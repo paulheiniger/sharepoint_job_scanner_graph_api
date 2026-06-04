@@ -44,6 +44,7 @@ Fill these values from an Azure app registration:
 MS_TENANT_ID=...
 MS_CLIENT_ID=...
 MS_CLIENT_SECRET=...
+ZAPIER_WEBHOOK_URL=...
 ```
 
 See `docs/AZURE_GRAPH_SETUP.md` for the Azure setup steps.
@@ -99,6 +100,34 @@ python -m jobscan.zapier_payloads output/job_index.json \
 ```
 
 Use `teams_digest.md` for a Teams post. Use `zapier_payload.json` for webhook or MCP-driven QuickBooks / CompanyCam / Teams actions.
+
+## Send records to Zapier
+
+Create a Zapier Catch Hook trigger, then set its URL in `.env`:
+
+```bash
+ZAPIER_WEBHOOK_URL=https://hooks.zapier.com/hooks/catch/...
+```
+
+Send all job records from the default index:
+
+```bash
+python -m jobscan.zapier_sender
+```
+
+Send only records with warnings:
+
+```bash
+python -m jobscan.zapier_sender output/job_index.json --only-warnings
+```
+
+Preview payloads without sending:
+
+```bash
+python -m jobscan.zapier_sender output/job_index.json --status Completed --limit 5 --dry-run
+```
+
+Each webhook payload includes the job record plus `source=sharepoint_job_scanner` and a UTC `sent_at` timestamp. Zapier can route those records to Teams, QuickBooks, CompanyCam, Outlook, or other follow-up actions.
 
 ## Streamlit dashboard prototype
 
