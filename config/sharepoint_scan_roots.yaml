@@ -1,0 +1,48 @@
+sharepoint:
+  site_url: "https://aro365531128.sharepoint.com/sites/Data"
+  library: "Documents"
+
+scan_roots:
+  - folder: "2026 Flooring/COMPLETED"
+    division: "Flooring"
+    pipeline_status: "Completed"
+
+  - folder: "2026 Flooring/CONTRACTED"
+    division: "Flooring"
+    pipeline_status: "Contracted"
+
+  - folder: "2026 Flooring/PROPOSED"
+    division: "Flooring"
+    pipeline_status: "Proposed"
+
+  - folder: "2026 Roofing/COMPLETED"
+    division: "Roofing"
+    pipeline_status: "Completed"
+
+  - folder: "2026 Roofing/CONTRACTED"
+    division: "Roofing"
+    pipeline_status: "Contracted"
+
+  - folder: "2026 Roofing/PROPOSED"
+    division: "Roofing"
+    pipeline_status: "Proposed"
+
+  - folder: "2026 Roofing/CONTRACTED REPAIRS"
+    division: "Roofing"
+    pipeline_status: "Contracted Repairs"
+
+  - folder: "2026 Insulation/COMPLETED"
+    division: "Insulation"
+    pipeline_status: "Completed"
+
+  - folder: "2026 Insulation/CONTRACTED"
+    division: "Insulation"
+    pipeline_status: "Contracted"
+
+  - folder: "2026 Insulation/PROPOSED"
+    division: "Insulation"
+    pipeline_status: "Proposed"
+
+  - folder: "2026 Specialty"
+    division: "Specialty"
+    pipeline_status: null
