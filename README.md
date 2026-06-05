@@ -179,7 +179,9 @@ Send the live summary:
 python -m jobscan.zapier_summary_sender output/job_index.json
 ```
 
-This module sends one aggregate payload only. It includes total jobs, final-price totals, division and status breakdowns, warning counts, completed-folder issue counts, aerial/photo totals, top warning jobs, and top highest-value jobs.
+This module sends one aggregate payload only. It includes total jobs, final-price totals, division and status breakdowns, warning counts, completed-folder issue counts, aerial/photo totals, top warning jobs, and top highest-value jobs. It also includes Teams-ready newline-separated text fields: `division_summary_text`, `pipeline_summary_text`, `warning_jobs_text`, and `top_value_jobs_text`.
+
+For Microsoft Teams Zapier actions, set Message Text Format / Format to HTML and use `{{teams_message_html}}` as the message body. The payload also includes section-level HTML fields: `division_summary_html`, `pipeline_summary_html`, `warning_jobs_html`, and `top_value_jobs_html`.
 
 ## Streamlit dashboard prototype
 
