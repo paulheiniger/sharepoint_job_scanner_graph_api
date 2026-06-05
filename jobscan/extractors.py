@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import hashlib
@@ -129,10 +128,8 @@ def classify_files(folder: Path) -> dict[str, Any]:
     skipped_image_count = len(image_manifest_entries)
 
     duplicate_count: int | None
-    warnings: list[str] = []
     if skipped_image_count:
         duplicate_count = None
-        warnings.append("Image downloads were skipped; duplicate photo detection requires --include-images")
     else:
         hashes: dict[str, int] = {}
         for photo in photos:
@@ -158,7 +155,7 @@ def classify_files(folder: Path) -> dict[str, Any]:
         "duplicate_photo_count": duplicate_count,
         "image_files_cached": skipped_image_count == 0,
         "skipped_image_count": skipped_image_count,
-        "warnings": warnings,
+        "warnings": [],
     }
 
 
@@ -407,7 +404,14 @@ def scan_job_folder(folder: Path, root: Path | None = None) -> JobRecord:
         record.invoice_file = rel(invoice, root)
 
     record.customer = infer_customer_from_folder(record.folder_name, record.job_name)
-    record.status = infer_status(record, f"{record.folder_path} {record.folder_name}")
+    folder_context = f"{record.folder_path} {record.folder_name}"
+    record.status = infer_status(record, folder_context)
+
+    completed_context = any(term in folder_context.lower() for term in ["completed", "complete", "closed"])
+    if completed_context and not record.has_invoice:
+        record.warnings.append("Completed job has no invoice")
+    if completed_context and not record.has_signed_contract:
+        record.warnings.append("Completed job has no signed contract")
 
     if record.final_price and record.invoice_amount and abs(record.final_price - record.invoice_amount) > 1:
         record.warnings.append(

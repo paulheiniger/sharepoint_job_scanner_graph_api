@@ -66,7 +66,7 @@ The sync step downloads only useful files into `.cache/sharepoint/`:
 - Excel estimate files
 - PDFs / Word docs
 
-For speed, image downloads are skipped by default. The sync still writes `.image_manifest.json` files in cached folders, so `photo_count` can include SharePoint photos without downloading hundreds of JPG/PNG/HEIC files.
+For speed, image downloads are skipped by default. The sync still writes `.image_manifest.json` files in cached folders, so `photo_count` can include SharePoint photos without downloading hundreds of JPG/PNG/HEIC files. Skipped images are normal scan metadata, not warnings: records use `image_files_cached`, `skipped_image_count`, and a blank/null `duplicate_photo_count` when duplicate detection was not run.
 
 Use `--include-images` only when you need duplicate image detection or image-byte analysis:
 
@@ -120,6 +120,8 @@ Send only records with warnings:
 ```bash
 python -m jobscan.zapier_sender output/job_index.json --only-warnings
 ```
+
+`--only-warnings` is intended for actionable business/data issues, such as failed estimate parsing, missing estimate workbooks, invoice mismatches, completed jobs missing invoices or signed contracts, or roof jobs with zero labor. Normal skipped-image metadata does not trigger warning-only sends.
 
 Preview payloads without sending:
 
