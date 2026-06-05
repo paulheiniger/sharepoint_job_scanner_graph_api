@@ -159,6 +159,34 @@ python -m jobscan.zapier_sender output/job_index.json --status Completed --limit
 
 Each webhook payload includes the job record plus `source=sharepoint_job_scanner` and a UTC `sent_at` timestamp. Zapier can route those records to Teams, QuickBooks, CompanyCam, Outlook, or other follow-up actions.
 
+## Send Job Index To SharePoint List
+
+Create a Zapier Catch Hook that creates or updates rows in the SharePoint List named `Job Index`, then set its URL in `.env`:
+
+```bash
+ZAPIER_JOB_INDEX_WEBHOOK_URL=https://hooks.zapier.com/hooks/catch/...
+```
+
+Preview normalized SharePoint List upsert payloads:
+
+```bash
+python -m jobscan.zapier_job_index_sender output/job_index.json --dry-run
+```
+
+Send all job index records:
+
+```bash
+python -m jobscan.zapier_job_index_sender output/job_index.json
+```
+
+Send a filtered subset:
+
+```bash
+python -m jobscan.zapier_job_index_sender output/job_index.json --division Roofing --status Invoiced --limit 25
+```
+
+To avoid resending unchanged rows after a successful run, add `--only-changed`. The sender stores local hashes in `.cache/zapier_job_index_sender_state.json`.
+
 ## Send Daily Summary To Zapier
 
 Create a separate Zapier Catch Hook for the daily scan summary, then set its URL in `.env`:
