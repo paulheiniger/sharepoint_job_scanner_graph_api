@@ -159,6 +159,28 @@ python -m jobscan.zapier_sender output/job_index.json --status Completed --limit
 
 Each webhook payload includes the job record plus `source=sharepoint_job_scanner` and a UTC `sent_at` timestamp. Zapier can route those records to Teams, QuickBooks, CompanyCam, Outlook, or other follow-up actions.
 
+## Send Daily Summary To Zapier
+
+Create a separate Zapier Catch Hook for the daily scan summary, then set its URL in `.env`:
+
+```bash
+ZAPIER_DAILY_SUMMARY_WEBHOOK_URL=https://hooks.zapier.com/hooks/catch/...
+```
+
+Preview the one-message summary payload:
+
+```bash
+python -m jobscan.zapier_summary_sender output/job_index.json --dry-run
+```
+
+Send the live summary:
+
+```bash
+python -m jobscan.zapier_summary_sender output/job_index.json
+```
+
+This module sends one aggregate payload only. It includes total jobs, final-price totals, division and status breakdowns, warning counts, completed-folder issue counts, aerial/photo totals, top warning jobs, and top highest-value jobs.
+
 ## Streamlit dashboard prototype
 
 ```bash
