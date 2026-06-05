@@ -11,6 +11,11 @@ class JobRecord:
     folder_name: str
     folder_path: str
 
+    division: str | None = None
+    pipeline_status: str | None = None
+    scan_root: str | None = None
+    source_year: int | None = None
+
     customer: str | None = None
     job_name: str | None = None
     job_type: str | None = None

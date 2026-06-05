@@ -10,7 +10,8 @@ from .models import JobRecord
 
 
 FIELD_ORDER = [
-    "job_id", "status", "customer", "job_name", "job_type", "site_address", "city", "state", "zip_code",
+    "job_id", "status", "division", "pipeline_status", "scan_root", "source_year",
+    "customer", "job_name", "job_type", "site_address", "city", "state", "zip_code",
     "contact_name", "contact_title", "contact_email", "contact_phone",
     "estimate_date", "estimated_sqft", "material_subtotal", "labor_subtotal",
     "warranty_bonding_insurance_subtotal", "total_job_cost", "overhead_pct", "overhead_amount",

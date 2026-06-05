@@ -80,6 +80,34 @@ python -m jobscan.sharepoint_sync \
 
 It uses a manifest with eTags so unchanged downloaded files are skipped on later runs.
 
+## Run batch SharePoint sync + scan
+
+Use batch scanning when jobs are spread across multiple division/status folders. Configure roots in `config/sharepoint_scan_roots.yaml`:
+
+```yaml
+sharepoint:
+  site_url: "https://yourtenant.sharepoint.com/sites/Operations"
+  library: "Documents"
+
+scan_roots:
+  - folder: "2026 Roofing/COMPLETED"
+    division: "Roofing"
+    pipeline_status: "Completed"
+```
+
+Then run:
+
+```bash
+python -m jobscan.batch_sharepoint_sync \
+  --config config/sharepoint_scan_roots.yaml \
+  --out output/job_index.csv \
+  --json output/job_index.json \
+  --xlsx output/job_index.xlsx \
+  --force
+```
+
+The batch scanner syncs each root, scans its local cache, combines all records into one index, and annotates each job with `division`, `pipeline_status`, `scan_root`, and `source_year`. If one root fails, the remaining roots still run; failures are written to `output/batch_scan_summary.json` under `scan_errors`.
+
 ## Run local/exported folder scan
 
 Useful for testing parser changes without hitting Graph:
