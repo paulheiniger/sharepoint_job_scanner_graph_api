@@ -410,8 +410,6 @@ def scan_job_folder(folder: Path, root: Path | None = None) -> JobRecord:
     completed_context = any(term in folder_context.lower() for term in ["completed", "complete", "closed"])
     if completed_context and not record.has_invoice:
         record.warnings.append("Completed job has no invoice")
-    if completed_context and not record.has_signed_contract:
-        record.warnings.append("Completed job has no signed contract")
 
     if record.final_price and record.invoice_amount and abs(record.final_price - record.invoice_amount) > 1:
         record.warnings.append(

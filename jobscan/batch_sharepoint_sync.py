@@ -98,10 +98,8 @@ def add_batch_context(record: JobRecord, root: BatchScanRoot) -> None:
     if status == "completed":
         if not record.has_invoice:
             record.warnings.append("Folder is Completed but no invoice found")
-        if not record.has_signed_contract:
-            record.warnings.append("Folder is Completed but no signed contract found")
-    if status == "contracted" and not record.has_signed_contract:
-        record.warnings.append("Folder is Contracted but no signed contract found")
+        if record.final_price is None:
+            record.warnings.append("Folder is Completed but no final price found")
 
 
 def stats_as_dict(stats: SyncStats) -> dict[str, Any]:
@@ -135,6 +133,7 @@ def main() -> None:
     records: list[JobRecord] = []
     scan_errors: list[dict[str, Any]] = []
     root_summaries: list[dict[str, Any]] = []
+    contracted_without_signed_contract_count = 0
 
     for root in roots:
         site_url = root.site_url or default_site_url
@@ -154,6 +153,10 @@ def main() -> None:
             root_records = scan_root(cache_root)
             for record in root_records:
                 add_batch_context(record, root)
+            if (root.pipeline_status or "").strip().lower() == "contracted":
+                contracted_without_signed_contract_count += sum(
+                    1 for record in root_records if not record.has_signed_contract
+                )
             records.extend(root_records)
             root_summaries.append(
                 {
@@ -192,6 +195,7 @@ def main() -> None:
         "roots_completed": len(root_summaries),
         "roots_failed": len(scan_errors),
         "jobs_indexed": len(records),
+        "contracted_without_signed_contract_count": contracted_without_signed_contract_count,
         "roots": root_summaries,
         "scan_errors": scan_errors,
         "outputs": {
@@ -206,6 +210,7 @@ def main() -> None:
     print(f"Roots completed: {len(root_summaries)}")
     print(f"Roots failed: {len(scan_errors)}")
     print(f"Jobs indexed: {len(records)}")
+    print(f"Contracted without signed contract: {contracted_without_signed_contract_count}")
     print(f"CSV: {args.out}")
     print(f"JSON: {args.json}")
     print(f"Excel: {args.xlsx}")

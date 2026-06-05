@@ -106,7 +106,7 @@ python -m jobscan.batch_sharepoint_sync \
   --force
 ```
 
-The batch scanner syncs each root, scans its local cache, combines all records into one index, and annotates each job with `division`, `pipeline_status`, `scan_root`, and `source_year`. If one root fails, the remaining roots still run; failures are written to `output/batch_scan_summary.json` under `scan_errors`.
+The batch scanner syncs each root, scans its local cache, combines all records into one index, and annotates each job with `division`, `pipeline_status`, `scan_root`, and `source_year`. If one root fails, the remaining roots still run; failures are written to `output/batch_scan_summary.json` under `scan_errors`. Missing signed contracts remain visible through `has_signed_contract`; for Contracted roots, the summary also includes `contracted_without_signed_contract_count` as a non-warning metric.
 
 ## Run local/exported folder scan
 
@@ -149,7 +149,7 @@ Send only records with warnings:
 python -m jobscan.zapier_sender output/job_index.json --only-warnings
 ```
 
-`--only-warnings` is intended for actionable business/data issues, such as failed estimate parsing, missing estimate workbooks, invoice mismatches, completed jobs missing invoices or signed contracts, or roof jobs with zero labor. Normal skipped-image metadata does not trigger warning-only sends.
+`--only-warnings` is intended for actionable business/data issues, such as failed estimate parsing, missing estimate workbooks, invoice mismatches, completed jobs missing invoices or final prices, or roof jobs with zero labor. Normal skipped-image metadata and missing signed contracts in Contracted folders do not trigger warning-only sends.
 
 Preview payloads without sending:
 

@@ -3,46 +3,46 @@ sharepoint:
   library: "Documents"
 
 scan_roots:
-  - folder: "2026 Flooring/COMPLETED"
+  - folder: "2026 FLOORING/COMPLETED"
     division: "Flooring"
     pipeline_status: "Completed"
 
-  - folder: "2026 Flooring/CONTRACTED"
+  - folder: "2026 FLOORING/CONTRACTED"
     division: "Flooring"
     pipeline_status: "Contracted"
 
-  - folder: "2026 Flooring/PROPOSED"
+  - folder: "2026 FLOORING/PROPOSED"
     division: "Flooring"
     pipeline_status: "Proposed"
 
-  - folder: "2026 Roofing/COMPLETED"
+  - folder: "2026 ROOFING/COMPLETED"
     division: "Roofing"
     pipeline_status: "Completed"
 
-  - folder: "2026 Roofing/CONTRACTED"
+  - folder: "2026 ROOFING/CONTRACTED"
     division: "Roofing"
     pipeline_status: "Contracted"
 
-  - folder: "2026 Roofing/PROPOSED"
+  - folder: "2026 ROOFING/PROPOSED"
     division: "Roofing"
     pipeline_status: "Proposed"
 
-  - folder: "2026 Roofing/CONTRACTED REPAIRS"
+  - folder: "2026 ROOFING/CONTRACTED REPAIRS"
     division: "Roofing"
     pipeline_status: "Contracted Repairs"
 
-  - folder: "2026 Insulation/COMPLETED"
+  - folder: "2026 INSULATION/COMPLETED"
     division: "Insulation"
     pipeline_status: "Completed"
 
-  - folder: "2026 Insulation/CONTRACTED"
+  - folder: "2026 INSULATION/CONTRACTED"
     division: "Insulation"
     pipeline_status: "Contracted"
 
-  - folder: "2026 Insulation/PROPOSED"
+  - folder: "2026 INSULATION/PROPOSED"
     division: "Insulation"
     pipeline_status: "Proposed"
 
-  - folder: "2026 Specialty"
+  - folder: "2026 SPECIALTY"
     division: "Specialty"
     pipeline_status: null
