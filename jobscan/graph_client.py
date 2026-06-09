@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ import msal
 import requests
 
 GRAPH_ROOT = "https://graph.microsoft.com/v1.0"
+TOKEN_REFRESH_SKEW_SECONDS = 300
 
 
 class GraphError(RuntimeError):
@@ -66,10 +68,20 @@ class GraphClient:
             raise GraphError(f"Missing Microsoft Graph env vars: {', '.join(missing)}")
 
         self._token: str | None = None
+        self.token_acquired_at: float | None = None
+        self.expires_in: int | None = None
 
-    def token(self) -> str:
-        if self._token:
+    def _token_expiring_soon(self) -> bool:
+        if not self._token or self.token_acquired_at is None or self.expires_in is None:
+            return True
+        expires_at = self.token_acquired_at + self.expires_in
+        return time.time() >= expires_at - TOKEN_REFRESH_SKEW_SECONDS
+
+    def token(self, *, force_refresh: bool = False) -> str:
+        if self._token and not force_refresh and not self._token_expiring_soon():
             return self._token
+        if self._token:
+            print("Refreshing Microsoft Graph token")
         app = msal.ConfidentialClientApplication(
             client_id=self.client_id,
             authority=f"https://login.microsoftonline.com/{self.tenant_id}",
@@ -79,15 +91,38 @@ class GraphClient:
         if "access_token" not in result:
             raise GraphError(f"Could not acquire Microsoft Graph token: {json.dumps(result, indent=2)}")
         self._token = result["access_token"]
+        self.token_acquired_at = time.time()
+        try:
+            self.expires_in = int(result.get("expires_in") or 3599)
+        except (TypeError, ValueError):
+            self.expires_in = 3599
         return self._token
 
-    def _headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self.token()}", "Accept": "application/json"}
+    def _headers(self, *, force_refresh: bool = False) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self.token(force_refresh=force_refresh)}", "Accept": "application/json"}
+
+    def _request_once(self, method: str, url: str, *, force_refresh: bool = False, **kwargs: Any) -> requests.Response:
+        return requests.request(method, url, headers=self._headers(force_refresh=force_refresh), timeout=self.timeout, **kwargs)
+
+    def _is_invalid_auth_token(self, response: requests.Response) -> bool:
+        if response.status_code != 401:
+            return False
+        try:
+            detail = response.json()
+        except ValueError:
+            return "InvalidAuthenticationToken" in response.text
+        error = detail.get("error") if isinstance(detail, dict) else None
+        if not isinstance(error, dict):
+            return False
+        return error.get("code") == "InvalidAuthenticationToken"
 
     def request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
         if url.startswith("/"):
             url = GRAPH_ROOT + url
-        response = requests.request(method, url, headers=self._headers(), timeout=self.timeout, **kwargs)
+        response = self._request_once(method, url, **kwargs)
+        if self._is_invalid_auth_token(response):
+            response.close()
+            response = self._request_once(method, url, force_refresh=True, **kwargs)
         if response.status_code >= 400:
             try:
                 detail = response.json()
