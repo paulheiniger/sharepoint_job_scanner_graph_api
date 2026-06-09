@@ -35,6 +35,7 @@ DETAIL_FIELDS = [
     "month_folder",
     "project",
     "code",
+    "code_missing",
     "row_type",
     "duration_hours",
     "approx_time_spent",
@@ -56,6 +57,7 @@ EMPLOYEE_DAILY_SUMMARY_FIELDS = [
     "line_count",
     "timed_entry_count",
     "activity_only_count",
+    "missing_code_count",
     "project_count",
     "warning_count",
 ]
@@ -67,6 +69,7 @@ CODE_SUMMARY_FIELDS = [
     "line_count",
     "timed_entry_count",
     "activity_only_count",
+    "missing_code_count",
     "date_min",
     "date_max",
 ]
@@ -80,8 +83,17 @@ PROJECT_TOUCH_SUMMARY_FIELDS = [
     "line_count",
     "timed_entry_count",
     "activity_only_count",
+    "missing_code_count",
     "latest_notes",
 ]
+ACTIONABLE_WARNING_PATTERNS = {
+    "invalid duration",
+    "invalid start/end time",
+    "unusually large duration",
+    "long office timesheet entry",
+    "possible duplicate sheet",
+    "missing code",
+}
 MONTH_RE = re.compile(r"\b(?:\d{1,2}\s+)?(january|february|march|april|may|june|july|august|september|october|november|december)\b", re.I)
 YEAR_RE = re.compile(r"\b(20\d{2})\b")
 DURATION_UNIT_RE = re.compile(
@@ -414,7 +426,8 @@ def _row_value(row: tuple[Any, ...], col_idx: int | None) -> Any:
 def _is_continuation(values: dict[str, Any]) -> bool:
     has_text = any(_stringify(values.get(field)) for field in ("project", "hubspot_notes", "additional_notes"))
     has_structured = any(_stringify(values.get(field)) for field in ("code", "approx_time_spent", "start_time", "end_time"))
-    return has_text and not has_structured
+    has_project = bool(_stringify(values.get("project")))
+    return has_text and not has_project and not has_structured
 
 
 def _has_activity_content(record: dict[str, Any]) -> bool:
@@ -435,12 +448,14 @@ def _finalize_record(record: dict[str, Any]) -> dict[str, Any]:
         warnings.append("missing work_date")
     if not record.get("project"):
         warnings.append("missing project")
-    if not record.get("code"):
-        warnings.append("missing code")
+    code_missing = not bool(_stringify(record.get("code")))
     duration, duration_warnings = _duration_from_values(record.get("_approx_raw"), record.get("_start_raw"), record.get("_end_raw"))
     record["duration_hours"] = duration
     record["row_type"] = _row_type_for_record(record)
+    record["code_missing"] = code_missing
     warnings.extend(duration_warnings)
+    if code_missing and (_is_timed_entry(record) or _has_time_intent(record.get("_approx_raw"), record.get("_start_raw"), record.get("_end_raw"))):
+        warnings.append("missing code")
     record["warnings"] = "; ".join(dict.fromkeys(warnings))
     for hidden in ("_warnings", "_approx_raw", "_start_raw", "_end_raw"):
         record.pop(hidden, None)
@@ -615,6 +630,7 @@ def build_employee_daily_summary(records: list[dict[str, Any]]) -> list[dict[str
             "line_count": 0,
             "timed_entry_count": 0,
             "activity_only_count": 0,
+            "missing_code_count": 0,
             "project_count": 0,
             "warning_count": 0,
         })
@@ -623,6 +639,8 @@ def build_employee_daily_summary(records: list[dict[str, Any]]) -> list[dict[str
             group["timed_entry_count"] += 1
         if _is_activity_only(record):
             group["activity_only_count"] += 1
+        if record.get("code_missing"):
+            group["missing_code_count"] += 1
         group["line_count"] += 1
         if record.get("warnings"):
             group["warning_count"] += 1
@@ -651,6 +669,7 @@ def build_code_summary(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "line_count": 0,
             "timed_entry_count": 0,
             "activity_only_count": 0,
+            "missing_code_count": 0,
             "date_min": "",
             "date_max": "",
         })
@@ -659,6 +678,8 @@ def build_code_summary(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
             group["timed_entry_count"] += 1
         if _is_activity_only(record):
             group["activity_only_count"] += 1
+        if record.get("code_missing"):
+            group["missing_code_count"] += 1
         group["line_count"] += 1
         if record.get("employee_name"):
             employees[key].add(record["employee_name"])
@@ -695,6 +716,7 @@ def build_project_touch_summary(records: list[dict[str, Any]]) -> list[dict[str,
             "line_count": 0,
             "timed_entry_count": 0,
             "activity_only_count": 0,
+            "missing_code_count": 0,
             "latest_notes": "",
         })
         if _is_timed_entry(record):
@@ -702,6 +724,8 @@ def build_project_touch_summary(records: list[dict[str, Any]]) -> list[dict[str,
             group["timed_entry_count"] += 1
         if _is_activity_only(record):
             group["activity_only_count"] += 1
+        if record.get("code_missing"):
+            group["missing_code_count"] += 1
         group["line_count"] += 1
         if record.get("employee_name"):
             employees[key].add(record["employee_name"])
@@ -722,7 +746,12 @@ def build_project_touch_summary(records: list[dict[str, Any]]) -> list[dict[str,
 
 
 def warning_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [record for record in records if record.get("warnings")]
+    return [record for record in records if _has_actionable_warning(record)]
+
+
+def _has_actionable_warning(record: dict[str, Any]) -> bool:
+    warnings = record.get("warnings") or ""
+    return any(pattern in warnings for pattern in ACTIONABLE_WARNING_PATTERNS)
 
 
 def build_console_summary(records: list[dict[str, Any]], stats: ScanStats) -> dict[str, Any]:

@@ -6,6 +6,7 @@ from jobscan.office_timesheet_sync import (
     build_employee_daily_summary,
     build_project_touch_summary,
     parse_duration_hours,
+    warning_records,
 )
 
 
@@ -92,9 +93,27 @@ def test_activity_only_rows_do_not_warn_missing_duration() -> None:
     assert "missing duration" not in str(activity["warnings"])
 
 
+def test_activity_only_missing_code_is_not_warning() -> None:
+    activity = _record(code="", additional_notes="Called customer")
+
+    assert activity["row_type"] == "activity_only"
+    assert activity["code_missing"] is True
+    assert "missing code" not in str(activity["warnings"])
+    assert warning_records([activity]) == []
+
+
+def test_timed_entry_missing_code_is_warning() -> None:
+    timed = _record(code="", _approx_raw="1 hr")
+
+    assert timed["row_type"] == "timed_entry"
+    assert timed["code_missing"] is True
+    assert "missing code" in str(timed["warnings"])
+    assert warning_records([timed]) == [timed]
+
+
 def test_summary_counts_timed_and_activity_rows() -> None:
-    timed = _record(_approx_raw="1 hr")
-    activity = _record(project="Smith", code="EST", additional_notes="Left voicemail")
+    timed = _record(code="", _approx_raw="1 hr")
+    activity = _record(project="Smith", code="", additional_notes="Left voicemail")
     records = [timed, activity]
 
     employee_daily = build_employee_daily_summary(records)[0]
@@ -106,6 +125,7 @@ def test_summary_counts_timed_and_activity_rows() -> None:
         assert summary["line_count"] == 2
         assert summary["timed_entry_count"] == 1
         assert summary["activity_only_count"] == 1
+        assert summary["missing_code_count"] == 2
 
 
 if __name__ == "__main__":
@@ -113,5 +133,7 @@ if __name__ == "__main__":
     test_parse_approx_time_fractional_hours()
     test_parse_fractional_text_durations()
     test_activity_only_rows_do_not_warn_missing_duration()
+    test_activity_only_missing_code_is_not_warning()
+    test_timed_entry_missing_code_is_warning()
     test_summary_counts_timed_and_activity_rows()
     print("office timesheet duration parser ok")
