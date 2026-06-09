@@ -119,50 +119,56 @@ python -m jobscan.cli examples/sample_export \
   --xlsx output/job_index.xlsx
 ```
 
-## Scan timesheets
+## Scan office/admin/sales timesheets
 
-The timesheet scanner reads exported SharePoint folders or ZIP files containing daily Excel timesheets, then writes detail rows plus daily/code and project/code summaries.
+The office timesheet scanner reads exported SharePoint folders or ZIP files containing daily Excel timesheets for office, admin, estimating, and sales activity. It summarizes employee time, codes, project/customer touches, HubSpot notes, and warnings.
+
+This is not the field crew labor scanner and should not be used as full job labor costing or field labor profitability reporting. Field worker/job-site labor timesheets are separate and can be handled later.
 
 Run against a local export:
 
 ```bash
-python -m jobscan.timesheet_sync \
+python -m jobscan.office_timesheet_sync \
   --root "Timesheets" \
-  --out output/timesheet_entries.csv \
-  --summary output/timesheet_summary.csv \
-  --json output/timesheet_entries.json
+  --out output/office_timesheet_entries.csv \
+  --json output/office_timesheet_entries.json
 ```
 
-This also writes `output/timesheet_project_summary.csv`.
+By default this writes:
 
-Filter by date or employee:
+- `output/office_timesheet_entries.csv`
+- `output/office_timesheet_employee_daily_summary.csv`
+- `output/office_timesheet_code_summary.csv`
+- `output/office_timesheet_project_touch_summary.csv`
+- `output/office_timesheet_warnings.csv`
+
+Filter by date, employee, code, or project:
 
 ```bash
-python -m jobscan.timesheet_sync \
+python -m jobscan.office_timesheet_sync \
   --root "Timesheets" \
   --start-date 2026-06-01 \
   --end-date 2026-06-30 \
   --employee Aaron \
-  --out output/timesheet_entries.csv \
-  --summary output/timesheet_summary.csv
+  --code EST \
+  --project "Smith"
 ```
 
 Preview counts without writing files:
 
 ```bash
-python -m jobscan.timesheet_sync --root "Timesheets" --dry-run
+python -m jobscan.office_timesheet_sync --root "Timesheets" --dry-run
 ```
 
 The same scanner can download `.xlsx` timesheets through Microsoft Graph before parsing:
 
 ```bash
-python -m jobscan.timesheet_sync \
+python -m jobscan.office_timesheet_sync \
   --sharepoint-url "https://yourtenant.sharepoint.com/sites/Operations" \
   --library "Documents" \
   --folder "Timesheets" \
-  --out output/timesheet_entries.csv \
-  --summary output/timesheet_summary.csv \
-  --json output/timesheet_entries.json
+  --out output/office_timesheet_entries.csv \
+  --json output/office_timesheet_entries.json
 ```
 
 ## Generate Zapier handoff payloads

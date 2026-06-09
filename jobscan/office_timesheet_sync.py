@@ -47,8 +47,9 @@ DETAIL_FIELDS = [
     "source_path",
     "warnings",
 ]
-SUMMARY_FIELDS = ["work_date", "employee_name", "code", "total_hours", "line_count", "project_count", "warning_count"]
-PROJECT_SUMMARY_FIELDS = ["project", "code", "total_hours", "employee_count", "date_min", "date_max", "line_count"]
+EMPLOYEE_DAILY_SUMMARY_FIELDS = ["work_date", "employee_name", "total_hours", "line_count", "project_count", "warning_count"]
+CODE_SUMMARY_FIELDS = ["code", "total_hours", "employee_count", "project_count", "line_count", "date_min", "date_max"]
+PROJECT_TOUCH_SUMMARY_FIELDS = ["project", "code", "total_hours", "employee_count", "date_min", "date_max", "line_count", "latest_notes"]
 MONTH_RE = re.compile(r"\b(?:\d{1,2}\s+)?(january|february|march|april|may|june|july|august|september|october|november|december)\b", re.I)
 YEAR_RE = re.compile(r"\b(20\d{2})\b")
 
@@ -362,7 +363,14 @@ def find_workbooks(root: Path) -> tuple[list[Path], list[dict[str, Any]]]:
     return workbooks, skipped
 
 
-def _record_in_filters(record: dict[str, Any], start_date: str, end_date: str, employee: str) -> bool:
+def _record_in_filters(
+    record: dict[str, Any],
+    start_date: str,
+    end_date: str,
+    employee: str,
+    code: str,
+    project: str,
+) -> bool:
     work_date = record.get("work_date") or ""
     if start_date and work_date and work_date < start_date:
         return False
@@ -373,30 +381,50 @@ def _record_in_filters(record: dict[str, Any], start_date: str, end_date: str, e
         haystack = f"{record.get('employee_name', '')} {record.get('employee_folder', '')}".lower()
         if needle not in haystack:
             return False
+    if code and code.lower() not in (record.get("code") or "").lower():
+        return False
+    if project and project.lower() not in (record.get("project") or "").lower():
+        return False
     return True
 
 
-def scan_timesheets(root: Path, start_date: str = "", end_date: str = "", employee: str = "", include_skipped: bool = True) -> list[dict[str, Any]]:
+def scan_office_timesheets(
+    root: Path,
+    start_date: str = "",
+    end_date: str = "",
+    employee: str = "",
+    code: str = "",
+    project: str = "",
+    include_skipped: bool = True,
+) -> list[dict[str, Any]]:
     workbooks, skipped = find_workbooks(root)
     records: list[dict[str, Any]] = []
     if include_skipped:
         records.extend(skipped)
     for workbook in workbooks:
         records.extend(_scan_workbook(workbook, root))
-    return [record for record in records if _record_in_filters(record, start_date, end_date, employee)]
+    return [record for record in records if _record_in_filters(record, start_date, end_date, employee, code, project)]
 
 
-def build_summary(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    groups: dict[tuple[str, str, str], dict[str, Any]] = {}
-    projects: defaultdict[tuple[str, str, str], set[str]] = defaultdict(set)
+def _is_line_item_record(record: dict[str, Any]) -> bool:
+    return bool(record.get("employee_name") or record.get("project") or record.get("code") or record.get("duration_hours"))
+
+
+def _record_notes(record: dict[str, Any]) -> str:
+    notes = [record.get("hubspot_notes", ""), record.get("additional_notes", "")]
+    return "\n".join(note for note in notes if note)
+
+
+def build_employee_daily_summary(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: dict[tuple[str, str], dict[str, Any]] = {}
+    projects: defaultdict[tuple[str, str], set[str]] = defaultdict(set)
     for record in records:
-        if not record.get("project") and not record.get("code"):
+        if not _is_line_item_record(record):
             continue
-        key = (record.get("work_date", ""), record.get("employee_name", ""), record.get("code", ""))
+        key = (record.get("work_date", ""), record.get("employee_name", ""))
         group = groups.setdefault(key, {
             "work_date": key[0],
             "employee_name": key[1],
-            "code": key[2],
             "total_hours": 0.0,
             "line_count": 0,
             "project_count": 0,
@@ -411,17 +439,54 @@ def build_summary(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for key, group in groups.items():
         group["total_hours"] = round(group["total_hours"], 4)
         group["project_count"] = len(projects[key])
-    return sorted(groups.values(), key=lambda row: (row["work_date"], row["employee_name"], row["code"]))
+    return sorted(groups.values(), key=lambda row: (row["work_date"], row["employee_name"]))
 
 
-def build_project_summary(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def build_code_summary(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: dict[str, dict[str, Any]] = {}
+    employees: defaultdict[str, set[str]] = defaultdict(set)
+    projects: defaultdict[str, set[str]] = defaultdict(set)
+    dates: defaultdict[str, list[str]] = defaultdict(list)
+    for record in records:
+        if not _is_line_item_record(record):
+            continue
+        key = record.get("code", "")
+        group = groups.setdefault(key, {
+            "code": key,
+            "total_hours": 0.0,
+            "employee_count": 0,
+            "project_count": 0,
+            "line_count": 0,
+            "date_min": "",
+            "date_max": "",
+        })
+        group["total_hours"] += float(record.get("duration_hours") or 0)
+        group["line_count"] += 1
+        if record.get("employee_name"):
+            employees[key].add(record["employee_name"])
+        if record.get("project"):
+            projects[key].add(record["project"])
+        if record.get("work_date"):
+            dates[key].append(record["work_date"])
+    for key, group in groups.items():
+        group["total_hours"] = round(group["total_hours"], 4)
+        group["employee_count"] = len(employees[key])
+        group["project_count"] = len(projects[key])
+        if dates[key]:
+            group["date_min"] = min(dates[key])
+            group["date_max"] = max(dates[key])
+    return sorted(groups.values(), key=lambda row: row["code"])
+
+
+def build_project_touch_summary(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     groups: dict[tuple[str, str], dict[str, Any]] = {}
     employees: defaultdict[tuple[str, str], set[str]] = defaultdict(set)
     dates: defaultdict[tuple[str, str], list[str]] = defaultdict(list)
+    latest_note_dates: dict[tuple[str, str], str] = {}
     for record in records:
-        key = (record.get("project", ""), record.get("code", ""))
-        if not key[0] and not key[1]:
+        if not _is_line_item_record(record):
             continue
+        key = (record.get("project", ""), record.get("code", ""))
         group = groups.setdefault(key, {
             "project": key[0],
             "code": key[1],
@@ -430,6 +495,7 @@ def build_project_summary(records: list[dict[str, Any]]) -> list[dict[str, Any]]
             "date_min": "",
             "date_max": "",
             "line_count": 0,
+            "latest_notes": "",
         })
         group["total_hours"] += float(record.get("duration_hours") or 0)
         group["line_count"] += 1
@@ -437,6 +503,11 @@ def build_project_summary(records: list[dict[str, Any]]) -> list[dict[str, Any]]
             employees[key].add(record["employee_name"])
         if record.get("work_date"):
             dates[key].append(record["work_date"])
+        notes = _record_notes(record)
+        note_date = record.get("work_date") or ""
+        if notes and note_date >= latest_note_dates.get(key, ""):
+            latest_note_dates[key] = note_date
+            group["latest_notes"] = notes
     for key, group in groups.items():
         group["total_hours"] = round(group["total_hours"], 4)
         group["employee_count"] = len(employees[key])
@@ -444,6 +515,10 @@ def build_project_summary(records: list[dict[str, Any]]) -> list[dict[str, Any]]
             group["date_min"] = min(dates[key])
             group["date_max"] = max(dates[key])
     return sorted(groups.values(), key=lambda row: (row["project"], row["code"]))
+
+
+def warning_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [record for record in records if record.get("warnings")]
 
 
 def write_csv(path: Path, rows: list[dict[str, Any]], fields: list[str]) -> None:
@@ -460,7 +535,7 @@ def write_json(path: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def _extract_zip(zip_path: Path) -> tempfile.TemporaryDirectory[str]:
-    temp_dir = tempfile.TemporaryDirectory(prefix="timesheet_zip_")
+    temp_dir = tempfile.TemporaryDirectory(prefix="office_timesheet_zip_")
     with zipfile.ZipFile(zip_path) as archive:
         archive.extractall(temp_dir.name)
     return temp_dir
@@ -474,7 +549,7 @@ def _scan_root_from_extracted_zip(temp_dir: tempfile.TemporaryDirectory[str]) ->
     return root
 
 
-def sync_sharepoint_timesheets(
+def sync_sharepoint_office_timesheets(
     *,
     sharepoint_url: str,
     library: str,
@@ -512,30 +587,53 @@ def sync_sharepoint_timesheets(
     return sync_root
 
 
-def _project_summary_path(summary_path: Path) -> Path:
-    return summary_path.parent / "timesheet_project_summary.csv"
-
-
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Scan SharePoint/exported timesheet workbooks and produce structured outputs.")
-    parser.add_argument("--root", type=Path, default=None, help="Local Timesheets folder or exported ZIP")
+    parser = argparse.ArgumentParser(
+        description="Scan office/admin/sales timesheet workbooks and summarize employee time, codes, project touches, and warnings."
+    )
+    parser.add_argument("--root", type=Path, default=None, help="Local office timesheets folder or exported ZIP")
     parser.add_argument("--sharepoint-url", default="", help="Site URL, e.g. https://contoso.sharepoint.com/sites/Operations")
     parser.add_argument("--library", default="Documents", help="SharePoint document library name. Default: Documents")
     parser.add_argument("--folder", default="", help="Folder path inside the library, e.g. Timesheets")
-    parser.add_argument("--cache", type=Path, default=Path(".cache/sharepoint_timesheets"), help="Local cache folder for SharePoint downloads")
+    parser.add_argument("--cache", type=Path, default=Path(".cache/sharepoint_office_timesheets"), help="Local cache folder for SharePoint downloads")
     parser.add_argument("--force", action="store_true", help="Redownload SharePoint workbooks even when cached")
-    parser.add_argument("--out", type=Path, default=Path("output/timesheet_entries.csv"), help="Detail CSV output path")
-    parser.add_argument("--summary", type=Path, default=Path("output/timesheet_summary.csv"), help="Daily/code summary CSV output path")
+    parser.add_argument("--out", type=Path, default=Path("output/office_timesheet_entries.csv"), help="Detail CSV output path")
+    parser.add_argument(
+        "--employee-daily-summary",
+        type=Path,
+        default=Path("output/office_timesheet_employee_daily_summary.csv"),
+        help="Employee/day summary CSV output path",
+    )
+    parser.add_argument(
+        "--code-summary",
+        type=Path,
+        default=Path("output/office_timesheet_code_summary.csv"),
+        help="Code summary CSV output path",
+    )
+    parser.add_argument(
+        "--project-touch-summary",
+        type=Path,
+        default=Path("output/office_timesheet_project_touch_summary.csv"),
+        help="Project/code touch summary CSV output path",
+    )
+    parser.add_argument(
+        "--warnings-out",
+        type=Path,
+        default=Path("output/office_timesheet_warnings.csv"),
+        help="Warnings-only CSV output path",
+    )
     parser.add_argument("--json", type=Path, default=None, help="Optional detail JSON output path")
     parser.add_argument("--start-date", default="", help="Inclusive ISO date filter, e.g. 2026-06-01")
     parser.add_argument("--end-date", default="", help="Inclusive ISO date filter, e.g. 2026-06-30")
     parser.add_argument("--employee", default="", help="Employee name or folder substring filter")
+    parser.add_argument("--code", default="", help="Code substring filter")
+    parser.add_argument("--project", default="", help="Project substring filter")
     parser.add_argument("--dry-run", action="store_true", help="Scan and print counts without writing output files")
     args = parser.parse_args()
 
     temp_dir: tempfile.TemporaryDirectory[str] | None = None
     if args.sharepoint_url:
-        scan_root = sync_sharepoint_timesheets(
+        scan_root = sync_sharepoint_office_timesheets(
             sharepoint_url=args.sharepoint_url,
             library=args.library,
             folder=args.folder,
@@ -553,28 +651,42 @@ def main() -> None:
         parser.error("Provide --root for local scanning or --sharepoint-url for Graph scanning.")
 
     try:
-        records = scan_timesheets(scan_root, start_date=args.start_date, end_date=args.end_date, employee=args.employee)
-        summary = build_summary(records)
-        project_summary = build_project_summary(records)
-        project_summary_path = _project_summary_path(args.summary)
+        records = scan_office_timesheets(
+            scan_root,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            employee=args.employee,
+            code=args.code,
+            project=args.project,
+        )
+        employee_daily_summary = build_employee_daily_summary(records)
+        code_summary = build_code_summary(records)
+        project_touch_summary = build_project_touch_summary(records)
+        warnings = warning_records(records)
 
         if args.dry_run:
             print(f"Dry run: scanned root {scan_root}")
             print(f"Detail records: {len(records)}")
-            print(f"Summary rows: {len(summary)}")
-            print(f"Project summary rows: {len(project_summary)}")
+            print(f"Employee daily summary rows: {len(employee_daily_summary)}")
+            print(f"Code summary rows: {len(code_summary)}")
+            print(f"Project touch summary rows: {len(project_touch_summary)}")
+            print(f"Warning rows: {len(warnings)}")
             return
 
         write_csv(args.out, records, DETAIL_FIELDS)
-        write_csv(args.summary, summary, SUMMARY_FIELDS)
-        write_csv(project_summary_path, project_summary, PROJECT_SUMMARY_FIELDS)
+        write_csv(args.employee_daily_summary, employee_daily_summary, EMPLOYEE_DAILY_SUMMARY_FIELDS)
+        write_csv(args.code_summary, code_summary, CODE_SUMMARY_FIELDS)
+        write_csv(args.project_touch_summary, project_touch_summary, PROJECT_TOUCH_SUMMARY_FIELDS)
+        write_csv(args.warnings_out, warnings, DETAIL_FIELDS)
         if args.json:
             write_json(args.json, records)
 
         print(f"Detail records: {len(records)}")
         print(f"CSV: {args.out}")
-        print(f"Summary CSV: {args.summary}")
-        print(f"Project summary CSV: {project_summary_path}")
+        print(f"Employee daily summary CSV: {args.employee_daily_summary}")
+        print(f"Code summary CSV: {args.code_summary}")
+        print(f"Project touch summary CSV: {args.project_touch_summary}")
+        print(f"Warnings CSV: {args.warnings_out}")
         if args.json:
             print(f"JSON: {args.json}")
     finally:
