@@ -89,6 +89,11 @@ def load_scan_roots(path: Path) -> tuple[str, str, list[BatchScanRoot]]:
 
 
 def add_batch_context(record: JobRecord, root: BatchScanRoot) -> None:
+    """Attach config context to every record from a batch root.
+
+    Batch roots are business groupings, not necessarily pipeline-status folders.
+    Keep unusual statuses such as "Folder Created" exactly as configured.
+    """
     record.division = root.division
     record.pipeline_status = root.pipeline_status
     record.scan_root = root.folder
@@ -109,6 +114,20 @@ def stats_as_dict(stats: SyncStats) -> dict[str, Any]:
 def write_summary(path: Path, summary: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def print_root_start(root: BatchScanRoot, site_url: str, library: str) -> None:
+    print(f"Scanning root: {root.folder}")
+    print(f"  site_url: {site_url}")
+    print(f"  library: {library}")
+    print(f"  division: {root.division or ''}")
+    print(f"  pipeline_status: {root.pipeline_status or ''}")
+
+
+def print_root_done(root: BatchScanRoot, records_found: int) -> None:
+    print(f"  records_found: {records_found}")
+    if records_found == 0:
+        print("  WARNING: Scan root found but no records extracted")
 
 
 def main() -> None:
@@ -138,7 +157,7 @@ def main() -> None:
     for root in roots:
         site_url = root.site_url or default_site_url
         library = root.library or default_library
-        print(f"Scanning {root.folder}")
+        print_root_start(root, site_url, library)
         try:
             target = SharePointTarget.from_url(site_url, library=library, folder_path=root.folder)
             cache_root, stats = sync_sharepoint_folder(
@@ -153,6 +172,7 @@ def main() -> None:
             root_records = scan_root(cache_root)
             for record in root_records:
                 add_batch_context(record, root)
+            print_root_done(root, len(root_records))
             if (root.pipeline_status or "").strip().lower() == "contracted":
                 contracted_without_signed_contract_count += sum(
                     1 for record in root_records if not record.has_signed_contract
@@ -165,7 +185,9 @@ def main() -> None:
                     "pipeline_status": root.pipeline_status,
                     "source_year": root.source_year,
                     "cache_root": str(cache_root),
+                    "records_found": len(root_records),
                     "records": len(root_records),
+                    "warning": "Scan root found but no records extracted" if not root_records else None,
                     "stats": stats_as_dict(stats),
                 }
             )
