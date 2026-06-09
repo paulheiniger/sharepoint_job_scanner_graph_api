@@ -36,16 +36,36 @@ PAYLOAD_FIELDS = [
     "city",
     "state",
     "zip_code",
+    "estimate_date",
+    "estimated_sqft",
+    "material_subtotal",
+    "labor_subtotal",
+    "total_job_cost",
+    "overhead_pct",
+    "overhead_amount",
+    "profit_pct",
+    "profit_amount",
+    "worksheet_price",
     "final_price",
+    "price_per_sqft",
+    "invoice_number",
     "invoice_amount",
-    "has_invoice",
+    "invoice_date",
     "has_signed_contract",
+    "has_invoice",
+    "has_warranty",
+    "has_proposal",
+    "has_job_spec",
     "has_aerial",
+    "has_notes",
     "photo_count",
-    "warnings",
+    "folder_name",
+    "folder_path",
     "folder_url",
     "estimate_file",
     "invoice_file",
+    "warnings",
+    "last_scanned_at",
 ]
 
 
@@ -106,17 +126,38 @@ def filter_records(
     *,
     status: str | None = None,
     division: str | None = None,
+    pipeline_status: str | None = None,
     limit: int | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     selected = records
+
     if status:
         wanted = status.strip().lower()
-        selected = [record for record in selected if str(record.get("status") or "").strip().lower() == wanted]
+        selected = [
+            record
+            for record in selected
+            if str(record.get("status") or "").strip().lower() == wanted
+        ]
+
     if division:
         wanted = division.strip().lower()
-        selected = [record for record in selected if str(record.get("division") or "").strip().lower() == wanted]
+        selected = [
+            record
+            for record in selected
+            if str(record.get("division") or "").strip().lower() == wanted
+        ]
+
+    if pipeline_status:
+        wanted = pipeline_status.strip().lower()
+        selected = [
+            record
+            for record in selected
+            if str(record.get("pipeline_status") or "").strip().lower() == wanted
+        ]
+
     if limit is not None:
         selected = selected[:limit]
+
     return selected, len(records) - len(selected)
 
 
@@ -133,6 +174,8 @@ def main() -> None:
     parser.add_argument("--limit", type=int, help="Send only the first N matching records")
     parser.add_argument("--status", help="Send only records matching this scanner status")
     parser.add_argument("--division", help="Send only records matching this division")
+    parser.add_argument("--pipeline-status", help="Send only records matching this pipeline status")
+    parser.add_argument("--only-warnings", action="store_true", help="Send only records with actionable warnings")
     parser.add_argument("--only-changed", action="store_true", help="Send only records whose normalized payload changed since the last successful send")
     parser.add_argument("--state", type=Path, default=DEFAULT_STATE_PATH, help="Local state file used by --only-changed")
     args = parser.parse_args()
@@ -149,8 +192,14 @@ def main() -> None:
         records,
         status=args.status,
         division=args.division,
+        pipeline_status=args.pipeline_status,
         limit=args.limit,
     )
+
+    if args.only_warnings:
+        before = len(selected)
+        selected = [record for record in selected if warning_text(record)]
+        skipped_count += before - len(selected)
     state = load_state(args.state) if args.only_changed else {}
     new_state = dict(state)
 
