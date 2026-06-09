@@ -119,6 +119,52 @@ python -m jobscan.cli examples/sample_export \
   --xlsx output/job_index.xlsx
 ```
 
+## Scan timesheets
+
+The timesheet scanner reads exported SharePoint folders or ZIP files containing daily Excel timesheets, then writes detail rows plus daily/code and project/code summaries.
+
+Run against a local export:
+
+```bash
+python -m jobscan.timesheet_sync \
+  --root "Timesheets" \
+  --out output/timesheet_entries.csv \
+  --summary output/timesheet_summary.csv \
+  --json output/timesheet_entries.json
+```
+
+This also writes `output/timesheet_project_summary.csv`.
+
+Filter by date or employee:
+
+```bash
+python -m jobscan.timesheet_sync \
+  --root "Timesheets" \
+  --start-date 2026-06-01 \
+  --end-date 2026-06-30 \
+  --employee Aaron \
+  --out output/timesheet_entries.csv \
+  --summary output/timesheet_summary.csv
+```
+
+Preview counts without writing files:
+
+```bash
+python -m jobscan.timesheet_sync --root "Timesheets" --dry-run
+```
+
+The same scanner can download `.xlsx` timesheets through Microsoft Graph before parsing:
+
+```bash
+python -m jobscan.timesheet_sync \
+  --sharepoint-url "https://yourtenant.sharepoint.com/sites/Operations" \
+  --library "Documents" \
+  --folder "Timesheets" \
+  --out output/timesheet_entries.csv \
+  --summary output/timesheet_summary.csv \
+  --json output/timesheet_entries.json
+```
+
 ## Generate Zapier handoff payloads
 
 ```bash
