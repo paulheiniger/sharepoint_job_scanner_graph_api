@@ -131,6 +131,8 @@ For estimating analytics and future AI estimate generation, the batch scanner al
 
 The summary dataset is one row per estimate workbook. The line-item dataset preserves section, item, quantity/cost fields where available, labor task days/crew/hours, and `source_sheet` / `source_row` references for parser improvements.
 
+If a job folder contains multiple estimate workbooks, the Job Index remains one row per job and selects one `primary_estimate_file` for high-level fields. Other workbooks are retained in `supporting_estimate_files` and emitted as supporting rows in `estimate_summary`.
+
 ## Run local/exported folder scan
 
 Useful for testing parser changes without hitting Graph:

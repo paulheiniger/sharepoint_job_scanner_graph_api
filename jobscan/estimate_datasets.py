@@ -6,14 +6,18 @@ import re
 from pathlib import Path
 from typing import Any
 
+from .estimate_selection import estimate_id, infer_estimate_scope_type, select_primary_estimate
 from .extractors import SPREADSHEET_EXTS, classify_files, extract_estimate_xlsx, money, rel
 from .models import JobRecord
 
 ESTIMATE_SUMMARY_FIELDS = [
     "job_id",
+    "estimate_id",
     "division",
     "pipeline_status",
     "customer",
+    "estimate_role",
+    "estimate_scope_type",
     "job_name",
     "job_type",
     "estimate_file",
@@ -32,6 +36,12 @@ ESTIMATE_SUMMARY_FIELDS = [
     "equipment_subtotal",
     "subcontractor_subtotal",
     "travel_lodging",
+    "adders_subtotal",
+    "warranty_amount",
+    "insurance_amount",
+    "rental_amount",
+    "subcontractor_amount",
+    "misc_materials_amount",
     "total_job_cost",
     "overhead_pct",
     "overhead_amount",
@@ -50,11 +60,13 @@ ESTIMATE_SUMMARY_FIELDS = [
     "labor_duration_source",
     "source_file",
     "source_path",
+    "source_sheet",
     "folder_url",
     "extraction_warnings",
 ]
 
 ESTIMATE_LINE_ITEM_FIELDS = [
+    "estimate_id",
     "job_id",
     "estimate_file",
     "division",
@@ -63,6 +75,7 @@ ESTIMATE_LINE_ITEM_FIELDS = [
     "job_name",
     "section",
     "line_item_name",
+    "line_item_category",
     "description",
     "quantity",
     "unit",
@@ -108,6 +121,19 @@ SUMMARY_LABELS = {
     "warranty_years": ["warranty years", "warranty"],
 }
 
+ADDER_SKIP_PATTERNS = [
+    r"^total$",
+    r"^subtotal$",
+    r"\btotal job cost\b",
+    r"\boverhead\b",
+    r"\bprofit\b",
+    r"\bfinal price\b",
+    r"\bprice\s*/?\s*sq\.?\s*ft\b",
+    r"\btotal hours\b",
+    r"\btotal days\b",
+    r"\bworksheet price\b",
+]
+
 
 def estimate_version_from_name(path: Path) -> str | None:
     match = re.search(r"\b(?:rev|revision|version|v)\s*[-_. ]?([A-Za-z0-9]+)\b", path.stem, flags=re.I)
@@ -124,42 +150,72 @@ def scan_estimate_datasets_for_records(root: Path, records: list[JobRecord]) -> 
         if not folder.exists():
             continue
         info = classify_files(folder)
-        estimate_files = info.get("estimate_files") or [
+        estimate_files = sorted(info.get("estimate_files") or [
             path for path in info.get("files", []) if path.suffix.lower() in SPREADSHEET_EXTS
-        ]
+        ], key=lambda path: path.name.lower())
+        parsed_estimates = []
         for estimate_file in estimate_files:
-            summary, items = extract_estimate_dataset(estimate_file, root, record)
+            high_level = safe_extract_estimate_xlsx(estimate_file)
+            parsed_estimates.append(
+                {
+                    "path": estimate_file,
+                    "estimate_file": rel(estimate_file, root),
+                    **high_level,
+                }
+            )
+        primary, _reason = select_primary_estimate(parsed_estimates)
+        primary_path = primary.get("path") if primary else None
+        for parsed in parsed_estimates:
+            estimate_file = parsed["path"]
+            role = "primary" if estimate_file == primary_path else "supporting"
+            summary, items = extract_estimate_dataset(estimate_file, root, record, estimate_role=role, high_level=parsed)
             summaries.append(summary)
             line_items.extend(items)
     return summaries, line_items
 
 
-def extract_estimate_dataset(path: Path, root: Path, record: JobRecord) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    warnings: list[str] = []
+def safe_extract_estimate_xlsx(path: Path) -> dict[str, Any]:
     try:
-        high_level = extract_estimate_xlsx(path)
-        warnings.extend(high_level.get("warnings") or [])
+        return extract_estimate_xlsx(path)
     except Exception as exc:
-        high_level = {}
-        warnings.append(f"estimate parse failed: {type(exc).__name__}: {exc}")
+        return {"warnings": [f"estimate parse failed: {type(exc).__name__}: {exc}"]}
+
+
+def extract_estimate_dataset(
+    path: Path,
+    root: Path,
+    record: JobRecord,
+    *,
+    estimate_role: str | None = None,
+    high_level: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    warnings: list[str] = []
+    high_level = high_level or safe_extract_estimate_xlsx(path)
+    warnings.extend(high_level.get("warnings") or [])
+    source_path = rel(path, root)
+    eid = estimate_id(record.job_id, source_path)
 
     try:
         import openpyxl
 
         wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
-        workbook_summary, line_items, workbook_warnings = extract_workbook_details(wb, path, root, record)
+        workbook_summary, line_items, workbook_warnings = extract_workbook_details(wb, path, root, record, eid)
         warnings.extend(workbook_warnings)
     except Exception as exc:
         workbook_summary = {}
         line_items = []
         warnings.append(f"detail extraction failed: {type(exc).__name__}: {exc}")
 
-    source_path = rel(path, root)
+    scope_type = infer_estimate_scope_type(path, " ".join(str(high_level.get(key) or "") for key in ("job_name", "job_type")))
+    role = estimate_role or ("primary" if source_path == record.primary_estimate_file or source_path == record.estimate_file else "supporting")
     summary = {
         "job_id": record.job_id,
+        "estimate_id": eid,
         "division": record.division,
         "pipeline_status": record.pipeline_status,
         "customer": record.customer,
+        "estimate_role": role,
+        "estimate_scope_type": scope_type,
         "job_name": high_level.get("job_name") or record.job_name,
         "job_type": high_level.get("job_type") or record.job_type,
         "estimate_file": source_path,
@@ -178,6 +234,12 @@ def extract_estimate_dataset(path: Path, root: Path, record: JobRecord) -> tuple
         "equipment_subtotal": workbook_summary.get("equipment_subtotal"),
         "subcontractor_subtotal": workbook_summary.get("subcontractor_subtotal"),
         "travel_lodging": workbook_summary.get("travel_lodging"),
+        "adders_subtotal": workbook_summary.get("adders_subtotal"),
+        "warranty_amount": workbook_summary.get("warranty_amount"),
+        "insurance_amount": workbook_summary.get("insurance_amount"),
+        "rental_amount": workbook_summary.get("rental_amount"),
+        "subcontractor_amount": workbook_summary.get("subcontractor_amount"),
+        "misc_materials_amount": workbook_summary.get("misc_materials_amount"),
         "total_job_cost": high_level.get("total_job_cost") or record.total_job_cost,
         "overhead_pct": high_level.get("overhead_pct") or record.overhead_pct,
         "overhead_amount": high_level.get("overhead_amount") or record.overhead_amount,
@@ -196,13 +258,14 @@ def extract_estimate_dataset(path: Path, root: Path, record: JobRecord) -> tuple
         "labor_duration_source": high_level.get("labor_duration_source") or record.labor_duration_source,
         "source_file": path.name,
         "source_path": source_path,
+        "source_sheet": "Estimate",
         "folder_url": record.folder_url,
         "extraction_warnings": "; ".join(dict.fromkeys(warnings)),
     }
     return {field: summary.get(field) for field in ESTIMATE_SUMMARY_FIELDS}, line_items
 
 
-def extract_workbook_details(wb: Any, path: Path, root: Path, record: JobRecord) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
+def extract_workbook_details(wb: Any, path: Path, root: Path, record: JobRecord, estimate_id: str) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
     warnings: list[str] = []
     summary: dict[str, Any] = {}
     line_items: list[dict[str, Any]] = []
@@ -230,9 +293,14 @@ def extract_workbook_details(wb: Any, path: Path, root: Path, record: JobRecord)
             end_row=next_row,
             source_path=source_path,
             record=record,
+            estimate_id=estimate_id,
         )
         line_items.extend(section_items)
         warnings.extend(section_warnings)
+    existing_rows = {item["source_row"] for item in line_items if item.get("source_sheet") == ws.title}
+    adder_items = extract_estimate_adders(ws, source_path, record, estimate_id, existing_rows)
+    line_items.extend(adder_items)
+    summary.update(adder_rollups(adder_items))
     return summary, line_items, warnings
 
 
@@ -311,6 +379,7 @@ def extract_section_line_items(
     end_row: int,
     source_path: str,
     record: JobRecord,
+    estimate_id: str,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     section_name_text = section["section"]
     warnings: list[str] = []
@@ -318,7 +387,7 @@ def extract_section_line_items(
     header = find_line_item_header(ws, section["row"] + 1, min(section["row"] + 12, end_row - 1))
 
     if section_name_text == "Labor / Subcontractor":
-        labor_items, labor_warnings = extract_labor_line_items(ws, section, end_row, source_path, record, header)
+        labor_items, labor_warnings = extract_labor_line_items(ws, section, end_row, source_path, record, header, estimate_id)
         return labor_items, labor_warnings
 
     if not header:
@@ -359,6 +428,7 @@ def extract_section_line_items(
         items.append(
             line_item_row(
                 record=record,
+                estimate_id=estimate_id,
                 estimate_file=source_path,
                 section=section_name_text,
                 source_sheet=ws.title,
@@ -385,6 +455,7 @@ def extract_labor_line_items(
     source_path: str,
     record: JobRecord,
     header: tuple[int, dict[str, int]] | None,
+    estimate_id: str,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     warnings: list[str] = []
     if not header:
@@ -408,6 +479,7 @@ def extract_labor_line_items(
         items.append(
             line_item_row(
                 record=record,
+                estimate_id=estimate_id,
                 estimate_file=source_path,
                 section="Labor / Subcontractor",
                 source_sheet=ws.title,
@@ -419,6 +491,70 @@ def extract_labor_line_items(
             )
         )
     return items, warnings
+
+
+def extract_estimate_adders(
+    ws: Any,
+    source_path: str,
+    record: JobRecord,
+    estimate_id: str,
+    existing_rows: set[int],
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    start_row = max(1, ws.max_row - 80)
+    for row_num in range(start_row, ws.max_row + 1):
+        if row_num in existing_rows:
+            continue
+        row_cells = list(ws[row_num])
+        text_parts = [str(cell.value).strip() for cell in row_cells if text_value(cell.value)]
+        row_text = " ".join(text_parts).strip()
+        if not meaningful_adder_text(row_text):
+            continue
+        amount = rightmost_amount(row_cells)
+        if amount is None:
+            continue
+        category = infer_line_item_category(row_text)
+        items.append(
+            line_item_row(
+                record=record,
+                estimate_id=estimate_id,
+                estimate_file=source_path,
+                section="Estimate Adders",
+                source_sheet=ws.title,
+                source_row=row_num,
+                line_item_name=adder_name(row_text),
+                line_item_category=category,
+                description=row_text,
+                extended_cost=amount,
+            )
+        )
+    return items
+
+
+def adder_rollups(items: list[dict[str, Any]]) -> dict[str, Any]:
+    rollups = {
+        "adders_subtotal": 0,
+        "warranty_amount": 0,
+        "insurance_amount": 0,
+        "rental_amount": 0,
+        "subcontractor_amount": 0,
+        "misc_materials_amount": 0,
+    }
+    for item in items:
+        amount = numeric_value(item.get("extended_cost")) or 0
+        rollups["adders_subtotal"] += amount
+        category = item.get("line_item_category")
+        if category == "Warranty":
+            rollups["warranty_amount"] += amount
+        elif category == "Insurance":
+            rollups["insurance_amount"] += amount
+        elif category in {"Rental / Site Services", "Equipment Rental"}:
+            rollups["rental_amount"] += amount
+        elif category == "Subcontractor":
+            rollups["subcontractor_amount"] += amount
+        elif category == "Materials":
+            rollups["misc_materials_amount"] += amount
+    return {key: (int(value) if float(value).is_integer() else value) for key, value in rollups.items() if value}
 
 
 def find_line_item_header(ws: Any, start_row: int, end_row: int) -> tuple[int, dict[str, int]] | None:
@@ -437,8 +573,9 @@ def find_line_item_header(ws: Any, start_row: int, end_row: int) -> tuple[int, d
     return None
 
 
-def line_item_row(record: JobRecord, estimate_file: str, section: str, source_sheet: str, source_row: int, **values: Any) -> dict[str, Any]:
+def line_item_row(record: JobRecord, estimate_file: str, section: str, source_sheet: str, source_row: int, estimate_id: str = "", **values: Any) -> dict[str, Any]:
     row = {
+        "estimate_id": estimate_id,
         "job_id": record.job_id,
         "estimate_file": estimate_file,
         "division": record.division,
@@ -447,6 +584,7 @@ def line_item_row(record: JobRecord, estimate_file: str, section: str, source_sh
         "job_name": record.job_name,
         "section": section,
         "line_item_name": None,
+        "line_item_category": None,
         "description": None,
         "quantity": None,
         "unit": None,
@@ -540,6 +678,65 @@ def numeric_value(value: Any) -> float | int | None:
     if parsed is None:
         return None
     return int(parsed) if float(parsed).is_integer() else parsed
+
+
+def rightmost_amount(cells: list[Any]) -> float | int | None:
+    for cell in reversed(cells):
+        value = getattr(cell, "value", cell)
+        amount = amount_value(value)
+        if amount is not None:
+            return amount
+    return None
+
+
+def amount_value(value: Any) -> float | int | None:
+    if isinstance(value, (int, float)):
+        return int(value) if float(value).is_integer() else float(value)
+    if value is None:
+        return None
+    text = str(value)
+    matches = re.findall(r"\$\s*(-?\(?[0-9][0-9,]*(?:\.\d{1,2})?\)?)", text)
+    if not matches:
+        return None
+    raw = matches[-1].replace(",", "").replace("(", "-").replace(")", "").strip()
+    try:
+        parsed = float(raw)
+    except ValueError:
+        return None
+    return int(parsed) if parsed.is_integer() else parsed
+
+
+def meaningful_adder_text(text: str) -> bool:
+    normalized = norm_label(text)
+    if not normalized or len(normalized) < 3:
+        return False
+    if not re.search(r"[a-zA-Z]", normalized):
+        return False
+    return not any(re.search(pattern, normalized) for pattern in ADDER_SKIP_PATTERNS)
+
+
+def adder_name(text: str) -> str:
+    cleaned = re.sub(r"\s+\$?\s*-?\(?[0-9][0-9,]*(?:\.\d{1,2})?\)?\s*$", "", text).strip(" -")
+    return cleaned or text.strip()
+
+
+def infer_line_item_category(text: str) -> str:
+    normalized = norm_label(text)
+    if "warranty" in normalized:
+        return "Warranty"
+    if "insurance" in normalized:
+        return "Insurance"
+    if "porta" in normalized or "john" in normalized:
+        return "Rental / Site Services"
+    if "subcontractor" in normalized or re.search(r"\bsub\b", normalized):
+        return "Subcontractor"
+    if "lift" in normalized or "rental" in normalized:
+        return "Equipment Rental"
+    if any(term in normalized for term in ["material", "caulk", "brush grade", "rustnox"]):
+        return "Materials"
+    if "labor" in normalized:
+        return "Labor"
+    return "Misc"
 
 
 def text_value(value: Any) -> str | None:

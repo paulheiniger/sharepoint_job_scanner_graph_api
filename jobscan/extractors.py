@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .estimate_selection import select_primary_estimate
 from .models import JobRecord, money, rel
 from .schedule_extractor import apply_schedule_extraction
 
@@ -567,19 +568,43 @@ def scan_job_folder(folder: Path, root: Path | None = None, scan_context: str = 
     )
     record.warnings.extend(info["warnings"])
 
+    estimate_files = sorted(info["estimate_files"], key=lambda path: path.name.lower())
+    record.estimate_file_count = len(estimate_files)
+    record.estimate_files = [rel(path, root) for path in estimate_files]
+    record.multiple_estimates_found = len(estimate_files) > 1
+
     if info["estimate_files"]:
-        estimate_file = info["estimate_files"][0]
-        try:
-            extracted = extract_estimate_xlsx(estimate_file)
-            for key, value in extracted.items():
+        parsed_estimates: list[dict[str, Any]] = []
+        for estimate_file in estimate_files:
+            parsed: dict[str, Any] = {"path": estimate_file, "estimate_file": rel(estimate_file, root), "warnings": []}
+            try:
+                extracted = extract_estimate_xlsx(estimate_file)
+                parsed.update(extracted)
+                parsed["path"] = estimate_file
+                parsed["estimate_file"] = rel(estimate_file, root)
+            except Exception as exc:  # Keep the scanner running when one workbook is bad.
+                parsed["warnings"] = [f"Estimate parse failed: {exc}"]
+                record.warnings.append(f"Estimate parse failed for {rel(estimate_file, root)}: {exc}")
+            parsed_estimates.append(parsed)
+
+        primary, reason = select_primary_estimate(parsed_estimates)
+        record.estimate_selection_reason = (
+            f"Multiple estimate workbooks found; {reason}" if record.multiple_estimates_found else reason
+        )
+        if primary:
+            primary_path = primary["path"]
+            record.primary_estimate_file = rel(primary_path, root)
+            record.estimate_file = record.primary_estimate_file
+            record.supporting_estimate_files = [
+                rel(path, root) for path in estimate_files if path != primary_path
+            ]
+            for key, value in primary.items():
+                if key in {"path", "estimate_file"}:
+                    continue
                 if key == "warnings":
                     record.warnings.extend(value or [])
                 elif hasattr(record, key):
                     setattr(record, key, value)
-            record.estimate_file = rel(estimate_file, root)
-        except Exception as exc:  # Keep the scanner running when one workbook is bad.
-            record.estimate_file = rel(estimate_file, root)
-            record.warnings.append(f"Estimate parse failed: {exc}")
 
     if info["invoice_files"]:
         invoice = info["invoice_files"][0]

@@ -17,6 +17,8 @@ FIELD_ORDER = [
     "warranty_bonding_insurance_subtotal", "total_job_cost", "overhead_pct", "overhead_amount",
     "profit_pct", "profit_amount", "worksheet_price", "final_price", "price_per_sqft",
     "invoice_number", "invoice_amount", "invoice_date",
+    "estimate_file_count", "estimate_files", "primary_estimate_file", "supporting_estimate_files",
+    "multiple_estimates_found", "estimate_selection_reason",
     "has_signed_contract", "has_invoice", "has_warranty", "has_proposal", "has_job_spec", "has_aerial", "has_notes",
     "photo_count", "duplicate_photo_count", "image_files_cached", "skipped_image_count",
     "crew_leader", "assigned_crew_leader", "crew_type", "suggested_crew_type", "suggested_crew_reason",
@@ -51,6 +53,10 @@ def records_as_dicts(records: Iterable[JobRecord], *, tabular: bool = False) -> 
         row["warnings"] = "; ".join(row.get("warnings") or [])
         if tabular and isinstance(row.get("labor_schedule_breakdown"), list):
             row["labor_schedule_breakdown"] = json.dumps(row["labor_schedule_breakdown"], ensure_ascii=False)
+        if tabular and isinstance(row.get("estimate_files"), list):
+            row["estimate_files"] = json.dumps(row["estimate_files"], ensure_ascii=False)
+        if tabular and isinstance(row.get("supporting_estimate_files"), list):
+            row["supporting_estimate_files"] = json.dumps(row["supporting_estimate_files"], ensure_ascii=False)
         rows.append({field: row.get(field) for field in FIELD_ORDER})
     return rows
 

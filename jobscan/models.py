@@ -49,6 +49,13 @@ class JobRecord:
     invoice_amount: float | None = None
     invoice_date: str | None = None
 
+    estimate_file_count: int = 0
+    estimate_files: list[str] = field(default_factory=list)
+    primary_estimate_file: str | None = None
+    supporting_estimate_files: list[str] = field(default_factory=list)
+    multiple_estimates_found: bool = False
+    estimate_selection_reason: str | None = None
+
     has_signed_contract: bool = False
     has_invoice: bool = False
     has_warranty: bool = False
