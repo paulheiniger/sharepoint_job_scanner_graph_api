@@ -106,6 +106,10 @@ python -m jobscan.batch_sharepoint_sync \
   --xlsx output/job_index.xlsx \
   --crew-schedule-out output/crew_schedule_candidates.csv \
   --crew-schedule-json output/crew_schedule_candidates.json \
+  --estimate-summary-out output/estimate_summary.csv \
+  --estimate-summary-json output/estimate_summary.json \
+  --estimate-line-items-out output/estimate_line_items.csv \
+  --estimate-line-items-json output/estimate_line_items.json \
   --force
 ```
 
@@ -117,6 +121,15 @@ The batch scanner also writes crew schedule candidate files:
 - `output/crew_schedule_candidates.json`
 
 These files are dashboard-friendly extracts of the job index. They include `crew_leader`, `crew_type`, `scheduled_sequence`, `estimated_start_date`, `estimated_duration_days`, `estimated_end_date`, `schedule_status`, `ready_to_schedule`, `blocking_issue`, `schedule_notes`, `schedule_source_file`, and `schedule_confidence`. Missing crew leader, estimated duration, estimated start date, missing job spec, completed jobs, and non-contracted jobs are called out in `blocking_issue`.
+
+For estimating analytics and future AI estimate generation, the batch scanner also writes detailed estimate datasets:
+
+- `output/estimate_summary.csv`
+- `output/estimate_summary.json`
+- `output/estimate_line_items.csv`
+- `output/estimate_line_items.json`
+
+The summary dataset is one row per estimate workbook. The line-item dataset preserves section, item, quantity/cost fields where available, labor task days/crew/hours, and `source_sheet` / `source_row` references for parser improvements.
 
 ## Run local/exported folder scan
 

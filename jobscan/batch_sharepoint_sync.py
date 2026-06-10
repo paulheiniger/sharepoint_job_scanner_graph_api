@@ -11,6 +11,13 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from .estimate_datasets import (
+    ESTIMATE_LINE_ITEM_FIELDS,
+    ESTIMATE_SUMMARY_FIELDS,
+    scan_estimate_datasets_for_records,
+    write_dataset_csv,
+    write_dataset_json,
+)
 from .graph_client import GraphClient, SharePointTarget
 from .models import JobRecord
 from .scan import scan_root, write_csv, write_excel, write_json
@@ -206,6 +213,10 @@ def main() -> None:
     parser.add_argument("--xlsx", type=Path, default=Path("output/job_index.xlsx"))
     parser.add_argument("--crew-schedule-out", type=Path, default=Path("output/crew_schedule_candidates.csv"))
     parser.add_argument("--crew-schedule-json", type=Path, default=Path("output/crew_schedule_candidates.json"))
+    parser.add_argument("--estimate-summary-out", type=Path, default=Path("output/estimate_summary.csv"))
+    parser.add_argument("--estimate-summary-json", type=Path, default=Path("output/estimate_summary.json"))
+    parser.add_argument("--estimate-line-items-out", type=Path, default=Path("output/estimate_line_items.csv"))
+    parser.add_argument("--estimate-line-items-json", type=Path, default=Path("output/estimate_line_items.json"))
     parser.add_argument("--summary", type=Path, default=None, help="Batch scan summary JSON path")
     args = parser.parse_args()
 
@@ -213,6 +224,8 @@ def main() -> None:
     default_site_url, default_library, roots = load_scan_roots(args.config)
     client = GraphClient()
     records: list[JobRecord] = []
+    estimate_summaries: list[dict[str, Any]] = []
+    estimate_line_items: list[dict[str, Any]] = []
     scan_errors: list[dict[str, Any]] = []
     root_summaries: list[dict[str, Any]] = []
     contracted_without_signed_contract_count = 0
@@ -235,6 +248,9 @@ def main() -> None:
             root_records = scan_root(cache_root, scan_context=root.folder)
             for record in root_records:
                 add_batch_context(record, root)
+            root_estimate_summaries, root_estimate_line_items = scan_estimate_datasets_for_records(cache_root, root_records)
+            estimate_summaries.extend(root_estimate_summaries)
+            estimate_line_items.extend(root_estimate_line_items)
             print_root_done(root, len(root_records))
             if (root.pipeline_status or "").strip().lower() == "contracted":
                 contracted_without_signed_contract_count += sum(
@@ -250,6 +266,8 @@ def main() -> None:
                     "cache_root": str(cache_root),
                     "records_found": len(root_records),
                     "records": len(root_records),
+                    "estimate_summaries": len(root_estimate_summaries),
+                    "estimate_line_items": len(root_estimate_line_items),
                     "warning": "Scan root found but no records extracted" if not root_records else None,
                     "stats": stats_as_dict(stats),
                 }
@@ -272,6 +290,10 @@ def main() -> None:
     write_excel(records, args.xlsx)
     write_crew_schedule_csv(records, args.crew_schedule_out)
     write_crew_schedule_json(records, args.crew_schedule_json)
+    write_dataset_csv(estimate_summaries, ESTIMATE_SUMMARY_FIELDS, args.estimate_summary_out)
+    write_dataset_json(estimate_summaries, ESTIMATE_SUMMARY_FIELDS, args.estimate_summary_json)
+    write_dataset_csv(estimate_line_items, ESTIMATE_LINE_ITEM_FIELDS, args.estimate_line_items_out)
+    write_dataset_json(estimate_line_items, ESTIMATE_LINE_ITEM_FIELDS, args.estimate_line_items_json)
 
     summary_path = args.summary or args.json.with_name("batch_scan_summary.json")
     summary = {
@@ -282,6 +304,8 @@ def main() -> None:
         "roots_completed": len(root_summaries),
         "roots_failed": len(scan_errors),
         "jobs_indexed": len(records),
+        "estimate_summaries": len(estimate_summaries),
+        "estimate_line_items": len(estimate_line_items),
         "contracted_without_signed_contract_count": contracted_without_signed_contract_count,
         "roots": root_summaries,
         "scan_errors": scan_errors,
@@ -291,6 +315,10 @@ def main() -> None:
             "xlsx": str(args.xlsx),
             "crew_schedule_csv": str(args.crew_schedule_out),
             "crew_schedule_json": str(args.crew_schedule_json),
+            "estimate_summary_csv": str(args.estimate_summary_out),
+            "estimate_summary_json": str(args.estimate_summary_json),
+            "estimate_line_items_csv": str(args.estimate_line_items_out),
+            "estimate_line_items_json": str(args.estimate_line_items_json),
         },
     }
     write_summary(summary_path, summary)
@@ -299,12 +327,18 @@ def main() -> None:
     print(f"Roots completed: {len(root_summaries)}")
     print(f"Roots failed: {len(scan_errors)}")
     print(f"Jobs indexed: {len(records)}")
+    print(f"Estimate summaries: {len(estimate_summaries)}")
+    print(f"Estimate line items: {len(estimate_line_items)}")
     print(f"Contracted without signed contract: {contracted_without_signed_contract_count}")
     print(f"CSV: {args.out}")
     print(f"JSON: {args.json}")
     print(f"Excel: {args.xlsx}")
     print(f"Crew schedule CSV: {args.crew_schedule_out}")
     print(f"Crew schedule JSON: {args.crew_schedule_json}")
+    print(f"Estimate summary CSV: {args.estimate_summary_out}")
+    print(f"Estimate summary JSON: {args.estimate_summary_json}")
+    print(f"Estimate line items CSV: {args.estimate_line_items_out}")
+    print(f"Estimate line items JSON: {args.estimate_line_items_json}")
     print(f"Summary: {summary_path}")
 
 
