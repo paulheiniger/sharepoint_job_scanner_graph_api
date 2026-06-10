@@ -63,7 +63,10 @@ class JobRecord:
 
     status: str = "Unknown"
     crew_leader: str | None = None
+    assigned_crew_leader: str | None = None
     crew_type: str | None = None
+    suggested_crew_type: str | None = None
+    suggested_crew_reason: str | None = None
     scheduled_sequence: int | None = None
     estimated_start_date: str | None = None
     estimated_duration_days: int | None = None

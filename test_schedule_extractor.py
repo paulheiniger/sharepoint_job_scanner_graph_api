@@ -53,7 +53,7 @@ def test_parse_schedule_dates_and_durations() -> None:
     assert add_business_days("2026-06-12", 3) == "2026-06-16"
 
 
-def test_scan_root_adds_schedule_fields_from_job_spec() -> None:
+def test_scan_root_does_not_assign_crew_from_job_spec_text() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         job = root / "Pence UofL"
@@ -67,15 +67,15 @@ def test_scan_root_adds_schedule_fields_from_job_spec() -> None:
         add_batch_context(record, BatchScanRoot(folder="2026 Roofing/Contracted", pipeline_status="Contracted"))
         row = records_as_dicts([record])[0]
 
-    assert row["crew_leader"] == "Santos"
-    assert row["estimated_start_date"] == "2026-06-15"
-    assert row["estimated_duration_days"] == 7
-    assert row["estimated_end_date"] == "2026-06-23"
-    assert row["schedule_status"] == "Scheduled"
-    assert row["ready_to_schedule"] is True
-    assert row["blocking_issue"] is None
-    assert row["schedule_source_file"] == "Pence UofL/Job Spec.txt"
-    assert row["schedule_confidence"] == "high"
+    assert row["crew_leader"] is None
+    assert row["assigned_crew_leader"] is None
+    assert row["estimated_start_date"] is None
+    assert row["estimated_duration_days"] is None
+    assert row["schedule_status"] == "Not Ready"
+    assert row["ready_to_schedule"] is False
+    assert row["blocking_issue"] == "Missing estimated duration"
+    assert row["suggested_crew_type"] is None
+    assert row["suggested_crew_reason"] == "manual_needed"
 
 
 def test_crew_schedule_rows_surface_missing_schedule_info() -> None:
@@ -88,12 +88,12 @@ def test_crew_schedule_rows_surface_missing_schedule_info() -> None:
         add_batch_context(record, BatchScanRoot(folder="2026 Roofing/Folder Created", pipeline_status="Folder Created"))
         row = crew_schedule_rows([record])[0]
 
-    assert row["schedule_status"] == "Unscheduled"
+    assert row["schedule_status"] == "Not Ready"
     assert row["ready_to_schedule"] is False
     assert "Missing estimated duration" in row["blocking_issue"]
-    assert "Missing estimated start date" in row["blocking_issue"]
-    assert "Missing crew leader" in row["blocking_issue"]
-    assert "Missing job spec" in row["blocking_issue"]
+    assert "Missing estimated start date" not in row["blocking_issue"]
+    assert "Missing crew leader" not in row["blocking_issue"]
+    assert "Missing job spec" not in row["blocking_issue"]
 
 
 def test_estimate_parser_extracts_labor_schedule_duration() -> None:
@@ -140,5 +140,27 @@ def test_scan_root_uses_estimate_duration_for_schedule_fields() -> None:
     assert row["estimated_hours_per_day"] == 11
     assert row["estimated_crew_size"] == 6
     assert row["labor_schedule_breakdown"][0]["task"] == "Set Up/Safety"
+    assert row["schedule_status"] == "Needs Assignment"
+    assert row["ready_to_schedule"] is True
     assert row["schedule_confidence"] == "medium"
     assert "Missing estimated duration" not in row["blocking_issue"]
+    assert row["blocking_issue"] == "Needs crew assignment"
+    assert row["suggested_crew_type"] is None
+    assert row["suggested_crew_reason"] == "manual_needed"
+
+
+def test_manual_assignment_changes_schedule_status() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        job = root / "ACRE Bens Bargain"
+        job.mkdir()
+        write_labor_schedule_workbook(job / "Estimate Roofing (2026) - ACRE Bens Bargain.xlsx")
+
+        record = scan_root(root, scan_context="2026 Roofing/Contracted")[0]
+        record.assigned_crew_leader = "Mariano"
+        add_batch_context(record, BatchScanRoot(folder="2026 Roofing/Contracted", pipeline_status="Contracted"))
+        row = records_as_dicts([record])[0]
+
+    assert row["schedule_status"] == "Needs Start Date"
+    assert row["ready_to_schedule"] is True
+    assert row["blocking_issue"] == "Needs start date"

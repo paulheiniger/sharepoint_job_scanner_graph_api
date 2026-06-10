@@ -120,7 +120,7 @@ The batch scanner also writes crew schedule candidate files:
 - `output/crew_schedule_candidates.csv`
 - `output/crew_schedule_candidates.json`
 
-These files are dashboard-friendly extracts of the job index. They include `crew_leader`, `crew_type`, `scheduled_sequence`, `estimated_start_date`, `estimated_duration_days`, `estimated_end_date`, `schedule_status`, `ready_to_schedule`, `blocking_issue`, `schedule_notes`, `schedule_source_file`, and `schedule_confidence`. Missing crew leader, estimated duration, estimated start date, missing job spec, completed jobs, and non-contracted jobs are called out in `blocking_issue`.
+These files are dashboard-friendly assignment candidates for production scheduling. The scanner uses estimate labor data to populate `estimated_duration_days`, `estimated_labor_hours`, and `estimated_crew_size`, then flags jobs as `Needs Assignment`, `Needs Start Date`, `Scheduled`, `Complete`, or `Not Ready`. `crew_leader`, `assigned_crew_leader`, and `estimated_start_date` stay blank unless they are manually provided later. `suggested_crew_type` is blank by default and `suggested_crew_reason` is `manual_needed` until a real recommendation rule is added.
 
 For estimating analytics and future AI estimate generation, the batch scanner also writes detailed estimate datasets:
 

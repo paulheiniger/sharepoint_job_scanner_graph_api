@@ -49,7 +49,10 @@ CONTRACTED_STATUSES = {"contracted", "contracted repairs", "folder created"}
 @dataclass
 class ScheduleExtraction:
     crew_leader: str | None = None
+    assigned_crew_leader: str | None = None
     crew_type: str | None = None
+    suggested_crew_type: str | None = None
+    suggested_crew_reason: str | None = None
     scheduled_sequence: int | None = None
     estimated_start_date: str | None = None
     estimated_duration_days: int | None = None
@@ -78,7 +81,10 @@ def apply_schedule_extraction(record: JobRecord, folder: Path, root: Path, class
 def finalize_schedule_record(record: JobRecord) -> None:
     extraction = ScheduleExtraction(
         crew_leader=record.crew_leader,
+        assigned_crew_leader=record.assigned_crew_leader or record.crew_leader,
         crew_type=record.crew_type,
+        suggested_crew_type=record.suggested_crew_type,
+        suggested_crew_reason=record.suggested_crew_reason,
         scheduled_sequence=record.scheduled_sequence,
         estimated_start_date=record.estimated_start_date,
         estimated_duration_days=record.estimated_duration_days,
@@ -86,10 +92,17 @@ def finalize_schedule_record(record: JobRecord) -> None:
         schedule_notes=record.schedule_notes,
         schedule_source_file=record.schedule_source_file,
     )
+    extraction.suggested_crew_type = extraction.suggested_crew_type or None
+    extraction.suggested_crew_reason = extraction.suggested_crew_reason or "manual_needed"
     extraction.schedule_status = _schedule_status(record, record.schedule_notes or "", extraction)
     extraction.blocking_issue = _blocking_issue(record, extraction)
     extraction.ready_to_schedule = _ready_to_schedule(record, extraction)
     extraction.schedule_confidence = _schedule_confidence(extraction)
+    record.assigned_crew_leader = extraction.assigned_crew_leader
+    if not record.crew_leader and extraction.assigned_crew_leader:
+        record.crew_leader = extraction.assigned_crew_leader
+    record.suggested_crew_type = extraction.suggested_crew_type
+    record.suggested_crew_reason = extraction.suggested_crew_reason
     record.schedule_status = extraction.schedule_status
     record.blocking_issue = extraction.blocking_issue
     record.ready_to_schedule = extraction.ready_to_schedule
@@ -97,11 +110,13 @@ def finalize_schedule_record(record: JobRecord) -> None:
 
 
 def extract_schedule(record: JobRecord, folder: Path, root: Path, classified: dict[str, Any]) -> ScheduleExtraction:
-    sources = collect_schedule_text_sources(folder, root, classified)
-    combined_text = "\n".join(source.text for source in sources if source.text)
+    assigned_crew_leader = record.assigned_crew_leader or record.crew_leader
     extraction = ScheduleExtraction(
-        crew_leader=record.crew_leader,
+        crew_leader=assigned_crew_leader,
+        assigned_crew_leader=assigned_crew_leader,
         crew_type=record.crew_type,
+        suggested_crew_type=record.suggested_crew_type,
+        suggested_crew_reason=record.suggested_crew_reason,
         scheduled_sequence=record.scheduled_sequence,
         estimated_start_date=record.estimated_start_date,
         estimated_duration_days=record.estimated_duration_days,
@@ -109,32 +124,18 @@ def extract_schedule(record: JobRecord, folder: Path, root: Path, classified: di
         schedule_source_file=record.labor_duration_source,
     )
 
-    crew_source = duration_source = start_source = None
+    duration_source = None
     if record.labor_duration_source and record.estimate_file:
         duration_source = TextSource(record.estimate_file, record.labor_duration_source, "estimate")
-    for source in sources:
-        if extraction.crew_leader is None:
-            extraction.crew_leader = parse_crew_leader(source.text)
-            if extraction.crew_leader:
-                crew_source = source
-        if extraction.estimated_duration_days is None:
-            extraction.estimated_duration_days = parse_duration_days(source.text)
-            if extraction.estimated_duration_days:
-                duration_source = source
-        if extraction.estimated_start_date is None:
-            extraction.estimated_start_date = parse_start_date(source.text)
-            if extraction.estimated_start_date:
-                start_source = source
 
-    if extraction.crew_leader:
-        extraction.crew_type = "Subcontractor" if _is_subcontractor(extraction.crew_leader, combined_text) else "Internal"
-    extraction.scheduled_sequence = parse_scheduled_sequence(combined_text)
     if extraction.estimated_start_date and extraction.estimated_duration_days:
         extraction.estimated_end_date = add_business_days(extraction.estimated_start_date, extraction.estimated_duration_days)
 
-    extraction.schedule_source_file = _best_source_name(crew_source, start_source, duration_source) or extraction.schedule_source_file
-    extraction.schedule_notes = _schedule_notes(record, extraction, combined_text)
-    extraction.schedule_status = _schedule_status(record, combined_text, extraction)
+    extraction.schedule_source_file = _best_source_name(duration_source) or extraction.schedule_source_file
+    extraction.suggested_crew_type = extraction.suggested_crew_type or None
+    extraction.suggested_crew_reason = extraction.suggested_crew_reason or "manual_needed"
+    extraction.schedule_notes = _schedule_notes(record, extraction, "")
+    extraction.schedule_status = _schedule_status(record, "", extraction)
     extraction.blocking_issue = _blocking_issue(record, extraction)
     extraction.ready_to_schedule = _ready_to_schedule(record, extraction)
     extraction.schedule_confidence = _schedule_confidence(extraction)
@@ -336,73 +337,65 @@ def _best_source_name(*sources: TextSource | None) -> str | None:
 
 def _schedule_notes(record: JobRecord, extraction: ScheduleExtraction, text: str) -> str | None:
     notes: list[str] = []
-    if extraction.crew_leader:
-        notes.append(f"Crew leader found: {extraction.crew_leader}")
+    if extraction.assigned_crew_leader:
+        notes.append(f"Assigned crew leader: {extraction.assigned_crew_leader}")
     if extraction.estimated_start_date:
-        notes.append(f"Estimated start found: {extraction.estimated_start_date}")
+        notes.append(f"Estimated start date: {extraction.estimated_start_date}")
     if extraction.estimated_duration_days:
         notes.append(f"Estimated duration found: {extraction.estimated_duration_days} days")
     if record.labor_duration_source:
         notes.append(record.labor_duration_source)
-    if "hold" in text.lower():
-        notes.append("Hold language found in source text")
-    if not record.has_job_spec:
-        notes.append("No job spec file found")
     return "; ".join(notes) if notes else None
 
 
 def _schedule_status(record: JobRecord, text: str, extraction: ScheduleExtraction) -> str:
-    status_text = f"{record.status or ''} {record.pipeline_status or ''}".lower()
-    if "completed" in status_text or "complete" in status_text:
+    if _is_completed(record):
         return "Complete"
-    if "hold" in text.lower():
-        return "On Hold"
-    if any(term in status_text for term in ["active", "in progress"]):
-        return "In Progress"
-    if extraction.crew_leader and extraction.estimated_start_date:
+    if not _is_contractable(record) or extraction.estimated_duration_days is None:
+        return "Not Ready"
+    assigned_crew = extraction.assigned_crew_leader or extraction.crew_leader
+    if assigned_crew and extraction.estimated_start_date:
         return "Scheduled"
-    return "Unscheduled"
+    if assigned_crew:
+        return "Needs Start Date"
+    return "Needs Assignment"
 
 
 def _blocking_issue(record: JobRecord, extraction: ScheduleExtraction) -> str | None:
     issues: list[str] = []
-    status_text = (record.status or "").strip().lower()
-    pipeline_status = (record.pipeline_status or "").strip().lower()
-    if status_text == "completed" or pipeline_status == "completed":
+    if _is_completed(record):
         issues.append("Completed job")
-    if pipeline_status and pipeline_status not in CONTRACTED_STATUSES:
+    if not _is_contractable(record) and not _is_completed(record):
         issues.append("Not contracted")
     if not extraction.estimated_duration_days:
         issues.append("Missing estimated duration")
-    if not extraction.estimated_start_date:
-        issues.append("Missing estimated start date")
-    if not extraction.crew_leader:
-        issues.append("Missing crew leader")
-    if not record.has_job_spec:
-        issues.append("Missing job spec")
+    base_ready = _ready_to_schedule(record, extraction)
+    assigned_crew = extraction.assigned_crew_leader or extraction.crew_leader
+    if base_ready and not assigned_crew:
+        issues.append("Needs crew assignment")
+    if base_ready and assigned_crew and not extraction.estimated_start_date:
+        issues.append("Needs start date")
     return "; ".join(dict.fromkeys(issues)) if issues else None
 
 
 def _ready_to_schedule(record: JobRecord, extraction: ScheduleExtraction) -> bool:
-    pipeline_status = (record.pipeline_status or "").strip().lower()
-    status = (record.status or "").strip().lower()
     return (
-        pipeline_status in CONTRACTED_STATUSES
+        _is_contractable(record)
         and extraction.estimated_duration_days is not None
-        and status != "completed"
-        and extraction.blocking_issue is None
+        and not _is_completed(record)
     )
 
 
 def _schedule_confidence(extraction: ScheduleExtraction) -> str:
-    keys = [extraction.crew_leader, extraction.estimated_start_date, extraction.estimated_duration_days]
-    found = sum(value is not None for value in keys)
-    if found == 3:
-        return "high"
-    if found == 2:
-        return "medium"
-    if found == 1:
-        return "medium" if extraction.estimated_duration_days is not None else "low"
-    if found == 0:
-        return "manual_needed"
-    return "manual_needed"
+    return "medium" if extraction.estimated_duration_days is not None else "manual_needed"
+
+
+def _is_completed(record: JobRecord) -> bool:
+    status_text = f"{record.status or ''} {record.pipeline_status or ''}".strip().lower()
+    return "completed" in status_text or "complete" in status_text
+
+
+def _is_contractable(record: JobRecord) -> bool:
+    pipeline_status = (record.pipeline_status or "").strip().lower()
+    status = (record.status or "").strip().lower()
+    return pipeline_status in CONTRACTED_STATUSES or (not pipeline_status and status in CONTRACTED_STATUSES)
