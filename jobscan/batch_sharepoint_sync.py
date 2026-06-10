@@ -98,6 +98,8 @@ def add_batch_context(record: JobRecord, root: BatchScanRoot) -> None:
     record.pipeline_status = root.pipeline_status
     record.scan_root = root.folder
     record.source_year = root.source_year or infer_source_year(root.folder)
+    if root.pipeline_status and not record.estimate_file:
+        record.status = root.pipeline_status
 
     status = (root.pipeline_status or "").strip().lower()
     if status == "completed":
@@ -169,7 +171,7 @@ def main() -> None:
                 force=args.force,
                 skip_images=args.skip_images,
             )
-            root_records = scan_root(cache_root)
+            root_records = scan_root(cache_root, scan_context=root.folder)
             for record in root_records:
                 add_batch_context(record, root)
             print_root_done(root, len(root_records))

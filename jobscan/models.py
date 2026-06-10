@@ -10,6 +10,7 @@ class JobRecord:
     job_id: str
     folder_name: str
     folder_path: str
+    folder_url: str | None = None
 
     division: str | None = None
     pipeline_status: str | None = None

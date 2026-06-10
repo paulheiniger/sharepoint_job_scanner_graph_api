@@ -200,7 +200,7 @@ def main() -> None:
         force=args.force,
         skip_images=args.skip_images,
     )
-    records = scan_root(cache_root)
+    records = scan_root(cache_root, scan_context=target.folder_path)
     write_csv(records, args.out)
     write_json(records, args.json)
     write_excel(records, args.xlsx)

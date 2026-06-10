@@ -14,6 +14,26 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".heic", ".webp", ".tif", ".tiff"}
 SPREADSHEET_EXTS = {".xlsx", ".xlsm", ".xls"}
 DOC_EXTS = {".doc", ".docx", ".pdf"}
 IMAGE_MANIFEST_NAME = ".image_manifest.json"
+NON_JOB_FOLDER_NAMES = {
+    "pics",
+    "photos",
+    "images",
+    "drone",
+    "drones",
+    "aerial",
+    "aerials",
+    "warranties",
+    "warranty",
+    "invoices",
+    "invoice",
+    "contracts",
+    "contract",
+    "old",
+    "archive",
+    "archives",
+    "template",
+    "templates",
+}
 
 AERIAL_KEYWORDS = [
     "aerial",
@@ -52,9 +72,30 @@ def split_city_state_zip(value: str | None) -> tuple[str | None, str | None, str
     return m.group("city").strip(), m.group("state"), m.group("zip")
 
 
+def _folder_key(path: Path) -> str:
+    return re.sub(r"\s+", " ", path.name.strip().lower())
+
+
+def is_non_job_folder(path: Path) -> bool:
+    key = _folder_key(path)
+    return key in NON_JOB_FOLDER_NAMES or key.startswith(".")
+
+
+def immediate_child_job_folders(root: Path) -> tuple[list[Path], int]:
+    children = [p for p in sorted(root.iterdir()) if p.is_dir()]
+    skipped_count = sum(1 for child in children if is_non_job_folder(child))
+    return [child for child in children if not is_non_job_folder(child)], skipped_count
+
+
 def find_job_folders(root: Path) -> list[Path]:
     """Return likely job folders from an exported SharePoint/OneDrive directory."""
     root = root.resolve()
+    immediate_children, skipped_admin_count = immediate_child_job_folders(root)
+    find_job_folders.last_immediate_child_count = len(immediate_children)  # type: ignore[attr-defined]
+    find_job_folders.last_skipped_admin_count = skipped_admin_count  # type: ignore[attr-defined]
+    if immediate_children:
+        return immediate_children
+
     candidates: list[Path] = []
 
     for directory in [root, *[p for p in root.rglob("*") if p.is_dir()]]:
@@ -68,7 +109,7 @@ def find_job_folders(root: Path) -> list[Path]:
             for p in files
         )
         # Avoid returning Pics as a separate job folder.
-        if has_job_artifact and directory.name.lower() not in {"pics", "photos", "images"}:
+        if has_job_artifact and not is_non_job_folder(directory):
             candidates.append(directory)
 
     # Prefer folders that contain an estimate, invoice, contract, proposal, or subfolder pics.
@@ -351,6 +392,12 @@ def infer_status(record: JobRecord, folder_context: str = "") -> str:
         return "Invoiced"
     if record.has_signed_contract:
         return "Contracted"
+    if "contracted repairs" in context or "contracted repair" in context:
+        return "Contracted Repairs"
+    if "contracted" in context:
+        return "Contracted"
+    if "proposed" in context:
+        return "Proposed"
     if any(term in context for term in ["completed", "complete", "closed"]):
         return "Completed"
     if any(term in context for term in ["active", "in progress", "open"]):
@@ -360,7 +407,7 @@ def infer_status(record: JobRecord, folder_context: str = "") -> str:
     return "Folder Created"
 
 
-def scan_job_folder(folder: Path, root: Path | None = None) -> JobRecord:
+def scan_job_folder(folder: Path, root: Path | None = None, scan_context: str = "") -> JobRecord:
     root = root or folder.parent
     info = classify_files(folder)
     record = JobRecord(
@@ -404,7 +451,7 @@ def scan_job_folder(folder: Path, root: Path | None = None) -> JobRecord:
         record.invoice_file = rel(invoice, root)
 
     record.customer = infer_customer_from_folder(record.folder_name, record.job_name)
-    folder_context = f"{record.folder_path} {record.folder_name}"
+    folder_context = f"{scan_context} {record.folder_path} {record.folder_name}"
     record.status = infer_status(record, folder_context)
 
     completed_context = any(term in folder_context.lower() for term in ["completed", "complete", "closed"])

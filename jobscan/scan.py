@@ -19,14 +19,23 @@ FIELD_ORDER = [
     "invoice_number", "invoice_amount", "invoice_date",
     "has_signed_contract", "has_invoice", "has_warranty", "has_proposal", "has_job_spec", "has_aerial", "has_notes",
     "photo_count", "duplicate_photo_count", "image_files_cached", "skipped_image_count",
-    "folder_name", "folder_path", "estimate_file", "invoice_file", "warnings",
+    "folder_name", "folder_path", "folder_url", "estimate_file", "invoice_file", "warnings",
 ]
 
 
-def scan_root(root: Path) -> list[JobRecord]:
+def scan_root(root: Path, scan_context: str = "") -> list[JobRecord]:
     root = root.resolve()
     folders = find_job_folders(root)
-    return [scan_job_folder(folder, root=root) for folder in folders]
+    records = [scan_job_folder(folder, root=root, scan_context=scan_context) for folder in folders]
+    with_estimate = sum(1 for record in records if record.estimate_file)
+    without_estimate = len(records) - with_estimate
+    immediate_child_count = getattr(find_job_folders, "last_immediate_child_count", 0)
+    skipped_admin_count = getattr(find_job_folders, "last_skipped_admin_count", 0)
+    print(f"Immediate child job folders found: {immediate_child_count}")
+    print(f"Records emitted from estimate workbooks: {with_estimate}")
+    print(f"Records emitted without estimate workbook: {without_estimate}")
+    print(f"Skipped administrative/template folders: {skipped_admin_count}")
+    return records
 
 
 def records_as_dicts(records: Iterable[JobRecord]) -> list[dict]:
