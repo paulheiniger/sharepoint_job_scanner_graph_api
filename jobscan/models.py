@@ -62,6 +62,18 @@ class JobRecord:
     skipped_image_count: int = 0
 
     status: str = "Unknown"
+    crew_leader: str | None = None
+    crew_type: str | None = None
+    scheduled_sequence: int | None = None
+    estimated_start_date: str | None = None
+    estimated_duration_days: int | None = None
+    estimated_end_date: str | None = None
+    schedule_status: str | None = None
+    ready_to_schedule: bool = False
+    blocking_issue: str | None = None
+    schedule_notes: str | None = None
+    schedule_source_file: str | None = None
+    schedule_confidence: str | None = None
     warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:

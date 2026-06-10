@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import re
 from dataclasses import asdict, dataclass
@@ -13,7 +14,33 @@ from dotenv import load_dotenv
 from .graph_client import GraphClient, SharePointTarget
 from .models import JobRecord
 from .scan import scan_root, write_csv, write_excel, write_json
+from .schedule_extractor import finalize_schedule_record
 from .sharepoint_sync import SyncStats, sync_sharepoint_folder
+
+
+CREW_SCHEDULE_FIELDS = [
+    "job_id",
+    "division",
+    "pipeline_status",
+    "status",
+    "customer",
+    "job_name",
+    "job_type",
+    "crew_leader",
+    "crew_type",
+    "scheduled_sequence",
+    "estimated_start_date",
+    "estimated_duration_days",
+    "estimated_end_date",
+    "schedule_status",
+    "ready_to_schedule",
+    "blocking_issue",
+    "schedule_notes",
+    "schedule_source_file",
+    "schedule_confidence",
+    "folder_url",
+    "warnings",
+]
 
 
 @dataclass(frozen=True)
@@ -107,6 +134,7 @@ def add_batch_context(record: JobRecord, root: BatchScanRoot) -> None:
             record.warnings.append("Folder is Completed but no invoice found")
         if record.final_price is None:
             record.warnings.append("Folder is Completed but no final price found")
+    finalize_schedule_record(record)
 
 
 def stats_as_dict(stats: SyncStats) -> dict[str, Any]:
@@ -116,6 +144,30 @@ def stats_as_dict(stats: SyncStats) -> dict[str, Any]:
 def write_summary(path: Path, summary: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def crew_schedule_rows(records: list[JobRecord]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for record in records:
+        row = record.to_dict()
+        row["warnings"] = "; ".join(row.get("warnings") or [])
+        rows.append({field: row.get(field) for field in CREW_SCHEDULE_FIELDS})
+    return rows
+
+
+def write_crew_schedule_csv(records: list[JobRecord], path: Path) -> None:
+    rows = crew_schedule_rows(records)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=CREW_SCHEDULE_FIELDS)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def write_crew_schedule_json(records: list[JobRecord], path: Path) -> None:
+    rows = crew_schedule_rows(records)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(rows, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def print_root_start(root: BatchScanRoot, site_url: str, library: str) -> None:
@@ -145,6 +197,8 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=Path("output/job_index.csv"))
     parser.add_argument("--json", type=Path, default=Path("output/job_index.json"))
     parser.add_argument("--xlsx", type=Path, default=Path("output/job_index.xlsx"))
+    parser.add_argument("--crew-schedule-out", type=Path, default=Path("output/crew_schedule_candidates.csv"))
+    parser.add_argument("--crew-schedule-json", type=Path, default=Path("output/crew_schedule_candidates.json"))
     parser.add_argument("--summary", type=Path, default=None, help="Batch scan summary JSON path")
     args = parser.parse_args()
 
@@ -209,6 +263,8 @@ def main() -> None:
     write_csv(records, args.out)
     write_json(records, args.json)
     write_excel(records, args.xlsx)
+    write_crew_schedule_csv(records, args.crew_schedule_out)
+    write_crew_schedule_json(records, args.crew_schedule_json)
 
     summary_path = args.summary or args.json.with_name("batch_scan_summary.json")
     summary = {
@@ -226,6 +282,8 @@ def main() -> None:
             "csv": str(args.out),
             "json": str(args.json),
             "xlsx": str(args.xlsx),
+            "crew_schedule_csv": str(args.crew_schedule_out),
+            "crew_schedule_json": str(args.crew_schedule_json),
         },
     }
     write_summary(summary_path, summary)
@@ -238,6 +296,8 @@ def main() -> None:
     print(f"CSV: {args.out}")
     print(f"JSON: {args.json}")
     print(f"Excel: {args.xlsx}")
+    print(f"Crew schedule CSV: {args.crew_schedule_out}")
+    print(f"Crew schedule JSON: {args.crew_schedule_json}")
     print(f"Summary: {summary_path}")
 
 

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import JobRecord, money, rel
+from .schedule_extractor import apply_schedule_extraction
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".heic", ".webp", ".tif", ".tiff"}
 SPREADSHEET_EXTS = {".xlsx", ".xlsm", ".xls"}
@@ -453,6 +454,7 @@ def scan_job_folder(folder: Path, root: Path | None = None, scan_context: str = 
     record.customer = infer_customer_from_folder(record.folder_name, record.job_name)
     folder_context = f"{scan_context} {record.folder_path} {record.folder_name}"
     record.status = infer_status(record, folder_context)
+    apply_schedule_extraction(record, folder, root, info)
 
     completed_context = any(term in folder_context.lower() for term in ["completed", "complete", "closed"])
     if completed_context and not record.has_invoice:

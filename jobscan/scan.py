@@ -19,6 +19,9 @@ FIELD_ORDER = [
     "invoice_number", "invoice_amount", "invoice_date",
     "has_signed_contract", "has_invoice", "has_warranty", "has_proposal", "has_job_spec", "has_aerial", "has_notes",
     "photo_count", "duplicate_photo_count", "image_files_cached", "skipped_image_count",
+    "crew_leader", "crew_type", "scheduled_sequence", "estimated_start_date", "estimated_duration_days",
+    "estimated_end_date", "schedule_status", "ready_to_schedule", "blocking_issue", "schedule_notes",
+    "schedule_source_file", "schedule_confidence",
     "folder_name", "folder_path", "folder_url", "estimate_file", "invoice_file", "warnings",
 ]
 
