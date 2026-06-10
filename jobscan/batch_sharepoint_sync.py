@@ -31,7 +31,12 @@ CREW_SCHEDULE_FIELDS = [
     "scheduled_sequence",
     "estimated_start_date",
     "estimated_duration_days",
+    "estimated_labor_hours",
+    "estimated_hours_per_day",
+    "estimated_crew_size",
     "estimated_end_date",
+    "labor_duration_source",
+    "labor_schedule_breakdown",
     "schedule_status",
     "ready_to_schedule",
     "blocking_issue",
@@ -146,17 +151,19 @@ def write_summary(path: Path, summary: dict[str, Any]) -> None:
     path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def crew_schedule_rows(records: list[JobRecord]) -> list[dict[str, Any]]:
+def crew_schedule_rows(records: list[JobRecord], *, tabular: bool = False) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for record in records:
         row = record.to_dict()
         row["warnings"] = "; ".join(row.get("warnings") or [])
+        if tabular and isinstance(row.get("labor_schedule_breakdown"), list):
+            row["labor_schedule_breakdown"] = json.dumps(row["labor_schedule_breakdown"], ensure_ascii=False)
         rows.append({field: row.get(field) for field in CREW_SCHEDULE_FIELDS})
     return rows
 
 
 def write_crew_schedule_csv(records: list[JobRecord], path: Path) -> None:
-    rows = crew_schedule_rows(records)
+    rows = crew_schedule_rows(records, tabular=True)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=CREW_SCHEDULE_FIELDS)

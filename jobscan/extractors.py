@@ -215,6 +215,140 @@ def _coerce_date(value: Any) -> str | None:
     return str(value)
 
 
+def _norm_label(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if value is None:
+        return None
+    text = str(value).replace(",", "").strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _clean_number(value: float | None) -> int | float | None:
+    if value is None:
+        return None
+    return int(value) if float(value).is_integer() else value
+
+
+def _find_cell_containing(ws: Any, text: str) -> Any | None:
+    needle = text.strip().lower()
+    for row in ws.iter_rows():
+        for cell in row:
+            if needle in _norm_label(cell.value):
+                return cell
+    return None
+
+
+def _find_header_columns(ws: Any, start_row: int, max_row: int) -> tuple[int, dict[str, int]] | None:
+    for row_num in range(start_row, max_row + 1):
+        headers: dict[str, int] = {}
+        for cell in ws[row_num]:
+            label = _norm_label(cell.value)
+            if label == "days":
+                headers["days"] = cell.column
+            elif label in {"no. of people", "no of people", "number of people"}:
+                headers["crew_size"] = cell.column
+            elif label == "total hours":
+                headers["total_hours"] = cell.column
+        if {"days", "crew_size", "total_hours"}.issubset(headers):
+            return row_num, headers
+    return None
+
+
+def _find_total_row(ws: Any, start_row: int, max_row: int) -> int | None:
+    for row_num in range(start_row, max_row + 1):
+        labels = [_norm_label(cell.value) for cell in ws[row_num]]
+        if "total hours" in labels and "total days" in labels:
+            return row_num
+    return None
+
+
+def _most_common_crew_size(values: list[int]) -> int | None:
+    if not values:
+        return None
+    counts: dict[int, int] = {}
+    for value in values:
+        counts[value] = counts.get(value, 0) + 1
+    return sorted(counts, key=lambda value: (-counts[value], -value))[0]
+
+
+def _value_right_of_label_in_row(ws: Any, row_num: int, label: str) -> Any:
+    target = label.strip().lower()
+    row = list(ws[row_num])
+    for index, cell in enumerate(row):
+        if _norm_label(cell.value) == target and index + 1 < len(row):
+            return row[index + 1].value
+    return None
+
+
+def extract_labor_schedule(ws: Any) -> dict[str, Any]:
+    section = _find_cell_containing(ws, "Labor / Subcontractor")
+    if not section:
+        return {}
+
+    header = _find_header_columns(ws, section.row + 1, min(ws.max_row, section.row + 20))
+    if not header:
+        return {}
+    header_row, columns = header
+
+    total_row = _find_total_row(ws, header_row + 1, ws.max_row)
+    if not total_row:
+        return {}
+
+    breakdown: list[dict[str, Any]] = []
+    crew_sizes: list[int] = []
+    task_col = section.column
+    for row_num in range(header_row + 1, total_row):
+        task = ws.cell(row=row_num, column=task_col).value
+        days = _number(ws.cell(row=row_num, column=columns["days"]).value)
+        crew_size = _number(ws.cell(row=row_num, column=columns["crew_size"]).value)
+        total_hours = _number(ws.cell(row=row_num, column=columns["total_hours"]).value)
+        if not task or days is None or total_hours is None:
+            continue
+        task_text = str(task).strip()
+        if not task_text or "subtotal" in task_text.lower() or task_text.lower().startswith("total"):
+            continue
+        item = {
+            "task": task_text,
+            "days": _clean_number(days),
+            "crew_size": _clean_number(crew_size),
+            "total_hours": _clean_number(total_hours),
+        }
+        breakdown.append(item)
+        if crew_size is not None:
+            crew_sizes.append(int(crew_size))
+
+    total_hours = _number(_value_right_of_label_in_row(ws, total_row, "Total Hours"))
+    total_days = _number(_value_right_of_label_in_row(ws, total_row, "Total Days"))
+    out: dict[str, Any] = {
+        "estimated_labor_hours": _clean_number(total_hours),
+        "estimated_duration_days": _clean_number(total_days),
+        "estimated_crew_size": _most_common_crew_size(crew_sizes),
+        "labor_duration_source": "Estimate sheet Labor / Subcontractor section",
+        "labor_schedule_breakdown": breakdown,
+    }
+    return {key: value for key, value in out.items() if value not in (None, [])}
+
+
+def extract_hours_per_day(wb: Any) -> float | int | None:
+    if "People" not in wb.sheetnames:
+        return None
+    ws = wb["People"]
+    cell = _find_cell_containing(ws, "Hours /Day")
+    if not cell:
+        return None
+    return _clean_number(_number(ws.cell(row=cell.row, column=cell.column + 1).value))
+
+
 def extract_estimate_xlsx(path: Path) -> dict[str, Any]:
     """Extract key fields from Spray-Tec-style estimate workbooks.
 
@@ -307,6 +441,10 @@ def extract_estimate_xlsx(path: Path) -> dict[str, Any]:
         "price_per_sqft": numeric_to_right("Price / Sq. Ft", pick="first"),
         "warnings": [],
     }
+    out.update(extract_labor_schedule(ws))
+    hours_per_day = extract_hours_per_day(wb)
+    if hours_per_day is not None:
+        out["estimated_hours_per_day"] = hours_per_day
 
     # Pull percentage values from the percentage rows.
     for pct_label, pct_key in [("Estimated O/H", "overhead_pct"), ("Profit", "profit_pct")]:

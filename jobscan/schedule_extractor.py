@@ -99,9 +99,19 @@ def finalize_schedule_record(record: JobRecord) -> None:
 def extract_schedule(record: JobRecord, folder: Path, root: Path, classified: dict[str, Any]) -> ScheduleExtraction:
     sources = collect_schedule_text_sources(folder, root, classified)
     combined_text = "\n".join(source.text for source in sources if source.text)
-    extraction = ScheduleExtraction()
+    extraction = ScheduleExtraction(
+        crew_leader=record.crew_leader,
+        crew_type=record.crew_type,
+        scheduled_sequence=record.scheduled_sequence,
+        estimated_start_date=record.estimated_start_date,
+        estimated_duration_days=record.estimated_duration_days,
+        estimated_end_date=record.estimated_end_date,
+        schedule_source_file=record.labor_duration_source,
+    )
 
     crew_source = duration_source = start_source = None
+    if record.labor_duration_source and record.estimate_file:
+        duration_source = TextSource(record.estimate_file, record.labor_duration_source, "estimate")
     for source in sources:
         if extraction.crew_leader is None:
             extraction.crew_leader = parse_crew_leader(source.text)
@@ -122,7 +132,7 @@ def extract_schedule(record: JobRecord, folder: Path, root: Path, classified: di
     if extraction.estimated_start_date and extraction.estimated_duration_days:
         extraction.estimated_end_date = add_business_days(extraction.estimated_start_date, extraction.estimated_duration_days)
 
-    extraction.schedule_source_file = _best_source_name(crew_source, start_source, duration_source)
+    extraction.schedule_source_file = _best_source_name(crew_source, start_source, duration_source) or extraction.schedule_source_file
     extraction.schedule_notes = _schedule_notes(record, extraction, combined_text)
     extraction.schedule_status = _schedule_status(record, combined_text, extraction)
     extraction.blocking_issue = _blocking_issue(record, extraction)
@@ -332,6 +342,8 @@ def _schedule_notes(record: JobRecord, extraction: ScheduleExtraction, text: str
         notes.append(f"Estimated start found: {extraction.estimated_start_date}")
     if extraction.estimated_duration_days:
         notes.append(f"Estimated duration found: {extraction.estimated_duration_days} days")
+    if record.labor_duration_source:
+        notes.append(record.labor_duration_source)
     if "hold" in text.lower():
         notes.append("Hold language found in source text")
     if not record.has_job_spec:
@@ -390,7 +402,7 @@ def _schedule_confidence(extraction: ScheduleExtraction) -> str:
     if found == 2:
         return "medium"
     if found == 1:
-        return "low"
+        return "medium" if extraction.estimated_duration_days is not None else "low"
     if found == 0:
         return "manual_needed"
     return "manual_needed"

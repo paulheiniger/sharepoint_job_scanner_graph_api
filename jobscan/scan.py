@@ -20,7 +20,9 @@ FIELD_ORDER = [
     "has_signed_contract", "has_invoice", "has_warranty", "has_proposal", "has_job_spec", "has_aerial", "has_notes",
     "photo_count", "duplicate_photo_count", "image_files_cached", "skipped_image_count",
     "crew_leader", "crew_type", "scheduled_sequence", "estimated_start_date", "estimated_duration_days",
-    "estimated_end_date", "schedule_status", "ready_to_schedule", "blocking_issue", "schedule_notes",
+    "estimated_labor_hours", "estimated_hours_per_day", "estimated_crew_size", "estimated_end_date",
+    "labor_duration_source", "labor_schedule_breakdown",
+    "schedule_status", "ready_to_schedule", "blocking_issue", "schedule_notes",
     "schedule_source_file", "schedule_confidence",
     "folder_name", "folder_path", "folder_url", "estimate_file", "invoice_file", "warnings",
 ]
@@ -41,17 +43,19 @@ def scan_root(root: Path, scan_context: str = "") -> list[JobRecord]:
     return records
 
 
-def records_as_dicts(records: Iterable[JobRecord]) -> list[dict]:
+def records_as_dicts(records: Iterable[JobRecord], *, tabular: bool = False) -> list[dict]:
     rows = []
     for record in records:
         row = record.to_dict()
         row["warnings"] = "; ".join(row.get("warnings") or [])
+        if tabular and isinstance(row.get("labor_schedule_breakdown"), list):
+            row["labor_schedule_breakdown"] = json.dumps(row["labor_schedule_breakdown"], ensure_ascii=False)
         rows.append({field: row.get(field) for field in FIELD_ORDER})
     return rows
 
 
 def write_csv(records: Iterable[JobRecord], path: Path) -> None:
-    rows = records_as_dicts(records)
+    rows = records_as_dicts(records, tabular=True)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=FIELD_ORDER)
@@ -77,7 +81,7 @@ def write_excel(records: Iterable[JobRecord], path: Path) -> None:
     except ImportError as exc:
         raise RuntimeError("Install openpyxl to write Excel output: pip install openpyxl") from exc
 
-    rows = records_as_dicts(records)
+    rows = records_as_dicts(records, tabular=True)
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Job Index"

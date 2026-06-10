@@ -67,7 +67,12 @@ class JobRecord:
     scheduled_sequence: int | None = None
     estimated_start_date: str | None = None
     estimated_duration_days: int | None = None
+    estimated_labor_hours: float | None = None
+    estimated_hours_per_day: float | None = None
+    estimated_crew_size: int | None = None
     estimated_end_date: str | None = None
+    labor_duration_source: str | None = None
+    labor_schedule_breakdown: list[dict[str, Any]] = field(default_factory=list)
     schedule_status: str | None = None
     ready_to_schedule: bool = False
     blocking_issue: str | None = None
