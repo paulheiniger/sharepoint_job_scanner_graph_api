@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Iterable
 
 from .extractors import find_job_folders, scan_job_folder
-from .models import JobRecord
+from .models import JobRecord, get_estimated_value_info
 
 
 FIELD_ORDER = [
@@ -15,11 +15,12 @@ FIELD_ORDER = [
     "contact_name", "contact_title", "contact_email", "contact_phone",
     "estimate_date", "estimated_sqft", "material_subtotal", "labor_subtotal",
     "warranty_bonding_insurance_subtotal", "total_job_cost", "overhead_pct", "overhead_amount",
-    "profit_pct", "profit_amount", "worksheet_price", "final_price", "price_per_sqft",
+    "profit_pct", "profit_amount", "worksheet_price", "final_price",
+    "estimated_value", "estimated_value_source", "price_per_sqft",
     "invoice_number", "invoice_amount", "invoice_date",
     "estimate_file_count", "estimate_files", "primary_estimate_file", "supporting_estimate_files",
     "multiple_estimates_found", "estimate_selection_reason",
-    "has_signed_contract", "has_invoice", "has_warranty", "has_proposal", "has_job_spec", "has_aerial", "has_notes",
+    "has_signed_contract", "has_invoice", "has_warranty", "has_proposal", "has_job_spec", "has_job_tracking_form", "has_aerial", "has_notes",
     "photo_count", "duplicate_photo_count", "image_files_cached", "skipped_image_count",
     "crew_leader", "assigned_crew_leader", "crew_type", "suggested_crew_type", "suggested_crew_reason",
     "scheduled_sequence", "estimated_start_date", "estimated_duration_days",
@@ -27,6 +28,10 @@ FIELD_ORDER = [
     "labor_duration_source", "labor_schedule_breakdown",
     "schedule_status", "ready_to_schedule", "blocking_issue", "schedule_notes",
     "schedule_source_file", "schedule_confidence",
+    "job_tracking_file", "actual_first_work_date", "actual_last_work_date", "actual_work_day_count",
+    "actual_labor_hours", "actual_travel_hours", "actual_load_hours", "actual_mileage",
+    "actual_base_coat_1", "actual_base_coat_2", "actual_af_buttergrade", "actual_caulk",
+    "labor_hours_variance", "tracking_warnings",
     "folder_name", "folder_path", "folder_url", "estimate_file", "invoice_file", "warnings",
 ]
 
@@ -50,6 +55,9 @@ def records_as_dicts(records: Iterable[JobRecord], *, tabular: bool = False) -> 
     rows = []
     for record in records:
         row = record.to_dict()
+        estimated_value, estimated_value_source = get_estimated_value_info(row)
+        row["estimated_value"] = estimated_value
+        row["estimated_value_source"] = estimated_value_source
         row["warnings"] = "; ".join(row.get("warnings") or [])
         if tabular and isinstance(row.get("labor_schedule_breakdown"), list):
             row["labor_schedule_breakdown"] = json.dumps(row["labor_schedule_breakdown"], ensure_ascii=False)
@@ -116,7 +124,7 @@ def write_excel(records: Iterable[JobRecord], path: Path) -> None:
     ws.auto_filter.ref = ws.dimensions
 
     # Format money and percentages.
-    money_headers = {"material_subtotal", "labor_subtotal", "total_job_cost", "overhead_amount", "profit_amount", "worksheet_price", "final_price", "price_per_sqft", "invoice_amount"}
+    money_headers = {"material_subtotal", "labor_subtotal", "total_job_cost", "overhead_amount", "profit_amount", "worksheet_price", "final_price", "estimated_value", "price_per_sqft", "invoice_amount"}
     pct_headers = {"overhead_pct", "profit_pct"}
     header_idx = {cell.value: cell.column for cell in ws[1]}
     for header in money_headers:

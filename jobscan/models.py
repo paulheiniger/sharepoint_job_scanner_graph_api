@@ -42,6 +42,8 @@ class JobRecord:
     profit_amount: float | None = None
     worksheet_price: float | None = None
     final_price: float | None = None
+    estimated_value: float | None = None
+    estimated_value_source: str | None = None
     price_per_sqft: float | None = None
 
     invoice_file: str | None = None
@@ -61,6 +63,7 @@ class JobRecord:
     has_warranty: bool = False
     has_proposal: bool = False
     has_job_spec: bool = False
+    has_job_tracking_form: bool = False
     has_aerial: bool = False
     has_notes: bool = False
     photo_count: int = 0
@@ -89,6 +92,20 @@ class JobRecord:
     schedule_notes: str | None = None
     schedule_source_file: str | None = None
     schedule_confidence: str | None = None
+    job_tracking_file: str | None = None
+    actual_first_work_date: str | None = None
+    actual_last_work_date: str | None = None
+    actual_work_day_count: int | None = None
+    actual_labor_hours: float | None = None
+    actual_travel_hours: float | None = None
+    actual_load_hours: float | None = None
+    actual_mileage: float | None = None
+    actual_base_coat_1: float | None = None
+    actual_base_coat_2: float | None = None
+    actual_af_buttergrade: float | None = None
+    actual_caulk: float | None = None
+    labor_hours_variance: float | None = None
+    tracking_warnings: str | None = None
     warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -107,6 +124,26 @@ def money(value: Any) -> float | None:
         return round(float(text), 2)
     except ValueError:
         return None
+
+
+def get_estimated_value(record: Any) -> float | None:
+    value, _source = get_estimated_value_info(record)
+    return value
+
+
+def get_estimated_value_info(record: Any) -> tuple[float | None, str | None]:
+    for field in ("final_price", "worksheet_price", "total_job_cost"):
+        raw_value = _record_value(record, field)
+        value = money(raw_value)
+        if value is not None:
+            return value, field
+    return None, None
+
+
+def _record_value(record: Any, field: str) -> Any:
+    if isinstance(record, dict):
+        return record.get(field)
+    return getattr(record, field, None)
 
 
 def rel(path: Path, root: Path) -> str:

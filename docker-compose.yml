@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: spraytec_postgres
+    environment:
+      POSTGRES_USER: spraytec
+      POSTGRES_PASSWORD: spraytec_dev_password
+      POSTGRES_DB: spraytec_ops
+    ports:
+      - "5432:5432"
+    volumes:
+      - spraytec_postgres_data:/var/lib/postgresql/data
+
+volumes:
+  spraytec_postgres_data:

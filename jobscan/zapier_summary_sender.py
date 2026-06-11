@@ -12,6 +12,8 @@ from typing import Any
 import requests
 from dotenv import load_dotenv
 
+from .models import get_estimated_value, get_estimated_value_info
+
 
 SOURCE = "sharepoint_job_scanner"
 SUMMARY_TYPE = "daily_job_summary"
@@ -69,7 +71,7 @@ def label(value: Any) -> str:
 
 def money_text(value: Any) -> str:
     amount = number(value)
-    return f"${amount:,.2f}" if amount is not None else "No final price"
+    return f"${amount:,.2f}" if amount is not None else "No estimated value"
 
 
 def html_text(value: Any) -> str:
@@ -85,12 +87,17 @@ def is_contracted_pipeline(record: dict[str, Any]) -> bool:
 
 
 def job_identity(record: dict[str, Any]) -> dict[str, Any]:
+    estimated_value, estimated_value_source = get_estimated_value_info(record)
     return {
         "customer": record.get("customer"),
         "job_name": record.get("job_name"),
         "division": record.get("division"),
         "pipeline_status": record.get("pipeline_status"),
         "final_price": record.get("final_price"),
+        "worksheet_price": record.get("worksheet_price"),
+        "total_job_cost": record.get("total_job_cost"),
+        "estimated_value": estimated_value,
+        "estimated_value_source": estimated_value_source,
     }
 
 
@@ -107,6 +114,12 @@ def division_summary_text(total_by_division: dict[str, float]) -> str:
     )
 
 
+def value_summary_text(values: dict[str, float], empty_text: str) -> str:
+    if not values:
+        return empty_text
+    return "\n".join(f"{label_text}: ${amount:,.2f}" for label_text, amount in sorted(values.items()))
+
+
 def counter_summary_text(counter: Counter[str]) -> str:
     if not counter:
         return "No pipeline statuses found"
@@ -117,16 +130,16 @@ def warning_jobs_text(jobs: list[dict[str, Any]]) -> str:
     if not jobs:
         return "No warning jobs"
     return "\n".join(
-        f"{index}. {job_title(job)} ({label(job.get('division'))}, {label(job.get('pipeline_status'))}) - {money_text(job.get('final_price'))}: {job.get('warnings')}"
+        f"{index}. {job_title(job)} ({label(job.get('division'))}, {label(job.get('pipeline_status'))}) - {money_text(job.get('estimated_value'))}: {job.get('warnings')}"
         for index, job in enumerate(jobs, start=1)
     )
 
 
 def top_value_jobs_text(jobs: list[dict[str, Any]]) -> str:
     if not jobs:
-        return "No jobs with final prices"
+        return "No jobs with estimated values"
     return "\n".join(
-        f"{index}. {job_title(job)} ({label(job.get('division'))}, {label(job.get('pipeline_status'))}) - {money_text(job.get('final_price'))}"
+        f"{index}. {job_title(job)} ({label(job.get('division'))}, {label(job.get('pipeline_status'))}) - {money_text(job.get('estimated_value'))}"
         for index, job in enumerate(jobs, start=1)
     )
 
@@ -143,20 +156,24 @@ def pipeline_summary_html(counter: Counter[str]) -> str:
     return lines_to_html(counter_summary_text(counter))
 
 
+def pipeline_value_summary_html(values: dict[str, float]) -> str:
+    return lines_to_html(value_summary_text(values, "No pipeline estimated values found"))
+
+
 def warning_jobs_html(jobs: list[dict[str, Any]]) -> str:
     if not jobs:
         return "No warning jobs"
     return "<br>".join(
-        f"{index}. {html_text(job_title(job))} ({html_text(label(job.get('division')))}, {html_text(label(job.get('pipeline_status')))}) - {html_text(money_text(job.get('final_price')))}: {html_text(job.get('warnings'))}"
+        f"{index}. {html_text(job_title(job))} ({html_text(label(job.get('division')))}, {html_text(label(job.get('pipeline_status')))}) - {html_text(money_text(job.get('estimated_value')))}: {html_text(job.get('warnings'))}"
         for index, job in enumerate(jobs, start=1)
     )
 
 
 def top_value_jobs_html(jobs: list[dict[str, Any]]) -> str:
     if not jobs:
-        return "No jobs with final prices"
+        return "No jobs with estimated values"
     return "<br>".join(
-        f"{index}. {html_text(job_title(job))} ({html_text(label(job.get('division')))}, {html_text(label(job.get('pipeline_status')))}) - {html_text(money_text(job.get('final_price')))}"
+        f"{index}. {html_text(job_title(job))} ({html_text(label(job.get('division')))}, {html_text(label(job.get('pipeline_status')))}) - {html_text(money_text(job.get('estimated_value')))}"
         for index, job in enumerate(jobs, start=1)
     )
 
@@ -172,7 +189,7 @@ def teams_message_html(payload: dict[str, Any]) -> str:
     return (
         "<h2>Daily SharePoint Job Scan Summary</h2>"
         f"<p><strong>Total jobs:</strong> {payload['total_jobs']}<br>"
-        f"<strong>Total final price:</strong> {html_text(money_text(payload['total_final_price']))}<br>"
+        f"<strong>Total Estimated Value:</strong> {html_text(money_text(payload['total_estimated_value']))}<br>"
         f"<strong>Proposed:</strong> {payload['proposed_count']} &nbsp; "
         f"<strong>Contracted:</strong> {payload['contracted_count']} &nbsp; "
         f"<strong>Completed:</strong> {payload['completed_count']}</p>"
@@ -180,6 +197,8 @@ def teams_message_html(payload: dict[str, Any]) -> str:
         f"<p>{payload['division_summary_html']}</p>"
         "<h3>Pipeline Summary</h3>"
         f"<p>{payload['pipeline_summary_html']}</p>"
+        "<h3>Pipeline Estimated Value</h3>"
+        f"<p>{payload['pipeline_value_summary_html']}</p>"
         "<h3>Quality Checks</h3>"
         f"<ul>{''.join(quality_items)}</ul>"
         "<h3>Top Warning Jobs</h3>"
@@ -191,22 +210,26 @@ def teams_message_html(payload: dict[str, Any]) -> str:
 
 def build_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
     total_by_division: dict[str, float] = defaultdict(float)
+    total_by_pipeline_status: dict[str, float] = defaultdict(float)
     count_by_pipeline_status: Counter[str] = Counter()
     count_by_status: Counter[str] = Counter()
 
-    total_final_price = 0.0
+    total_estimated_value = 0.0
     total_photo_count = 0
     warning_jobs: list[dict[str, Any]] = []
 
     for record in records:
         division = label(record.get("division"))
+        pipeline_status = label(record.get("pipeline_status"))
         total_by_division[division] += 0.0
-        final_price = number(record.get("final_price"))
-        if final_price is not None:
-            total_final_price += final_price
-            total_by_division[division] += final_price
+        total_by_pipeline_status[pipeline_status] += 0.0
+        estimated_value = get_estimated_value(record)
+        if estimated_value is not None:
+            total_estimated_value += estimated_value
+            total_by_division[division] += estimated_value
+            total_by_pipeline_status[pipeline_status] += estimated_value
 
-        count_by_pipeline_status[label(record.get("pipeline_status"))] += 1
+        count_by_pipeline_status[pipeline_status] += 1
         count_by_status[label(record.get("status"))] += 1
         total_photo_count += int(number(record.get("photo_count")) or 0)
 
@@ -216,16 +239,17 @@ def build_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
             warning_jobs.append(warning_entry)
 
     highest_value_jobs = sorted(
-        (record for record in records if number(record.get("final_price")) is not None),
-        key=lambda record: number(record.get("final_price")) or 0,
+        (record for record in records if get_estimated_value(record) is not None),
+        key=lambda record: get_estimated_value(record) or 0,
         reverse=True,
     )[:10]
     warning_jobs = sorted(
         warning_jobs,
-        key=lambda record: number(record.get("final_price")) or 0,
+        key=lambda record: get_estimated_value(record) or 0,
         reverse=True,
     )[:10]
     total_by_division_out = {key: round(value, 2) for key, value in sorted(total_by_division.items())}
+    total_by_pipeline_status_out = {key: round(value, 2) for key, value in sorted(total_by_pipeline_status.items())}
     count_by_pipeline_status_out = dict(sorted(count_by_pipeline_status.items()))
     top_highest_value_jobs = [job_identity(record) for record in highest_value_jobs]
 
@@ -234,8 +258,12 @@ def build_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
         "summary_type": SUMMARY_TYPE,
         "sent_at": datetime.now(timezone.utc).isoformat(),
         "total_jobs": len(records),
-        "total_final_price": round(total_final_price, 2),
+        "total_estimated_value": round(total_estimated_value, 2),
+        "total_final_price": round(total_estimated_value, 2),
         "total_by_division": total_by_division_out,
+        "total_estimated_value_by_division": total_by_division_out,
+        "total_by_pipeline_status": total_by_pipeline_status_out,
+        "total_estimated_value_by_pipeline_status": total_by_pipeline_status_out,
         "count_by_pipeline_status": count_by_pipeline_status_out,
         "count_by_status": dict(sorted(count_by_status.items())),
         "warning_count": len([record for record in records if has_warning(record)]),
@@ -254,10 +282,12 @@ def build_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
         "top_highest_value_jobs": top_highest_value_jobs,
         "division_summary_text": division_summary_text(total_by_division_out),
         "pipeline_summary_text": counter_summary_text(count_by_pipeline_status),
+        "pipeline_value_summary_text": value_summary_text(total_by_pipeline_status_out, "No pipeline estimated values found"),
         "warning_jobs_text": warning_jobs_text(warning_jobs),
         "top_value_jobs_text": top_value_jobs_text(top_highest_value_jobs),
         "division_summary_html": division_summary_html(total_by_division_out),
         "pipeline_summary_html": pipeline_summary_html(count_by_pipeline_status),
+        "pipeline_value_summary_html": pipeline_value_summary_html(total_by_pipeline_status_out),
         "warning_jobs_html": warning_jobs_html(warning_jobs),
         "top_value_jobs_html": top_value_jobs_html(top_highest_value_jobs),
     }

@@ -19,6 +19,11 @@ from .estimate_datasets import (
     write_dataset_json,
 )
 from .graph_client import GraphClient, SharePointTarget
+from .job_tracking_extractor import (
+    JOB_TRACKING_DAILY_FIELDS,
+    JOB_TRACKING_SUMMARY_FIELDS,
+    scan_job_tracking_for_records,
+)
 from .models import JobRecord
 from .scan import scan_root, write_csv, write_excel, write_json
 from .schedule_extractor import finalize_schedule_record
@@ -220,6 +225,10 @@ def main() -> None:
     parser.add_argument("--estimate-summary-json", type=Path, default=Path("output/estimate_summary.json"))
     parser.add_argument("--estimate-line-items-out", type=Path, default=Path("output/estimate_line_items.csv"))
     parser.add_argument("--estimate-line-items-json", type=Path, default=Path("output/estimate_line_items.json"))
+    parser.add_argument("--job-tracking-summary-out", type=Path, default=Path("output/job_tracking_summary.csv"))
+    parser.add_argument("--job-tracking-summary-json", type=Path, default=Path("output/job_tracking_summary.json"))
+    parser.add_argument("--job-tracking-daily-out", type=Path, default=Path("output/job_tracking_daily_entries.csv"))
+    parser.add_argument("--job-tracking-daily-json", type=Path, default=Path("output/job_tracking_daily_entries.json"))
     parser.add_argument("--summary", type=Path, default=None, help="Batch scan summary JSON path")
     args = parser.parse_args()
 
@@ -229,6 +238,8 @@ def main() -> None:
     records: list[JobRecord] = []
     estimate_summaries: list[dict[str, Any]] = []
     estimate_line_items: list[dict[str, Any]] = []
+    job_tracking_summaries: list[dict[str, Any]] = []
+    job_tracking_daily_entries: list[dict[str, Any]] = []
     scan_errors: list[dict[str, Any]] = []
     root_summaries: list[dict[str, Any]] = []
     contracted_without_signed_contract_count = 0
@@ -254,6 +265,9 @@ def main() -> None:
             root_estimate_summaries, root_estimate_line_items = scan_estimate_datasets_for_records(cache_root, root_records)
             estimate_summaries.extend(root_estimate_summaries)
             estimate_line_items.extend(root_estimate_line_items)
+            root_tracking_summaries, root_tracking_daily_entries = scan_job_tracking_for_records(cache_root, root_records)
+            job_tracking_summaries.extend(root_tracking_summaries)
+            job_tracking_daily_entries.extend(root_tracking_daily_entries)
             print_root_done(root, len(root_records))
             if (root.pipeline_status or "").strip().lower() == "contracted":
                 contracted_without_signed_contract_count += sum(
@@ -271,6 +285,8 @@ def main() -> None:
                     "records": len(root_records),
                     "estimate_summaries": len(root_estimate_summaries),
                     "estimate_line_items": len(root_estimate_line_items),
+                    "job_tracking_summaries": len(root_tracking_summaries),
+                    "job_tracking_daily_entries": len(root_tracking_daily_entries),
                     "warning": "Scan root found but no records extracted" if not root_records else None,
                     "stats": stats_as_dict(stats),
                 }
@@ -297,6 +313,10 @@ def main() -> None:
     write_dataset_json(estimate_summaries, ESTIMATE_SUMMARY_FIELDS, args.estimate_summary_json)
     write_dataset_csv(estimate_line_items, ESTIMATE_LINE_ITEM_FIELDS, args.estimate_line_items_out)
     write_dataset_json(estimate_line_items, ESTIMATE_LINE_ITEM_FIELDS, args.estimate_line_items_json)
+    write_dataset_csv(job_tracking_summaries, JOB_TRACKING_SUMMARY_FIELDS, args.job_tracking_summary_out)
+    write_dataset_json(job_tracking_summaries, JOB_TRACKING_SUMMARY_FIELDS, args.job_tracking_summary_json)
+    write_dataset_csv(job_tracking_daily_entries, JOB_TRACKING_DAILY_FIELDS, args.job_tracking_daily_out)
+    write_dataset_json(job_tracking_daily_entries, JOB_TRACKING_DAILY_FIELDS, args.job_tracking_daily_json)
 
     summary_path = args.summary or args.json.with_name("batch_scan_summary.json")
     summary = {
@@ -309,6 +329,8 @@ def main() -> None:
         "jobs_indexed": len(records),
         "estimate_summaries": len(estimate_summaries),
         "estimate_line_items": len(estimate_line_items),
+        "job_tracking_summaries": len(job_tracking_summaries),
+        "job_tracking_daily_entries": len(job_tracking_daily_entries),
         "contracted_without_signed_contract_count": contracted_without_signed_contract_count,
         "roots": root_summaries,
         "scan_errors": scan_errors,
@@ -322,6 +344,10 @@ def main() -> None:
             "estimate_summary_json": str(args.estimate_summary_json),
             "estimate_line_items_csv": str(args.estimate_line_items_out),
             "estimate_line_items_json": str(args.estimate_line_items_json),
+            "job_tracking_summary_csv": str(args.job_tracking_summary_out),
+            "job_tracking_summary_json": str(args.job_tracking_summary_json),
+            "job_tracking_daily_csv": str(args.job_tracking_daily_out),
+            "job_tracking_daily_json": str(args.job_tracking_daily_json),
         },
     }
     write_summary(summary_path, summary)
@@ -332,6 +358,8 @@ def main() -> None:
     print(f"Jobs indexed: {len(records)}")
     print(f"Estimate summaries: {len(estimate_summaries)}")
     print(f"Estimate line items: {len(estimate_line_items)}")
+    print(f"Job tracking summaries: {len(job_tracking_summaries)}")
+    print(f"Job tracking daily entries: {len(job_tracking_daily_entries)}")
     print(f"Contracted without signed contract: {contracted_without_signed_contract_count}")
     print(f"CSV: {args.out}")
     print(f"JSON: {args.json}")
@@ -342,6 +370,10 @@ def main() -> None:
     print(f"Estimate summary JSON: {args.estimate_summary_json}")
     print(f"Estimate line items CSV: {args.estimate_line_items_out}")
     print(f"Estimate line items JSON: {args.estimate_line_items_json}")
+    print(f"Job tracking summary CSV: {args.job_tracking_summary_out}")
+    print(f"Job tracking summary JSON: {args.job_tracking_summary_json}")
+    print(f"Job tracking daily CSV: {args.job_tracking_daily_out}")
+    print(f"Job tracking daily JSON: {args.job_tracking_daily_json}")
     print(f"Summary: {summary_path}")
 
 

@@ -110,6 +110,10 @@ python -m jobscan.batch_sharepoint_sync \
   --estimate-summary-json output/estimate_summary.json \
   --estimate-line-items-out output/estimate_line_items.csv \
   --estimate-line-items-json output/estimate_line_items.json \
+  --job-tracking-summary-out output/job_tracking_summary.csv \
+  --job-tracking-summary-json output/job_tracking_summary.json \
+  --job-tracking-daily-out output/job_tracking_daily_entries.csv \
+  --job-tracking-daily-json output/job_tracking_daily_entries.json \
   --force
 ```
 
@@ -132,6 +136,15 @@ For estimating analytics and future AI estimate generation, the batch scanner al
 The summary dataset is one row per estimate workbook. The line-item dataset preserves section, item, quantity/cost fields where available, labor task days/crew/hours, and `source_sheet` / `source_row` references for parser improvements.
 
 If a job folder contains multiple estimate workbooks, the Job Index remains one row per job and selects one `primary_estimate_file` for high-level fields. Other workbooks are retained in `supporting_estimate_files` and emitted as supporting rows in `estimate_summary`.
+
+When a job folder contains a Job Tracking Form workbook or a job tracking worksheet inside another workbook, the batch scanner writes:
+
+- `output/job_tracking_summary.csv`
+- `output/job_tracking_summary.json`
+- `output/job_tracking_daily_entries.csv`
+- `output/job_tracking_daily_entries.json`
+
+These outputs capture actual daily production entries, actual-versus-estimated summary totals, and source row references. The Job Index also includes high-level tracking fields such as `has_job_tracking_form`, `actual_labor_hours`, dates worked, and `labor_hours_variance`.
 
 ## Run local/exported folder scan
 
@@ -195,6 +208,31 @@ python -m jobscan.office_timesheet_sync \
   --out output/office_timesheet_entries.csv \
   --json output/office_timesheet_entries.json
 ```
+
+## Load outputs into Postgres
+
+The scanner still writes CSV/JSON/XLSX files as the source of truth for exports. To load the JSON outputs into the local Postgres database, set `DATABASE_URL` in `.env`:
+
+```bash
+DATABASE_URL=postgresql+psycopg2://spraytec:spraytec_dev_password@localhost:5432/spraytec_ops
+```
+
+Load one dataset:
+
+```bash
+python -m jobscan.db_loader --jobs output/job_index.json
+python -m jobscan.db_loader --estimates output/estimate_summary.json
+python -m jobscan.db_loader --line-items output/estimate_line_items.json
+python -m jobscan.db_loader --crew-schedule output/crew_schedule_candidates.json
+```
+
+Load all available default JSON outputs, skipping missing files:
+
+```bash
+python -m jobscan.db_loader --all
+```
+
+The loader upserts into existing tables, stores each source record in the table's `raw` JSONB column, and only writes columns that exist in the current SQL schema.
 
 ## Generate Zapier handoff payloads
 
@@ -284,9 +322,9 @@ Send the live summary:
 python -m jobscan.zapier_summary_sender output/job_index.json
 ```
 
-This module sends one aggregate payload only. It includes total jobs, final-price totals, division and status breakdowns, warning counts, completed-folder issue counts, aerial/photo totals, top warning jobs, and top highest-value jobs. It also includes Teams-ready newline-separated text fields: `division_summary_text`, `pipeline_summary_text`, `warning_jobs_text`, and `top_value_jobs_text`.
+This module sends one aggregate payload only. It includes total jobs, quoted estimated value totals, division and pipeline value breakdowns, warning counts, completed-folder issue counts, aerial/photo totals, top warning jobs, and top highest-value jobs. Estimated value uses `final_price`, then `worksheet_price`, then `total_job_cost` as a fallback. It also includes Teams-ready newline-separated text fields: `division_summary_text`, `pipeline_summary_text`, `pipeline_value_summary_text`, `warning_jobs_text`, and `top_value_jobs_text`.
 
-For Microsoft Teams Zapier actions, set Message Text Format / Format to HTML and use `{{teams_message_html}}` as the message body. The payload also includes section-level HTML fields: `division_summary_html`, `pipeline_summary_html`, `warning_jobs_html`, and `top_value_jobs_html`.
+For Microsoft Teams Zapier actions, set Message Text Format / Format to HTML and use `{{teams_message_html}}` as the message body. The payload also includes section-level HTML fields: `division_summary_html`, `pipeline_summary_html`, `pipeline_value_summary_html`, `warning_jobs_html`, and `top_value_jobs_html`.
 
 ## Streamlit dashboard prototype
 

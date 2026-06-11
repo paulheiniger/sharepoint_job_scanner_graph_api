@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .estimate_selection import select_primary_estimate
+from .job_tracking_extractor import apply_job_tracking_to_record, is_job_tracking_file
 from .models import JobRecord, money, rel
 from .schedule_extractor import apply_schedule_extraction
 
@@ -154,9 +155,14 @@ def classify_files(folder: Path) -> dict[str, Any]:
     lower = {p: p.name.lower() for p in files}
     image_manifest_entries = _load_image_manifest_entries(folder)
 
-    estimate_files = [p for p in files if p.suffix.lower() in SPREADSHEET_EXTS and "estimate" in lower[p]]
+    job_tracking_files = [p for p in files if p.suffix.lower() in SPREADSHEET_EXTS and is_job_tracking_file(p)]
+    estimate_files = [
+        p for p in files
+        if p.suffix.lower() in SPREADSHEET_EXTS
+        and "estimate" in lower[p]
+    ]
     if not estimate_files:
-        estimate_files = [p for p in files if p.suffix.lower() in SPREADSHEET_EXTS]
+        estimate_files = [p for p in files if p.suffix.lower() in SPREADSHEET_EXTS and p not in job_tracking_files]
 
     invoice_files = [p for p in files if "invoice" in lower[p] and p.suffix.lower() == ".pdf"]
     signed_contracts = [p for p in files if "signed" in lower[p] and "contract" in lower[p]]
@@ -186,6 +192,7 @@ def classify_files(folder: Path) -> dict[str, Any]:
     return {
         "files": files,
         "estimate_files": estimate_files,
+        "job_tracking_files": job_tracking_files,
         "invoice_files": invoice_files,
         "signed_contracts": signed_contracts,
         "warranties": warranties,
@@ -563,6 +570,7 @@ def scan_job_folder(folder: Path, root: Path | None = None, scan_context: str = 
         has_warranty=bool(info["warranties"]),
         has_proposal=bool(info["proposals"]),
         has_job_spec=bool(info["job_specs"]),
+        has_job_tracking_form=bool(info["job_tracking_files"]),
         has_aerial=bool(info["aerials"]),
         has_notes=bool(info["notes"]),
     )
@@ -617,6 +625,7 @@ def scan_job_folder(folder: Path, root: Path | None = None, scan_context: str = 
     record.customer = infer_customer_from_folder(record.folder_name, record.job_name)
     folder_context = f"{scan_context} {record.folder_path} {record.folder_name}"
     record.status = infer_status(record, folder_context)
+    apply_job_tracking_to_record(record, folder, root, info["job_tracking_files"])
     apply_schedule_extraction(record, folder, root, info)
 
     completed_context = any(term in folder_context.lower() for term in ["completed", "complete", "closed"])
