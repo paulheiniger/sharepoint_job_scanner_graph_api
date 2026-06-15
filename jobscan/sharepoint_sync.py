@@ -6,6 +6,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from .extractors import DOC_EXTS, SPREADSHEET_EXTS
 from .graph_client import GraphClient, SharePointTarget
@@ -33,6 +34,31 @@ def _safe_name(name: str) -> str:
     bad = '<>:"/\\|?*'
     cleaned = "".join("_" if c in bad else c for c in name).strip()
     return cleaned or "unnamed"
+
+
+def is_url(value: Any) -> bool:
+    return isinstance(value, str) and value.lower().startswith(("http://", "https://"))
+
+
+def build_sharepoint_folder_url(site_url: str, library: str, folder_path: str) -> str | None:
+    if not site_url or not folder_path:
+        return None
+
+    library_url_name = "Shared Documents" if library.lower() == "documents" else library
+    encoded_parts = [quote(part) for part in folder_path.strip("/").split("/") if part]
+    encoded_path = "/".join(encoded_parts)
+    if not encoded_path:
+        return f"{site_url.rstrip('/')}/{quote(library_url_name)}"
+    return f"{site_url.rstrip('/')}/{quote(library_url_name)}/{encoded_path}"
+
+
+def site_url_from_target(target: SharePointTarget) -> str:
+    return f"https://{target.hostname}{target.site_path}"
+
+
+def joined_folder_path(root_folder: str, relative_folder: str) -> str:
+    parts = [part.strip("/") for part in (root_folder, relative_folder) if part and part != "."]
+    return "/".join(part for part in parts if part)
 
 
 def _load_manifest(path: Path) -> dict[str, Any]:
@@ -98,7 +124,10 @@ def sync_sharepoint_folder(
         "site_id": site["id"],
         "drive_id": drive["id"],
         "folder_item_id": root_item["id"],
+        "site_url": site_url_from_target(target),
+        "library": target.library,
         "items": {},
+        "folders": {},
     }
     stats = SyncStats()
     image_manifests: dict[Path, list[dict[str, Any]]] = {}
@@ -110,10 +139,30 @@ def sync_sharepoint_folder(
         else:
             path.mkdir(parents=True, exist_ok=True)
 
-    def walk(item_id: str, local_dir: Path, depth: int) -> None:
+    def remember_folder(local_dir: Path, item: dict[str, Any], relative_folder: str) -> None:
+        graph_folder_path = joined_folder_path(target.folder_path, relative_folder)
+        folder_url = item.get("webUrl") or build_sharepoint_folder_url(
+            site_url_from_target(target),
+            target.library,
+            graph_folder_path,
+        )
+        try:
+            local_relative = str(local_dir.relative_to(sync_root))
+        except ValueError:
+            local_relative = relative_folder or "."
+        local_relative = local_relative if local_relative else "."
+        new_manifest["folders"][local_relative] = {
+            "name": item.get("name"),
+            "id": item.get("id"),
+            "folder_path": graph_folder_path,
+            "webUrl": folder_url,
+        }
+
+    def walk(item_id: str, local_dir: Path, depth: int, item: dict[str, Any], relative_folder: str = ".") -> None:
         if depth > max_depth:
             return
         ensure_dir(local_dir)
+        remember_folder(local_dir, item, relative_folder)
         children = client.list_children(drive["id"], item_id)
         for child in children:
             name = child.get("name", "")
@@ -123,7 +172,8 @@ def sync_sharepoint_folder(
                 if name.strip().lower() in DEFAULT_SKIP_DIRS:
                     continue
                 stats.folders_seen += 1
-                walk(child["id"], local_dir / _safe_name(name), depth + 1)
+                child_relative = name if relative_folder == "." else f"{relative_folder}/{name}"
+                walk(child["id"], local_dir / _safe_name(name), depth + 1, child, child_relative)
                 continue
 
             stats.files_seen += 1
@@ -160,7 +210,7 @@ def sync_sharepoint_folder(
             stats.downloaded_files += 1
             stats.bytes_downloaded += int(child.get("size") or 0)
 
-    walk(root_item["id"], sync_root, depth=0)
+    walk(root_item["id"], sync_root, depth=0, item=root_item)
     for stale_manifest in sync_root.rglob(IMAGE_MANIFEST_NAME):
         if stale_manifest.parent not in image_manifests:
             stale_manifest.unlink()
@@ -170,6 +220,32 @@ def sync_sharepoint_folder(
         stats.manifest_files_written += 1
     _save_manifest(manifest_path, new_manifest)
     return sync_root, stats
+
+
+def load_folder_url_map(cache_root: Path) -> dict[str, str]:
+    manifest = _load_manifest(cache_root / ".jobscan_manifest.json")
+    folders = manifest.get("folders") if isinstance(manifest, dict) else None
+    if not isinstance(folders, dict):
+        return {}
+    out: dict[str, str] = {}
+    for folder_path, metadata in folders.items():
+        if not isinstance(metadata, dict):
+            continue
+        folder_url = metadata.get("webUrl") or metadata.get("web_url")
+        if folder_url:
+            out[str(folder_path)] = str(folder_url)
+    return out
+
+
+def attach_folder_urls(records: list[Any], cache_root: Path) -> None:
+    folder_urls = load_folder_url_map(cache_root)
+    for record in records:
+        folder_path = getattr(record, "folder_path", None)
+        if folder_path is None:
+            continue
+        folder_url = folder_urls.get(str(folder_path)) or folder_urls.get(str(Path(str(folder_path))))
+        if folder_url:
+            record.folder_url = folder_url
 
 
 def main() -> None:
@@ -201,9 +277,11 @@ def main() -> None:
         skip_images=args.skip_images,
     )
     records = scan_root(cache_root, scan_context=target.folder_path)
+    attach_folder_urls(records, cache_root)
     write_csv(records, args.out)
     write_json(records, args.json)
     write_excel(records, args.xlsx)
+    jobs_with_folder_url = sum(1 for record in records if is_url(record.folder_url))
 
     print(f"SharePoint cache: {cache_root}")
     print(f"Folders seen: {stats.folders_seen}")
@@ -214,6 +292,8 @@ def main() -> None:
     print(f"Folders created: {stats.folders_created}")
     print(f"Image manifest files written: {stats.manifest_files_written}")
     print(f"Jobs indexed: {len(records)}")
+    print(f"Jobs with folder_url: {jobs_with_folder_url}")
+    print(f"Jobs missing folder_url: {len(records) - jobs_with_folder_url}")
     print(f"CSV: {args.out}")
     print(f"JSON: {args.json}")
     print(f"Excel: {args.xlsx}")

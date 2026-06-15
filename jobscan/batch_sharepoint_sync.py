@@ -29,7 +29,7 @@ from .job_tracking_extractor import (
 from .models import JobRecord
 from .scan import scan_root, write_csv, write_excel, write_json
 from .schedule_extractor import finalize_schedule_record
-from .sharepoint_sync import SyncStats, sync_sharepoint_folder
+from .sharepoint_sync import SyncStats, attach_folder_urls, is_url, sync_sharepoint_folder
 
 
 CREW_SCHEDULE_FIELDS = [
@@ -356,6 +356,7 @@ def main() -> None:
                 skip_images=args.skip_images,
             )
             root_records = scan_root(cache_root, scan_context=root.folder)
+            attach_folder_urls(root_records, cache_root)
             for record in root_records:
                 add_batch_context(record, root)
             root_estimate_summaries: list[dict[str, Any]] = []
@@ -507,6 +508,9 @@ def main() -> None:
     print(f"estimate_line_item_rows: {len(estimate_line_items)}")
     print(f"scan_roots_completed: {len(root_summaries)}")
     print(f"scan_roots_failed: {len(scan_errors)}")
+    jobs_with_folder_url = sum(1 for record in records if is_url(record.folder_url))
+    print(f"Jobs with folder_url: {jobs_with_folder_url}")
+    print(f"Jobs missing folder_url: {len(records) - jobs_with_folder_url}")
     print(f"Job tracking summaries: {len(job_tracking_summaries)}")
     print(f"Job tracking daily entries: {len(job_tracking_daily_entries)}")
     print(f"Contracted without signed contract: {contracted_without_signed_contract_count}")

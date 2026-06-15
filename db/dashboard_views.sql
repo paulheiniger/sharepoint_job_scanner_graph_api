@@ -404,7 +404,7 @@ SELECT
     price_per_sqft,
     has_warnings,
     warnings,
-    COALESCE(folder_url, folder_path) AS folder_link_or_path,
+    COALESCE(NULLIF(folder_url, ''), folder_path) AS folder_link_or_path,
     folder_url,
     folder_path,
     updated_at
@@ -430,7 +430,7 @@ SELECT
     estimated_value,
     estimated_sqft,
     price_per_sqft,
-    COALESCE(folder_url, folder_path) AS folder_link_or_path,
+    COALESCE(NULLIF(folder_url, ''), folder_path) AS folder_link_or_path,
     folder_url,
     folder_path,
     warnings,
@@ -479,7 +479,7 @@ SELECT
 
     j.has_warnings,
     j.warnings,
-    COALESCE(j.folder_url, j.folder_path) AS folder_link_or_path,
+    COALESCE(NULLIF(j.folder_url, ''), j.folder_path) AS folder_link_or_path,
     j.folder_url,
     j.folder_path,
     j.updated_at
@@ -510,7 +510,7 @@ SELECT
     j.material_subtotal,
     j.labor_subtotal,
     j.estimate_file,
-    COALESCE(j.folder_url, j.folder_path) AS folder_link_or_path,
+    COALESCE(NULLIF(j.folder_url, ''), j.folder_path) AS folder_link_or_path,
     j.folder_url,
     j.folder_path,
 
@@ -604,7 +604,7 @@ SELECT
     has_job_spec,
     has_signed_contract,
     has_invoice,
-    COALESCE(folder_url, folder_path) AS folder_link_or_path,
+    COALESCE(NULLIF(folder_url, ''), folder_path) AS folder_link_or_path,
     folder_url,
     folder_path,
 
@@ -772,7 +772,7 @@ SELECT
     job_name,
     folder_url,
     folder_path,
-    COALESCE(folder_url, folder_path) AS folder_link_or_path,
+    COALESCE(NULLIF(folder_url, ''), folder_path) AS folder_link_or_path,
     warnings,
     estimated_value,
     updated_at
@@ -794,7 +794,7 @@ SELECT
     estimated_value,
     estimated_sqft,
     price_per_sqft,
-    COALESCE(folder_url, folder_path) AS folder_link_or_path,
+    COALESCE(NULLIF(folder_url, ''), folder_path) AS folder_link_or_path,
     folder_url,
     folder_path,
     warnings,
@@ -989,7 +989,7 @@ SELECT
     estimated_value,
     estimated_sqft,
     price_per_sqft,
-    COALESCE(folder_url, folder_path) AS folder_link_or_path,
+    COALESCE(NULLIF(folder_url, ''), folder_path) AS folder_link_or_path,
     folder_url,
     folder_path,
     warnings,
@@ -1055,7 +1055,7 @@ SELECT
     photo_count,
     has_aerial,
     warnings,
-    COALESCE(folder_url, folder_path) AS folder_link_or_path,
+    COALESCE(NULLIF(folder_url, ''), folder_path) AS folder_link_or_path,
     folder_url,
     folder_path,
     CASE
@@ -1177,7 +1177,7 @@ SELECT
     has_warnings,
     warnings,
     estimate_file,
-    COALESCE(folder_url, folder_path) AS folder_link_or_path,
+    COALESCE(NULLIF(folder_url, ''), folder_path) AS folder_link_or_path,
     folder_url,
     folder_path,
     CASE
@@ -1208,7 +1208,7 @@ SELECT
     has_signed_contract,
     has_invoice,
     has_warranty,
-    COALESCE(folder_url, folder_path) AS folder_link_or_path,
+    COALESCE(NULLIF(folder_url, ''), folder_path) AS folder_link_or_path,
     folder_url,
     folder_path,
     CASE

@@ -14,6 +14,11 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 
+try:
+    from streamlit_calendar import calendar
+except ImportError:
+    calendar = None
+
 
 load_dotenv(dotenv_path=Path.cwd() / ".env")
 
@@ -139,8 +144,6 @@ def text_value(value) -> str:
 
 def schedule_id_for_job(job_id: object) -> str:
     job_text = text_value(job_id)
-    if job_text:
-        return f"schedule-{job_text}"
     digest = hashlib.sha1(job_text.encode("utf-8")).hexdigest()[:20]
     return f"schedule-{digest}"
 
@@ -255,6 +258,333 @@ def save_schedule_rows(df: pd.DataFrame) -> int:
         conn.execute(upsert_sql, records)
     st.cache_data.clear()
     return len(records)
+
+
+CREW_COLOR_PALETTE = [
+    "#1f77b4",
+    "#ff7f0e",
+    "#2ca02c",
+    "#d62728",
+    "#9467bd",
+    "#8c564b",
+    "#e377c2",
+    "#7f7f7f",
+    "#bcbd22",
+    "#17becf",
+]
+
+
+def get_crew_color(crew_leader: object) -> str:
+    leader = text_value(crew_leader) or "Unassigned"
+    digest = hashlib.sha1(leader.lower().encode("utf-8")).hexdigest()
+    return CREW_COLOR_PALETTE[int(digest[:8], 16) % len(CREW_COLOR_PALETTE)]
+
+
+def relation_columns(relation_name: str) -> set[str]:
+    try:
+        engine = get_engine()
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = :relation_name
+                    """
+                ),
+                {"relation_name": relation_name},
+            ).fetchall()
+        return {row[0] for row in rows}
+    except Exception:
+        return set()
+
+
+def sql_column(alias: str, columns: set[str], column: str, default: str = "NULL") -> str:
+    return f"{alias}.{column}" if column in columns else default
+
+
+def sql_nonblank_column(alias: str, columns: set[str], column: str, default: str = "NULL") -> str:
+    return f"NULLIF({alias}.{column}, '')" if column in columns else default
+
+
+def sql_coalesce(expressions: list[str], default: str = "NULL") -> str:
+    available = [expression for expression in expressions if expression != "NULL"]
+    if not available:
+        return default
+    if len(available) == 1:
+        return available[0]
+    return f"COALESCE({', '.join(available)})"
+
+
+def load_schedule_calendar_df() -> pd.DataFrame:
+    jobs_cols = relation_columns("dashboard_jobs")
+    backlog_cols = relation_columns("dashboard_contracted_backlog")
+    estimate_cols = relation_columns("dashboard_estimates")
+    folder_expr = sql_coalesce(
+        [
+            sql_nonblank_column("j", jobs_cols, "folder_url"),
+            sql_nonblank_column("j", jobs_cols, "folder_path"),
+            sql_nonblank_column("b", backlog_cols, "folder_link_or_path"),
+            sql_nonblank_column("b", backlog_cols, "folder_url"),
+            sql_nonblank_column("b", backlog_cols, "folder_path"),
+        ]
+    )
+    estimate_expr = sql_coalesce(
+        [
+            sql_column("j", jobs_cols, "estimate_file"),
+            sql_column("b", backlog_cols, "estimate_file"),
+        ]
+    )
+    proposal_expr = sql_coalesce(
+        [
+            sql_column("j", jobs_cols, "proposal_file"),
+            sql_column("b", backlog_cols, "proposal_file"),
+            estimate_expr,
+        ]
+    )
+    estimate_select_columns = [
+        "job_id",
+        "estimated_sqft",
+        "price_per_sqft",
+        "estimated_labor_hours",
+        "estimated_crew_size",
+        "job_type",
+        "coating_type",
+        "foam_type",
+        "warranty_amount",
+        "equipment_rental_amount",
+        "subcontractor_amount",
+        "material_subtotal",
+        "labor_subtotal",
+        "extraction_warnings",
+    ]
+    estimate_subquery_select = ",\n                ".join(
+        f"{column}" if column in estimate_cols else f"NULL AS {column}"
+        for column in estimate_select_columns
+    )
+    query = f"""
+        SELECT
+            cs.schedule_id,
+            cs.job_id,
+            COALESCE(j.customer, b.customer) AS customer,
+            COALESCE(j.job_name, b.job_name) AS job_name,
+            COALESCE(j.division, b.division) AS division,
+            COALESCE(j.pipeline_status, b.pipeline_status) AS pipeline_status,
+            COALESCE(j.status, b.status) AS status,
+            COALESCE(j.estimated_value, b.estimated_value) AS estimated_value,
+            COALESCE(b.estimated_duration_days, cs.estimated_duration_days) AS estimated_duration_days,
+            {sql_coalesce([sql_column("b", backlog_cols, "estimated_labor_hours"), "e.estimated_labor_hours"])} AS estimated_labor_hours,
+            {sql_coalesce([sql_column("b", backlog_cols, "estimated_crew_size"), "e.estimated_crew_size"])} AS estimated_crew_size,
+            {sql_coalesce([sql_column("j", jobs_cols, "estimated_sqft"), sql_column("b", backlog_cols, "estimated_sqft"), "e.estimated_sqft"])} AS estimated_sqft,
+            {sql_coalesce([sql_column("j", jobs_cols, "price_per_sqft"), sql_column("b", backlog_cols, "price_per_sqft"), "e.price_per_sqft"])} AS price_per_sqft,
+            {sql_coalesce([sql_column("j", jobs_cols, "job_type"), sql_column("b", backlog_cols, "job_type"), "e.job_type"])} AS job_type,
+            {sql_coalesce([sql_column("j", jobs_cols, "coating_type"), sql_column("b", backlog_cols, "coating_type"), "e.coating_type"])} AS coating_type,
+            {sql_coalesce([sql_column("j", jobs_cols, "foam_type"), sql_column("b", backlog_cols, "foam_type"), "e.foam_type"])} AS foam_type,
+            {sql_coalesce([sql_column("j", jobs_cols, "warranty_amount"), sql_column("b", backlog_cols, "warranty_amount"), "e.warranty_amount"])} AS warranty_amount,
+            {sql_coalesce([sql_column("j", jobs_cols, "equipment_rental_amount"), sql_column("b", backlog_cols, "equipment_rental_amount"), "e.equipment_rental_amount"])} AS equipment_rental_amount,
+            {sql_coalesce([sql_column("j", jobs_cols, "subcontractor_amount"), sql_column("b", backlog_cols, "subcontractor_amount"), "e.subcontractor_amount"])} AS subcontractor_amount,
+            {sql_coalesce([sql_column("j", jobs_cols, "material_subtotal"), sql_column("b", backlog_cols, "material_subtotal"), "e.material_subtotal"])} AS material_subtotal,
+            {sql_coalesce([sql_column("j", jobs_cols, "labor_subtotal"), sql_column("b", backlog_cols, "labor_subtotal"), "e.labor_subtotal"])} AS labor_subtotal,
+            cs.assigned_crew_leader,
+            cs.estimated_start_date,
+            cs.estimated_end_date,
+            cs.schedule_status,
+            cs.priority,
+            cs.blocking_issue,
+            cs.schedule_notes,
+            {sql_column("j", jobs_cols, "folder_url")} AS folder_url,
+            {sql_column("j", jobs_cols, "folder_path")} AS folder_path,
+            {folder_expr} AS folder_link_or_path,
+            {estimate_expr} AS estimate_file,
+            {proposal_expr} AS proposal_file,
+            {sql_coalesce([sql_column("j", jobs_cols, "contract_file"), sql_column("b", backlog_cols, "contract_file")])} AS contract_file,
+            {sql_coalesce([sql_column("j", jobs_cols, "job_tracking_file"), sql_column("b", backlog_cols, "job_tracking_file")])} AS job_tracking_file,
+            {sql_coalesce([sql_column("j", jobs_cols, "has_proposal"), sql_column("b", backlog_cols, "has_proposal")])} AS has_proposal,
+            {sql_coalesce([sql_column("j", jobs_cols, "has_signed_contract"), sql_column("b", backlog_cols, "has_signed_contract")])} AS has_signed_contract,
+            {sql_coalesce([sql_column("j", jobs_cols, "has_job_tracking_form"), sql_column("b", backlog_cols, "has_job_tracking_form")])} AS has_job_tracking_form,
+            {sql_coalesce([sql_column("j", jobs_cols, "has_aerial"), sql_column("b", backlog_cols, "has_aerial")])} AS has_aerial,
+            {sql_coalesce([sql_column("j", jobs_cols, "photo_count"), sql_column("b", backlog_cols, "photo_count")])} AS photo_count,
+            {sql_coalesce([sql_column("j", jobs_cols, "warnings"), sql_column("b", backlog_cols, "warnings"), "e.extraction_warnings"])} AS warnings
+        FROM crew_schedule cs
+        LEFT JOIN dashboard_jobs j ON cs.job_id = j.job_id
+        LEFT JOIN dashboard_contracted_backlog b ON cs.job_id = b.job_id
+        LEFT JOIN (
+            SELECT DISTINCT ON (job_id)
+                {estimate_subquery_select}
+            FROM dashboard_estimates
+            WHERE job_id IS NOT NULL
+            ORDER BY job_id, estimated_value DESC NULLS LAST
+        ) e ON cs.job_id = e.job_id
+        WHERE cs.estimated_start_date IS NOT NULL
+    """
+    return safe_load(query)
+
+
+def load_unscheduled_backlog_df(scheduled_job_ids: set[str]) -> pd.DataFrame:
+    backlog = query_view("dashboard_contracted_backlog")
+    if backlog.empty or "job_id" not in backlog.columns:
+        return backlog
+    out = backlog[~backlog["job_id"].fillna("").astype(str).isin(scheduled_job_ids)].copy()
+    out = with_folder_link(out)
+    if "proposal_file" not in out.columns:
+        out["proposal_file"] = out["estimate_file"] if "estimate_file" in out.columns else None
+    return out
+
+
+def is_url(value: object) -> bool:
+    return text_value(value).lower().startswith(("http://", "https://"))
+
+
+def render_document_access(label: str, value: object, unavailable_message: str | None = None) -> None:
+    value_text = text_value(value)
+    if is_url(value_text):
+        st.link_button(label, value_text)
+    elif value_text:
+        st.write(f"**{label}:**")
+        st.caption(value_text)
+    elif unavailable_message:
+        st.caption(unavailable_message)
+
+
+def format_summary_value(value: object, *, kind: str = "text") -> str:
+    if kind in {"money", "number"}:
+        number = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+        if pd.isna(number):
+            return "-"
+        if kind == "money":
+            return fmt_dollar(number)
+        return fmt_count(number)
+    return text_value(value) or "-"
+
+
+def calendar_events_from_schedule(df: pd.DataFrame) -> list[dict[str, object]]:
+    events: list[dict[str, object]] = []
+    if df.empty:
+        return events
+    for row in df.to_dict(orient="records"):
+        start = pd.to_datetime(row.get("estimated_start_date"), errors="coerce")
+        if pd.isna(start):
+            continue
+        end = pd.to_datetime(row.get("estimated_end_date"), errors="coerce")
+        if pd.isna(end):
+            end = start
+        event_id = text_value(row.get("schedule_id")) or text_value(row.get("job_id"))
+        crew_leader = text_value(row.get("assigned_crew_leader")) or "Unassigned"
+        customer = text_value(row.get("customer")) or "Unknown customer"
+        job_name = text_value(row.get("job_name")) or text_value(row.get("job_id"))
+        color = get_crew_color(crew_leader)
+        props = {key: clean_db_value(value) for key, value in row.items()}
+        events.append(
+            {
+                "id": event_id,
+                "title": f"{crew_leader} | {customer} - {job_name}",
+                "start": start.date().isoformat(),
+                "end": (end.date() + timedelta(days=1)).isoformat(),
+                "backgroundColor": color,
+                "borderColor": color,
+                "extendedProps": props,
+            }
+        )
+    return events
+
+
+def find_calendar_event(calendar_result: object, events: list[dict[str, object]]) -> dict[str, object] | None:
+    if not isinstance(calendar_result, dict):
+        return None
+    event_payload = calendar_result.get("eventClick") or calendar_result.get("event")
+    if isinstance(event_payload, dict) and isinstance(event_payload.get("event"), dict):
+        event_payload = event_payload["event"]
+    event_id = calendar_event_id(event_payload)
+    if not event_id:
+        return None
+    return next((event for event in events if text_value(event.get("id")) == event_id), None)
+
+
+def calendar_event_id(event_payload: object) -> str:
+    if not isinstance(event_payload, dict):
+        return ""
+    extended_props = event_payload.get("extendedProps") if isinstance(event_payload.get("extendedProps"), dict) else {}
+    event_def = event_payload.get("_def") if isinstance(event_payload.get("_def"), dict) else {}
+    for value in (
+        event_payload.get("id"),
+        event_payload.get("publicId"),
+        event_def.get("publicId"),
+        extended_props.get("schedule_id"),
+        extended_props.get("job_id"),
+    ):
+        event_id = text_value(value)
+        if event_id:
+            return event_id
+    return ""
+
+
+def calendar_event_date(event_payload: dict[str, object], *keys: str) -> object | None:
+    for key in keys:
+        value = event_payload.get(key)
+        if value:
+            return value
+    instance = event_payload.get("_instance") if isinstance(event_payload.get("_instance"), dict) else {}
+    date_range = instance.get("range") if isinstance(instance.get("range"), dict) else {}
+    for key in keys:
+        if key.startswith("start"):
+            value = date_range.get("start")
+        elif key.startswith("end"):
+            value = date_range.get("end")
+        else:
+            value = None
+        if value:
+            return value
+    return None
+
+
+def parse_calendar_change(calendar_result: object) -> dict[str, object] | None:
+    if not isinstance(calendar_result, dict):
+        return None
+    payload = calendar_result.get("eventDrop") or calendar_result.get("eventChange") or calendar_result.get("eventResize")
+    if not isinstance(payload, dict):
+        return None
+    event_payload = payload.get("event") if isinstance(payload.get("event"), dict) else payload
+    event_id = calendar_event_id(event_payload)
+    start = calendar_event_date(event_payload, "startStr", "start")
+    end = calendar_event_date(event_payload, "endStr", "end")
+    if not event_id or not start:
+        return None
+    return {"event_id": event_id, "start": start, "end": end}
+
+
+def update_calendar_schedule_dates(event_id: object, start_value: object, exclusive_end_value: object | None) -> None:
+    start = pd.to_datetime(start_value, errors="coerce")
+    end = pd.to_datetime(exclusive_end_value, errors="coerce") if exclusive_end_value else pd.NaT
+    if pd.isna(start):
+        return
+    if pd.isna(end):
+        inclusive_end = start.date()
+    else:
+        inclusive_end = end.date() - timedelta(days=1)
+    duration_days = max((inclusive_end - start.date()).days + 1, 1)
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                UPDATE crew_schedule
+                SET estimated_start_date = :estimated_start_date,
+                    estimated_end_date = :estimated_end_date,
+                    estimated_duration_days = :estimated_duration_days,
+                    updated_at = NOW()
+                WHERE schedule_id = :event_id OR job_id = :event_id
+                """
+            ),
+            {
+                "event_id": text_value(event_id),
+                "estimated_start_date": start.date().isoformat(),
+                "estimated_end_date": inclusive_end.isoformat(),
+                "estimated_duration_days": duration_days,
+            },
+        )
+    st.cache_data.clear()
 
 
 def load_dispatch_jobs(dispatch_date: date) -> pd.DataFrame:
@@ -576,7 +906,10 @@ def with_folder_link(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     if "folder_link_or_path" not in out.columns:
         if "folder_url" in out.columns:
-            out["folder_link_or_path"] = out["folder_url"]
+            out["folder_link_or_path"] = out["folder_url"].where(
+                out["folder_url"].fillna("").astype(str).str.strip() != "",
+                out["folder_path"] if "folder_path" in out.columns else "",
+            )
         elif "folder_path" in out.columns:
             out["folder_link_or_path"] = out["folder_path"]
         else:
@@ -908,6 +1241,316 @@ def contracted_backlog_scheduling_page() -> None:
 
 def operations_scheduling_page() -> None:
     contracted_backlog_scheduling_page()
+
+
+def schedule_calendar_page() -> None:
+    st.title("Schedule Calendar")
+    if calendar is None:
+        st.error("streamlit-calendar is not installed. Run `pip install streamlit-calendar` and restart Streamlit.")
+        return
+
+    schedule_df = load_schedule_calendar_df()
+    if schedule_df.empty:
+        show_empty("No scheduled jobs have an estimated start date yet.")
+
+    sidebar = st.sidebar
+    sidebar.caption("Schedule Calendar Filters")
+    crew_filter = sidebar.multiselect("Calendar Crew Leader", options_from(schedule_df, "assigned_crew_leader"))
+    division_filter = sidebar.multiselect("Calendar Division", options_from(schedule_df, "division"))
+    status_filter = sidebar.multiselect("Calendar Schedule Status", options_from(schedule_df, "schedule_status"))
+    show_unscheduled = sidebar.checkbox("Show unscheduled contracted jobs", value=True)
+
+    filtered = schedule_df.copy()
+    if crew_filter and "assigned_crew_leader" in filtered.columns:
+        filtered = filtered[filtered["assigned_crew_leader"].astype(str).isin(crew_filter)]
+    if division_filter and "division" in filtered.columns:
+        filtered = filtered[filtered["division"].astype(str).isin(division_filter)]
+    if status_filter and "schedule_status" in filtered.columns:
+        filtered = filtered[filtered["schedule_status"].astype(str).isin(status_filter)]
+
+    events = calendar_events_from_schedule(filtered)
+    calendar_options = {
+        "initialView": "dayGridMonth",
+        "editable": True,
+        "eventStartEditable": True,
+        "eventDurationEditable": True,
+        "selectable": True,
+        "height": 800,
+        "headerToolbar": {
+            "left": "prev,next today",
+            "center": "title",
+            "right": "dayGridMonth,timeGridWeek,timeGridDay,listWeek",
+        },
+        "eventDisplay": "block",
+    }
+
+    # TODO: add Teams send button from selected calendar day.
+    # TODO: add weather delay/push schedule feature.
+    # TODO: add true crew availability table.
+    calendar_col, detail_col = st.columns([2, 1])
+    with calendar_col:
+        calendar_result = calendar(events=events, options=calendar_options, key="schedule_calendar")
+        with st.expander("Calendar event debug"):
+            st.write(calendar_result)
+
+    change = parse_calendar_change(calendar_result)
+    if change:
+        update_calendar_schedule_dates(change["event_id"], change["start"], change.get("end"))
+        st.success("Schedule updated")
+        st.rerun()
+
+    selected_event = find_calendar_event(calendar_result, events)
+    with detail_col:
+        st.subheader("Selected Job")
+        if not selected_event:
+            st.info("Click a scheduled job block to view and edit details.")
+        else:
+            props = selected_event.get("extendedProps", {})
+            if not isinstance(props, dict):
+                props = {}
+            details = [
+                ("Customer", props.get("customer")),
+                ("Job Name", props.get("job_name")),
+                ("Division", props.get("division")),
+                ("Pipeline Status", props.get("pipeline_status")),
+                ("Status", props.get("status")),
+                ("Estimated Value", fmt_dollar(pd.to_numeric(pd.Series([props.get("estimated_value")]), errors="coerce").iloc[0])),
+                ("Estimated Duration Days", props.get("estimated_duration_days")),
+                ("Estimated Labor Hours", props.get("estimated_labor_hours")),
+                ("Estimated Crew Size", props.get("estimated_crew_size")),
+                ("Crew Leader", props.get("assigned_crew_leader")),
+                ("Start Date", props.get("estimated_start_date")),
+                ("End Date", props.get("estimated_end_date")),
+                ("Schedule Status", props.get("schedule_status")),
+                ("Priority", props.get("priority")),
+                ("Blocking Issue", props.get("blocking_issue")),
+                ("Schedule Notes", props.get("schedule_notes")),
+            ]
+            for label, value in details:
+                st.write(f"**{label}:** {text_value(value) or '-'}")
+            folder_link = text_value(props.get("folder_link_or_path"))
+            if folder_link:
+                render_document_access("Open Job Folder", folder_link)
+
+            st.subheader("Proposal Summary")
+            summary_fields = [
+                ("Estimated Value", props.get("estimated_value"), "money"),
+                ("Estimated Sq Ft", props.get("estimated_sqft"), "number"),
+                ("Price / Sq Ft", props.get("price_per_sqft"), "money"),
+                ("Estimated Duration Days", props.get("estimated_duration_days"), "number"),
+                ("Estimated Labor Hours", props.get("estimated_labor_hours"), "number"),
+                ("Estimated Crew Size", props.get("estimated_crew_size"), "number"),
+                ("Job Type", props.get("job_type"), "text"),
+                ("Coating Type", props.get("coating_type"), "text"),
+                ("Foam Type", props.get("foam_type"), "text"),
+                ("Warranty Amount", props.get("warranty_amount"), "money"),
+                ("Equipment Rental Amount", props.get("equipment_rental_amount"), "money"),
+                ("Subcontractor Amount", props.get("subcontractor_amount"), "money"),
+                ("Material Subtotal", props.get("material_subtotal"), "money"),
+                ("Labor Subtotal", props.get("labor_subtotal"), "money"),
+                ("Schedule Notes", props.get("schedule_notes"), "text"),
+                ("Warnings", props.get("warnings"), "text"),
+            ]
+            for label, value, kind in summary_fields:
+                st.write(f"**{label}:** {format_summary_value(value, kind=kind)}")
+
+            st.subheader("Job Documents")
+            # TODO: generate true SharePoint web links for estimate/proposal files.
+            # TODO: extract proposal scope summary for display in calendar.
+            # TODO: add proposal preview panel or PDF link.
+            folder_value = props.get("folder_url") or props.get("folder_link_or_path") or props.get("folder_path")
+            proposal_value = props.get("proposal_file") or props.get("estimate_file")
+            render_document_access("Open Job Folder", folder_value)
+            render_document_access(
+                "Open Proposal / Estimate",
+                proposal_value,
+                "Proposal link not available yet — use job folder.",
+            )
+            render_document_access("Open Contract", props.get("contract_file"))
+            render_document_access("Open Job Tracking Form", props.get("job_tracking_file"))
+            aerial_status = "Available" if bool(props.get("has_aerial")) else "Not found"
+            st.write(f"**Aerial/Drone status:** {aerial_status}")
+            st.write(f"**Photo count:** {text_value(props.get('photo_count')) or '0'}")
+
+            start_default = pd.to_datetime(props.get("estimated_start_date"), errors="coerce")
+            end_default = pd.to_datetime(props.get("estimated_end_date"), errors="coerce")
+            duration_default = pd.to_numeric(pd.Series([props.get("estimated_duration_days")]), errors="coerce").iloc[0]
+            with st.form("calendar_selected_job_form"):
+                assigned_crew_leader = st.text_input(
+                    "Crew Leader",
+                    value=text_value(props.get("assigned_crew_leader")),
+                )
+                estimated_start_date = st.date_input(
+                    "Estimated Start Date",
+                    value=start_default.date() if not pd.isna(start_default) else date.today(),
+                )
+                estimated_duration_days = st.number_input(
+                    "Estimated Duration Days",
+                    min_value=1.0,
+                    value=float(duration_default) if not pd.isna(duration_default) and float(duration_default) > 0 else 1.0,
+                    step=0.5,
+                )
+                calculated_end = calculate_end_date(estimated_start_date, estimated_duration_days)
+                estimated_end_date = st.date_input(
+                    "Estimated End Date",
+                    value=pd.to_datetime(calculated_end or end_default, errors="coerce").date()
+                    if not pd.isna(pd.to_datetime(calculated_end or end_default, errors="coerce"))
+                    else estimated_start_date,
+                )
+                schedule_status = st.text_input("Schedule Status", value=text_value(props.get("schedule_status")))
+                priority = st.text_input("Priority", value=text_value(props.get("priority")))
+                blocking_issue = st.text_area("Blocking Issue", value=text_value(props.get("blocking_issue")), height=80)
+                schedule_notes = st.text_area("Schedule Notes", value=text_value(props.get("schedule_notes")), height=120)
+                submitted = st.form_submit_button("Save Calendar Changes", type="primary")
+
+            if submitted:
+                row = pd.DataFrame(
+                    [
+                        {
+                            "schedule_id": props.get("schedule_id") or selected_event.get("id"),
+                            "job_id": props.get("job_id"),
+                            "assigned_crew_leader": assigned_crew_leader,
+                            "estimated_start_date": estimated_start_date,
+                            "estimated_duration_days": estimated_duration_days,
+                            "estimated_end_date": estimated_end_date,
+                            "schedule_status": schedule_status,
+                            "priority": priority,
+                            "blocking_issue": blocking_issue,
+                            "schedule_notes": schedule_notes,
+                        }
+                    ]
+                )
+                save_schedule_rows(row)
+                st.success("Calendar changes saved.")
+                st.rerun()
+
+    if show_unscheduled:
+        scheduled_job_ids = set(schedule_df["job_id"].dropna().astype(str)) if "job_id" in schedule_df.columns else set()
+        unscheduled = load_unscheduled_backlog_df(scheduled_job_ids)
+        st.subheader("Unscheduled Contracted Jobs")
+        show_table(
+            unscheduled,
+            [
+                "customer",
+                "job_name",
+                "division",
+                "pipeline_status",
+                "estimated_value",
+                "estimated_duration_days",
+                "estimated_labor_hours",
+                "estimated_crew_size",
+                "estimate_file",
+                "proposal_file",
+                "folder_link_or_path",
+            ],
+            height=300,
+            sort_by="estimated_value",
+        )
+
+        if not unscheduled.empty and "job_id" in unscheduled.columns:
+            unscheduled_by_id = {
+                text_value(row.get("job_id")): row
+                for row in unscheduled.to_dict(orient="records")
+                if text_value(row.get("job_id"))
+            }
+            job_ids = list(unscheduled_by_id.keys())
+            if not job_ids:
+                st.info("No unscheduled jobs with job_id are available to schedule.")
+                return
+
+            def job_label(job_id: str) -> str:
+                row = unscheduled_by_id.get(job_id, {})
+                return f"{text_value(row.get('customer'))} - {text_value(row.get('job_name'))} ({job_id})"
+
+            selected_job_id = st.selectbox("Job", job_ids, format_func=job_label, key="schedule_job_to_add")
+            selected_row = unscheduled_by_id.get(selected_job_id, {})
+            if st.session_state.get("schedule_selected_job_id") != selected_job_id:
+                st.session_state["schedule_selected_job_id"] = selected_job_id
+                selected_duration = pd.to_numeric(
+                    pd.Series([selected_row.get("estimated_duration_days")]),
+                    errors="coerce",
+                ).iloc[0]
+                selected_labor_hours = pd.to_numeric(
+                    pd.Series([selected_row.get("estimated_labor_hours")]),
+                    errors="coerce",
+                ).iloc[0]
+                selected_crew_size = pd.to_numeric(
+                    pd.Series([selected_row.get("estimated_crew_size")]),
+                    errors="coerce",
+                ).iloc[0]
+                st.session_state["schedule_new_duration_days"] = (
+                    int(selected_duration) if not pd.isna(selected_duration) and selected_duration > 0 else 1
+                )
+                st.session_state["schedule_new_labor_hours"] = (
+                    float(selected_labor_hours) if not pd.isna(selected_labor_hours) else 0.0
+                )
+                st.session_state["schedule_new_crew_size"] = (
+                    int(selected_crew_size) if not pd.isna(selected_crew_size) else 0
+                )
+
+            with st.form("add_unscheduled_job_form"):
+                assigned_crew_leader = st.text_input("Crew Leader", key="unscheduled_crew_leader")
+                estimated_start_date = st.date_input("Estimated Start Date", value=date.today(), key="unscheduled_start")
+                estimated_duration_days = st.number_input(
+                    "Estimated Duration Days",
+                    min_value=1.0,
+                    step=0.5,
+                    key="schedule_new_duration_days",
+                )
+                estimated_labor_hours = st.number_input(
+                    "Estimated Labor Hours",
+                    min_value=0.0,
+                    step=1.0,
+                    key="schedule_new_labor_hours",
+                )
+                estimated_crew_size = st.number_input(
+                    "Estimated Crew Size",
+                    min_value=0,
+                    step=1,
+                    key="schedule_new_crew_size",
+                )
+                estimated_end_date = calculate_end_date(estimated_start_date, estimated_duration_days)
+                st.write(f"**Estimated End Date:** {estimated_end_date or '-'}")
+                st.write("**Selected Job Metadata**")
+                metadata = [
+                    ("Customer", selected_row.get("customer")),
+                    ("Job Name", selected_row.get("job_name")),
+                    ("Division", selected_row.get("division")),
+                    ("Estimated Value", fmt_dollar(pd.to_numeric(pd.Series([selected_row.get("estimated_value")]), errors="coerce").iloc[0])),
+                    ("Estimated Duration Days", selected_row.get("estimated_duration_days")),
+                    ("Estimated Labor Hours", selected_row.get("estimated_labor_hours")),
+                    ("Estimated Crew Size", selected_row.get("estimated_crew_size")),
+                    ("Folder Link / Path", selected_row.get("folder_link_or_path")),
+                ]
+                for label, value in metadata:
+                    st.write(f"**{label}:** {text_value(value) or '-'}")
+                schedule_status = st.text_input("Schedule Status", value="Scheduled", key="unscheduled_status")
+                priority = st.text_input("Priority", key="unscheduled_priority")
+                schedule_notes = st.text_area("Schedule Notes", key="unscheduled_notes")
+                submitted = st.form_submit_button("Add Job to Schedule", type="primary")
+
+            if submitted:
+                row = pd.DataFrame(
+                    [
+                        {
+                            "schedule_id": schedule_id_for_job(selected_row.get("job_id")),
+                            "job_id": selected_row.get("job_id"),
+                            "assigned_crew_leader": assigned_crew_leader,
+                            "estimated_start_date": estimated_start_date,
+                            "estimated_duration_days": estimated_duration_days,
+                            "estimated_labor_hours": estimated_labor_hours,
+                            "estimated_crew_size": estimated_crew_size,
+                            "estimated_end_date": estimated_end_date,
+                            "schedule_status": schedule_status,
+                            "priority": priority,
+                            "schedule_notes": schedule_notes,
+                        }
+                    ]
+                )
+                save_schedule_rows(row)
+                st.success("Job added to schedule.")
+                st.session_state.pop("schedule_selected_job_id", None)
+                st.rerun()
 
 
 def project_scheduling_page() -> None:
@@ -1483,6 +2126,7 @@ def main() -> None:
         "Page",
         [
             "Owner Overview",
+            "Schedule Calendar",
             "Pipeline / Money",
             "Sales Follow-Up",
             "Contracted Backlog / Scheduling",
@@ -1503,6 +2147,8 @@ def main() -> None:
 
     if page == "Owner Overview":
         owner_overview_page()
+    elif page == "Schedule Calendar":
+        schedule_calendar_page()
     elif page == "Pipeline / Money":
         pipeline_money_page()
     elif page == "Sales Follow-Up":
