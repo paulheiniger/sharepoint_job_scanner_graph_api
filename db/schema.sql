@@ -133,6 +133,30 @@ CREATE TABLE IF NOT EXISTS crew_schedule (
     updated_at TIMESTAMPTZ DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS daily_dispatch (
+    dispatch_id TEXT PRIMARY KEY,
+    dispatch_date DATE NOT NULL,
+    job_id TEXT,
+    customer TEXT,
+    job_name TEXT,
+    site_address TEXT,
+    start_time TEXT,
+    crew_leader TEXT,
+    crew_members TEXT,
+    work_scope TEXT,
+    equipment_notes TEXT,
+    material_notes TEXT,
+    safety_notes TEXT,
+    weather_notes TEXT,
+    special_instructions TEXT,
+    message_text TEXT,
+    send_method TEXT,
+    sent_status TEXT,
+    sent_at TIMESTAMPTZ,
+    raw JSONB,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS job_tracking_summary (
     tracking_id TEXT PRIMARY KEY,
     job_id TEXT REFERENCES jobs(job_id) ON DELETE CASCADE,
@@ -243,5 +267,7 @@ CREATE INDEX IF NOT EXISTS idx_estimates_job_id ON estimates(job_id);
 CREATE INDEX IF NOT EXISTS idx_line_items_job_id ON estimate_line_items(job_id);
 CREATE INDEX IF NOT EXISTS idx_line_items_estimate_id ON estimate_line_items(estimate_id);
 CREATE INDEX IF NOT EXISTS idx_crew_schedule_job_id ON crew_schedule(job_id);
+CREATE INDEX IF NOT EXISTS idx_daily_dispatch_date ON daily_dispatch(dispatch_date);
+CREATE INDEX IF NOT EXISTS idx_daily_dispatch_job_id ON daily_dispatch(job_id);
 CREATE INDEX IF NOT EXISTS idx_tracking_summary_job_id ON job_tracking_summary(job_id);
 CREATE INDEX IF NOT EXISTS idx_timesheet_project_name ON office_timesheet_entries(project_name);

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Iterable
 
@@ -80,6 +83,365 @@ def load_df(query: str) -> pd.DataFrame:
     engine = get_engine()
     with engine.connect() as conn:
         return pd.read_sql_query(text(query), conn)
+
+
+DAILY_DISPATCH_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS daily_dispatch (
+    dispatch_id TEXT PRIMARY KEY,
+    dispatch_date DATE NOT NULL,
+    job_id TEXT,
+    customer TEXT,
+    job_name TEXT,
+    site_address TEXT,
+    start_time TEXT,
+    crew_leader TEXT,
+    crew_members TEXT,
+    work_scope TEXT,
+    equipment_notes TEXT,
+    material_notes TEXT,
+    safety_notes TEXT,
+    weather_notes TEXT,
+    special_instructions TEXT,
+    message_text TEXT,
+    send_method TEXT,
+    sent_status TEXT,
+    sent_at TIMESTAMPTZ,
+    raw JSONB,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+)
+"""
+
+
+def clean_db_value(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.lower() in {"", "nan", "none", "null", "n/a"}:
+            return None
+        return stripped
+    if isinstance(value, pd.Timestamp):
+        return None if pd.isna(value) else value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return value
+
+
+def text_value(value) -> str:
+    cleaned = clean_db_value(value)
+    return "" if cleaned is None else str(cleaned).strip()
+
+
+def schedule_id_for_job(job_id: object) -> str:
+    job_text = text_value(job_id)
+    if job_text:
+        return f"schedule-{job_text}"
+    digest = hashlib.sha1(job_text.encode("utf-8")).hexdigest()[:20]
+    return f"schedule-{digest}"
+
+
+def dispatch_id_for(dispatch_date: date, job_id: object) -> str:
+    key = f"{dispatch_date.isoformat()}||{text_value(job_id)}"
+    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:20]
+    return f"dispatch-{digest}"
+
+
+def calculate_end_date(start_value: object, duration_value: object) -> str | None:
+    start = pd.to_datetime(start_value, errors="coerce")
+    duration = pd.to_numeric(pd.Series([duration_value]), errors="coerce").iloc[0]
+    if pd.isna(start) or pd.isna(duration):
+        return None
+    duration_days = max(int(round(float(duration))), 1)
+    return (start.date() + timedelta(days=duration_days - 1)).isoformat()
+
+
+def ensure_daily_dispatch_table() -> None:
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(text(DAILY_DISPATCH_TABLE_SQL))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_daily_dispatch_date ON daily_dispatch(dispatch_date)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_daily_dispatch_job_id ON daily_dispatch(job_id)"))
+
+
+def load_schedule_df() -> pd.DataFrame:
+    return safe_load("SELECT * FROM crew_schedule")
+
+
+def save_schedule_rows(df: pd.DataFrame) -> int:
+    if df.empty:
+        return 0
+
+    schedule_columns = [
+        "schedule_id",
+        "job_id",
+        "assigned_crew_leader",
+        "estimated_start_date",
+        "estimated_duration_days",
+        "estimated_end_date",
+        "schedule_status",
+        "blocking_issue",
+        "priority",
+        "schedule_notes",
+        "raw",
+    ]
+    upsert_sql = text(
+        """
+        INSERT INTO crew_schedule (
+            schedule_id,
+            job_id,
+            assigned_crew_leader,
+            estimated_start_date,
+            estimated_duration_days,
+            estimated_end_date,
+            schedule_status,
+            blocking_issue,
+            priority,
+            schedule_notes,
+            raw,
+            updated_at
+        )
+        VALUES (
+            :schedule_id,
+            :job_id,
+            :assigned_crew_leader,
+            :estimated_start_date,
+            :estimated_duration_days,
+            :estimated_end_date,
+            :schedule_status,
+            :blocking_issue,
+            :priority,
+            :schedule_notes,
+            CAST(:raw AS JSONB),
+            NOW()
+        )
+        ON CONFLICT (schedule_id) DO UPDATE SET
+            job_id = EXCLUDED.job_id,
+            assigned_crew_leader = EXCLUDED.assigned_crew_leader,
+            estimated_start_date = EXCLUDED.estimated_start_date,
+            estimated_duration_days = EXCLUDED.estimated_duration_days,
+            estimated_end_date = EXCLUDED.estimated_end_date,
+            schedule_status = EXCLUDED.schedule_status,
+            blocking_issue = EXCLUDED.blocking_issue,
+            priority = EXCLUDED.priority,
+            schedule_notes = EXCLUDED.schedule_notes,
+            raw = EXCLUDED.raw,
+            updated_at = NOW()
+        """
+    )
+
+    records = []
+    for row in df.to_dict(orient="records"):
+        if not text_value(row.get("job_id")):
+            continue
+        row["schedule_id"] = text_value(row.get("schedule_id")) or schedule_id_for_job(row.get("job_id"))
+        row["estimated_end_date"] = calculate_end_date(
+            row.get("estimated_start_date"),
+            row.get("estimated_duration_days"),
+        ) or clean_db_value(row.get("estimated_end_date"))
+        record = {column: clean_db_value(row.get(column)) for column in schedule_columns}
+        record["raw"] = json.dumps(row, default=str)
+        records.append(record)
+
+    if not records:
+        return 0
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(upsert_sql, records)
+    st.cache_data.clear()
+    return len(records)
+
+
+def load_dispatch_jobs(dispatch_date: date) -> pd.DataFrame:
+    query = text(
+        """
+        SELECT
+            cs.schedule_id,
+            cs.job_id,
+            j.customer,
+            j.job_name,
+            j.site_address,
+            cs.assigned_crew_leader AS crew_leader,
+            cs.estimated_start_date,
+            cs.estimated_end_date,
+            cs.estimated_duration_days,
+            cs.schedule_status,
+            cs.priority,
+            cs.schedule_notes AS work_scope,
+            NULL::TEXT AS start_time,
+            NULL::TEXT AS crew_members,
+            NULL::TEXT AS equipment_notes,
+            NULL::TEXT AS material_notes,
+            NULL::TEXT AS work_notes,
+            NULL::TEXT AS safety_notes,
+            NULL::TEXT AS weather_notes,
+            NULL::TEXT AS special_instructions
+        FROM crew_schedule cs
+        LEFT JOIN dashboard_jobs j ON j.job_id = cs.job_id
+        WHERE cs.estimated_start_date IS NOT NULL
+          AND cs.estimated_end_date IS NOT NULL
+          AND cs.estimated_start_date <= :dispatch_date
+          AND cs.estimated_end_date >= :dispatch_date
+        ORDER BY cs.assigned_crew_leader NULLS LAST, cs.priority NULLS LAST, j.customer, j.job_name
+        """
+    )
+    try:
+        engine = get_engine()
+        with engine.connect() as conn:
+            return pd.read_sql_query(query, conn, params={"dispatch_date": dispatch_date})
+    except (SQLAlchemyError, OSError, ValueError) as exc:
+        show_database_error(exc)
+        st.stop()
+
+
+def generate_dispatch_message(df: pd.DataFrame, dispatch_date: date) -> str:
+    if df.empty:
+        return f"Daily Crew Dispatch - {dispatch_date:%A, %B %-d, %Y}\n\nNo scheduled jobs."
+
+    lines = [f"Daily Crew Dispatch - {dispatch_date:%A, %B %-d, %Y}"]
+    leader_series = df["crew_leader"] if "crew_leader" in df.columns else pd.Series("", index=df.index)
+    working_df = df.assign(_crew_leader=leader_series.fillna("").astype(str).str.strip().replace("", "Unassigned"))
+    for crew_leader, group in working_df.groupby("_crew_leader", dropna=False):
+        lines.append("")
+        lines.append(str(crew_leader))
+        for _, row in group.iterrows():
+            start_time = text_value(row.get("start_time")) or "TBD"
+            customer = text_value(row.get("customer")) or "Unknown customer"
+            job_name = text_value(row.get("job_name")) or text_value(row.get("job_id"))
+            address = text_value(row.get("site_address"))
+            scope = text_value(row.get("work_notes")) or text_value(row.get("work_scope"))
+            lines.append(f"- {start_time} | {customer} - {job_name}")
+            if address:
+                lines.append(f"  Site: {address}")
+            if scope:
+                lines.append(f"  Work: {scope}")
+            for label, column in (
+                ("Crew", "crew_members"),
+                ("Equipment", "equipment_notes"),
+                ("Materials", "material_notes"),
+                ("Safety", "safety_notes"),
+                ("Weather", "weather_notes"),
+                ("Special", "special_instructions"),
+            ):
+                value = text_value(row.get(column))
+                if value:
+                    lines.append(f"  {label}: {value}")
+    return "\n".join(lines)
+
+
+def save_dispatch_draft(df: pd.DataFrame, message_text: str, dispatch_date: date) -> int:
+    ensure_daily_dispatch_table()
+    if df.empty:
+        return 0
+
+    upsert_sql = text(
+        """
+        INSERT INTO daily_dispatch (
+            dispatch_id,
+            dispatch_date,
+            job_id,
+            customer,
+            job_name,
+            site_address,
+            start_time,
+            crew_leader,
+            crew_members,
+            work_scope,
+            equipment_notes,
+            material_notes,
+            safety_notes,
+            weather_notes,
+            special_instructions,
+            message_text,
+            send_method,
+            sent_status,
+            raw,
+            updated_at
+        )
+        VALUES (
+            :dispatch_id,
+            :dispatch_date,
+            :job_id,
+            :customer,
+            :job_name,
+            :site_address,
+            :start_time,
+            :crew_leader,
+            :crew_members,
+            :work_scope,
+            :equipment_notes,
+            :material_notes,
+            :safety_notes,
+            :weather_notes,
+            :special_instructions,
+            :message_text,
+            :send_method,
+            :sent_status,
+            CAST(:raw AS JSONB),
+            NOW()
+        )
+        ON CONFLICT (dispatch_id) DO UPDATE SET
+            customer = EXCLUDED.customer,
+            job_name = EXCLUDED.job_name,
+            site_address = EXCLUDED.site_address,
+            start_time = EXCLUDED.start_time,
+            crew_leader = EXCLUDED.crew_leader,
+            crew_members = EXCLUDED.crew_members,
+            work_scope = EXCLUDED.work_scope,
+            equipment_notes = EXCLUDED.equipment_notes,
+            material_notes = EXCLUDED.material_notes,
+            safety_notes = EXCLUDED.safety_notes,
+            weather_notes = EXCLUDED.weather_notes,
+            special_instructions = EXCLUDED.special_instructions,
+            message_text = EXCLUDED.message_text,
+            send_method = EXCLUDED.send_method,
+            sent_status = EXCLUDED.sent_status,
+            raw = EXCLUDED.raw,
+            updated_at = NOW()
+        """
+    )
+
+    records = []
+    for row in df.to_dict(orient="records"):
+        if not text_value(row.get("job_id")):
+            continue
+        row["dispatch_date"] = dispatch_date.isoformat()
+        record = {
+            "dispatch_id": dispatch_id_for(dispatch_date, row.get("job_id")),
+            "dispatch_date": dispatch_date.isoformat(),
+            "job_id": clean_db_value(row.get("job_id")),
+            "customer": clean_db_value(row.get("customer")),
+            "job_name": clean_db_value(row.get("job_name")),
+            "site_address": clean_db_value(row.get("site_address")),
+            "start_time": clean_db_value(row.get("start_time")),
+            "crew_leader": clean_db_value(row.get("crew_leader")),
+            "crew_members": clean_db_value(row.get("crew_members")),
+            "work_scope": clean_db_value(row.get("work_notes")) or clean_db_value(row.get("work_scope")),
+            "equipment_notes": clean_db_value(row.get("equipment_notes")),
+            "material_notes": clean_db_value(row.get("material_notes")),
+            "safety_notes": clean_db_value(row.get("safety_notes")),
+            "weather_notes": clean_db_value(row.get("weather_notes")),
+            "special_instructions": clean_db_value(row.get("special_instructions")),
+            "message_text": message_text,
+            "send_method": "draft",
+            "sent_status": "draft",
+            "raw": json.dumps(row, default=str),
+        }
+        records.append(record)
+
+    if not records:
+        return 0
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(upsert_sql, records)
+    st.cache_data.clear()
+    return len(records)
 
 
 def show_database_error(exc: Exception) -> None:
@@ -548,6 +910,167 @@ def operations_scheduling_page() -> None:
     contracted_backlog_scheduling_page()
 
 
+def project_scheduling_page() -> None:
+    st.title("Project Scheduling")
+    backlog = apply_basic_filters(query_view("dashboard_contracted_backlog"))
+    schedule = load_schedule_df()
+
+    if backlog.empty and schedule.empty:
+        show_empty("No contracted backlog or schedule rows are available.")
+        return
+
+    if "job_id" not in backlog.columns:
+        show_empty("dashboard_contracted_backlog does not include job_id.")
+        return
+
+    merged = backlog.merge(schedule, on="job_id", how="left", suffixes=("", "_schedule"))
+    for column in (
+        "schedule_id",
+        "assigned_crew_leader",
+        "estimated_start_date",
+        "estimated_end_date",
+        "schedule_status",
+        "priority",
+        "blocking_issue",
+        "schedule_notes",
+    ):
+        if column not in merged.columns:
+            merged[column] = None
+
+    if "estimated_duration_days_schedule" in merged.columns:
+        merged["estimated_duration_days"] = merged["estimated_duration_days_schedule"].combine_first(
+            merged.get("estimated_duration_days")
+        )
+
+    merged["schedule_id"] = merged.apply(
+        lambda row: text_value(row.get("schedule_id")) or schedule_id_for_job(row.get("job_id")),
+        axis=1,
+    )
+
+    filter_cols = st.columns(3)
+    with filter_cols[0]:
+        division_filter = st.multiselect("Division", options_from(merged, "division"), key="project_schedule_division")
+    with filter_cols[1]:
+        leader_filter = st.multiselect(
+            "Crew Leader",
+            options_from(merged, "assigned_crew_leader"),
+            key="project_schedule_leader",
+        )
+    with filter_cols[2]:
+        schedule_status_filter = st.multiselect(
+            "Schedule Status",
+            options_from(merged, "schedule_status"),
+            key="project_schedule_status",
+        )
+
+    filtered = merged.copy()
+    if division_filter:
+        filtered = filtered[filtered["division"].astype(str).isin(division_filter)]
+    if leader_filter:
+        filtered = filtered[filtered["assigned_crew_leader"].astype(str).isin(leader_filter)]
+    if schedule_status_filter:
+        filtered = filtered[filtered["schedule_status"].astype(str).isin(schedule_status_filter)]
+
+    display_columns = [
+        "job_id",
+        "customer",
+        "job_name",
+        "division",
+        "pipeline_status",
+        "estimated_value",
+        "estimated_duration_days",
+        "estimated_labor_hours",
+        "estimated_crew_size",
+        "assigned_crew_leader",
+        "estimated_start_date",
+        "estimated_end_date",
+        "schedule_status",
+        "priority",
+        "blocking_issue",
+        "schedule_notes",
+    ]
+    for column in display_columns:
+        if column not in filtered.columns:
+            filtered[column] = None
+
+    st.caption("Edit schedule fields, then save. End date is recalculated from start date and duration when possible.")
+    edited = st.data_editor(
+        filtered[display_columns],
+        use_container_width=True,
+        hide_index=True,
+        height=560,
+        disabled=[
+            "job_id",
+            "customer",
+            "job_name",
+            "division",
+            "pipeline_status",
+            "estimated_value",
+            "estimated_labor_hours",
+            "estimated_crew_size",
+        ],
+        column_config={
+            "estimated_start_date": st.column_config.DateColumn("Estimated Start Date"),
+            "estimated_end_date": st.column_config.DateColumn("Estimated End Date"),
+            "estimated_value": st.column_config.NumberColumn("Estimated Value", format="$%.0f"),
+        },
+    )
+
+    if st.button("Save Schedule", type="primary"):
+        try:
+            saved_count = save_schedule_rows(edited)
+            st.success(f"Saved {saved_count:,} schedule rows.")
+        except Exception as exc:
+            show_database_error(exc)
+
+
+def daily_crew_dispatch_page() -> None:
+    st.title("Daily Crew Dispatch")
+    dispatch_date = st.date_input("Dispatch Date", value=date.today())
+    jobs = load_dispatch_jobs(dispatch_date)
+
+    if jobs.empty:
+        show_empty("No scheduled jobs overlap the selected dispatch date.")
+        return
+
+    editable_columns = [
+        "job_id",
+        "customer",
+        "job_name",
+        "site_address",
+        "start_time",
+        "crew_leader",
+        "crew_members",
+        "equipment_notes",
+        "material_notes",
+        "work_notes",
+        "special_instructions",
+    ]
+    for column in editable_columns:
+        if column not in jobs.columns:
+            jobs[column] = None
+
+    edited = st.data_editor(
+        jobs[editable_columns],
+        use_container_width=True,
+        hide_index=True,
+        height=420,
+        disabled=["job_id", "customer", "job_name", "site_address"],
+    )
+
+    message_text = generate_dispatch_message(edited, dispatch_date)
+    st.subheader("Dispatch Message")
+    st.text_area("Copy-friendly dispatch output", value=message_text, height=360)
+
+    # TODO: Add Teams/Zapier/Twilio send integration after draft review and approval.
+    if st.button("Save Dispatch Draft", type="primary"):
+        try:
+            saved_count = save_dispatch_draft(edited, message_text, dispatch_date)
+            st.success(f"Saved {saved_count:,} dispatch draft rows.")
+        except Exception as exc:
+            show_database_error(exc)
+
+
 def closeout_billing_risk_page() -> None:
     st.title("Closeout / Billing Risk")
     risk = apply_basic_filters(load_df("SELECT * FROM dashboard_closeout_billing_risk"))
@@ -963,6 +1486,8 @@ def main() -> None:
             "Pipeline / Money",
             "Sales Follow-Up",
             "Contracted Backlog / Scheduling",
+            "Project Scheduling",
+            "Daily Crew Dispatch",
             "Jobs Needing Action",
             "Closeout / Billing Risk",
             "Documentation Risk",
@@ -984,6 +1509,10 @@ def main() -> None:
         sales_followup_page()
     elif page == "Contracted Backlog / Scheduling":
         contracted_backlog_scheduling_page()
+    elif page == "Project Scheduling":
+        project_scheduling_page()
+    elif page == "Daily Crew Dispatch":
+        daily_crew_dispatch_page()
     elif page == "Jobs Needing Action":
         jobs_needing_action_page()
     elif page == "Closeout / Billing Risk":
