@@ -15,7 +15,17 @@ from sqlalchemy.exc import SQLAlchemyError
 load_dotenv(dotenv_path=Path.cwd() / ".env")
 
 DEFAULT_DATABASE_URL = "postgresql+psycopg2://spraytec:spraytec_dev_password@127.0.0.1:5433/spraytec_ops"
-DATABASE_URL = os.getenv("DATABASE_URL") or DEFAULT_DATABASE_URL
+
+
+def get_database_url() -> str:
+    try:
+        secret_url = st.secrets.get("DATABASE_URL")
+    except Exception:
+        secret_url = None
+    return secret_url or os.getenv("DATABASE_URL") or DEFAULT_DATABASE_URL
+
+
+DATABASE_URL = get_database_url()
 
 VIEWS = [
     "dashboard_jobs",
