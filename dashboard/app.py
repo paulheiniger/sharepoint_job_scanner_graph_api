@@ -1110,6 +1110,26 @@ JOB_BOARD_STATUS_ORDER = [
 JOB_WORKFLOW_PRIORITY_OPTIONS = ["Low", "Normal", "High", "Urgent"]
 
 
+POSSIBLE_WORKFLOW_STATUS_COLS = [
+    "workflow_status",
+    "workflow_status_override",
+]
+
+
+POSSIBLE_PIPELINE_STATUS_COLS = [
+    "pipeline_status",
+    "pipeline_status_x",
+    "pipeline_status_y",
+]
+
+
+POSSIBLE_STATUS_COLS = [
+    "status",
+    "status_x",
+    "status_y",
+]
+
+
 JOB_BOARD_FIELDS = [
     "job_id",
     "customer",
@@ -1239,42 +1259,70 @@ def load_job_board_df() -> pd.DataFrame:
     return jobs
 
 
+def first_nonblank(*values: object) -> str:
+    for value in values:
+        if value is None:
+            continue
+        try:
+            if pd.isna(value):
+                continue
+        except (TypeError, ValueError):
+            pass
+        text = str(value).strip()
+        if text and text.lower() not in {"nan", "none", "null", "-", "—"}:
+            return text
+    return ""
+
+
+def first_existing_value(row: pd.Series, columns: list[str]) -> object:
+    for column in columns:
+        if column in row.index:
+            value = row.get(column)
+            if first_nonblank(value):
+                return value
+    return None
+
+
 def normalize_board_status(value: object) -> str:
-    raw = text_value(value)
-    if not raw:
-        return "Other"
-    lowered = raw.lower().strip()
-    variants = {
-        "lead": "Lead Created",
+    raw = str(value or "").strip()
+    key = raw.lower().replace("_", " ").replace("-", " ")
+    key = " ".join(key.split())
+
+    mapping = {
         "lead created": "Lead Created",
+        "lead": "Lead Created",
+        "new lead": "Lead Created",
         "contacted": "Contacted",
-        "estimate": "Estimate In Progress",
         "estimate in progress": "Estimate In Progress",
+        "estimating": "Estimate In Progress",
+        "estimate": "Estimate In Progress",
         "estimated": "Estimate In Progress",
         "proposed": "Proposed",
+        "proposal": "Proposal Submitted",
         "proposal submitted": "Proposal Submitted",
         "submitted": "Proposal Submitted",
         "contracted": "Contracted",
+        "contract": "Contracted",
         "contracted repairs": "Contracted Repairs",
         "contracted repair": "Contracted Repairs",
         "scheduled": "Scheduled",
-        "active": "In Progress",
         "in progress": "In Progress",
+        "active": "In Progress",
         "completed": "Completed",
         "complete": "Completed",
         "invoiced": "Invoiced",
+        "invoice": "Invoiced",
         "folder created": "Folder Created",
     }
-    if lowered in variants:
-        return variants[lowered]
-    for ordered in JOB_BOARD_STATUS_ORDER:
-        if lowered == ordered.lower():
-            return ordered
-    return raw.title() if raw.title() in JOB_BOARD_STATUS_ORDER else "Other"
+    return mapping.get(key, raw if raw else "Other")
 
 
 def board_status_for_row(row: pd.Series) -> str:
-    return normalize_board_status(row.get("workflow_status") or row.get("pipeline_status") or row.get("status"))
+    workflow_value = first_existing_value(row, POSSIBLE_WORKFLOW_STATUS_COLS)
+    pipeline_value = first_existing_value(row, POSSIBLE_PIPELINE_STATUS_COLS)
+    status_value = first_existing_value(row, POSSIBLE_STATUS_COLS)
+    raw_status = first_nonblank(workflow_value, pipeline_value, status_value)
+    return normalize_board_status(raw_status)
 
 
 def bool_label(value: object) -> str:
@@ -1354,9 +1402,15 @@ def job_board_page() -> None:
             jobs[column] = None
 
     jobs["job_id"] = jobs["job_id"].fillna("").astype(str)
+    jobs["board_status"] = jobs.apply(board_status_for_row, axis=1)
     selected_job_id = str(st.session_state.get("selected_job_board_job_id", "") or "")
     if selected_job_id:
         st.caption(f"Selected job_id: {selected_job_id}")
+
+    with st.expander("Job Board status debug"):
+        cols = [column for column in ["workflow_status", "pipeline_status", "status", "board_status"] if column in jobs.columns]
+        st.write(jobs[cols].head(50))
+        st.write(jobs["board_status"].value_counts(dropna=False))
 
     st.subheader("Filters")
     f1, f2, f3, f4 = st.columns(4)
@@ -1427,30 +1481,31 @@ def job_board_page() -> None:
         ]
     )
 
-    board_df = filtered.copy()
-    board_df["board_status"] = board_df.apply(board_status_for_row, axis=1)
-    existing_columns = [status for status in JOB_BOARD_STATUS_ORDER if status in set(board_df["board_status"])]
-    if not existing_columns and not board_df.empty:
-        existing_columns = ["Other"]
-    selected_columns = st.multiselect(
+    available_statuses = list(jobs["board_status"].dropna().unique())
+    ordered_statuses = [status for status in JOB_BOARD_STATUS_ORDER if status in available_statuses]
+    ordered_statuses.extend(sorted(status for status in available_statuses if status not in JOB_BOARD_STATUS_ORDER))
+    existing_columns = [status for status in ordered_statuses if status in set(filtered["board_status"])]
+    if not existing_columns and not filtered.empty:
+        existing_columns = ["Other"] if "Other" in ordered_statuses else ordered_statuses[:1]
+    selected_board_columns = st.multiselect(
         "Board columns",
-        JOB_BOARD_STATUS_ORDER,
+        ordered_statuses,
         default=existing_columns,
         key="job_board_columns",
     )
 
-    if not selected_columns:
+    if not selected_board_columns:
         st.info("Select at least one board column.")
         return
 
     st.subheader("Pipeline Board")
-    board_columns = st.columns(len(selected_columns))
-    for status_name, column in zip(selected_columns, board_columns):
-        status_jobs = board_df[board_df["board_status"] == status_name].sort_values("estimated_value", ascending=False, na_position="last")
+    board_columns = st.columns(len(selected_board_columns))
+    for board_status, column in zip(selected_board_columns, board_columns):
+        column_df = filtered[filtered["board_status"] == board_status].sort_values("estimated_value", ascending=False, na_position="last")
         with column:
-            st.markdown(f"**{status_name}**")
-            st.caption(f"{len(status_jobs):,} jobs | {fmt_dollar(safe_sum(status_jobs, 'estimated_value'))}")
-            for row_index, row in status_jobs.iterrows():
+            st.markdown(f"**{board_status}**")
+            st.caption(f"{len(column_df):,} jobs | {fmt_dollar(safe_sum(column_df, 'estimated_value'))}")
+            for row_index, row in column_df.iterrows():
                 job_id = str(row.get("job_id") or "")
                 if not job_id:
                     continue
@@ -1463,7 +1518,13 @@ def job_board_page() -> None:
                     badge_parts = [text_value(row.get("division")), text_value(row.get("job_type"))]
                     st.caption(" / ".join(part for part in badge_parts if part) or "No division / type")
                     st.write(format_summary_value(row.get("estimated_value"), kind="money"))
-                    st.caption(text_value(row.get("workflow_status")) or text_value(row.get("pipeline_status")) or text_value(row.get("status")) or "No status")
+                    st.caption(f"Board: {text_value(row.get('board_status')) or 'Other'}")
+                    pipeline_status = text_value(row.get("pipeline_status"))
+                    row_status_value = text_value(row.get("status"))
+                    if pipeline_status:
+                        st.caption(f"Pipeline: {pipeline_status}")
+                    if row_status_value and row_status_value != pipeline_status:
+                        st.caption(f"Status: {row_status_value}")
                     workflow_priority = text_value(row.get("priority"))
                     if workflow_priority:
                         st.caption(f"Priority: {workflow_priority}")
