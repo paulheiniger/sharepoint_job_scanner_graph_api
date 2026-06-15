@@ -3,11 +3,13 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import re
+import shutil
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from dotenv import load_dotenv
 
@@ -71,6 +73,13 @@ class BatchScanRoot:
     source_year: int | None = None
     site_url: str | None = None
     library: str | None = None
+
+
+@dataclass(frozen=True)
+class StagedOutput:
+    path: Path
+    temp_path: Path
+    label: str
 
 
 def load_yaml(path: Path) -> dict[str, Any]:
@@ -166,6 +175,90 @@ def write_summary(path: Path, summary: dict[str, Any]) -> None:
     path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+def timestamp_slug() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def temp_output_path(path: Path, run_id: str) -> Path:
+    return path.with_name(f".{path.stem}.{run_id}.{os.getpid()}.tmp{path.suffix}")
+
+
+def stage_output(path: Path, label: str, writer: Callable[[Path], None], run_id: str) -> StagedOutput:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = temp_output_path(path, run_id)
+    if temp_path.exists():
+        temp_path.unlink()
+    writer(temp_path)
+    return StagedOutput(path=path, temp_path=temp_path, label=label)
+
+
+def cleanup_staged_outputs(staged_outputs: list[StagedOutput]) -> None:
+    for staged in staged_outputs:
+        try:
+            if staged.temp_path.exists():
+                staged.temp_path.unlink()
+        except OSError:
+            pass
+
+
+def replace_staged_outputs(staged_outputs: list[StagedOutput]) -> None:
+    for staged in staged_outputs:
+        staged.path.parent.mkdir(parents=True, exist_ok=True)
+        staged.temp_path.replace(staged.path)
+
+
+def backup_existing_file(path: Path, run_id: str) -> Path | None:
+    if not path.exists():
+        return None
+    backup_path = path.with_name(f"{path.name}.{run_id}.bak")
+    shutil.copy2(path, backup_path)
+    return backup_path
+
+
+def json_row_count(path: Path) -> int | None:
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return len(data) if isinstance(data, list) else None
+
+
+def append_record_warning(record: JobRecord, warning: str) -> None:
+    if warning not in record.warnings:
+        record.warnings.append(warning)
+
+
+def attach_estimate_detail_warnings(records: list[JobRecord], summaries: list[dict[str, Any]]) -> None:
+    records_by_job_id = {record.job_id: record for record in records}
+    for summary in summaries:
+        warnings = str(summary.get("extraction_warnings") or "")
+        if "detail extraction failed" not in warnings.lower():
+            continue
+        job_id = summary.get("job_id")
+        record = records_by_job_id.get(job_id)
+        if record:
+            append_record_warning(record, "Estimate detail extraction failed")
+
+
+def job_index_overwrite_blockers(
+    *,
+    new_rows: int,
+    previous_rows: int | None,
+    scan_roots_failed: int,
+    existing_job_index: bool,
+    allow_shrink: bool,
+    allow_partial: bool,
+) -> list[str]:
+    blockers: list[str] = []
+    if previous_rows is not None and new_rows < previous_rows * 0.8 and not allow_shrink:
+        blockers.append("shrink")
+    if scan_roots_failed and existing_job_index and not allow_partial:
+        blockers.append("partial")
+    return blockers
+
+
 def crew_schedule_rows(records: list[JobRecord], *, tabular: bool = False) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for record in records:
@@ -230,9 +323,12 @@ def main() -> None:
     parser.add_argument("--job-tracking-daily-out", type=Path, default=Path("output/job_tracking_daily_entries.csv"))
     parser.add_argument("--job-tracking-daily-json", type=Path, default=Path("output/job_tracking_daily_entries.json"))
     parser.add_argument("--summary", type=Path, default=None, help="Batch scan summary JSON path")
+    parser.add_argument("--allow-shrink", action="store_true", help="Allow overwriting an existing job index when the new row count is less than 80% of the previous row count")
+    parser.add_argument("--allow-partial", action="store_true", help="Allow overwriting an existing job index even when one or more scan roots failed")
     args = parser.parse_args()
 
     load_dotenv()
+    run_id = timestamp_slug()
     default_site_url, default_library, roots = load_scan_roots(args.config)
     client = GraphClient()
     records: list[JobRecord] = []
@@ -262,7 +358,17 @@ def main() -> None:
             root_records = scan_root(cache_root, scan_context=root.folder)
             for record in root_records:
                 add_batch_context(record, root)
-            root_estimate_summaries, root_estimate_line_items = scan_estimate_datasets_for_records(cache_root, root_records)
+            root_estimate_summaries: list[dict[str, Any]] = []
+            root_estimate_line_items: list[dict[str, Any]] = []
+            estimate_extraction_error = None
+            try:
+                root_estimate_summaries, root_estimate_line_items = scan_estimate_datasets_for_records(cache_root, root_records)
+                attach_estimate_detail_warnings(root_records, root_estimate_summaries)
+            except Exception as exc:
+                estimate_extraction_error = f"{type(exc).__name__}: {exc}"
+                print(f"  WARNING: Estimate detail extraction failed: {estimate_extraction_error}")
+                for record in root_records:
+                    append_record_warning(record, "Estimate detail extraction failed")
             estimate_summaries.extend(root_estimate_summaries)
             estimate_line_items.extend(root_estimate_line_items)
             root_tracking_summaries, root_tracking_daily_entries = scan_job_tracking_for_records(cache_root, root_records)
@@ -285,6 +391,7 @@ def main() -> None:
                     "records": len(root_records),
                     "estimate_summaries": len(root_estimate_summaries),
                     "estimate_line_items": len(root_estimate_line_items),
+                    "estimate_extraction_error": estimate_extraction_error,
                     "job_tracking_summaries": len(root_tracking_summaries),
                     "job_tracking_daily_entries": len(root_tracking_daily_entries),
                     "warning": "Scan root found but no records extracted" if not root_records else None,
@@ -303,20 +410,6 @@ def main() -> None:
                     "error": message,
                 }
             )
-
-    write_csv(records, args.out)
-    write_json(records, args.json)
-    write_excel(records, args.xlsx)
-    write_crew_schedule_csv(records, args.crew_schedule_out)
-    write_crew_schedule_json(records, args.crew_schedule_json)
-    write_dataset_csv(estimate_summaries, ESTIMATE_SUMMARY_FIELDS, args.estimate_summary_out)
-    write_dataset_json(estimate_summaries, ESTIMATE_SUMMARY_FIELDS, args.estimate_summary_json)
-    write_dataset_csv(estimate_line_items, ESTIMATE_LINE_ITEM_FIELDS, args.estimate_line_items_out)
-    write_dataset_json(estimate_line_items, ESTIMATE_LINE_ITEM_FIELDS, args.estimate_line_items_json)
-    write_dataset_csv(job_tracking_summaries, JOB_TRACKING_SUMMARY_FIELDS, args.job_tracking_summary_out)
-    write_dataset_json(job_tracking_summaries, JOB_TRACKING_SUMMARY_FIELDS, args.job_tracking_summary_json)
-    write_dataset_csv(job_tracking_daily_entries, JOB_TRACKING_DAILY_FIELDS, args.job_tracking_daily_out)
-    write_dataset_json(job_tracking_daily_entries, JOB_TRACKING_DAILY_FIELDS, args.job_tracking_daily_json)
 
     summary_path = args.summary or args.json.with_name("batch_scan_summary.json")
     summary = {
@@ -350,7 +443,58 @@ def main() -> None:
             "job_tracking_daily_json": str(args.job_tracking_daily_json),
         },
     }
-    write_summary(summary_path, summary)
+
+    previous_job_index_rows = json_row_count(args.json)
+    blockers = job_index_overwrite_blockers(
+        new_rows=len(records),
+        previous_rows=previous_job_index_rows,
+        scan_roots_failed=len(scan_errors),
+        existing_job_index=args.json.exists(),
+        allow_shrink=args.allow_shrink,
+        allow_partial=args.allow_partial,
+    )
+
+    if "shrink" in blockers:
+        print(
+            f"WARNING: new job index has {len(records)} rows, previous had {previous_job_index_rows} rows. "
+            "Use --allow-shrink to overwrite."
+        )
+    if "partial" in blockers:
+        print(
+            f"WARNING: {len(scan_errors)} scan root(s) failed. Use --allow-partial to overwrite existing job_index outputs."
+        )
+
+    staged_outputs: list[StagedOutput] = []
+    try:
+        staged_outputs.extend(
+            [
+                stage_output(args.out, "job index CSV", lambda path: write_csv(records, path), run_id),
+                stage_output(args.json, "job index JSON", lambda path: write_json(records, path), run_id),
+                stage_output(args.xlsx, "job index XLSX", lambda path: write_excel(records, path), run_id),
+                stage_output(args.crew_schedule_out, "crew schedule CSV", lambda path: write_crew_schedule_csv(records, path), run_id),
+                stage_output(args.crew_schedule_json, "crew schedule JSON", lambda path: write_crew_schedule_json(records, path), run_id),
+                stage_output(args.estimate_summary_out, "estimate summary CSV", lambda path: write_dataset_csv(estimate_summaries, ESTIMATE_SUMMARY_FIELDS, path), run_id),
+                stage_output(args.estimate_summary_json, "estimate summary JSON", lambda path: write_dataset_json(estimate_summaries, ESTIMATE_SUMMARY_FIELDS, path), run_id),
+                stage_output(args.estimate_line_items_out, "estimate line items CSV", lambda path: write_dataset_csv(estimate_line_items, ESTIMATE_LINE_ITEM_FIELDS, path), run_id),
+                stage_output(args.estimate_line_items_json, "estimate line items JSON", lambda path: write_dataset_json(estimate_line_items, ESTIMATE_LINE_ITEM_FIELDS, path), run_id),
+                stage_output(args.job_tracking_summary_out, "job tracking summary CSV", lambda path: write_dataset_csv(job_tracking_summaries, JOB_TRACKING_SUMMARY_FIELDS, path), run_id),
+                stage_output(args.job_tracking_summary_json, "job tracking summary JSON", lambda path: write_dataset_json(job_tracking_summaries, JOB_TRACKING_SUMMARY_FIELDS, path), run_id),
+                stage_output(args.job_tracking_daily_out, "job tracking daily CSV", lambda path: write_dataset_csv(job_tracking_daily_entries, JOB_TRACKING_DAILY_FIELDS, path), run_id),
+                stage_output(args.job_tracking_daily_json, "job tracking daily JSON", lambda path: write_dataset_json(job_tracking_daily_entries, JOB_TRACKING_DAILY_FIELDS, path), run_id),
+                stage_output(summary_path, "batch summary JSON", lambda path: write_summary(path, summary), run_id),
+            ]
+        )
+        if blockers:
+            cleanup_staged_outputs(staged_outputs)
+            print("Outputs not replaced.")
+        else:
+            backup_path = backup_existing_file(args.json, run_id)
+            replace_staged_outputs(staged_outputs)
+            if backup_path:
+                print(f"Job index JSON backup: {backup_path}")
+    except Exception:
+        cleanup_staged_outputs(staged_outputs)
+        raise
 
     print(f"Scan roots: {len(roots)}")
     print(f"Roots completed: {len(root_summaries)}")
@@ -358,6 +502,11 @@ def main() -> None:
     print(f"Jobs indexed: {len(records)}")
     print(f"Estimate summaries: {len(estimate_summaries)}")
     print(f"Estimate line items: {len(estimate_line_items)}")
+    print(f"job_index_rows: {len(records)}")
+    print(f"estimate_summary_rows: {len(estimate_summaries)}")
+    print(f"estimate_line_item_rows: {len(estimate_line_items)}")
+    print(f"scan_roots_completed: {len(root_summaries)}")
+    print(f"scan_roots_failed: {len(scan_errors)}")
     print(f"Job tracking summaries: {len(job_tracking_summaries)}")
     print(f"Job tracking daily entries: {len(job_tracking_daily_entries)}")
     print(f"Contracted without signed contract: {contracted_without_signed_contract_count}")
