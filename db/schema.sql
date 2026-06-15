@@ -157,6 +157,18 @@ CREATE TABLE IF NOT EXISTS daily_dispatch (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS job_workflow_overrides (
+    job_id TEXT PRIMARY KEY,
+    workflow_status TEXT,
+    deal_owner TEXT,
+    assigned_user TEXT,
+    follow_up_date DATE,
+    priority TEXT,
+    internal_notes TEXT,
+    updated_by TEXT,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS job_tracking_summary (
     tracking_id TEXT PRIMARY KEY,
     job_id TEXT REFERENCES jobs(job_id) ON DELETE CASCADE,
@@ -269,5 +281,7 @@ CREATE INDEX IF NOT EXISTS idx_line_items_estimate_id ON estimate_line_items(est
 CREATE INDEX IF NOT EXISTS idx_crew_schedule_job_id ON crew_schedule(job_id);
 CREATE INDEX IF NOT EXISTS idx_daily_dispatch_date ON daily_dispatch(dispatch_date);
 CREATE INDEX IF NOT EXISTS idx_daily_dispatch_job_id ON daily_dispatch(job_id);
+CREATE INDEX IF NOT EXISTS idx_job_workflow_status ON job_workflow_overrides(workflow_status);
+CREATE INDEX IF NOT EXISTS idx_job_workflow_priority ON job_workflow_overrides(priority);
 CREATE INDEX IF NOT EXISTS idx_tracking_summary_job_id ON job_tracking_summary(job_id);
 CREATE INDEX IF NOT EXISTS idx_timesheet_project_name ON office_timesheet_entries(project_name);

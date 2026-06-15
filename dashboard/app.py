@@ -117,6 +117,21 @@ CREATE TABLE IF NOT EXISTS daily_dispatch (
 """
 
 
+JOB_WORKFLOW_OVERRIDES_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS job_workflow_overrides (
+    job_id TEXT PRIMARY KEY,
+    workflow_status TEXT,
+    deal_owner TEXT,
+    assigned_user TEXT,
+    follow_up_date DATE,
+    priority TEXT,
+    internal_notes TEXT,
+    updated_by TEXT,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+)
+"""
+
+
 def clean_db_value(value):
     if value is None:
         return None
@@ -169,6 +184,14 @@ def ensure_daily_dispatch_table() -> None:
         conn.execute(text(DAILY_DISPATCH_TABLE_SQL))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_daily_dispatch_date ON daily_dispatch(dispatch_date)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_daily_dispatch_job_id ON daily_dispatch(job_id)"))
+
+
+def ensure_job_workflow_overrides_table() -> None:
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(text(JOB_WORKFLOW_OVERRIDES_TABLE_SQL))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_job_workflow_status ON job_workflow_overrides(workflow_status)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_job_workflow_priority ON job_workflow_overrides(priority)"))
 
 
 def load_schedule_df() -> pd.DataFrame:
@@ -258,6 +281,94 @@ def save_schedule_rows(df: pd.DataFrame) -> int:
         conn.execute(upsert_sql, records)
     st.cache_data.clear()
     return len(records)
+
+
+def load_job_workflow_overrides() -> pd.DataFrame:
+    try:
+        ensure_job_workflow_overrides_table()
+        return safe_load(
+            """
+            SELECT
+                job_id,
+                workflow_status,
+                deal_owner,
+                assigned_user,
+                follow_up_date,
+                priority,
+                internal_notes,
+                updated_by,
+                updated_at
+            FROM job_workflow_overrides
+            """
+        )
+    except Exception:
+        return pd.DataFrame()
+
+
+def save_job_workflow_override(
+    *,
+    job_id: object,
+    workflow_status: object,
+    deal_owner: object,
+    assigned_user: object,
+    follow_up_date: object,
+    priority: object,
+    internal_notes: object,
+    updated_by: object | None = None,
+) -> None:
+    ensure_job_workflow_overrides_table()
+    job_id_text = text_value(job_id)
+    if not job_id_text:
+        raise ValueError("job_id is required to save workflow overrides.")
+    record = {
+        "job_id": job_id_text,
+        "workflow_status": clean_db_value(workflow_status),
+        "deal_owner": clean_db_value(deal_owner),
+        "assigned_user": clean_db_value(assigned_user),
+        "follow_up_date": clean_db_value(follow_up_date),
+        "priority": clean_db_value(priority),
+        "internal_notes": clean_db_value(internal_notes),
+        "updated_by": clean_db_value(updated_by),
+    }
+    upsert_sql = text(
+        """
+        INSERT INTO job_workflow_overrides (
+            job_id,
+            workflow_status,
+            deal_owner,
+            assigned_user,
+            follow_up_date,
+            priority,
+            internal_notes,
+            updated_by,
+            updated_at
+        )
+        VALUES (
+            :job_id,
+            :workflow_status,
+            :deal_owner,
+            :assigned_user,
+            :follow_up_date,
+            :priority,
+            :internal_notes,
+            :updated_by,
+            NOW()
+        )
+        ON CONFLICT (job_id) DO UPDATE SET
+            workflow_status = EXCLUDED.workflow_status,
+            deal_owner = EXCLUDED.deal_owner,
+            assigned_user = EXCLUDED.assigned_user,
+            follow_up_date = EXCLUDED.follow_up_date,
+            priority = EXCLUDED.priority,
+            internal_notes = EXCLUDED.internal_notes,
+            updated_by = EXCLUDED.updated_by,
+            updated_at = NOW()
+        """
+    )
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(upsert_sql, record)
+    st.cache_data.clear()
 
 
 CREW_COLOR_PALETTE = [
@@ -996,6 +1107,9 @@ JOB_BOARD_STATUS_ORDER = [
 ]
 
 
+JOB_WORKFLOW_PRIORITY_OPTIONS = ["Low", "Normal", "High", "Urgent"]
+
+
 JOB_BOARD_FIELDS = [
     "job_id",
     "customer",
@@ -1059,20 +1173,20 @@ def load_job_board_schedule() -> pd.DataFrame:
     cols = relation_columns("crew_schedule")
     if not cols or "job_id" not in cols:
         return pd.DataFrame()
-    fields = [
-        "job_id",
-        "assigned_crew_leader",
-        "estimated_start_date",
-        "estimated_end_date",
-        "estimated_duration_days",
-        "estimated_labor_hours",
-        "estimated_crew_size",
-        "schedule_status",
-        "priority",
-        "blocking_issue",
-        "schedule_notes",
-    ]
-    select_parts = [f"{sql_column('cs', cols, field)} AS {field}" for field in fields]
+    fields = {
+        "job_id": "job_id",
+        "assigned_crew_leader": "assigned_crew_leader",
+        "estimated_start_date": "estimated_start_date",
+        "estimated_end_date": "estimated_end_date",
+        "estimated_duration_days": "estimated_duration_days",
+        "estimated_labor_hours": "estimated_labor_hours",
+        "estimated_crew_size": "estimated_crew_size",
+        "schedule_status": "schedule_status",
+        "priority": "schedule_priority",
+        "blocking_issue": "blocking_issue",
+        "schedule_notes": "schedule_notes",
+    }
+    select_parts = [f"{sql_column('cs', cols, source)} AS {alias}" for source, alias in fields.items()]
     try:
         schedule = safe_load(f"SELECT {', '.join(select_parts)} FROM crew_schedule cs")
     except Exception:
@@ -1109,6 +1223,9 @@ def load_job_board_df() -> pd.DataFrame:
     if jobs.empty or "job_id" not in jobs.columns:
         return jobs
     jobs = with_folder_link(jobs)
+    overrides = load_job_workflow_overrides()
+    if "job_id" in overrides.columns:
+        jobs = jobs.merge(overrides, on="job_id", how="left")
     schedule = load_job_board_schedule()
     if not schedule.empty and "job_id" in schedule.columns:
         jobs = jobs.merge(schedule, on="job_id", how="left")
@@ -1157,7 +1274,7 @@ def normalize_board_status(value: object) -> str:
 
 
 def board_status_for_row(row: pd.Series) -> str:
-    return normalize_board_status(row.get("pipeline_status") or row.get("status"))
+    return normalize_board_status(row.get("workflow_status") or row.get("pipeline_status") or row.get("status"))
 
 
 def bool_label(value: object) -> str:
@@ -1168,8 +1285,12 @@ def job_board_summary(row: pd.Series) -> str:
     parts = [
         f"Job: {text_value(row.get('job_name')) or text_value(row.get('customer'))}",
         f"Customer: {text_value(row.get('customer')) or '-'}",
-        f"Status: {text_value(row.get('pipeline_status')) or text_value(row.get('status')) or '-'}",
+        f"Status: {text_value(row.get('workflow_status')) or text_value(row.get('pipeline_status')) or text_value(row.get('status')) or '-'}",
         f"Value: {format_summary_value(row.get('estimated_value'), kind='money')}",
+        f"Owner: {text_value(row.get('deal_owner')) or '-'}",
+        f"Assigned User: {text_value(row.get('assigned_user')) or '-'}",
+        f"Priority: {text_value(row.get('priority')) or '-'}",
+        f"Follow Up: {text_value(row.get('follow_up_date')) or '-'}",
         f"Crew: {text_value(row.get('assigned_crew_leader')) or '-'}",
         f"Schedule: {text_value(row.get('estimated_start_date')) or '-'} to {text_value(row.get('estimated_end_date')) or '-'}",
         f"Warnings: {text_value(row.get('warning_summary')) or text_value(row.get('warnings')) or '-'}",
@@ -1185,10 +1306,16 @@ def render_job_board_documents(row: pd.Series) -> None:
     render_document_access("Open Job Tracking Form", row.get("job_tracking_file"), "Job tracking form link not available.")
 
 
+def parsed_date_or_today(value: object) -> date:
+    parsed = pd.to_datetime(value, errors="coerce")
+    if pd.isna(parsed):
+        return date.today()
+    return parsed.date()
+
+
 def job_board_page() -> None:
     st.title("Job Board")
     st.caption("VSimple-style pipeline view built from Spray-Tec job data.")
-    # TODO: add status update/upsert workflow.
     # TODO: add activity stream/comments.
     # TODO: add true drag/drop kanban if moving away from Streamlit.
     # TODO: connect VSimple export/API if available.
@@ -1202,6 +1329,14 @@ def job_board_page() -> None:
         if column not in jobs.columns:
             jobs[column] = None
     for column in [
+        "workflow_status",
+        "deal_owner",
+        "assigned_user",
+        "follow_up_date",
+        "priority",
+        "internal_notes",
+        "updated_by",
+        "updated_at",
         "assigned_crew_leader",
         "estimated_start_date",
         "estimated_end_date",
@@ -1209,7 +1344,7 @@ def job_board_page() -> None:
         "estimated_labor_hours",
         "estimated_crew_size",
         "schedule_status",
-        "priority",
+        "schedule_priority",
         "blocking_issue",
         "schedule_notes",
         "warning_count",
@@ -1217,6 +1352,11 @@ def job_board_page() -> None:
     ]:
         if column not in jobs.columns:
             jobs[column] = None
+
+    jobs["job_id"] = jobs["job_id"].fillna("").astype(str)
+    selected_job_id = str(st.session_state.get("selected_job_board_job_id", "") or "")
+    if selected_job_id:
+        st.caption(f"Selected job_id: {selected_job_id}")
 
     st.subheader("Filters")
     f1, f2, f3, f4 = st.columns(4)
@@ -1229,13 +1369,16 @@ def job_board_page() -> None:
     with f4:
         status_filter = st.multiselect("Status", options_from(jobs, "status"), key="job_board_status")
 
-    f5, f6, f7 = st.columns(3)
+    f5, f6, f7, f8 = st.columns(4)
     with f5:
         crew_filter = st.multiselect("Crew Leader", options_from(jobs, "assigned_crew_leader"), key="job_board_crew")
     with f6:
-        show_action_only = st.checkbox("Show only jobs needing action", key="job_board_action_only")
+        workflow_filter = st.multiselect("Workflow Status", options_from(jobs, "workflow_status"), key="job_board_workflow_status")
     with f7:
+        priority_filter = st.multiselect("Priority", options_from(jobs, "priority"), key="job_board_priority")
+    with f8:
         hide_completed = st.checkbox("Hide completed/invoiced jobs", value=True, key="job_board_hide_completed")
+    show_action_only = st.checkbox("Show only jobs needing action", key="job_board_action_only")
 
     filtered = jobs.copy()
     if search:
@@ -1249,6 +1392,8 @@ def job_board_page() -> None:
         (pipeline_filter, "pipeline_status"),
         (status_filter, "status"),
         (crew_filter, "assigned_crew_leader"),
+        (workflow_filter, "workflow_status"),
+        (priority_filter, "priority"),
     ):
         if selected and column in filtered.columns:
             filtered = filtered[filtered[column].astype(str).isin(selected)]
@@ -1259,11 +1404,18 @@ def job_board_page() -> None:
         filtered = filtered[warning_mask | warning_text_mask | blocking_mask]
     if hide_completed:
         status_text = (
-            filtered.get("pipeline_status", pd.Series("", index=filtered.index)).fillna("").astype(str)
+            filtered.get("workflow_status", pd.Series("", index=filtered.index)).fillna("").astype(str)
+            + " "
+            + filtered.get("pipeline_status", pd.Series("", index=filtered.index)).fillna("").astype(str)
             + " "
             + filtered.get("status", pd.Series("", index=filtered.index)).fillna("").astype(str)
         )
         filtered = filtered[~status_text.str.contains("completed|invoiced", case=False, na=False)]
+
+    with st.expander("Job Board selection debug"):
+        st.write("selected_job_board_job_id", st.session_state.get("selected_job_board_job_id"))
+        st.write("Job IDs sample", jobs["job_id"].head(20).tolist())
+        st.write("Filtered rows", len(filtered))
 
     metric_row(
         [
@@ -1298,8 +1450,10 @@ def job_board_page() -> None:
         with column:
             st.markdown(f"**{status_name}**")
             st.caption(f"{len(status_jobs):,} jobs | {fmt_dollar(safe_sum(status_jobs, 'estimated_value'))}")
-            for _, row in status_jobs.iterrows():
-                job_id = text_value(row.get("job_id")) or hashlib.sha1(str(row.to_dict()).encode("utf-8")).hexdigest()[:12]
+            for row_index, row in status_jobs.iterrows():
+                job_id = str(row.get("job_id") or "")
+                if not job_id:
+                    continue
                 with st.container(border=True):
                     title = text_value(row.get("job_name")) or text_value(row.get("customer")) or "Untitled job"
                     customer = text_value(row.get("customer"))
@@ -1309,7 +1463,10 @@ def job_board_page() -> None:
                     badge_parts = [text_value(row.get("division")), text_value(row.get("job_type"))]
                     st.caption(" / ".join(part for part in badge_parts if part) or "No division / type")
                     st.write(format_summary_value(row.get("estimated_value"), kind="money"))
-                    st.caption(text_value(row.get("pipeline_status")) or text_value(row.get("status")) or "No status")
+                    st.caption(text_value(row.get("workflow_status")) or text_value(row.get("pipeline_status")) or text_value(row.get("status")) or "No status")
+                    workflow_priority = text_value(row.get("priority"))
+                    if workflow_priority:
+                        st.caption(f"Priority: {workflow_priority}")
                     crew = text_value(row.get("assigned_crew_leader"))
                     if crew:
                         st.caption(f"Crew: {crew}")
@@ -1327,15 +1484,19 @@ def job_board_page() -> None:
                         indicators.append(f"{int(photo_count)} photos")
                     if indicators:
                         st.caption(" | ".join(indicators))
-                    if st.button("Open", key=f"job_board_open_{job_id}"):
+                    safe_job_id = hashlib.sha1(job_id.encode("utf-8")).hexdigest()[:12]
+                    button_key = f"open_job_board_{safe_job_id}_{row_index}"
+                    if st.button("Open", key=button_key):
                         st.session_state["selected_job_board_job_id"] = job_id
                         st.rerun()
 
-    selected_job_id = st.session_state.get("selected_job_board_job_id")
     if selected_job_id:
-        selected_rows = jobs[jobs["job_id"].fillna("").astype(str) == str(selected_job_id)]
+        selected_rows = jobs[jobs["job_id"].astype(str) == selected_job_id]
         if selected_rows.empty:
-            st.warning("Selected job is no longer available in the current dataset.")
+            st.warning("Selected job was not found in the current job data. It may be hidden by filters.")
+            if st.button("Clear selected job", key="clear_selected_job_board_job"):
+                del st.session_state["selected_job_board_job_id"]
+                st.rerun()
             return
         row = selected_rows.iloc[0]
         st.divider()
@@ -1345,6 +1506,11 @@ def job_board_page() -> None:
             ("Job Name", row.get("job_name"), "text"),
             ("Customer", row.get("customer"), "text"),
             ("Division", row.get("division"), "text"),
+            ("Workflow Status", row.get("workflow_status") or row.get("pipeline_status") or row.get("status"), "text"),
+            ("Priority", row.get("priority"), "text"),
+            ("Follow Up Date", row.get("follow_up_date"), "text"),
+            ("Deal Owner", row.get("deal_owner"), "text"),
+            ("Assigned User", row.get("assigned_user"), "text"),
             ("Pipeline Status", row.get("pipeline_status"), "text"),
             ("Status", row.get("status"), "text"),
             ("Job Type", row.get("job_type"), "text"),
@@ -1369,6 +1535,61 @@ def job_board_page() -> None:
 
         render_job_board_documents(row)
 
+        st.subheader("Edit Workflow")
+        st.caption("These workflow edits are stored in the app and do not overwrite SharePoint scan data.")
+        job_key = hashlib.sha1(str(selected_job_id).encode("utf-8")).hexdigest()[:12]
+        workflow_value = normalize_board_status(row.get("workflow_status") or row.get("pipeline_status") or row.get("status"))
+        workflow_options = JOB_BOARD_STATUS_ORDER
+        workflow_index = workflow_options.index(workflow_value) if workflow_value in workflow_options else workflow_options.index("Other")
+        priority_value = text_value(row.get("priority")) or "Normal"
+        priority_index = JOB_WORKFLOW_PRIORITY_OPTIONS.index(priority_value) if priority_value in JOB_WORKFLOW_PRIORITY_OPTIONS else JOB_WORKFLOW_PRIORITY_OPTIONS.index("Normal")
+        with st.form(f"job_workflow_form_{job_key}"):
+            edit_cols = st.columns(3)
+            with edit_cols[0]:
+                workflow_status = st.selectbox(
+                    "Workflow Status",
+                    workflow_options,
+                    index=workflow_index,
+                    key=f"job_workflow_status_{job_key}",
+                )
+                deal_owner = st.text_input("Deal Owner", value=text_value(row.get("deal_owner")), key=f"job_deal_owner_{job_key}")
+            with edit_cols[1]:
+                assigned_user = st.text_input("Assigned User", value=text_value(row.get("assigned_user")), key=f"job_assigned_user_{job_key}")
+                follow_up_date = st.date_input(
+                    "Follow Up Date",
+                    value=parsed_date_or_today(row.get("follow_up_date")),
+                    key=f"job_follow_up_date_{job_key}",
+                )
+            with edit_cols[2]:
+                priority = st.selectbox(
+                    "Priority",
+                    JOB_WORKFLOW_PRIORITY_OPTIONS,
+                    index=priority_index,
+                    key=f"job_workflow_priority_{job_key}",
+                )
+            internal_notes = st.text_area(
+                "Internal Notes",
+                value=text_value(row.get("internal_notes")),
+                height=120,
+                key=f"job_internal_notes_{job_key}",
+            )
+            if st.form_submit_button("Save Workflow Changes"):
+                try:
+                    save_job_workflow_override(
+                        job_id=selected_job_id,
+                        workflow_status=workflow_status,
+                        deal_owner=deal_owner,
+                        assigned_user=assigned_user,
+                        follow_up_date=follow_up_date,
+                        priority=priority,
+                        internal_notes=internal_notes,
+                        updated_by=os.getenv("USER"),
+                    )
+                    st.success("Workflow updated")
+                    st.rerun()
+                except Exception as exc:
+                    show_database_error(exc)
+
         st.subheader("Operational Context")
         operational_items = [
             ("Signed Contract", bool_label(row.get("has_signed_contract"))),
@@ -1391,7 +1612,7 @@ def job_board_page() -> None:
             ("Labor Hours", row.get("estimated_labor_hours")),
             ("Crew Size", row.get("estimated_crew_size")),
             ("Schedule Status", row.get("schedule_status")),
-            ("Priority", row.get("priority")),
+            ("Schedule Priority", row.get("schedule_priority")),
             ("Blocking Issue", row.get("blocking_issue")),
             ("Schedule Notes", row.get("schedule_notes")),
         ]
