@@ -979,6 +979,430 @@ def status_value(df: pd.DataFrame, status_text: str) -> float:
     return safe_sum(df[mask], "estimated_value")
 
 
+JOB_BOARD_STATUS_ORDER = [
+    "Lead Created",
+    "Contacted",
+    "Estimate In Progress",
+    "Proposed",
+    "Proposal Submitted",
+    "Contracted",
+    "Contracted Repairs",
+    "Scheduled",
+    "In Progress",
+    "Completed",
+    "Invoiced",
+    "Folder Created",
+    "Other",
+]
+
+
+JOB_BOARD_FIELDS = [
+    "job_id",
+    "customer",
+    "job_name",
+    "division",
+    "pipeline_status",
+    "status",
+    "job_type",
+    "site_address",
+    "city",
+    "state",
+    "zip_code",
+    "estimated_value",
+    "total_job_cost",
+    "final_price",
+    "invoice_amount",
+    "estimated_sqft",
+    "price_per_sqft",
+    "estimate_date",
+    "folder_url",
+    "folder_path",
+    "folder_link_or_path",
+    "estimate_file",
+    "proposal_file",
+    "contract_file",
+    "job_tracking_file",
+    "has_proposal",
+    "has_signed_contract",
+    "has_invoice",
+    "has_warranty",
+    "has_job_spec",
+    "has_aerial",
+    "photo_count",
+    "warnings",
+    "last_scanned_at",
+]
+
+
+def load_job_board_jobs() -> pd.DataFrame:
+    cols = relation_columns("dashboard_jobs")
+    if not cols:
+        return query_view("dashboard_jobs")
+
+    select_parts: list[str] = []
+    for field in JOB_BOARD_FIELDS:
+        if field == "folder_link_or_path":
+            select_parts.append(
+                f"{sql_coalesce([sql_nonblank_column('j', cols, 'folder_url'), sql_nonblank_column('j', cols, 'folder_path')])} AS folder_link_or_path"
+            )
+        elif field == "proposal_file":
+            select_parts.append(
+                f"{sql_coalesce([sql_column('j', cols, 'proposal_file'), sql_column('j', cols, 'estimate_file')])} AS proposal_file"
+            )
+        else:
+            select_parts.append(f"{sql_column('j', cols, field)} AS {field}")
+
+    return safe_load(f"SELECT {', '.join(select_parts)} FROM dashboard_jobs j")
+
+
+def load_job_board_schedule() -> pd.DataFrame:
+    cols = relation_columns("crew_schedule")
+    if not cols or "job_id" not in cols:
+        return pd.DataFrame()
+    fields = [
+        "job_id",
+        "assigned_crew_leader",
+        "estimated_start_date",
+        "estimated_end_date",
+        "estimated_duration_days",
+        "estimated_labor_hours",
+        "estimated_crew_size",
+        "schedule_status",
+        "priority",
+        "blocking_issue",
+        "schedule_notes",
+    ]
+    select_parts = [f"{sql_column('cs', cols, field)} AS {field}" for field in fields]
+    try:
+        schedule = safe_load(f"SELECT {', '.join(select_parts)} FROM crew_schedule cs")
+    except Exception:
+        return pd.DataFrame()
+    if schedule.empty:
+        return schedule
+    return schedule.sort_values("estimated_start_date", na_position="last").drop_duplicates("job_id", keep="first")
+
+
+def load_job_board_warnings() -> pd.DataFrame:
+    if "job_id" not in relation_columns("dashboard_job_warnings_actionable"):
+        return pd.DataFrame()
+    cols = relation_columns("dashboard_job_warnings_actionable")
+    warning_expr = sql_column("w", cols, "warnings", "NULL")
+    try:
+        warnings = safe_load(
+            f"""
+            SELECT
+                w.job_id,
+                COUNT(*) AS warning_count,
+                STRING_AGG(DISTINCT COALESCE({warning_expr}, ''), '; ') AS warning_summary
+            FROM dashboard_job_warnings_actionable w
+            WHERE w.job_id IS NOT NULL
+            GROUP BY w.job_id
+            """
+        )
+    except Exception:
+        return pd.DataFrame()
+    return warnings
+
+
+def load_job_board_df() -> pd.DataFrame:
+    jobs = load_job_board_jobs()
+    if jobs.empty or "job_id" not in jobs.columns:
+        return jobs
+    jobs = with_folder_link(jobs)
+    schedule = load_job_board_schedule()
+    if not schedule.empty and "job_id" in schedule.columns:
+        jobs = jobs.merge(schedule, on="job_id", how="left")
+    warnings = load_job_board_warnings()
+    if not warnings.empty and "job_id" in warnings.columns:
+        jobs = jobs.merge(warnings, on="job_id", how="left")
+    if "warning_count" not in jobs.columns:
+        jobs["warning_count"] = jobs["warnings"].fillna("").astype(str).str.strip().ne("").astype(int) if "warnings" in jobs.columns else 0
+    if "warning_summary" not in jobs.columns:
+        jobs["warning_summary"] = jobs["warnings"] if "warnings" in jobs.columns else ""
+    return jobs
+
+
+def normalize_board_status(value: object) -> str:
+    raw = text_value(value)
+    if not raw:
+        return "Other"
+    lowered = raw.lower().strip()
+    variants = {
+        "lead": "Lead Created",
+        "lead created": "Lead Created",
+        "contacted": "Contacted",
+        "estimate": "Estimate In Progress",
+        "estimate in progress": "Estimate In Progress",
+        "estimated": "Estimate In Progress",
+        "proposed": "Proposed",
+        "proposal submitted": "Proposal Submitted",
+        "submitted": "Proposal Submitted",
+        "contracted": "Contracted",
+        "contracted repairs": "Contracted Repairs",
+        "contracted repair": "Contracted Repairs",
+        "scheduled": "Scheduled",
+        "active": "In Progress",
+        "in progress": "In Progress",
+        "completed": "Completed",
+        "complete": "Completed",
+        "invoiced": "Invoiced",
+        "folder created": "Folder Created",
+    }
+    if lowered in variants:
+        return variants[lowered]
+    for ordered in JOB_BOARD_STATUS_ORDER:
+        if lowered == ordered.lower():
+            return ordered
+    return raw.title() if raw.title() in JOB_BOARD_STATUS_ORDER else "Other"
+
+
+def board_status_for_row(row: pd.Series) -> str:
+    return normalize_board_status(row.get("pipeline_status") or row.get("status"))
+
+
+def bool_label(value: object) -> str:
+    return "Yes" if bool(value) else "No"
+
+
+def job_board_summary(row: pd.Series) -> str:
+    parts = [
+        f"Job: {text_value(row.get('job_name')) or text_value(row.get('customer'))}",
+        f"Customer: {text_value(row.get('customer')) or '-'}",
+        f"Status: {text_value(row.get('pipeline_status')) or text_value(row.get('status')) or '-'}",
+        f"Value: {format_summary_value(row.get('estimated_value'), kind='money')}",
+        f"Crew: {text_value(row.get('assigned_crew_leader')) or '-'}",
+        f"Schedule: {text_value(row.get('estimated_start_date')) or '-'} to {text_value(row.get('estimated_end_date')) or '-'}",
+        f"Warnings: {text_value(row.get('warning_summary')) or text_value(row.get('warnings')) or '-'}",
+    ]
+    return "\n".join(parts)
+
+
+def render_job_board_documents(row: pd.Series) -> None:
+    st.subheader("Job Documents")
+    render_document_access("Open Job Folder", row.get("folder_url") or row.get("folder_link_or_path") or row.get("folder_path"), "Job folder link not available.")
+    render_document_access("Open Proposal / Estimate", row.get("proposal_file") or row.get("estimate_file"), "Proposal / estimate link not available.")
+    render_document_access("Open Contract", row.get("contract_file"), "Contract link not available.")
+    render_document_access("Open Job Tracking Form", row.get("job_tracking_file"), "Job tracking form link not available.")
+
+
+def job_board_page() -> None:
+    st.title("Job Board")
+    st.caption("VSimple-style pipeline view built from Spray-Tec job data.")
+    # TODO: add status update/upsert workflow.
+    # TODO: add activity stream/comments.
+    # TODO: add true drag/drop kanban if moving away from Streamlit.
+    # TODO: connect VSimple export/API if available.
+
+    jobs = load_job_board_df()
+    if jobs.empty:
+        show_empty("No jobs are available for the board.")
+        return
+
+    for column in JOB_BOARD_FIELDS:
+        if column not in jobs.columns:
+            jobs[column] = None
+    for column in [
+        "assigned_crew_leader",
+        "estimated_start_date",
+        "estimated_end_date",
+        "estimated_duration_days",
+        "estimated_labor_hours",
+        "estimated_crew_size",
+        "schedule_status",
+        "priority",
+        "blocking_issue",
+        "schedule_notes",
+        "warning_count",
+        "warning_summary",
+    ]:
+        if column not in jobs.columns:
+            jobs[column] = None
+
+    st.subheader("Filters")
+    f1, f2, f3, f4 = st.columns(4)
+    with f1:
+        search = st.text_input("Search jobs / customers / addresses", key="job_board_search").strip()
+    with f2:
+        division_filter = st.multiselect("Division", options_from(jobs, "division"), key="job_board_division")
+    with f3:
+        pipeline_filter = st.multiselect("Pipeline Status", options_from(jobs, "pipeline_status"), key="job_board_pipeline")
+    with f4:
+        status_filter = st.multiselect("Status", options_from(jobs, "status"), key="job_board_status")
+
+    f5, f6, f7 = st.columns(3)
+    with f5:
+        crew_filter = st.multiselect("Crew Leader", options_from(jobs, "assigned_crew_leader"), key="job_board_crew")
+    with f6:
+        show_action_only = st.checkbox("Show only jobs needing action", key="job_board_action_only")
+    with f7:
+        hide_completed = st.checkbox("Hide completed/invoiced jobs", value=True, key="job_board_hide_completed")
+
+    filtered = jobs.copy()
+    if search:
+        search_cols = [column for column in ["job_name", "customer", "site_address", "city", "state", "zip_code"] if column in filtered.columns]
+        mask = pd.Series(False, index=filtered.index)
+        for column in search_cols:
+            mask = mask | filtered[column].fillna("").astype(str).str.contains(search, case=False, na=False)
+        filtered = filtered[mask]
+    for selected, column in (
+        (division_filter, "division"),
+        (pipeline_filter, "pipeline_status"),
+        (status_filter, "status"),
+        (crew_filter, "assigned_crew_leader"),
+    ):
+        if selected and column in filtered.columns:
+            filtered = filtered[filtered[column].astype(str).isin(selected)]
+    if show_action_only:
+        warning_mask = numeric_series(filtered, "warning_count").fillna(0) > 0
+        warning_text_mask = filtered["warnings"].fillna("").astype(str).str.strip().ne("") if "warnings" in filtered.columns else False
+        blocking_mask = filtered["blocking_issue"].fillna("").astype(str).str.strip().ne("") if "blocking_issue" in filtered.columns else False
+        filtered = filtered[warning_mask | warning_text_mask | blocking_mask]
+    if hide_completed:
+        status_text = (
+            filtered.get("pipeline_status", pd.Series("", index=filtered.index)).fillna("").astype(str)
+            + " "
+            + filtered.get("status", pd.Series("", index=filtered.index)).fillna("").astype(str)
+        )
+        filtered = filtered[~status_text.str.contains("completed|invoiced", case=False, na=False)]
+
+    metric_row(
+        [
+            ("Total Jobs Shown", fmt_count(len(filtered))),
+            ("Total Estimated Value", fmt_dollar(safe_sum(filtered, "estimated_value"))),
+            ("Proposed Value", fmt_dollar(status_value(filtered, "proposed"))),
+            ("Contracted / Backlog Value", fmt_dollar(status_value(filtered, "contracted"))),
+            ("Warnings / Action Items", fmt_count((numeric_series(filtered, "warning_count").fillna(0) > 0).sum())),
+        ]
+    )
+
+    board_df = filtered.copy()
+    board_df["board_status"] = board_df.apply(board_status_for_row, axis=1)
+    existing_columns = [status for status in JOB_BOARD_STATUS_ORDER if status in set(board_df["board_status"])]
+    if not existing_columns and not board_df.empty:
+        existing_columns = ["Other"]
+    selected_columns = st.multiselect(
+        "Board columns",
+        JOB_BOARD_STATUS_ORDER,
+        default=existing_columns,
+        key="job_board_columns",
+    )
+
+    if not selected_columns:
+        st.info("Select at least one board column.")
+        return
+
+    st.subheader("Pipeline Board")
+    board_columns = st.columns(len(selected_columns))
+    for status_name, column in zip(selected_columns, board_columns):
+        status_jobs = board_df[board_df["board_status"] == status_name].sort_values("estimated_value", ascending=False, na_position="last")
+        with column:
+            st.markdown(f"**{status_name}**")
+            st.caption(f"{len(status_jobs):,} jobs | {fmt_dollar(safe_sum(status_jobs, 'estimated_value'))}")
+            for _, row in status_jobs.iterrows():
+                job_id = text_value(row.get("job_id")) or hashlib.sha1(str(row.to_dict()).encode("utf-8")).hexdigest()[:12]
+                with st.container(border=True):
+                    title = text_value(row.get("job_name")) or text_value(row.get("customer")) or "Untitled job"
+                    customer = text_value(row.get("customer"))
+                    st.markdown(f"**{title}**")
+                    if customer and customer != title:
+                        st.caption(customer)
+                    badge_parts = [text_value(row.get("division")), text_value(row.get("job_type"))]
+                    st.caption(" / ".join(part for part in badge_parts if part) or "No division / type")
+                    st.write(format_summary_value(row.get("estimated_value"), kind="money"))
+                    st.caption(text_value(row.get("pipeline_status")) or text_value(row.get("status")) or "No status")
+                    crew = text_value(row.get("assigned_crew_leader"))
+                    if crew:
+                        st.caption(f"Crew: {crew}")
+                    start = text_value(row.get("estimated_start_date"))
+                    duration = text_value(row.get("estimated_duration_days"))
+                    if start or duration:
+                        st.caption(f"Schedule: {start or 'TBD'} | {duration or '-'} days")
+                    indicators: list[str] = []
+                    if pd.to_numeric(pd.Series([row.get("warning_count")]), errors="coerce").fillna(0).iloc[0] > 0 or text_value(row.get("warnings")):
+                        indicators.append("Action")
+                    if bool(row.get("has_aerial")):
+                        indicators.append("Aerial")
+                    photo_count = pd.to_numeric(pd.Series([row.get("photo_count")]), errors="coerce").fillna(0).iloc[0]
+                    if photo_count:
+                        indicators.append(f"{int(photo_count)} photos")
+                    if indicators:
+                        st.caption(" | ".join(indicators))
+                    if st.button("Open", key=f"job_board_open_{job_id}"):
+                        st.session_state["selected_job_board_job_id"] = job_id
+                        st.rerun()
+
+    selected_job_id = st.session_state.get("selected_job_board_job_id")
+    if selected_job_id:
+        selected_rows = jobs[jobs["job_id"].fillna("").astype(str) == str(selected_job_id)]
+        if selected_rows.empty:
+            st.warning("Selected job is no longer available in the current dataset.")
+            return
+        row = selected_rows.iloc[0]
+        st.divider()
+        st.header("Job Detail")
+        detail_cols = st.columns(3)
+        detail_items = [
+            ("Job Name", row.get("job_name"), "text"),
+            ("Customer", row.get("customer"), "text"),
+            ("Division", row.get("division"), "text"),
+            ("Pipeline Status", row.get("pipeline_status"), "text"),
+            ("Status", row.get("status"), "text"),
+            ("Job Type", row.get("job_type"), "text"),
+            ("Address", " ".join(part for part in [text_value(row.get("site_address")), text_value(row.get("city")), text_value(row.get("state")), text_value(row.get("zip_code"))] if part), "text"),
+            ("Estimated Value", row.get("estimated_value"), "money"),
+            ("Estimated Sq Ft", row.get("estimated_sqft"), "number"),
+            ("Price / Sq Ft", row.get("price_per_sqft"), "money"),
+            ("Final Price", row.get("final_price"), "money"),
+            ("Invoice Amount", row.get("invoice_amount"), "money"),
+            ("Assigned Crew Leader", row.get("assigned_crew_leader"), "text"),
+            ("Scheduled Start", row.get("estimated_start_date"), "text"),
+            ("Scheduled End", row.get("estimated_end_date"), "text"),
+            ("Duration Days", row.get("estimated_duration_days"), "number"),
+            ("Labor Hours", row.get("estimated_labor_hours"), "number"),
+            ("Crew Size", row.get("estimated_crew_size"), "number"),
+            ("Warnings", row.get("warning_summary") or row.get("warnings"), "text"),
+            ("Last Scanned At", row.get("last_scanned_at"), "text"),
+        ]
+        for index, (label, value, kind) in enumerate(detail_items):
+            with detail_cols[index % 3]:
+                st.write(f"**{label}:** {format_summary_value(value, kind=kind)}")
+
+        render_job_board_documents(row)
+
+        st.subheader("Operational Context")
+        operational_items = [
+            ("Signed Contract", bool_label(row.get("has_signed_contract"))),
+            ("Invoice", bool_label(row.get("has_invoice"))),
+            ("Warranty", bool_label(row.get("has_warranty"))),
+            ("Job Spec", bool_label(row.get("has_job_spec"))),
+            ("Aerial", bool_label(row.get("has_aerial"))),
+            ("Photo Count", format_summary_value(row.get("photo_count"), kind="number")),
+            ("Warnings", text_value(row.get("warning_summary")) or text_value(row.get("warnings")) or "-"),
+        ]
+        for label, value in operational_items:
+            st.write(f"**{label}:** {value}")
+
+        st.subheader("Scheduling Context")
+        schedule_items = [
+            ("Crew Leader", row.get("assigned_crew_leader")),
+            ("Start Date", row.get("estimated_start_date")),
+            ("End Date", row.get("estimated_end_date")),
+            ("Duration Days", row.get("estimated_duration_days")),
+            ("Labor Hours", row.get("estimated_labor_hours")),
+            ("Crew Size", row.get("estimated_crew_size")),
+            ("Schedule Status", row.get("schedule_status")),
+            ("Priority", row.get("priority")),
+            ("Blocking Issue", row.get("blocking_issue")),
+            ("Schedule Notes", row.get("schedule_notes")),
+        ]
+        for label, value in schedule_items:
+            st.write(f"**{label}:** {text_value(value) or '-'}")
+        st.caption("Use Schedule Calendar to move this job.")
+
+        st.subheader("Copy Job Summary")
+        st.text_area("Copy into Teams/email", value=job_board_summary(row), height=180)
+
+
 def owner_overview_page() -> None:
     st.title("Owner Overview")
     jobs = apply_basic_filters(query_view("dashboard_jobs"))
@@ -2126,6 +2550,7 @@ def main() -> None:
         "Page",
         [
             "Owner Overview",
+            "Job Board",
             "Schedule Calendar",
             "Pipeline / Money",
             "Sales Follow-Up",
@@ -2147,6 +2572,8 @@ def main() -> None:
 
     if page == "Owner Overview":
         owner_overview_page()
+    elif page == "Job Board":
+        job_board_page()
     elif page == "Schedule Calendar":
         schedule_calendar_page()
     elif page == "Pipeline / Money":
