@@ -18,6 +18,8 @@ FIELD_ORDER = [
     "profit_pct", "profit_amount", "worksheet_price", "final_price",
     "estimated_value", "estimated_value_source", "price_per_sqft",
     "invoice_number", "invoice_amount", "invoice_date",
+    "proposal_url", "estimate_url", "contract_url", "invoice_url", "job_tracking_url", "warranty_url", "aerial_url",
+    "primary_doc_link", "primary_doc_type", "primary_doc_name", "important_doc_links_json", "document_link_count",
     "estimate_file_count", "estimate_files", "primary_estimate_file", "supporting_estimate_files",
     "multiple_estimates_found", "estimate_selection_reason",
     "has_signed_contract", "has_invoice", "has_warranty", "has_proposal", "has_job_spec", "has_job_tracking_form", "has_aerial", "has_notes",

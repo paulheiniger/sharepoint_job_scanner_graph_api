@@ -29,7 +29,7 @@ from .job_tracking_extractor import (
 from .models import JobRecord
 from .scan import scan_root, write_csv, write_excel, write_json
 from .schedule_extractor import finalize_schedule_record
-from .sharepoint_sync import SyncStats, attach_folder_urls, is_url, sync_sharepoint_folder
+from .sharepoint_sync import SyncStats, attach_document_urls, attach_folder_urls, is_url, sync_sharepoint_folder
 
 
 CREW_SCHEDULE_FIELDS = [
@@ -300,6 +300,7 @@ def print_root_done(root: BatchScanRoot, records_found: int) -> None:
 
 
 def main() -> None:
+    load_dotenv()
     parser = argparse.ArgumentParser(description="Batch sync multiple SharePoint roots and build one job index.")
     parser.add_argument("--config", type=Path, default=Path("config/sharepoint_scan_roots.yaml"), help="Batch scan YAML config")
     parser.add_argument("--cache", type=Path, default=Path(".cache/sharepoint"), help="Local cache folder")
@@ -323,11 +324,13 @@ def main() -> None:
     parser.add_argument("--job-tracking-daily-out", type=Path, default=Path("output/job_tracking_daily_entries.csv"))
     parser.add_argument("--job-tracking-daily-json", type=Path, default=Path("output/job_tracking_daily_entries.json"))
     parser.add_argument("--summary", type=Path, default=None, help="Batch scan summary JSON path")
-    parser.add_argument("--allow-shrink", action="store_true", help="Allow overwriting an existing job index when the new row count is less than 80% of the previous row count")
+    parser.add_argument("--allow-shrink", action="store_true", help="Allow overwriting an existing job index when the new row count is less than 80%% of the previous row count")
     parser.add_argument("--allow-partial", action="store_true", help="Allow overwriting an existing job index even when one or more scan roots failed")
+    parser.add_argument("--sync-job-index-list", action="store_true", help="After successful output replacement, upsert output/job_index.json into the SharePoint Job Index list")
+    parser.add_argument("--job-index-list-site-url", default=os.getenv("SHAREPOINT_JOB_INDEX_SITE_URL") or "https://aro365531128.sharepoint.com/sites/Data")
+    parser.add_argument("--job-index-list-name", default=os.getenv("SHAREPOINT_JOB_INDEX_LIST_NAME") or "Job Index")
     args = parser.parse_args()
 
-    load_dotenv()
     run_id = timestamp_slug()
     default_site_url, default_library, roots = load_scan_roots(args.config)
     client = GraphClient()
@@ -357,6 +360,7 @@ def main() -> None:
             )
             root_records = scan_root(cache_root, scan_context=root.folder)
             attach_folder_urls(root_records, cache_root)
+            attach_document_urls(root_records, cache_root)
             for record in root_records:
                 add_batch_context(record, root)
             root_estimate_summaries: list[dict[str, Any]] = []
@@ -488,7 +492,7 @@ def main() -> None:
         if blockers:
             cleanup_staged_outputs(staged_outputs)
             print("Outputs not replaced.")
-        else:
+        if not blockers:
             backup_path = backup_existing_file(args.json, run_id)
             replace_staged_outputs(staged_outputs)
             if backup_path:
@@ -496,6 +500,26 @@ def main() -> None:
     except Exception:
         cleanup_staged_outputs(staged_outputs)
         raise
+
+    if args.sync_job_index_list and not blockers:
+        from .sharepoint_list_sync import parse_args as parse_list_sync_args
+        from .sharepoint_list_sync import run as run_list_sync
+
+        print("Syncing Job Index SharePoint List...")
+        run_list_sync(
+            parse_list_sync_args(
+                [
+                    "--input",
+                    str(args.json),
+                    "--site-url",
+                    args.job_index_list_site_url,
+                    "--list-name",
+                    args.job_index_list_name,
+                ]
+            )
+        )
+    elif args.sync_job_index_list and blockers:
+        print("SharePoint Job Index List sync skipped because job_index outputs were not replaced.")
 
     print(f"Scan roots: {len(roots)}")
     print(f"Roots completed: {len(root_summaries)}")

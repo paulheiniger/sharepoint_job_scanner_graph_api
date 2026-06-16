@@ -5,7 +5,7 @@ A Python starter project for scanning roofing job folders directly from SharePoi
 The local scanner still works, but the primary path is now:
 
 ```text
-Microsoft Graph → SharePoint job folder cache → extractor → job index → Zapier handoff
+Microsoft Graph → SharePoint job folder cache → extractor → job index → SharePoint List / dashboard
 ```
 
 ## What it extracts
@@ -49,6 +49,13 @@ ZAPIER_WEBHOOK_URL=...
 ```
 
 See `docs/AZURE_GRAPH_SETUP.md` for the Azure setup steps.
+
+For direct SharePoint List synchronization, the Azure app also needs write access to the target site/list, typically one of:
+
+- `Sites.ReadWrite.All` application permission, admin consented
+- or a narrower Microsoft Graph Sites.Selected setup with write permission granted to the target site
+
+The sync command never logs the client secret, access token, or authorization headers.
 
 ## Run direct SharePoint sync + scan
 
@@ -274,7 +281,84 @@ python -m jobscan.zapier_sender output/job_index.json --status Completed --limit
 
 Each webhook payload includes the job record plus `source=sharepoint_job_scanner` and a UTC `sent_at` timestamp. Zapier can route those records to Teams, QuickBooks, CompanyCam, Outlook, or other follow-up actions.
 
-## Send Job Index To SharePoint List
+## Send Job Index To SharePoint List Directly With Graph
+
+The preferred Job Index list path is now direct Microsoft Graph sync. It discovers the SharePoint site, list, and actual internal column names automatically, then upserts one item per unique `job_id`.
+
+Default target:
+
+```bash
+SHAREPOINT_JOB_INDEX_SITE_URL=https://aro365531128.sharepoint.com/sites/Data
+SHAREPOINT_JOB_INDEX_LIST_NAME="Job Index"
+```
+
+Optional ID overrides skip discovery:
+
+```bash
+SHAREPOINT_JOB_INDEX_SITE_ID=...
+SHAREPOINT_JOB_INDEX_LIST_ID=...
+```
+
+Inspect SharePoint columns without syncing rows:
+
+```bash
+python -m jobscan.sharepoint_list_sync \
+  --site-url "https://aro365531128.sharepoint.com/sites/Data" \
+  --list-name "Job Index" \
+  --print-columns \
+  --columns-only
+```
+
+Dry-run a full sync plan without writing:
+
+```bash
+python -m jobscan.sharepoint_list_sync \
+  --input output/job_index.json \
+  --site-url "https://aro365531128.sharepoint.com/sites/Data" \
+  --list-name "Job Index" \
+  --dry-run \
+  --print-columns
+```
+
+Run a limited write test:
+
+```bash
+python -m jobscan.sharepoint_list_sync \
+  --input output/job_index.json \
+  --site-url "https://aro365531128.sharepoint.com/sites/Data" \
+  --list-name "Job Index" \
+  --limit 5
+```
+
+Run the full sync:
+
+```bash
+python -m jobscan.sharepoint_list_sync \
+  --input output/job_index.json \
+  --site-url "https://aro365531128.sharepoint.com/sites/Data" \
+  --list-name "Job Index"
+```
+
+The command writes:
+
+- `output/job_index_sharepoint_columns.json`
+- `output/sharepoint_job_index_sync_report.json`
+
+The scanner now preserves Graph `webUrl` values for job folders and important documents when available. The Job Index includes direct link fields such as `folder_url`, `proposal_url`, `estimate_url`, `invoice_url`, and `primary_doc_link`. Verify document links by opening a few SharePoint List rows and confirming `primary_doc_link` opens the best proposal/estimate, falling back to contract, tracking form, or job folder.
+
+The batch scanner can run the direct list sync after protected outputs are successfully written:
+
+```bash
+python -m jobscan.batch_sharepoint_sync \
+  --config config/sharepoint_scan_roots.yaml \
+  --sync-job-index-list
+```
+
+If shrink protection or partial-root protection blocks replacing `output/job_index.json`, the direct SharePoint List sync is skipped.
+
+## Send Job Index To SharePoint List Through Zapier
+
+The Zapier sender is still available as a fallback/legacy path. Direct Graph sync replaces the Zapier Job Index upsert for normal use.
 
 Create a Zapier Catch Hook that creates or updates rows in the SharePoint List named `Job Index`, then set its URL in `.env`:
 

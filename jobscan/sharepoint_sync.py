@@ -98,6 +98,65 @@ def _image_manifest_entry(child: dict[str, Any], relative_path: Path) -> dict[st
     }
 
 
+def drive_item_manifest_entry(child: dict[str, Any], relative_path: Path) -> dict[str, Any]:
+    name = child.get("name") or ""
+    return {
+        "name": name,
+        "web_url": child.get("webUrl"),
+        "webUrl": child.get("webUrl"),
+        "graph_item_id": child.get("id"),
+        "relative_path": str(relative_path),
+        "extension": Path(name).suffix.lower(),
+        "document_type": classify_document_type(name),
+        "modified_at": child.get("lastModifiedDateTime"),
+        "parentReference": child.get("parentReference"),
+        "file": child.get("file"),
+        "folder": child.get("folder"),
+    }
+
+
+def classify_document_type(name: str) -> str:
+    lower = name.lower()
+    if any(token in lower for token in ("proposal", "quote", "bid")):
+        return "proposal"
+    if "invoice" in lower:
+        return "invoice"
+    if any(token in lower for token in ("contract", "signed", "agreement")):
+        return "contract"
+    if any(token in lower for token in ("job tracking", "tracking form")):
+        return "job_tracking"
+    if "warranty" in lower:
+        return "warranty"
+    if any(token in lower for token in ("aerial", "eagleview", "drone", "satellite")):
+        return "aerial"
+    if "estimate" in lower or Path(name).suffix.lower() in SPREADSHEET_EXTS:
+        return "estimate"
+    return "other"
+
+
+def _name_matches(selected_name: Any, candidate_name: Any) -> bool:
+    selected = str(selected_name or "").strip().lower()
+    candidate = str(candidate_name or "").strip().lower()
+    return bool(selected and candidate and (selected == candidate or selected in candidate or candidate in selected))
+
+
+def _doc_sort_key(entry: dict[str, Any], selected_names: list[Any], preferred_type: str) -> tuple[int, str]:
+    exact = any(_name_matches(selected, entry.get("name")) for selected in selected_names)
+    type_match = entry.get("document_type") == preferred_type
+    modified = str(entry.get("modified_at") or "")
+    return (2 if exact else 1 if type_match else 0, modified)
+
+
+def select_document_url(entries: list[dict[str, Any]], document_type: str, selected_names: list[Any] | None = None) -> dict[str, Any] | None:
+    selected_names = selected_names or []
+    candidates = [entry for entry in entries if entry.get("web_url") and entry.get("document_type") == document_type]
+    if not candidates and document_type == "proposal":
+        candidates = [entry for entry in entries if entry.get("web_url") and entry.get("document_type") == "estimate"]
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda entry: _doc_sort_key(entry, selected_names, document_type), reverse=True)[0]
+
+
 def sync_sharepoint_folder(
     *,
     client: GraphClient,
@@ -128,6 +187,7 @@ def sync_sharepoint_folder(
         "library": target.library,
         "items": {},
         "folders": {},
+        "documents": [],
     }
     stats = SyncStats()
     image_manifests: dict[Path, list[dict[str, Any]]] = {}
@@ -178,11 +238,13 @@ def sync_sharepoint_folder(
 
             stats.files_seen += 1
             destination = local_dir / _safe_name(name)
+            try:
+                relative_path = destination.relative_to(sync_root)
+            except ValueError:
+                relative_path = destination
+            doc_entry = drive_item_manifest_entry(child, relative_path)
+            new_manifest["documents"].append(doc_entry)
             if skip_images and _is_image_item(child):
-                try:
-                    relative_path = destination.relative_to(sync_root)
-                except ValueError:
-                    relative_path = destination
                 image_manifests.setdefault(local_dir, []).append(_image_manifest_entry(child, relative_path))
                 stats.files_skipped += 1
                 stats.skipped_images += 1
@@ -200,7 +262,11 @@ def sync_sharepoint_folder(
                 "etag": etag,
                 "size": child.get("size"),
                 "webUrl": child.get("webUrl"),
+                "parentReference": child.get("parentReference"),
+                "file": child.get("file"),
+                "lastModifiedDateTime": child.get("lastModifiedDateTime"),
                 "local_path": str(destination.relative_to(sync_root)),
+                "document_type": doc_entry.get("document_type"),
             }
             if not force and destination.exists() and old.get("etag") == etag:
                 stats.files_skipped += 1
@@ -248,6 +314,96 @@ def attach_folder_urls(records: list[Any], cache_root: Path) -> None:
             record.folder_url = folder_url
 
 
+def load_document_manifest(cache_root: Path) -> list[dict[str, Any]]:
+    manifest = _load_manifest(cache_root / ".jobscan_manifest.json")
+    docs = manifest.get("documents") if isinstance(manifest, dict) else None
+    if isinstance(docs, list):
+        return [doc for doc in docs if isinstance(doc, dict)]
+    items = manifest.get("items") if isinstance(manifest, dict) else None
+    if not isinstance(items, dict):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in items.values():
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name") or ""
+        out.append(
+            {
+                "name": name,
+                "web_url": item.get("webUrl") or item.get("web_url"),
+                "graph_item_id": item.get("id"),
+                "relative_path": item.get("local_path"),
+                "extension": Path(name).suffix.lower(),
+                "document_type": item.get("document_type") or classify_document_type(name),
+                "modified_at": item.get("lastModifiedDateTime"),
+            }
+        )
+    return out
+
+
+def _docs_for_record(all_docs: list[dict[str, Any]], record: Any) -> list[dict[str, Any]]:
+    folder_path = str(getattr(record, "folder_path", "") or "").strip().strip("/")
+    folder_name = str(getattr(record, "folder_name", "") or "").strip().lower()
+    docs: list[dict[str, Any]] = []
+    for doc in all_docs:
+        relative_path = str(doc.get("relative_path") or "").strip("/")
+        parent_path = str((doc.get("parentReference") or {}).get("path") or "")
+        haystack = f"{relative_path} {parent_path}".lower()
+        if folder_path and folder_path.lower() in haystack:
+            docs.append(doc)
+        elif folder_name and folder_name in haystack:
+            docs.append(doc)
+    return docs
+
+
+def attach_document_urls(records: list[Any], cache_root: Path) -> None:
+    all_docs = load_document_manifest(cache_root)
+    for record in records:
+        docs = _docs_for_record(all_docs, record)
+        selected = {
+            "proposal": [getattr(record, "estimate_file", None), getattr(record, "primary_estimate_file", None)],
+            "estimate": [getattr(record, "estimate_file", None), getattr(record, "primary_estimate_file", None)],
+            "contract": [],
+            "invoice": [getattr(record, "invoice_file", None)],
+            "job_tracking": [getattr(record, "job_tracking_file", None)],
+            "warranty": [],
+            "aerial": [],
+        }
+        selected_docs: dict[str, dict[str, Any]] = {}
+        for doc_type, selected_names in selected.items():
+            match = select_document_url(docs, doc_type, selected_names)
+            if match:
+                selected_docs[doc_type] = match
+                setattr(record, f"{doc_type}_url" if doc_type != "job_tracking" else "job_tracking_url", match.get("web_url"))
+        if not getattr(record, "proposal_url", None):
+            proposal = select_document_url(docs, "proposal", selected["proposal"])
+            if proposal:
+                record.proposal_url = proposal.get("web_url")
+                selected_docs["proposal"] = proposal
+        primary_type = None
+        primary = None
+        for doc_type in ("proposal", "estimate", "contract", "job_tracking"):
+            url_attr = f"{doc_type}_url" if doc_type != "job_tracking" else "job_tracking_url"
+            url = getattr(record, url_attr, None)
+            if url:
+                primary_type = doc_type
+                primary = selected_docs.get(doc_type)
+                record.primary_doc_link = url
+                break
+        if not record.primary_doc_link and getattr(record, "folder_url", None):
+            primary_type = "folder"
+            record.primary_doc_link = record.folder_url
+        record.primary_doc_type = primary_type
+        record.primary_doc_name = primary.get("name") if isinstance(primary, dict) else None
+        link_rows = [
+            {"type": key, "name": value.get("name"), "url": value.get("web_url")}
+            for key, value in selected_docs.items()
+            if value.get("web_url")
+        ]
+        record.document_link_count = len(link_rows)
+        record.important_doc_links_json = json.dumps(link_rows, ensure_ascii=False) if link_rows else None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Sync SharePoint job folders through Microsoft Graph and build a job index.")
     parser.add_argument("--sharepoint-url", required=True, help="Site URL, e.g. https://contoso.sharepoint.com/sites/Operations")
@@ -278,6 +434,7 @@ def main() -> None:
     )
     records = scan_root(cache_root, scan_context=target.folder_path)
     attach_folder_urls(records, cache_root)
+    attach_document_urls(records, cache_root)
     write_csv(records, args.out)
     write_json(records, args.json)
     write_excel(records, args.xlsx)

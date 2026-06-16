@@ -54,11 +54,13 @@ class GraphClient:
         client_id: str | None = None,
         client_secret: str | None = None,
         timeout: int = 60,
+        max_retries: int = 5,
     ) -> None:
         self.tenant_id = tenant_id or os.getenv("MS_TENANT_ID")
         self.client_id = client_id or os.getenv("MS_CLIENT_ID")
         self.client_secret = client_secret or os.getenv("MS_CLIENT_SECRET")
         self.timeout = timeout
+        self.max_retries = max_retries
         missing = [name for name, value in {
             "MS_TENANT_ID": self.tenant_id,
             "MS_CLIENT_ID": self.client_id,
@@ -119,17 +121,43 @@ class GraphClient:
     def request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
         if url.startswith("/"):
             url = GRAPH_ROOT + url
-        response = self._request_once(method, url, **kwargs)
-        if self._is_invalid_auth_token(response):
-            response.close()
-            response = self._request_once(method, url, force_refresh=True, **kwargs)
-        if response.status_code >= 400:
+        retry_statuses = {429, 500, 502, 503, 504}
+        last_response: requests.Response | None = None
+        for attempt in range(self.max_retries + 1):
+            response = self._request_once(method, url, **kwargs)
+            if self._is_invalid_auth_token(response):
+                response.close()
+                response = self._request_once(method, url, force_refresh=True, **kwargs)
+            if response.status_code not in retry_statuses:
+                if response.status_code >= 400:
+                    try:
+                        detail = response.json()
+                    except ValueError:
+                        detail = response.text[:1000]
+                    raise GraphError(f"Graph {method} {url} failed with {response.status_code}: {detail}")
+                return response
+            last_response = response
+            if attempt >= self.max_retries:
+                break
+            retry_after = response.headers.get("Retry-After")
             try:
-                detail = response.json()
+                sleep_seconds = float(retry_after) if retry_after else min(2 ** attempt, 30)
             except ValueError:
-                detail = response.text[:1000]
-            raise GraphError(f"Graph {method} {url} failed with {response.status_code}: {detail}")
-        return response
+                sleep_seconds = min(2 ** attempt, 30)
+            response.close()
+            time.sleep(sleep_seconds)
+
+        detail: Any
+        if last_response is None:
+            detail = "No response"
+            status_code = "unknown"
+        else:
+            status_code = last_response.status_code
+            try:
+                detail = last_response.json()
+            except ValueError:
+                detail = last_response.text[:1000]
+        raise GraphError(f"Graph {method} {url} failed after retries with {status_code}: {detail}")
 
     def get_json(self, url: str) -> dict[str, Any]:
         return self.request("GET", url).json()

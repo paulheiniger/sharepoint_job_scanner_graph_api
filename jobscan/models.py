@@ -47,6 +47,18 @@ class JobRecord:
     price_per_sqft: float | None = None
 
     invoice_file: str | None = None
+    proposal_url: str | None = None
+    estimate_url: str | None = None
+    contract_url: str | None = None
+    invoice_url: str | None = None
+    job_tracking_url: str | None = None
+    warranty_url: str | None = None
+    aerial_url: str | None = None
+    primary_doc_link: str | None = None
+    primary_doc_type: str | None = None
+    primary_doc_name: str | None = None
+    important_doc_links_json: str | None = None
+    document_link_count: int | None = 0
     invoice_number: str | None = None
     invoice_amount: float | None = None
     invoice_date: str | None = None
