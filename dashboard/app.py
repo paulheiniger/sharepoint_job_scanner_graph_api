@@ -5,7 +5,7 @@ import json
 import os
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 import pandas as pd
 import plotly.express as px
@@ -13,6 +13,14 @@ import streamlit as st
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
+
+from jobscan.job_search import (
+    get_job_documents,
+    interpret_search_request,
+    requested_document_available,
+    requested_document_label,
+    search_jobs,
+)
 
 try:
     from streamlit_calendar import calendar
@@ -1088,6 +1096,158 @@ def status_value(df: pd.DataFrame, status_text: str) -> float:
         return 0.0
     mask = df["pipeline_status"].fillna("").astype(str).str.contains(status_text, case=False, na=False)
     return safe_sum(df[mask], "estimated_value")
+
+
+def markdown_link(label: str, url: str) -> str:
+    safe_label = str(label).replace("[", "\\[").replace("]", "\\]")
+    safe_url = str(url).replace(")", "%29")
+    return f"[{safe_label}]({safe_url})"
+
+
+def job_result_markdown(job: dict[str, Any], interpreted: dict[str, Any], *, include_documents: bool = True) -> str:
+    title = text_value(job.get("job_name")) or text_value(job.get("customer")) or text_value(job.get("job_id")) or "Untitled job"
+    location = ", ".join(part for part in [text_value(job.get("city")), text_value(job.get("state"))] if part)
+    meta = " · ".join(
+        part
+        for part in [
+            text_value(job.get("division")),
+            text_value(job.get("pipeline_status")) or text_value(job.get("status")),
+            location,
+        ]
+        if part
+    )
+    lines = [f"**{title}**"]
+    if text_value(job.get("customer")) and text_value(job.get("customer")) != title:
+        lines.append(text_value(job.get("customer")))
+    if meta:
+        lines.append(meta)
+    lines.append(f"Match: {text_value(job.get('match_reason')) or 'Matched job data'}")
+    if include_documents:
+        docs = get_job_documents(job, interpreted.get("document_type"))
+        requested_type = interpreted.get("document_type")
+        if requested_type not in (None, "all") and not requested_document_available(job, requested_type):
+            lines.append(f"{requested_document_label(requested_type)}: not indexed")
+        if docs:
+            lines.append("Documents:")
+            lines.extend(f"- {markdown_link('Open ' + doc['label'].lower(), doc['url'])}" for doc in docs)
+        elif requested_type:
+            lines.append(f"No stored {str(interpreted['document_type']).replace('_', ' ')} link found for this job.")
+    return "\n".join(lines)
+
+
+def ask_spraytec_page() -> None:
+    st.title("Ask Spray-Tec")
+    st.caption("Conversational job and document finder. This searches structured job data and stored document links, not document contents yet.")
+
+    if "ask_spraytec_messages" not in st.session_state:
+        st.session_state["ask_spraytec_messages"] = [
+            {
+                "role": "assistant",
+                "content": "Ask me to find a job or document, like “Find the Mudd furniture job” or “Show me the Canadian Solar estimate.”",
+            }
+        ]
+    selected_job = st.session_state.get("ask_spraytec_selected_job")
+    selected_job_id = st.session_state.get("ask_spraytec_selected_job_id")
+    if selected_job_id:
+        st.caption(f"Selected job_id: {selected_job_id}")
+        if st.button("Clear selected job", key="ask_spraytec_clear_selected"):
+            st.session_state.pop("ask_spraytec_selected_job", None)
+            st.session_state.pop("ask_spraytec_selected_job_id", None)
+            st.rerun()
+
+    for message in st.session_state["ask_spraytec_messages"]:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    prompt = st.chat_input("Find a job or document")
+    if not prompt:
+        return
+
+    st.session_state["ask_spraytec_messages"].append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+    interpreted = interpret_search_request(prompt)
+    debug_payload: dict[str, Any] = {"interpreted": interpreted, "ranked_matches": []}
+    response = ""
+
+    if interpreted.get("is_follow_up") and selected_job:
+        docs = get_job_documents(selected_job, interpreted.get("document_type"))
+        requested_type = interpreted.get("document_type")
+        if docs:
+            response = f"Using selected job: **{text_value(selected_job.get('job_name')) or text_value(selected_job.get('customer'))}**\n\n"
+            if requested_type not in (None, "all") and not requested_document_available(selected_job, requested_type):
+                response += f"{requested_document_label(requested_type)}: not indexed\n\n"
+            response += "\n".join(f"- {markdown_link('Open ' + doc['label'].lower(), doc['url'])}" for doc in docs)
+        else:
+            response = "I do not see that document link stored for the selected job."
+        debug_payload["ranked_matches"] = [
+            {
+                "job_id": selected_job.get("job_id"),
+                "score": selected_job.get("match_score"),
+                "reason": selected_job.get("match_reason"),
+            }
+        ]
+    else:
+        try:
+            with get_engine().connect() as conn:
+                results = search_jobs(conn, prompt, limit=10)
+        except Exception as exc:
+            show_database_error(exc)
+            return
+        debug_payload["ranked_matches"] = [
+            {
+                "job_id": result.get("job_id"),
+                "customer": result.get("customer"),
+                "job_name": result.get("job_name"),
+                "score": result.get("match_score"),
+                "reason": result.get("match_reason"),
+            }
+            for result in results
+        ]
+        strong_results = [result for result in results if float(result.get("match_score") or 0) >= 45]
+        display_results = strong_results or results[:5]
+        if not display_results:
+            response = "No confident match was found. Try adding a customer name, location, division, or approximate year."
+        elif len(strong_results) == 1 and float(strong_results[0].get("match_score") or 0) >= 75:
+            job = strong_results[0]
+            st.session_state["ask_spraytec_selected_job"] = job
+            st.session_state["ask_spraytec_selected_job_id"] = str(job.get("job_id") or "")
+            response = "I found a strong match.\n\n" + job_result_markdown(job, interpreted)
+            alternatives = results[1:4]
+            if alternatives:
+                response += "\n\nLower-ranked alternatives are available in Search details."
+        else:
+            if strong_results:
+                response = f"I found {len(strong_results)} possible matches. The strongest results are:\n\n"
+            else:
+                response = "No confident match was found, but these weaker suggestions may help:\n\n"
+            chunks = []
+            for index, job in enumerate(display_results[:5], start=1):
+                chunks.append(f"{index}. " + job_result_markdown(job, interpreted))
+            response += "\n\n".join(chunks)
+            if display_results:
+                job = display_results[0]
+                st.session_state["ask_spraytec_selected_job"] = job
+                st.session_state["ask_spraytec_selected_job_id"] = str(job.get("job_id") or "")
+            if not strong_results:
+                response += "\n\nTry adding customer, location, division, or approximate year to narrow this down."
+
+    st.session_state["ask_spraytec_messages"].append({"role": "assistant", "content": response})
+    with st.chat_message("assistant"):
+        st.markdown(response)
+        with st.expander("Search details"):
+            st.write("interpreted search text", interpreted.get("search_text"))
+            st.write("detected document type", interpreted.get("document_type"))
+            st.write(
+                "detected filters",
+                {
+                    "division": interpreted.get("division"),
+                    "status": interpreted.get("status"),
+                    "city": interpreted.get("city"),
+                    "state": interpreted.get("state"),
+                },
+            )
+            st.write(debug_payload["ranked_matches"])
 
 
 JOB_BOARD_STATUS_ORDER = [
@@ -2832,6 +2992,7 @@ def main() -> None:
         "Page",
         [
             "Owner Overview",
+            "Ask Spray-Tec",
             "Job Board",
             "Schedule Calendar",
             "Pipeline / Money",
@@ -2854,6 +3015,8 @@ def main() -> None:
 
     if page == "Owner Overview":
         owner_overview_page()
+    elif page == "Ask Spray-Tec":
+        ask_spraytec_page()
     elif page == "Job Board":
         job_board_page()
     elif page == "Schedule Calendar":

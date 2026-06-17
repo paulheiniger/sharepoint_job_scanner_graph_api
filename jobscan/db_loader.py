@@ -430,13 +430,17 @@ def upsert_row(conn: Connection, table: Table, primary_key: str, row: dict[str, 
         return 0
 
     stmt = pg_insert(table).values(row)
-    update_cols = {key: stmt.excluded[key] for key in row if key != primary_key}
+    update_cols = upsert_update_columns(stmt, row, primary_key)
     if update_cols:
         stmt = stmt.on_conflict_do_update(index_elements=[primary_key], set_=update_cols)
     else:
         stmt = stmt.on_conflict_do_nothing(index_elements=[primary_key])
     conn.execute(stmt)
     return 1
+
+
+def upsert_update_columns(stmt: Any, row: dict[str, Any], primary_key: str) -> dict[str, Any]:
+    return {key: stmt.excluded[key] for key in row if key != primary_key}
 
 
 def existing_tracking_summary_ids(conn: Connection, tracking_ids: set[str]) -> set[str]:

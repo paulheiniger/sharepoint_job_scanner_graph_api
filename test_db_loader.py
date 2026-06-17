@@ -1,5 +1,8 @@
 from datetime import datetime, timezone
 
+from sqlalchemy import Column, MetaData, Table, Text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+
 from jobscan.db_loader import (
     clean_date_value,
     ensure_primary_id,
@@ -9,6 +12,7 @@ from jobscan.db_loader import (
     primary_key_diagnostics,
     stable_hash_id,
     stable_id,
+    upsert_update_columns,
 )
 
 
@@ -255,3 +259,93 @@ def test_prepare_row_normalizes_valid_known_date_columns() -> None:
     assert row["actual_last_work_date"] == "2026-06-04"
     assert row["raw"]["estimated_end_date"] == "on separate Sheet"
     assert stats["invalid_date_values"] == 1
+
+
+def test_prepare_job_row_populates_document_link_fields_and_count() -> None:
+    columns = {
+        "job_id": "text",
+        "primary_doc_link": "text",
+        "primary_doc_type": "text",
+        "primary_doc_name": "text",
+        "proposal_url": "text",
+        "estimate_url": "text",
+        "contract_url": "text",
+        "invoice_url": "text",
+        "job_tracking_url": "text",
+        "warranty_url": "text",
+        "aerial_url": "text",
+        "document_link_count": "integer",
+        "raw": "jsonb",
+    }
+    row = prepare_row(
+        "jobs",
+        {
+            "job_id": "job-docs",
+            "primary_doc_link": "https://sharepoint.example/primary",
+            "primary_doc_type": "proposal",
+            "primary_doc_name": "Proposal.pdf",
+            "proposal_url": "https://sharepoint.example/proposal",
+            "estimate_url": "https://sharepoint.example/estimate",
+            "contract_url": "https://sharepoint.example/contract",
+            "invoice_url": "https://sharepoint.example/invoice",
+            "job_tracking_url": "https://sharepoint.example/tracking",
+            "warranty_url": "https://sharepoint.example/warranty",
+            "aerial_url": "https://sharepoint.example/aerial",
+            "document_link_count": "7",
+        },
+        columns,
+        datetime(2026, 6, 10, tzinfo=timezone.utc),
+    )
+
+    assert row["primary_doc_link"] == "https://sharepoint.example/primary"
+    assert row["proposal_url"] == "https://sharepoint.example/proposal"
+    assert row["estimate_url"] == "https://sharepoint.example/estimate"
+    assert row["contract_url"] == "https://sharepoint.example/contract"
+    assert row["invoice_url"] == "https://sharepoint.example/invoice"
+    assert row["job_tracking_url"] == "https://sharepoint.example/tracking"
+    assert row["warranty_url"] == "https://sharepoint.example/warranty"
+    assert row["aerial_url"] == "https://sharepoint.example/aerial"
+    assert row["document_link_count"] == 7
+    assert row["raw"]["invoice_url"] == "https://sharepoint.example/invoice"
+
+
+def test_prepare_job_row_blanks_document_urls_to_null_and_absent_fields_are_not_updated() -> None:
+    columns = {
+        "job_id": "text",
+        "proposal_url": "text",
+        "invoice_url": "text",
+        "document_link_count": "integer",
+    }
+    row = prepare_row(
+        "jobs",
+        {
+            "job_id": "job-docs",
+            "proposal_url": "",
+            "document_link_count": "",
+        },
+        columns,
+        datetime(2026, 6, 10, tzinfo=timezone.utc),
+    )
+
+    assert row["proposal_url"] is None
+    assert row["document_link_count"] is None
+    assert "invoice_url" not in row
+
+
+def test_upsert_update_columns_include_document_links() -> None:
+    table = Table(
+        "jobs",
+        MetaData(),
+        Column("job_id", Text, primary_key=True),
+        Column("invoice_url", Text),
+        Column("estimate_url", Text),
+    )
+    row = {
+        "job_id": "job-docs",
+        "invoice_url": "https://sharepoint.example/invoice",
+        "estimate_url": "https://sharepoint.example/estimate",
+    }
+    stmt = pg_insert(table).values(row)
+    update_cols = upsert_update_columns(stmt, row, "job_id")
+
+    assert set(update_cols) == {"invoice_url", "estimate_url"}

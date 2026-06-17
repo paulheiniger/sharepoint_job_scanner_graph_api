@@ -241,6 +241,20 @@ python -m jobscan.db_loader --all
 
 The loader upserts into existing tables, stores each source record in the table's `raw` JSONB column, and only writes columns that exist in the current SQL schema.
 
+For faster conversational job lookup, apply the optional search indexes after the base schema:
+
+```bash
+psql "$DATABASE_URL" -f db/job_search.sql
+```
+
+Smoke-test the job/document finder from the command line:
+
+```bash
+python -m jobscan.job_search \
+  --query "show me the Canadian Solar estimate" \
+  --database-url "$DATABASE_URL"
+```
+
 ## Generate Zapier handoff payloads
 
 ```bash
@@ -425,6 +439,8 @@ For Microsoft Teams Zapier actions, set Message Text Format / Format to HTML and
 ```bash
 streamlit run app.py
 ```
+
+The dashboard includes an **Ask Spray-Tec** page for conversational job and document lookup. It searches structured job fields and stored SharePoint document links, then shows matching job records and available folder/proposal/estimate/contract/invoice links.
 
 ## Recommended rollout
 
