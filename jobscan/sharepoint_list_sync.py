@@ -10,7 +10,6 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -21,6 +20,40 @@ DEFAULT_SITE_URL = "https://aro365531128.sharepoint.com/sites/Data"
 DEFAULT_LIST_NAME = "Job Index"
 DEFAULT_REPORT_OUT = Path("output/sharepoint_job_index_sync_report.json")
 DEFAULT_COLUMNS_OUT = Path("output/job_index_sharepoint_columns.json")
+
+URL_FIELDS = {
+    "folder_url",
+    "primary_doc_link",
+    "proposal_url",
+    "estimate_url",
+    "contract_url",
+    "invoice_url",
+    "job_tracking_url",
+    "warranty_url",
+    "aerial_url",
+}
+
+CRITICAL_FIELDS = {
+    "job_id",
+    "customer",
+    "job_name",
+    "folder_url",
+    "primary_doc_link",
+    "estimate_url",
+}
+
+OPTIONAL_FIELDS = {
+    "proposal_url",
+    "contract_url",
+    "invoice_url",
+    "job_tracking_url",
+    "warranty_url",
+    "aerial_url",
+    "primary_doc_type",
+    "primary_doc_name",
+    "important_doc_links_json",
+    "document_link_count",
+}
 
 RECOMMENDED_FIELDS = [
     "Title",
@@ -74,7 +107,6 @@ RECOMMENDED_FIELDS = [
     "job_tracking_url",
     "warranty_url",
     "aerial_url",
-    "important_doc_links_json",
     "document_link_count",
     "primary_doc_type",
     "primary_doc_name",
@@ -85,7 +117,17 @@ SOURCE_ALIASES = {
     "primary_doc_link": ["primary_doc_link"],
     "zip_code": ["zip_code", "zip"],
     "profit_pct": ["profit_pct", "profit_percent"],
+    "estimated_sqft": ["estimated_sqft", "estimated_square_feet"],
+    "price_per_sqft": ["price_per_sqft", "price_per_square_foot"],
 }
+
+
+def default_source_fields(*, include_important_doc_links_json: bool = False) -> list[str]:
+    fields = list(RECOMMENDED_FIELDS)
+    if include_important_doc_links_json:
+        insert_after = fields.index("aerial_url") + 1 if "aerial_url" in fields else len(fields)
+        fields.insert(insert_after, "important_doc_links_json")
+    return fields
 
 
 @dataclass
@@ -137,7 +179,7 @@ def clean_value(value: Any) -> Any:
 
 
 def infer_column_type(column: dict[str, Any]) -> str:
-    for key in ("text", "multilineText", "number", "currency", "boolean", "dateTime", "hyperlinkOrPicture", "choice", "calculated", "lookup", "personOrGroup"):
+    for key in ("text", "multilineText", "note", "number", "currency", "boolean", "dateTime", "hyperlinkOrPicture", "choice", "calculated", "lookup", "personOrGroup"):
         if key in column:
             return key
     return column.get("columnGroup") or "unknown"
@@ -197,6 +239,44 @@ def resolve_list_id(client: GraphClient, site_id: str, list_name: str, explicit_
 
 def get_columns(client: GraphClient, site_id: str, list_id: str) -> list[ColumnInfo]:
     return column_infos(client.get_all_pages(f"/sites/{site_id}/lists/{list_id}/columns"))
+
+
+def desired_column_payload(source: str) -> dict[str, Any]:
+    display_name = source
+    if source in {"document_link_count", "photo_count"}:
+        return {"name": source, "displayName": display_name, "number": {}}
+    if source in {"important_doc_links_json", "warnings"}:
+        return {"name": source, "displayName": display_name, "multilineText": {"allowMultipleLines": True}}
+    if source in URL_FIELDS:
+        return {"name": source, "displayName": display_name, "text": {}}
+    return {"name": source, "displayName": display_name, "text": {}}
+
+
+def ensure_missing_columns(
+    client: GraphClient,
+    site_id: str,
+    list_id: str,
+    missing: list[str],
+    *,
+    continue_on_error: bool = True,
+) -> list[dict[str, str]]:
+    failures: list[dict[str, str]] = []
+    for source in missing:
+        payload = desired_column_payload(source)
+        try:
+            client.request("POST", f"/sites/{site_id}/lists/{list_id}/columns", json=payload)
+            print(f"Created SharePoint column: {source}")
+        except Exception as exc:
+            failures.append({"field": source, "error": f"{type(exc).__name__}: {exc}"})
+            print(f"Failed creating SharePoint column {source}: {type(exc).__name__}: {exc}")
+            if not continue_on_error:
+                raise
+    if failures:
+        print(
+            "The app may not have permission to modify the SharePoint list schema. "
+            "Add missing columns manually or request elevated permission."
+        )
+    return failures
 
 
 def print_columns(columns: list[ColumnInfo]) -> None:
@@ -293,10 +373,21 @@ def title_for_record(record: dict[str, Any]) -> str:
     return str(clean_value(record.get("job_name")) or clean_value(record.get("customer")) or clean_value(record.get("folder_name")) or clean_value(record.get("job_id")) or "Untitled Job")
 
 
-def convert_value_for_column(value: Any, column: ColumnInfo) -> Any:
+def is_text_like_column(column: ColumnInfo) -> bool:
+    return column.type_name in {"text", "multilineText", "note", "unknown", "Custom Columns"} or column.type_name.lower() in {"custom columns", "custom"}
+
+
+def convert_value_for_column(value: Any, column: ColumnInfo, *, source_field: str | None = None, url_fields_as_text: bool = False) -> Any:
     value = clean_value(value)
     if value is None:
         return None
+    if source_field in URL_FIELDS:
+        url = str(value).strip()
+        if url_fields_as_text or is_text_like_column(column):
+            return url
+        if column.type_name == "hyperlinkOrPicture":
+            return {"Url": url, "Description": url} if is_url(url) else None
+        return url
     if column.type_name in {"number", "currency"}:
         try:
             return float(str(value).replace("$", "").replace(",", ""))
@@ -335,8 +426,23 @@ def build_field_mapping(columns: list[ColumnInfo], source_fields: list[str] = RE
     return mapped, missing, skipped
 
 
-def build_payload(record: dict[str, Any], mapping: dict[str, ColumnInfo]) -> dict[str, Any]:
+def classify_missing_columns(missing: list[str]) -> tuple[list[str], list[str], list[str]]:
+    critical = [field for field in missing if field in CRITICAL_FIELDS]
+    optional = [field for field in missing if field in OPTIONAL_FIELDS]
+    other = [field for field in missing if field not in CRITICAL_FIELDS and field not in OPTIONAL_FIELDS]
+    return critical, optional, other
+
+
+def build_payload(
+    record: dict[str, Any],
+    mapping: dict[str, ColumnInfo],
+    *,
+    url_fields_as_text: bool = False,
+    url_text_columns: set[str] | None = None,
+    omitted_fields: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     record = ensure_document_links(record)
+    url_text_columns = url_text_columns or set()
     fields: dict[str, Any] = {}
     for source, column in mapping.items():
         value = title_for_record(record) if source == "Title" else record.get(source)
@@ -344,7 +450,29 @@ def build_payload(record: dict[str, Any], mapping: dict[str, ColumnInfo]) -> dic
             value = "\n".join(str(item) for item in value)
         if source == "important_doc_links_json" and not isinstance(value, str):
             value = json.dumps(value, ensure_ascii=False)
-        converted = convert_value_for_column(value, column)
+        if source == "important_doc_links_json" and column.type_name == "text":
+            text_value = str(clean_value(value) or "")
+            if len(text_value) > 255:
+                print(
+                    "WARNING: important_doc_links_json omitted because the destination SharePoint column "
+                    f"'{column.name}' is single-line text and the value is {len(text_value)} characters."
+                )
+                if omitted_fields is not None:
+                    omitted_fields.append(
+                        {
+                            "field": source,
+                            "column": column.name,
+                            "reason": "single-line text limit",
+                            "length": len(text_value),
+                        }
+                    )
+                continue
+        converted = convert_value_for_column(
+            value,
+            column,
+            source_field=source,
+            url_fields_as_text=url_fields_as_text or column.name in url_text_columns,
+        )
         fields[column.name] = converted
     return fields
 
@@ -377,15 +505,25 @@ def sync_records(
     create_only: bool,
     update_only: bool,
     continue_on_error: bool,
+    url_fields_as_text: bool = False,
 ) -> dict[str, Any]:
     stats = Counter()
     errors: list[dict[str, Any]] = []
+    omitted_fields: list[dict[str, Any]] = []
+    url_text_columns: set[str] = set()
+    url_column_names = {column.name for source, column in mapping.items() if source in URL_FIELDS}
     for record in records:
         job_id = str(clean_value(record.get("job_id")) or "").strip()
         if not job_id:
             stats["skipped"] += 1
             continue
-        fields = build_payload(record, mapping)
+        fields = build_payload(
+            record,
+            mapping,
+            url_fields_as_text=url_fields_as_text,
+            url_text_columns=url_text_columns,
+            omitted_fields=omitted_fields,
+        )
         item_id = existing.get(job_id.lower())
         try:
             if item_id:
@@ -405,11 +543,37 @@ def sync_records(
                     client.request("POST", f"/sites/{site_id}/lists/{list_id}/items", json={"fields": fields})
                 stats["creates_succeeded"] += 1
         except Exception as exc:
-            stats["failures"] += 1
-            errors.append({"job_id": job_id, "error": f"{type(exc).__name__}: {exc}"})
-            if not continue_on_error:
-                raise
-    return {**stats, "errors": errors}
+            if not url_fields_as_text and url_column_names:
+                try:
+                    retry_fields = build_payload(record, mapping, url_fields_as_text=True, omitted_fields=omitted_fields)
+                    if item_id:
+                        if not dry_run:
+                            client.request("PATCH", f"/sites/{site_id}/lists/{list_id}/items/{item_id}/fields", json=retry_fields)
+                        stats["updates_succeeded"] += 1
+                    else:
+                        if not dry_run:
+                            client.request("POST", f"/sites/{site_id}/lists/{list_id}/items", json={"fields": retry_fields})
+                        stats["creates_succeeded"] += 1
+                    url_text_columns.update(url_column_names)
+                    stats["url_hyperlink_fallbacks"] += 1
+                    continue
+                except Exception as retry_exc:
+                    errors.append(
+                        {
+                            "job_id": job_id,
+                            "error": f"{type(exc).__name__}: {exc}",
+                            "text_retry_error": f"{type(retry_exc).__name__}: {retry_exc}",
+                        }
+                    )
+                    stats["failures"] += 1
+                    if not continue_on_error:
+                        raise retry_exc from exc
+            else:
+                stats["failures"] += 1
+                errors.append({"job_id": job_id, "error": f"{type(exc).__name__}: {exc}"})
+                if not continue_on_error:
+                    raise
+    return {**stats, "errors": errors, "url_text_columns": sorted(url_text_columns), "omitted_fields": omitted_fields}
 
 
 def url_count(records: list[dict[str, Any]], field: str) -> int:
@@ -430,18 +594,52 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if args.print_columns:
         print_columns(columns)
     write_json(args.columns_out, [column.raw for column in columns])
-    if args.columns_only:
-        return {"site_id": site_id, "list_id": list_id, "columns": len(columns)}
+    source_fields = default_source_fields(include_important_doc_links_json=args.include_important_doc_links_json)
+    mapping, missing, skipped = build_field_mapping(columns, source_fields)
+    critical_missing, optional_missing, other_missing = classify_missing_columns(missing)
+    ensure_column_failures: list[dict[str, str]] = []
+    if args.ensure_columns and missing:
+        ensure_column_failures = ensure_missing_columns(client, site_id, list_id, missing)
+        if ensure_column_failures and not args.ensure_columns_only:
+            columns = get_columns(client, site_id, list_id)
+            mapping, missing, skipped = build_field_mapping(columns, source_fields)
+            critical_missing, optional_missing, other_missing = classify_missing_columns(missing)
+    if "primary_doc_link" in missing:
+        print("primary_doc_link missing: Copilot/BizChat document lookup will be less reliable.")
+    if args.columns_only or args.ensure_columns_only:
+        completed_at = datetime.now(timezone.utc).isoformat()
+        report = {
+            "started_at": started_at,
+            "completed_at": completed_at,
+            "site_id": site_id,
+            "list_id": list_id,
+            "list_name": args.list_name,
+            "columns": len(columns),
+            "mapped_columns": {source: column.name for source, column in mapping.items()},
+            "missing_columns": missing,
+            "critical_missing_columns": critical_missing,
+            "optional_missing_columns": optional_missing,
+            "other_missing_columns": other_missing,
+            "skipped_read_only_columns": skipped,
+            "ensure_column_failures": ensure_column_failures,
+            "errors": [],
+            "dry_run": args.dry_run,
+        }
+        write_json(args.report_out, report)
+        if args.ensure_columns_only and ensure_column_failures:
+            raise SystemExit(1)
+        return report
 
     records = load_records(args.input)
     if args.limit:
         records = records[: args.limit]
     unique_records, duplicates = dedupe_records(records)
-    mapping, missing, skipped = build_field_mapping(columns)
     print("Mapped columns:")
     for source, column in mapping.items():
         print(f"  {source} -> {column.display_name} ({column.name})")
-    print("Missing recommended columns:", ", ".join(missing) if missing else "none")
+    print("Critical missing columns:", ", ".join(critical_missing) if critical_missing else "none")
+    print("Optional missing columns:", ", ".join(optional_missing) if optional_missing else "none")
+    print("Other missing recommended columns:", ", ".join(other_missing) if other_missing else "none")
     print("Skipped read-only columns:", ", ".join(skipped) if skipped else "none")
     existing_items = get_existing_items(client, site_id, list_id)
     job_id_column = mapping.get("job_id")
@@ -457,6 +655,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         create_only=args.create_only,
         update_only=args.update_only,
         continue_on_error=args.continue_on_error,
+        url_fields_as_text=args.url_fields_as_text,
     )
     completed_at = datetime.now(timezone.utc).isoformat()
     report = {
@@ -482,6 +681,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "jobs_with_invoice_url": url_count(unique_records, "invoice_url"),
         "mapped_columns": {source: column.name for source, column in mapping.items()},
         "missing_columns": missing,
+        "critical_missing_columns": critical_missing,
+        "optional_missing_columns": optional_missing,
+        "other_missing_columns": other_missing,
+        "skipped_read_only_columns": skipped,
+        "ensure_column_failures": ensure_column_failures,
+        "url_hyperlink_fallbacks": sync_stats.get("url_hyperlink_fallbacks", 0),
+        "url_text_columns": sync_stats.get("url_text_columns", []),
+        "omitted_fields": sync_stats.get("omitted_fields", []),
         "truncated_values": [],
         "errors": sync_stats.get("errors", []),
         "dry_run": args.dry_run,
@@ -516,6 +723,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--update-only", action="store_true")
     parser.add_argument("--print-columns", action="store_true")
     parser.add_argument("--columns-only", action="store_true")
+    parser.add_argument("--ensure-columns", action="store_true", help="Attempt to create missing SharePoint columns, then continue syncing existing columns if creation fails.")
+    parser.add_argument("--ensure-columns-only", action="store_true", help="Only attempt to create missing columns and write a report.")
+    parser.add_argument("--url-fields-as-text", action="store_true", help="Force URL fields to be written as plain strings regardless of detected SharePoint column type.")
+    parser.add_argument("--include-important-doc-links-json", action="store_true", help="Include important_doc_links_json in SharePoint writes. Omitted by default because long JSON can exceed single-line text limits.")
     parser.add_argument("--columns-out", type=Path, default=DEFAULT_COLUMNS_OUT)
     parser.add_argument("--report-out", type=Path, default=DEFAULT_REPORT_OUT)
     parser.add_argument("--concurrency", type=int, default=4, help="Reserved for future batched writes; writes are currently conservative/sequential.")
@@ -523,6 +734,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.create_only and args.update_only:
         parser.error("--create-only and --update-only cannot be combined")
+    if args.ensure_columns_only:
+        args.ensure_columns = True
     return args
 
 

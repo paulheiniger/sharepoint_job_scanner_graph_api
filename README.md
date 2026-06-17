@@ -344,7 +344,17 @@ The command writes:
 - `output/job_index_sharepoint_columns.json`
 - `output/sharepoint_job_index_sync_report.json`
 
+Recommended manual SharePoint column types:
+
+- URL/link fields such as `folder_url`, `primary_doc_link`, `proposal_url`, `estimate_url`, `contract_url`, `invoice_url`, `job_tracking_url`, `warranty_url`, and `aerial_url`: **Single line of text**. This is the easiest and most reliable Graph sync target.
+- `important_doc_links_json`: **Multiple lines of text**.
+- `document_link_count`: **Number**.
+- Money fields such as `final_price`, `invoice_amount`, `material_subtotal`, `labor_subtotal`, and `total_job_cost`: **Currency**.
+- Yes/no fields such as `has_invoice`, `has_signed_contract`, and `has_aerial`: **Yes/No**.
+
 The scanner now preserves Graph `webUrl` values for job folders and important documents when available. The Job Index includes direct link fields such as `folder_url`, `proposal_url`, `estimate_url`, `invoice_url`, and `primary_doc_link`. Verify document links by opening a few SharePoint List rows and confirming `primary_doc_link` opens the best proposal/estimate, falling back to contract, tracking form, or job folder.
+
+`important_doc_links_json` is not written by default because historical JSON values can exceed SharePoint's single-line text limit. Add `--include-important-doc-links-json` only after that column has been changed to Multiple lines of text. If it is still single-line text and a value exceeds 255 characters, the sync omits that field for the row and continues.
 
 The batch scanner can run the direct list sync after protected outputs are successfully written:
 
