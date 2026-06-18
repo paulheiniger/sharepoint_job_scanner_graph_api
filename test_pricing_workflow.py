@@ -58,20 +58,20 @@ def test_header_csv_and_xlsx_pricing_sheets_are_parsed(tmp_path: Path) -> None:
     assert xlsx_rows[0]["unit_price"] == 12.25
 
 
-def test_pdf_text_lines_extract_structured_and_review_rows(tmp_path: Path) -> None:
+def test_pdf_text_lines_extract_structured_and_skips_ambiguous_notes(tmp_path: Path) -> None:
     pdf_path = tmp_path / "Coatings - Terr 763 - Eff 5.6.25.pdf"
     pdf_path.write_text("GAF Silicone 5 gallon pail $275.00\nFreight terms included\nAmbiguous coating note\n", encoding="utf-8")
 
     rows = core.extract_pricing_file(pdf_path)
 
     structured = [row for row in rows if row["product_name"].startswith("GAF Silicone")]
-    review = [row for row in rows if row["needs_review"]]
     assert structured
     assert structured[0]["vendor"] == "GAF"
     assert structured[0]["unit_price"] == 275.0
     assert structured[0]["category"] == "Coatings"
     assert '"page_number": 1' in structured[0]["details"]
-    assert review
+    assert "Freight terms included" not in {row["product_name"] for row in rows}
+    assert "Ambiguous coating note" not in {row["product_name"] for row in rows}
 
 
 def test_pdf_narrative_line_prefers_currency_price_over_case_count() -> None:

@@ -19,6 +19,7 @@ PRICING_COLUMNS = [
     "vendor",
     "category",
     "product_name",
+    "product_family",
     "description",
     "unit_price",
     "unit_of_measure",
@@ -45,6 +46,7 @@ REVIEW_COLUMNS = [
     "vendor",
     "category",
     "product_name",
+    "product_family",
     "description",
     "current_product_name",
     "current_category",
@@ -93,6 +95,16 @@ class MatchResult:
     score: float
     strategy: str
     confidence: str
+
+
+@dataclass
+class PdfExtractionResult:
+    rows: list[dict[str, Any]]
+    pages_read: int = 0
+    product_rows_extracted: int = 0
+    notes_skipped: int = 0
+    duplicates_skipped: int = 0
+    categories_detected: set[str] | None = None
 
 
 def blank(value: Any) -> bool:
@@ -173,7 +185,7 @@ def normalize_product_key(value: Any) -> str:
 def normalize_price_row(row: dict[str, Any]) -> dict[str, Any]:
     out = {column: "" for column in PRICING_COLUMNS}
     out.update({key: value for key, value in row.items() if key in out})
-    for key in ("source_file", "source_type", "vendor", "category", "product_name", "description", "unit_of_measure", "package_size", "price_basis", "vendor_item_no", "details", "effective_date", "freight_terms", "notes"):
+    for key in ("source_file", "source_type", "vendor", "category", "product_name", "product_family", "description", "unit_of_measure", "package_size", "price_basis", "vendor_item_no", "details", "effective_date", "freight_terms", "notes"):
         out[key] = clean_text(out.get(key))
     for key in ("unit_price", "price_per_gallon", "parser_confidence"):
         value = parse_float(out.get(key))
@@ -403,19 +415,158 @@ def clean_pdf_line(line: str) -> str:
     return line
 
 
+PDF_SECTION_HEADERS = {
+    "silicone roofing products",
+    "primers",
+    "granules",
+    "acrylic top coats",
+    "acrylic base coats",
+    "acrylic flashing",
+    "urethane",
+    "sebs coatings",
+    "specialty coatings",
+    "accessories/application tools",
+    "architectural wall coatings",
+}
+
+PDF_HEADER_PATTERNS = (
+    "price uom unit info details effective date end date",
+    "unit info details effective date end date",
+    "silicone roofing products price uom",
+)
+
+PDF_NOTE_PATTERNS = (
+    "gaf roof coatings",
+    "general notes",
+    "all orders",
+    "contact coatings",
+    "placed via coatings@gaf.com",
+    "as of",
+)
+
+NON_LIQUID_PACKAGE_UNITS = {"bag", "super sack", "roll", "case", "kit", "tube", "sausage", "cartridge", "lb", "oz"}
+
+
+def product_family_from_text(text: str) -> str:
+    family = clean_pdf_line(text)
+    family = re.sub(r"\s*[-–—]\s*\d+(?:\.\d+)?\s*(?:gal|gallon|g|qt|oz|lb|lbs|roll|case|bag|pail|drum|kit)\b.*$", "", family, flags=re.I)
+    family = re.sub(r"\b\d+(?:\.\d+)?\s*(?:gal|gallon|g|qt|oz|lb|lbs|roll|case|bag|pail|drum|kit)\b", "", family, flags=re.I)
+    family = re.sub(r"\b\d{1,3}(?:,\d{3})+\s*lb\s+super\s+sack\b", "", family, flags=re.I)
+    family = re.sub(r"\b(?:pail|drum|container|tote|roll|case|bag|super\s+sack)\b\s*$", "", family, flags=re.I)
+    return clean_pdf_line(family.strip(" -–—:/"))
+
+
+def pdf_details(page_number: int | None, source_line: str, parsed: dict[str, Any]) -> str:
+    details: dict[str, Any] = {
+        "page_number": page_number,
+        "source_line": clean_pdf_line(source_line)[:500],
+    }
+    product_family = clean_text(parsed.get("product_family"))
+    if product_family:
+        details["product_family"] = product_family
+    package_quantity = parsed.get("package_quantity")
+    if package_quantity not in ("", None):
+        details["package_quantity"] = package_quantity
+    return json.dumps(details)
+
+
+def classify_pdf_line(line: str) -> str:
+    text = clean_pdf_line(line)
+    lowered = text.lower().strip(" :-")
+    if not lowered or not re.search(r"[A-Za-z0-9]", lowered):
+        return "footer"
+    if lowered in PDF_SECTION_HEADERS or (
+        lowered.endswith(" products")
+        and not PRICE_RE.search(text)
+        and not any(pattern in lowered for pattern in PDF_NOTE_PATTERNS)
+    ):
+        return "section_header"
+    if any(pattern in lowered for pattern in PDF_HEADER_PATTERNS):
+        return "table_header"
+    if lowered in {"price", "uom", "unit info", "details", "effective date", "end date", "market"}:
+        return "table_header"
+    if lowered in {"standard colors", "custom colors"}:
+        return "note"
+    if lowered.startswith("-") or any(lowered.startswith(pattern) for pattern in PDF_NOTE_PATTERNS):
+        return "note"
+    if re.fullmatch(r"page\s+\d+(?:\s+of\s+\d+)?", lowered):
+        return "footer"
+    if line_is_price_only(text) or line_is_unit(text):
+        return "ambiguous"
+    return "product_price_row" if PRICE_RE.search(text) else "ambiguous"
+
+
+def package_info_from_text(text: str, price: float | None = None) -> dict[str, Any]:
+    lowered = text.lower()
+    result: dict[str, Any] = {
+        "package_size": "",
+        "package_quantity": None,
+        "unit_of_measure": infer_unit(text),
+        "price_basis": "PDF table price",
+        "price_per_gallon": None,
+        "needs_review": False,
+    }
+
+    super_sack = re.search(r"\b(\d{1,3}(?:,\d{3})+|\d{3,5})\s*lb\s+super\s+sack\b", lowered)
+    if super_sack:
+        pounds = parse_float(super_sack.group(1))
+        result.update({"package_size": f"{int(pounds)} lb" if pounds else super_sack.group(0), "unit_of_measure": "super sack", "price_basis": "per super sack"})
+        return result
+
+    package_match = re.search(r"\b(\d+(?:\.\d+)?)\s*(gal|gallon|g)\b", lowered)
+    if package_match:
+        quantity = parse_float(package_match.group(1))
+        if quantity is not None:
+            result["package_quantity"] = quantity
+            result["package_size"] = f"{quantity:g} gal"
+            if quantity >= 50:
+                result["unit_of_measure"] = "drum" if quantity in {50, 54, 55, 250} else "container"
+            elif quantity >= 1:
+                result["unit_of_measure"] = "pail" if quantity <= 5 else "container"
+            result["price_basis"] = f"per {result['unit_of_measure'] or 'container'}"
+            if price is not None:
+                result["price_per_gallon"] = round(price / quantity, 4)
+            return result
+
+    other_package = re.search(r"\b(\d+(?:\.\d+)?)\s*(qt|oz|lb|lbs|roll|case|bag|pail|drum|kit)\b", lowered)
+    if other_package:
+        quantity = parse_float(other_package.group(1))
+        unit = other_package.group(2)
+        unit = "lb" if unit == "lbs" else unit
+        result["package_quantity"] = quantity
+        result["package_size"] = f"{quantity:g} {unit}" if quantity is not None else other_package.group(0)
+        if unit in {"pail", "drum", "case", "bag", "roll", "kit"}:
+            result["unit_of_measure"] = unit
+            result["price_basis"] = f"per {unit}"
+        elif unit in NON_LIQUID_PACKAGE_UNITS:
+            result["unit_of_measure"] = unit
+            result["price_basis"] = f"per {unit}"
+        return result
+
+    if not result["unit_of_measure"]:
+        result["needs_review"] = True
+    return result
+
+
+def suspicious_pdf_product_name(text: str) -> bool:
+    lowered = clean_pdf_line(text).lower()
+    if len(lowered) < 5:
+        return True
+    if lowered.endswith(".") or lowered.count(" ") > 18:
+        return True
+    if any(pattern in lowered for pattern in PDF_NOTE_PATTERNS):
+        return True
+    return False
+
+
 def parse_pdf_pricing_line(line: str) -> dict[str, Any] | None:
     text = clean_pdf_line(line)
     if len(text) < 4:
         return None
+    if classify_pdf_line(text) != "product_price_row":
+        return None
     price_matches = list(PRICE_RE.finditer(text))
     if not price_matches:
-        if any(word in text.lower() for word in ("silicone", "coating", "foam", "primer", "price", "freight", "warranty")):
-            return {
-                "product_name": text[:120],
-                "notes": "Ambiguous PDF text line without a clear price.",
-                "parser_confidence": 0.35,
-                "needs_review": True,
-            }
         return None
     price_match = price_matches[0]
     if "$" in text:
@@ -423,6 +574,8 @@ def parse_pdf_pricing_line(line: str) -> dict[str, Any] | None:
             if "$" in text[max(0, candidate.start() - 3) : candidate.start() + 1]:
                 price_match = candidate
                 break
+    elif len(price_matches) == 1 and re.search(rf"\b{re.escape(price_matches[0].group(1))}\s*(?:gal|gallon|g|qt|oz|lb|lbs|roll|case|bag|pail|drum|kit)\b", text, re.I):
+        return None
     price = parse_float(price_match.group(1))
     before = clean_text(text[: price_match.start()])
     after = clean_text(text[price_match.end() :])
@@ -430,22 +583,21 @@ def parse_pdf_pricing_line(line: str) -> dict[str, Any] | None:
         return None
     before = re.sub(r"\b(price|cost|list|net)\b\s*$", "", before, flags=re.I).strip(" :-")
     item_match = ITEM_NO_RE.search(text)
-    unit = infer_unit(f"{before} {after}")
-    package_match = re.search(r"\b(\d+(?:\.\d+)?)\s*(gal|gallon|lb|lbs|oz|case|pail|drum|roll|kit|bag)\b", text, re.I)
-    per_gallon = None
-    if unit == "gallon" or re.search(r"\bper\s*gal", text, re.I):
-        per_gallon = price
+    package = package_info_from_text(f"{before} {after}", price)
+    unit = package["unit_of_measure"]
     return {
         "product_name": before[:160],
+        "product_family": product_family_from_text(before),
         "description": text if len(text) > len(before) + 10 else "",
         "unit_price": price,
         "unit_of_measure": unit,
-        "package_size": package_match.group(0) if package_match else "",
+        "package_size": package["package_size"],
+        "package_quantity": package["package_quantity"],
         "price_basis": "extracted line price",
-        "price_per_gallon": per_gallon,
+        "price_per_gallon": package["price_per_gallon"],
         "vendor_item_no": item_match.group(1) if item_match else "",
-        "parser_confidence": 0.72 if unit else 0.62,
-        "needs_review": not bool(unit),
+        "parser_confidence": 0.82 if unit and not package["needs_review"] else 0.62,
+        "needs_review": package["needs_review"] or not bool(unit) or suspicious_pdf_product_name(before),
     }
 
 
@@ -475,65 +627,74 @@ def normalized_unit_from_line(line: str) -> str:
 
 
 def line_looks_like_heading(line: str) -> bool:
-    text = clean_pdf_line(line).lower()
-    return (
-        not text
-        or text in {"price", "uom", "unit info", "details", "effective date", "market"}
-        or text.startswith("as of ")
-        or text.startswith("-")
-    )
+    return classify_pdf_line(line) in {"section_header", "table_header", "note", "footer"}
 
 
-def parse_pdf_table_lines(lines: list[str]) -> list[dict[str, Any]]:
+def parse_pdf_table_lines(lines: list[str]) -> tuple[list[dict[str, Any]], int, set[str]]:
     rows: list[dict[str, Any]] = []
+    notes_skipped = 0
+    categories_detected: set[str] = set()
     current_category = ""
     index = 0
     while index < len(lines):
         line = clean_pdf_line(lines[index])
-        lowered = line.lower()
-        if "products" in lowered and not PRICE_RE.search(line):
-            current_category = line
+        classification = classify_pdf_line(line)
+        if classification == "section_header":
+            current_category = line.strip(" :-")
+            categories_detected.add(current_category)
             index += 1
             continue
-        if line_looks_like_heading(line) or line_is_price_only(line):
+        if classification in {"table_header", "note", "footer"} or line_is_price_only(line):
+            notes_skipped += 1
             index += 1
             continue
         if index + 1 < len(lines):
             price = line_price_value(lines[index + 1])
             unit = normalized_unit_from_line(lines[index + 2]) if index + 2 < len(lines) and line_is_unit(lines[index + 2]) else ""
             if price is not None:
-                package_match = re.search(r"\b(\d+(?:\.\d+)?)\s*(gal|gallon|g|lb|lbs|oz|case|pail|drum|roll|kit|bag)\b", line, re.I)
-                package_size = package_match.group(0) if package_match else ""
-                gallons = None
-                if package_size:
-                    gallons_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:gal|gallon|g)\b", package_size, re.I)
-                    gallons = parse_float(gallons_match.group(1)) if gallons_match else None
-                price_per_gallon = round(price / gallons, 4) if gallons else None
+                package = package_info_from_text(line, price)
+                row_unit = package["unit_of_measure"] or unit
+                category = current_category or infer_pdf_category(line)
                 rows.append(
                     {
                         "product_name": line,
+                        "product_family": product_family_from_text(line),
                         "unit_price": price,
-                        "unit_of_measure": unit,
-                        "package_size": package_size,
-                        "price_basis": "PDF table price",
-                        "price_per_gallon": price_per_gallon,
-                        "category": infer_pdf_category(line) or current_category,
-                        "parser_confidence": 0.82 if unit else 0.72,
-                        "needs_review": not bool(unit),
+                        "unit_of_measure": row_unit,
+                        "package_size": package["package_size"],
+                        "package_quantity": package["package_quantity"],
+                        "price_basis": package["price_basis"],
+                        "price_per_gallon": package["price_per_gallon"],
+                        "category": category,
+                        "parser_confidence": 0.9 if row_unit and category and not package["needs_review"] else 0.68,
+                        "needs_review": package["needs_review"] or not bool(row_unit) or not bool(category) or suspicious_pdf_product_name(line),
+                        "classification": "product_price_row",
                     }
                 )
                 index += 3 if unit else 2
                 continue
         index += 1
-    return rows
+    return rows, notes_skipped, categories_detected
 
 
-def extract_pdf_file(path: Path) -> list[dict[str, Any]]:
+def pdf_dedupe_key(row: dict[str, Any]) -> tuple[str, str, str, str, str]:
+    product_family = clean_text(row.get("product_family")) or row.get("product_name")
+    return (
+        clean_text(row.get("source_file")).lower(),
+        normalize_product_key(product_family),
+        clean_text(row.get("package_size")).lower(),
+        clean_text(row.get("unit_of_measure")).lower(),
+        str(parse_float(row.get("unit_price")) or ""),
+    )
+
+
+def extract_pdf_file_with_stats(path: Path) -> PdfExtractionResult:
     pages = pdf_pages(path)
     vendor = vendor_from_filename(path)
     all_text = "\n".join(text for _page, text in pages)
     effective_date = effective_date_from_text(path.stem) or effective_date_from_text(all_text)
     rows: list[dict[str, Any]] = []
+    stats = PdfExtractionResult(rows=rows, pages_read=len(pages), categories_detected=set())
     if not all_text.strip():
         rows.append(
             normalize_price_row(
@@ -549,10 +710,13 @@ def extract_pdf_file(path: Path) -> list[dict[str, Any]]:
                 }
             )
         )
-        return rows
+        stats.product_rows_extracted = 1
+        return stats
     for page_number, text in pages:
         lines = [clean_pdf_line(line) for line in text.splitlines() if clean_pdf_line(line)]
-        table_rows = parse_pdf_table_lines(lines)
+        table_rows, notes_skipped, categories_detected = parse_pdf_table_lines(lines)
+        stats.notes_skipped += notes_skipped
+        stats.categories_detected.update(categories_detected)
         consumed_products = {row["product_name"] for row in table_rows}
         for parsed in table_rows:
             parsed.update(
@@ -561,12 +725,17 @@ def extract_pdf_file(path: Path) -> list[dict[str, Any]]:
                     "source_type": "pdf",
                     "vendor": parsed.get("vendor") or infer_vendor(parsed.get("product_name", "")) or vendor,
                     "effective_date": parsed.get("effective_date") or effective_date,
-                    "details": json.dumps({"page_number": page_number, "source_line": parsed.get("product_name", "")[:500]}),
+                    "details": pdf_details(page_number, parsed.get("product_name", ""), parsed),
                 }
             )
             rows.append(normalize_price_row(parsed))
         for line in lines:
+            classification = classify_pdf_line(line)
             if line in consumed_products or line_is_price_only(line) or line_is_unit(line):
+                continue
+            if classification in {"section_header", "table_header", "note", "footer"}:
+                if classification != "section_header":
+                    stats.notes_skipped += 1
                 continue
             parsed = parse_pdf_pricing_line(line)
             if not parsed:
@@ -578,11 +747,29 @@ def extract_pdf_file(path: Path) -> list[dict[str, Any]]:
                     "vendor": parsed.get("vendor") or infer_vendor(parsed.get("product_name", "")) or vendor,
                     "category": parsed.get("category") or infer_pdf_category(parsed.get("product_name", "")),
                     "effective_date": parsed.get("effective_date") or effective_date,
-                    "details": json.dumps({"page_number": page_number, "source_line": clean_pdf_line(line)[:500]}),
+                    "details": pdf_details(page_number, line, parsed),
                 }
             )
+            if not parsed.get("category"):
+                parsed["needs_review"] = True
+                parsed["parser_confidence"] = min(float(parsed.get("parser_confidence") or 0.62), 0.62)
             rows.append(normalize_price_row(parsed))
-    return rows
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str, str]] = set()
+    for row in rows:
+        key = pdf_dedupe_key(row)
+        if key in seen:
+            stats.duplicates_skipped += 1
+            continue
+        seen.add(key)
+        deduped.append(row)
+    stats.rows = deduped
+    stats.product_rows_extracted = len(deduped)
+    return stats
+
+
+def extract_pdf_file(path: Path) -> list[dict[str, Any]]:
+    return extract_pdf_file_with_stats(path).rows
 
 
 def infer_pdf_category(text: str) -> str:

@@ -104,8 +104,9 @@ def test_prepare_pricing_row_sets_needs_review_for_incomplete_price(tmp_path: Pa
 
 
 class FakeRows:
-    def __init__(self, rows):
+    def __init__(self, rows, rowcount=0):
         self.rows = rows
+        self.rowcount = rowcount
 
     def fetchall(self):
         return self.rows
@@ -135,6 +136,8 @@ class FakeConnection:
             rows = params if isinstance(params, list) else [params]
             for row in rows:
                 self.pricing_ids.add(row["pricing_item_id"])
+        if "UPDATE pricing_catalog" in sql and "LOWER(COALESCE(source_type" in sql:
+            return FakeRows([], rowcount=3)
         return FakeRows([])
 
 
@@ -199,7 +202,8 @@ def test_loader_extracts_machine_readable_pdf_rows_with_source_page(tmp_path: Pa
     assert row["vendor"] == "GAF"
     assert row["unit_price"] == 185.0
     assert row["unit_of_measure"] == "pail"
-    assert row["package_size"] == "5 Gal"
+    assert row["package_size"] == "5 gal"
+    assert row["price_per_gallon"] == 37.0
     assert row["effective_date"] == "2025-05-06"
     raw = json.loads(row["raw_row_json"])
     assert raw["source_details"]["page_number"] == 1
@@ -212,11 +216,7 @@ def test_ambiguous_pdf_line_becomes_needs_review(tmp_path: Path) -> None:
 
     rows, _skipped = pl.load_input_rows(pdf_path)
 
-    assert rows
-    assert rows[0]["source_type"] == "pdf"
-    assert rows[0]["source_page"] == 1
-    assert rows[0]["needs_review"] is True
-    assert rows[0]["unit_price"] is None
+    assert rows == []
 
 
 def test_pdf_load_is_idempotent_and_reports_pdf_counts(tmp_path: Path) -> None:
@@ -230,11 +230,168 @@ def test_pdf_load_is_idempotent_and_reports_pdf_counts(tmp_path: Path) -> None:
     assert first.pdf_files_discovered == 1
     assert first.pdf_files_parsed == 1
     assert first.pdf_pages_read >= 1
-    assert first.pdf_rows_extracted >= 2
+    assert first.pdf_product_rows_extracted >= 1
+    assert first.pdf_notes_skipped >= 1
     assert first.pdf_rows_loaded == first.rows_inserted + first.rows_updated
-    assert first.pdf_rows_needing_review >= 1
     assert second.rows_inserted == 0
     assert second.rows_updated == first.rows_inserted
+
+
+def test_pdf_table_headers_and_notes_are_skipped(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "Coatings - Terr 763 - Eff 5.6.25.pdf"
+    pdf_path.write_text(
+        "\n".join(
+            [
+                "GAF Roof Coatings",
+                "Price UOM Unit Info Details Effective Date End Date",
+                "General Notes for all Coatings Products:",
+                "-All orders must be placed via coatings@gaf.com",
+                "Silicone Roofing Products",
+                "GAF Unisil 5 Gal",
+                "$185.00",
+                "Pail",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    rows, skipped, stats = pl.load_input_rows_with_stats(pdf_path)
+    products = [row["product_name"] for row in rows]
+
+    assert products == ["GAF Unisil 5 Gal"]
+    assert skipped == 0
+    assert stats["notes_skipped"] >= 3
+
+
+def test_pdf_section_header_carried_into_category(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "Coatings - Terr 763 - Eff 5.6.25.pdf"
+    pdf_path.write_text("Primers\nGAF QuickPrime 5 Gal\n$200.00\nPail\n", encoding="utf-8")
+
+    rows, _skipped = pl.load_input_rows(pdf_path)
+
+    assert rows[0]["category"] == "Primers"
+
+
+def test_pdf_55_gal_row_becomes_drum_with_price_per_gallon(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "Coatings - Terr 763 - Eff 5.6.25.pdf"
+    pdf_path.write_text("Silicone Roofing Products\nGAF Silicone 55 Gal White\n$5,500.00\nDrum\n", encoding="utf-8")
+
+    rows, _skipped = pl.load_input_rows(pdf_path)
+    row = rows[0]
+
+    assert row["unit_of_measure"] == "drum"
+    assert row["package_size"] == "55 gal"
+    assert row["price_per_gallon"] == 100.0
+
+
+def test_pdf_250g_liquid_row_becomes_250_gal(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "Coatings - Terr 763 - Eff 5.6.25.pdf"
+    pdf_path.write_text("Silicone Roofing Products\nGAF Silicone 250G Tote\n$12,500.00\nTote\n", encoding="utf-8")
+
+    rows, _skipped = pl.load_input_rows(pdf_path)
+    row = rows[0]
+
+    assert row["package_size"] == "250 gal"
+    assert row["price_per_gallon"] == 50.0
+
+
+def test_pdf_bag_roll_case_rows_do_not_get_price_per_gallon(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "Coatings - Terr 763 - Eff 5.6.25.pdf"
+    pdf_path.write_text("Granules\nGAF Granules 2,200 lb Super Sack\n$880.00\nBag\n", encoding="utf-8")
+
+    rows, _skipped = pl.load_input_rows(pdf_path)
+    row = rows[0]
+
+    assert row["unit_of_measure"] == "super sack"
+    assert row["package_size"] == "2200 lb"
+    assert row["price_per_gallon"] is None
+
+
+def test_duplicate_pdf_rows_are_skipped(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "Coatings - Terr 763 - Eff 5.6.25.pdf"
+    pdf_path.write_text(
+        "Primers\nGAF QuickPrime 5 Gal\n$200.00\nPail\nGAF QuickPrime 5 Gal\n$200.00\nPail\n",
+        encoding="utf-8",
+    )
+
+    rows, _skipped, stats = pl.load_input_rows_with_stats(pdf_path)
+
+    assert len(rows) == 1
+    assert stats["duplicates_skipped"] == 1
+
+
+def test_pdf_does_not_dedupe_different_package_sizes(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "Coatings - Terr 763 - Eff 5.6.25.pdf"
+    pdf_path.write_text(
+        "\n".join(
+            [
+                "Primers",
+                "GAF Bleed Block Asphalt Primer - 54G",
+                "$2,700.00",
+                "Drum",
+                "GAF Bleed Block Asphalt Primer - 5G",
+                "$300.00",
+                "Pail",
+                "Premium Brush Grade Acrylic Flashing 2 Gal",
+                "$120.00",
+                "Pail",
+                "Premium Brush Grade Acrylic Flashing 5 Gal",
+                "$250.00",
+                "Pail",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    rows, _skipped, stats = pl.load_input_rows_with_stats(pdf_path)
+    by_name = {row["product_name"]: row for row in rows}
+
+    assert len(rows) == 4
+    assert stats["duplicates_skipped"] == 0
+    assert by_name["GAF Bleed Block Asphalt Primer - 54G"]["package_size"] == "54 gal"
+    assert by_name["GAF Bleed Block Asphalt Primer - 54G"]["unit_of_measure"] == "drum"
+    assert by_name["GAF Bleed Block Asphalt Primer - 54G"]["price_per_gallon"] == 50.0
+    assert by_name["GAF Bleed Block Asphalt Primer - 5G"]["package_size"] == "5 gal"
+    assert by_name["GAF Bleed Block Asphalt Primer - 5G"]["unit_of_measure"] == "pail"
+    assert by_name["Premium Brush Grade Acrylic Flashing 2 Gal"]["package_size"] == "2 gal"
+    assert by_name["Premium Brush Grade Acrylic Flashing 5 Gal"]["package_size"] == "5 gal"
+    assert all(row["status"] == "active" for row in rows)
+    raw = json.loads(by_name["GAF Bleed Block Asphalt Primer - 5G"]["raw_row_json"])
+    assert raw["extracted_row"]["product_family"] == "GAF Bleed Block Asphalt Primer"
+    assert raw["extracted_row"]["details"]
+
+
+def test_pdf_dedupes_same_family_package_unit_price(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "Coatings - Terr 763 - Eff 5.6.25.pdf"
+    pdf_path.write_text(
+        "\n".join(
+            [
+                "Primers",
+                "GAF Bleed Block Asphalt Primer - 5G",
+                "$300.00",
+                "Pail",
+                "GAF Bleed Block Asphalt Primer 5 Gal",
+                "$300.00",
+                "Pail",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    rows, _skipped, stats = pl.load_input_rows_with_stats(pdf_path)
+
+    assert len(rows) == 1
+    assert stats["duplicates_skipped"] == 1
+
+
+def test_cleanup_pdf_pricing_does_not_touch_csv_rows() -> None:
+    engine = FakeEngine()
+
+    changed = pl.cleanup_pdf_pricing_catalog(engine)
+
+    assert changed == 3
+    sql = "\n".join(statement for statement, _params in engine.conn.executed)
+    assert "LOWER(COALESCE(source_type, '')) = 'pdf'" in sql
 
 
 def test_loader_does_not_modify_input_pdf_content(tmp_path: Path) -> None:
@@ -323,6 +480,8 @@ def test_dashboard_pricing_query_helper_filters_searches_and_limits(monkeypatch)
         ("GAF",),
         ("Coatings",),
         ("active",),
+        ("master.csv",),
+        ("csv",),
         "Current only",
         "Needs review",
         "2026-01-01",
@@ -333,10 +492,47 @@ def test_dashboard_pricing_query_helper_filters_searches_and_limits(monkeypatch)
     assert len(df) == 1
     assert "product_name ILIKE :search" in captured["query"]
     assert "vendor = ANY(:vendors)" in captured["query"]
+    assert "source_file = ANY(:source_files)" in captured["query"]
+    assert "source_type = ANY(:source_types)" in captured["query"]
     assert "LIMIT :limit" in captured["query"]
     assert captured["params"]["search"] == "%silicone%"
     assert captured["params"]["vendors"] == ["GAF"]
+    assert captured["params"]["source_files"] == ["master.csv"]
+    assert captured["params"]["source_types"] == ["csv"]
     assert captured["params"]["limit"] == 250
+
+
+def test_dashboard_pricing_default_query_excludes_review_rows(monkeypatch) -> None:
+    import dashboard.app as app
+    from jobscan.db_connections import ReadQueryResult
+
+    captured = {}
+
+    def fake_load_df_uncached(query, params=None):
+        captured["query"] = query
+        captured["params"] = params
+        return ReadQueryResult(ok=True, value=pd.DataFrame([{"product_name": "Clean Item"}]))
+
+    monkeypatch.setattr(app, "load_df_uncached", fake_load_df_uncached)
+    app.load_pricing_catalog_filtered.clear()
+
+    app.load_pricing_catalog_filtered(
+        "",
+        (),
+        (),
+        ("active",),
+        (),
+        (),
+        "Current only",
+        "Reviewed / OK",
+        None,
+        None,
+        2000,
+    )
+
+    assert "COALESCE(is_current, false) IS TRUE" in captured["query"]
+    assert "COALESCE(needs_review, false) IS FALSE" in captured["query"]
+    assert "status = ANY(:statuses)" in captured["query"]
 
 
 def test_dashboard_full_current_catalog_query_helper(monkeypatch) -> None:

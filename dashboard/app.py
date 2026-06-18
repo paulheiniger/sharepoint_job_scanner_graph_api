@@ -65,6 +65,7 @@ PRICING_EXPORT_COLUMNS = [
     "is_current",
     "needs_review",
     "source_file",
+    "source_type",
     "notes",
 ]
 
@@ -1041,6 +1042,8 @@ def load_pricing_catalog_filtered(
     vendors: tuple[str, ...],
     categories: tuple[str, ...],
     statuses: tuple[str, ...],
+    source_files: tuple[str, ...],
+    source_types: tuple[str, ...],
     is_current_filter: str,
     needs_review_filter: str,
     effective_start: str | None,
@@ -1072,6 +1075,12 @@ def load_pricing_catalog_filtered(
     if statuses:
         clauses.append("status = ANY(:statuses)")
         params["statuses"] = list(statuses)
+    if source_files:
+        clauses.append("source_file = ANY(:source_files)")
+        params["source_files"] = list(source_files)
+    if source_types:
+        clauses.append("source_type = ANY(:source_types)")
+        params["source_types"] = list(source_types)
     if is_current_filter == "Current only":
         clauses.append("COALESCE(is_current, false) IS TRUE")
     elif is_current_filter == "Not current":
@@ -1106,11 +1115,12 @@ def load_pricing_catalog_filtered(
             is_current,
             needs_review,
             source_file,
+            source_type,
             notes,
             vendor_item_no
         FROM pricing_catalog
         WHERE {" AND ".join(clauses)}
-        ORDER BY COALESCE(needs_review, false) DESC, product_name
+        ORDER BY product_name
         LIMIT :limit
     """
     result = load_df_uncached(query, params=params)
@@ -1141,6 +1151,7 @@ def load_current_pricing_catalog_export() -> pd.DataFrame:
             is_current,
             needs_review,
             source_file,
+            source_type,
             notes
         FROM pricing_catalog
         WHERE COALESCE(is_current, false) IS TRUE
@@ -1161,6 +1172,10 @@ def load_pricing_filter_options() -> dict[str, list[str]]:
         SELECT 'category' AS field, category AS value FROM pricing_catalog WHERE NULLIF(category, '') IS NOT NULL
         UNION
         SELECT 'status' AS field, status AS value FROM pricing_catalog WHERE NULLIF(status, '') IS NOT NULL
+        UNION
+        SELECT 'source_file' AS field, source_file AS value FROM pricing_catalog WHERE NULLIF(source_file, '') IS NOT NULL
+        UNION
+        SELECT 'source_type' AS field, source_type AS value FROM pricing_catalog WHERE NULLIF(source_type, '') IS NOT NULL
         """
     )
     if not result.ok:
@@ -3296,13 +3311,18 @@ def pricing_catalog_page() -> None:
         c1, c2, c3 = st.columns(3)
         with c1:
             vendors = st.multiselect("Vendor", filter_options.get("vendor", []), key="pricing_vendor_filter")
-            is_current_filter = st.selectbox("Current", ["All", "Current only", "Not current"], key="pricing_current_filter")
+            is_current_filter = st.selectbox("Current", ["All", "Current only", "Not current"], index=1, key="pricing_current_filter")
         with c2:
             categories = st.multiselect("Category", filter_options.get("category", []), key="pricing_category_filter")
-            needs_review_filter = st.selectbox("Review", ["All", "Needs review", "Reviewed / OK"], key="pricing_review_filter")
+            source_types = st.multiselect("Source type", filter_options.get("source_type", []), key="pricing_source_type_filter")
         with c3:
-            statuses = st.multiselect("Status", filter_options.get("status", []), key="pricing_status_filter")
+            default_statuses = ["active"] if "active" in filter_options.get("status", []) else []
+            statuses = st.multiselect("Status", filter_options.get("status", []), default=default_statuses, key="pricing_status_filter")
             limit = st.number_input("Row limit", min_value=100, max_value=10000, value=2000, step=100, key="pricing_limit")
+
+        source_files = st.multiselect("Source file", filter_options.get("source_file", []), key="pricing_source_file_filter")
+        show_review_rows = st.checkbox("Show review/ambiguous rows", value=False, key="pricing_show_review_rows")
+        needs_review_filter = "All" if show_review_rows else "Reviewed / OK"
 
         d1, d2 = st.columns(2)
         with d1:
@@ -3316,6 +3336,8 @@ def pricing_catalog_page() -> None:
             tuple(vendors),
             tuple(categories),
             tuple(statuses),
+            tuple(source_files),
+            tuple(source_types),
             is_current_filter,
             needs_review_filter,
             effective_start.isoformat() if effective_start else None,
@@ -3351,6 +3373,7 @@ def pricing_catalog_page() -> None:
                 "status",
                 "needs_review",
                 "source_file",
+                "source_type",
                 "notes",
             ],
             height=560,

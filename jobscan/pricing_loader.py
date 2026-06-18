@@ -19,7 +19,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 
 from jobscan.db_connections import create_resilient_engine
-from jobscan.pricing.core import extract_pricing_file, parse_float, pdf_pages
+from jobscan.pricing.core import extract_pdf_file_with_stats, extract_pricing_file, parse_float, pdf_pages
 
 
 PRICING_TABLE_SQL = """
@@ -101,6 +101,7 @@ PRICING_EXPORT_COLUMNS = [
     "is_current",
     "needs_review",
     "source_file",
+    "source_type",
     "notes",
 ]
 
@@ -116,8 +117,12 @@ class PricingLoadResult:
     pdf_files_parsed: int = 0
     pdf_pages_read: int = 0
     pdf_rows_extracted: int = 0
+    pdf_product_rows_extracted: int = 0
+    pdf_notes_skipped: int = 0
+    pdf_rows_deduplicated: int = 0
     pdf_rows_loaded: int = 0
     pdf_rows_needing_review: int = 0
+    pdf_categories_detected: set[str] | None = None
     pdf_files_skipped: list[str] | None = None
 
 
@@ -159,10 +164,10 @@ def stable_pricing_item_id(row: dict[str, Any]) -> str:
     if str(row.get("source_type") or "").lower() == "pdf":
         fields = [
             row.get("source_file"),
-            row.get("source_page"),
             row.get("product_name_normalized"),
-            row.get("unit_of_measure"),
             row.get("unit_price"),
+            row.get("package_size"),
+            row.get("price_basis"),
         ]
     else:
         fields = [
@@ -276,7 +281,7 @@ def prepare_pricing_row(
         "effective_date": safe_date(effective_date) or safe_date(extracted_row.get("effective_date")),
         "expiration_date": None,
         "is_current": bool(mark_current) or True,
-        "status": "active",
+        "status": clean_text(extracted_row.get("status")) or ("review" if bool(extracted_row.get("needs_review")) or unit_price is None or not normalized else "active"),
         "needs_review": bool(extracted_row.get("needs_review")) or unit_price is None or not normalized,
         "review_notes": None,
         "notes": clean_text(extracted_row.get("notes")),
@@ -302,9 +307,41 @@ def load_input_rows(
     effective_date: str | None = None,
     mark_current: bool = False,
 ) -> tuple[list[dict[str, Any]], int]:
+    rows, skipped, _stats = load_input_rows_with_stats(
+        path,
+        vendor=vendor,
+        category=category,
+        source_file=source_file,
+        effective_date=effective_date,
+        mark_current=mark_current,
+    )
+    return rows, skipped
+
+
+def load_input_rows_with_stats(
+    path: Path,
+    *,
+    vendor: str | None = None,
+    category: str | None = None,
+    source_file: str | None = None,
+    effective_date: str | None = None,
+    mark_current: bool = False,
+) -> tuple[list[dict[str, Any]], int, dict[str, Any]]:
     if path.suffix.lower() not in SUPPORTED_INPUT_EXTS:
-        return [], 0
-    extracted_rows = extract_pricing_file(path)
+        return [], 0, {}
+    stats: dict[str, Any] = {}
+    if path.suffix.lower() == ".pdf":
+        pdf_result = extract_pdf_file_with_stats(path)
+        extracted_rows = pdf_result.rows
+        stats = {
+            "pages_read": pdf_result.pages_read,
+            "product_rows_extracted": pdf_result.product_rows_extracted,
+            "notes_skipped": pdf_result.notes_skipped,
+            "duplicates_skipped": pdf_result.duplicates_skipped,
+            "categories_detected": pdf_result.categories_detected or set(),
+        }
+    else:
+        extracted_rows = extract_pricing_file(path)
     raw_rows = dataframe_raw_rows(path)
     prepared: list[dict[str, Any]] = []
     skipped = 0
@@ -323,7 +360,7 @@ def load_input_rows(
             skipped += 1
         else:
             prepared.append(row)
-    return prepared, skipped
+    return prepared, skipped, stats
 
 
 def pdf_page_count(path: Path) -> int:
@@ -460,6 +497,7 @@ def load_pricing(
 ) -> PricingLoadResult:
     result = PricingLoadResult()
     result.pdf_files_skipped = []
+    result.pdf_categories_detected = set()
     loaded_at = datetime.now(timezone.utc)
     with engine.begin() as conn:
         ensure_pricing_tables(conn)
@@ -467,9 +505,8 @@ def load_pricing(
             is_pdf = path.suffix.lower() == ".pdf"
             if is_pdf:
                 result.pdf_files_discovered += 1
-                result.pdf_pages_read += pdf_page_count(path)
             try:
-                rows, skipped = load_input_rows(
+                rows, skipped, input_stats = load_input_rows_with_stats(
                     path,
                     vendor=vendor,
                     category=category,
@@ -490,13 +527,59 @@ def load_pricing(
             result.rows_updated += updated
             if is_pdf:
                 result.pdf_files_parsed += 1
+                result.pdf_pages_read += int(input_stats.get("pages_read") or 0)
                 result.pdf_rows_extracted += len(rows) + skipped
+                result.pdf_product_rows_extracted += int(input_stats.get("product_rows_extracted") or 0)
+                result.pdf_notes_skipped += int(input_stats.get("notes_skipped") or 0)
+                result.pdf_rows_deduplicated += int(input_stats.get("duplicates_skipped") or 0)
+                result.pdf_categories_detected.update(input_stats.get("categories_detected") or set())
                 result.pdf_rows_loaded += inserted + updated
                 result.pdf_rows_needing_review += sum(1 for row in rows if row.get("needs_review"))
                 if not rows:
                     result.pdf_files_skipped.append(f"{path.name}: no pricing rows extracted")
             upsert_source_file(conn, path, rows, loaded_at, vendor=vendor, effective_date=effective_date)
     return result
+
+
+PDF_CLEANUP_SQL = """
+UPDATE pricing_catalog
+SET
+    status = 'review',
+    needs_review = TRUE,
+    review_notes = COALESCE(NULLIF(review_notes, ''), 'Marked for review by PDF pricing cleanup: header/note line.'),
+    updated_at = NOW()
+WHERE LOWER(COALESCE(source_type, '')) = 'pdf'
+  AND (
+      COALESCE(status, '') IS DISTINCT FROM 'review'
+      OR COALESCE(needs_review, FALSE) IS DISTINCT FROM TRUE
+  )
+  AND (
+      LOWER(COALESCE(product_name, '')) IN (
+          'gaf roof coatings',
+          'as of',
+          'standard colors',
+          'custom colors',
+          'silicone roofing products price uom unit info details effective date end date'
+      )
+      OR LOWER(COALESCE(product_name, '')) LIKE 'general notes%'
+      OR LOWER(COALESCE(product_name, '')) LIKE '%all orders%'
+      OR LOWER(COALESCE(product_name, '')) LIKE '%contact coatings%'
+      OR LOWER(COALESCE(product_name, '')) LIKE '%coatings@gaf.com%'
+      OR LOWER(COALESCE(product_name, '')) LIKE 'price uom unit info details%'
+      OR COALESCE(product_name, '') !~ '[A-Za-z0-9]'
+  )
+"""
+
+
+def cleanup_pdf_pricing(conn: Connection) -> int:
+    result = conn.execute(text(PDF_CLEANUP_SQL))
+    return int(result.rowcount or 0)
+
+
+def cleanup_pdf_pricing_catalog(engine: Engine) -> int:
+    with engine.begin() as conn:
+        ensure_pricing_tables(conn)
+        return cleanup_pdf_pricing(conn)
 
 
 def current_pricing_rows(conn: Connection) -> list[dict[str, Any]]:
@@ -521,6 +604,7 @@ def current_pricing_rows(conn: Connection) -> list[dict[str, Any]]:
                 is_current,
                 needs_review,
                 source_file,
+                source_type,
                 notes
             FROM pricing_catalog
             WHERE COALESCE(is_current, false) IS TRUE
@@ -562,6 +646,7 @@ def main() -> None:
     parser.add_argument("--input", type=Path, help="Pricing CSV/XLSX/PDF file to load.")
     parser.add_argument("--input-dir", type=Path, help="Folder of pricing CSV/XLSX/PDF files to load.")
     parser.add_argument("--export-current", action="store_true", help="Export current pricing_catalog rows to --out.")
+    parser.add_argument("--cleanup-pdf-pricing", action="store_true", help="Mark obvious PDF header/note pricing rows for review.")
     parser.add_argument("--out", type=Path, help="Output CSV path for --export-current.")
     parser.add_argument("--database-url", help="Postgres/Neon database URL.")
     parser.add_argument("--mark-current", action="store_true", help="Mark loaded rows as current. Does not demote unrelated rows.")
@@ -573,6 +658,13 @@ def main() -> None:
 
     database_url = database_url_from_env(args.database_url)
     engine = create_resilient_engine(database_url)
+
+    if args.cleanup_pdf_pricing:
+        changed = cleanup_pdf_pricing_catalog(engine)
+        print(f"PDF pricing cleanup rows marked for review: {changed}")
+        print("CSV-derived master pricing rows were not touched.")
+        print("Source files are read-only; no source pricing files were modified.")
+        return
 
     if args.export_current:
         if not args.out:
@@ -605,8 +697,15 @@ def main() -> None:
     print(f"PDF files parsed: {result.pdf_files_parsed}")
     print(f"PDF pages read: {result.pdf_pages_read}")
     print(f"PDF rows extracted: {result.pdf_rows_extracted}")
+    print(f"PDF product rows extracted: {result.pdf_product_rows_extracted}")
+    print(f"PDF notes/header lines skipped: {result.pdf_notes_skipped}")
+    print(f"PDF rows deduplicated: {result.pdf_rows_deduplicated}")
     print(f"PDF rows loaded: {result.pdf_rows_loaded}")
     print(f"PDF rows needing review: {result.pdf_rows_needing_review}")
+    if result.pdf_categories_detected:
+        print("PDF categories detected:")
+        for category_name in sorted(result.pdf_categories_detected):
+            print(f"  {category_name}")
     if result.pdf_files_skipped:
         print("PDF files skipped with reason:")
         for reason in result.pdf_files_skipped:
