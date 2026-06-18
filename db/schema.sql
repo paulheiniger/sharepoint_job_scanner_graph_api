@@ -299,6 +299,9 @@ CREATE TABLE IF NOT EXISTS documents (
     cached_file_path TEXT,
     requires_ocr BOOLEAN DEFAULT FALSE,
     deleted_at TIMESTAMPTZ,
+    drive_metadata_match_strategy TEXT,
+    drive_metadata_matched_at TIMESTAMPTZ,
+    drive_metadata_match_confidence TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );

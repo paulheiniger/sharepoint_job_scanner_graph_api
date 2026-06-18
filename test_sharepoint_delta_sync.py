@@ -394,3 +394,159 @@ def test_delta_link_not_logged_in_stats_output(capsys) -> None:
     out = capsys.readouterr().out
     assert "deltaLink" not in out
     assert "token" not in out.lower()
+
+
+def inv_row(item_id, *, name="Doc.pdf", web_url=None, parent_path="Jobs/Acme", relative_path=None, drive_id="drive-1"):
+    return {
+        "drive_id": drive_id,
+        "drive_item_id": item_id,
+        "name": name,
+        "web_url": web_url,
+        "parent_path": parent_path,
+        "relative_path": relative_path or f"{parent_path}/{name}",
+        "is_file": True,
+        "mime_type": "application/pdf",
+        "size_bytes": 100,
+        "last_modified_at": "2026-01-02T00:00:00Z",
+    }
+
+
+def doc_row(document_id, *, file_name="Doc.pdf", drive_id=None, drive_item_id=None, sharepoint_url=None, folder_path="Jobs/Acme", relative_path=None):
+    return {
+        "document_id": document_id,
+        "job_id": "JOB",
+        "file_name": file_name,
+        "drive_id": drive_id,
+        "drive_item_id": drive_item_id,
+        "sharepoint_url": sharepoint_url,
+        "folder_path": folder_path,
+        "relative_path": relative_path,
+    }
+
+
+def update_by_doc(updates):
+    return {row["document_id"]: row for row in updates}
+
+
+def test_reconciliation_drive_item_id_match_fills_missing_drive_id() -> None:
+    updates, stats = sp.match_document_drive_metadata(
+        [doc_row("doc-1", drive_item_id="item-1")],
+        [inv_row("item-1")],
+    )
+
+    assert update_by_doc(updates)["doc-1"]["drive_id"] == "drive-1"
+    assert update_by_doc(updates)["doc-1"]["drive_item_id"] == "item-1"
+    assert update_by_doc(updates)["doc-1"]["strategy"] == "drive_item_id"
+    assert stats.matched_by_drive_item_id == 1
+
+
+def test_reconciliation_document_id_driveitem_prefix_fills_identifiers() -> None:
+    updates, stats = sp.match_document_drive_metadata(
+        [doc_row("driveitem-item-2")],
+        [inv_row("item-2")],
+    )
+
+    update = update_by_doc(updates)["driveitem-item-2"]
+    assert update["drive_id"] == "drive-1"
+    assert update["drive_item_id"] == "item-2"
+    assert update["strategy"] == "document_id_drive_item_id"
+    assert stats.matched_by_document_id_drive_item_id == 1
+
+
+def test_reconciliation_preserves_existing_complete_identifiers() -> None:
+    updates, stats = sp.match_document_drive_metadata(
+        [doc_row("doc-1", drive_id="existing-drive", drive_item_id="existing-item")],
+        [inv_row("existing-item", drive_id="new-drive")],
+    )
+
+    assert updates == []
+    assert stats.missing_before == 0
+
+
+def test_reconciliation_does_not_match_inventory_without_drive_id() -> None:
+    updates, stats = sp.match_document_drive_metadata(
+        [doc_row("doc-1", drive_item_id="item-1")],
+        [inv_row("item-1", drive_id=None)],
+    )
+
+    assert updates == []
+    assert stats.documents_updated == 0
+
+
+def test_reconciliation_url_decoded_path_matching() -> None:
+    updates, stats = sp.match_document_drive_metadata(
+        [doc_row("doc-1", sharepoint_url="https://tenant.sharepoint.com/sites/Ops/Shared%20Documents/Jobs/Acme/Proposal%20Final.pdf", file_name="Proposal Final.pdf")],
+        [inv_row("item-1", name="Proposal Final.pdf", web_url="https://tenant.sharepoint.com/sites/Ops/Shared Documents/Jobs/Acme/Proposal Final.pdf")],
+    )
+
+    assert update_by_doc(updates)["doc-1"]["strategy"] in {"exact_url", "url_path"}
+    assert stats.matched_by_exact_url + stats.matched_by_url_path == 1
+
+
+def test_reconciliation_relative_path_matching() -> None:
+    updates, stats = sp.match_document_drive_metadata(
+        [doc_row("doc-1", relative_path="Jobs/Acme/Estimate.xlsx", file_name="Estimate.xlsx")],
+        [inv_row("item-1", name="Estimate.xlsx", relative_path="Jobs/Acme/Estimate.xlsx")],
+    )
+
+    assert update_by_doc(updates)["doc-1"]["strategy"] == "relative_path"
+    assert stats.matched_by_relative_path == 1
+
+
+def test_reconciliation_folder_path_plus_file_name_matching() -> None:
+    updates, stats = sp.match_document_drive_metadata(
+        [doc_row("doc-1", folder_path="Jobs/Acme", file_name="Contract.pdf")],
+        [inv_row("item-1", name="Contract.pdf", relative_path="Jobs/Acme/Contract.pdf")],
+    )
+
+    assert update_by_doc(updates)["doc-1"]["strategy"] == "folder_file"
+    assert stats.matched_by_folder_file == 1
+
+
+def test_reconciliation_parent_path_plus_name_matching() -> None:
+    updates, stats = sp.match_document_drive_metadata(
+        [doc_row("doc-1", folder_path="Jobs/Acme", file_name="Tracking.xlsx")],
+        [inv_row("item-1", name="Tracking.xlsx", parent_path="Jobs/Acme", relative_path="Different/Tracking.xlsx")],
+    )
+
+    assert update_by_doc(updates)["doc-1"]["strategy"] == "parent_name"
+    assert stats.matched_by_parent_name == 1
+
+
+def test_reconciliation_unique_filename_fallback_only_when_unique() -> None:
+    updates, stats = sp.match_document_drive_metadata(
+        [doc_row("doc-1", folder_path="Unknown", file_name="Only.pdf")],
+        [inv_row("item-1", name="Only.pdf", parent_path="Inventory/Elsewhere", relative_path="Inventory/Elsewhere/Only.pdf")],
+    )
+
+    assert update_by_doc(updates)["doc-1"]["strategy"] == "unique_filename"
+    assert update_by_doc(updates)["doc-1"]["confidence"] == "low"
+    assert stats.matched_by_unique_filename == 1
+
+
+def test_reconciliation_ambiguous_filename_fallback_skipped() -> None:
+    updates, stats = sp.match_document_drive_metadata(
+        [doc_row("doc-1", folder_path="Unknown", file_name="Repeat.pdf")],
+        [
+            inv_row("item-1", name="Repeat.pdf", parent_path="A", relative_path="A/Repeat.pdf"),
+            inv_row("item-2", name="Repeat.pdf", parent_path="B", relative_path="B/Repeat.pdf"),
+        ],
+    )
+
+    assert updates == []
+    assert stats.ambiguous_skipped == 1
+    assert stats.unmatched == 1
+
+
+def test_reconciliation_is_idempotent_after_identifiers_are_filled() -> None:
+    documents = [doc_row("doc-1", drive_item_id="item-1")]
+    inventory = [inv_row("item-1")]
+    updates, _stats = sp.match_document_drive_metadata(documents, inventory)
+    first = update_by_doc(updates)["doc-1"]
+    documents[0]["drive_id"] = first["drive_id"]
+    documents[0]["drive_item_id"] = first["drive_item_id"]
+
+    second_updates, second_stats = sp.match_document_drive_metadata(documents, inventory)
+
+    assert second_updates == []
+    assert second_stats.missing_before == 0

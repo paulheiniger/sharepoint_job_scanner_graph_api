@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import PurePosixPath, Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlparse
 
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
@@ -63,6 +63,24 @@ class DeltaSyncStats:
     changed_folders: list[dict[str, Any]] | None = None
     deleted_item_rows: list[dict[str, Any]] | None = None
     partial: bool = False
+
+
+@dataclass
+class DocumentReconciliationStats:
+    missing_before: int = 0
+    inventory_files_available: int = 0
+    matched_by_drive_item_id: int = 0
+    matched_by_document_id_drive_item_id: int = 0
+    matched_by_exact_url: int = 0
+    matched_by_url_path: int = 0
+    matched_by_relative_path: int = 0
+    matched_by_folder_file: int = 0
+    matched_by_parent_name: int = 0
+    matched_by_unique_filename: int = 0
+    ambiguous_skipped: int = 0
+    unmatched: int = 0
+    documents_updated: int = 0
+    missing_after: int = 0
 
 
 def _safe_name(name: str) -> str:
@@ -623,6 +641,9 @@ def ensure_delta_tables(connection: Connection) -> None:
         "ALTER TABLE documents ADD COLUMN IF NOT EXISTS drive_id TEXT",
         "ALTER TABLE documents ADD COLUMN IF NOT EXISTS drive_item_id TEXT",
         "ALTER TABLE documents ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ",
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS drive_metadata_match_strategy TEXT",
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS drive_metadata_matched_at TIMESTAMPTZ",
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS drive_metadata_match_confidence TEXT",
     ):
         try:
             connection.execute(text(stmt))
@@ -828,48 +849,401 @@ def soft_delete_inventory_item(connection: Connection, drive_id: str, item: dict
     )
 
 
-def reconcile_documents_for_items(connection: Connection, drive_id: str, rows: list[dict[str, Any]]) -> int:
-    reconciled = 0
+def is_blank(value: Any) -> bool:
+    if value is None:
+        return True
+    text_value = str(value).strip()
+    return not text_value or text_value.lower() in {"nan", "none", "null"}
+
+
+def normalize_match_text(value: Any) -> str:
+    if is_blank(value):
+        return ""
+    return " ".join(str(value).strip().lower().split())
+
+
+def normalize_match_path(value: Any) -> str:
+    if is_blank(value):
+        return ""
+    text_value = unquote(str(value)).replace("\\", "/").strip()
+    while "//" in text_value:
+        text_value = text_value.replace("//", "/")
+    return normalize_drive_path(text_value).lower()
+
+
+def normalize_full_url(value: Any) -> str:
+    if is_blank(value):
+        return ""
+    text_value = unquote(str(value).strip())
+    parsed = urlparse(text_value)
+    if parsed.scheme and parsed.netloc:
+        normalized_path = normalize_match_path(parsed.path)
+        query = f"?{parsed.query}" if parsed.query else ""
+        return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}/{normalized_path}{query}".rstrip("/")
+    return normalize_match_path(text_value)
+
+
+def normalize_url_path(value: Any) -> str:
+    if is_blank(value):
+        return ""
+    parsed = urlparse(str(value).strip())
+    path = parsed.path if parsed.scheme and parsed.netloc else str(value)
+    return normalize_match_path(path)
+
+
+def document_missing_complete_identifiers(document: dict[str, Any]) -> bool:
+    return is_blank(document.get("drive_id")) or is_blank(document.get("drive_item_id"))
+
+
+def document_id_drive_item_candidate(document: dict[str, Any]) -> str:
+    document_id = str(document.get("document_id") or "")
+    if document_id.startswith("driveitem-") and len(document_id) > len("driveitem-"):
+        return document_id[len("driveitem-") :]
+    return ""
+
+
+def folder_file_path(document: dict[str, Any]) -> str:
+    return normalize_match_path(f"{document.get('folder_path') or ''}/{document.get('file_name') or ''}")
+
+
+def build_unique_lookup(rows: list[dict[str, Any]], key_func) -> tuple[dict[str, dict[str, Any]], set[str]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
-        result = connection.execute(
+        key = key_func(row)
+        if key:
+            grouped.setdefault(key, []).append(row)
+    unique = {key: values[0] for key, values in grouped.items() if len(values) == 1}
+    ambiguous = {key for key, values in grouped.items() if len(values) > 1}
+    return unique, ambiguous
+
+
+def reconciliation_update(
+    document: dict[str, Any],
+    inventory: dict[str, Any],
+    *,
+    strategy: str,
+    confidence: str,
+    drive_item_id: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "document_id": document.get("document_id"),
+        "drive_id": inventory.get("drive_id"),
+        "drive_item_id": drive_item_id or document.get("drive_item_id") or inventory.get("drive_item_id"),
+        "web_url": inventory.get("web_url"),
+        "mime_type": inventory.get("mime_type"),
+        "size_bytes": inventory.get("size_bytes"),
+        "modified_at": inventory.get("last_modified_at"),
+        "strategy": strategy,
+        "confidence": confidence,
+    }
+
+
+def match_document_drive_metadata(
+    documents: list[dict[str, Any]],
+    inventory_rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], DocumentReconciliationStats]:
+    stats = DocumentReconciliationStats()
+    candidate_documents = [dict(row) for row in documents if document_missing_complete_identifiers(row)]
+    inventory_files = [dict(row) for row in inventory_rows if row.get("drive_item_id") and row.get("is_file") is not False]
+    stats.missing_before = len(candidate_documents)
+    stats.inventory_files_available = len(inventory_files)
+
+    unmatched: dict[Any, dict[str, Any]] = {doc.get("document_id"): doc for doc in candidate_documents if doc.get("document_id")}
+    updates: list[dict[str, Any]] = []
+
+    def apply_match(document_id: Any, inventory: dict[str, Any], *, strategy: str, confidence: str, drive_item_id: str | None = None) -> None:
+        if is_blank(inventory.get("drive_id")) or is_blank(drive_item_id or inventory.get("drive_item_id")):
+            return
+        document = unmatched.pop(document_id, None)
+        if not document:
+            return
+        updates.append(reconciliation_update(document, inventory, strategy=strategy, confidence=confidence, drive_item_id=drive_item_id))
+        setattr(stats, f"matched_by_{strategy}", getattr(stats, f"matched_by_{strategy}") + 1)
+
+    inventory_by_drive_item_id, ambiguous_drive_item_ids = build_unique_lookup(inventory_files, lambda row: normalize_match_text(row.get("drive_item_id")))
+    for document_id, document in list(unmatched.items()):
+        key = normalize_match_text(document.get("drive_item_id"))
+        if not key:
+            continue
+        if key in inventory_by_drive_item_id:
+            apply_match(document_id, inventory_by_drive_item_id[key], strategy="drive_item_id", confidence="high")
+        elif key in ambiguous_drive_item_ids:
+            stats.ambiguous_skipped += 1
+
+    for document_id, document in list(unmatched.items()):
+        if not is_blank(document.get("drive_item_id")):
+            continue
+        key = normalize_match_text(document_id_drive_item_candidate(document))
+        if not key:
+            continue
+        if key in inventory_by_drive_item_id:
+            apply_match(document_id, inventory_by_drive_item_id[key], strategy="document_id_drive_item_id", confidence="high", drive_item_id=inventory_by_drive_item_id[key].get("drive_item_id"))
+        elif key in ambiguous_drive_item_ids:
+            stats.ambiguous_skipped += 1
+
+    strategy_specs = [
+        ("exact_url", "high", lambda doc: normalize_full_url(doc.get("sharepoint_url")), lambda row: normalize_full_url(row.get("web_url"))),
+        ("url_path", "medium", lambda doc: normalize_url_path(doc.get("sharepoint_url")), lambda row: normalize_url_path(row.get("web_url"))),
+        ("relative_path", "high", lambda doc: normalize_match_path(doc.get("relative_path")), lambda row: normalize_match_path(row.get("relative_path"))),
+        ("folder_file", "high", folder_file_path, lambda row: normalize_match_path(row.get("relative_path"))),
+        (
+            "parent_name",
+            "high",
+            lambda doc: f"{normalize_match_path(doc.get('folder_path'))}||{normalize_match_text(doc.get('file_name'))}",
+            lambda row: f"{normalize_match_path(row.get('parent_path'))}||{normalize_match_text(row.get('name'))}",
+        ),
+    ]
+    for strategy, confidence, doc_key_func, inventory_key_func in strategy_specs:
+        lookup, ambiguous = build_unique_lookup(inventory_files, inventory_key_func)
+        for document_id, document in list(unmatched.items()):
+            key = doc_key_func(document)
+            if not key or key == "||":
+                continue
+            if key in lookup:
+                apply_match(document_id, lookup[key], strategy=strategy, confidence=confidence)
+            elif key in ambiguous:
+                stats.ambiguous_skipped += 1
+
+    document_filename_counts: dict[str, int] = {}
+    for document in candidate_documents:
+        key = normalize_match_text(document.get("file_name"))
+        if key:
+            document_filename_counts[key] = document_filename_counts.get(key, 0) + 1
+    inventory_filename_lookup, ambiguous_inventory_filenames = build_unique_lookup(inventory_files, lambda row: normalize_match_text(row.get("name")))
+    for document_id, document in list(unmatched.items()):
+        key = normalize_match_text(document.get("file_name"))
+        if not key:
+            continue
+        if document_filename_counts.get(key) == 1 and key in inventory_filename_lookup:
+            apply_match(document_id, inventory_filename_lookup[key], strategy="unique_filename", confidence="low")
+        elif document_filename_counts.get(key, 0) > 1 or key in ambiguous_inventory_filenames:
+            stats.ambiguous_skipped += 1
+
+    stats.unmatched = len(unmatched)
+    stats.documents_updated = len(updates)
+    stats.missing_after = stats.missing_before - stats.documents_updated
+    return updates, stats
+
+
+def table_columns(connection: Connection, table_name: str) -> set[str]:
+    try:
+        rows = connection.execute(
             text(
                 """
-                UPDATE documents
-                SET drive_id = :drive_id,
-                    drive_item_id = :drive_item_id,
-                    sharepoint_url = COALESCE(NULLIF(sharepoint_url, ''), :web_url),
-                    extraction_status = CASE
-                        WHEN COALESCE(drive_item_id, '') <> :drive_item_id
-                             OR COALESCE(content_hash, '') <> COALESCE(:etag, '')
-                        THEN 'pending'
-                        ELSE extraction_status
-                    END,
-                    extraction_error = CASE
-                        WHEN COALESCE(drive_item_id, '') <> :drive_item_id
-                             OR COALESCE(content_hash, '') <> COALESCE(:etag, '')
-                        THEN NULL
-                        ELSE extraction_error
-                    END,
-                    deleted_at = NULL,
-                    updated_at = NOW()
-                WHERE
-                    (drive_id = :drive_id AND drive_item_id = :drive_item_id)
-                    OR (sharepoint_url IS NOT NULL AND sharepoint_url <> '' AND sharepoint_url = :web_url)
-                    OR (relative_path IS NOT NULL AND relative_path <> '' AND relative_path = :relative_path)
-                    OR (folder_path IS NOT NULL AND file_name IS NOT NULL
-                        AND :relative_path = folder_path || '/' || file_name)
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = :table_name
                 """
             ),
-            {
-                "drive_id": drive_id,
-                "drive_item_id": row["drive_item_id"],
-                "web_url": row.get("web_url"),
-                "relative_path": row.get("relative_path"),
-                "etag": row.get("etag") or row.get("ctag"),
-            },
+            {"table_name": table_name},
+        ).fetchall()
+        columns = {str(row[0]) for row in rows}
+        if columns:
+            return columns
+    except Exception:
+        pass
+    return set()
+
+
+def load_missing_document_rows(connection: Connection) -> list[dict[str, Any]]:
+    return [
+        dict(row)
+        for row in connection.execute(
+            text(
+                """
+                SELECT document_id, job_id, sharepoint_url, folder_path, relative_path, file_name,
+                       drive_id, drive_item_id
+                FROM documents
+                WHERE NULLIF(drive_id, '') IS NULL OR NULLIF(drive_item_id, '') IS NULL
+                """
+            )
         )
-        reconciled += int(result.rowcount or 0)
-    return reconciled
+        .mappings()
+        .all()
+    ]
+
+
+def load_inventory_file_rows(connection: Connection) -> list[dict[str, Any]]:
+    return [
+        dict(row)
+        for row in connection.execute(
+            text(
+                """
+                SELECT drive_id, drive_item_id, name, web_url, parent_path, relative_path,
+                       is_file, mime_type, size_bytes, last_modified_at
+                FROM sharepoint_drive_items
+                WHERE NULLIF(drive_item_id, '') IS NOT NULL
+                  AND COALESCE(is_file, false) IS TRUE
+                  AND deleted_at IS NULL
+                """
+            )
+        )
+        .mappings()
+        .all()
+    ]
+
+
+def missing_complete_identifier_count(connection: Connection) -> int:
+    return int(
+        connection.execute(
+            text(
+                """
+                SELECT COUNT(*)
+                FROM documents
+                WHERE NULLIF(drive_id, '') IS NULL OR NULLIF(drive_item_id, '') IS NULL
+                """
+            )
+        ).scalar()
+        or 0
+    )
+
+
+def docs_with_drive_item_missing_drive_count(connection: Connection) -> int:
+    return int(
+        connection.execute(
+            text(
+                """
+                SELECT COUNT(*)
+                FROM documents
+                WHERE NULLIF(drive_item_id, '') IS NOT NULL AND NULLIF(drive_id, '') IS NULL
+                """
+            )
+        ).scalar()
+        or 0
+    )
+
+
+def inventory_files_available_count(connection: Connection) -> int:
+    return int(
+        connection.execute(
+            text(
+                """
+                SELECT COUNT(*)
+                FROM sharepoint_drive_items
+                WHERE NULLIF(drive_item_id, '') IS NOT NULL
+                  AND COALESCE(is_file, false) IS TRUE
+                  AND deleted_at IS NULL
+                """
+            )
+        ).scalar()
+        or 0
+    )
+
+
+def apply_document_reconciliation_updates(
+    connection: Connection,
+    updates: list[dict[str, Any]],
+    *,
+    columns: set[str] | None = None,
+) -> int:
+    if not updates:
+        return 0
+    document_columns = columns or table_columns(connection, "documents")
+    set_clauses = [
+        "drive_id = COALESCE(NULLIF(drive_id, ''), :drive_id)",
+        "drive_item_id = COALESCE(NULLIF(drive_item_id, ''), :drive_item_id)",
+    ]
+    if "sharepoint_url" in document_columns:
+        set_clauses.append("sharepoint_url = COALESCE(NULLIF(sharepoint_url, ''), :web_url)")
+    if "mime_type" in document_columns:
+        set_clauses.append("mime_type = COALESCE(NULLIF(mime_type, ''), :mime_type)")
+    if "size_bytes" in document_columns:
+        set_clauses.append("size_bytes = COALESCE(size_bytes, :size_bytes)")
+    if "modified_at" in document_columns:
+        set_clauses.append("modified_at = COALESCE(modified_at, :modified_at)")
+    if "drive_metadata_match_strategy" in document_columns:
+        set_clauses.append("drive_metadata_match_strategy = :strategy")
+    if "drive_metadata_match_confidence" in document_columns:
+        set_clauses.append("drive_metadata_match_confidence = :confidence")
+    if "drive_metadata_matched_at" in document_columns:
+        set_clauses.append("drive_metadata_matched_at = CURRENT_TIMESTAMP")
+    if "updated_at" in document_columns:
+        set_clauses.append("updated_at = CURRENT_TIMESTAMP")
+    statement = text(
+        f"""
+        UPDATE documents
+        SET {", ".join(set_clauses)}
+        WHERE document_id = :document_id
+          AND (NULLIF(drive_id, '') IS NULL OR NULLIF(drive_item_id, '') IS NULL)
+        """
+    )
+    updated = 0
+    for update in updates:
+        if is_blank(update.get("drive_id")) or is_blank(update.get("drive_item_id")):
+            continue
+        result = connection.execute(statement, update)
+        updated += int(result.rowcount or 0)
+    return updated
+
+
+def reconcile_document_drive_metadata(
+    connection: Connection,
+    *,
+    inventory_rows: list[dict[str, Any]] | None = None,
+    debug: bool = False,
+) -> DocumentReconciliationStats:
+    ensure_delta_tables(connection)
+    missing_before = missing_complete_identifier_count(connection)
+    inventory_count = inventory_files_available_count(connection) if inventory_rows is None else len(inventory_rows)
+    documents = load_missing_document_rows(connection)
+    inventory = inventory_rows if inventory_rows is not None else load_inventory_file_rows(connection)
+    updates, stats = match_document_drive_metadata(documents, inventory)
+    stats.missing_before = missing_before
+    stats.inventory_files_available = inventory_count
+    stats.documents_updated = apply_document_reconciliation_updates(connection, updates)
+    stats.missing_after = missing_complete_identifier_count(connection)
+    if debug:
+        print_reconciliation_debug(connection, documents, inventory, updates)
+    return stats
+
+
+def print_reconciliation_debug(
+    connection: Connection,
+    documents: list[dict[str, Any]],
+    inventory: list[dict[str, Any]],
+    updates: list[dict[str, Any]],
+) -> None:
+    matched_ids = {update.get("document_id") for update in updates}
+    unmatched = [doc for doc in documents if doc.get("document_id") not in matched_ids][:10]
+    progress(f"Documents with drive_item_id but missing drive_id: {docs_with_drive_item_missing_drive_count(connection)}")
+    if unmatched:
+        progress("Sample unmatched documents:")
+        for doc in unmatched:
+            progress(
+                "  "
+                f"document_id={doc.get('document_id')} file_name={doc.get('file_name')} "
+                f"drive_item_candidate={doc.get('drive_item_id') or document_id_drive_item_candidate(doc)} "
+                f"url_path={normalize_url_path(doc.get('sharepoint_url'))} "
+                f"relative_path={normalize_match_path(doc.get('relative_path'))} "
+                f"folder_file={folder_file_path(doc)}"
+            )
+            same_name = [row for row in inventory if normalize_match_text(row.get("name")) == normalize_match_text(doc.get("file_name"))][:5]
+            for row in same_name:
+                progress(f"    same filename inventory: drive_id={row.get('drive_id')} item={row.get('drive_item_id')} path={row.get('relative_path')}")
+
+
+def print_document_reconciliation_stats(stats: DocumentReconciliationStats) -> None:
+    progress(f"documents missing complete identifiers before: {stats.missing_before}")
+    progress(f"inventory files available: {stats.inventory_files_available}")
+    progress(f"matched by drive_item_id: {stats.matched_by_drive_item_id}")
+    progress(f"matched by document_id-derived drive_item_id: {stats.matched_by_document_id_drive_item_id}")
+    progress(f"matched by exact URL: {stats.matched_by_exact_url}")
+    progress(f"matched by URL path: {stats.matched_by_url_path}")
+    progress(f"matched by relative path: {stats.matched_by_relative_path}")
+    progress(f"matched by folder plus filename: {stats.matched_by_folder_file}")
+    progress(f"matched by parent path plus filename: {stats.matched_by_parent_name}")
+    progress(f"matched by unique filename fallback: {stats.matched_by_unique_filename}")
+    progress(f"ambiguous skipped: {stats.ambiguous_skipped}")
+    progress(f"unmatched: {stats.unmatched}")
+    progress(f"documents updated: {stats.documents_updated}")
+    progress(f"documents missing complete identifiers after: {stats.missing_after}")
+
+
+def reconcile_documents_for_items(connection: Connection, drive_id: str, rows: list[dict[str, Any]]) -> int:
+    page_file_rows = [row for row in rows if row.get("is_file") is not False and row.get("drive_item_id")]
+    if not page_file_rows:
+        return 0
+    return reconcile_document_drive_metadata(connection, inventory_rows=page_file_rows).documents_updated
 
 
 def mark_deleted_documents(connection: Connection, drive_id: str, item_ids: list[str]) -> int:
@@ -949,6 +1323,7 @@ def process_delta_page(
     }
     changed_rows: list[dict[str, Any]] = []
     changed_folder_rows: list[dict[str, Any]] = []
+    page_file_rows: list[dict[str, Any]] = []
     deleted_ids: list[str] = []
     deleted_rows: list[dict[str, Any]] = []
     for item in page_items:
@@ -974,6 +1349,8 @@ def process_delta_page(
             continue
         change_kind = upsert_inventory_item(connection, row)
         page_counts["upserted"] += 1
+        if row.get("is_file"):
+            page_file_rows.append(row)
         if not is_relevant_path(str(row.get("relative_path") or ""), roots):
             continue
         if change_kind == "new":
@@ -993,7 +1370,7 @@ def process_delta_page(
                 changed_rows.append(row)
             elif row.get("is_folder"):
                 changed_folder_rows.append(row)
-    page_counts["documents_reconciled"] = reconcile_documents_for_items(connection, drive_id, changed_rows)
+    page_counts["documents_reconciled"] = reconcile_documents_for_items(connection, drive_id, page_file_rows)
     stats.documents_reconciled += page_counts["documents_reconciled"]
     stats.documents_marked_deleted += mark_deleted_documents(connection, drive_id, deleted_ids)
     page_job_ids = affected_jobs_for_items(connection, drive_id, changed_rows, deleted_ids)
@@ -1214,6 +1591,8 @@ def main() -> None:
     parser.add_argument("--limit-pages", type=int, help="Process only the first N delta pages for testing; does not save final delta state unless final page is reached.")
     parser.add_argument("--debug-progress", action="store_true", help="Print additional per-page delta progress details.")
     parser.add_argument("--delta-status", action="store_true", help="Show saved SharePoint delta synchronization state.")
+    parser.add_argument("--reconcile-documents", action="store_true", help="Populate missing documents drive identifiers from sharepoint_drive_items inventory.")
+    parser.add_argument("--debug-reconciliation", action="store_true", help="Print sample unmatched reconciliation candidates.")
     parser.add_argument("--config", type=Path, help="Batch scan roots YAML used to filter relevant delta items.")
     parser.add_argument("--database-url", default=os.getenv("DATABASE_URL") or os.getenv("NEON_DATABASE_URL"))
     args = parser.parse_args()
@@ -1222,6 +1601,17 @@ def main() -> None:
         if not args.database_url:
             raise SystemExit("Set --database-url, DATABASE_URL, or NEON_DATABASE_URL.")
         print_delta_status(create_engine(args.database_url, future=True))
+        return
+
+    if args.reconcile_documents:
+        if not args.database_url:
+            raise SystemExit("Set --database-url, DATABASE_URL, or NEON_DATABASE_URL.")
+        engine = create_engine(args.database_url, future=True)
+        progress("Reconciling documents from SharePoint drive inventory")
+        progress(f"Database target: {database_host_summary(args.database_url)}")
+        with engine.begin() as conn:
+            stats = reconcile_document_drive_metadata(conn, debug=args.debug_reconciliation)
+        print_document_reconciliation_stats(stats)
         return
 
     site_url = args.site_url or args.sharepoint_url

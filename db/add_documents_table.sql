@@ -31,6 +31,9 @@ CREATE TABLE IF NOT EXISTS documents (
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS drive_id TEXT;
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS drive_item_id TEXT;
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS drive_metadata_match_strategy TEXT;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS drive_metadata_matched_at TIMESTAMPTZ;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS drive_metadata_match_confidence TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_documents_job_id
     ON documents(job_id);

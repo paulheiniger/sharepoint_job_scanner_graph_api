@@ -5,6 +5,9 @@ ALTER TABLE documents ADD COLUMN IF NOT EXISTS requires_ocr BOOLEAN DEFAULT FALS
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS drive_id TEXT;
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS drive_item_id TEXT;
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS drive_metadata_match_strategy TEXT;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS drive_metadata_matched_at TIMESTAMPTZ;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS drive_metadata_match_confidence TEXT;
 
 CREATE TABLE IF NOT EXISTS document_content (
     content_id TEXT PRIMARY KEY,
