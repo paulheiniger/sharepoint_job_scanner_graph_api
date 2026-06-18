@@ -47,6 +47,27 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_DATABASE_URL = "postgresql+psycopg2://spraytec:spraytec_dev_password@127.0.0.1:5433/spraytec_ops"
 
+PRICING_EXPORT_COLUMNS = [
+    "pricing_item_id",
+    "vendor",
+    "category",
+    "product_name",
+    "description",
+    "unit_price",
+    "unit_of_measure",
+    "package_size",
+    "price_basis",
+    "price_per_gallon",
+    "price_per_sqft",
+    "price_per_unit",
+    "effective_date",
+    "status",
+    "is_current",
+    "needs_review",
+    "source_file",
+    "notes",
+]
+
 
 def get_database_url() -> str:
     try:
@@ -91,6 +112,7 @@ VIEWS = [
     "dashboard_adder_business_category_rollup",
     "dashboard_sales_followup",
     "dashboard_documentation_risk",
+    "pricing_catalog",
 ]
 
 selected_divisions: list[str] = []
@@ -992,6 +1014,172 @@ def query_view(view_name: str) -> pd.DataFrame:
     if view_name not in VIEWS:
         raise ValueError(f"Unsupported dashboard view: {view_name}")
     return safe_load(f"SELECT * FROM {view_name}")
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_pricing_health() -> pd.DataFrame:
+    result = load_df_uncached(
+        """
+        SELECT
+            COUNT(*) AS total_rows,
+            COUNT(*) FILTER (WHERE COALESCE(is_current, false) AND COALESCE(status, '') = 'active') AS current_active_rows,
+            COUNT(*) FILTER (WHERE COALESCE(needs_review, false)) AS rows_needing_review,
+            COUNT(DISTINCT NULLIF(vendor, '')) AS distinct_vendors,
+            MAX(effective_date) AS latest_effective_date,
+            COUNT(*) FILTER (WHERE unit_price IS NULL) AS missing_price_count
+        FROM pricing_catalog
+        """
+    )
+    if result.ok:
+        return result.value
+    raise result.error or RuntimeError("Pricing health query failed.")
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_pricing_catalog_filtered(
+    search: str,
+    vendors: tuple[str, ...],
+    categories: tuple[str, ...],
+    statuses: tuple[str, ...],
+    is_current_filter: str,
+    needs_review_filter: str,
+    effective_start: str | None,
+    effective_end: str | None,
+    limit: int,
+) -> pd.DataFrame:
+    clauses = ["1 = 1"]
+    params: dict[str, Any] = {"limit": int(limit)}
+    if search:
+        clauses.append(
+            """
+            (
+                product_name ILIKE :search
+                OR description ILIKE :search
+                OR vendor ILIKE :search
+                OR category ILIKE :search
+                OR vendor_item_no ILIKE :search
+                OR notes ILIKE :search
+            )
+            """
+        )
+        params["search"] = f"%{search}%"
+    if vendors:
+        clauses.append("vendor = ANY(:vendors)")
+        params["vendors"] = list(vendors)
+    if categories:
+        clauses.append("category = ANY(:categories)")
+        params["categories"] = list(categories)
+    if statuses:
+        clauses.append("status = ANY(:statuses)")
+        params["statuses"] = list(statuses)
+    if is_current_filter == "Current only":
+        clauses.append("COALESCE(is_current, false) IS TRUE")
+    elif is_current_filter == "Not current":
+        clauses.append("COALESCE(is_current, false) IS FALSE")
+    if needs_review_filter == "Needs review":
+        clauses.append("COALESCE(needs_review, false) IS TRUE")
+    elif needs_review_filter == "Reviewed / OK":
+        clauses.append("COALESCE(needs_review, false) IS FALSE")
+    if effective_start:
+        clauses.append("effective_date >= :effective_start")
+        params["effective_start"] = effective_start
+    if effective_end:
+        clauses.append("effective_date <= :effective_end")
+        params["effective_end"] = effective_end
+
+    query = f"""
+        SELECT
+            pricing_item_id,
+            vendor,
+            category,
+            product_name,
+            description,
+            unit_price,
+            unit_of_measure,
+            package_size,
+            price_basis,
+            price_per_gallon,
+            price_per_sqft,
+            price_per_unit,
+            effective_date,
+            status,
+            is_current,
+            needs_review,
+            source_file,
+            notes,
+            vendor_item_no
+        FROM pricing_catalog
+        WHERE {" AND ".join(clauses)}
+        ORDER BY COALESCE(needs_review, false) DESC, product_name
+        LIMIT :limit
+    """
+    result = load_df_uncached(query, params=params)
+    if result.ok:
+        return result.value
+    raise result.error or RuntimeError("Pricing catalog query failed.")
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_current_pricing_catalog_export() -> pd.DataFrame:
+    result = load_df_uncached(
+        """
+        SELECT
+            pricing_item_id,
+            vendor,
+            category,
+            product_name,
+            description,
+            unit_price,
+            unit_of_measure,
+            package_size,
+            price_basis,
+            price_per_gallon,
+            price_per_sqft,
+            price_per_unit,
+            effective_date,
+            status,
+            is_current,
+            needs_review,
+            source_file,
+            notes
+        FROM pricing_catalog
+        WHERE COALESCE(is_current, false) IS TRUE
+        ORDER BY vendor NULLS LAST, category NULLS LAST, product_name
+        """
+    )
+    if result.ok:
+        return result.value
+    raise result.error or RuntimeError("Current pricing catalog export query failed.")
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_pricing_filter_options() -> dict[str, list[str]]:
+    result = load_df_uncached(
+        """
+        SELECT 'vendor' AS field, vendor AS value FROM pricing_catalog WHERE NULLIF(vendor, '') IS NOT NULL
+        UNION
+        SELECT 'category' AS field, category AS value FROM pricing_catalog WHERE NULLIF(category, '') IS NOT NULL
+        UNION
+        SELECT 'status' AS field, status AS value FROM pricing_catalog WHERE NULLIF(status, '') IS NOT NULL
+        """
+    )
+    if not result.ok:
+        raise result.error or RuntimeError("Pricing filter option query failed.")
+    df = result.value
+    if df.empty:
+        return {"vendor": [], "category": [], "status": []}
+    options: dict[str, list[str]] = {}
+    for field, group in df.groupby("field"):
+        options[str(field)] = sorted(group["value"].dropna().astype(str).str.strip().unique().tolist())
+    return {
+        "vendor": options.get("vendor", []),
+        "category": options.get("category", []),
+        "status": options.get("status", []),
+    }
+
+
+def pricing_export_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    return df[[column for column in PRICING_EXPORT_COLUMNS if column in df.columns]].copy()
 
 
 def numeric_series(df: pd.DataFrame, column: str) -> pd.Series:
@@ -3081,6 +3269,111 @@ def documentation_page() -> None:
     documentation_risk_page()
 
 
+def pricing_catalog_page() -> None:
+    st.title("Pricing Catalog")
+    try:
+        health = load_pricing_health()
+        filter_options = load_pricing_filter_options()
+    except Exception as exc:
+        show_database_error(exc)
+        st.stop()
+
+    if not health.empty:
+        row = health.iloc[0]
+        metric_row(
+            [
+                ("Total Pricing Rows", fmt_count(row.get("total_rows"))),
+                ("Current Active Rows", fmt_count(row.get("current_active_rows"))),
+                ("Needs Review", fmt_count(row.get("rows_needing_review"))),
+                ("Distinct Vendors", fmt_count(row.get("distinct_vendors"))),
+                ("Latest Effective Date", text_value(row.get("latest_effective_date")) or "-"),
+                ("Missing Price", fmt_count(row.get("missing_price_count"))),
+            ]
+        )
+
+    with st.expander("Pricing filters", expanded=True):
+        search = st.text_input("Search products, descriptions, vendors, categories, item numbers, and notes", key="pricing_search").strip()
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            vendors = st.multiselect("Vendor", filter_options.get("vendor", []), key="pricing_vendor_filter")
+            is_current_filter = st.selectbox("Current", ["All", "Current only", "Not current"], key="pricing_current_filter")
+        with c2:
+            categories = st.multiselect("Category", filter_options.get("category", []), key="pricing_category_filter")
+            needs_review_filter = st.selectbox("Review", ["All", "Needs review", "Reviewed / OK"], key="pricing_review_filter")
+        with c3:
+            statuses = st.multiselect("Status", filter_options.get("status", []), key="pricing_status_filter")
+            limit = st.number_input("Row limit", min_value=100, max_value=10000, value=2000, step=100, key="pricing_limit")
+
+        d1, d2 = st.columns(2)
+        with d1:
+            effective_start = st.date_input("Effective date from", value=None, key="pricing_effective_start")
+        with d2:
+            effective_end = st.date_input("Effective date to", value=None, key="pricing_effective_end")
+
+    try:
+        pricing = load_pricing_catalog_filtered(
+            search,
+            tuple(vendors),
+            tuple(categories),
+            tuple(statuses),
+            is_current_filter,
+            needs_review_filter,
+            effective_start.isoformat() if effective_start else None,
+            effective_end.isoformat() if effective_end else None,
+            int(limit),
+        )
+    except Exception as exc:
+        show_database_error(exc)
+        st.stop()
+
+    try:
+        current_pricing_export = load_current_pricing_catalog_export()
+    except Exception as exc:
+        show_database_error(exc)
+        st.stop()
+
+    st.caption(f"Showing {fmt_count(len(pricing))} pricing rows")
+    if pricing.empty:
+        show_empty("No pricing rows match the current filters.")
+    else:
+        show_table(
+            pricing,
+            [
+                "product_name",
+                "vendor",
+                "category",
+                "unit_price",
+                "unit_of_measure",
+                "package_size",
+                "price_basis",
+                "price_per_gallon",
+                "effective_date",
+                "status",
+                "needs_review",
+                "source_file",
+                "notes",
+            ],
+            height=560,
+        )
+    filtered_export = pricing_export_dataframe(pricing)
+    full_current_export = pricing_export_dataframe(current_pricing_export)
+    c1, c2 = st.columns(2)
+    with c1:
+        st.download_button(
+            "Download filtered pricing CSV",
+            data=filtered_export.to_csv(index=False).encode("utf-8"),
+            file_name="pricing_catalog_filtered.csv",
+            mime="text/csv",
+        )
+    with c2:
+        st.download_button(
+            "Download full current pricing catalog CSV",
+            data=full_current_export.to_csv(index=False).encode("utf-8"),
+            file_name="pricing_catalog_current.csv",
+            mime="text/csv",
+        )
+
+
 def raw_tables_page() -> None:
     st.title("Raw Tables")
     view_name = st.selectbox("View", VIEWS)
@@ -3130,6 +3423,7 @@ def main() -> None:
             "Line Item Analysis",
             "Estimate Adders",
             "STAMP Tracking",
+            "Pricing Catalog",
             "Raw Tables",
         ],
     )
@@ -3170,6 +3464,8 @@ def main() -> None:
         estimate_adders_page()
     elif page == "STAMP Tracking":
         stamp_tracking_page()
+    elif page == "Pricing Catalog":
+        pricing_catalog_page()
     else:
         raw_tables_page()
 

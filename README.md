@@ -719,6 +719,73 @@ This module sends one aggregate payload only. It includes total jobs, quoted est
 
 For Microsoft Teams Zapier actions, set Message Text Format / Format to HTML and use `{{teams_message_html}}` as the message body. The payload also includes section-level HTML fields: `division_summary_html`, `pipeline_summary_html`, `pipeline_value_summary_html`, `warning_jobs_html`, and `top_value_jobs_html`.
 
+## Pricing intake and master reconciliation
+
+The pricing workflow normalizes vendor price files from a local folder into a review CSV before any master pricing update is made. It supports CSV/XLSX sheets and PDFs when a text extraction backend such as `pypdf` or `pdfplumber` is installed.
+
+Source pricing files are immutable inputs. Do not edit or overwrite the original master CSV or vendor files in `data/pricing/`; generated files should be written under `output/pricing/`.
+
+Extract source pricing rows:
+
+```bash
+python -m jobscan.pricing.extract_pricing \
+  --input-dir data/pricing \
+  --out output/pricing/pricing_source_items.csv
+```
+
+Compare extracted rows to the current master pricing sheet:
+
+```bash
+python -m jobscan.pricing.reconcile_pricing \
+  --master "data/pricing/Pricing Sheet (MASTER 2026)(Sheet1).csv" \
+  --source output/pricing/pricing_source_items.csv \
+  --out output/pricing/pricing_master_update_review.csv
+```
+
+The reconcile command also writes `output/pricing/pricing_master_updated_draft.csv`. The original master file is never overwritten. Review `pricing_master_update_review.csv` first; rows are flagged as `new_item`, `price_changed`, `possible_duplicate`, `missing_from_new_source`, and/or `needs_review`. Low-confidence fuzzy matches are reported for human review and are not automatically merged into the draft.
+
+### Load approved pricing into Postgres
+
+Apply the pricing catalog migration:
+
+```bash
+psql "$DATABASE_URL" -f db/add_pricing_catalog_tables.sql
+```
+
+Load the current master pricing CSV:
+
+```bash
+python -m jobscan.pricing_loader \
+  --input "data/pricing/Pricing Sheet (MASTER 2026)(Sheet1).csv" \
+  --database-url "$DATABASE_URL" \
+  --mark-current
+```
+
+You can also load a local folder of CSV/XLSX/PDF pricing files:
+
+```bash
+python -m jobscan.pricing_loader \
+  --input-dir data/pricing \
+  --database-url "$DATABASE_URL"
+```
+
+The loader upserts rows into `pricing_catalog`, preserves the source row in `raw_row_json`, and never deletes old pricing rows automatically. Machine-readable PDFs are parsed with text extraction only; no OCR is attempted. PDF-derived rows preserve `source_file` and `source_page`, and ambiguous rows or rows with unclear prices are flagged with `needs_review`.
+
+Export the combined current pricing catalog from Postgres:
+
+```bash
+python -m jobscan.pricing_loader \
+  --export-current \
+  --out output/pricing/pricing_catalog_current.csv \
+  --database-url "$DATABASE_URL"
+```
+
+The original master CSV is an input only, not the system of record. The normalized working catalog is `pricing_catalog` in Postgres, and combined master exports are generated from that table.
+
+The Streamlit dashboard includes a **Pricing Catalog** page with search, vendor/category/status/current/review/date filters, health metrics, CSV download for filtered rows, and CSV download for the full current catalog. Both downloads are generated from Postgres query results, not from the source master CSV.
+
+Current pricing rule for future estimator work: new estimates should use current approved rows from `pricing_catalog`. Historical estimate unit prices should be used for analysis and fallback only, and any fallback should be flagged for review.
+
 ## Streamlit dashboard prototype
 
 ```bash
