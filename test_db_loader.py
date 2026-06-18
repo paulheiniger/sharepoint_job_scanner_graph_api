@@ -12,6 +12,7 @@ from jobscan.db_loader import (
     primary_key_diagnostics,
     stable_hash_id,
     stable_id,
+    upsert_rows,
     upsert_update_columns,
 )
 
@@ -349,3 +350,35 @@ def test_upsert_update_columns_include_document_links() -> None:
     update_cols = upsert_update_columns(stmt, row, "job_id")
 
     assert set(update_cols) == {"invoice_url", "estimate_url"}
+
+
+def test_upsert_rows_batches_valid_rows_with_matching_columns() -> None:
+    table = Table(
+        "office_timesheet_entries",
+        MetaData(),
+        Column("entry_id", Text, primary_key=True),
+        Column("employee", Text),
+    )
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.executed = []
+
+        def execute(self, stmt):
+            self.executed.append(stmt)
+
+    conn = FakeConnection()
+    count = upsert_rows(
+        conn,
+        table,
+        "entry_id",
+        [
+            {"entry_id": "timesheet-1", "employee": "Alex"},
+            {"entry_id": "", "employee": "Missing"},
+            {"entry_id": "timesheet-2", "employee": "Jane"},
+            {"entry_id": "timesheet-2", "employee": "Jane Updated"},
+        ],
+    )
+
+    assert count == 2
+    assert len(conn.executed) == 1

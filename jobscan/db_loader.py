@@ -47,6 +47,8 @@ DATASETS = {
     "crew_schedule": DatasetConfig("crew schedule candidates", "crew_schedule", "schedule_id"),
 }
 
+DEFAULT_UPSERT_BATCH_SIZE = 1000
+
 
 NUMERIC_TYPES = {"bigint", "double precision", "integer", "numeric", "real", "smallint"}
 DATE_TYPES = {"date", "timestamp without time zone", "timestamp with time zone"}
@@ -443,6 +445,38 @@ def upsert_update_columns(stmt: Any, row: dict[str, Any], primary_key: str) -> d
     return {key: stmt.excluded[key] for key in row if key != primary_key}
 
 
+def upsert_rows(conn: Connection, table: Table, primary_key: str, rows: list[dict[str, Any]]) -> int:
+    valid_rows = [row for row in rows if primary_key in row and row.get(primary_key) not in (None, "")]
+    if not valid_rows:
+        return 0
+    deduped_by_primary_key = {str(row[primary_key]).strip(): row for row in valid_rows}
+    deduped_rows = list(deduped_by_primary_key.values())
+    if len(deduped_rows) == 1:
+        return upsert_row(conn, table, primary_key, deduped_rows[0])
+
+    stmt = pg_insert(table).values(deduped_rows)
+    update_cols = upsert_update_columns(stmt, deduped_rows[0], primary_key)
+    if update_cols:
+        stmt = stmt.on_conflict_do_update(index_elements=[primary_key], set_=update_cols)
+    else:
+        stmt = stmt.on_conflict_do_nothing(index_elements=[primary_key])
+    conn.execute(stmt)
+    return len(deduped_rows)
+
+
+def flush_prepared_batches(
+    conn: Connection,
+    table: Table,
+    primary_key: str,
+    prepared_batches: dict[tuple[str, ...], list[dict[str, Any]]],
+) -> int:
+    upserted = 0
+    for rows in prepared_batches.values():
+        upserted += upsert_rows(conn, table, primary_key, rows)
+    prepared_batches.clear()
+    return upserted
+
+
 def existing_tracking_summary_ids(conn: Connection, tracking_ids: set[str]) -> set[str]:
     if not tracking_ids:
         return set()
@@ -511,7 +545,14 @@ def ensure_tracking_summary_parents(
     return created
 
 
-def load_dataset(engine: Engine, dataset_key: str, path: Path, *, skip_missing: bool = False) -> tuple[int, int]:
+def load_dataset(
+    engine: Engine,
+    dataset_key: str,
+    path: Path,
+    *,
+    skip_missing: bool = False,
+    batch_size: int = DEFAULT_UPSERT_BATCH_SIZE,
+) -> tuple[int, int]:
     config = DATASETS[dataset_key]
     if not path.exists():
         message = f"Skipped missing file: {path}"
@@ -534,9 +575,16 @@ def load_dataset(engine: Engine, dataset_key: str, path: Path, *, skip_missing: 
         coercion_stats: dict[str, int] = {}
         if dataset_key == "job_tracking_daily":
             ensure_tracking_summary_parents(conn, records, loaded_at)
-        for record in records:
+        prepared_batches: dict[tuple[str, ...], list[dict[str, Any]]] = {}
+        for index, record in enumerate(records, start=1):
             prepared = prepare_row(dataset_key, record, table_columns, loaded_at, coercion_stats)
-            upserted += upsert_row(conn, table, config.primary_key, prepared)
+            column_signature = tuple(prepared.keys())
+            prepared_batches.setdefault(column_signature, []).append(prepared)
+            pending_rows = sum(len(rows) for rows in prepared_batches.values())
+            if pending_rows >= batch_size:
+                upserted += flush_prepared_batches(conn, table, config.primary_key, prepared_batches)
+                print(f"Rows upserted so far: {upserted}/{len(records)}")
+        upserted += flush_prepared_batches(conn, table, config.primary_key, prepared_batches)
 
     print(f"Rows upserted: {upserted}")
     invalid_date_values = coercion_stats.get("invalid_date_values", 0)
@@ -575,6 +623,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--office-timesheets", type=Path, help="Path to output/office_timesheet_entries.json")
     parser.add_argument("--crew-schedule", type=Path, help="Path to output/crew_schedule_candidates.json")
     parser.add_argument("--all", action="store_true", help="Load all default output JSON files, skipping missing files.")
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_UPSERT_BATCH_SIZE, help="Rows per batched upsert statement.")
     return parser.parse_args(argv)
 
 
@@ -609,8 +658,9 @@ def main(argv: list[str] | None = None) -> int:
 
     total_read = 0
     total_upserted = 0
+    batch_size = max(args.batch_size, 1)
     for dataset_key, path, skip_missing in selections:
-        read_count, upserted_count = load_dataset(engine, dataset_key, path, skip_missing=skip_missing)
+        read_count, upserted_count = load_dataset(engine, dataset_key, path, skip_missing=skip_missing, batch_size=batch_size)
         total_read += read_count
         total_upserted += upserted_count
 
