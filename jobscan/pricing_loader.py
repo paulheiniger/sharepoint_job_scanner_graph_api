@@ -122,6 +122,7 @@ class PricingLoadResult:
     pdf_rows_deduplicated: int = 0
     pdf_rows_loaded: int = 0
     pdf_rows_needing_review: int = 0
+    source_rows_retired: int = 0
     pdf_categories_detected: set[str] | None = None
     pdf_files_skipped: list[str] | None = None
 
@@ -167,6 +168,7 @@ def stable_pricing_item_id(row: dict[str, Any]) -> str:
             row.get("product_name_normalized"),
             row.get("unit_price"),
             row.get("package_size"),
+            row.get("unit_of_measure"),
             row.get("price_basis"),
         ]
     else:
@@ -485,6 +487,32 @@ def upsert_source_file(conn: Connection, path: Path, rows: list[dict[str, Any]],
     )
 
 
+RETIRE_SOURCE_ROWS_SQL = """
+UPDATE pricing_catalog
+SET
+    status = 'inactive',
+    is_current = FALSE,
+    needs_review = TRUE,
+    review_notes = :review_notes,
+    updated_at = NOW()
+WHERE source_file = :source_file
+  AND LOWER(COALESCE(source_type, '')) = LOWER(:source_type)
+  AND (
+      COALESCE(status, '') IS DISTINCT FROM 'inactive'
+      OR COALESCE(is_current, TRUE) IS DISTINCT FROM FALSE
+      OR COALESCE(needs_review, FALSE) IS DISTINCT FROM TRUE
+  )
+"""
+
+
+def retire_source_rows(conn: Connection, *, source_file: str, source_type: str, review_notes: str = "Retired before source reload") -> int:
+    result = conn.execute(
+        text(RETIRE_SOURCE_ROWS_SQL),
+        {"source_file": source_file, "source_type": source_type, "review_notes": review_notes},
+    )
+    return int(result.rowcount or 0)
+
+
 def load_pricing(
     engine: Engine,
     paths: list[Path],
@@ -494,6 +522,7 @@ def load_pricing(
     source_file: str | None = None,
     effective_date: str | None = None,
     mark_current: bool = False,
+    replace_source: bool = False,
 ) -> PricingLoadResult:
     result = PricingLoadResult()
     result.pdf_files_skipped = []
@@ -522,6 +551,11 @@ def load_pricing(
             result.rows_read += len(rows) + skipped
             result.rows_skipped += skipped
             result.rows_needing_review += sum(1 for row in rows if row.get("needs_review"))
+            source_type = path.suffix.lower().lstrip(".")
+            source_name = clean_text(source_file) or path.name
+            if is_pdf or replace_source:
+                review_note = "Retired before PDF source reload" if is_pdf else "Retired before source reload"
+                result.source_rows_retired += retire_source_rows(conn, source_file=source_name, source_type=source_type, review_notes=review_note)
             inserted, updated = upsert_pricing_rows(conn, rows)
             result.rows_inserted += inserted
             result.rows_updated += updated
@@ -544,13 +578,15 @@ def load_pricing(
 PDF_CLEANUP_SQL = """
 UPDATE pricing_catalog
 SET
-    status = 'review',
+    status = 'inactive',
+    is_current = FALSE,
     needs_review = TRUE,
-    review_notes = COALESCE(NULLIF(review_notes, ''), 'Marked for review by PDF pricing cleanup: header/note line.'),
+    review_notes = COALESCE(NULLIF(review_notes, ''), 'Marked inactive by PDF pricing cleanup: stale header/note/package row.'),
     updated_at = NOW()
 WHERE LOWER(COALESCE(source_type, '')) = 'pdf'
   AND (
-      COALESCE(status, '') IS DISTINCT FROM 'review'
+      COALESCE(status, '') IS DISTINCT FROM 'inactive'
+      OR COALESCE(is_current, TRUE) IS DISTINCT FROM FALSE
       OR COALESCE(needs_review, FALSE) IS DISTINCT FROM TRUE
   )
   AND (
@@ -561,12 +597,22 @@ WHERE LOWER(COALESCE(source_type, '')) = 'pdf'
           'custom colors',
           'silicone roofing products price uom unit info details effective date end date'
       )
+      OR LOWER(COALESCE(product_name, '')) LIKE '%standard colors%'
+      OR LOWER(COALESCE(product_name, '')) LIKE '%custom colors%'
       OR LOWER(COALESCE(product_name, '')) LIKE 'general notes%'
       OR LOWER(COALESCE(product_name, '')) LIKE '%all orders%'
       OR LOWER(COALESCE(product_name, '')) LIKE '%contact coatings%'
       OR LOWER(COALESCE(product_name, '')) LIKE '%coatings@gaf.com%'
       OR LOWER(COALESCE(product_name, '')) LIKE 'price uom unit info details%'
       OR COALESCE(product_name, '') !~ '[A-Za-z0-9]'
+      OR (
+          LOWER(COALESCE(unit_of_measure, '')) = 'gallon'
+          AND LOWER(COALESCE(package_size, '')) ~ '\\m(2|3\\.5|5|50|54|55|250)\\s*(gal|gallon|g)\\M'
+          AND unit_price IS NOT NULL
+          AND price_per_gallon IS NOT NULL
+          AND ABS(unit_price - price_per_gallon) < 0.0001
+      )
+      OR LOWER(COALESCE(package_size, '')) ~ '\\$|\\m\\d+(?:\\.\\d+)?\\s+(pail|drum)\\M'
   )
 """
 
@@ -646,10 +692,11 @@ def main() -> None:
     parser.add_argument("--input", type=Path, help="Pricing CSV/XLSX/PDF file to load.")
     parser.add_argument("--input-dir", type=Path, help="Folder of pricing CSV/XLSX/PDF files to load.")
     parser.add_argument("--export-current", action="store_true", help="Export current pricing_catalog rows to --out.")
-    parser.add_argument("--cleanup-pdf-pricing", action="store_true", help="Mark obvious PDF header/note pricing rows for review.")
+    parser.add_argument("--cleanup-pdf-pricing", action="store_true", help="Mark obvious stale PDF header/note/package rows inactive for review.")
     parser.add_argument("--out", type=Path, help="Output CSV path for --export-current.")
     parser.add_argument("--database-url", help="Postgres/Neon database URL.")
     parser.add_argument("--mark-current", action="store_true", help="Mark loaded rows as current. Does not demote unrelated rows.")
+    parser.add_argument("--replace-source", action="store_true", help="Retire existing rows for each loaded source_file/source_type before reloading it. PDF sources do this by default.")
     parser.add_argument("--vendor", help="Override vendor for loaded rows.")
     parser.add_argument("--category", help="Override category for loaded rows.")
     parser.add_argument("--source-file", help="Override source_file for loaded rows.")
@@ -661,7 +708,7 @@ def main() -> None:
 
     if args.cleanup_pdf_pricing:
         changed = cleanup_pdf_pricing_catalog(engine)
-        print(f"PDF pricing cleanup rows marked for review: {changed}")
+        print(f"PDF pricing cleanup rows marked inactive for review: {changed}")
         print("CSV-derived master pricing rows were not touched.")
         print("Source files are read-only; no source pricing files were modified.")
         return
@@ -687,12 +734,14 @@ def main() -> None:
         source_file=args.source_file,
         effective_date=args.effective_date,
         mark_current=args.mark_current,
+        replace_source=args.replace_source,
     )
     print(f"Rows read: {result.rows_read}")
     print(f"Rows inserted: {result.rows_inserted}")
     print(f"Rows updated: {result.rows_updated}")
     print(f"Rows skipped: {result.rows_skipped}")
     print(f"Rows needing review: {result.rows_needing_review}")
+    print(f"Existing source rows retired: {result.source_rows_retired}")
     print(f"PDF files discovered: {result.pdf_files_discovered}")
     print(f"PDF files parsed: {result.pdf_files_parsed}")
     print(f"PDF pages read: {result.pdf_pages_read}")

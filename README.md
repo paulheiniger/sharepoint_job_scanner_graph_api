@@ -769,7 +769,7 @@ python -m jobscan.pricing_loader \
   --database-url "$DATABASE_URL"
 ```
 
-The loader upserts rows into `pricing_catalog`, preserves the source row in `raw_row_json`, and never deletes old pricing rows automatically. Machine-readable PDFs are parsed with text extraction only; no OCR is attempted. PDF-derived rows preserve `source_file` and `source_page`, and ambiguous rows or rows with unclear prices are flagged with `needs_review`.
+The loader upserts rows into `pricing_catalog`, preserves the source row in `raw_row_json`, and never deletes old pricing rows automatically. Machine-readable PDFs are parsed with text extraction only; no OCR is attempted. PDF-derived rows preserve `source_file` and `source_page`, and ambiguous rows or rows with unclear prices are flagged with `needs_review`. Reloading a PDF source automatically marks prior rows from that same PDF `inactive` before inserting the newly parsed rows, so stale parser output does not remain active. Use `--replace-source` only when you explicitly want the same source-scoped retirement behavior for non-PDF inputs.
 
 PDF extraction is intentionally conservative: obvious page headers, table headers, footers, and general notes are skipped instead of being loaded as active catalog products. Section headers such as `Silicone Roofing Products`, `Primers`, and `Granules` are carried forward as categories for following product-price rows. Packaged liquid rows such as `5 Gal`, `54G`, `55 Gal`, and `250G` are treated as container/drum prices with calculated `price_per_gallon` when the package basis is clear. Product family is tracked in PDF row metadata, and package-size variants such as `2 Gal` versus `5 Gal` or pail versus drum are kept as separate catalog rows.
 
@@ -781,7 +781,7 @@ python -m jobscan.pricing_loader \
   --database-url "$DATABASE_URL"
 ```
 
-The cleanup marks obvious PDF header/note rows as `status='review'` with `needs_review=true`; it does not delete pricing rows or modify source files.
+The cleanup marks obvious stale PDF header/note/package rows as `status='inactive'`, `is_current=false`, and `needs_review=true`; it does not delete pricing rows or modify source files.
 
 Export the combined current pricing catalog from Postgres:
 

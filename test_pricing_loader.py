@@ -121,6 +121,7 @@ class FakeRows:
 class FakeConnection:
     def __init__(self):
         self.pricing_ids: set[str] = set()
+        self.pricing_rows: dict[str, dict[str, object]] = {}
         self.export_rows: list[dict[str, object]] = []
         self.executed = []
 
@@ -136,6 +137,21 @@ class FakeConnection:
             rows = params if isinstance(params, list) else [params]
             for row in rows:
                 self.pricing_ids.add(row["pricing_item_id"])
+                existing = self.pricing_rows.get(row["pricing_item_id"], {})
+                self.pricing_rows[row["pricing_item_id"]] = {**existing, **row}
+        if "UPDATE pricing_catalog" in sql and "source_file = :source_file" in sql:
+            source_file = params.get("source_file") if isinstance(params, dict) else None
+            source_type = str(params.get("source_type") or "").lower() if isinstance(params, dict) else ""
+            count = 0
+            for row in self.pricing_rows.values():
+                if row.get("source_file") == source_file and str(row.get("source_type") or "").lower() == source_type:
+                    if row.get("status") != "inactive" or row.get("is_current") is not False or row.get("needs_review") is not True:
+                        row["status"] = "inactive"
+                        row["is_current"] = False
+                        row["needs_review"] = True
+                        row["review_notes"] = params.get("review_notes")
+                        count += 1
+            return FakeRows([], rowcount=count)
         if "UPDATE pricing_catalog" in sql and "LOWER(COALESCE(source_type" in sql:
             return FakeRows([], rowcount=3)
         return FakeRows([])
@@ -235,6 +251,104 @@ def test_pdf_load_is_idempotent_and_reports_pdf_counts(tmp_path: Path) -> None:
     assert first.pdf_rows_loaded == first.rows_inserted + first.rows_updated
     assert second.rows_inserted == 0
     assert second.rows_updated == first.rows_inserted
+
+
+def test_pdf_reload_retires_existing_rows_for_same_source_only(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "Coatings - Terr 763 - Eff 5.6.25.pdf"
+    pdf_path.write_text("Silicone Roofing Products\nGAF High Solids Silicone 5 Gal\n$190.00\nPail\n", encoding="utf-8")
+    engine = FakeEngine()
+    engine.conn.pricing_rows = {
+        "old-bad": {
+            "pricing_item_id": "old-bad",
+            "product_name": "GAF High Solids Silicone 5 Gal",
+            "source_file": pdf_path.name,
+            "source_type": "pdf",
+            "unit_of_measure": "gallon",
+            "package_size": "5 Gal",
+            "price_per_gallon": 190.0,
+            "status": "active",
+            "is_current": True,
+            "needs_review": False,
+        },
+        "csv-row": {
+            "pricing_item_id": "csv-row",
+            "product_name": "Master Row",
+            "source_file": "Pricing Sheet (MASTER 2026)(Sheet1).csv",
+            "source_type": "csv",
+            "status": "active",
+            "is_current": True,
+            "needs_review": False,
+        },
+        "other-pdf": {
+            "pricing_item_id": "other-pdf",
+            "product_name": "Other PDF Row",
+            "source_file": "Other.pdf",
+            "source_type": "pdf",
+            "status": "active",
+            "is_current": True,
+            "needs_review": False,
+        },
+    }
+
+    result = pl.load_pricing(engine, [pdf_path], mark_current=True)
+
+    assert result.source_rows_retired == 1
+    assert engine.conn.pricing_rows["old-bad"]["status"] == "inactive"
+    assert engine.conn.pricing_rows["old-bad"]["is_current"] is False
+    assert engine.conn.pricing_rows["old-bad"]["needs_review"] is True
+    assert engine.conn.pricing_rows["old-bad"]["review_notes"] == "Retired before PDF source reload"
+    assert engine.conn.pricing_rows["csv-row"]["status"] == "active"
+    assert engine.conn.pricing_rows["other-pdf"]["status"] == "active"
+    new_rows = [row for key, row in engine.conn.pricing_rows.items() if key not in {"old-bad", "csv-row", "other-pdf"}]
+    assert len(new_rows) == 1
+    assert new_rows[0]["status"] == "active"
+    assert new_rows[0]["unit_of_measure"] == "pail"
+    assert new_rows[0]["price_per_gallon"] == 38.0
+
+
+def test_csv_load_does_not_replace_source_without_flag(tmp_path: Path) -> None:
+    path = tmp_path / "master.csv"
+    master_fixture(path)
+    engine = FakeEngine()
+    engine.conn.pricing_rows = {
+        "old-csv": {
+            "pricing_item_id": "old-csv",
+            "product_name": "Old CSV",
+            "source_file": path.name,
+            "source_type": "csv",
+            "status": "active",
+            "is_current": True,
+            "needs_review": False,
+        }
+    }
+
+    result = pl.load_pricing(engine, [path], mark_current=True)
+
+    assert result.source_rows_retired == 0
+    assert engine.conn.pricing_rows["old-csv"]["status"] == "active"
+
+
+def test_replace_source_retires_same_csv_source_when_explicit(tmp_path: Path) -> None:
+    path = tmp_path / "master.csv"
+    master_fixture(path)
+    engine = FakeEngine()
+    engine.conn.pricing_rows = {
+        "old-csv": {
+            "pricing_item_id": "old-csv",
+            "product_name": "Old CSV",
+            "source_file": path.name,
+            "source_type": "csv",
+            "status": "active",
+            "is_current": True,
+            "needs_review": False,
+        }
+    }
+
+    result = pl.load_pricing(engine, [path], mark_current=True, replace_source=True)
+
+    assert result.source_rows_retired == 1
+    assert engine.conn.pricing_rows["old-csv"]["status"] == "inactive"
+    assert engine.conn.pricing_rows["old-csv"]["review_notes"] == "Retired before source reload"
 
 
 def test_pdf_table_headers_and_notes_are_skipped(tmp_path: Path) -> None:
@@ -384,6 +498,24 @@ def test_pdf_dedupes_same_family_package_unit_price(tmp_path: Path) -> None:
     assert stats["duplicates_skipped"] == 1
 
 
+def test_inline_pdf_package_price_uom_does_not_pollute_package_size() -> None:
+    from jobscan.pricing import core
+
+    parsed_54 = core.parse_pdf_pricing_line("GAF Bleed Block Asphalt Primer - 54G 296.00 Drum")
+    parsed_5 = core.parse_pdf_pricing_line("GAF Bleed Block Asphalt Primer - 5G 125.00 Pail")
+
+    assert parsed_54 is not None
+    assert parsed_54["product_name"] == "GAF Bleed Block Asphalt Primer - 54G"
+    assert parsed_54["package_size"] == "54 gal"
+    assert parsed_54["unit_of_measure"] == "drum"
+    assert parsed_54["price_per_gallon"] == round(296.0 / 54.0, 4)
+    assert parsed_5 is not None
+    assert parsed_5["product_name"] == "GAF Bleed Block Asphalt Primer - 5G"
+    assert parsed_5["package_size"] == "5 gal"
+    assert parsed_5["unit_of_measure"] == "pail"
+    assert parsed_5["price_per_gallon"] == 25.0
+
+
 def test_cleanup_pdf_pricing_does_not_touch_csv_rows() -> None:
     engine = FakeEngine()
 
@@ -392,6 +524,10 @@ def test_cleanup_pdf_pricing_does_not_touch_csv_rows() -> None:
     assert changed == 3
     sql = "\n".join(statement for statement, _params in engine.conn.executed)
     assert "LOWER(COALESCE(source_type, '')) = 'pdf'" in sql
+    assert "unit_of_measure" in sql
+    assert "price_per_gallon" in sql
+    assert "package_size" in sql
+    assert "status = 'inactive'" in sql
 
 
 def test_loader_does_not_modify_input_pdf_content(tmp_path: Path) -> None:

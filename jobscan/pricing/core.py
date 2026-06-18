@@ -559,6 +559,25 @@ def suspicious_pdf_product_name(text: str) -> bool:
     return False
 
 
+def price_match_is_package_quantity(text: str, match: re.Match[str]) -> bool:
+    after = text[match.end() :]
+    return bool(re.match(r"\s*(?:gal|gallon|g|qt|oz|lb|lbs)\b", after, re.I))
+
+
+def choose_pdf_price_match(text: str, price_matches: list[re.Match[str]]) -> re.Match[str] | None:
+    if "$" in text:
+        for candidate in price_matches:
+            if "$" in text[max(0, candidate.start() - 3) : candidate.start() + 1]:
+                return candidate
+    candidates = [candidate for candidate in price_matches if not price_match_is_package_quantity(text, candidate)]
+    if not candidates:
+        return None
+    for candidate in candidates:
+        if "." in candidate.group(1):
+            return candidate
+    return candidates[-1]
+
+
 def parse_pdf_pricing_line(line: str) -> dict[str, Any] | None:
     text = clean_pdf_line(line)
     if len(text) < 4:
@@ -568,13 +587,8 @@ def parse_pdf_pricing_line(line: str) -> dict[str, Any] | None:
     price_matches = list(PRICE_RE.finditer(text))
     if not price_matches:
         return None
-    price_match = price_matches[0]
-    if "$" in text:
-        for candidate in price_matches:
-            if "$" in text[max(0, candidate.start() - 3) : candidate.start() + 1]:
-                price_match = candidate
-                break
-    elif len(price_matches) == 1 and re.search(rf"\b{re.escape(price_matches[0].group(1))}\s*(?:gal|gallon|g|qt|oz|lb|lbs|roll|case|bag|pail|drum|kit)\b", text, re.I):
+    price_match = choose_pdf_price_match(text, price_matches)
+    if price_match is None:
         return None
     price = parse_float(price_match.group(1))
     before = clean_text(text[: price_match.start()])
