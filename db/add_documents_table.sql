@@ -23,12 +23,14 @@ CREATE TABLE IF NOT EXISTS documents (
     content_hash TEXT,
     extraction_status TEXT,
     extraction_error TEXT,
+    deleted_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS drive_id TEXT;
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS drive_item_id TEXT;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 
 CREATE INDEX IF NOT EXISTS idx_documents_job_id
     ON documents(job_id);

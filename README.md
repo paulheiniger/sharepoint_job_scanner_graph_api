@@ -244,6 +244,141 @@ The loader upserts into existing tables, stores each source record in the table'
 
 For deployed Streamlit, prefer Neon’s pooled connection string for `DATABASE_URL` so the web app can recover cleanly from idle or stale database connections. CLI migrations, schema changes, and bulk/admin loads can continue to use the direct Neon connection string when appropriate.
 
+## Microsoft Graph delta synchronization
+
+The SharePoint sync CLI supports Microsoft Graph delta synchronization for metadata-first file discovery and change detection. The first run performs a full drive delta enumeration and stores the final Graph delta state in Postgres. Later runs use the saved delta state and process only additions, updates, moves, renames, and deletions returned by Graph.
+
+Apply the idempotent migration:
+
+```bash
+psql "$DATABASE_URL" -f db/add_sharepoint_delta_tables.sql
+```
+
+Check saved delta state:
+
+```bash
+python -m jobscan.sharepoint_sync \
+  --delta-status \
+  --database-url "$NEON_DATABASE_URL"
+```
+
+Initial sync, and also the normal incremental command after a delta state exists:
+
+```bash
+python -m jobscan.sharepoint_sync \
+  --delta \
+  --site-url "https://aro365531128.sharepoint.com/sites/Data" \
+  --library "Documents" \
+  --config config/sharepoint_scan_roots.yaml \
+  --database-url "$NEON_DATABASE_URL"
+```
+
+Force a fresh full delta enumeration without deleting existing inventory first:
+
+```bash
+python -m jobscan.sharepoint_sync \
+  --delta \
+  --full-refresh \
+  --site-url "https://aro365531128.sharepoint.com/sites/Data" \
+  --library "Documents" \
+  --config config/sharepoint_scan_roots.yaml \
+  --database-url "$NEON_DATABASE_URL"
+```
+
+Delta sync stores:
+
+- `sharepoint_delta_state`: one row per drive, including the saved Graph delta state and sync status.
+- `sharepoint_drive_items`: the persistent current inventory of DriveItems keyed by `(drive_id, drive_item_id)`.
+
+Operational behavior:
+
+- The previous valid delta state is preserved until a complete run succeeds.
+- If Graph returns `410 Gone`, the tool records the event and performs a fresh full delta enumeration without truncating the existing inventory first.
+- Deleted files are soft-deleted in `sharepoint_drive_items` and matching document rows are marked `extraction_status = 'deleted'`.
+- New or changed files reconcile `documents.drive_id` and `documents.drive_item_id`, clear extraction errors, and mark matching documents pending for extraction.
+- The sync does not download document contents. Extraction still happens through `jobscan.document_extraction`.
+- Configured scan roots are used as local relevance filters after drive inventory updates; delta is not run separately for every job folder.
+- Output never prints the saved delta state value.
+
+## Delta-driven incremental processing
+
+The normal scheduled path is `jobscan.incremental_scan`. It runs Graph delta, routes changed DriveItems to the smallest affected processing unit, writes changed-only output files, and preserves unchanged records in the persistent outputs and database.
+
+Normal daily command:
+
+```bash
+python -m jobscan.incremental_scan \
+  --delta \
+  --site-url "https://aro365531128.sharepoint.com/sites/Data" \
+  --library "Documents" \
+  --config config/sharepoint_scan_roots.yaml \
+  --database-url "$NEON_DATABASE_URL"
+```
+
+Metadata-only run, useful for validating delta routing without reparsing cached files:
+
+```bash
+python -m jobscan.incremental_scan \
+  --delta \
+  --metadata-only \
+  --site-url "https://aro365531128.sharepoint.com/sites/Data" \
+  --library "Documents" \
+  --config config/sharepoint_scan_roots.yaml \
+  --database-url "$NEON_DATABASE_URL"
+```
+
+Resume a failed processing run after correcting the underlying parser/cache issue:
+
+```bash
+python -m jobscan.incremental_scan \
+  --resume \
+  --run-id "<RUN_ID>" \
+  --database-url "$NEON_DATABASE_URL"
+```
+
+Changed-only Postgres loads:
+
+```bash
+python -m jobscan.db_loader --jobs-changed output/changed_jobs.json
+python -m jobscan.db_loader --estimates-changed output/changed_estimates.json
+python -m jobscan.db_loader --line-items-changed output/changed_estimate_line_items.json
+python -m jobscan.db_loader --job-tracking-summary-changed output/changed_tracking_summary.json
+python -m jobscan.db_loader --job-tracking-daily-changed output/changed_tracking_daily_entries.json
+python -m jobscan.db_loader --timesheets-changed output/changed_timesheets.json
+python -m jobscan.db_loader --documents-changed output/changed_documents.json
+```
+
+Changed-only SharePoint Job Index List sync:
+
+```bash
+python -m jobscan.sharepoint_list_sync \
+  --input output/changed_jobs.json \
+  --continue-on-error \
+  --url-fields-as-text
+```
+
+Recovery and validation commands remain explicit administrative operations:
+
+```bash
+python -m jobscan.incremental_scan --full-refresh-metadata --delta --site-url "https://aro365531128.sharepoint.com/sites/Data" --library "Documents" --config config/sharepoint_scan_roots.yaml --database-url "$NEON_DATABASE_URL"
+python -m jobscan.incremental_scan --rebuild-all-jobs
+python -m jobscan.incremental_scan --rebuild-all-estimates
+python -m jobscan.incremental_scan --rebuild-all-tracking
+python -m jobscan.incremental_scan --rebuild-all-timesheets
+python -m jobscan.incremental_scan --rebuild-all-documents
+```
+
+Incremental processing rules:
+
+- Delta changes are used only to identify affected jobs, workbooks, and documents.
+- Parsers must be rerun against the complete current state of the affected job folder or source workbook.
+- Unchanged jobs, estimates, tracking files, timesheets, and documents are skipped.
+- New or changed documents are queued by setting `extraction_status = pending`; document content extraction is run separately.
+- Deleted documents are marked inactive/deleted while historical extracted content is retained.
+- If an affected folder or workbook is not available in the local cache, the run records a retryable failure instead of falling back to a broad SharePoint traversal.
+- Office-timesheet SharePoint routing activates when those workbook roots are included in scan-root configuration; otherwise local-only full rebuild remains an explicit operation.
+- Scan-root, classification-rule, or parser-version changes can make previously unchanged files newly relevant. In that case run a bounded validation or explicit rebuild command rather than relying on delta changes alone.
+
 ## Build and load the document index
 
 The normalized `documents` table stores one row per discovered SharePoint file and links it to `jobs.job_id`. It is populated from existing `.cache/sharepoint/**/.jobscan_manifest.json` files plus `output/job_index.json`; it does not re-scan SharePoint or download document contents.

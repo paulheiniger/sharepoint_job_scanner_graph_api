@@ -3,13 +3,20 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import time
 from dataclasses import dataclass
-from pathlib import Path
+from datetime import datetime, timezone
+from pathlib import PurePosixPath, Path
 from typing import Any
 from urllib.parse import quote
 
+from dotenv import load_dotenv
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Connection, Engine, make_url
+from sqlalchemy.exc import SQLAlchemyError
+
 from .extractors import DOC_EXTS, SPREADSHEET_EXTS
-from .graph_client import GraphClient, SharePointTarget
+from .graph_client import GraphClient, GraphError, SharePointTarget
 from .scan import scan_root, write_csv, write_excel, write_json
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".heic", ".webp", ".tif", ".tiff"}
@@ -28,6 +35,34 @@ class SyncStats:
     folders_created: int = 0
     manifest_files_written: int = 0
     bytes_downloaded: int = 0
+
+
+@dataclass
+class DeltaSyncStats:
+    mode: str
+    drive_id: str
+    pages_processed: int = 0
+    items_returned: int = 0
+    new_items: int = 0
+    modified_items: int = 0
+    moved_documents: int = 0
+    deleted_items: int = 0
+    renamed_folders: int = 0
+    documents_reconciled: int = 0
+    documents_marked_pending: int = 0
+    documents_marked_deleted: int = 0
+    jobs_affected: int = 0
+    jobs_rescanned: int = 0
+    graph_requests: int = 0
+    throttling_retries: int = 0
+    unresolved_items: int = 0
+    delta_token_saved: bool = False
+    elapsed_seconds: float = 0.0
+    affected_job_ids: list[str] | None = None
+    changed_files: list[dict[str, Any]] | None = None
+    changed_folders: list[dict[str, Any]] | None = None
+    deleted_item_rows: list[dict[str, Any]] | None = None
+    partial: bool = False
 
 
 def _safe_name(name: str) -> str:
@@ -423,9 +458,745 @@ def attach_document_urls(records: list[Any], cache_root: Path) -> None:
         record.important_doc_links_json = json.dumps(link_rows, ensure_ascii=False) if link_rows else None
 
 
+def load_configured_roots(config_path: Path | None) -> list[str]:
+    if not config_path or not config_path.exists():
+        return []
+    try:
+        import yaml
+    except ImportError:
+        return []
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    roots = payload.get("scan_roots") if isinstance(payload, dict) else []
+    out: list[str] = []
+    if isinstance(roots, list):
+        for root in roots:
+            if isinstance(root, dict) and root.get("folder"):
+                out.append(normalize_drive_path(str(root["folder"])))
+    return out
+
+
+def normalize_drive_path(value: Any) -> str:
+    return "/".join(part for part in str(value or "").replace("\\", "/").strip().strip("/").split("/") if part)
+
+
+def relative_path_from_drive_item(item: dict[str, Any]) -> str:
+    name = str(item.get("name") or "").strip("/")
+    parent = item.get("parentReference") if isinstance(item.get("parentReference"), dict) else {}
+    parent_path = str(parent.get("path") or "")
+    if "root:" in parent_path:
+        parent_path = parent_path.split("root:", 1)[1]
+    parent_path = normalize_drive_path(parent_path)
+    return normalize_drive_path(f"{parent_path}/{name}" if name else parent_path)
+
+
+def parent_path_from_drive_item(item: dict[str, Any]) -> str:
+    parent = item.get("parentReference") if isinstance(item.get("parentReference"), dict) else {}
+    parent_path = str(parent.get("path") or "")
+    if "root:" in parent_path:
+        parent_path = parent_path.split("root:", 1)[1]
+    return normalize_drive_path(parent_path)
+
+
+def item_inventory_row(drive_id: str, item: dict[str, Any]) -> dict[str, Any]:
+    parent = item.get("parentReference") if isinstance(item.get("parentReference"), dict) else {}
+    file_meta = item.get("file") if isinstance(item.get("file"), dict) else {}
+    return {
+        "drive_id": drive_id,
+        "drive_item_id": item.get("id"),
+        "parent_item_id": parent.get("id"),
+        "name": item.get("name"),
+        "web_url": item.get("webUrl"),
+        "parent_path": parent_path_from_drive_item(item),
+        "relative_path": relative_path_from_drive_item(item),
+        "is_folder": item.get("folder") is not None,
+        "is_file": item.get("file") is not None,
+        "mime_type": file_meta.get("mimeType"),
+        "size_bytes": item.get("size"),
+        "etag": item.get("eTag"),
+        "ctag": item.get("cTag"),
+        "last_modified_at": item.get("lastModifiedDateTime"),
+        "metadata_json": json.dumps(item, default=str),
+    }
+
+
+def is_relevant_path(relative_path: str, roots: list[str]) -> bool:
+    normalized = normalize_drive_path(relative_path).lower()
+    if not roots:
+        return True
+    return any(normalized == root.lower() or normalized.startswith(root.lower().rstrip("/") + "/") for root in roots)
+
+
+def changed_item_kind(previous: dict[str, Any] | None, row: dict[str, Any]) -> str:
+    if previous is None:
+        return "new"
+    previous_path = normalize_drive_path(previous.get("relative_path"))
+    current_path = normalize_drive_path(row.get("relative_path"))
+    previous_name = str(previous.get("name") or "")
+    current_name = str(row.get("name") or "")
+    if previous_path != current_path:
+        return "moved"
+    if previous_name != current_name:
+        return "renamed"
+    for field in ("etag", "ctag", "last_modified_at", "size_bytes", "web_url"):
+        if str(previous.get(field) or "") != str(row.get(field) or ""):
+            return "modified"
+    return "unchanged"
+
+
+def progress(message: str) -> None:
+    print(message, flush=True)
+
+
+def database_host_summary(database_url: str | None) -> str:
+    if not database_url:
+        return "unknown"
+    try:
+        url = make_url(database_url)
+    except Exception:
+        return "unknown"
+    host = url.host or "localhost"
+    database = url.database or ""
+    return f"{host}/{database}" if database else host
+
+
+def commit_if_possible(connection: Connection) -> None:
+    commit = getattr(connection, "commit", None)
+    if callable(commit):
+        try:
+            commit()
+        except Exception:
+            pass
+
+
+def ensure_delta_tables(connection: Connection) -> None:
+    connection.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS sharepoint_delta_state (
+                site_id TEXT,
+                drive_id TEXT PRIMARY KEY,
+                library_name TEXT,
+                delta_link TEXT,
+                sync_status TEXT,
+                sync_started_at TIMESTAMPTZ,
+                sync_completed_at TIMESTAMPTZ,
+                last_successful_sync_at TIMESTAMPTZ,
+                items_seen BIGINT DEFAULT 0,
+                changes_applied BIGINT DEFAULT 0,
+                error_message TEXT,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    )
+    connection.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS sharepoint_drive_items (
+                drive_id TEXT NOT NULL,
+                drive_item_id TEXT NOT NULL,
+                parent_item_id TEXT,
+                name TEXT,
+                web_url TEXT,
+                parent_path TEXT,
+                relative_path TEXT,
+                is_folder BOOLEAN,
+                is_file BOOLEAN,
+                mime_type TEXT,
+                size_bytes BIGINT,
+                etag TEXT,
+                ctag TEXT,
+                last_modified_at TIMESTAMPTZ,
+                deleted_at TIMESTAMPTZ,
+                first_seen_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                last_seen_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                metadata_json JSONB,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (drive_id, drive_item_id)
+            )
+            """
+        )
+    )
+    for stmt in (
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS drive_id TEXT",
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS drive_item_id TEXT",
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ",
+    ):
+        try:
+            connection.execute(text(stmt))
+        except SQLAlchemyError:
+            pass
+
+
+def try_advisory_lock(connection: Connection, drive_id: str) -> bool:
+    try:
+        locked = bool(connection.execute(text("SELECT pg_try_advisory_lock(hashtext(:drive_id))"), {"drive_id": drive_id}).scalar())
+        commit_if_possible(connection)
+        return locked
+    except Exception:
+        commit_if_possible(connection)
+        return True
+
+
+def release_advisory_lock(connection: Connection, drive_id: str) -> None:
+    try:
+        connection.execute(text("SELECT pg_advisory_unlock(hashtext(:drive_id))"), {"drive_id": drive_id})
+        commit_if_possible(connection)
+    except Exception:
+        commit_if_possible(connection)
+        pass
+
+
+def get_delta_state(connection: Connection, drive_id: str) -> dict[str, Any] | None:
+    row = connection.execute(
+        text("SELECT * FROM sharepoint_delta_state WHERE drive_id = :drive_id"),
+        {"drive_id": drive_id},
+    ).mappings().first()
+    return dict(row) if row else None
+
+
+def mark_delta_started(connection: Connection, site_id: str, drive_id: str, library: str, mode: str) -> None:
+    connection.execute(
+        text(
+            """
+            INSERT INTO sharepoint_delta_state (
+                site_id, drive_id, library_name, sync_status, sync_started_at, error_message, created_at, updated_at
+            )
+            VALUES (:site_id, :drive_id, :library_name, :sync_status, NOW(), NULL, NOW(), NOW())
+            ON CONFLICT (drive_id) DO UPDATE SET
+                site_id = EXCLUDED.site_id,
+                library_name = EXCLUDED.library_name,
+                sync_status = EXCLUDED.sync_status,
+                sync_started_at = NOW(),
+                error_message = NULL,
+                updated_at = NOW()
+            """
+        ),
+        {"site_id": site_id, "drive_id": drive_id, "library_name": library, "sync_status": f"{mode}_running"},
+    )
+
+
+def mark_delta_failed(connection: Connection, drive_id: str, error: str) -> None:
+    connection.execute(
+        text(
+            """
+            UPDATE sharepoint_delta_state
+            SET sync_status = 'failed',
+                error_message = :error_message,
+                sync_completed_at = NOW(),
+                updated_at = NOW()
+            WHERE drive_id = :drive_id
+            """
+        ),
+        {"drive_id": drive_id, "error_message": error[:1000]},
+    )
+
+
+def mark_delta_interrupted(connection: Connection, drive_id: str, message: str = "Delta sync interrupted") -> None:
+    connection.execute(
+        text(
+            """
+            UPDATE sharepoint_delta_state
+            SET sync_status = 'interrupted',
+                error_message = :error_message,
+                sync_completed_at = NOW(),
+                updated_at = NOW()
+            WHERE drive_id = :drive_id
+            """
+        ),
+        {"drive_id": drive_id, "error_message": message[:1000]},
+    )
+
+
+def mark_delta_partial(connection: Connection, drive_id: str, stats: DeltaSyncStats) -> None:
+    connection.execute(
+        text(
+            """
+            UPDATE sharepoint_delta_state
+            SET sync_status = 'partial_test',
+                sync_completed_at = NOW(),
+                items_seen = :items_seen,
+                changes_applied = :changes_applied,
+                error_message = 'Stopped by --limit-pages before final delta page; previous delta state preserved.',
+                updated_at = NOW()
+            WHERE drive_id = :drive_id
+            """
+        ),
+        {
+            "drive_id": drive_id,
+            "items_seen": stats.items_returned,
+            "changes_applied": stats.new_items + stats.modified_items + stats.deleted_items + stats.moved_documents + stats.renamed_folders,
+        },
+    )
+
+
+def mark_delta_succeeded(connection: Connection, drive_id: str, delta_link: str, stats: DeltaSyncStats) -> None:
+    connection.execute(
+        text(
+            """
+            UPDATE sharepoint_delta_state
+            SET delta_link = :delta_link,
+                sync_status = 'succeeded',
+                sync_completed_at = NOW(),
+                last_successful_sync_at = NOW(),
+                items_seen = :items_seen,
+                changes_applied = :changes_applied,
+                error_message = NULL,
+                updated_at = NOW()
+            WHERE drive_id = :drive_id
+            """
+        ),
+        {
+            "drive_id": drive_id,
+            "delta_link": delta_link,
+            "items_seen": stats.items_returned,
+            "changes_applied": stats.new_items + stats.modified_items + stats.deleted_items + stats.moved_documents + stats.renamed_folders,
+        },
+    )
+
+
+def fetch_existing_inventory(connection: Connection, drive_id: str, drive_item_id: str) -> dict[str, Any] | None:
+    row = connection.execute(
+        text(
+            """
+            SELECT drive_id, drive_item_id, name, web_url, parent_path, relative_path, etag, ctag,
+                   size_bytes, last_modified_at, deleted_at
+            FROM sharepoint_drive_items
+            WHERE drive_id = :drive_id AND drive_item_id = :drive_item_id
+            """
+        ),
+        {"drive_id": drive_id, "drive_item_id": drive_item_id},
+    ).mappings().first()
+    return dict(row) if row else None
+
+
+def upsert_inventory_item(connection: Connection, row: dict[str, Any]) -> str:
+    previous = fetch_existing_inventory(connection, row["drive_id"], row["drive_item_id"])
+    change_kind = changed_item_kind(previous, row)
+    connection.execute(
+        text(
+            """
+            INSERT INTO sharepoint_drive_items (
+                drive_id, drive_item_id, parent_item_id, name, web_url, parent_path, relative_path,
+                is_folder, is_file, mime_type, size_bytes, etag, ctag, last_modified_at,
+                deleted_at, first_seen_at, last_seen_at, metadata_json, created_at, updated_at
+            )
+            VALUES (
+                :drive_id, :drive_item_id, :parent_item_id, :name, :web_url, :parent_path, :relative_path,
+                :is_folder, :is_file, :mime_type, :size_bytes, :etag, :ctag, :last_modified_at,
+                NULL, NOW(), NOW(), CAST(:metadata_json AS JSONB), NOW(), NOW()
+            )
+            ON CONFLICT (drive_id, drive_item_id) DO UPDATE SET
+                parent_item_id = EXCLUDED.parent_item_id,
+                name = EXCLUDED.name,
+                web_url = EXCLUDED.web_url,
+                parent_path = EXCLUDED.parent_path,
+                relative_path = EXCLUDED.relative_path,
+                is_folder = EXCLUDED.is_folder,
+                is_file = EXCLUDED.is_file,
+                mime_type = EXCLUDED.mime_type,
+                size_bytes = EXCLUDED.size_bytes,
+                etag = EXCLUDED.etag,
+                ctag = EXCLUDED.ctag,
+                last_modified_at = EXCLUDED.last_modified_at,
+                deleted_at = NULL,
+                last_seen_at = NOW(),
+                metadata_json = EXCLUDED.metadata_json,
+                updated_at = NOW()
+            """
+        ),
+        row,
+    )
+    return change_kind
+
+
+def soft_delete_inventory_item(connection: Connection, drive_id: str, item: dict[str, Any]) -> None:
+    connection.execute(
+        text(
+            """
+            UPDATE sharepoint_drive_items
+            SET deleted_at = COALESCE(deleted_at, NOW()),
+                last_seen_at = NOW(),
+                metadata_json = CAST(:metadata_json AS JSONB),
+                updated_at = NOW()
+            WHERE drive_id = :drive_id AND drive_item_id = :drive_item_id
+            """
+        ),
+        {"drive_id": drive_id, "drive_item_id": item.get("id"), "metadata_json": json.dumps(item, default=str)},
+    )
+
+
+def reconcile_documents_for_items(connection: Connection, drive_id: str, rows: list[dict[str, Any]]) -> int:
+    reconciled = 0
+    for row in rows:
+        result = connection.execute(
+            text(
+                """
+                UPDATE documents
+                SET drive_id = :drive_id,
+                    drive_item_id = :drive_item_id,
+                    sharepoint_url = COALESCE(NULLIF(sharepoint_url, ''), :web_url),
+                    extraction_status = CASE
+                        WHEN COALESCE(drive_item_id, '') <> :drive_item_id
+                             OR COALESCE(content_hash, '') <> COALESCE(:etag, '')
+                        THEN 'pending'
+                        ELSE extraction_status
+                    END,
+                    extraction_error = CASE
+                        WHEN COALESCE(drive_item_id, '') <> :drive_item_id
+                             OR COALESCE(content_hash, '') <> COALESCE(:etag, '')
+                        THEN NULL
+                        ELSE extraction_error
+                    END,
+                    deleted_at = NULL,
+                    updated_at = NOW()
+                WHERE
+                    (drive_id = :drive_id AND drive_item_id = :drive_item_id)
+                    OR (sharepoint_url IS NOT NULL AND sharepoint_url <> '' AND sharepoint_url = :web_url)
+                    OR (relative_path IS NOT NULL AND relative_path <> '' AND relative_path = :relative_path)
+                    OR (folder_path IS NOT NULL AND file_name IS NOT NULL
+                        AND :relative_path = folder_path || '/' || file_name)
+                """
+            ),
+            {
+                "drive_id": drive_id,
+                "drive_item_id": row["drive_item_id"],
+                "web_url": row.get("web_url"),
+                "relative_path": row.get("relative_path"),
+                "etag": row.get("etag") or row.get("ctag"),
+            },
+        )
+        reconciled += int(result.rowcount or 0)
+    return reconciled
+
+
+def mark_deleted_documents(connection: Connection, drive_id: str, item_ids: list[str]) -> int:
+    if not item_ids:
+        return 0
+    result = connection.execute(
+        text(
+            """
+            UPDATE documents
+            SET extraction_status = 'deleted',
+                deleted_at = COALESCE(deleted_at, NOW()),
+                updated_at = NOW()
+            WHERE drive_id = :drive_id
+              AND drive_item_id = ANY(:item_ids)
+            """
+        ),
+        {"drive_id": drive_id, "item_ids": item_ids},
+    )
+    return int(result.rowcount or 0)
+
+
+def affected_jobs_for_items(connection: Connection, drive_id: str, rows: list[dict[str, Any]], deleted_ids: list[str]) -> set[str]:
+    job_ids: set[str] = set()
+    for row in rows:
+        matches = connection.execute(
+            text(
+                """
+                SELECT DISTINCT job_id
+                FROM documents
+                WHERE job_id IS NOT NULL
+                  AND (
+                    (drive_id = :drive_id AND drive_item_id = :drive_item_id)
+                    OR (sharepoint_url IS NOT NULL AND sharepoint_url <> '' AND sharepoint_url = :web_url)
+                    OR (relative_path IS NOT NULL AND relative_path <> '' AND relative_path = :relative_path)
+                  )
+                """
+            ),
+            {
+                "drive_id": drive_id,
+                "drive_item_id": row["drive_item_id"],
+                "web_url": row.get("web_url"),
+                "relative_path": row.get("relative_path"),
+            },
+        ).fetchall()
+        job_ids.update(str(match[0]) for match in matches if match[0])
+    if deleted_ids:
+        matches = connection.execute(
+            text(
+                """
+                SELECT DISTINCT job_id
+                FROM documents
+                WHERE drive_id = :drive_id AND drive_item_id = ANY(:item_ids) AND job_id IS NOT NULL
+                """
+            ),
+            {"drive_id": drive_id, "item_ids": deleted_ids},
+        ).fetchall()
+        job_ids.update(str(match[0]) for match in matches if match[0])
+    return job_ids
+
+
+def process_delta_page(
+    connection: Connection,
+    *,
+    drive_id: str,
+    page: dict[str, Any],
+    roots: list[str],
+    stats: DeltaSyncStats,
+) -> dict[str, Any]:
+    page_items = page.get("value", [])
+    page_counts = {
+        "items": 0,
+        "folders": 0,
+        "files": 0,
+        "deleted": 0,
+        "upserted": 0,
+        "documents_reconciled": 0,
+    }
+    changed_rows: list[dict[str, Any]] = []
+    changed_folder_rows: list[dict[str, Any]] = []
+    deleted_ids: list[str] = []
+    deleted_rows: list[dict[str, Any]] = []
+    for item in page_items:
+        if not isinstance(item, dict) or not item.get("id"):
+            stats.unresolved_items += 1
+            continue
+        stats.items_returned += 1
+        page_counts["items"] += 1
+        if item.get("deleted") is not None:
+            soft_delete_inventory_item(connection, drive_id, item)
+            deleted_ids.append(str(item["id"]))
+            deleted_rows.append({"drive_id": drive_id, "drive_item_id": item.get("id"), "change_type": "deleted", "metadata": item})
+            stats.deleted_items += 1
+            page_counts["deleted"] += 1
+            continue
+        row = item_inventory_row(drive_id, item)
+        if row.get("is_folder"):
+            page_counts["folders"] += 1
+        if row.get("is_file"):
+            page_counts["files"] += 1
+        if not row["drive_item_id"]:
+            stats.unresolved_items += 1
+            continue
+        change_kind = upsert_inventory_item(connection, row)
+        page_counts["upserted"] += 1
+        if not is_relevant_path(str(row.get("relative_path") or ""), roots):
+            continue
+        if change_kind == "new":
+            stats.new_items += 1
+        elif change_kind == "modified":
+            stats.modified_items += 1
+        elif change_kind == "moved":
+            stats.moved_documents += 1
+        elif change_kind == "renamed":
+            if row.get("is_folder"):
+                stats.renamed_folders += 1
+            else:
+                stats.moved_documents += 1
+        if change_kind != "unchanged":
+            row["change_type"] = change_kind
+            if row.get("is_file"):
+                changed_rows.append(row)
+            elif row.get("is_folder"):
+                changed_folder_rows.append(row)
+    page_counts["documents_reconciled"] = reconcile_documents_for_items(connection, drive_id, changed_rows)
+    stats.documents_reconciled += page_counts["documents_reconciled"]
+    stats.documents_marked_deleted += mark_deleted_documents(connection, drive_id, deleted_ids)
+    page_job_ids = affected_jobs_for_items(connection, drive_id, changed_rows, deleted_ids)
+    existing_job_ids = set(stats.affected_job_ids or [])
+    stats.affected_job_ids = sorted(existing_job_ids | page_job_ids)
+    stats.jobs_affected = len(stats.affected_job_ids)
+    stats.jobs_rescanned = len(stats.affected_job_ids)
+    current_files = list(stats.changed_files or [])
+    current_files.extend(changed_rows)
+    stats.changed_files = current_files
+    current_folders = list(stats.changed_folders or [])
+    current_folders.extend(changed_folder_rows)
+    stats.changed_folders = current_folders
+    current_deleted = list(stats.deleted_item_rows or [])
+    current_deleted.extend(deleted_rows)
+    stats.deleted_item_rows = current_deleted
+    return page_counts
+
+
+def graph_delta_pages(client: GraphClient, start_url: str) -> tuple[list[dict[str, Any]], str, int]:
+    pages: list[dict[str, Any]] = []
+    url = start_url
+    requests = 0
+    while url:
+        requests += 1
+        page = client.get_json(url)
+        pages.append(page)
+        url = page.get("@odata.nextLink")
+    delta_link = pages[-1].get("@odata.deltaLink") if pages else None
+    if not delta_link:
+        raise RuntimeError("Graph delta response did not include a final deltaLink.")
+    return pages, delta_link, requests
+
+
+def run_delta_sync(
+    *,
+    engine: Engine,
+    client: GraphClient,
+    target: SharePointTarget,
+    config_path: Path | None = None,
+    full_refresh: bool = False,
+    limit_pages: int | None = None,
+    debug_progress: bool = False,
+    database_url: str | None = None,
+) -> DeltaSyncStats:
+    start = time.monotonic()
+    progress("Starting Microsoft Graph delta sync")
+    progress(f"Site URL: {site_url_from_target(target)}")
+    progress(f"Library: {target.library}")
+    progress(f"Database target: {database_host_summary(database_url)}")
+    site = client.get_site(target.hostname, target.site_path)
+    drive = client.get_drive_by_name(site["id"], target.library)
+    drive_id = drive["id"]
+    progress(f"Drive ID: {drive_id}")
+    roots = load_configured_roots(config_path)
+
+    with engine.begin() as conn:
+        ensure_delta_tables(conn)
+    lock_conn = engine.connect()
+    locked = False
+    stats = DeltaSyncStats(mode="initial", drive_id=drive_id)
+    try:
+        locked = try_advisory_lock(lock_conn, drive_id)
+        if not locked:
+            progress(f"Delta sync lock not acquired for drive {drive_id}; another sync is already running.")
+            raise RuntimeError(f"Another delta synchronization is already running for drive {drive_id}.")
+        progress(f"Delta sync lock acquired for drive {drive_id}")
+        with engine.begin() as conn:
+            state = get_delta_state(conn, drive_id)
+            mode = "full_refresh" if full_refresh else "incremental" if state and state.get("delta_link") else "initial"
+            stats.mode = mode
+            mark_delta_started(conn, site["id"], drive_id, target.library, mode)
+        progress(f"Mode: {stats.mode} delta")
+        progress(f"Previous delta state exists: {'yes' if state and state.get('delta_link') else 'no'}")
+        start_url = f"/drives/{drive_id}/root/delta" if full_refresh or not state or not state.get("delta_link") else str(state["delta_link"])
+        url: str | None = start_url
+        delta_link: str | None = None
+        stopped_by_limit = False
+        retried_after_410 = False
+        while url:
+            if limit_pages is not None and stats.pages_processed >= max(limit_pages, 0):
+                stopped_by_limit = True
+                break
+            stats.graph_requests += 1
+            try:
+                page = client.get_json(url)
+            except GraphError as exc:
+                if not retried_after_410 and "410" in str(exc):
+                    progress("Saved delta state expired; starting fresh full delta enumeration.")
+                    with engine.begin() as conn:
+                        mark_delta_started(conn, site["id"], drive_id, target.library, "token_expired_full_refresh")
+                    stats.mode = "token_expired_full_refresh"
+                    url = f"/drives/{drive_id}/root/delta"
+                    retried_after_410 = True
+                    continue
+                raise
+            stats.pages_processed += 1
+            with engine.begin() as conn:
+                page_counts = process_delta_page(conn, drive_id=drive_id, page=page, roots=roots, stats=stats)
+            stats.documents_marked_pending += page_counts["documents_reconciled"]
+            elapsed = time.monotonic() - start
+            progress(
+                "Delta page "
+                f"{stats.pages_processed}: items={page_counts['items']}, cumulative={stats.items_returned}, "
+                f"folders={page_counts['folders']}, files={page_counts['files']}, deleted={page_counts['deleted']}, "
+                f"sharepoint_drive_items_upserted={page_counts['upserted']}, "
+                f"documents_reconciled={page_counts['documents_reconciled']}, elapsed={elapsed:.1f}s"
+            )
+            if debug_progress:
+                progress(f"  next page available: {'yes' if page.get('@odata.nextLink') else 'no'}")
+                progress(f"  final delta state on this page: {'yes' if page.get('@odata.deltaLink') else 'no'}")
+            delta_link = page.get("@odata.deltaLink") or delta_link
+            url = page.get("@odata.nextLink")
+
+        if stopped_by_limit and url:
+            stats.partial = True
+            with engine.begin() as conn:
+                mark_delta_partial(conn, drive_id, stats)
+            progress(f"Stopped after --limit-pages={limit_pages}; final delta state was not saved.")
+            return stats
+        if not delta_link:
+            raise RuntimeError("Graph delta response did not include a final deltaLink.")
+        with engine.begin() as conn:
+            mark_delta_succeeded(conn, drive_id, delta_link, stats)
+        stats.delta_token_saved = True
+    except Exception as exc:
+        with engine.begin() as conn:
+            ensure_delta_tables(conn)
+            mark_delta_failed(conn, drive_id, str(exc))
+        raise
+    except KeyboardInterrupt:
+        progress("Delta sync interrupted")
+        with engine.begin() as conn:
+            ensure_delta_tables(conn)
+            mark_delta_interrupted(conn, drive_id)
+        raise
+    finally:
+        if locked:
+            release_advisory_lock(lock_conn, drive_id)
+            progress(f"Delta sync lock released for drive {drive_id}")
+        lock_conn.close()
+        stats.elapsed_seconds = time.monotonic() - start
+    return stats
+
+
+def print_delta_stats(stats: DeltaSyncStats) -> None:
+    print(f"Synchronization mode: {stats.mode}")
+    print(f"Drive ID: {stats.drive_id}")
+    print(f"Pages processed: {stats.pages_processed}")
+    print(f"Items returned: {stats.items_returned}")
+    print(f"New items: {stats.new_items}")
+    print(f"Modified items: {stats.modified_items}")
+    print(f"Moved documents: {stats.moved_documents}")
+    print(f"Deleted items: {stats.deleted_items}")
+    print(f"Renamed folders: {stats.renamed_folders}")
+    print(f"Documents reconciled: {stats.documents_reconciled}")
+    print(f"Documents marked pending: {stats.documents_marked_pending}")
+    print(f"Documents marked deleted: {stats.documents_marked_deleted}")
+    print(f"Jobs affected: {stats.jobs_affected}")
+    print(f"Jobs rescanned: {stats.jobs_rescanned}")
+    print(f"Graph requests: {stats.graph_requests}")
+    print(f"Throttling/retries: {stats.throttling_retries}")
+    print(f"Unresolved items: {stats.unresolved_items}")
+    print(f"Final delta state saved: {'yes' if stats.delta_token_saved else 'no'}")
+    print(f"Elapsed seconds: {stats.elapsed_seconds:.2f}")
+    if stats.affected_job_ids:
+        print("Affected job IDs:")
+        for job_id in stats.affected_job_ids[:50]:
+            print(f"  {job_id}")
+
+
+def print_delta_status(engine: Engine) -> None:
+    with engine.begin() as conn:
+        ensure_delta_tables(conn)
+        rows = conn.execute(
+            text(
+                """
+                SELECT drive_id, library_name, sync_status, sync_started_at, sync_completed_at,
+                       last_successful_sync_at, items_seen, changes_applied,
+                       CASE WHEN delta_link IS NULL OR delta_link = '' THEN false ELSE true END AS has_delta_link
+                FROM sharepoint_delta_state
+                ORDER BY updated_at DESC
+                """
+            )
+        ).mappings().all()
+    if not rows:
+        print("No SharePoint delta state found.")
+        return
+    for row in rows:
+        print(f"Drive ID: {row['drive_id']}")
+        print(f"  Library: {row['library_name']}")
+        print(f"  Status: {row['sync_status']}")
+        print(f"  Last successful sync: {row['last_successful_sync_at']}")
+        print(f"  Items seen: {row['items_seen']}")
+        print(f"  Changes applied: {row['changes_applied']}")
+        print(f"  Delta state stored: {'yes' if row['has_delta_link'] else 'no'}")
+
+
 def main() -> None:
+    load_dotenv()
     parser = argparse.ArgumentParser(description="Sync SharePoint job folders through Microsoft Graph and build a job index.")
-    parser.add_argument("--sharepoint-url", required=True, help="Site URL, e.g. https://contoso.sharepoint.com/sites/Operations")
+    parser.add_argument("--sharepoint-url", help="Site URL, e.g. https://contoso.sharepoint.com/sites/Operations")
+    parser.add_argument("--site-url", help="Alias for --sharepoint-url used by delta sync.")
     parser.add_argument("--library", default="Documents", help="SharePoint document library name. Default: Documents")
     parser.add_argument("--folder", default="", help="Folder path inside the library, e.g. Estimates/2026")
     parser.add_argument("--cache", type=Path, default=Path(".cache/sharepoint"), help="Local cache folder")
@@ -438,10 +1209,47 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=Path("output/job_index.csv"))
     parser.add_argument("--json", type=Path, default=Path("output/job_index.json"))
     parser.add_argument("--xlsx", type=Path, default=Path("output/job_index.xlsx"))
+    parser.add_argument("--delta", action="store_true", help="Use Microsoft Graph delta sync for metadata discovery.")
+    parser.add_argument("--full-refresh", action="store_true", help="Force a fresh full delta enumeration without discarding existing inventory first.")
+    parser.add_argument("--limit-pages", type=int, help="Process only the first N delta pages for testing; does not save final delta state unless final page is reached.")
+    parser.add_argument("--debug-progress", action="store_true", help="Print additional per-page delta progress details.")
+    parser.add_argument("--delta-status", action="store_true", help="Show saved SharePoint delta synchronization state.")
+    parser.add_argument("--config", type=Path, help="Batch scan roots YAML used to filter relevant delta items.")
+    parser.add_argument("--database-url", default=os.getenv("DATABASE_URL") or os.getenv("NEON_DATABASE_URL"))
     args = parser.parse_args()
 
-    target = SharePointTarget.from_url(args.sharepoint_url, library=args.library, folder_path=args.folder)
+    if args.delta_status:
+        if not args.database_url:
+            raise SystemExit("Set --database-url, DATABASE_URL, or NEON_DATABASE_URL.")
+        print_delta_status(create_engine(args.database_url, future=True))
+        return
+
+    site_url = args.site_url or args.sharepoint_url
+    if not site_url:
+        raise SystemExit("Set --site-url or --sharepoint-url.")
+    target = SharePointTarget.from_url(site_url, library=args.library, folder_path=args.folder)
     client = GraphClient()
+    if args.delta:
+        if not args.database_url:
+            raise SystemExit("Set --database-url, DATABASE_URL, or NEON_DATABASE_URL.")
+        engine = create_engine(args.database_url, future=True)
+        try:
+            stats = run_delta_sync(
+                engine=engine,
+                client=client,
+                target=target,
+                config_path=args.config,
+                full_refresh=args.full_refresh,
+                limit_pages=args.limit_pages,
+                debug_progress=args.debug_progress,
+                database_url=args.database_url,
+            )
+        except KeyboardInterrupt:
+            print("Delta synchronization interrupted. Previous valid delta token was preserved.")
+            raise SystemExit(130)
+        print_delta_stats(stats)
+        return
+
     cache_root, stats = sync_sharepoint_folder(
         client=client,
         target=target,

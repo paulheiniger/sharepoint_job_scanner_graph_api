@@ -181,6 +181,99 @@ CREATE TABLE IF NOT EXISTS job_workflow_overrides (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS sharepoint_delta_state (
+    site_id TEXT,
+    drive_id TEXT PRIMARY KEY,
+    library_name TEXT,
+    delta_link TEXT,
+    sync_status TEXT,
+    sync_started_at TIMESTAMPTZ,
+    sync_completed_at TIMESTAMPTZ,
+    last_successful_sync_at TIMESTAMPTZ,
+    items_seen BIGINT DEFAULT 0,
+    changes_applied BIGINT DEFAULT 0,
+    error_message TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS sharepoint_drive_items (
+    drive_id TEXT NOT NULL,
+    drive_item_id TEXT NOT NULL,
+    parent_item_id TEXT,
+    name TEXT,
+    web_url TEXT,
+    parent_path TEXT,
+    relative_path TEXT,
+    is_folder BOOLEAN,
+    is_file BOOLEAN,
+    mime_type TEXT,
+    size_bytes BIGINT,
+    etag TEXT,
+    ctag TEXT,
+    last_modified_at TIMESTAMPTZ,
+    deleted_at TIMESTAMPTZ,
+    first_seen_at TIMESTAMPTZ DEFAULT NOW(),
+    last_seen_at TIMESTAMPTZ DEFAULT NOW(),
+    metadata_json JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (drive_id, drive_item_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sharepoint_drive_items_relative_path
+    ON sharepoint_drive_items(relative_path);
+
+CREATE INDEX IF NOT EXISTS idx_sharepoint_drive_items_web_url
+    ON sharepoint_drive_items(web_url)
+    WHERE web_url IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_sharepoint_drive_items_deleted_at
+    ON sharepoint_drive_items(deleted_at);
+
+CREATE TABLE IF NOT EXISTS sharepoint_incremental_runs (
+    run_id TEXT PRIMARY KEY,
+    delta_run_id TEXT,
+    drive_id TEXT,
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    status TEXT,
+    affected_jobs INTEGER DEFAULT 0,
+    affected_estimates INTEGER DEFAULT 0,
+    affected_tracking_files INTEGER DEFAULT 0,
+    affected_timesheet_files INTEGER DEFAULT 0,
+    affected_documents INTEGER DEFAULT 0,
+    jobs_processed INTEGER DEFAULT 0,
+    files_processed INTEGER DEFAULT 0,
+    failures INTEGER DEFAULT 0,
+    output_manifest_path TEXT,
+    error_message TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS sharepoint_incremental_run_items (
+    run_id TEXT,
+    drive_id TEXT,
+    drive_item_id TEXT,
+    change_type TEXT,
+    source_path TEXT,
+    destination_path TEXT,
+    mapped_job_id TEXT,
+    processor TEXT,
+    processing_status TEXT,
+    error_message TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (run_id, drive_id, drive_item_id, processor)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sharepoint_incremental_run_items_run_id
+    ON sharepoint_incremental_run_items(run_id);
+
+CREATE INDEX IF NOT EXISTS idx_sharepoint_incremental_run_items_status
+    ON sharepoint_incremental_run_items(processing_status);
+
 CREATE TABLE IF NOT EXISTS documents (
     document_id TEXT PRIMARY KEY,
     job_id TEXT NOT NULL,
@@ -205,6 +298,7 @@ CREATE TABLE IF NOT EXISTS documents (
     extracted_at TIMESTAMPTZ,
     cached_file_path TEXT,
     requires_ocr BOOLEAN DEFAULT FALSE,
+    deleted_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -310,6 +404,11 @@ CREATE TABLE IF NOT EXISTS office_timesheet_entries (
     source_file TEXT,
     source_sheet TEXT,
     source_row INTEGER,
+    source_drive_id TEXT,
+    source_drive_item_id TEXT,
+    source_file_path TEXT,
+    source_modified_at TIMESTAMPTZ,
+    source_content_hash TEXT,
     warnings TEXT,
     raw JSONB,
     updated_at TIMESTAMPTZ DEFAULT now()
@@ -351,3 +450,4 @@ CREATE INDEX IF NOT EXISTS idx_job_workflow_status ON job_workflow_overrides(wor
 CREATE INDEX IF NOT EXISTS idx_job_workflow_priority ON job_workflow_overrides(priority);
 CREATE INDEX IF NOT EXISTS idx_tracking_summary_job_id ON job_tracking_summary(job_id);
 CREATE INDEX IF NOT EXISTS idx_timesheet_project_name ON office_timesheet_entries(project_name);
+CREATE INDEX IF NOT EXISTS idx_office_timesheet_source_drive_item ON office_timesheet_entries(source_drive_id, source_drive_item_id);

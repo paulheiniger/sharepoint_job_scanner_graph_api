@@ -144,6 +144,10 @@ class GraphClient:
                 sleep_seconds = float(retry_after) if retry_after else min(2 ** attempt, 30)
             except ValueError:
                 sleep_seconds = min(2 ** attempt, 30)
+            print(
+                f"Graph {method} retry {attempt + 1}/{self.max_retries} after status {response.status_code}; waiting {sleep_seconds:g}s",
+                flush=True,
+            )
             response.close()
             time.sleep(sleep_seconds)
 

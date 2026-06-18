@@ -658,6 +658,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--office-timesheets", type=Path, help="Path to output/office_timesheet_entries.json")
     parser.add_argument("--crew-schedule", type=Path, help="Path to output/crew_schedule_candidates.json")
     parser.add_argument("--documents", type=Path, help="Path to output/document_index.json")
+    parser.add_argument("--jobs-changed", type=Path, help="Path to output/changed_jobs.json")
+    parser.add_argument("--estimates-changed", type=Path, help="Path to output/changed_estimates.json")
+    parser.add_argument("--line-items-changed", type=Path, help="Path to output/changed_estimate_line_items.json")
+    parser.add_argument("--job-tracking-summary-changed", type=Path, help="Path to output/changed_tracking_summary.json")
+    parser.add_argument("--job-tracking-daily-changed", type=Path, help="Path to output/changed_tracking_daily_entries.json")
+    parser.add_argument("--timesheets-changed", type=Path, help="Path to output/changed_timesheets.json")
+    parser.add_argument("--documents-changed", type=Path, help="Path to output/changed_documents.json")
     parser.add_argument("--all", action="store_true", help="Load all default output JSON files, skipping missing files.")
     parser.add_argument("--batch-size", type=int, default=DEFAULT_UPSERT_BATCH_SIZE, help="Rows per batched upsert statement.")
     return parser.parse_args(argv)
@@ -669,14 +676,14 @@ def selected_inputs(args: argparse.Namespace) -> list[tuple[str, Path, bool]]:
         selections.extend((key, path, True) for key, path in DEFAULT_OUTPUTS.items())
 
     explicit = {
-        "jobs": args.jobs,
-        "estimates": args.estimates,
-        "line_items": args.line_items,
-        "job_tracking_summary": args.job_tracking_summary,
-        "job_tracking_daily": args.job_tracking_daily,
-        "office_timesheets": args.office_timesheets,
+        "jobs": args.jobs_changed or args.jobs,
+        "estimates": args.estimates_changed or args.estimates,
+        "line_items": args.line_items_changed or args.line_items,
+        "job_tracking_summary": args.job_tracking_summary_changed or args.job_tracking_summary,
+        "job_tracking_daily": args.job_tracking_daily_changed or args.job_tracking_daily,
+        "office_timesheets": args.timesheets_changed or args.office_timesheets,
         "crew_schedule": args.crew_schedule,
-        "documents": args.documents,
+        "documents": args.documents_changed or args.documents,
     }
     selections.extend((key, path, False) for key, path in explicit.items() if path is not None)
     return selections
