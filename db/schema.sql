@@ -196,13 +196,44 @@ CREATE TABLE IF NOT EXISTS documents (
     modified_at TIMESTAMPTZ,
     source_year INTEGER,
     source_division TEXT,
+    drive_id TEXT,
     drive_item_id TEXT,
     content_hash TEXT,
     extraction_status TEXT,
+    extraction_method TEXT,
     extraction_error TEXT,
+    extracted_at TIMESTAMPTZ,
+    cached_file_path TEXT,
+    requires_ocr BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS document_content (
+    content_id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL,
+    job_id TEXT,
+    content_type TEXT,
+    source_locator TEXT,
+    page_number INTEGER,
+    sheet_name TEXT,
+    cell_range TEXT,
+    row_number INTEGER,
+    section_name TEXT,
+    text_content TEXT NOT NULL,
+    normalized_text TEXT,
+    extraction_method TEXT,
+    content_hash TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_document_content_document_id ON document_content(document_id);
+CREATE INDEX IF NOT EXISTS idx_document_content_job_id ON document_content(job_id);
+CREATE INDEX IF NOT EXISTS idx_document_content_page_number ON document_content(page_number);
+CREATE INDEX IF NOT EXISTS idx_document_content_sheet_name ON document_content(sheet_name);
+CREATE INDEX IF NOT EXISTS idx_document_content_content_type ON document_content(content_type);
+CREATE INDEX IF NOT EXISTS idx_documents_extraction_status ON documents(extraction_status);
 
 CREATE TABLE IF NOT EXISTS job_tracking_summary (
     tracking_id TEXT PRIMARY KEY,

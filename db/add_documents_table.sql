@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS documents (
     modified_at TIMESTAMPTZ,
     source_year INTEGER,
     source_division TEXT,
+    drive_id TEXT,
     drive_item_id TEXT,
     content_hash TEXT,
     extraction_status TEXT,
@@ -25,6 +26,9 @@ CREATE TABLE IF NOT EXISTS documents (
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS drive_id TEXT;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS drive_item_id TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_documents_job_id
     ON documents(job_id);
@@ -47,3 +51,7 @@ CREATE INDEX IF NOT EXISTS idx_documents_modified_at
 CREATE INDEX IF NOT EXISTS idx_documents_drive_item_id
     ON documents(drive_item_id)
     WHERE drive_item_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_documents_drive_id
+    ON documents(drive_id)
+    WHERE drive_id IS NOT NULL;

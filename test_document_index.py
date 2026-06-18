@@ -9,6 +9,7 @@ from jobscan.document_index import (
     stable_document_id,
 )
 from jobscan.job_search import get_preferred_job_documents
+from jobscan.sharepoint_sync import drive_item_manifest_entry
 
 
 def test_stable_document_id_prefers_drive_item_id() -> None:
@@ -58,6 +59,7 @@ def test_build_document_index_records_from_existing_manifest_fixture(tmp_path: P
                         "name": "Invoice No. 2026-042.pdf",
                         "size": 123,
                         "webUrl": "https://sharepoint.example/invoice.pdf",
+                        "parentReference": {"driveId": "drive-123", "id": "parent-1"},
                         "file": {"mimeType": "application/pdf", "fileExtension": ".pdf", "hashes": {"quickXorHash": "abc"}},
                         "lastModifiedDateTime": "2026-01-01T00:00:00Z",
                         "local_path": "Diven, Clint - Lee Sporting Shop/Invoice No. 2026-042.pdf",
@@ -75,6 +77,27 @@ def test_build_document_index_records_from_existing_manifest_fixture(tmp_path: P
     assert rows[0]["job_id"] == "JOB-DIVEN"
     assert rows[0]["document_type"] == "invoice"
     assert rows[0]["sharepoint_url"] == "https://sharepoint.example/invoice.pdf"
+    assert rows[0]["drive_id"] == "drive-123"
+    assert rows[0]["drive_item_id"] == "01X"
+
+
+def test_drive_item_manifest_entry_persists_graph_identifiers_and_url() -> None:
+    row = drive_item_manifest_entry(
+        {
+            "id": "item-1",
+            "name": "Proposal.pdf",
+            "webUrl": "https://sharepoint.example/doc.aspx?id=1",
+            "size": 12,
+            "parentReference": {"driveId": "drive-1", "id": "parent-1"},
+            "lastModifiedDateTime": "2026-01-01T00:00:00Z",
+        },
+        Path("Job/Proposal.pdf"),
+    )
+
+    assert row["drive_id"] == "drive-1"
+    assert row["drive_item_id"] == "item-1"
+    assert row["graph_item_id"] == "item-1"
+    assert row["webUrl"] == "https://sharepoint.example/doc.aspx?id=1"
 
 
 class FakeConnection:

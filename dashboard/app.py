@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
+import re
 import sys
 from datetime import date, timedelta
 from pathlib import Path
@@ -16,9 +18,16 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
+from jobscan.db_connections import (
+    ReadQueryResult,
+    create_resilient_engine,
+    database_target,
+    execute_read_with_retry,
+)
+from jobscan.document_extraction import search_extracted_text
 from jobscan.job_search import (
     get_preferred_job_documents,
     interpret_search_request,
@@ -33,6 +42,8 @@ except ImportError:
 
 
 load_dotenv(dotenv_path=Path.cwd() / ".env")
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_DATABASE_URL = "postgresql+psycopg2://spraytec:spraytec_dev_password@127.0.0.1:5433/spraytec_ops"
 
@@ -92,14 +103,74 @@ st.set_page_config(page_title="Spray-Tec Ops Dashboard", layout="wide")
 
 @st.cache_resource
 def get_engine():
-    return create_engine(DATABASE_URL, future=True)
+    return create_resilient_engine(DATABASE_URL)
+
+
+def read_dataframe(connection: Any, statement: Any, params: dict[str, Any] | None = None) -> pd.DataFrame:
+    return pd.read_sql_query(statement, connection, params=params)
+
+
+def load_df_uncached(query: str, params: dict[str, Any] | None = None) -> ReadQueryResult:
+    return execute_read_with_retry(get_engine(), text(query), params=params, retries=1, read_fn=read_dataframe)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_df(query: str) -> pd.DataFrame:
-    engine = get_engine()
-    with engine.connect() as conn:
-        return pd.read_sql_query(text(query), conn)
+    result = load_df_uncached(query)
+    if result.ok:
+        return result.value
+    raise result.error or RuntimeError("Database read failed.")
+
+
+def reset_database_connection() -> None:
+    try:
+        get_engine().dispose()
+    except Exception:
+        logger.exception("database pool dispose failed")
+    st.cache_data.clear()
+    try:
+        get_engine.clear()
+    except Exception:
+        logger.exception("database engine cache clear failed")
+
+
+def database_target_debug_payload() -> dict[str, Any]:
+    target = database_target(DATABASE_URL)
+    return {
+        "host": target.host,
+        "database": target.database,
+        "appears_neon": target.is_neon,
+        "uses_pooler": target.uses_pooler,
+    }
+
+
+def render_neon_pooler_warning() -> None:
+    target = database_target(DATABASE_URL)
+    if target.is_neon and not target.uses_pooler:
+        st.warning(
+            "This appears to be a direct Neon database host. "
+            "For the Streamlit web app, Neon recommends using the pooled connection string. "
+            "CLI migrations and bulk/admin loads may continue to use a direct connection."
+        )
+
+
+def render_database_target_debug() -> None:
+    with st.expander("Developer database details"):
+        st.write(database_target_debug_payload())
+        render_neon_pooler_warning()
+
+
+def safe_exception_text(exc: Exception) -> str:
+    text_value = str(exc)
+    if DATABASE_URL and DATABASE_URL in text_value:
+        text_value = text_value.replace(DATABASE_URL, "[database URL redacted]")
+    text_value = re.sub(
+        r"postgresql(?:\+\w+)?://[^@\s]+@",
+        "postgresql://[credentials-redacted]@",
+        text_value,
+        flags=re.IGNORECASE,
+    )
+    return text_value
 
 
 DAILY_DISPATCH_TABLE_SQL = """
@@ -743,13 +814,11 @@ def load_dispatch_jobs(dispatch_date: date) -> pd.DataFrame:
         ORDER BY cs.assigned_crew_leader NULLS LAST, cs.priority NULLS LAST, j.customer, j.job_name
         """
     )
-    try:
-        engine = get_engine()
-        with engine.connect() as conn:
-            return pd.read_sql_query(query, conn, params={"dispatch_date": dispatch_date})
-    except (SQLAlchemyError, OSError, ValueError) as exc:
-        show_database_error(exc)
-        st.stop()
+    result = load_df_uncached(query, params={"dispatch_date": dispatch_date})
+    if result.ok:
+        return result.value
+    show_database_error(result.error or RuntimeError("Database read failed."))
+    st.stop()
 
 
 def generate_dispatch_message(df: pd.DataFrame, dispatch_date: date) -> str:
@@ -899,18 +968,24 @@ def save_dispatch_draft(df: pd.DataFrame, message_text: str, dispatch_date: date
 
 def show_database_error(exc: Exception) -> None:
     st.error(
-        "Could not connect to the Spray-Tec Postgres database. "
-        "Check that Docker/Postgres is running and that DATABASE_URL in .env is correct."
+        "Spray-Tec data is temporarily unavailable. "
+        "The app attempted to reconnect but could not reach the database. Please retry in a moment."
     )
-    st.caption(str(exc))
+    if st.button("Retry database connection", key="retry_database_connection"):
+        reset_database_connection()
+        st.rerun()
+    with st.expander("Developer database diagnostics"):
+        st.write(database_target_debug_payload())
+        render_neon_pooler_warning()
+        st.caption(safe_exception_text(exc))
 
 
 def safe_load(query: str) -> pd.DataFrame:
-    try:
-        return load_df(query)
-    except (SQLAlchemyError, OSError, ValueError) as exc:
-        show_database_error(exc)
-        st.stop()
+    result = load_df_uncached(query)
+    if result.ok:
+        return result.value
+    show_database_error(result.error or RuntimeError("Database read failed."))
+    st.stop()
 
 
 def query_view(view_name: str) -> pd.DataFrame:
@@ -1146,7 +1221,7 @@ def job_result_markdown(job: dict[str, Any], interpreted: dict[str, Any], *, inc
 
 def ask_spraytec_page() -> None:
     st.title("Ask Spray-Tec")
-    st.caption("Conversational job and document finder. This searches structured job data and stored document links, not document contents yet.")
+    st.caption("Conversational job and document finder. This searches structured job data, stored document links, and any extracted document text.")
 
     if "ask_spraytec_messages" not in st.session_state:
         st.session_state["ask_spraytec_messages"] = [
@@ -1163,6 +1238,36 @@ def ask_spraytec_page() -> None:
             st.session_state.pop("ask_spraytec_selected_job", None)
             st.session_state.pop("ask_spraytec_selected_job_id", None)
             st.rerun()
+        with st.expander("Indexed document content"):
+            try:
+                with get_engine().connect() as conn:
+                    preview_rows = search_extracted_text(conn, "", job_id=str(selected_job_id), limit=25)
+            except Exception as exc:
+                st.info(f"Document content preview is not available yet: {exc}")
+                preview_rows = []
+            if preview_rows:
+                st.dataframe(
+                    pd.DataFrame(preview_rows)[
+                        [
+                            column
+                            for column in [
+                                "file_name",
+                                "document_type",
+                                "source_locator",
+                                "page_number",
+                                "sheet_name",
+                                "row_number",
+                                "excerpt",
+                                "sharepoint_url",
+                            ]
+                            if column in preview_rows[0]
+                        ]
+                    ],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            else:
+                st.caption("No extracted document content is indexed for this job yet.")
 
     for message in st.session_state["ask_spraytec_messages"]:
         with st.chat_message(message["role"]):
@@ -2999,6 +3104,9 @@ def main() -> None:
     except Exception as exc:
         show_database_error(exc)
         st.stop()
+
+    with st.sidebar:
+        render_database_target_debug()
 
     filters = sidebar_filters(jobs_for_filters)
     page = st.sidebar.radio(

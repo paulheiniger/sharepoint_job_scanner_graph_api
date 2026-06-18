@@ -202,6 +202,10 @@ class GraphClient:
     def download_item(self, drive_id: str, item_id: str, destination: Path) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
         response = self.request("GET", f"/drives/{drive_id}/items/{item_id}/content", stream=True)
+        content_type = response.headers.get("Content-Type", "").lower()
+        if "text/html" in content_type:
+            response.close()
+            raise GraphError("Graph returned HTML instead of file content.")
         with destination.open("wb") as f:
             for chunk in response.iter_content(chunk_size=1024 * 1024):
                 if chunk:

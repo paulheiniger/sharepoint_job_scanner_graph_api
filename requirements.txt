@@ -1,6 +1,7 @@
 msal>=1.28.0
 requests>=2.32.0
 openpyxl>=3.1.2
+pypdf>=4.0.0
 pandas>=2.0.0
 streamlit>=1.35.0
 streamlit-calendar

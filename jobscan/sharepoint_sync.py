@@ -88,23 +88,33 @@ def _is_image_item(item: dict[str, Any]) -> bool:
     return Path(item.get("name", "")).suffix.lower() in IMAGE_EXTS
 
 
-def _image_manifest_entry(child: dict[str, Any], relative_path: Path) -> dict[str, Any]:
+def _image_manifest_entry(child: dict[str, Any], relative_path: Path, drive_id: str | None = None) -> dict[str, Any]:
+    parent = child.get("parentReference") if isinstance(child.get("parentReference"), dict) else {}
     return {
         "name": child.get("name"),
         "relative_path": str(relative_path),
         "size": child.get("size"),
         "last_modified": child.get("lastModifiedDateTime"),
         "web_url": child.get("webUrl"),
+        "drive_id": drive_id or parent.get("driveId"),
+        "drive_item_id": child.get("id"),
+        "graph_item_id": child.get("id"),
+        "parentReference": child.get("parentReference"),
     }
 
 
-def drive_item_manifest_entry(child: dict[str, Any], relative_path: Path) -> dict[str, Any]:
+def drive_item_manifest_entry(child: dict[str, Any], relative_path: Path, drive_id: str | None = None) -> dict[str, Any]:
     name = child.get("name") or ""
+    parent = child.get("parentReference") if isinstance(child.get("parentReference"), dict) else {}
+    item_id = child.get("id")
     return {
         "name": name,
         "web_url": child.get("webUrl"),
         "webUrl": child.get("webUrl"),
-        "graph_item_id": child.get("id"),
+        "drive_id": drive_id or parent.get("driveId"),
+        "drive_item_id": item_id,
+        "graph_item_id": item_id,
+        "id": item_id,
         "relative_path": str(relative_path),
         "extension": Path(name).suffix.lower(),
         "document_type": classify_document_type(name),
@@ -242,10 +252,10 @@ def sync_sharepoint_folder(
                 relative_path = destination.relative_to(sync_root)
             except ValueError:
                 relative_path = destination
-            doc_entry = drive_item_manifest_entry(child, relative_path)
+            doc_entry = drive_item_manifest_entry(child, relative_path, drive["id"])
             new_manifest["documents"].append(doc_entry)
             if skip_images and _is_image_item(child):
-                image_manifests.setdefault(local_dir, []).append(_image_manifest_entry(child, relative_path))
+                image_manifests.setdefault(local_dir, []).append(_image_manifest_entry(child, relative_path, drive["id"]))
                 stats.files_skipped += 1
                 stats.skipped_images += 1
                 continue
@@ -259,6 +269,10 @@ def sync_sharepoint_folder(
             old = manifest.get("items", {}).get(item_key, {})
             new_manifest["items"][item_key] = {
                 "name": name,
+                "drive_id": drive["id"],
+                "drive_item_id": child.get("id"),
+                "graph_item_id": child.get("id"),
+                "id": child.get("id"),
                 "etag": etag,
                 "size": child.get("size"),
                 "webUrl": child.get("webUrl"),
@@ -323,19 +337,24 @@ def load_document_manifest(cache_root: Path) -> list[dict[str, Any]]:
     if not isinstance(items, dict):
         return []
     out: list[dict[str, Any]] = []
-    for item in items.values():
+    manifest_drive_id = manifest.get("drive_id") if isinstance(manifest, dict) else None
+    for item_id, item in items.items():
         if not isinstance(item, dict):
             continue
         name = item.get("name") or ""
+        parent = item.get("parentReference") if isinstance(item.get("parentReference"), dict) else {}
         out.append(
             {
                 "name": name,
                 "web_url": item.get("webUrl") or item.get("web_url"),
-                "graph_item_id": item.get("id"),
+                "drive_id": item.get("drive_id") or parent.get("driveId") or manifest_drive_id,
+                "drive_item_id": item.get("drive_item_id") or item.get("graph_item_id") or item.get("id") or item_id,
+                "graph_item_id": item.get("graph_item_id") or item.get("drive_item_id") or item.get("id") or item_id,
                 "relative_path": item.get("local_path"),
                 "extension": Path(name).suffix.lower(),
                 "document_type": item.get("document_type") or classify_document_type(name),
                 "modified_at": item.get("lastModifiedDateTime"),
+                "parentReference": item.get("parentReference"),
             }
         )
     return out

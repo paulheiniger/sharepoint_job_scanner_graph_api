@@ -391,6 +391,8 @@ def test_prepare_document_row_handles_missing_optional_metadata_and_url_blanks()
         "document_type": "text",
         "file_name": "text",
         "sharepoint_url": "text",
+        "drive_id": "text",
+        "drive_item_id": "text",
         "size_bytes": "bigint",
         "modified_at": "timestamp with time zone",
         "raw": "jsonb",
@@ -404,6 +406,8 @@ def test_prepare_document_row_handles_missing_optional_metadata_and_url_blanks()
             "document_type": "invoice",
             "file_name": "Invoice.pdf",
             "sharepoint_url": "",
+            "drive_id": "drive-1",
+            "drive_item_id": "item-1",
             "size_bytes": "123",
             "modified_at": "2026-01-01T00:00:00Z",
         },
@@ -412,6 +416,8 @@ def test_prepare_document_row_handles_missing_optional_metadata_and_url_blanks()
     )
 
     assert row["sharepoint_url"] is None
+    assert row["drive_id"] == "drive-1"
+    assert row["drive_item_id"] == "item-1"
     assert row["size_bytes"] == 123
     assert row["modified_at"] == "2026-01-01T00:00:00Z"
     assert row["raw"]["sharepoint_url"] == ""

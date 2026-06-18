@@ -242,6 +242,8 @@ python -m jobscan.db_loader --all
 
 The loader upserts into existing tables, stores each source record in the table's `raw` JSONB column, and only writes columns that exist in the current SQL schema.
 
+For deployed Streamlit, prefer Neon’s pooled connection string for `DATABASE_URL` so the web app can recover cleanly from idle or stale database connections. CLI migrations, schema changes, and bulk/admin loads can continue to use the direct Neon connection string when appropriate.
+
 ## Build and load the document index
 
 The normalized `documents` table stores one row per discovered SharePoint file and links it to `jobs.job_id`. It is populated from existing `.cache/sharepoint/**/.jobscan_manifest.json` files plus `output/job_index.json`; it does not re-scan SharePoint or download document contents.
@@ -284,7 +286,110 @@ python -m jobscan.document_index --job-id "<JOB_ID>" --database-url "$DATABASE_U
 python -m jobscan.job_search --query "what files do we have for Canadian Solar" --database-url "$DATABASE_URL"
 ```
 
-Current limitation: document contents are not extracted, OCRed, embedded, or searchable yet. This phase indexes metadata only: file names, paths, types, timestamps, and exact SharePoint URLs.
+## Extract indexed document content
+
+The document content extractor adds source-aware text chunks for supported cached files:
+
+- PDF text pages via `pypdf`
+- DOCX headings, paragraphs, and table rows
+- XLSX/XLSM visible worksheet rows with sheet, row, and cell-range references
+- TXT/CSV whole-file text
+
+Apply the idempotent content migration:
+
+```bash
+psql "$DATABASE_URL" -f db/add_document_content_tables.sql
+```
+
+Extract one document:
+
+```bash
+python -m jobscan.document_extraction \
+  --document-id "<DOCUMENT_ID>" \
+  --database-url "$DATABASE_URL"
+```
+
+Extract a bounded batch of pending documents:
+
+```bash
+python -m jobscan.document_extraction \
+  --pending \
+  --limit 10 \
+  --database-url "$DATABASE_URL"
+```
+
+Extract one job's indexed documents:
+
+```bash
+python -m jobscan.document_extraction \
+  --job-id "<JOB_ID>" \
+  --database-url "$DATABASE_URL"
+```
+
+Check extraction status:
+
+```bash
+python -m jobscan.document_extraction --status --database-url "$DATABASE_URL"
+```
+
+Check whether indexed documents have the Graph identifiers needed for downloads:
+
+```bash
+python -m jobscan.document_extraction --identifier-status --database-url "$DATABASE_URL"
+```
+
+Backfill download identifiers from existing SharePoint scanner manifests without rescanning or downloading files:
+
+```bash
+python -m jobscan.document_extraction \
+  --backfill-metadata \
+  --cache-root .cache/sharepoint \
+  --limit 1000 \
+  --database-url "$DATABASE_URL"
+```
+
+If cached manifests do not have enough metadata, resolve missing identifiers from Graph by site/library/path without downloading content:
+
+```bash
+python -m jobscan.document_extraction \
+  --resolve-metadata \
+  --site-url "https://YOURTENANT.sharepoint.com/sites/YOURSITE" \
+  --library "Documents" \
+  --root-folder "OPTIONAL/LIBRARY/ROOT" \
+  --limit 25 \
+  --database-url "$DATABASE_URL"
+```
+
+Rebuild and load document metadata after scanner manifests include `drive_id` and `drive_item_id`:
+
+```bash
+python -m jobscan.document_index \
+  --build \
+  --job-index output/job_index.json \
+  --cache-root .cache/sharepoint \
+  --out output/document_index.json
+
+python -m jobscan.db_loader --documents output/document_index.json
+```
+
+Retry one PDF or a limited pending batch after identifiers are present:
+
+```bash
+python -m jobscan.document_extraction \
+  --document-id "<PDF_DOCUMENT_ID>" \
+  --force \
+  --database-url "$DATABASE_URL"
+
+python -m jobscan.document_extraction \
+  --pending \
+  --document-type estimate \
+  --limit 10 \
+  --database-url "$DATABASE_URL"
+```
+
+By default, extraction reuses existing files under `.cache/sharepoint` and records failures on the document row instead of stopping the whole batch. Successful content is replaced transactionally per document; prior extracted content is left in place if a later extraction fails. Re-run a previously completed or failed unchanged file with `--force`.
+
+Limitations: image-only PDFs are marked `requires_ocr`; this patch does not perform OCR, embeddings, vector search, or LLM document answers. If the local SharePoint cache does not contain a file and the document row lacks download identifiers, extraction records a failure for that document.
 
 For faster conversational job lookup, apply the optional search indexes after the base schema:
 

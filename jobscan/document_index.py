@@ -125,21 +125,29 @@ def _manifest_documents(manifest_path: Path) -> list[dict[str, Any]]:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     items = manifest.get("items") if isinstance(manifest, dict) else {}
     docs = manifest.get("documents") if isinstance(manifest, dict) else []
+    manifest_drive_id = manifest.get("drive_id") if isinstance(manifest, dict) else None
     by_id: dict[str, dict[str, Any]] = {}
     if isinstance(items, dict):
         for item_id, item in items.items():
             if not isinstance(item, dict):
                 continue
             row = dict(item)
-            row["graph_item_id"] = row.get("graph_item_id") or row.get("id") or item_id
+            parent = row.get("parentReference") if isinstance(row.get("parentReference"), dict) else {}
+            row["drive_id"] = row.get("drive_id") or parent.get("driveId") or manifest_drive_id
+            row["drive_item_id"] = row.get("drive_item_id") or row.get("graph_item_id") or row.get("id") or item_id
+            row["graph_item_id"] = row.get("graph_item_id") or row.get("drive_item_id") or row.get("id") or item_id
             row["relative_path"] = row.get("relative_path") or row.get("local_path")
             by_id[str(row["graph_item_id"])] = row
     if isinstance(docs, list):
         for doc in docs:
             if not isinstance(doc, dict):
                 continue
-            item_id = str(doc.get("graph_item_id") or doc.get("id") or "")
+            parent = doc.get("parentReference") if isinstance(doc.get("parentReference"), dict) else {}
+            item_id = str(doc.get("drive_item_id") or doc.get("graph_item_id") or doc.get("id") or "")
             row = {**by_id.get(item_id, {}), **doc}
+            row["drive_id"] = row.get("drive_id") or parent.get("driveId") or manifest_drive_id
+            row["drive_item_id"] = row.get("drive_item_id") or row.get("graph_item_id") or row.get("id") or item_id or None
+            row["graph_item_id"] = row.get("graph_item_id") or row.get("drive_item_id")
             if item_id:
                 by_id[item_id] = row
             else:
@@ -166,6 +174,10 @@ def _image_documents(cache_root: Path) -> list[dict[str, Any]]:
                     "size": item.get("size"),
                     "modified_at": item.get("last_modified"),
                     "web_url": item.get("web_url"),
+                    "drive_id": item.get("drive_id") or (item.get("parentReference") or {}).get("driveId"),
+                    "drive_item_id": item.get("drive_item_id") or item.get("graph_item_id") or item.get("id"),
+                    "graph_item_id": item.get("graph_item_id") or item.get("drive_item_id") or item.get("id"),
+                    "parentReference": item.get("parentReference"),
                     "document_type": "photos",
                 }
             )
@@ -210,7 +222,8 @@ def build_document_index_records(
             "modified_at": doc.get("modified_at") or doc.get("lastModifiedDateTime"),
             "source_year": job.get("source_year"),
             "source_division": job.get("division"),
-            "drive_item_id": doc.get("graph_item_id") or doc.get("id"),
+            "drive_id": doc.get("drive_id") or parent.get("driveId"),
+            "drive_item_id": doc.get("drive_item_id") or doc.get("graph_item_id") or doc.get("id"),
             "content_hash": file_hashes.get("quickXorHash"),
             "extraction_status": "not_started",
             "extraction_error": None,
@@ -286,7 +299,7 @@ def list_job_documents(connection: Connection | Engine, job_id: str, document_ty
         sql = f"""
             SELECT document_id, job_id, document_type, classification_reason, file_name, sharepoint_url,
                    folder_path, relative_path, mime_type, file_extension, size_bytes, modified_at,
-                   source_year, source_division, drive_item_id, content_hash
+                   source_year, source_division, drive_id, drive_item_id, content_hash
             FROM documents
             WHERE {' AND '.join(where)}
             ORDER BY document_type, modified_at DESC NULLS LAST, file_name
@@ -331,7 +344,7 @@ def search_documents(
         sql = f"""
             SELECT document_id, job_id, document_type, classification_reason, file_name, sharepoint_url,
                    folder_path, relative_path, mime_type, file_extension, size_bytes, modified_at,
-                   source_year, source_division, drive_item_id, content_hash
+                   source_year, source_division, drive_id, drive_item_id, content_hash
             FROM documents
             {where_sql}
             ORDER BY modified_at DESC NULLS LAST, file_name
