@@ -382,3 +382,36 @@ def test_upsert_rows_batches_valid_rows_with_matching_columns() -> None:
 
     assert count == 2
     assert len(conn.executed) == 1
+
+
+def test_prepare_document_row_handles_missing_optional_metadata_and_url_blanks() -> None:
+    columns = {
+        "document_id": "text",
+        "job_id": "text",
+        "document_type": "text",
+        "file_name": "text",
+        "sharepoint_url": "text",
+        "size_bytes": "bigint",
+        "modified_at": "timestamp with time zone",
+        "raw": "jsonb",
+        "updated_at": "timestamp with time zone",
+    }
+    row = prepare_row(
+        "documents",
+        {
+            "document_id": "driveitem-1",
+            "job_id": "JOB",
+            "document_type": "invoice",
+            "file_name": "Invoice.pdf",
+            "sharepoint_url": "",
+            "size_bytes": "123",
+            "modified_at": "2026-01-01T00:00:00Z",
+        },
+        columns,
+        datetime(2026, 6, 10, tzinfo=timezone.utc),
+    )
+
+    assert row["sharepoint_url"] is None
+    assert row["size_bytes"] == 123
+    assert row["modified_at"] == "2026-01-01T00:00:00Z"
+    assert row["raw"]["sharepoint_url"] == ""

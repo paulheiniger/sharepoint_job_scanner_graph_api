@@ -45,6 +45,8 @@ DOCUMENT_KEYWORDS = {
     "job tracking": "job_tracking",
     "tracking form": "job_tracking",
     "folder": "folder",
+    "file": "all",
+    "files": "all",
     "documents": "all",
     "docs": "all",
 }
@@ -428,6 +430,42 @@ def get_job_documents(job: dict[str, Any], document_type: str | None = None) -> 
     return docs
 
 
+def normalize_indexed_document(doc: dict[str, Any]) -> dict[str, str]:
+    document_type = str(doc.get("document_type") or "other")
+    label = DOCUMENT_LABELS.get(document_type, document_type.replace("_", " ").title())
+    return {
+        "label": label,
+        "url": str(doc.get("sharepoint_url") or ""),
+        "type": document_type,
+        "field": "documents",
+        "file_name": str(doc.get("file_name") or ""),
+        "classification_reason": str(doc.get("classification_reason") or ""),
+    }
+
+
+def get_preferred_job_documents(connection: Connection | Engine, job: dict[str, Any], document_type: str | None = None, limit: int = 100) -> list[dict[str, str]]:
+    try:
+        from .document_index import documents_table_count, list_job_documents
+
+        if documents_table_count(connection) > 0:
+            indexed = [
+                normalize_indexed_document(doc)
+                for doc in list_job_documents(connection, str(job.get("job_id") or ""), document_type, limit)
+                if first_nonblank(doc.get("sharepoint_url"))
+            ]
+            seen: set[str] = set()
+            deduped = []
+            for doc in indexed:
+                if doc["url"] in seen:
+                    continue
+                seen.add(doc["url"])
+                deduped.append(doc)
+            return deduped
+    except Exception:
+        pass
+    return get_job_documents(job, document_type)
+
+
 def requested_document_available(job: dict[str, Any], document_type: str | None) -> bool:
     if document_type in (None, "all"):
         return True
@@ -451,6 +489,10 @@ def format_cli_result(result: dict[str, Any]) -> str:
 
 def format_cli_documents(result: dict[str, Any], document_type: str | None) -> list[str]:
     docs = get_job_documents(result, document_type)
+    return format_document_lines(docs, document_type)
+
+
+def format_document_lines(docs: list[dict[str, str]], document_type: str | None) -> list[str]:
     lines: list[str] = []
     if document_type not in (None, "all"):
         requested_label = requested_document_label(document_type)
@@ -464,9 +506,16 @@ def format_cli_documents(result: dict[str, Any], document_type: str | None) -> l
             lines.append("  Available documents:")
             lines.extend(f"  - {doc['label']}: {doc['url']}" for doc in available_docs)
         return lines
+    if not docs:
+        return ["  Documents: not indexed"]
     for doc in docs:
         lines.append(f"  - {doc['label']}: {doc['url']}")
     return lines
+
+
+def format_cli_documents_for_connection(connection: Connection | Engine, result: dict[str, Any], document_type: str | None) -> list[str]:
+    docs = get_preferred_job_documents(connection, result, document_type)
+    return format_document_lines(docs, document_type)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -507,7 +556,7 @@ def main() -> None:
     if strong_results:
         for result in strong_results[:10]:
             print(format_cli_result(result))
-            for line in format_cli_documents(result, interpreted.get("document_type")):
+            for line in format_cli_documents_for_connection(engine, result, interpreted.get("document_type")):
                 print(line)
     else:
         print("No candidate passed the normal threshold.")
@@ -515,7 +564,7 @@ def main() -> None:
         print("Weak suggestions:")
         for result in weak_results[:5]:
             print(format_cli_result(result))
-            for line in format_cli_documents(result, interpreted.get("document_type")):
+            for line in format_cli_documents_for_connection(engine, result, interpreted.get("document_type")):
                 print(line)
 
 

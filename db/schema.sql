@@ -181,6 +181,29 @@ CREATE TABLE IF NOT EXISTS job_workflow_overrides (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS documents (
+    document_id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    document_type TEXT,
+    classification_reason TEXT,
+    file_name TEXT NOT NULL,
+    sharepoint_url TEXT,
+    folder_path TEXT,
+    relative_path TEXT,
+    mime_type TEXT,
+    file_extension TEXT,
+    size_bytes BIGINT,
+    modified_at TIMESTAMPTZ,
+    source_year INTEGER,
+    source_division TEXT,
+    drive_item_id TEXT,
+    content_hash TEXT,
+    extraction_status TEXT,
+    extraction_error TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS job_tracking_summary (
     tracking_id TEXT PRIMARY KEY,
     job_id TEXT REFERENCES jobs(job_id) ON DELETE CASCADE,

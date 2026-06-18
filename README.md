@@ -231,6 +231,7 @@ python -m jobscan.db_loader --jobs output/job_index.json
 python -m jobscan.db_loader --estimates output/estimate_summary.json
 python -m jobscan.db_loader --line-items output/estimate_line_items.json
 python -m jobscan.db_loader --crew-schedule output/crew_schedule_candidates.json
+python -m jobscan.db_loader --documents output/document_index.json
 ```
 
 Load all available default JSON outputs, skipping missing files:
@@ -240,6 +241,50 @@ python -m jobscan.db_loader --all
 ```
 
 The loader upserts into existing tables, stores each source record in the table's `raw` JSONB column, and only writes columns that exist in the current SQL schema.
+
+## Build and load the document index
+
+The normalized `documents` table stores one row per discovered SharePoint file and links it to `jobs.job_id`. It is populated from existing `.cache/sharepoint/**/.jobscan_manifest.json` files plus `output/job_index.json`; it does not re-scan SharePoint or download document contents.
+
+Apply the idempotent migration:
+
+```bash
+psql "$DATABASE_URL" -f db/add_documents_table.sql
+```
+
+Build the reusable manifest:
+
+```bash
+python -m jobscan.document_index \
+  --build \
+  --job-index output/job_index.json \
+  --cache-root .cache/sharepoint \
+  --out output/document_index.json
+```
+
+Load it into Postgres/Neon:
+
+```bash
+python -m jobscan.db_loader --documents output/document_index.json
+```
+
+Verify rows by type:
+
+```sql
+SELECT document_type, COUNT(*)
+FROM documents
+GROUP BY document_type
+ORDER BY COUNT(*) DESC;
+```
+
+CLI examples:
+
+```bash
+python -m jobscan.document_index --job-id "<JOB_ID>" --database-url "$DATABASE_URL" --debug
+python -m jobscan.job_search --query "what files do we have for Canadian Solar" --database-url "$DATABASE_URL"
+```
+
+Current limitation: document contents are not extracted, OCRed, embedded, or searchable yet. This phase indexes metadata only: file names, paths, types, timestamps, and exact SharePoint URLs.
 
 For faster conversational job lookup, apply the optional search indexes after the base schema:
 

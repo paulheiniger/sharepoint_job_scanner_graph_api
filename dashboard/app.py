@@ -15,9 +15,8 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from jobscan.job_search import (
-    get_job_documents,
+    get_preferred_job_documents,
     interpret_search_request,
-    requested_document_available,
     requested_document_label,
     search_jobs,
 )
@@ -1104,7 +1103,7 @@ def markdown_link(label: str, url: str) -> str:
     return f"[{safe_label}]({safe_url})"
 
 
-def job_result_markdown(job: dict[str, Any], interpreted: dict[str, Any], *, include_documents: bool = True) -> str:
+def job_result_markdown(job: dict[str, Any], interpreted: dict[str, Any], *, include_documents: bool = True, connection: Any = None) -> str:
     title = text_value(job.get("job_name")) or text_value(job.get("customer")) or text_value(job.get("job_id")) or "Untitled job"
     location = ", ".join(part for part in [text_value(job.get("city")), text_value(job.get("state"))] if part)
     meta = " · ".join(
@@ -1123,13 +1122,18 @@ def job_result_markdown(job: dict[str, Any], interpreted: dict[str, Any], *, inc
         lines.append(meta)
     lines.append(f"Match: {text_value(job.get('match_reason')) or 'Matched job data'}")
     if include_documents:
-        docs = get_job_documents(job, interpreted.get("document_type"))
+        docs = job.get("_documents") if isinstance(job.get("_documents"), list) else None
+        if docs is None:
+            docs = get_preferred_job_documents(connection, job, interpreted.get("document_type")) if connection is not None else []
         requested_type = interpreted.get("document_type")
-        if requested_type not in (None, "all") and not requested_document_available(job, requested_type):
+        if requested_type not in (None, "all") and not any(doc.get("type") == requested_type for doc in docs):
             lines.append(f"{requested_document_label(requested_type)}: not indexed")
         if docs:
             lines.append("Documents:")
-            lines.extend(f"- {markdown_link('Open ' + doc['label'].lower(), doc['url'])}" for doc in docs)
+            for doc in docs:
+                file_name = text_value(doc.get("file_name"))
+                label = file_name or f"Open {doc['label'].lower()}"
+                lines.append(f"- {doc['label']}: {markdown_link(label, doc['url'])}")
         elif requested_type:
             lines.append(f"No stored {str(interpreted['document_type']).replace('_', ' ')} link found for this job.")
     return "\n".join(lines)
@@ -1171,26 +1175,30 @@ def ask_spraytec_page() -> None:
     response = ""
 
     if interpreted.get("is_follow_up") and selected_job:
-        docs = get_job_documents(selected_job, interpreted.get("document_type"))
         requested_type = interpreted.get("document_type")
+        try:
+            with get_engine().connect() as conn:
+                docs = get_preferred_job_documents(conn, selected_job, requested_type)
+        except Exception as exc:
+            show_database_error(exc)
+            return
+        response = f"Using selected job: **{text_value(selected_job.get('job_name')) or text_value(selected_job.get('customer'))}**\n\n"
+        if requested_type not in (None, "all") and not any(doc.get("type") == requested_type for doc in docs):
+            response += f"{requested_document_label(requested_type)}: not indexed\n\n"
         if docs:
-            response = f"Using selected job: **{text_value(selected_job.get('job_name')) or text_value(selected_job.get('customer'))}**\n\n"
-            if requested_type not in (None, "all") and not requested_document_available(selected_job, requested_type):
-                response += f"{requested_document_label(requested_type)}: not indexed\n\n"
-            response += "\n".join(f"- {markdown_link('Open ' + doc['label'].lower(), doc['url'])}" for doc in docs)
+            response += "\n".join(
+                f"- {doc['label']}: {markdown_link(text_value(doc.get('file_name')) or 'Open ' + doc['label'].lower(), doc['url'])}"
+                for doc in docs
+            )
         else:
-            response = "I do not see that document link stored for the selected job."
-        debug_payload["ranked_matches"] = [
-            {
-                "job_id": selected_job.get("job_id"),
-                "score": selected_job.get("match_score"),
-                "reason": selected_job.get("match_reason"),
-            }
-        ]
+            response += "I do not see any indexed document links for the selected job."
+        debug_payload["ranked_matches"] = [{"job_id": selected_job.get("job_id"), "score": selected_job.get("match_score"), "reason": selected_job.get("match_reason")}]
     else:
         try:
             with get_engine().connect() as conn:
                 results = search_jobs(conn, prompt, limit=10)
+                for result in results:
+                    result["_documents"] = get_preferred_job_documents(conn, result, interpreted.get("document_type"))
         except Exception as exc:
             show_database_error(exc)
             return
@@ -1212,7 +1220,7 @@ def ask_spraytec_page() -> None:
             job = strong_results[0]
             st.session_state["ask_spraytec_selected_job"] = job
             st.session_state["ask_spraytec_selected_job_id"] = str(job.get("job_id") or "")
-            response = "I found a strong match.\n\n" + job_result_markdown(job, interpreted)
+            response = "I found a strong match.\n\n" + job_result_markdown(job, interpreted, connection=None)
             alternatives = results[1:4]
             if alternatives:
                 response += "\n\nLower-ranked alternatives are available in Search details."
@@ -1223,7 +1231,7 @@ def ask_spraytec_page() -> None:
                 response = "No confident match was found, but these weaker suggestions may help:\n\n"
             chunks = []
             for index, job in enumerate(display_results[:5], start=1):
-                chunks.append(f"{index}. " + job_result_markdown(job, interpreted))
+                chunks.append(f"{index}. " + job_result_markdown(job, interpreted, connection=None))
             response += "\n\n".join(chunks)
             if display_results:
                 job = display_results[0]

@@ -27,6 +27,7 @@ DEFAULT_OUTPUTS = {
     "job_tracking_daily": Path("output/job_tracking_daily_entries.json"),
     "office_timesheets": Path("output/office_timesheet_entries.json"),
     "crew_schedule": Path("output/crew_schedule_candidates.json"),
+    "documents": Path("output/document_index.json"),
 }
 
 
@@ -45,6 +46,7 @@ DATASETS = {
     "job_tracking_daily": DatasetConfig("job tracking daily entries", "job_tracking_daily_entries", "tracking_entry_id"),
     "office_timesheets": DatasetConfig("office timesheet entries", "office_timesheet_entries", "entry_id"),
     "crew_schedule": DatasetConfig("crew schedule candidates", "crew_schedule", "schedule_id"),
+    "documents": DatasetConfig("documents", "documents", "document_id"),
 }
 
 DEFAULT_UPSERT_BATCH_SIZE = 1000
@@ -422,6 +424,30 @@ def load_json_records(path: Path) -> list[dict[str, Any]]:
     return [record for record in records if isinstance(record, dict)]
 
 
+def dedupe_records_by_primary_key(records: list[dict[str, Any]], primary_key: str) -> tuple[list[dict[str, Any]], int]:
+    deduped: dict[str, dict[str, Any]] = {}
+    skipped = 0
+    for record in records:
+        value = record.get(primary_key)
+        if value is None or str(value).strip() == "":
+            skipped += 1
+            continue
+        deduped[str(value).strip()] = record
+    return list(deduped.values()), len(records) - len(deduped) - skipped
+
+
+def print_document_load_summary(records_read: int, records: list[dict[str, Any]], deduplicated: int, skipped: int) -> None:
+    counts = Counter(str(record.get("document_type") or "other") for record in records)
+    print(f"Document rows read: {records_read}")
+    print(f"Document rows deduplicated: {deduplicated}")
+    print(f"Document rows skipped: {skipped}")
+    print(f"Document rows missing job_id: {sum(1 for record in records if not record.get('job_id'))}")
+    print(f"Document rows missing URL: {sum(1 for record in records if not record.get('sharepoint_url'))}")
+    print("Document classification counts:")
+    for document_type, count in counts.most_common():
+        print(f"  {document_type}: {count}")
+
+
 def reflect_table(engine: Engine, table_name: str) -> Table:
     metadata = MetaData()
     return Table(table_name, metadata, autoload_with=engine)
@@ -562,6 +588,15 @@ def load_dataset(
         raise FileNotFoundError(message)
 
     records = load_json_records(path)
+    records_read = len(records)
+    skipped_records = 0
+    deduplicated_records = 0
+    if dataset_key == "documents":
+        records, deduplicated_records = dedupe_records_by_primary_key(records, config.primary_key)
+        before_required_filter = len(records)
+        records = [record for record in records if record.get("job_id") and record.get("file_name")]
+        skipped_records = records_read - before_required_filter + (before_required_filter - len(records))
+        print_document_load_summary(records_read, records, deduplicated_records, skipped_records)
     print(f"Loading {config.label}: {path}")
     print_primary_key_diagnostics(dataset_key, records)
 
@@ -622,6 +657,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--job-tracking-daily", type=Path, help="Path to output/job_tracking_daily_entries.json")
     parser.add_argument("--office-timesheets", type=Path, help="Path to output/office_timesheet_entries.json")
     parser.add_argument("--crew-schedule", type=Path, help="Path to output/crew_schedule_candidates.json")
+    parser.add_argument("--documents", type=Path, help="Path to output/document_index.json")
     parser.add_argument("--all", action="store_true", help="Load all default output JSON files, skipping missing files.")
     parser.add_argument("--batch-size", type=int, default=DEFAULT_UPSERT_BATCH_SIZE, help="Rows per batched upsert statement.")
     return parser.parse_args(argv)
@@ -640,6 +676,7 @@ def selected_inputs(args: argparse.Namespace) -> list[tuple[str, Path, bool]]:
         "job_tracking_daily": args.job_tracking_daily,
         "office_timesheets": args.office_timesheets,
         "crew_schedule": args.crew_schedule,
+        "documents": args.documents,
     }
     selections.extend((key, path, False) for key, path in explicit.items() if path is not None)
     return selections
