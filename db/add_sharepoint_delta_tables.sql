@@ -10,9 +10,22 @@ CREATE TABLE IF NOT EXISTS sharepoint_delta_state (
     items_seen BIGINT DEFAULT 0,
     changes_applied BIGINT DEFAULT 0,
     error_message TEXT,
+    checkpoint_next_link TEXT,
+    checkpoint_page INTEGER,
+    checkpoint_items_seen BIGINT,
+    checkpoint_updated_at TIMESTAMPTZ,
+    last_error_page INTEGER,
+    last_error_message TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+ALTER TABLE sharepoint_delta_state ADD COLUMN IF NOT EXISTS checkpoint_next_link TEXT;
+ALTER TABLE sharepoint_delta_state ADD COLUMN IF NOT EXISTS checkpoint_page INTEGER;
+ALTER TABLE sharepoint_delta_state ADD COLUMN IF NOT EXISTS checkpoint_items_seen BIGINT;
+ALTER TABLE sharepoint_delta_state ADD COLUMN IF NOT EXISTS checkpoint_updated_at TIMESTAMPTZ;
+ALTER TABLE sharepoint_delta_state ADD COLUMN IF NOT EXISTS last_error_page INTEGER;
+ALTER TABLE sharepoint_delta_state ADD COLUMN IF NOT EXISTS last_error_message TEXT;
 
 CREATE TABLE IF NOT EXISTS sharepoint_drive_items (
     drive_id TEXT NOT NULL,

@@ -193,6 +193,12 @@ CREATE TABLE IF NOT EXISTS sharepoint_delta_state (
     items_seen BIGINT DEFAULT 0,
     changes_applied BIGINT DEFAULT 0,
     error_message TEXT,
+    checkpoint_next_link TEXT,
+    checkpoint_page INTEGER,
+    checkpoint_items_seen BIGINT,
+    checkpoint_updated_at TIMESTAMPTZ,
+    last_error_page INTEGER,
+    last_error_message TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );

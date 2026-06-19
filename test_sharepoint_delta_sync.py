@@ -45,6 +45,9 @@ class FakeContext:
     def __exit__(self, exc_type, exc, tb):
         self.conn.in_transaction = False
         self.engine.begin_exits += 1
+        if self.engine.fail_on_exit_count > 0 and self.engine.begin_exits > self.engine.fail_on_exit_after:
+            self.engine.fail_on_exit_count -= 1
+            raise sp.OperationalError("COMMIT", {}, Exception("SSL SYSCALL error: Operation timed out"))
         return False
 
 
@@ -54,12 +57,18 @@ class FakeEngine:
         self.lock_conn = FakeConnection()
         self.begin_entries = 0
         self.begin_exits = 0
+        self.dispose_calls = 0
+        self.fail_on_exit_count = 0
+        self.fail_on_exit_after = 0
 
     def begin(self):
         return FakeContext(self, self.conn)
 
     def connect(self):
         return self.lock_conn
+
+    def dispose(self):
+        self.dispose_calls += 1
 
 
 class FakeGraphClient:
@@ -84,6 +93,49 @@ class FakeGraphClient:
         return value
 
 
+class FakeMappingResult:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def mappings(self):
+        return self
+
+    def all(self):
+        return self.rows
+
+
+class FakeStatusConnection(FakeConnection):
+    def __init__(self, rows):
+        super().__init__()
+        self.rows = rows
+
+    def execute(self, statement, params=None):
+        self.executed.append((str(statement), params or {}))
+        return FakeMappingResult(self.rows)
+
+
+class FakeStatusEngine(FakeEngine):
+    def __init__(self, rows):
+        super().__init__()
+        self.conn = FakeStatusConnection(rows)
+
+
+class InventoryFakeConnection(FakeConnection):
+    def __init__(self, existing_rows=None):
+        super().__init__()
+        self.existing_rows = existing_rows or []
+        self.written_rows = []
+
+    def execute(self, statement, params=None):
+        self.executed.append((str(statement), params or {}))
+        if isinstance(params, list):
+            self.written_rows.extend(params)
+            return FakeResult(True)
+        if "FROM sharepoint_drive_items" in str(statement):
+            return FakeMappingResult(self.existing_rows)
+        return FakeResult(True)
+
+
 def install_db_fakes(monkeypatch, *, state=None, lock=True, patch_lock=True):
     calls = {
         "started": [],
@@ -96,6 +148,9 @@ def install_db_fakes(monkeypatch, *, state=None, lock=True, patch_lock=True):
         "reconciled_rows": [],
         "affected_rows": [],
         "released": [],
+        "checkpoints": [],
+        "cleared_checkpoints": [],
+        "bulk_results": [],
     }
     previous_by_id = {}
 
@@ -107,8 +162,11 @@ def install_db_fakes(monkeypatch, *, state=None, lock=True, patch_lock=True):
     monkeypatch.setattr(sp, "mark_delta_started", lambda conn, site_id, drive_id, library, mode: calls["started"].append(mode))
     monkeypatch.setattr(sp, "mark_delta_succeeded", lambda conn, drive_id, delta_link, stats: calls["succeeded"].append(delta_link))
     monkeypatch.setattr(sp, "mark_delta_failed", lambda conn, drive_id, error: calls["failed"].append(error))
+    monkeypatch.setattr(sp, "mark_delta_failed_at_page", lambda conn, drive_id, error, page_number: calls["failed"].append((error, page_number)))
     monkeypatch.setattr(sp, "mark_delta_interrupted", lambda conn, drive_id, message="Delta sync interrupted": calls["interrupted"].append(message))
     monkeypatch.setattr(sp, "mark_delta_partial", lambda conn, drive_id, stats: calls["partial"].append((drive_id, stats.items_returned)))
+    monkeypatch.setattr(sp, "save_delta_checkpoint", lambda conn, drive_id, next_link, page_number, items_seen: calls["checkpoints"].append((drive_id, page_number, items_seen, bool(next_link))))
+    monkeypatch.setattr(sp, "clear_delta_checkpoint", lambda conn, drive_id: calls["cleared_checkpoints"].append(drive_id))
     monkeypatch.setattr(sp, "soft_delete_inventory_item", lambda conn, drive_id, item: calls["deleted"].append(item["id"]))
 
     def upsert(_conn, row):
@@ -118,6 +176,27 @@ def install_db_fakes(monkeypatch, *, state=None, lock=True, patch_lock=True):
         return sp.changed_item_kind(previous, row)
 
     monkeypatch.setattr(sp, "upsert_inventory_item", upsert)
+
+    def bulk_upsert(_conn, rows, *, force_updates=False):
+        out = {}
+        inserted = 0
+        updated = 0
+        skipped = 0
+        for row in rows:
+            previous = previous_by_id.get(str(row["drive_item_id"]))
+            kind = upsert(_conn, row)
+            out[str(row["drive_item_id"])] = kind
+            if previous is None:
+                inserted += 1
+            elif kind == "unchanged" and not force_updates:
+                skipped += 1
+            else:
+                updated += 1
+        result = sp.InventoryUpsertResult(change_kinds=out, inserted=inserted, updated=updated, skipped_unchanged=skipped)
+        calls["bulk_results"].append(result)
+        return result
+
+    monkeypatch.setattr(sp, "upsert_inventory_items_bulk", bulk_upsert)
 
     def reconcile(_conn, drive_id, rows):
         calls["reconciled_rows"].extend(rows)
@@ -136,6 +215,114 @@ def install_db_fakes(monkeypatch, *, state=None, lock=True, patch_lock=True):
 
 def target():
     return SharePointTarget.from_url("https://contoso.sharepoint.com/sites/Data", library="Documents")
+
+
+def inventory_row(item_id="item-1", **overrides):
+    row = {
+        "drive_id": "drive-1",
+        "drive_item_id": item_id,
+        "parent_item_id": "parent-1",
+        "name": "Doc.pdf",
+        "web_url": "https://sp/doc.pdf",
+        "parent_path": "Jobs/Acme",
+        "relative_path": "Jobs/Acme/Doc.pdf",
+        "is_folder": False,
+        "is_file": True,
+        "mime_type": "application/pdf",
+        "size_bytes": 100,
+        "etag": "etag-1",
+        "ctag": "ctag-1",
+        "last_modified_at": "2026-01-02T00:00:00Z",
+        "metadata_json": "{}",
+    }
+    row.update(overrides)
+    return row
+
+
+def existing_inventory_row(item_id="item-1", **overrides):
+    row = inventory_row(item_id, **overrides)
+    row["deleted_at"] = overrides.get("deleted_at")
+    return row
+
+
+def test_existing_unchanged_inventory_row_is_skipped_not_updated() -> None:
+    conn = InventoryFakeConnection([existing_inventory_row()])
+
+    result = sp.upsert_inventory_items_bulk(conn, [inventory_row()])
+
+    assert result.inserted == 0
+    assert result.updated == 0
+    assert result.skipped_unchanged == 1
+    assert result.change_kinds == {"item-1": "unchanged"}
+    assert conn.written_rows == []
+
+
+def test_changed_etag_inventory_row_is_updated() -> None:
+    conn = InventoryFakeConnection([existing_inventory_row(etag="old")])
+
+    result = sp.upsert_inventory_items_bulk(conn, [inventory_row(etag="new")])
+
+    assert result.updated == 1
+    assert result.skipped_unchanged == 0
+    assert result.change_kinds == {"item-1": "modified"}
+    assert conn.written_rows == [inventory_row(etag="new")]
+
+
+def test_changed_path_and_name_inventory_row_is_updated() -> None:
+    conn = InventoryFakeConnection([existing_inventory_row(name="Old.pdf", relative_path="Jobs/Acme/Old.pdf")])
+    row = inventory_row(name="New.pdf", relative_path="Jobs/Acme/New.pdf")
+
+    result = sp.upsert_inventory_items_bulk(conn, [row])
+
+    assert result.updated == 1
+    assert result.change_kinds == {"item-1": "moved"}
+    assert conn.written_rows == [row]
+
+
+def test_new_inventory_row_is_inserted() -> None:
+    conn = InventoryFakeConnection([])
+    row = inventory_row()
+
+    result = sp.upsert_inventory_items_bulk(conn, [row])
+
+    assert result.inserted == 1
+    assert result.updated == 0
+    assert result.skipped_unchanged == 0
+    assert result.change_kinds == {"item-1": "new"}
+    assert conn.written_rows == [row]
+
+
+def test_deleted_facet_row_marks_inventory_deleted(monkeypatch) -> None:
+    conn = InventoryFakeConnection([])
+    monkeypatch.setattr(sp, "upsert_inventory_items_bulk", lambda *_args, **_kwargs: sp.InventoryUpsertResult(change_kinds={}))
+    monkeypatch.setattr(sp, "reconcile_documents_for_items", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(sp, "mark_deleted_documents", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(sp, "affected_jobs_for_items", lambda *_args, **_kwargs: set())
+
+    counts = sp.process_delta_page(
+        conn,
+        drive_id="drive-1",
+        page={"value": [{"id": "deleted-1", "deleted": {}}]},
+        roots=[],
+        stats=sp.DeltaSyncStats(mode="initial", drive_id="drive-1"),
+    )
+
+    assert counts["deleted"] == 1
+    assert any("UPDATE sharepoint_drive_items" in statement for statement, _params in conn.executed)
+    assert any((params or {}).get("drive_item_id") == "deleted-1" for _statement, params in conn.executed)
+
+
+def test_force_inventory_updates_rewrites_unchanged_rows() -> None:
+    conn = InventoryFakeConnection([existing_inventory_row()])
+    row = inventory_row()
+
+    result = sp.upsert_inventory_items_bulk(conn, [row], force_updates=True)
+
+    assert result.inserted == 0
+    assert result.updated == 1
+    assert result.skipped_unchanged == 0
+    assert result.change_kinds == {"item-1": "unchanged"}
+    assert conn.written_rows == [row]
 
 
 def test_delta_initial_enumeration_multiple_pages_persists_final_delta_link(monkeypatch) -> None:
@@ -160,6 +347,7 @@ def test_delta_initial_enumeration_multiple_pages_persists_final_delta_link(monk
     assert stats.graph_requests == 2
     assert stats.delta_token_saved is True
     assert calls["succeeded"] == ["delta-secret-token"]
+    assert calls["checkpoints"] == [("drive-1", 1, 1, True)]
 
 
 def test_advisory_lock_transaction_is_committed_before_graph_wait(monkeypatch) -> None:
@@ -220,6 +408,64 @@ def test_delta_pages_upsert_and_commit_incrementally_before_next_graph_page(monk
     assert len(calls["upserted"]) == 2
 
 
+def test_db_operational_error_retries_same_page_before_next_graph(monkeypatch) -> None:
+    calls = install_db_fakes(monkeypatch)
+    monkeypatch.setattr(sp.time, "sleep", lambda _seconds: None)
+    engine = FakeEngine()
+    engine.fail_on_exit_count = 1
+    engine.fail_on_exit_after = 2
+    observations = []
+
+    def observe_graph_page(_client, url):
+        observations.append((url, len(calls["upserted"])))
+
+    client = FakeGraphClient(
+        {
+            "/drives/drive-1/root/delta": {
+                "value": [{"id": "1", "name": "First.pdf", "file": {}, "parentReference": {"path": "/drives/drive-1/root:/2026 ROOFING/PROPOSED/Job"}}],
+                "@odata.nextLink": "next",
+            },
+            "next": {"value": [], "@odata.deltaLink": "delta-final"},
+        },
+        on_get_json=observe_graph_page,
+    )
+
+    stats = sp.run_delta_sync(engine=engine, client=client, target=target())
+
+    assert client.urls == ["/drives/drive-1/root/delta", "next"]
+    assert observations[1] == ("next", 2)
+    assert stats.db_retries == 1
+    assert engine.dispose_calls == 1
+    assert stats.items_returned == 1
+    assert calls["checkpoints"][-1] == ("drive-1", 1, 1, True)
+
+
+def test_checkpoint_does_not_advance_when_page_db_retries_fail(monkeypatch) -> None:
+    calls = install_db_fakes(monkeypatch)
+    monkeypatch.setattr(sp.time, "sleep", lambda _seconds: None)
+
+    def fail_page(*_args, **_kwargs):
+        raise sp.OperationalError("INSERT", {}, Exception("could not receive data from server: Operation timed out"))
+
+    monkeypatch.setattr(sp, "process_delta_page", fail_page)
+    client = FakeGraphClient(
+        {
+            "/drives/drive-1/root/delta": {
+                "value": [{"id": "1", "name": "First.pdf", "file": {}, "parentReference": {"path": "/drives/drive-1/root:/2026 ROOFING/PROPOSED/Job"}}],
+                "@odata.nextLink": "next",
+            }
+        }
+    )
+
+    with pytest.raises(sp.OperationalError):
+        sp.run_delta_sync(engine=FakeEngine(), client=client, target=target())
+
+    assert calls["checkpoints"] == []
+    assert calls["succeeded"] == []
+    assert calls["failed"][0][1] == 1
+    assert calls["released"] == ["drive-1"]
+
+
 def test_delta_incremental_uses_saved_delta_link(monkeypatch) -> None:
     calls = install_db_fakes(monkeypatch, state={"delta_link": "saved-delta"})
     client = FakeGraphClient({"saved-delta": {"value": [], "@odata.deltaLink": "new-delta"}})
@@ -229,6 +475,70 @@ def test_delta_incremental_uses_saved_delta_link(monkeypatch) -> None:
     assert stats.mode == "incremental"
     assert client.urls == ["saved-delta"]
     assert calls["succeeded"] == ["new-delta"]
+
+
+def test_incremental_delta_does_not_write_initial_checkpoint(monkeypatch) -> None:
+    calls = install_db_fakes(monkeypatch, state={"delta_link": "saved-delta"})
+    client = FakeGraphClient(
+        {
+            "saved-delta": {"value": [{"id": "1", "name": "A.pdf", "file": {}, "parentReference": {"path": "/drives/drive-1/root:/Jobs"}}], "@odata.nextLink": "next"},
+            "next": {"value": [], "@odata.deltaLink": "new-delta"},
+        }
+    )
+
+    stats = sp.run_delta_sync(engine=FakeEngine(), client=client, target=target())
+
+    assert stats.mode == "incremental"
+    assert calls["checkpoints"] == []
+    assert calls["succeeded"] == ["new-delta"]
+
+
+def test_initial_delta_resumes_from_checkpoint_next_link(monkeypatch, capsys) -> None:
+    calls = install_db_fakes(
+        monkeypatch,
+        state={"delta_link": None, "checkpoint_next_link": "checkpoint-next", "checkpoint_page": 7, "checkpoint_items_seen": 700},
+    )
+    client = FakeGraphClient({"checkpoint-next": {"value": [], "@odata.deltaLink": "delta-final"}})
+
+    stats = sp.run_delta_sync(engine=FakeEngine(), client=client, target=target())
+
+    out = capsys.readouterr().out
+    assert stats.mode == "initial_resume"
+    assert client.urls == ["checkpoint-next"]
+    assert "Resuming initial delta from checkpoint page 7" in out
+    assert "checkpoint-next" not in out
+    assert calls["succeeded"] == ["delta-final"]
+
+
+def test_restart_initial_delta_clears_checkpoint_only_when_requested(monkeypatch) -> None:
+    calls = install_db_fakes(
+        monkeypatch,
+        state={"delta_link": None, "checkpoint_next_link": "checkpoint-next", "checkpoint_page": 7, "checkpoint_items_seen": 700},
+    )
+    client = FakeGraphClient({"/drives/drive-1/root/delta": {"value": [], "@odata.deltaLink": "delta-final"}})
+
+    stats = sp.run_delta_sync(engine=FakeEngine(), client=client, target=target(), restart_initial_delta=True)
+
+    assert stats.mode == "initial"
+    assert client.urls == ["/drives/drive-1/root/delta"]
+    assert calls["cleared_checkpoints"] == ["drive-1"]
+    assert calls["succeeded"] == ["delta-final"]
+
+
+def test_invalid_initial_checkpoint_410_requires_explicit_restart(monkeypatch, capsys) -> None:
+    calls = install_db_fakes(
+        monkeypatch,
+        state={"delta_link": None, "checkpoint_next_link": "expired-checkpoint", "checkpoint_page": 7, "checkpoint_items_seen": 700},
+    )
+    client = FakeGraphClient({"expired-checkpoint": GraphError("Graph GET failed with 410: Gone")})
+
+    with pytest.raises(GraphError):
+        sp.run_delta_sync(engine=FakeEngine(), client=client, target=target())
+
+    out = capsys.readouterr().out
+    assert "checkpoint is no longer valid" in out
+    assert calls["cleared_checkpoints"] == []
+    assert calls["succeeded"] == []
 
 
 def test_delta_link_not_replaced_after_partial_failure(monkeypatch) -> None:
@@ -292,7 +602,35 @@ def test_limit_pages_writes_inventory_but_does_not_save_final_delta_link(monkeyp
     assert len(calls["upserted"]) == 1
     assert calls["succeeded"] == []
     assert calls["partial"] == [("drive-1", 1)]
+    assert calls["checkpoints"] == [("drive-1", 1, 1, True)]
     assert client.urls == ["/drives/drive-1/root/delta"]
+
+
+def test_checkpoint_advances_when_all_inventory_rows_are_skipped(monkeypatch) -> None:
+    calls = install_db_fakes(monkeypatch)
+
+    def skip_all(_conn, rows, *, force_updates=False):
+        return sp.InventoryUpsertResult(
+            change_kinds={str(row["drive_item_id"]): "unchanged" for row in rows},
+            skipped_unchanged=len(rows),
+        )
+
+    monkeypatch.setattr(sp, "upsert_inventory_items_bulk", skip_all)
+    client = FakeGraphClient(
+        {
+            "/drives/drive-1/root/delta": {
+                "value": [{"id": "1", "name": "AlreadyThere.pdf", "file": {}, "parentReference": {"path": "/drives/drive-1/root:/2026 ROOFING/PROPOSED/Job"}}],
+                "@odata.nextLink": "next",
+            },
+            "next": {"value": [], "@odata.deltaLink": "delta-final"},
+        }
+    )
+
+    stats = sp.run_delta_sync(engine=FakeEngine(), client=client, target=target())
+
+    assert stats.inventory_skipped_unchanged == 1
+    assert calls["checkpoints"] == [("drive-1", 1, 1, True)]
+    assert calls["succeeded"] == ["delta-final"]
 
 
 def test_add_update_move_rename_and_delete_handling() -> None:
@@ -302,6 +640,40 @@ def test_add_update_move_rename_and_delete_handling() -> None:
     assert sp.changed_item_kind(previous, {**previous, "relative_path": "B/Old.pdf"}) == "moved"
     assert sp.changed_item_kind(previous, {**previous, "name": "New.pdf"}) == "renamed"
     assert sp.changed_item_kind(previous, dict(previous)) == "unchanged"
+
+
+def test_image_metadata_is_slimmed_by_default() -> None:
+    row = sp.item_inventory_row(
+        "drive-1",
+        {
+            "id": "img-1",
+            "name": "CompanyCam.jpg",
+            "file": {"mimeType": "image/jpeg", "hashes": {"quickXorHash": "secret-heavy"}},
+            "photo": {"takenDateTime": "2026-01-01T12:00:00Z"},
+            "parentReference": {"path": "/drives/drive-1/root:/CompanyCam Pics 2026"},
+            "webUrl": "https://example/image",
+            "size": 123,
+        },
+    )
+
+    metadata = sp.json.loads(row["metadata_json"])
+    assert metadata == {
+        "metadata_slimmed": True,
+        "original_type": "image/jpeg",
+        "photo_takenDateTime": "2026-01-01T12:00:00Z",
+    }
+
+
+def test_non_image_metadata_remains_full_and_full_image_flag_preserves_raw() -> None:
+    pdf_row = sp.item_inventory_row("drive-1", {"id": "pdf-1", "name": "Doc.pdf", "file": {"mimeType": "application/pdf"}, "custom": "kept"})
+    image_row = sp.item_inventory_row(
+        "drive-1",
+        {"id": "img-1", "name": "Image.jpg", "file": {"mimeType": "image/jpeg"}, "custom": "kept"},
+        store_full_image_metadata=True,
+    )
+
+    assert sp.json.loads(pdf_row["metadata_json"])["custom"] == "kept"
+    assert sp.json.loads(image_row["metadata_json"])["custom"] == "kept"
 
 
 def test_root_path_filtering() -> None:
@@ -384,7 +756,9 @@ def test_progress_output_reports_startup_and_page_counts(monkeypatch, capsys) ->
     assert "Previous delta state exists: no" in out
     assert "Delta page 1:" in out
     assert "items=1" in out
-    assert "sharepoint_drive_items_upserted=1" in out
+    assert "inserted=1" in out
+    assert "updated=0" in out
+    assert "skipped_unchanged=0" in out
     assert "secret" not in out
 
 
@@ -394,6 +768,43 @@ def test_delta_link_not_logged_in_stats_output(capsys) -> None:
     out = capsys.readouterr().out
     assert "deltaLink" not in out
     assert "token" not in out.lower()
+
+
+def test_delta_status_reports_checkpoint_without_leaking_links(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(sp, "ensure_delta_tables", lambda conn: None)
+    engine = FakeStatusEngine(
+        [
+            {
+                "drive_id": "drive-1",
+                "library_name": "Documents",
+                "sync_status": "failed",
+                "sync_started_at": "start",
+                "sync_completed_at": "done",
+                "last_successful_sync_at": None,
+                "items_seen": 359013,
+                "changes_applied": 100,
+                "checkpoint_page": 1565,
+                "checkpoint_items_seen": 359013,
+                "checkpoint_updated_at": "checkpoint-time",
+                "last_error_page": 1566,
+                "last_error_message": "could not receive data from server",
+                "total_inventory_rows": 313031,
+                "has_delta_link": False,
+                "has_checkpoint": True,
+            }
+        ]
+    )
+
+    sp.print_delta_status(engine)
+
+    out = capsys.readouterr().out
+    assert "Checkpoint stored: yes" in out
+    assert "Checkpoint page: 1565" in out
+    assert "Total inventory rows: 313031" in out
+    assert "Last error page: 1566" in out
+    assert "could not receive data from server" in out
+    assert "nextLink" not in out
+    assert "deltaLink" not in out
 
 
 def inv_row(item_id, *, name="Doc.pdf", web_url=None, parent_path="Jobs/Acme", relative_path=None, drive_id="drive-1"):

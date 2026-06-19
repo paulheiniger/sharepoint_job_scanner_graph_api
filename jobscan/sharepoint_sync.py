@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import time
@@ -13,7 +14,7 @@ from urllib.parse import quote, unquote, urlparse
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Connection, Engine, make_url
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import DBAPIError, OperationalError, SQLAlchemyError
 
 from .extractors import DOC_EXTS, SPREADSHEET_EXTS
 from .graph_client import GraphClient, GraphError, SharePointTarget
@@ -63,6 +64,14 @@ class DeltaSyncStats:
     changed_folders: list[dict[str, Any]] | None = None
     deleted_item_rows: list[dict[str, Any]] | None = None
     partial: bool = False
+    checkpoint_saved: bool = False
+    checkpoint_page: int | None = None
+    checkpoint_items_seen: int | None = None
+    db_retries: int = 0
+    inventory_inserted: int = 0
+    inventory_updated: int = 0
+    inventory_skipped_unchanged: int = 0
+    inventory_deleted: int = 0
 
 
 @dataclass
@@ -81,6 +90,14 @@ class DocumentReconciliationStats:
     unmatched: int = 0
     documents_updated: int = 0
     missing_after: int = 0
+
+
+@dataclass
+class InventoryUpsertResult:
+    change_kinds: dict[str, str]
+    inserted: int = 0
+    updated: int = 0
+    skipped_unchanged: int = 0
 
 
 def _safe_name(name: str) -> str:
@@ -515,7 +532,29 @@ def parent_path_from_drive_item(item: dict[str, Any]) -> str:
     return normalize_drive_path(parent_path)
 
 
-def item_inventory_row(drive_id: str, item: dict[str, Any]) -> dict[str, Any]:
+def slim_metadata_json(item: dict[str, Any], *, slim_images: bool = True, store_full_image_metadata: bool = False) -> str:
+    file_meta = item.get("file") if isinstance(item.get("file"), dict) else {}
+    mime_type = str(file_meta.get("mimeType") or "")
+    if slim_images and not store_full_image_metadata and mime_type.lower().startswith("image/"):
+        photo = item.get("photo") if isinstance(item.get("photo"), dict) else {}
+        return json.dumps(
+            {
+                "metadata_slimmed": True,
+                "original_type": mime_type,
+                "photo_takenDateTime": photo.get("takenDateTime"),
+            },
+            default=str,
+        )
+    return json.dumps(item, default=str)
+
+
+def item_inventory_row(
+    drive_id: str,
+    item: dict[str, Any],
+    *,
+    slim_images: bool = True,
+    store_full_image_metadata: bool = False,
+) -> dict[str, Any]:
     parent = item.get("parentReference") if isinstance(item.get("parentReference"), dict) else {}
     file_meta = item.get("file") if isinstance(item.get("file"), dict) else {}
     return {
@@ -533,7 +572,7 @@ def item_inventory_row(drive_id: str, item: dict[str, Any]) -> dict[str, Any]:
         "etag": item.get("eTag"),
         "ctag": item.get("cTag"),
         "last_modified_at": item.get("lastModifiedDateTime"),
-        "metadata_json": json.dumps(item, default=str),
+        "metadata_json": slim_metadata_json(item, slim_images=slim_images, store_full_image_metadata=store_full_image_metadata),
     }
 
 
@@ -561,6 +600,64 @@ def changed_item_kind(previous: dict[str, Any] | None, row: dict[str, Any]) -> s
     return "unchanged"
 
 
+INVENTORY_COMPARE_FIELDS = (
+    "etag",
+    "ctag",
+    "name",
+    "parent_item_id",
+    "web_url",
+    "parent_path",
+    "relative_path",
+    "is_folder",
+    "is_file",
+    "mime_type",
+    "size_bytes",
+    "last_modified_at",
+)
+
+
+def normalize_inventory_compare_value(field: str, value: Any) -> Any:
+    if value is None:
+        return None
+    if field in {"is_folder", "is_file"}:
+        return bool(value)
+    if field == "size_bytes":
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+    if field == "last_modified_at":
+        if isinstance(value, datetime):
+            parsed = value
+        else:
+            text_value = str(value).strip()
+            if not text_value:
+                return None
+            try:
+                parsed = datetime.fromisoformat(text_value.replace("Z", "+00:00"))
+            except ValueError:
+                return text_value
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).replace(microsecond=0).isoformat()
+    if field in {"parent_path", "relative_path"}:
+        return normalize_drive_path(value)
+    text_value = str(value).strip()
+    return text_value or None
+
+
+def inventory_row_unchanged(previous: dict[str, Any] | None, row: dict[str, Any]) -> bool:
+    if previous is None:
+        return False
+    if previous.get("deleted_at") is not None:
+        return False
+    return all(
+        normalize_inventory_compare_value(field, previous.get(field))
+        == normalize_inventory_compare_value(field, row.get(field))
+        for field in INVENTORY_COMPARE_FIELDS
+    )
+
+
 def progress(message: str) -> None:
     print(message, flush=True)
 
@@ -575,6 +672,25 @@ def database_host_summary(database_url: str | None) -> str:
     host = url.host or "localhost"
     database = url.database or ""
     return f"{host}/{database}" if database else host
+
+
+def create_sharepoint_engine(database_url: str) -> Engine:
+    url = make_url(database_url)
+    connect_args: dict[str, Any] = {}
+    if url.drivername.startswith("postgresql"):
+        connect_args["connect_timeout"] = 15
+        if "sslmode" not in url.query:
+            connect_args["sslmode"] = "require"
+    return create_engine(
+        database_url,
+        future=True,
+        pool_pre_ping=True,
+        pool_recycle=300,
+        pool_size=3,
+        max_overflow=2,
+        pool_timeout=30,
+        connect_args=connect_args,
+    )
 
 
 def commit_if_possible(connection: Connection) -> None:
@@ -602,6 +718,12 @@ def ensure_delta_tables(connection: Connection) -> None:
                 items_seen BIGINT DEFAULT 0,
                 changes_applied BIGINT DEFAULT 0,
                 error_message TEXT,
+                checkpoint_next_link TEXT,
+                checkpoint_page INTEGER,
+                checkpoint_items_seen BIGINT,
+                checkpoint_updated_at TIMESTAMPTZ,
+                last_error_page INTEGER,
+                last_error_message TEXT,
                 created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             )
@@ -638,6 +760,12 @@ def ensure_delta_tables(connection: Connection) -> None:
         )
     )
     for stmt in (
+        "ALTER TABLE sharepoint_delta_state ADD COLUMN IF NOT EXISTS checkpoint_next_link TEXT",
+        "ALTER TABLE sharepoint_delta_state ADD COLUMN IF NOT EXISTS checkpoint_page INTEGER",
+        "ALTER TABLE sharepoint_delta_state ADD COLUMN IF NOT EXISTS checkpoint_items_seen BIGINT",
+        "ALTER TABLE sharepoint_delta_state ADD COLUMN IF NOT EXISTS checkpoint_updated_at TIMESTAMPTZ",
+        "ALTER TABLE sharepoint_delta_state ADD COLUMN IF NOT EXISTS last_error_page INTEGER",
+        "ALTER TABLE sharepoint_delta_state ADD COLUMN IF NOT EXISTS last_error_message TEXT",
         "ALTER TABLE documents ADD COLUMN IF NOT EXISTS drive_id TEXT",
         "ALTER TABLE documents ADD COLUMN IF NOT EXISTS drive_item_id TEXT",
         "ALTER TABLE documents ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ",
@@ -706,6 +834,7 @@ def mark_delta_failed(connection: Connection, drive_id: str, error: str) -> None
             UPDATE sharepoint_delta_state
             SET sync_status = 'failed',
                 error_message = :error_message,
+                last_error_message = :error_message,
                 sync_completed_at = NOW(),
                 updated_at = NOW()
             WHERE drive_id = :drive_id
@@ -722,6 +851,7 @@ def mark_delta_interrupted(connection: Connection, drive_id: str, message: str =
             UPDATE sharepoint_delta_state
             SET sync_status = 'interrupted',
                 error_message = :error_message,
+                last_error_message = :error_message,
                 sync_completed_at = NOW(),
                 updated_at = NOW()
             WHERE drive_id = :drive_id
@@ -741,6 +871,8 @@ def mark_delta_partial(connection: Connection, drive_id: str, stats: DeltaSyncSt
                 items_seen = :items_seen,
                 changes_applied = :changes_applied,
                 error_message = 'Stopped by --limit-pages before final delta page; previous delta state preserved.',
+                last_error_page = :last_error_page,
+                last_error_message = 'Stopped by --limit-pages before final delta page; previous delta state preserved.',
                 updated_at = NOW()
             WHERE drive_id = :drive_id
             """
@@ -748,6 +880,7 @@ def mark_delta_partial(connection: Connection, drive_id: str, stats: DeltaSyncSt
         {
             "drive_id": drive_id,
             "items_seen": stats.items_returned,
+            "last_error_page": stats.pages_processed,
             "changes_applied": stats.new_items + stats.modified_items + stats.deleted_items + stats.moved_documents + stats.renamed_folders,
         },
     )
@@ -765,6 +898,12 @@ def mark_delta_succeeded(connection: Connection, drive_id: str, delta_link: str,
                 items_seen = :items_seen,
                 changes_applied = :changes_applied,
                 error_message = NULL,
+                checkpoint_next_link = NULL,
+                checkpoint_page = NULL,
+                checkpoint_items_seen = NULL,
+                checkpoint_updated_at = NULL,
+                last_error_page = NULL,
+                last_error_message = NULL,
                 updated_at = NOW()
             WHERE drive_id = :drive_id
             """
@@ -778,12 +917,71 @@ def mark_delta_succeeded(connection: Connection, drive_id: str, delta_link: str,
     )
 
 
+def save_delta_checkpoint(connection: Connection, drive_id: str, next_link: str, page_number: int, items_seen: int) -> None:
+    connection.execute(
+        text(
+            """
+            UPDATE sharepoint_delta_state
+            SET checkpoint_next_link = :checkpoint_next_link,
+                checkpoint_page = :checkpoint_page,
+                checkpoint_items_seen = :checkpoint_items_seen,
+                checkpoint_updated_at = NOW(),
+                items_seen = :checkpoint_items_seen,
+                sync_status = 'initial_checkpointed',
+                updated_at = NOW()
+            WHERE drive_id = :drive_id
+            """
+        ),
+        {
+            "drive_id": drive_id,
+            "checkpoint_next_link": next_link,
+            "checkpoint_page": page_number,
+            "checkpoint_items_seen": items_seen,
+        },
+    )
+
+
+def clear_delta_checkpoint(connection: Connection, drive_id: str) -> None:
+    connection.execute(
+        text(
+            """
+            UPDATE sharepoint_delta_state
+            SET checkpoint_next_link = NULL,
+                checkpoint_page = NULL,
+                checkpoint_items_seen = NULL,
+                checkpoint_updated_at = NULL,
+                updated_at = NOW()
+            WHERE drive_id = :drive_id
+            """
+        ),
+        {"drive_id": drive_id},
+    )
+
+
+def mark_delta_failed_at_page(connection: Connection, drive_id: str, error: str, page_number: int | None) -> None:
+    connection.execute(
+        text(
+            """
+            UPDATE sharepoint_delta_state
+            SET sync_status = 'failed',
+                error_message = :error_message,
+                last_error_page = :last_error_page,
+                last_error_message = :error_message,
+                sync_completed_at = NOW(),
+                updated_at = NOW()
+            WHERE drive_id = :drive_id
+            """
+        ),
+        {"drive_id": drive_id, "error_message": error[:1000], "last_error_page": page_number},
+    )
+
+
 def fetch_existing_inventory(connection: Connection, drive_id: str, drive_item_id: str) -> dict[str, Any] | None:
     row = connection.execute(
         text(
             """
-            SELECT drive_id, drive_item_id, name, web_url, parent_path, relative_path, etag, ctag,
-                   size_bytes, last_modified_at, deleted_at
+            SELECT drive_id, drive_item_id, parent_item_id, name, web_url, parent_path, relative_path,
+                   is_folder, is_file, mime_type, size_bytes, etag, ctag, last_modified_at, deleted_at
             FROM sharepoint_drive_items
             WHERE drive_id = :drive_id AND drive_item_id = :drive_item_id
             """
@@ -793,43 +991,102 @@ def fetch_existing_inventory(connection: Connection, drive_id: str, drive_item_i
     return dict(row) if row else None
 
 
+def fetch_existing_inventory_map(connection: Connection, drive_id: str, drive_item_ids: list[str]) -> dict[str, dict[str, Any]]:
+    if not drive_item_ids:
+        return {}
+    rows = connection.execute(
+        text(
+            """
+            SELECT drive_id, drive_item_id, parent_item_id, name, web_url, parent_path, relative_path,
+                   is_folder, is_file, mime_type, size_bytes, etag, ctag, last_modified_at, deleted_at
+            FROM sharepoint_drive_items
+            WHERE drive_id = :drive_id AND drive_item_id = ANY(:drive_item_ids)
+            """
+        ),
+        {"drive_id": drive_id, "drive_item_ids": drive_item_ids},
+    ).mappings().all()
+    return {str(row["drive_item_id"]): dict(row) for row in rows}
+
+
+INVENTORY_UPSERT_SQL = text(
+    """
+    INSERT INTO sharepoint_drive_items (
+        drive_id, drive_item_id, parent_item_id, name, web_url, parent_path, relative_path,
+        is_folder, is_file, mime_type, size_bytes, etag, ctag, last_modified_at,
+        deleted_at, first_seen_at, last_seen_at, metadata_json, created_at, updated_at
+    )
+    VALUES (
+        :drive_id, :drive_item_id, :parent_item_id, :name, :web_url, :parent_path, :relative_path,
+        :is_folder, :is_file, :mime_type, :size_bytes, :etag, :ctag, :last_modified_at,
+        NULL, NOW(), NOW(), CAST(:metadata_json AS JSONB), NOW(), NOW()
+    )
+    ON CONFLICT (drive_id, drive_item_id) DO UPDATE SET
+        parent_item_id = EXCLUDED.parent_item_id,
+        name = EXCLUDED.name,
+        web_url = EXCLUDED.web_url,
+        parent_path = EXCLUDED.parent_path,
+        relative_path = EXCLUDED.relative_path,
+        is_folder = EXCLUDED.is_folder,
+        is_file = EXCLUDED.is_file,
+        mime_type = EXCLUDED.mime_type,
+        size_bytes = EXCLUDED.size_bytes,
+        etag = EXCLUDED.etag,
+        ctag = EXCLUDED.ctag,
+        last_modified_at = EXCLUDED.last_modified_at,
+        deleted_at = NULL,
+        last_seen_at = NOW(),
+        metadata_json = EXCLUDED.metadata_json,
+        updated_at = NOW()
+    """
+)
+
+
+def upsert_inventory_items_bulk(connection: Connection, rows: list[dict[str, Any]], *, force_updates: bool = False) -> InventoryUpsertResult:
+    if not rows:
+        return InventoryUpsertResult(change_kinds={})
+    drive_id = str(rows[0]["drive_id"])
+    previous_by_id = fetch_existing_inventory_map(connection, drive_id, [str(row["drive_item_id"]) for row in rows])
+    change_kinds: dict[str, str] = {}
+    rows_to_write: list[dict[str, Any]] = []
+    inserted = 0
+    updated = 0
+    skipped_unchanged = 0
+    for row in rows:
+        drive_item_id = str(row["drive_item_id"])
+        previous = previous_by_id.get(drive_item_id)
+        change_kind = changed_item_kind(previous, row)
+        if previous is None:
+            inserted += 1
+            rows_to_write.append(row)
+        elif force_updates:
+            updated += 1
+            rows_to_write.append(row)
+        elif inventory_row_unchanged(previous, row):
+            skipped_unchanged += 1
+        else:
+            updated += 1
+            rows_to_write.append(row)
+            if change_kind == "unchanged":
+                change_kind = "modified"
+        change_kinds[drive_item_id] = change_kind
+    if not rows_to_write:
+        return InventoryUpsertResult(change_kinds=change_kinds, inserted=inserted, updated=updated, skipped_unchanged=skipped_unchanged)
+    try:
+        connection.execute(INVENTORY_UPSERT_SQL, rows_to_write)
+    except Exception as exc:
+        sample = rows_to_write[0]
+        raise RuntimeError(
+            "Bulk sharepoint_drive_items upsert failed near "
+            f"drive_item_id={sample.get('drive_item_id')} name={sample.get('name')} path={sample.get('relative_path')}: {exc}"
+        ) from exc
+    return InventoryUpsertResult(change_kinds=change_kinds, inserted=inserted, updated=updated, skipped_unchanged=skipped_unchanged)
+
+
 def upsert_inventory_item(connection: Connection, row: dict[str, Any]) -> str:
     previous = fetch_existing_inventory(connection, row["drive_id"], row["drive_item_id"])
     change_kind = changed_item_kind(previous, row)
-    connection.execute(
-        text(
-            """
-            INSERT INTO sharepoint_drive_items (
-                drive_id, drive_item_id, parent_item_id, name, web_url, parent_path, relative_path,
-                is_folder, is_file, mime_type, size_bytes, etag, ctag, last_modified_at,
-                deleted_at, first_seen_at, last_seen_at, metadata_json, created_at, updated_at
-            )
-            VALUES (
-                :drive_id, :drive_item_id, :parent_item_id, :name, :web_url, :parent_path, :relative_path,
-                :is_folder, :is_file, :mime_type, :size_bytes, :etag, :ctag, :last_modified_at,
-                NULL, NOW(), NOW(), CAST(:metadata_json AS JSONB), NOW(), NOW()
-            )
-            ON CONFLICT (drive_id, drive_item_id) DO UPDATE SET
-                parent_item_id = EXCLUDED.parent_item_id,
-                name = EXCLUDED.name,
-                web_url = EXCLUDED.web_url,
-                parent_path = EXCLUDED.parent_path,
-                relative_path = EXCLUDED.relative_path,
-                is_folder = EXCLUDED.is_folder,
-                is_file = EXCLUDED.is_file,
-                mime_type = EXCLUDED.mime_type,
-                size_bytes = EXCLUDED.size_bytes,
-                etag = EXCLUDED.etag,
-                ctag = EXCLUDED.ctag,
-                last_modified_at = EXCLUDED.last_modified_at,
-                deleted_at = NULL,
-                last_seen_at = NOW(),
-                metadata_json = EXCLUDED.metadata_json,
-                updated_at = NOW()
-            """
-        ),
-        row,
-    )
+    if previous is None or not inventory_row_unchanged(previous, row):
+        connection.execute(INVENTORY_UPSERT_SQL, row)
     return change_kind
 
 
@@ -1311,6 +1568,9 @@ def process_delta_page(
     page: dict[str, Any],
     roots: list[str],
     stats: DeltaSyncStats,
+    slim_images: bool = True,
+    store_full_image_metadata: bool = False,
+    skip_unchanged_inventory: bool = True,
 ) -> dict[str, Any]:
     page_items = page.get("value", [])
     page_counts = {
@@ -1318,12 +1578,15 @@ def process_delta_page(
         "folders": 0,
         "files": 0,
         "deleted": 0,
-        "upserted": 0,
+        "inserted": 0,
+        "updated": 0,
+        "skipped_unchanged": 0,
         "documents_reconciled": 0,
     }
     changed_rows: list[dict[str, Any]] = []
     changed_folder_rows: list[dict[str, Any]] = []
     page_file_rows: list[dict[str, Any]] = []
+    inventory_rows: list[dict[str, Any]] = []
     deleted_ids: list[str] = []
     deleted_rows: list[dict[str, Any]] = []
     for item in page_items:
@@ -1339,7 +1602,7 @@ def process_delta_page(
             stats.deleted_items += 1
             page_counts["deleted"] += 1
             continue
-        row = item_inventory_row(drive_id, item)
+        row = item_inventory_row(drive_id, item, slim_images=slim_images, store_full_image_metadata=store_full_image_metadata)
         if row.get("is_folder"):
             page_counts["folders"] += 1
         if row.get("is_file"):
@@ -1347,8 +1610,18 @@ def process_delta_page(
         if not row["drive_item_id"]:
             stats.unresolved_items += 1
             continue
-        change_kind = upsert_inventory_item(connection, row)
-        page_counts["upserted"] += 1
+        inventory_rows.append(row)
+    inventory_result = upsert_inventory_items_bulk(connection, inventory_rows, force_updates=not skip_unchanged_inventory)
+    change_kinds = inventory_result.change_kinds
+    page_counts["inserted"] = inventory_result.inserted
+    page_counts["updated"] = inventory_result.updated
+    page_counts["skipped_unchanged"] = inventory_result.skipped_unchanged
+    stats.inventory_inserted += inventory_result.inserted
+    stats.inventory_updated += inventory_result.updated
+    stats.inventory_skipped_unchanged += inventory_result.skipped_unchanged
+    stats.inventory_deleted += page_counts["deleted"]
+    for row in inventory_rows:
+        change_kind = change_kinds.get(str(row["drive_item_id"]), "unchanged")
         if row.get("is_file"):
             page_file_rows.append(row)
         if not is_relevant_path(str(row.get("relative_path") or ""), roots):
@@ -1405,6 +1678,79 @@ def graph_delta_pages(client: GraphClient, start_url: str) -> tuple[list[dict[st
     return pages, delta_link, requests
 
 
+TRANSIENT_DB_ERROR_MARKERS = (
+    "ssl syscall error",
+    "could not receive data from server",
+    "connection closed",
+    "connection reset",
+    "operation timed out",
+    "timeout",
+    "server closed the connection",
+)
+
+
+def is_transient_db_error(exc: BaseException) -> bool:
+    if isinstance(exc, (OperationalError, DBAPIError)) and getattr(exc, "connection_invalidated", False):
+        return True
+    if isinstance(exc, OperationalError):
+        return True
+    text_value = str(exc).lower()
+    return any(marker in text_value for marker in TRANSIENT_DB_ERROR_MARKERS)
+
+
+def dispose_engine(engine: Engine) -> None:
+    dispose = getattr(engine, "dispose", None)
+    if callable(dispose):
+        dispose()
+
+
+def process_delta_page_with_retry(
+    *,
+    engine: Engine,
+    drive_id: str,
+    page: dict[str, Any],
+    roots: list[str],
+    stats: DeltaSyncStats,
+    page_number: int,
+    checkpoint_next_link: str | None,
+    slim_images: bool,
+    store_full_image_metadata: bool,
+    skip_unchanged_inventory: bool,
+    max_retries: int = 3,
+) -> dict[str, Any]:
+    attempt = 0
+    while True:
+        stats_snapshot = copy.deepcopy(stats.__dict__)
+        try:
+            with engine.begin() as conn:
+                page_counts = process_delta_page(
+                    conn,
+                    drive_id=drive_id,
+                    page=page,
+                    roots=roots,
+                    stats=stats,
+                    slim_images=slim_images,
+                    store_full_image_metadata=store_full_image_metadata,
+                    skip_unchanged_inventory=skip_unchanged_inventory,
+                )
+                if checkpoint_next_link:
+                    save_delta_checkpoint(conn, drive_id, checkpoint_next_link, page_number, stats.items_returned)
+                    stats.checkpoint_saved = True
+                    stats.checkpoint_page = page_number
+                    stats.checkpoint_items_seen = stats.items_returned
+            return page_counts
+        except Exception as exc:
+            stats.__dict__.update(stats_snapshot)
+            if not is_transient_db_error(exc) or attempt >= max_retries:
+                raise
+            attempt += 1
+            stats.db_retries += 1
+            wait_seconds = min(2 ** (attempt - 1), 8)
+            progress(f"Transient database error on delta page {page_number}; retry {attempt}/{max_retries} after {wait_seconds}s.")
+            dispose_engine(engine)
+            time.sleep(wait_seconds)
+
+
 def run_delta_sync(
     *,
     engine: Engine,
@@ -1412,9 +1758,13 @@ def run_delta_sync(
     target: SharePointTarget,
     config_path: Path | None = None,
     full_refresh: bool = False,
+    restart_initial_delta: bool = False,
     limit_pages: int | None = None,
     debug_progress: bool = False,
     database_url: str | None = None,
+    slim_images: bool = True,
+    store_full_image_metadata: bool = False,
+    force_inventory_updates: bool = False,
 ) -> DeltaSyncStats:
     start = time.monotonic()
     progress("Starting Microsoft Graph delta sync")
@@ -1432,6 +1782,7 @@ def run_delta_sync(
     lock_conn = engine.connect()
     locked = False
     stats = DeltaSyncStats(mode="initial", drive_id=drive_id)
+    last_attempted_page: int | None = None
     try:
         locked = try_advisory_lock(lock_conn, drive_id)
         if not locked:
@@ -1440,12 +1791,29 @@ def run_delta_sync(
         progress(f"Delta sync lock acquired for drive {drive_id}")
         with engine.begin() as conn:
             state = get_delta_state(conn, drive_id)
-            mode = "full_refresh" if full_refresh else "incremental" if state and state.get("delta_link") else "initial"
+            if restart_initial_delta and state and not state.get("delta_link"):
+                clear_delta_checkpoint(conn, drive_id)
+                state = {**state, "checkpoint_next_link": None, "checkpoint_page": None, "checkpoint_items_seen": None}
+                progress("Restarting initial delta from page 1; stored checkpoint was cleared.")
+            has_delta_link = bool(state and state.get("delta_link"))
+            has_checkpoint = bool(state and state.get("checkpoint_next_link"))
+            mode = "full_refresh" if full_refresh else "incremental" if has_delta_link else "initial_resume" if has_checkpoint else "initial"
             stats.mode = mode
             mark_delta_started(conn, site["id"], drive_id, target.library, mode)
         progress(f"Mode: {stats.mode} delta")
         progress(f"Previous delta state exists: {'yes' if state and state.get('delta_link') else 'no'}")
-        start_url = f"/drives/{drive_id}/root/delta" if full_refresh or not state or not state.get("delta_link") else str(state["delta_link"])
+        progress(f"Checkpoint state exists: {'yes' if state and state.get('checkpoint_next_link') and not state.get('delta_link') else 'no'}")
+        if stats.mode == "initial_resume":
+            checkpoint_page = state.get("checkpoint_page") if state else None
+            progress(f"Resuming initial delta from checkpoint page {checkpoint_page}")
+            start_url = str(state["checkpoint_next_link"])
+            stats.pages_processed = int(checkpoint_page or 0)
+            stats.items_returned = int(state.get("checkpoint_items_seen") or 0)
+            stats.checkpoint_saved = True
+            stats.checkpoint_page = int(checkpoint_page or 0)
+            stats.checkpoint_items_seen = stats.items_returned
+        else:
+            start_url = f"/drives/{drive_id}/root/delta" if full_refresh or not state or not state.get("delta_link") else str(state["delta_link"])
         url: str | None = start_url
         delta_link: str | None = None
         stopped_by_limit = False
@@ -1458,6 +1826,9 @@ def run_delta_sync(
             try:
                 page = client.get_json(url)
             except GraphError as exc:
+                if stats.mode == "initial_resume" and "410" in str(exc):
+                    progress("Stored initial delta checkpoint is no longer valid. Rerun with --restart-initial-delta to restart from page 1.")
+                    raise
                 if not retried_after_410 and "410" in str(exc):
                     progress("Saved delta state expired; starting fresh full delta enumeration.")
                     with engine.begin() as conn:
@@ -1467,23 +1838,39 @@ def run_delta_sync(
                     retried_after_410 = True
                     continue
                 raise
-            stats.pages_processed += 1
-            with engine.begin() as conn:
-                page_counts = process_delta_page(conn, drive_id=drive_id, page=page, roots=roots, stats=stats)
+            page_number = stats.pages_processed + 1
+            last_attempted_page = page_number
+            next_link = page.get("@odata.nextLink")
+            checkpoint_next_link = next_link if stats.mode in {"initial", "initial_resume", "full_refresh", "token_expired_full_refresh"} else None
+            page_counts = process_delta_page_with_retry(
+                engine=engine,
+                drive_id=drive_id,
+                page=page,
+                roots=roots,
+                stats=stats,
+                page_number=page_number,
+                checkpoint_next_link=checkpoint_next_link,
+                slim_images=slim_images,
+                store_full_image_metadata=store_full_image_metadata,
+                skip_unchanged_inventory=not force_inventory_updates,
+            )
+            stats.pages_processed = page_number
             stats.documents_marked_pending += page_counts["documents_reconciled"]
             elapsed = time.monotonic() - start
             progress(
                 "Delta page "
                 f"{stats.pages_processed}: items={page_counts['items']}, cumulative={stats.items_returned}, "
                 f"folders={page_counts['folders']}, files={page_counts['files']}, deleted={page_counts['deleted']}, "
-                f"sharepoint_drive_items_upserted={page_counts['upserted']}, "
-                f"documents_reconciled={page_counts['documents_reconciled']}, elapsed={elapsed:.1f}s"
+                f"inserted={page_counts['inserted']}, updated={page_counts['updated']}, "
+                f"skipped_unchanged={page_counts['skipped_unchanged']}, "
+                f"documents_reconciled={page_counts['documents_reconciled']}, "
+                f"checkpoint_saved={'yes' if checkpoint_next_link else 'no'}, elapsed={elapsed:.1f}s"
             )
             if debug_progress:
                 progress(f"  next page available: {'yes' if page.get('@odata.nextLink') else 'no'}")
                 progress(f"  final delta state on this page: {'yes' if page.get('@odata.deltaLink') else 'no'}")
             delta_link = page.get("@odata.deltaLink") or delta_link
-            url = page.get("@odata.nextLink")
+            url = next_link
 
         if stopped_by_limit and url:
             stats.partial = True
@@ -1499,7 +1886,7 @@ def run_delta_sync(
     except Exception as exc:
         with engine.begin() as conn:
             ensure_delta_tables(conn)
-            mark_delta_failed(conn, drive_id, str(exc))
+            mark_delta_failed_at_page(conn, drive_id, str(exc), last_attempted_page)
         raise
     except KeyboardInterrupt:
         progress("Delta sync interrupted")
@@ -1529,11 +1916,19 @@ def print_delta_stats(stats: DeltaSyncStats) -> None:
     print(f"Documents reconciled: {stats.documents_reconciled}")
     print(f"Documents marked pending: {stats.documents_marked_pending}")
     print(f"Documents marked deleted: {stats.documents_marked_deleted}")
+    print(f"Inventory inserted: {stats.inventory_inserted}")
+    print(f"Inventory updated: {stats.inventory_updated}")
+    print(f"Inventory skipped unchanged: {stats.inventory_skipped_unchanged}")
+    print(f"Inventory deleted: {stats.inventory_deleted}")
     print(f"Jobs affected: {stats.jobs_affected}")
     print(f"Jobs rescanned: {stats.jobs_rescanned}")
     print(f"Graph requests: {stats.graph_requests}")
     print(f"Throttling/retries: {stats.throttling_retries}")
+    print(f"Database retries: {stats.db_retries}")
     print(f"Unresolved items: {stats.unresolved_items}")
+    print(f"Checkpoint saved: {'yes' if stats.checkpoint_saved else 'no'}")
+    print(f"Checkpoint page: {stats.checkpoint_page}")
+    print(f"Checkpoint items seen: {stats.checkpoint_items_seen}")
     print(f"Final delta state saved: {'yes' if stats.delta_token_saved else 'no'}")
     print(f"Elapsed seconds: {stats.elapsed_seconds:.2f}")
     if stats.affected_job_ids:
@@ -1550,7 +1945,11 @@ def print_delta_status(engine: Engine) -> None:
                 """
                 SELECT drive_id, library_name, sync_status, sync_started_at, sync_completed_at,
                        last_successful_sync_at, items_seen, changes_applied,
-                       CASE WHEN delta_link IS NULL OR delta_link = '' THEN false ELSE true END AS has_delta_link
+                       checkpoint_page, checkpoint_items_seen, checkpoint_updated_at,
+                       last_error_page, last_error_message,
+                       (SELECT COUNT(*) FROM sharepoint_drive_items) AS total_inventory_rows,
+                       CASE WHEN delta_link IS NULL OR delta_link = '' THEN false ELSE true END AS has_delta_link,
+                       CASE WHEN checkpoint_next_link IS NULL OR checkpoint_next_link = '' THEN false ELSE true END AS has_checkpoint
                 FROM sharepoint_delta_state
                 ORDER BY updated_at DESC
                 """
@@ -1567,6 +1966,13 @@ def print_delta_status(engine: Engine) -> None:
         print(f"  Items seen: {row['items_seen']}")
         print(f"  Changes applied: {row['changes_applied']}")
         print(f"  Delta state stored: {'yes' if row['has_delta_link'] else 'no'}")
+        print(f"  Checkpoint stored: {'yes' if row['has_checkpoint'] else 'no'}")
+        print(f"  Checkpoint page: {row['checkpoint_page']}")
+        print(f"  Checkpoint items seen: {row['checkpoint_items_seen']}")
+        print(f"  Checkpoint updated at: {row['checkpoint_updated_at']}")
+        print(f"  Last error page: {row['last_error_page']}")
+        print(f"  Last error message: {row['last_error_message']}")
+        print(f"  Total inventory rows: {row['total_inventory_rows']}")
 
 
 def main() -> None:
@@ -1588,9 +1994,15 @@ def main() -> None:
     parser.add_argument("--xlsx", type=Path, default=Path("output/job_index.xlsx"))
     parser.add_argument("--delta", action="store_true", help="Use Microsoft Graph delta sync for metadata discovery.")
     parser.add_argument("--full-refresh", action="store_true", help="Force a fresh full delta enumeration without discarding existing inventory first.")
+    parser.add_argument("--restart-initial-delta", action="store_true", help="Discard an initial-delta checkpoint and restart initial enumeration from page 1. Does not delete inventory.")
     parser.add_argument("--limit-pages", type=int, help="Process only the first N delta pages for testing; does not save final delta state unless final page is reached.")
     parser.add_argument("--debug-progress", action="store_true", help="Print additional per-page delta progress details.")
     parser.add_argument("--delta-status", action="store_true", help="Show saved SharePoint delta synchronization state.")
+    parser.add_argument("--slim-images", dest="slim_images", action="store_true", default=True, help="Store lightweight metadata_json for image files during delta inventory. Default: true.")
+    parser.add_argument("--store-full-image-metadata", action="store_true", help="Store full raw Graph metadata_json for image files.")
+    inventory_group = parser.add_mutually_exclusive_group()
+    inventory_group.add_argument("--skip-unchanged-inventory", dest="force_inventory_updates", action="store_false", default=False, help="Skip rewriting unchanged sharepoint_drive_items rows. Default: true.")
+    inventory_group.add_argument("--force-inventory-updates", dest="force_inventory_updates", action="store_true", help="Rewrite inventory rows even when incoming Graph metadata is unchanged.")
     parser.add_argument("--reconcile-documents", action="store_true", help="Populate missing documents drive identifiers from sharepoint_drive_items inventory.")
     parser.add_argument("--debug-reconciliation", action="store_true", help="Print sample unmatched reconciliation candidates.")
     parser.add_argument("--config", type=Path, help="Batch scan roots YAML used to filter relevant delta items.")
@@ -1600,13 +2012,13 @@ def main() -> None:
     if args.delta_status:
         if not args.database_url:
             raise SystemExit("Set --database-url, DATABASE_URL, or NEON_DATABASE_URL.")
-        print_delta_status(create_engine(args.database_url, future=True))
+        print_delta_status(create_sharepoint_engine(args.database_url))
         return
 
     if args.reconcile_documents:
         if not args.database_url:
             raise SystemExit("Set --database-url, DATABASE_URL, or NEON_DATABASE_URL.")
-        engine = create_engine(args.database_url, future=True)
+        engine = create_sharepoint_engine(args.database_url)
         progress("Reconciling documents from SharePoint drive inventory")
         progress(f"Database target: {database_host_summary(args.database_url)}")
         with engine.begin() as conn:
@@ -1622,7 +2034,7 @@ def main() -> None:
     if args.delta:
         if not args.database_url:
             raise SystemExit("Set --database-url, DATABASE_URL, or NEON_DATABASE_URL.")
-        engine = create_engine(args.database_url, future=True)
+        engine = create_sharepoint_engine(args.database_url)
         try:
             stats = run_delta_sync(
                 engine=engine,
@@ -1630,9 +2042,13 @@ def main() -> None:
                 target=target,
                 config_path=args.config,
                 full_refresh=args.full_refresh,
+                restart_initial_delta=args.restart_initial_delta,
                 limit_pages=args.limit_pages,
                 debug_progress=args.debug_progress,
                 database_url=args.database_url,
+                slim_images=args.slim_images,
+                store_full_image_metadata=args.store_full_image_metadata,
+                force_inventory_updates=args.force_inventory_updates,
             )
         except KeyboardInterrupt:
             print("Delta synchronization interrupted. Previous valid delta token was preserved.")
