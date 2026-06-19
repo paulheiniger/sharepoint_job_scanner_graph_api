@@ -22,6 +22,8 @@ from .job_search import first_nonblank, normalize_search_text, tokenize_search_t
 
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".xlsm", ".txt", ".csv"}
 TEXT_EMPTY_THRESHOLD = 20
+MAX_XLSX_ROWS_PER_SHEET = 5000
+MAX_XLSX_COLUMNS_PER_SHEET = 120
 
 
 class DocumentAcquisitionError(RuntimeError):
@@ -395,6 +397,10 @@ def extract_docx(path: Path) -> ExtractionResult:
     return ExtractionResult(rows=rows, extraction_method="docx-xml")
 
 
+def _xlsx_cell_text(cell: Any) -> str | None:
+    return text_or_none(getattr(cell, "value", None))
+
+
 def extract_xlsx(path: Path) -> ExtractionResult:
     try:
         import openpyxl
@@ -403,33 +409,46 @@ def extract_xlsx(path: Path) -> ExtractionResult:
         raise RuntimeError("Install openpyxl to extract Excel content: pip install openpyxl") from exc
 
     wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+    formula_wb = openpyxl.load_workbook(path, data_only=False, read_only=True)
     rows: list[ExtractedContent] = []
-    for ws in wb.worksheets:
-        if getattr(ws, "sheet_state", "visible") != "visible":
-            continue
-        for row in ws.iter_rows():
-            values: list[tuple[int, str]] = []
-            row_number = row[0].row if row else None
-            for cell in row:
-                value = text_or_none(cell.value)
-                if value:
-                    values.append((cell.column, value))
-            if not values or row_number is None:
+    try:
+        for ws_index, ws in enumerate(wb.worksheets):
+            if getattr(ws, "sheet_state", "visible") != "visible":
                 continue
-            start_col = get_column_letter(values[0][0])
-            end_col = get_column_letter(values[-1][0])
-            cell_range = f"{start_col}{row_number}:{end_col}{row_number}"
-            text_content = " | ".join(f"{get_column_letter(col)}{row_number}: {value}" for col, value in values)
-            rows.append(
-                ExtractedContent(
-                    content_type="xlsx_row",
-                    source_locator=f"{ws.title}!{cell_range}",
-                    sheet_name=ws.title,
-                    cell_range=cell_range,
-                    row_number=row_number,
-                    text_content=text_content,
+            formula_ws = formula_wb.worksheets[ws_index]
+            max_row = min(ws.max_row or 0, MAX_XLSX_ROWS_PER_SHEET)
+            max_col = min(ws.max_column or 0, MAX_XLSX_COLUMNS_PER_SHEET)
+            if max_row <= 0 or max_col <= 0:
+                continue
+            formula_rows = formula_ws.iter_rows(max_row=max_row, max_col=max_col)
+            value_rows = ws.iter_rows(max_row=max_row, max_col=max_col)
+            for row_number, (row, formula_row) in enumerate(zip(value_rows, formula_rows), start=1):
+                values: list[tuple[int, str]] = []
+                for column_number, (cell, formula_cell) in enumerate(zip(row, formula_row), start=1):
+                    value = _xlsx_cell_text(cell)
+                    if value is None:
+                        value = _xlsx_cell_text(formula_cell)
+                    if value:
+                        values.append((column_number, value))
+                if not values:
+                    continue
+                start_col = get_column_letter(values[0][0])
+                end_col = get_column_letter(values[-1][0])
+                cell_range = f"{start_col}{row_number}:{end_col}{row_number}"
+                text_content = " | ".join(f"{get_column_letter(col)}{row_number}: {value}" for col, value in values)
+                rows.append(
+                    ExtractedContent(
+                        content_type="xlsx_row",
+                        source_locator=f"{ws.title}!{cell_range}",
+                        sheet_name=ws.title,
+                        cell_range=cell_range,
+                        row_number=row_number,
+                        text_content=text_content,
+                    )
                 )
-            )
+    finally:
+        wb.close()
+        formula_wb.close()
     return ExtractionResult(rows=rows, extraction_method="openpyxl")
 
 

@@ -171,6 +171,82 @@ def test_xlsx_worksheet_rows_include_cell_references(tmp_path: Path) -> None:
     assert "B2: 25" in rows[1].text_content
 
 
+def test_xlsx_sparse_worksheet_skips_empty_cells_safely(tmp_path: Path) -> None:
+    openpyxl = pytest.importorskip("openpyxl")
+    path = tmp_path / "sparse.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Sparse"
+    ws["A1"] = "Header"
+    ws["Z10"] = "Far value"
+    wb.save(path)
+
+    rows = de.extract_xlsx(path).rows
+
+    assert [row.row_number for row in rows] == [1, 10]
+    assert rows[1].source_locator == "Sparse!Z10:Z10"
+    assert "Z10: Far value" in rows[1].text_content
+
+
+def test_xlsx_merged_cells_do_not_crash(tmp_path: Path) -> None:
+    openpyxl = pytest.importorskip("openpyxl")
+    path = tmp_path / "merged.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Estimate"
+    ws.merge_cells("A1:D1")
+    ws["A1"] = "Merged Project Header"
+    ws["A3"] = "Labor"
+    ws["D3"] = 100
+    wb.save(path)
+
+    rows = de.extract_xlsx(path).rows
+
+    assert rows[0].source_locator == "Estimate!A1:A1"
+    assert "Merged Project Header" in rows[0].text_content
+    assert rows[1].source_locator == "Estimate!A3:D3"
+
+
+def test_xlsx_formula_cells_fall_back_to_formula_text(tmp_path: Path) -> None:
+    openpyxl = pytest.importorskip("openpyxl")
+    path = tmp_path / "formula.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Estimate"
+    ws["A1"] = "Quantity"
+    ws["B1"] = "Unit"
+    ws["C1"] = "Total"
+    ws["A2"] = 2
+    ws["B2"] = 5
+    ws["C2"] = "=A2*B2"
+    wb.save(path)
+
+    rows = de.extract_xlsx(path).rows
+
+    formula_row = rows[1]
+    assert formula_row.source_locator == "Estimate!A2:C2"
+    assert "C2: =A2*B2" in formula_row.text_content
+
+
+def test_xlsx_large_empty_print_area_is_bounded(tmp_path: Path) -> None:
+    openpyxl = pytest.importorskip("openpyxl")
+    from openpyxl.styles import PatternFill
+
+    path = tmp_path / "large-empty.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Estimate"
+    ws["A1"] = "Only useful cell"
+    ws.print_area = "A1:AZ10000"
+    ws["AZ10000"].fill = PatternFill(fill_type="solid", fgColor="FFFFFF")
+    wb.save(path)
+
+    rows = de.extract_xlsx(path).rows
+
+    assert len(rows) == 1
+    assert rows[0].source_locator == "Estimate!A1:A1"
+
+
 def test_content_id_prevents_duplicate_chunks() -> None:
     row = de.ExtractedContent(content_type="pdf_page", source_locator="page 1", page_number=1, text_content="Same")
     assert de.content_id_for("DOC", row) == de.content_id_for("DOC", row)

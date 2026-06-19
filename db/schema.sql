@@ -125,6 +125,32 @@ CREATE TABLE IF NOT EXISTS estimate_line_items (
     updated_at TIMESTAMPTZ DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS estimate_line_item_classifications (
+    line_item_id TEXT PRIMARY KEY,
+    job_id TEXT,
+    estimate_id TEXT,
+    source_file TEXT,
+    sheet_name TEXT,
+    row_number INTEGER,
+    raw_item_name TEXT,
+    raw_description TEXT,
+    normalized_item_name TEXT,
+    template_bucket TEXT,
+    template_section TEXT,
+    template_row_hint TEXT,
+    line_item_kind TEXT,
+    quantity NUMERIC,
+    unit TEXT,
+    unit_price NUMERIC,
+    line_total NUMERIC,
+    classification_confidence NUMERIC,
+    classification_reason TEXT,
+    needs_review BOOLEAN DEFAULT FALSE,
+    classifier_version TEXT,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS crew_schedule (
     schedule_id TEXT PRIMARY KEY,
     job_id TEXT REFERENCES jobs(job_id) ON DELETE CASCADE,
@@ -510,6 +536,11 @@ CREATE INDEX IF NOT EXISTS idx_jobs_customer ON jobs(customer);
 CREATE INDEX IF NOT EXISTS idx_estimates_job_id ON estimates(job_id);
 CREATE INDEX IF NOT EXISTS idx_line_items_job_id ON estimate_line_items(job_id);
 CREATE INDEX IF NOT EXISTS idx_line_items_estimate_id ON estimate_line_items(estimate_id);
+CREATE INDEX IF NOT EXISTS idx_estimate_line_item_classifications_job_id ON estimate_line_item_classifications(job_id);
+CREATE INDEX IF NOT EXISTS idx_estimate_line_item_classifications_estimate_id ON estimate_line_item_classifications(estimate_id);
+CREATE INDEX IF NOT EXISTS idx_estimate_line_item_classifications_template_bucket ON estimate_line_item_classifications(template_bucket);
+CREATE INDEX IF NOT EXISTS idx_estimate_line_item_classifications_line_item_kind ON estimate_line_item_classifications(line_item_kind);
+CREATE INDEX IF NOT EXISTS idx_estimate_line_item_classifications_needs_review ON estimate_line_item_classifications(needs_review);
 CREATE INDEX IF NOT EXISTS idx_crew_schedule_job_id ON crew_schedule(job_id);
 CREATE INDEX IF NOT EXISTS idx_daily_dispatch_date ON daily_dispatch(dispatch_date);
 CREATE INDEX IF NOT EXISTS idx_daily_dispatch_job_id ON daily_dispatch(job_id);

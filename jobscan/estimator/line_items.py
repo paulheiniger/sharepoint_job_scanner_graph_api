@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+import argparse
+import json
+import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from sqlalchemy import bindparam, create_engine, text
+from sqlalchemy.engine import Connection, Engine
 
+from jobscan.db_loader import ensure_primary_id, load_json_records
 from .rules import to_float
+
+CLASSIFIER_VERSION = "template-bucket-v1"
 
 TEMPLATE_BUCKETS = [
     "foam",
@@ -321,7 +330,12 @@ def summarize_similar_job_buckets(
             for _, row in similar_jobs.iterrows()
             if to_float(row.get("estimated_sqft"))
         }
-    classified = classify_line_items(filtered)
+    if {"template_bucket", "template_section", "classification_confidence", "needs_review"}.issubset(filtered.columns):
+        classified = filtered.copy()
+        if "line_total" not in classified.columns:
+            classified["line_total"] = classified.apply(_line_total, axis=1)
+    else:
+        classified = classify_line_items(filtered)
     classified["line_total"] = pd.to_numeric(classified["line_total"], errors="coerce").fillna(0)
     classified["estimated_sqft"] = classified["job_id"].astype(str).map(job_sqft)
     classified["cost_per_sqft"] = classified.apply(
@@ -365,3 +379,370 @@ def summarize_similar_job_buckets(
         "bucket_summary": bucket_summary,
         "common_items": common_items,
     }
+
+
+def _blank_to_none(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, float) and pd.isna(value):
+        return None
+    text_value = str(value).strip()
+    if not text_value or text_value.lower() in {"nan", "none", "null"}:
+        return None
+    return value
+
+
+def _to_int(value: Any) -> int | None:
+    number = to_float(value)
+    if number is None:
+        return None
+    return int(number)
+
+
+def _normalize_item_name(value: Any) -> str | None:
+    value = _blank_to_none(value)
+    if value is None:
+        return None
+    return " ".join(str(value).strip().lower().split())
+
+
+def _line_item_kind(template_section: str, row: dict[str, Any] | None = None) -> str:
+    if row:
+        item_text = " ".join(
+            str(row.get(column) or "")
+            for column in ("line_item_category", "line_item_name", "item_name", "description", "vendor", "notes")
+        ).lower()
+        if "subcontract" in item_text:
+            return "subcontractor"
+    return {
+        "materials": "material",
+        "labor": "labor",
+        "equipment": "equipment",
+        "travel": "travel",
+        "overhead_profit": "overhead_profit",
+        "other": "other",
+        "unknown": "unknown",
+    }.get(template_section, "unknown")
+
+
+def _template_row_hint(row: dict[str, Any]) -> str | None:
+    sheet_name = _blank_to_none(row.get("source_sheet") or row.get("sheet_name"))
+    row_number = _to_int(row.get("source_row") or row.get("row_number"))
+    if sheet_name and row_number is not None:
+        return f"{sheet_name}!{row_number}"
+    if row_number is not None:
+        return str(row_number)
+    return None
+
+
+def classification_row_from_line_item(row: dict[str, Any] | pd.Series) -> dict[str, Any]:
+    record = row.to_dict() if isinstance(row, pd.Series) else dict(row)
+    record = ensure_primary_id("line_items", record)
+    result = classify_template_line_item(record)
+    raw_item_name = _blank_to_none(record.get("line_item_name") or record.get("item_name"))
+    source_file = _blank_to_none(record.get("source_file") or record.get("estimate_file") or record.get("source_path"))
+    unit_price = to_float(record.get("unit_price"))
+    if unit_price is None:
+        unit_price = to_float(record.get("unit_cost"))
+    line_total = _line_total(record)
+    return {
+        "line_item_id": str(record["line_item_id"]),
+        "job_id": _blank_to_none(record.get("job_id")),
+        "estimate_id": _blank_to_none(record.get("estimate_id")),
+        "source_file": source_file,
+        "sheet_name": _blank_to_none(record.get("source_sheet") or record.get("sheet_name")),
+        "row_number": _to_int(record.get("source_row") or record.get("row_number")),
+        "raw_item_name": raw_item_name,
+        "raw_description": _blank_to_none(record.get("description")),
+        "normalized_item_name": _normalize_item_name(raw_item_name),
+        "template_bucket": result.template_bucket,
+        "template_section": result.template_section,
+        "template_row_hint": _template_row_hint(record),
+        "line_item_kind": _line_item_kind(result.template_section, record),
+        "quantity": to_float(record.get("quantity")),
+        "unit": _blank_to_none(record.get("unit")),
+        "unit_price": unit_price,
+        "line_total": line_total,
+        "classification_confidence": result.classification_confidence,
+        "classification_reason": result.classification_reason,
+        "needs_review": bool(result.needs_review),
+        "classifier_version": CLASSIFIER_VERSION,
+    }
+
+
+def classification_rows_from_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [classification_row_from_line_item(record) for record in records]
+
+
+CLASSIFICATION_COLUMNS = [
+    "line_item_id",
+    "job_id",
+    "estimate_id",
+    "source_file",
+    "sheet_name",
+    "row_number",
+    "raw_item_name",
+    "raw_description",
+    "normalized_item_name",
+    "template_bucket",
+    "template_section",
+    "template_row_hint",
+    "line_item_kind",
+    "quantity",
+    "unit",
+    "unit_price",
+    "line_total",
+    "classification_confidence",
+    "classification_reason",
+    "needs_review",
+    "classifier_version",
+]
+
+
+UPSERT_CLASSIFICATION_SQL = text(
+    """
+    INSERT INTO estimate_line_item_classifications (
+        line_item_id,
+        job_id,
+        estimate_id,
+        source_file,
+        sheet_name,
+        row_number,
+        raw_item_name,
+        raw_description,
+        normalized_item_name,
+        template_bucket,
+        template_section,
+        template_row_hint,
+        line_item_kind,
+        quantity,
+        unit,
+        unit_price,
+        line_total,
+        classification_confidence,
+        classification_reason,
+        needs_review,
+        classifier_version
+    )
+    VALUES (
+        :line_item_id,
+        :job_id,
+        :estimate_id,
+        :source_file,
+        :sheet_name,
+        :row_number,
+        :raw_item_name,
+        :raw_description,
+        :normalized_item_name,
+        :template_bucket,
+        :template_section,
+        :template_row_hint,
+        :line_item_kind,
+        :quantity,
+        :unit,
+        :unit_price,
+        :line_total,
+        :classification_confidence,
+        :classification_reason,
+        :needs_review,
+        :classifier_version
+    )
+    ON CONFLICT (line_item_id) DO UPDATE SET
+        job_id = excluded.job_id,
+        estimate_id = excluded.estimate_id,
+        source_file = excluded.source_file,
+        sheet_name = excluded.sheet_name,
+        row_number = excluded.row_number,
+        raw_item_name = excluded.raw_item_name,
+        raw_description = excluded.raw_description,
+        normalized_item_name = excluded.normalized_item_name,
+        template_bucket = excluded.template_bucket,
+        template_section = excluded.template_section,
+        template_row_hint = excluded.template_row_hint,
+        line_item_kind = excluded.line_item_kind,
+        quantity = excluded.quantity,
+        unit = excluded.unit,
+        unit_price = excluded.unit_price,
+        line_total = excluded.line_total,
+        classification_confidence = excluded.classification_confidence,
+        classification_reason = excluded.classification_reason,
+        needs_review = excluded.needs_review,
+        classifier_version = excluded.classifier_version,
+        updated_at = CURRENT_TIMESTAMP
+    """
+)
+
+
+def upsert_classification_rows(conn: Connection, rows: list[dict[str, Any]], batch_size: int = 1000) -> int:
+    if not rows:
+        return 0
+    total = 0
+    batch_size = max(batch_size, 1)
+    for start in range(0, len(rows), batch_size):
+        batch = rows[start : start + batch_size]
+        conn.execute(UPSERT_CLASSIFICATION_SQL, batch)
+        total += len(batch)
+    return total
+
+
+def fetch_estimate_line_item_records(conn: Connection, limit: int | None = None) -> list[dict[str, Any]]:
+    statement = """
+        SELECT
+            line_item_id,
+            estimate_id,
+            job_id,
+            estimate_file,
+            section,
+            line_item_category,
+            line_item_name,
+            description,
+            quantity,
+            unit,
+            unit_cost,
+            unit_price,
+            extended_cost,
+            labor_days,
+            crew_size,
+            labor_hours,
+            vendor,
+            notes,
+            source_sheet,
+            source_row
+        FROM estimate_line_items
+        ORDER BY job_id NULLS LAST, estimate_id NULLS LAST, source_sheet NULLS LAST, source_row NULLS LAST, line_item_id
+    """
+    params: dict[str, Any] = {}
+    if limit is not None:
+        statement += " LIMIT :limit"
+        params["limit"] = limit
+    return [dict(row) for row in conn.execute(text(statement), params).mappings().all()]
+
+
+def classification_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    bucket_counts = {key: count for key, count in sorted(pd.Series([row["template_bucket"] for row in rows]).value_counts().items())} if rows else {}
+    return {
+        "rows_classified": len(rows),
+        "rows_needing_review": sum(1 for row in rows if row.get("needs_review")),
+        "unknown_rows": sum(1 for row in rows if row.get("template_bucket") == "unknown"),
+        "by_bucket": bucket_counts,
+    }
+
+
+def classify_existing_line_items(engine: Engine, *, limit: int | None = None, batch_size: int = 1000) -> dict[str, Any]:
+    with engine.connect() as conn:
+        source_rows = fetch_estimate_line_item_records(conn, limit=limit)
+    classification_rows = classification_rows_from_records(source_rows)
+    with engine.begin() as conn:
+        rows_upserted = upsert_classification_rows(conn, classification_rows, batch_size=batch_size)
+    summary = classification_summary(classification_rows)
+    summary.update({"rows_read": len(source_rows), "rows_upserted": rows_upserted})
+    return summary
+
+
+def load_classified_line_items_for_job(engine: Engine, job_id: str) -> pd.DataFrame:
+    statement = text(
+        """
+        SELECT *
+        FROM estimate_line_item_classifications
+        WHERE job_id = :job_id
+        ORDER BY estimate_id, sheet_name, row_number, line_item_id
+        """
+    )
+    with engine.connect() as conn:
+        return pd.read_sql_query(statement, conn, params={"job_id": job_id})
+
+
+def load_classified_line_items_for_jobs(engine: Engine, job_ids: list[str]) -> pd.DataFrame:
+    clean_ids = [str(job_id) for job_id in job_ids if str(job_id).strip()]
+    if not clean_ids:
+        return pd.DataFrame()
+    statement = text(
+        """
+        SELECT *
+        FROM estimate_line_item_classifications
+        WHERE job_id IN :job_ids
+        ORDER BY job_id, estimate_id, sheet_name, row_number, line_item_id
+        """
+    ).bindparams(bindparam("job_ids", expanding=True))
+    with engine.connect() as conn:
+        return pd.read_sql_query(statement, conn, params={"job_ids": clean_ids})
+
+
+def load_classification_table_status(engine: Engine) -> dict[str, int]:
+    statement = text(
+        """
+        SELECT
+            COUNT(*) AS row_count,
+            COUNT(*) FILTER (WHERE needs_review) AS review_count,
+            COUNT(*) FILTER (WHERE template_bucket = 'unknown') AS unknown_count
+        FROM estimate_line_item_classifications
+        """
+    )
+    with engine.connect() as conn:
+        row = conn.execute(statement).mappings().first()
+    if not row:
+        return {"row_count": 0, "review_count": 0, "unknown_count": 0}
+    return {key: int(row.get(key) or 0) for key in ("row_count", "review_count", "unknown_count")}
+
+
+def bucket_summary_for_similar_jobs(classified: pd.DataFrame, similar_jobs: pd.DataFrame) -> dict[str, Any]:
+    return summarize_similar_job_buckets(classified, similar_jobs)
+
+
+def classify_file_to_dataframe(path: Path) -> pd.DataFrame:
+    records = load_json_records(path)
+    rows = classification_rows_from_records(records)
+    return pd.DataFrame(rows, columns=CLASSIFICATION_COLUMNS)
+
+
+def print_summary(summary: dict[str, Any]) -> None:
+    print(f"Rows read: {summary.get('rows_read', summary.get('rows_classified', 0))}")
+    print(f"Rows classified: {summary.get('rows_classified', 0)}")
+    if "rows_upserted" in summary:
+        print(f"Rows upserted: {summary['rows_upserted']}")
+    print(f"Rows needing review: {summary.get('rows_needing_review', 0)}")
+    print(f"Unknown rows: {summary.get('unknown_rows', 0)}")
+    print("Rows by bucket:")
+    for bucket, count in (summary.get("by_bucket") or {}).items():
+        print(f"  {bucket}: {count}")
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Classify Spray-Tec estimate line items into template buckets.")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--classify-existing", action="store_true", help="Classify existing estimate_line_items rows in Postgres.")
+    mode.add_argument("--classify-file", type=Path, help="Classify a local output/estimate_line_items.json file.")
+    parser.add_argument("--database-url", default=os.getenv("DATABASE_URL") or os.getenv("NEON_DATABASE_URL"), help="Postgres URL for --classify-existing.")
+    parser.add_argument("--out", type=Path, help="CSV output path for --classify-file.")
+    parser.add_argument("--limit", type=int, help="Optional row limit for testing.")
+    parser.add_argument("--batch-size", type=int, default=1000, help="Rows per classification upsert batch.")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    if args.classify_existing:
+        if not args.database_url:
+            raise SystemExit("Set --database-url, DATABASE_URL, or NEON_DATABASE_URL.")
+        engine = create_engine(args.database_url, future=True)
+        summary = classify_existing_line_items(engine, limit=args.limit, batch_size=args.batch_size)
+        print_summary(summary)
+        return 0
+
+    output_path = args.out
+    if output_path is None:
+        raise SystemExit("--out is required with --classify-file.")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    df = classify_file_to_dataframe(args.classify_file)
+    if args.limit is not None:
+        df = df.head(args.limit)
+    df.to_csv(output_path, index=False)
+    summary = classification_summary(df.to_dict(orient="records"))
+    summary["rows_read"] = len(df)
+    print_summary(summary)
+    print(f"Wrote classification CSV: {output_path}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

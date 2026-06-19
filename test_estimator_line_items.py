@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import pandas as pd
+from sqlalchemy import create_engine, text
 
+from jobscan.estimator.data_loader import load_estimator_data
 from jobscan.estimator.line_items import (
+    classification_row_from_line_item,
+    classify_existing_line_items,
     classify_line_items,
+    load_classified_line_items_for_job,
     classify_template_line_item,
     summarize_classified_by_job,
     summarize_similar_job_buckets,
@@ -123,3 +128,166 @@ def test_similar_job_bucket_summary() -> None:
     assert coating["frequency"] == 2
     assert coating["median_cost_per_sqft"] == 1
     assert not summary["classified_rows"].empty
+
+
+def test_classification_row_has_template_fields() -> None:
+    classified = classification_row_from_line_item(
+        row(
+            "High solids silicone coating",
+            line_item_id="LI1",
+            estimate_id="E1",
+            source_sheet="Estimate",
+            source_row=28,
+            extended_cost=123.45,
+        )
+    )
+
+    assert classified["line_item_id"] == "LI1"
+    assert classified["template_bucket"] == "coating"
+    assert classified["line_item_kind"] == "material"
+    assert classified["template_row_hint"] == "Estimate!28"
+    assert classified["line_total"] == 123.45
+
+
+def test_subcontractor_line_item_kind() -> None:
+    classified = classification_row_from_line_item(row("Subcontractor crane assist", description="subcontracted lift support"))
+
+    assert classified["line_item_kind"] == "subcontractor"
+
+
+def create_sqlite_classification_schema(engine) -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE estimate_line_items (
+                    line_item_id TEXT PRIMARY KEY,
+                    estimate_id TEXT,
+                    job_id TEXT,
+                    estimate_file TEXT,
+                    section TEXT,
+                    line_item_category TEXT,
+                    line_item_name TEXT,
+                    description TEXT,
+                    quantity NUMERIC,
+                    unit TEXT,
+                    unit_cost NUMERIC,
+                    unit_price NUMERIC,
+                    extended_cost NUMERIC,
+                    labor_days NUMERIC,
+                    crew_size NUMERIC,
+                    labor_hours NUMERIC,
+                    vendor TEXT,
+                    notes TEXT,
+                    source_sheet TEXT,
+                    source_row INTEGER,
+                    raw TEXT
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE estimate_line_item_classifications (
+                    line_item_id TEXT PRIMARY KEY,
+                    job_id TEXT,
+                    estimate_id TEXT,
+                    source_file TEXT,
+                    sheet_name TEXT,
+                    row_number INTEGER,
+                    raw_item_name TEXT,
+                    raw_description TEXT,
+                    normalized_item_name TEXT,
+                    template_bucket TEXT,
+                    template_section TEXT,
+                    template_row_hint TEXT,
+                    line_item_kind TEXT,
+                    quantity NUMERIC,
+                    unit TEXT,
+                    unit_price NUMERIC,
+                    line_total NUMERIC,
+                    classification_confidence NUMERIC,
+                    classification_reason TEXT,
+                    needs_review BOOLEAN DEFAULT FALSE,
+                    classifier_version TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        )
+
+
+def test_database_upsert_preserves_raw_line_items_and_is_idempotent() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    create_sqlite_classification_schema(engine)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO estimate_line_items (
+                    line_item_id, estimate_id, job_id, estimate_file, section,
+                    line_item_name, quantity, unit, unit_price, extended_cost,
+                    source_sheet, source_row, raw
+                )
+                VALUES (
+                    'LI1', 'E1', 'J1', 'Estimate.xlsx', 'Materials',
+                    'Silicone coating', 10, 'gal', 30, 300,
+                    'Estimate', 28, '{"original": true}'
+                )
+                """
+            )
+        )
+
+    first = classify_existing_line_items(engine)
+    second = classify_existing_line_items(engine)
+
+    assert first["rows_upserted"] == 1
+    assert second["rows_upserted"] == 1
+    with engine.connect() as conn:
+        raw_value = conn.execute(text("SELECT raw FROM estimate_line_items WHERE line_item_id = 'LI1'")).scalar_one()
+        count = conn.execute(text("SELECT COUNT(*) FROM estimate_line_item_classifications")).scalar_one()
+        bucket = conn.execute(text("SELECT template_bucket FROM estimate_line_item_classifications")).scalar_one()
+    assert raw_value == '{"original": true}'
+    assert count == 1
+    assert bucket == "coating"
+
+
+def test_load_classified_line_items_for_job() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    create_sqlite_classification_schema(engine)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO estimate_line_item_classifications (
+                    line_item_id, job_id, estimate_id, raw_item_name, template_bucket,
+                    template_section, line_item_kind, line_total, needs_review
+                )
+                VALUES ('LI1', 'J1', 'E1', 'Primer', 'primer', 'materials', 'material', 120, false)
+                """
+            )
+        )
+
+    df = load_classified_line_items_for_job(engine, "J1")
+
+    assert len(df) == 1
+    assert df.iloc[0]["template_bucket"] == "primer"
+
+
+def test_database_first_loader_falls_back_to_local_files(tmp_path) -> None:
+    output = tmp_path / "output"
+    output.mkdir()
+    (output / "job_index.json").write_text('[{"job_id": "J1", "job_name": "Fallback Job"}]', encoding="utf-8")
+    (output / "estimate_line_items.json").write_text(
+        '[{"job_id": "J1", "line_item_name": "Silicone coating", "extended_cost": 100}]',
+        encoding="utf-8",
+    )
+
+    data = load_estimator_data(tmp_path, database_url="sqlite:///:memory:", prefer_database=True)
+
+    assert len(data.jobs) == 1
+    assert len(data.line_items) == 1
+    assert len(data.classified_line_items) == 1
+    assert any("using local staging files" in warning for warning in data.warnings)

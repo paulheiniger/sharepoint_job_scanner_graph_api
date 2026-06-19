@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from sqlalchemy import text
 
+from jobscan.db_connections import create_resilient_engine
 from .schemas import DEFAULT_STAGE_FILES, PRICING_CANDIDATES, EstimatorData
 
 
@@ -29,8 +32,8 @@ def read_csv_dataframe(path: Path) -> pd.DataFrame:
     return pd.read_csv(path)
 
 
-def load_estimator_data(base_dir: Path | str | None = None) -> EstimatorData:
-    root = Path(base_dir or Path.cwd())
+def _load_estimator_data_from_local_files(root: Path) -> EstimatorData:
+    root = Path(root)
     data = EstimatorData()
 
     for attr, relative_path in DEFAULT_STAGE_FILES.items():
@@ -57,4 +60,56 @@ def load_estimator_data(base_dir: Path | str | None = None) -> EstimatorData:
 
     if data.pricing.empty:
         data.warnings.append("No current pricing export found.")
+    if not data.line_items.empty:
+        try:
+            from .line_items import classify_line_items
+
+            data.classified_line_items = classify_line_items(data.line_items)
+        except Exception as exc:
+            data.warnings.append(f"Could not classify local estimate line items: {type(exc).__name__}")
     return data
+
+
+def _read_sql_dataframe(connection: Any, query: str) -> pd.DataFrame:
+    return pd.read_sql_query(text(query), connection)
+
+
+def load_estimator_data_from_database(database_url: str) -> EstimatorData:
+    engine = create_resilient_engine(database_url)
+    data = EstimatorData()
+    queries = {
+        "jobs": "SELECT * FROM jobs",
+        "estimates": "SELECT * FROM estimates",
+        "line_items": "SELECT * FROM estimate_line_items",
+        "classified_line_items": "SELECT * FROM estimate_line_item_classifications",
+        "tracking_summary": "SELECT * FROM job_tracking_summary",
+        "tracking_daily": "SELECT * FROM job_tracking_daily_entries",
+        "pricing": "SELECT * FROM pricing_catalog WHERE COALESCE(is_current, true) = true",
+    }
+    with engine.connect() as connection:
+        for attr, query in queries.items():
+            setattr(data, attr, _read_sql_dataframe(connection, query))
+    data.source_files_used.append("Postgres database")
+    if data.classified_line_items.empty:
+        data.warnings.append(
+            "estimate_line_item_classifications is empty; run python -m jobscan.estimator.line_items --classify-existing."
+        )
+    return data
+
+
+def load_estimator_data(
+    base_dir: Path | str | None = None,
+    *,
+    database_url: str | None = None,
+    prefer_database: bool = False,
+) -> EstimatorData:
+    root = Path(base_dir or Path.cwd())
+    resolved_database_url = database_url or os.getenv("DATABASE_URL") or os.getenv("NEON_DATABASE_URL")
+    if prefer_database and resolved_database_url:
+        try:
+            return load_estimator_data_from_database(resolved_database_url)
+        except Exception:
+            data = _load_estimator_data_from_local_files(root)
+            data.warnings.insert(0, "Database estimator load failed; using local staging files.")
+            return data
+    return _load_estimator_data_from_local_files(root)

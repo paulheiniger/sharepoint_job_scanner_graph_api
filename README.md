@@ -507,11 +507,16 @@ python -m jobscan.document_index \
 python -m jobscan.db_loader --documents output/document_index.json
 ```
 
-Retry one PDF or a limited pending batch after identifiers are present:
+Retry one PDF/XLSX document or a limited pending batch after identifiers are present:
 
 ```bash
 python -m jobscan.document_extraction \
-  --document-id "<PDF_DOCUMENT_ID>" \
+  --document-id "<DOCUMENT_ID>" \
+  --force \
+  --database-url "$DATABASE_URL"
+
+python -m jobscan.document_extraction \
+  --document-id "<XLSX_ESTIMATE_DOCUMENT_ID>" \
   --force \
   --database-url "$DATABASE_URL"
 
@@ -800,7 +805,7 @@ Current pricing rule for future estimator work: new estimates should use current
 
 ## Estimator prototype
 
-The Streamlit dashboard includes an **Estimator Prototype** page. This is an early planning aid, not a production estimating system. It uses deterministic rules plus local staging files created by the scanner:
+The Streamlit dashboard includes an **Estimator Prototype** page. This is an early planning aid, not a production estimating system. It uses deterministic rules plus database history when available, with local staging files created by the scanner as a development fallback:
 
 - `output/job_index.json`
 - `output/estimate_summary.json`
@@ -815,6 +820,24 @@ The page accepts rough project notes and optional structured overrides, then sug
 The decision-tree layer turns project conditions into scope and assumption changes before similar jobs are used for calibration. For example, rusted metal roofs can add fastener/seam treatment and primer review, warranty targets adjust wet-mil assumptions, poor condition raises prep review, and high access or many penetrations increase labor modifiers. Similar historical jobs remain supporting evidence, not the sole estimating logic.
 
 Historical estimate line items are also classified into template-aware buckets that match the real workbook structure: `foam`, `coating`, `thinner`, `granules`, `primer`, `caulk_sealant`, `seams_misc`, `penetrations`, `hvac_units`, `drains`, `board_stock`, `fasteners`, `plates`, `dumpsters`, `lift`, `delivery_fee`, `fabric`, `edge_metal`, `gutter`, `downspouts`, `roof_hatch`, `scuppers`, `curbs`, `ladders`, `pitch_pockets`, `generator`, `freight`, `sales_inspection_trips`, `truck_expense`, labor task buckets, `meals_lodging`, `overhead_profit`, `other`, and `unknown`. Classification is transparent and rule-based using item names, descriptions, units, sections, and template source rows. Unknown or ambiguous rows, priced rows with unclear descriptions, and important material rows missing quantity/unit are flagged for review.
+
+For deployed Streamlit, store these classifications in Postgres:
+
+```bash
+psql "$NEON_DATABASE_URL" -f db/add_estimate_line_item_classifications.sql
+
+python -m jobscan.estimator.line_items \
+  --classify-existing \
+  --database-url "$NEON_DATABASE_URL"
+```
+
+For local development without a database, write a reviewable CSV from the staging file:
+
+```bash
+python -m jobscan.estimator.line_items \
+  --classify-file output/estimate_line_items.json \
+  --out output/estimate_line_item_classifications.csv
+```
 
 The prototype can also generate a filled draft copy of the Spray-Tec estimate workbook template at `data/estimate_samples/Estimate - Full Turnkey.xlsx`. The original template is never overwritten. The fill layer writes mapped input cells on the `Estimate` sheet, preserves formula cells, leaves `People` and `Materials` lookup tabs intact, and saves generated drafts under `output/estimates/` for estimator review.
 

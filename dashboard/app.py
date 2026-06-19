@@ -3410,7 +3410,7 @@ def pricing_catalog_page() -> None:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_estimator_data_cached():
-    return load_estimator_data(Path.cwd())
+    return load_estimator_data(Path.cwd(), database_url=DATABASE_URL, prefer_database=True)
 
 
 def dataframe_from_records(records: list[dict[str, Any]]) -> pd.DataFrame:
@@ -3442,7 +3442,7 @@ def estimate_export_payload(result: dict[str, Any]) -> dict[str, Any]:
 
 def estimator_prototype_page() -> None:
     st.title("Estimator Prototype")
-    st.caption("Prototype only. Uses local staging files, deterministic rules, and historical estimate patterns. Estimator review is required before quoting.")
+    st.caption("Prototype only. Uses database history when available, local staging files as fallback, deterministic rules, and historical estimate patterns. Estimator review is required before quoting.")
 
     data = load_estimator_data_cached()
     with st.expander("Source staging files", expanded=False):
@@ -3454,6 +3454,7 @@ def estimator_prototype_page() -> None:
                 "jobs": len(data.jobs),
                 "estimates": len(data.estimates),
                 "line_items": len(data.line_items),
+                "classified_line_items": len(data.classified_line_items),
                 "tracking_summary": len(data.tracking_summary),
                 "tracking_daily": len(data.tracking_daily),
                 "pricing": len(data.pricing),

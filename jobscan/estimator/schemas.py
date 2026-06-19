@@ -11,6 +11,7 @@ class EstimatorData:
     jobs: pd.DataFrame = field(default_factory=pd.DataFrame)
     estimates: pd.DataFrame = field(default_factory=pd.DataFrame)
     line_items: pd.DataFrame = field(default_factory=pd.DataFrame)
+    classified_line_items: pd.DataFrame = field(default_factory=pd.DataFrame)
     tracking_summary: pd.DataFrame = field(default_factory=pd.DataFrame)
     tracking_daily: pd.DataFrame = field(default_factory=pd.DataFrame)
     pricing: pd.DataFrame = field(default_factory=pd.DataFrame)
