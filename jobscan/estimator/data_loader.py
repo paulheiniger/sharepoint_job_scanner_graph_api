@@ -104,8 +104,8 @@ def load_estimator_data_from_database(database_url: str) -> EstimatorData:
 
 def load_estimator_data(
     base_dir: Path | str | None = None,
-    *,
     database_url: str | None = None,
+    *,
     prefer_database: bool = False,
 ) -> EstimatorData:
     root = Path(base_dir or Path.cwd())
