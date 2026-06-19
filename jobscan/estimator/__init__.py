@@ -1,6 +1,6 @@
 """Historical-data-backed estimator prototype helpers."""
 
-__all__ = ["build_estimate", "extract_scope", "load_estimator_data"]
+__all__ = ["build_estimate", "estimate_from_field_notes", "extract_scope", "load_estimator_data"]
 
 
 def __getattr__(name: str):
@@ -12,6 +12,10 @@ def __getattr__(name: str):
         from .rules import extract_scope
 
         return extract_scope
+    if name == "estimate_from_field_notes":
+        from .field_estimator import estimate_from_field_notes
+
+        return estimate_from_field_notes
     if name == "load_estimator_data":
         from .data_loader import load_estimator_data
 

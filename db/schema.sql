@@ -357,12 +357,56 @@ CREATE TABLE IF NOT EXISTS document_content (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS estimate_template_rows (
+    template_row_id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL,
+    job_id TEXT,
+    source_file TEXT,
+    sheet_name TEXT,
+    row_number INTEGER,
+    cell_range TEXT,
+    template_bucket TEXT,
+    template_section TEXT,
+    line_item_kind TEXT,
+    row_label TEXT,
+    raw_text TEXT,
+    cell_values JSONB,
+    formula_cells JSONB,
+    selected_item_name TEXT,
+    quantity NUMERIC,
+    unit TEXT,
+    unit_price NUMERIC,
+    estimated_units NUMERIC,
+    estimated_cost NUMERIC,
+    days NUMERIC,
+    crew_size NUMERIC,
+    total_hours NUMERIC,
+    daily_rate NUMERIC,
+    trips NUMERIC,
+    round_trip_miles NUMERIC,
+    cost_per_mile NUMERIC,
+    warranty_years NUMERIC,
+    overhead_pct NUMERIC,
+    profit_pct NUMERIC,
+    parsed_confidence NUMERIC,
+    needs_review BOOLEAN DEFAULT FALSE,
+    parser_version TEXT,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
 CREATE INDEX IF NOT EXISTS idx_document_content_document_id ON document_content(document_id);
 CREATE INDEX IF NOT EXISTS idx_document_content_job_id ON document_content(job_id);
 CREATE INDEX IF NOT EXISTS idx_document_content_page_number ON document_content(page_number);
 CREATE INDEX IF NOT EXISTS idx_document_content_sheet_name ON document_content(sheet_name);
 CREATE INDEX IF NOT EXISTS idx_document_content_content_type ON document_content(content_type);
 CREATE INDEX IF NOT EXISTS idx_documents_extraction_status ON documents(extraction_status);
+CREATE INDEX IF NOT EXISTS idx_estimate_template_rows_document_id ON estimate_template_rows(document_id);
+CREATE INDEX IF NOT EXISTS idx_estimate_template_rows_job_id ON estimate_template_rows(job_id);
+CREATE INDEX IF NOT EXISTS idx_estimate_template_rows_sheet_row ON estimate_template_rows(sheet_name, row_number);
+CREATE INDEX IF NOT EXISTS idx_estimate_template_rows_template_bucket ON estimate_template_rows(template_bucket);
+CREATE INDEX IF NOT EXISTS idx_estimate_template_rows_line_item_kind ON estimate_template_rows(line_item_kind);
+CREATE INDEX IF NOT EXISTS idx_estimate_template_rows_needs_review ON estimate_template_rows(needs_review);
 
 CREATE TABLE IF NOT EXISTS pricing_catalog (
     pricing_item_id TEXT PRIMARY KEY,

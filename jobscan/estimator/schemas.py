@@ -12,11 +12,69 @@ class EstimatorData:
     estimates: pd.DataFrame = field(default_factory=pd.DataFrame)
     line_items: pd.DataFrame = field(default_factory=pd.DataFrame)
     classified_line_items: pd.DataFrame = field(default_factory=pd.DataFrame)
+    template_rows: pd.DataFrame = field(default_factory=pd.DataFrame)
     tracking_summary: pd.DataFrame = field(default_factory=pd.DataFrame)
     tracking_daily: pd.DataFrame = field(default_factory=pd.DataFrame)
     pricing: pd.DataFrame = field(default_factory=pd.DataFrame)
     warnings: list[str] = field(default_factory=list)
     source_files_used: list[str] = field(default_factory=list)
+
+
+@dataclass
+class FieldNotesInput:
+    raw_notes: str
+    job_name: str | None = None
+    site_address: str | None = None
+    city: str | None = None
+    state: str | None = None
+    zip_code: str | None = None
+    estimated_sqft: float | None = None
+    substrate: str | None = None
+    roof_condition: str | None = None
+    coating_type: str | None = None
+    warranty_target_years: int | None = None
+    access_complexity: str | None = None
+    penetrations_complexity: str | None = None
+    insulation_present: bool | None = None
+    condensation_risk: bool | None = None
+    travel_origin: str = "1132 Equity Street, Shelbyville, KY"
+
+
+@dataclass
+class ParsedFieldNotes:
+    project_type: str = ""
+    division: str = ""
+    building_type: str = ""
+    substrate: str = ""
+    estimated_sqft: float | None = None
+    coating_type: str = ""
+    warranty_target_years: int | None = None
+    roof_condition: str = ""
+    access_complexity: str = ""
+    penetrations_complexity: str = ""
+    insulation_present: bool | None = None
+    condensation_risk: bool = False
+    city: str = ""
+    state: str = ""
+    missing_info: list[str] = field(default_factory=list)
+    confidence: float = 0.0
+
+
+@dataclass
+class EstimateRecommendation:
+    parsed_fields: dict
+    recommended_scope: list[str]
+    material_plan: list[dict]
+    labor_plan: list[dict]
+    travel_plan: dict
+    historical_calibration: dict
+    similar_examples: list[dict]
+    estimate_low: float
+    estimate_target: float
+    estimate_high: float
+    review_flags: list[str]
+    human_review_required: bool
+    draft_workbook_inputs: dict
 
 
 @dataclass(frozen=True)

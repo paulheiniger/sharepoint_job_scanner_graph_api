@@ -34,7 +34,7 @@ from jobscan.job_search import (
     requested_document_label,
     search_jobs,
 )
-from jobscan.estimator import build_estimate, load_estimator_data
+from jobscan.estimator import build_estimate, estimate_from_field_notes, load_estimator_data
 from jobscan.estimator.schemas import EstimatorAssumptions
 from jobscan.estimator.workbook_template import DEFAULT_TEMPLATE_PATH, fill_estimate_workbook
 
@@ -3454,6 +3454,7 @@ def estimator_prototype_page() -> None:
                 "jobs": len(data.jobs),
                 "estimates": len(data.estimates),
                 "line_items": len(data.line_items),
+                "template_rows": len(data.template_rows),
                 "classified_line_items": len(data.classified_line_items),
                 "tracking_summary": len(data.tracking_summary),
                 "tracking_daily": len(data.tracking_daily),
@@ -3506,6 +3507,66 @@ def estimator_prototype_page() -> None:
         "location": location,
         "target_wet_mils": target_wet_mils or None,
     }
+
+    st.subheader("Field Notes Estimate Recommendation")
+    with st.expander("Field notes recommendation overrides", expanded=False):
+        f1, f2, f3 = st.columns(3)
+        with f1:
+            field_job_name = st.text_input("Job name", key="field_estimator_job_name")
+            field_site_address = st.text_input("Address", key="field_estimator_site_address")
+        with f2:
+            field_city = st.text_input("City", value=location.split(",")[0] if location else "", key="field_estimator_city")
+            field_state = st.text_input("State", value="", key="field_estimator_state")
+        with f3:
+            field_warranty = st.number_input("Warranty target years", min_value=0, value=0, step=5, key="field_estimator_warranty")
+            field_sqft = st.number_input("Sqft override", min_value=0.0, value=surface_area or 0.0, step=500.0, key="field_estimator_sqft")
+    if st.button("Generate Estimate Recommendation", key="generate_field_estimate_recommendation"):
+        st.session_state["field_estimate_recommendation"] = estimate_from_field_notes(
+            notes,
+            {
+                "job_name": field_job_name,
+                "site_address": field_site_address,
+                "city": field_city,
+                "state": field_state,
+                "estimated_sqft": field_sqft or surface_area or None,
+                "substrate": substrate,
+                "roof_condition": roof_condition,
+                "coating_type": coating_type,
+                "warranty_target_years": field_warranty or None,
+                "access_complexity": access_complexity,
+            },
+            data=data,
+        )
+    field_recommendation = st.session_state.get("field_estimate_recommendation")
+    if field_recommendation:
+        metric_row(
+            [
+                ("Low", fmt_dollar(field_recommendation.estimate_low)),
+                ("Target", fmt_dollar(field_recommendation.estimate_target)),
+                ("High", fmt_dollar(field_recommendation.estimate_high)),
+                ("Review Required", "Yes" if field_recommendation.human_review_required else "No"),
+            ]
+        )
+        st.markdown("**Parsed Fields**")
+        st.dataframe(pd.DataFrame([field_recommendation.parsed_fields]), use_container_width=True, hide_index=True)
+        if field_recommendation.review_flags:
+            st.warning("\n".join(field_recommendation.review_flags))
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**Recommended Scope**")
+            show_table(dataframe_from_records([{"recommendation": item} for item in field_recommendation.recommended_scope]), ["recommendation"], height=180)
+        with c2:
+            st.markdown("**Travel Plan**")
+            st.dataframe(pd.DataFrame([field_recommendation.travel_plan]), use_container_width=True, hide_index=True)
+        st.markdown("**Material Plan**")
+        show_table(dataframe_from_records(field_recommendation.material_plan), ["item", "category", "quantity", "unit", "selected_price_source", "unit_price", "estimated_cost", "needs_review", "notes"], height=220)
+        st.markdown("**Labor Plan**")
+        show_table(dataframe_from_records(field_recommendation.labor_plan), ["task", "base_days", "adjusted_days", "crew_size", "total_hours", "estimated_cost", "evidence_count", "notes"], height=260)
+        with st.expander("Historical calibration and similar examples", expanded=False):
+            st.dataframe(pd.DataFrame([field_recommendation.historical_calibration]), use_container_width=True, hide_index=True)
+            show_table(dataframe_from_records(field_recommendation.similar_examples), ["job_id", "customer", "job_name", "estimated_sqft", "estimated_value", "price_per_sqft", "estimate_file", "similarity_score", "reason_matched"], height=260)
+        with st.expander("Draft workbook input preview", expanded=False):
+            st.json(field_recommendation.draft_workbook_inputs)
 
     assumptions = EstimatorAssumptions()
     result = build_estimate(notes, data, overrides, assumptions)

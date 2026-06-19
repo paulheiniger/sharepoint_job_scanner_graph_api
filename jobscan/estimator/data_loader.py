@@ -81,6 +81,7 @@ def load_estimator_data_from_database(database_url: str) -> EstimatorData:
         "jobs": "SELECT * FROM jobs",
         "estimates": "SELECT * FROM estimates",
         "line_items": "SELECT * FROM estimate_line_items",
+        "template_rows": "SELECT * FROM estimate_template_rows",
         "classified_line_items": "SELECT * FROM estimate_line_item_classifications",
         "tracking_summary": "SELECT * FROM job_tracking_summary",
         "tracking_daily": "SELECT * FROM job_tracking_daily_entries",
@@ -90,6 +91,10 @@ def load_estimator_data_from_database(database_url: str) -> EstimatorData:
         for attr, query in queries.items():
             setattr(data, attr, _read_sql_dataframe(connection, query))
     data.source_files_used.append("Postgres database")
+    if data.template_rows.empty:
+        data.warnings.append(
+            "estimate_template_rows is empty; run python -m jobscan.estimator.template_rows --parse-existing."
+        )
     if data.classified_line_items.empty:
         data.warnings.append(
             "estimate_line_item_classifications is empty; run python -m jobscan.estimator.line_items --classify-existing."

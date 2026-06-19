@@ -839,9 +839,87 @@ python -m jobscan.estimator.line_items \
   --out output/estimate_line_item_classifications.csv
 ```
 
+There are now two historical estimate row structures:
+
+- `estimate_template_rows` is the newer `document_content`-based parser for standard Spray-Tec XLSX estimate workbook templates. It reads extracted rows such as `A116: Pwash/Prep | B116: 4 | C116: 5...`, maps known workbook row numbers to template buckets, preserves formulas separately, and extracts structured material, labor, travel, warranty, overhead, profit, and total fields.
+- `estimate_line_item_classifications` is the older classifier built from the extracted `estimate_line_items` staging/table data. Keep it as a fallback for non-standard templates or older extraction outputs.
+
+Rows `173`-`180` on the standard `Estimate` sheet are parsed as flexible manual estimate adders. Estimators may type custom descriptions into column `A` such as `Misc. Materials`, `Misc. Insurance`, `Lift Rental`, or `Misc. Equipment`; amounts are usually in column `F`. These rows are parsed separately from standard material/labor rows, formulas in column `F` are preserved, and empty placeholder rows such as `Additional Amount w/o Markup` are skipped to avoid review noise.
+
+Apply and run the document-content template parser:
+
+```bash
+psql "$NEON_DATABASE_URL" -f db/add_estimate_template_rows.sql
+
+python -m jobscan.estimator.template_rows \
+  --parse-existing \
+  --database-url "$NEON_DATABASE_URL"
+```
+
+Parse a single extracted estimate workbook document:
+
+```bash
+python -m jobscan.estimator.template_rows \
+  --document-id "<DOCUMENT_ID>" \
+  --database-url "$NEON_DATABASE_URL"
+```
+
+Verify parsed template rows:
+
+```sql
+SELECT COUNT(*) FROM estimate_template_rows;
+
+SELECT template_bucket, line_item_kind, COUNT(*) AS rows
+FROM estimate_template_rows
+GROUP BY template_bucket, line_item_kind
+ORDER BY rows DESC;
+
+SELECT row_number, template_bucket, row_label, selected_item_name,
+       days, crew_size, total_hours, unit_price, estimated_units,
+       estimated_cost, needs_review
+FROM estimate_template_rows
+WHERE document_id = '<DOCUMENT_ID>'
+ORDER BY row_number;
+```
+
 The prototype can also generate a filled draft copy of the Spray-Tec estimate workbook template at `data/estimate_samples/Estimate - Full Turnkey.xlsx`. The original template is never overwritten. The fill layer writes mapped input cells on the `Estimate` sheet, preserves formula cells, leaves `People` and `Materials` lookup tabs intact, and saves generated drafts under `output/estimates/` for estimator review.
 
 Current approved pricing is preferred from the exported pricing catalog. Historical estimate line-item pricing is used only for calibration or fallback; any fallback is marked for pricing review. Missing square footage, missing location, ambiguous coating/foam assumptions, distant travel, and unavailable current pricing trigger human review warnings.
+
+### Field-notes estimator
+
+The first field-notes-to-estimate engine is available inside the Streamlit **Estimator Prototype** page. It accepts rough notes such as:
+
+```text
+Metal roof, about 12,000 sqft, rusted fasteners, wants 15-year warranty, lots of rooftop units, medium access, Louisville KY.
+```
+
+It returns parsed fields, missing information, recommended scope, material assumptions, labor assumptions, travel assumptions, historical calibration evidence, similar historical estimate examples, review flags, a low/target/high estimate range, and a draft workbook input plan. The result is an internal recommendation for estimator review, not a final customer-facing quote.
+
+Current data source hierarchy:
+
+1. `pricing_catalog` for current approved material pricing.
+2. `estimate_template_rows` for historical workbook-template calibration from extracted XLSX `document_content`.
+3. `estimate_line_item_classifications` as fallback evidence for older/non-standard line-item extraction.
+4. Local staging files only as a development fallback.
+
+Run the parser after document extraction, then open Streamlit:
+
+```bash
+python -m jobscan.estimator.template_rows \
+  --parse-existing \
+  --database-url "$NEON_DATABASE_URL"
+
+streamlit run dashboard/app.py
+```
+
+Limitations:
+
+- No external routing, geocoding, OCR, or LLM APIs are used.
+- Travel uses city/state distance buckets from `1132 Equity Street, Shelbyville, KY`.
+- Material pricing uses `pricing_catalog` first; historical fallback is flagged for review.
+- Labor calibration is strongest when `estimate_template_rows` has standard Spray-Tec workbook rows with labor days/hours/costs.
+- Workbook generation remains a draft/internal review step.
 
 Run locally:
 
