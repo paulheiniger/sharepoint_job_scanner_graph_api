@@ -13,7 +13,17 @@ def test_estimator_package_exports_dashboard_imports() -> None:
     assert callable(estimate_from_field_notes)
 
 
-def test_load_estimator_data_accepts_database_url_keyword(tmp_path: Path) -> None:
+def test_estimator_package_exports_field_notes_estimator() -> None:
+    assert build_estimate is not None
+    assert estimate_from_field_notes is not None
+    assert load_estimator_data is not None
+
+
+def test_load_estimator_data_accepts_database_url_keyword() -> None:
+    load_estimator_data(Path.cwd(), database_url=None)
+
+
+def test_load_estimator_data_accepts_database_url_keyword_with_missing_files(tmp_path: Path) -> None:
     data = load_estimator_data(tmp_path, database_url=None)
 
     assert data.jobs.empty

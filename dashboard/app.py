@@ -34,7 +34,12 @@ from jobscan.job_search import (
     requested_document_label,
     search_jobs,
 )
-from jobscan.estimator import build_estimate, load_estimator_data
+try:
+    from jobscan.estimator import build_estimate, estimate_from_field_notes, load_estimator_data
+except ImportError:
+    from jobscan.estimator import build_estimate, load_estimator_data
+
+    estimate_from_field_notes = None
 from jobscan.estimator.schemas import EstimatorAssumptions
 from jobscan.estimator.workbook_template import DEFAULT_TEMPLATE_PATH, fill_estimate_workbook
 
@@ -3414,13 +3419,9 @@ def load_estimator_data_cached():
 
 
 def optional_field_notes_estimator():
-    try:
-        from jobscan.estimator import estimate_from_field_notes
-
-        return estimate_from_field_notes, None
-    except Exception as exc:
-        logger.exception("field-notes estimator import failed")
-        return None, f"Field-notes estimator is temporarily unavailable: {type(exc).__name__}"
+    if estimate_from_field_notes is None:
+        return None, "Field notes estimator is not available in this deployment yet."
+    return estimate_from_field_notes, None
 
 
 def dataframe_from_records(records: list[dict[str, Any]]) -> pd.DataFrame:
@@ -3535,24 +3536,28 @@ def estimator_prototype_page() -> None:
             field_sqft = st.number_input("Sqft override", min_value=0.0, value=surface_area or 0.0, step=500.0, key="field_estimator_sqft")
     if st.button("Generate Estimate Recommendation", key="generate_field_estimate_recommendation"):
         if field_estimator_fn is None:
-            st.warning("Field-notes estimator could not be loaded. The rest of the Estimator Prototype remains available.")
+            st.warning("Field notes estimator is not available in this deployment yet.")
         else:
-            st.session_state["field_estimate_recommendation"] = field_estimator_fn(
-                notes,
-                {
-                    "job_name": field_job_name,
-                    "site_address": field_site_address,
-                    "city": field_city,
-                    "state": field_state,
-                    "estimated_sqft": field_sqft or surface_area or None,
-                    "substrate": substrate,
-                    "roof_condition": roof_condition,
-                    "coating_type": coating_type,
-                    "warranty_target_years": field_warranty or None,
-                    "access_complexity": access_complexity,
-                },
-                data=data,
-            )
+            try:
+                st.session_state["field_estimate_recommendation"] = field_estimator_fn(
+                    notes,
+                    {
+                        "job_name": field_job_name,
+                        "site_address": field_site_address,
+                        "city": field_city,
+                        "state": field_state,
+                        "estimated_sqft": field_sqft or surface_area or None,
+                        "substrate": substrate,
+                        "roof_condition": roof_condition,
+                        "coating_type": coating_type,
+                        "warranty_target_years": field_warranty or None,
+                        "access_complexity": access_complexity,
+                    },
+                    data=data,
+                )
+            except ImportError:
+                logger.exception("field-notes estimator became unavailable")
+                st.warning("Field notes estimator is not available in this deployment yet.")
     field_recommendation = st.session_state.get("field_estimate_recommendation")
     if field_recommendation:
         metric_row(
