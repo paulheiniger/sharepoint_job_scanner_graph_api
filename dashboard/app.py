@@ -34,6 +34,9 @@ from jobscan.job_search import (
     requested_document_label,
     search_jobs,
 )
+from jobscan.estimator import build_estimate, load_estimator_data
+from jobscan.estimator.schemas import EstimatorAssumptions
+from jobscan.estimator.workbook_template import DEFAULT_TEMPLATE_PATH, fill_estimate_workbook
 
 try:
     from streamlit_calendar import calendar
@@ -68,6 +71,14 @@ PRICING_EXPORT_COLUMNS = [
     "source_type",
     "notes",
 ]
+
+ESTIMATOR_SAMPLE_NOTES = {
+    "Metal roof silicone coating": "Metal roof, about 12,000 sqft, rusted fasteners, restaurant in Louisville, silicone coating, medium access.",
+    "Coated polyurethane foam roof": "Existing foam roof, about 18,000 sqft, 1.5 inch foam repairs, silicone top coat, commercial building in Lexington.",
+    "Spray foam insulation": "Spray foam insulation for warehouse walls, wall area 8,500 sqft, 2 inch foam, easy access in Shelbyville.",
+    "Roof repair": "Roof repair, about 3,000 sqft, leaks around penetrations, rusted metal panels, Louisville KY, difficult access.",
+    "Wall insulation": "Wall insulation, wall area 10,000 sqft, metal building, 2 inch spray foam, Cincinnati OH.",
+}
 
 
 def get_database_url() -> str:
@@ -3397,6 +3408,356 @@ def pricing_catalog_page() -> None:
         )
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def load_estimator_data_cached():
+    return load_estimator_data(Path.cwd())
+
+
+def dataframe_from_records(records: list[dict[str, Any]]) -> pd.DataFrame:
+    return pd.DataFrame(records) if records else pd.DataFrame()
+
+
+def estimate_export_payload(result: dict[str, Any]) -> dict[str, Any]:
+    payload = {
+        "scope": result.get("scope", {}),
+        "decision_tree": result.get("decision_tree", {}),
+        "calibration": result.get("calibration", {}),
+        "materials": result.get("materials", {}),
+        "labor": result.get("labor", {}),
+        "travel": result.get("travel", {}),
+        "estimate_range": result.get("estimate_range", {}),
+        "source_files_used": result.get("source_files_used", []),
+        "data_warnings": result.get("data_warnings", []),
+    }
+    similar = result.get("similar_jobs")
+    if isinstance(similar, pd.DataFrame):
+        payload["similar_jobs"] = similar.to_dict(orient="records")
+    template_summary = result.get("template_line_item_summary", {})
+    for key in ("bucket_summary", "common_items", "classified_rows"):
+        value = template_summary.get(key) if isinstance(template_summary, dict) else None
+        if isinstance(value, pd.DataFrame):
+            payload[f"template_{key}"] = value.to_dict(orient="records")
+    return payload
+
+
+def estimator_prototype_page() -> None:
+    st.title("Estimator Prototype")
+    st.caption("Prototype only. Uses local staging files, deterministic rules, and historical estimate patterns. Estimator review is required before quoting.")
+
+    data = load_estimator_data_cached()
+    with st.expander("Source staging files", expanded=False):
+        st.write("Files used:", data.source_files_used or [])
+        if data.warnings:
+            st.warning("\n".join(data.warnings))
+        st.write(
+            {
+                "jobs": len(data.jobs),
+                "estimates": len(data.estimates),
+                "line_items": len(data.line_items),
+                "tracking_summary": len(data.tracking_summary),
+                "tracking_daily": len(data.tracking_daily),
+                "pricing": len(data.pricing),
+            }
+        )
+
+    st.subheader("Project Notes")
+    sample_cols = st.columns(len(ESTIMATOR_SAMPLE_NOTES))
+    for column, (label, sample) in zip(sample_cols, ESTIMATOR_SAMPLE_NOTES.items()):
+        if column.button(label, key=f"estimator_sample_{label}"):
+            st.session_state["estimator_notes"] = sample
+
+    notes = st.text_area(
+        "Rough project notes",
+        key="estimator_notes",
+        height=120,
+        placeholder="Metal roof, about 12,000 sqft, rusted fasteners, restaurant in Louisville, silicone coating, medium access.",
+    )
+
+    with st.expander("Optional structured overrides", expanded=True):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            project_type = st.selectbox(
+                "Project type",
+                ["", "roof coating", "coated foam roof", "spray foam insulation", "roof repair", "wall insulation"],
+                key="estimator_project_type",
+            )
+            division = st.selectbox("Division", ["", "ROOFING", "FLOORING", "WALLS"], key="estimator_division")
+            surface_area = st.number_input("Surface area sqft", min_value=0.0, value=0.0, step=500.0, key="estimator_surface_area")
+        with c2:
+            substrate = st.selectbox("Substrate", ["", "metal", "concrete", "epdm", "tpo", "wood"], key="estimator_substrate")
+            coating_type = st.selectbox("Coating type", ["", "silicone", "acrylic", "urethane"], key="estimator_coating_type")
+            foam_thickness = st.number_input("Foam thickness inches", min_value=0.0, value=0.0, step=0.5, key="estimator_foam_thickness")
+        with c3:
+            roof_condition = st.selectbox("Roof condition", ["", "good", "fair", "poor/rusted"], key="estimator_roof_condition")
+            access_complexity = st.selectbox("Access complexity", ["", "low", "medium", "high"], key="estimator_access")
+            location = st.text_input("Location", key="estimator_location", placeholder="Louisville, KY")
+        target_wet_mils = st.number_input("Target warranty/coating wet mils", min_value=0.0, value=0.0, step=1.0, key="estimator_wet_mils")
+
+    overrides = {
+        "project_type": project_type,
+        "division": division,
+        "surface_area_sqft": surface_area or None,
+        "substrate": substrate,
+        "coating_type": coating_type,
+        "foam_thickness_inches": foam_thickness or None,
+        "roof_condition": roof_condition,
+        "access_complexity": access_complexity,
+        "location": location,
+        "target_wet_mils": target_wet_mils or None,
+    }
+
+    assumptions = EstimatorAssumptions()
+    result = build_estimate(notes, data, overrides, assumptions)
+    scope = result["scope"]
+    estimate_range = result["estimate_range"]
+    materials = result["materials"]
+    labor = result["labor"]
+    travel = result["travel"]
+    decision_tree = result.get("decision_tree", {})
+    calibration = result.get("calibration", {})
+
+    metric_row(
+        [
+            ("Estimate Low", fmt_dollar(estimate_range.get("estimate_low"))),
+            ("Estimate High", fmt_dollar(estimate_range.get("estimate_high"))),
+            ("Confidence", str(estimate_range.get("confidence") or "-").title()),
+            ("Human Review", "Yes" if estimate_range.get("human_review_required") else "No"),
+        ]
+    )
+
+    st.subheader("Extracted Fields")
+    extracted_cols = [
+        "project_type",
+        "division",
+        "building_type",
+        "substrate",
+        "surface_area_sqft",
+        "wall_area_sqft",
+        "coating_required",
+        "coating_type",
+        "foam_required",
+        "foam_thickness_inches",
+        "roof_condition",
+        "access_complexity",
+        "penetrations_complexity",
+        "prep_complexity",
+        "location",
+        "confidence",
+        "human_review_required",
+    ]
+    st.dataframe(pd.DataFrame([{column: scope.get(column) for column in extracted_cols}]), use_container_width=True, hide_index=True)
+
+    warning_messages = list(estimate_range.get("pricing_warnings") or []) + [f"Missing: {item}" for item in estimate_range.get("missing_info") or []]
+    if warning_messages:
+        st.warning("\n".join(warning_messages))
+
+    st.subheader("Decision Tree Results")
+    d1, d2 = st.columns(2)
+    with d1:
+        st.markdown("**Recommended Scope**")
+        scope_rows = [{"recommendation": item} for item in decision_tree.get("recommended_scope", [])]
+        show_table(dataframe_from_records(scope_rows), ["recommendation"], height=180)
+        st.markdown("**Human Review Flags**")
+        review_rows = [{"flag": item} for item in decision_tree.get("human_review_flags", [])]
+        if review_rows:
+            show_table(dataframe_from_records(review_rows), ["flag"], height=140)
+        else:
+            st.caption("No decision-tree review flags.")
+    with d2:
+        st.markdown("**Condition Flags**")
+        flags = decision_tree.get("condition_flags", {})
+        st.dataframe(pd.DataFrame([flags]) if flags else pd.DataFrame(), use_container_width=True, hide_index=True)
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown("**Material Assumptions**")
+        st.dataframe(pd.DataFrame([decision_tree.get("material_assumptions", {})]), use_container_width=True, hide_index=True)
+    with c2:
+        st.markdown("**Labor Modifiers**")
+        st.dataframe(pd.DataFrame([decision_tree.get("labor_modifiers", {})]), use_container_width=True, hide_index=True)
+    with c3:
+        st.markdown("**Crew Assumptions**")
+        st.dataframe(pd.DataFrame([decision_tree.get("crew_assumptions", {})]), use_container_width=True, hide_index=True)
+
+    with st.expander("Historical calibration evidence", expanded=False):
+        st.dataframe(pd.DataFrame([calibration]), use_container_width=True, hide_index=True)
+
+    st.subheader("Estimate Range")
+    range_df = pd.DataFrame(
+        [
+            {"cost_bucket": "Materials", "low": estimate_range.get("material_cost_low"), "high": estimate_range.get("material_cost_high")},
+            {"cost_bucket": "Labor", "low": estimate_range.get("labor_cost_low"), "high": estimate_range.get("labor_cost_high")},
+            {"cost_bucket": "Equipment", "low": estimate_range.get("equipment_cost_low"), "high": estimate_range.get("equipment_cost_high")},
+            {"cost_bucket": "Travel", "low": estimate_range.get("travel_cost_low"), "high": estimate_range.get("travel_cost_high")},
+            {"cost_bucket": "Subcontractor", "low": estimate_range.get("subcontractor_cost_low"), "high": estimate_range.get("subcontractor_cost_high")},
+            {"cost_bucket": "Overhead / Profit", "low": estimate_range.get("overhead_profit_low"), "high": estimate_range.get("overhead_profit_high")},
+            {"cost_bucket": "Total", "low": estimate_range.get("estimate_low"), "high": estimate_range.get("estimate_high")},
+        ]
+    )
+    st.dataframe(range_df, use_container_width=True, hide_index=True)
+    fig = px.bar(range_df[range_df["cost_bucket"] != "Total"], x="cost_bucket", y=["low", "high"], barmode="group", title="Rough Estimate Range by Cost Bucket")
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("Material Plan")
+    material_items = dataframe_from_records(materials.get("material_items") or [])
+    show_table(material_items, ["item", "quantity", "unit", "unit_price", "cost_low", "cost_high", "price_source_type", "needs_pricing_review", "notes"], height=220)
+
+    st.subheader("Labor / Crew")
+    st.dataframe(pd.DataFrame([labor]), use_container_width=True, hide_index=True)
+
+    st.subheader("Travel / Mobilization")
+    st.dataframe(pd.DataFrame([travel]), use_container_width=True, hide_index=True)
+
+    st.subheader("Similar Historical Jobs")
+    similar_jobs = result.get("similar_jobs")
+    if isinstance(similar_jobs, pd.DataFrame) and not similar_jobs.empty:
+        show_table(
+            similar_jobs,
+            [
+                "job_id",
+                "customer",
+                "job_name",
+                "division",
+                "pipeline_status",
+                "status",
+                "job_type",
+                "estimated_sqft",
+                "estimated_value",
+                "price_per_sqft",
+                "estimate_file",
+                "folder_url",
+                "similarity_score",
+                "reason_matched",
+            ],
+            height=360,
+        )
+    else:
+        show_empty("No similar historical jobs found from local staging files.")
+
+    st.subheader("Historical Line Item Patterns")
+    common_items = dataframe_from_records(result.get("line_item_patterns", {}).get("common_items", []))
+    show_table(common_items, ["estimate_category", "template_bucket", "line_item_category", "line_item_name", "unit", "count", "median_cost"], height=260)
+
+    st.subheader("Template Bucket Historical Summary")
+    template_summary = result.get("template_line_item_summary", {})
+    bucket_summary = template_summary.get("bucket_summary") if isinstance(template_summary, dict) else pd.DataFrame()
+    if isinstance(bucket_summary, pd.DataFrame) and not bucket_summary.empty:
+        show_table(
+            bucket_summary,
+            [
+                "template_bucket",
+                "frequency",
+                "median_cost_per_sqft",
+                "low_cost_per_sqft",
+                "high_cost_per_sqft",
+                "median_total_cost",
+                "needs_review_count",
+            ],
+            height=320,
+        )
+        likely_sections = sorted(
+            bucket_summary[bucket_summary["frequency"].fillna(0) > 0]["template_bucket"].dropna().astype(str).tolist()
+        )
+        st.caption("Likely template buckets to review/fill: " + ", ".join(likely_sections[:30]))
+    else:
+        show_empty("No template bucket summary available for the similar jobs.")
+
+    common_template_items = template_summary.get("common_items") if isinstance(template_summary, dict) else pd.DataFrame()
+    if isinstance(common_template_items, pd.DataFrame) and not common_template_items.empty:
+        st.markdown("**Common template-classified line items**")
+        show_table(common_template_items, ["template_bucket", "raw_item_name", "count", "median_line_total", "needs_review"], height=300)
+
+    classified_rows = template_summary.get("classified_rows") if isinstance(template_summary, dict) else pd.DataFrame()
+    with st.expander("Historical line-item classification", expanded=False):
+        if isinstance(classified_rows, pd.DataFrame) and not classified_rows.empty:
+            show_table(
+                classified_rows,
+                [
+                    "line_item_name",
+                    "quantity",
+                    "unit",
+                    "unit_price",
+                    "line_total",
+                    "template_bucket",
+                    "classification_confidence",
+                    "classification_reason",
+                    "needs_review",
+                ],
+                height=420,
+            )
+        else:
+            st.caption("No classified historical line items for the current similar-job set.")
+
+    st.subheader("Downloads")
+    payload = estimate_export_payload(result)
+    st.download_button(
+        "Download estimate draft JSON",
+        data=json.dumps(payload, indent=2, default=str).encode("utf-8"),
+        file_name="estimator_prototype_draft.json",
+        mime="application/json",
+    )
+    st.download_button(
+        "Download estimate range CSV",
+        data=range_df.to_csv(index=False).encode("utf-8"),
+        file_name="estimator_prototype_range.csv",
+        mime="text/csv",
+    )
+
+    st.subheader("Draft Estimate Workbook")
+    template_path_text = st.text_input(
+        "Estimate workbook template",
+        value=str(DEFAULT_TEMPLATE_PATH),
+        key="estimator_template_path",
+    )
+    with st.expander("Workbook header fields", expanded=False):
+        h1, h2, h3 = st.columns(3)
+        with h1:
+            workbook_job_name = st.text_input("Workbook job name", value=scope.get("project_type") or "Estimator Prototype Draft", key="estimator_workbook_job_name")
+            workbook_job_type = st.text_input("Workbook job type", value=scope.get("project_type") or "", key="estimator_workbook_job_type")
+        with h2:
+            workbook_site_address = st.text_input("Workbook site address", value="", key="estimator_workbook_site_address")
+            workbook_city_state_zip = st.text_input("Workbook city/state/zip", value=scope.get("location") or "", key="estimator_workbook_city_state_zip")
+        with h3:
+            workbook_contact = st.text_input("Workbook contact", value="", key="estimator_workbook_contact")
+            workbook_email = st.text_input("Workbook email", value="", key="estimator_workbook_email")
+            workbook_phone = st.text_input("Workbook phone", value="", key="estimator_workbook_phone")
+    if st.button("Generate Draft Estimate Workbook", key="generate_estimator_workbook"):
+        try:
+            workbook_result = fill_estimate_workbook(
+                Path(template_path_text),
+                result,
+                Path("output/estimates"),
+                metadata={
+                    "job_name": workbook_job_name,
+                    "job_type": workbook_job_type,
+                    "site_address": workbook_site_address,
+                    "city_state_zip": workbook_city_state_zip,
+                    "contact": workbook_contact,
+                    "email": workbook_email,
+                    "phone": workbook_phone,
+                },
+            )
+            st.success(f"Draft workbook created: {workbook_result.output_path}")
+            if workbook_result.warnings:
+                st.warning("\n".join(workbook_result.warnings))
+            st.caption("Workbook formulas are preserved and set to recalculate when opened in Excel.")
+            st.dataframe(
+                pd.DataFrame(
+                    [{"total": name, "formula_cell": formula} for name, formula in workbook_result.formula_cells.items()]
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+            st.download_button(
+                "Download draft estimate workbook",
+                data=workbook_result.output_path.read_bytes(),
+                file_name=workbook_result.output_path.name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        except Exception as exc:
+            st.error(f"Could not generate workbook draft: {safe_exception_text(exc)}")
+
+
 def raw_tables_page() -> None:
     st.title("Raw Tables")
     view_name = st.selectbox("View", VIEWS)
@@ -3415,41 +3776,46 @@ def raw_tables_page() -> None:
 
 
 def main() -> None:
+    database_startup_error: Exception | None = None
     try:
         jobs_for_filters = query_view("dashboard_jobs")
     except Exception as exc:
-        show_database_error(exc)
-        st.stop()
+        jobs_for_filters = pd.DataFrame()
+        database_startup_error = exc
 
     with st.sidebar:
         render_database_target_debug()
+        filters = sidebar_filters(jobs_for_filters)
+        page = st.radio(
+            "Page",
+            [
+                "Owner Overview",
+                "Ask Spray-Tec",
+                "Job Board",
+                "Schedule Calendar",
+                "Estimator Prototype",
+                "Pipeline / Money",
+                "Sales Follow-Up",
+                "Contracted Backlog / Scheduling",
+                "Project Scheduling",
+                "Daily Crew Dispatch",
+                "Jobs Needing Action",
+                "Closeout / Billing Risk",
+                "Documentation Risk",
+                "Job Warnings",
+                "Estimate Analytics",
+                "Estimate Quality Issues",
+                "Line Item Analysis",
+                "Estimate Adders",
+                "STAMP Tracking",
+                "Pricing Catalog",
+                "Raw Tables",
+            ],
+        )
 
-    filters = sidebar_filters(jobs_for_filters)
-    page = st.sidebar.radio(
-        "Page",
-        [
-            "Owner Overview",
-            "Ask Spray-Tec",
-            "Job Board",
-            "Schedule Calendar",
-            "Pipeline / Money",
-            "Sales Follow-Up",
-            "Contracted Backlog / Scheduling",
-            "Project Scheduling",
-            "Daily Crew Dispatch",
-            "Jobs Needing Action",
-            "Closeout / Billing Risk",
-            "Documentation Risk",
-            "Job Warnings",
-            "Estimate Analytics",
-            "Estimate Quality Issues",
-            "Line Item Analysis",
-            "Estimate Adders",
-            "STAMP Tracking",
-            "Pricing Catalog",
-            "Raw Tables",
-        ],
-    )
+    if database_startup_error and page != "Estimator Prototype":
+        show_database_error(database_startup_error)
+        st.stop()
 
     if page == "Owner Overview":
         owner_overview_page()
@@ -3459,6 +3825,8 @@ def main() -> None:
         job_board_page()
     elif page == "Schedule Calendar":
         schedule_calendar_page()
+    elif page == "Estimator Prototype":
+        estimator_prototype_page()
     elif page == "Pipeline / Money":
         pipeline_money_page()
     elif page == "Sales Follow-Up":

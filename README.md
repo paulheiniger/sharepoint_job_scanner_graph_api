@@ -798,10 +798,46 @@ The Streamlit dashboard includes a **Pricing Catalog** page with search, vendor/
 
 Current pricing rule for future estimator work: new estimates should use current approved rows from `pricing_catalog`. Historical estimate unit prices should be used for analysis and fallback only, and any fallback should be flagged for review.
 
+## Estimator prototype
+
+The Streamlit dashboard includes an **Estimator Prototype** page. This is an early planning aid, not a production estimating system. It uses deterministic rules plus local staging files created by the scanner:
+
+- `output/job_index.json`
+- `output/estimate_summary.json`
+- `output/estimate_line_items.json`
+- `output/job_tracking_summary.json`
+- `output/job_tracking_daily_entries.json`
+- `output/pricing/pricing_catalog_current_cleaned.csv`
+- `output/pricing/pricing_catalog_current.csv`
+
+The page accepts rough project notes and optional structured overrides, then suggests extracted scope fields, decision-tree recommendations, condition modifiers, similar historical jobs, rough material quantities, labor/crew assumptions, travel impact from `1132 Equity Street, Shelbyville, KY`, and a broad estimate range. It works without a live Neon/Postgres connection as long as the local staging files are present.
+
+The decision-tree layer turns project conditions into scope and assumption changes before similar jobs are used for calibration. For example, rusted metal roofs can add fastener/seam treatment and primer review, warranty targets adjust wet-mil assumptions, poor condition raises prep review, and high access or many penetrations increase labor modifiers. Similar historical jobs remain supporting evidence, not the sole estimating logic.
+
+Historical estimate line items are also classified into template-aware buckets that match the real workbook structure: `foam`, `coating`, `thinner`, `granules`, `primer`, `caulk_sealant`, `seams_misc`, `penetrations`, `hvac_units`, `drains`, `board_stock`, `fasteners`, `plates`, `dumpsters`, `lift`, `delivery_fee`, `fabric`, `edge_metal`, `gutter`, `downspouts`, `roof_hatch`, `scuppers`, `curbs`, `ladders`, `pitch_pockets`, `generator`, `freight`, `sales_inspection_trips`, `truck_expense`, labor task buckets, `meals_lodging`, `overhead_profit`, `other`, and `unknown`. Classification is transparent and rule-based using item names, descriptions, units, sections, and template source rows. Unknown or ambiguous rows, priced rows with unclear descriptions, and important material rows missing quantity/unit are flagged for review.
+
+The prototype can also generate a filled draft copy of the Spray-Tec estimate workbook template at `data/estimate_samples/Estimate - Full Turnkey.xlsx`. The original template is never overwritten. The fill layer writes mapped input cells on the `Estimate` sheet, preserves formula cells, leaves `People` and `Materials` lookup tabs intact, and saves generated drafts under `output/estimates/` for estimator review.
+
+Current approved pricing is preferred from the exported pricing catalog. Historical estimate line-item pricing is used only for calibration or fallback; any fallback is marked for pricing review. Missing square footage, missing location, ambiguous coating/foam assumptions, distant travel, and unavailable current pricing trigger human review warnings.
+
+Run locally:
+
+```bash
+streamlit run dashboard/app.py
+```
+
+Estimator limitations:
+
+- No external maps, OCR, routing, or LLM APIs are used.
+- Travel is estimated from simple city/state buckets or staged coordinates when available.
+- Material formulas are coarse; roof coating uses `gallons = sqft * wet_mils / 1604` plus waste.
+- Labor is inferred from similar estimate/tracking history or configurable productivity assumptions.
+- Every result requires estimator review before quoting.
+
 ## Streamlit dashboard prototype
 
 ```bash
-streamlit run app.py
+streamlit run dashboard/app.py
 ```
 
 The dashboard includes an **Ask Spray-Tec** page for conversational job and document lookup. It searches structured job fields and stored SharePoint document links, then shows matching job records and available folder/proposal/estimate/contract/invoice links.
