@@ -81,6 +81,66 @@ def field_data(*, with_template_rows: bool = True, with_pricing: bool = True, wi
                     "estimated_cost": 4500,
                 },
                 {
+                    "template_row_id": "R122",
+                    "document_id": "D1",
+                    "job_id": "J1",
+                    "source_file": "Estimate.xlsx",
+                    "template_bucket": "labor_base",
+                    "line_item_kind": "labor",
+                    "days": 2,
+                    "crew_size": 4,
+                    "total_hours": 64,
+                    "estimated_cost": 5200,
+                },
+                {
+                    "template_row_id": "R124",
+                    "document_id": "D1",
+                    "job_id": "J1",
+                    "source_file": "Estimate.xlsx",
+                    "template_bucket": "labor_top_coat",
+                    "line_item_kind": "labor",
+                    "days": 2,
+                    "crew_size": 5,
+                    "total_hours": 80,
+                    "estimated_cost": 6400,
+                },
+                {
+                    "template_row_id": "R141",
+                    "document_id": "D1",
+                    "job_id": "J1",
+                    "source_file": "Estimate.xlsx",
+                    "template_bucket": "infrared_scan",
+                    "line_item_kind": "labor",
+                    "days": 1,
+                    "crew_size": 2,
+                    "total_hours": 16,
+                    "estimated_cost": 1800,
+                },
+                {
+                    "template_row_id": "R130",
+                    "document_id": "D1",
+                    "job_id": "J1",
+                    "source_file": "Estimate.xlsx",
+                    "template_bucket": "labor_top_coat_granules",
+                    "line_item_kind": "labor",
+                    "days": 1,
+                    "crew_size": 3,
+                    "total_hours": 24,
+                    "estimated_cost": 2400,
+                },
+                {
+                    "template_row_id": "R134",
+                    "document_id": "D1",
+                    "job_id": "J1",
+                    "source_file": "Estimate.xlsx",
+                    "template_bucket": "labor_misc",
+                    "line_item_kind": "labor",
+                    "days": 5,
+                    "crew_size": 6,
+                    "total_hours": 300,
+                    "estimated_cost": 30000,
+                },
+                {
                     "template_row_id": "R169",
                     "document_id": "D1",
                     "job_id": "J1",
@@ -256,6 +316,45 @@ def test_field_estimator_uses_full_data_with_messy_template_rows_and_pricing() -
     assert recommendation.material_plan[0]["unit_price"] == 38
     assert recommendation.labor_plan
     assert any("Historical labor calibration was incomplete" in flag for flag in recommendation.review_flags)
+
+
+def test_roof_coating_filters_labor_calibration_and_travel_hours() -> None:
+    note = (
+        "Roof coating estimate. Metal roof in Louisville KY. Main roof is 120 ft by 80 ft. "
+        "Deduct two skylight areas, each 4 ft by 8 ft. Roof condition is fair with some rusted fasteners. "
+        "Customer wants a 10-year silicone coating system. Access is easy. Few penetrations."
+    )
+
+    recommendation = estimate_from_field_notes(note, {"estimated_sqft": 0}, data=field_data())
+    tasks = {row["task"] for row in recommendation.labor_plan}
+
+    assert recommendation.draft_workbook_inputs["header"]["C12_estimated_sqft"] == 9536
+    assert recommendation.material_plan[0]["price_source_type"] == "current_pricing"
+    assert {"labor_prep", "labor_seam_sealer", "labor_base", "labor_top_coat"}.issubset(tasks)
+    assert "infrared_scan" not in tasks
+    assert "labor_top_coat_granules" not in tasks
+    assert "labor_misc" not in tasks
+    assert 4 <= recommendation.travel_plan["travel_labor_hours"] <= 8
+    assert not any("Tear-off or substrate repair review required" in flag for flag in recommendation.review_flags)
+    assert any("Rusted fasteners/seams require detail review" in flag for flag in recommendation.review_flags)
+
+
+def test_roof_coating_includes_ir_scan_when_requested() -> None:
+    recommendation = estimate_from_field_notes(
+        "Metal roof 12000 sqft silicone coating Louisville KY include IR scan",
+        data=field_data(),
+    )
+
+    assert "infrared_scan" in {row["task"] for row in recommendation.labor_plan}
+
+
+def test_roof_coating_includes_granules_when_requested() -> None:
+    recommendation = estimate_from_field_notes(
+        "Metal roof 12000 sqft silicone coating with granules Louisville KY",
+        data=field_data(),
+    )
+
+    assert "labor_top_coat_granules" in {row["task"] for row in recommendation.labor_plan}
 
 
 def test_field_estimator_handles_sample_dimension_note_with_zero_sqft_override() -> None:

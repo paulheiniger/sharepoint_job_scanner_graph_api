@@ -69,10 +69,28 @@ def evaluate_decision_tree(
         review_flags.append("Foam or insulation design review required")
     if flags["warranty_target"]:
         recommended_scope.append(f"Design coating system for {flags['warranty_target']}-year warranty target")
-    if flags["roof_condition"] == "poor/rusted":
+    notes = first_nonblank(scope.get("notes")).lower()
+    major_repair_terms = (
+        "tear off",
+        "tear-off",
+        "tearoff",
+        "replacement",
+        "replace roof",
+        "wet insulation",
+        "failed substrate",
+        "saturated",
+        "rotten",
+        "major repair",
+        "leak",
+        "leaking",
+        "poor",
+    )
+    if flags["roof_condition"] == "poor/rusted" and (flags["tearoff_likely"] or any(term in notes for term in major_repair_terms)):
         recommended_scope.append("Include repair/restoration allowance")
         review_flags.append("Tear-off or substrate repair review required")
         flags["tearoff_likely"] = True if scope.get("tearoff_likely") else flags["tearoff_likely"]
+    elif flags["roof_condition"] == "poor/rusted":
+        review_flags.append("Rusted fasteners/seams require detail review.")
     if flags["penetrations_complexity"] == "high":
         recommended_scope.append("Increase detail labor for penetrations")
     if flags["access_complexity"] == "high":

@@ -254,12 +254,12 @@ def test_distant_city_triggers_lodging_review() -> None:
     assert travel["needs_travel_review"] is True
 
 
-def test_round_trip_miles_and_labor_scale_with_crew_and_days() -> None:
+def test_round_trip_miles_and_labor_scale_with_crew_not_production_days() -> None:
     one = estimate_travel_impact({"location": "Louisville, KY"}, recommended_crew_size=2, estimated_work_days=1)
     two = estimate_travel_impact({"location": "Louisville, KY"}, recommended_crew_size=4, estimated_work_days=2)
 
     assert one["estimated_round_trip_miles"] == one["estimated_one_way_miles"] * 2
-    assert two["travel_labor_hours"] == pytest.approx(one["travel_labor_hours"] * 4, abs=0.2)
+    assert two["travel_labor_hours"] == pytest.approx(one["travel_labor_hours"] * 2, abs=0.2)
 
 
 def test_no_insulation_increases_foam_review() -> None:

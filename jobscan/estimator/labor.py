@@ -166,7 +166,6 @@ def estimate_travel_impact(
     round_trip = one_way * 2
     one_way_minutes = one_way / assumptions.average_speed_mph_for_fallback * 60
     round_trip_hours = one_way_minutes * 2 / 60
-    work_days = max(int(estimated_work_days or 1), 1)
     crew = max(int(recommended_crew_size or 1), 1)
     lodging = one_way >= assumptions.lodging_review_one_way_miles or one_way_minutes >= assumptions.lodging_review_one_way_minutes
     return {
@@ -176,8 +175,8 @@ def estimate_travel_impact(
         "estimated_round_trip_miles": round(round_trip, 1),
         "estimated_drive_time_minutes_one_way": round(one_way_minutes),
         "travel_distance_bucket": travel_bucket(one_way, assumptions),
-        "travel_labor_hours": round(round_trip_hours * crew * work_days, 1),
-        "travel_vehicle_cost": round(round_trip * assumptions.cost_per_mile * work_days, 2),
+        "travel_labor_hours": round(round_trip_hours * crew, 1),
+        "travel_vehicle_cost": round(round_trip * assumptions.cost_per_mile * max(int(estimated_work_days or 1), 1), 2),
         "lodging_required_possible": lodging,
         "travel_notes": "Distance is bucketed from city/state or staged coordinates; no routing API used.",
         "needs_travel_review": lodging,

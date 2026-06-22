@@ -164,6 +164,104 @@ def historical_template_calibration(data: EstimatorData, similar_jobs: pd.DataFr
     }
 
 
+ROOF_COATING_LABOR_BUCKETS = {
+    "labor_prep",
+    "labor_prime",
+    "labor_seam_sealer",
+    "labor_base",
+    "labor_top_coat",
+    "labor_caulk",
+    "labor_details",
+    "labor_cleanup",
+    "labor_loading",
+}
+
+OPTIONAL_LABOR_BUCKET_TRIGGERS = {
+    "infrared_scan": ("ir scan", "infrared", "moisture scan", "thermal scan"),
+    "labor_top_coat_granules": ("granules", "granule", "broadcast"),
+    "labor_misc": ("misc", "miscellaneous"),
+}
+
+REPAIR_LABOR_BUCKETS = {"tear_off", "replacement", "substrate_repair", "roof_repair"}
+REPAIR_TRIGGERS = (
+    "tear off",
+    "tear-off",
+    "tearoff",
+    "replacement",
+    "replace roof",
+    "wet insulation",
+    "failed substrate",
+    "saturated",
+    "rotten",
+    "major repair",
+)
+
+
+def _text_has_any(text: str, phrases: tuple[str, ...]) -> bool:
+    return any(phrase in text for phrase in phrases)
+
+
+def selected_labor_buckets(scope: dict[str, Any], decision: dict[str, Any]) -> set[str] | None:
+    """Return calibrated labor buckets that belong to the parsed project scope.
+
+    None means the scope is not specific enough to filter historical rows safely.
+    """
+    notes = first_nonblank(scope.get("notes")).lower()
+    project_type = first_nonblank(scope.get("project_type")).lower()
+    substrate = first_nonblank(scope.get("substrate")).lower()
+    coating_type = first_nonblank(scope.get("coating_type")).lower()
+    coating_required = bool(scope.get("coating_required") or coating_type)
+    foam_required = bool(scope.get("foam_required") or scope.get("foam_thickness_inches"))
+
+    is_roof_coating = coating_required and ("roof" in project_type or "roof" in notes or substrate in {"metal", "tpo", "epdm"})
+    if is_roof_coating:
+        buckets = set(ROOF_COATING_LABOR_BUCKETS)
+        for bucket, triggers in OPTIONAL_LABOR_BUCKET_TRIGGERS.items():
+            if _text_has_any(notes, triggers):
+                buckets.add(bucket)
+        if _text_has_any(notes, REPAIR_TRIGGERS):
+            buckets.update(REPAIR_LABOR_BUCKETS)
+        return buckets
+
+    if foam_required:
+        buckets = {"labor_prep", "spray_foam", "insulation", "labor_details", "labor_cleanup", "labor_loading"}
+        if "wall" in project_type or "wall" in notes:
+            buckets.add("wall_insulation")
+        return buckets
+
+    if "repair" in project_type:
+        buckets = {"labor_prep", "labor_details", "labor_cleanup", "labor_loading", "roof_repair"}
+        if _text_has_any(notes, REPAIR_TRIGGERS):
+            buckets.update(REPAIR_LABOR_BUCKETS)
+        if _text_has_any(notes, OPTIONAL_LABOR_BUCKET_TRIGGERS["labor_misc"]):
+            buckets.add("labor_misc")
+        return buckets
+
+    return None
+
+
+def filter_labor_calibration_rows(
+    rows: list[Any],
+    scope: dict[str, Any],
+    decision: dict[str, Any],
+) -> tuple[list[Any], list[str]]:
+    allowed = selected_labor_buckets(scope, decision)
+    if not allowed:
+        return rows, []
+    filtered: list[Any] = []
+    excluded: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            filtered.append(row)
+            continue
+        bucket = first_nonblank(row.get("template_bucket"), row.get("task")).strip()
+        if not bucket or bucket in allowed:
+            filtered.append(row)
+        else:
+            excluded.append(bucket)
+    return filtered, sorted(set(excluded))
+
+
 def _median_positive(values: pd.Series) -> float | None:
     numeric = pd.to_numeric(values, errors="coerce").dropna()
     numeric = numeric[numeric > 0]
@@ -261,12 +359,16 @@ def build_labor_plan(
     crew_size = safe_int(decision.get("crew_assumptions", {}).get("recommended_crew_size"), 4)
     if crew_size <= 0:
         crew_size = 4
-    rows = calibration.get("labor_by_bucket") or []
+    raw_rows = calibration.get("labor_by_bucket") or []
+    rows, excluded_buckets = filter_labor_calibration_rows(raw_rows, scope, decision)
+    if excluded_buckets:
+        calibration["excluded_labor_buckets"] = excluded_buckets
     plan: list[dict[str, Any]] = []
     incomplete_calibration = False
     skipped_rows: list[str] = []
     total_hours = 0.0
     total_cost = 0.0
+    filtered_crew_sizes: list[int] = []
     if rows:
         for row in rows:
             try:
@@ -281,6 +383,8 @@ def build_labor_plan(
                 row_crew_size = safe_int(row.get("median_crew_size"), crew_size)
                 if row_crew_size <= 0:
                     row_crew_size = 4
+                elif not crew_missing:
+                    filtered_crew_sizes.append(row_crew_size)
                 hours = None if hours_missing else max(safe_float(row.get("median_total_hours"), 0.0), 0.0)
                 cost_value = row.get("median_estimated_cost")
                 if is_missing_or_bad_number(cost_value):
@@ -336,6 +440,9 @@ def build_labor_plan(
             }
         )
         crew_size = 4
+    elif filtered_crew_sizes:
+        filtered_crew_sizes = sorted(filtered_crew_sizes)
+        crew_size = filtered_crew_sizes[len(filtered_crew_sizes) // 2]
     low = total_cost * 0.85
     high = total_cost * 1.2
     if skipped_rows:
