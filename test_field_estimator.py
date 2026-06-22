@@ -240,6 +240,24 @@ def test_field_estimator_does_not_crash_with_nan_template_labor_history() -> Non
     assert any("Historical labor calibration was incomplete" in flag for flag in recommendation.review_flags)
 
 
+def test_field_estimator_uses_full_data_with_messy_template_rows_and_pricing() -> None:
+    data = field_data()
+    data.template_rows.loc[data.template_rows["line_item_kind"] == "labor", ["days", "crew_size", "total_hours", "estimated_cost"]] = float("nan")
+    note = (
+        "Roof coating estimate. Metal roof in Louisville KY. Main roof is 120 ft by 80 ft. "
+        "Deduct two skylight areas, each 4 ft by 8 ft. Customer wants a 10-year silicone coating system."
+    )
+
+    recommendation = estimate_from_field_notes(note, {"estimated_sqft": 0}, data=data)
+
+    assert recommendation.parsed_fields["estimated_sqft"] == 9536
+    assert recommendation.draft_workbook_inputs["header"]["C12_estimated_sqft"] == 9536
+    assert recommendation.material_plan[0]["price_source_type"] == "current_pricing"
+    assert recommendation.material_plan[0]["unit_price"] == 38
+    assert recommendation.labor_plan
+    assert any("Historical labor calibration was incomplete" in flag for flag in recommendation.review_flags)
+
+
 def test_field_estimator_handles_sample_dimension_note_with_zero_sqft_override() -> None:
     note = (
         "Roof coating estimate. Metal roof in Louisville KY. Main roof is 120 ft by 80 ft. "
@@ -254,7 +272,12 @@ def test_field_estimator_handles_sample_dimension_note_with_zero_sqft_override()
     assert dimensions["deduction_area_sqft"] == 64
     assert dimensions["net_area_sqft"] == 9536
     assert recommendation.parsed_fields["estimated_sqft"] == 9536
+    assert recommendation.parsed_fields.get("surface_area_sqft") == 9536
     assert recommendation.draft_workbook_inputs["header"]["C12_estimated_sqft"] == 9536
+    assert recommendation.draft_workbook_inputs["header"]["gross_area_sqft"] == 9600
+    assert recommendation.draft_workbook_inputs["header"]["deduction_area_sqft"] == 64
+    assert recommendation.draft_workbook_inputs["header"]["net_area_sqft"] == 9536
+    assert not any(flag == "Missing: estimated_sqft" for flag in recommendation.review_flags)
 
 
 def test_field_estimator_sample_note_works_with_data_none(monkeypatch) -> None:
@@ -272,6 +295,23 @@ def test_field_estimator_sample_note_works_with_data_none(monkeypatch) -> None:
     assert recommendation.parsed_fields["dimension_summary"]["deduction_area_sqft"] == 64
     assert recommendation.parsed_fields["dimension_summary"]["net_area_sqft"] == 9536
     assert any("Historical labor calibration unavailable or incomplete" in flag for flag in recommendation.review_flags)
+    assert recommendation.draft_workbook_inputs["header"]["C12_estimated_sqft"] == 9536
+    assert not any(flag == "Missing: estimated_sqft" for flag in recommendation.review_flags)
+
+
+def test_field_estimator_sample_note_without_overrides_uses_dimension_sqft(monkeypatch) -> None:
+    monkeypatch.setattr(field_estimator_module, "load_estimator_data", lambda *args, **kwargs: EstimatorData())
+    note = (
+        "Roof coating estimate. Metal roof in Louisville KY. Main roof is 120 ft by 80 ft. "
+        "Deduct two skylight areas, each 4 ft by 8 ft. Roof condition is fair with some rusted fasteners. "
+        "Customer wants a 10-year silicone coating system. Access is easy. Few penetrations."
+    )
+
+    recommendation = estimate_from_field_notes(note, data=None)
+
+    assert recommendation.parsed_fields["estimated_sqft"] == 9536
+    assert recommendation.draft_workbook_inputs["header"]["C12_estimated_sqft"] == 9536
+    assert not any(flag == "Missing: estimated_sqft" for flag in recommendation.review_flags)
 
 
 def test_field_estimator_returns_recommendation_when_labor_plan_raises(monkeypatch) -> None:

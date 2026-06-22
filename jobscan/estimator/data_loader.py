@@ -42,6 +42,66 @@ TEMPLATE_ROW_COLUMNS = [
     "needs_review",
 ]
 
+ESTIMATOR_NUMERIC_COLUMNS = [
+    "estimated_cost",
+    "cost_low",
+    "cost_high",
+    "unit_price",
+    "unit_cost",
+    "price_per_gallon",
+    "price_per_sqft",
+    "price_per_unit",
+    "quantity",
+    "median_cost",
+    "median_days",
+    "median_total_hours",
+    "median_crew_size",
+    "evidence_count",
+    "days",
+    "crew_size",
+    "total_hours",
+    "daily_rate",
+    "surface_area_sqft",
+    "estimated_sqft",
+    "gross_area_sqft",
+    "deduction_area_sqft",
+    "net_area_sqft",
+]
+
+
+def normalize_numeric_columns(df: pd.DataFrame | None, columns: list[str]) -> pd.DataFrame:
+    if df is None:
+        return pd.DataFrame()
+    df = df.copy()
+    for column in columns:
+        if column in df.columns:
+            df[column] = pd.to_numeric(df[column], errors="coerce")
+    return df
+
+
+def normalize_estimator_dataframe(df: pd.DataFrame | None) -> pd.DataFrame:
+    return normalize_numeric_columns(df, ESTIMATOR_NUMERIC_COLUMNS)
+
+
+def normalize_estimator_data(data: EstimatorData) -> EstimatorData:
+    data.pricing_catalog = normalize_estimator_dataframe(data.pricing_catalog)
+    data.pricing = normalize_estimator_dataframe(data.pricing)
+    data.template_rows = normalize_estimator_dataframe(data.template_rows)
+    data.line_items = normalize_estimator_dataframe(data.line_items)
+    data.classified_line_items = normalize_estimator_dataframe(data.classified_line_items)
+    data.line_item_classifications = normalize_estimator_dataframe(data.line_item_classifications)
+    data.jobs = normalize_estimator_dataframe(data.jobs)
+    data.estimates = normalize_estimator_dataframe(data.estimates)
+    if data.pricing.empty and not data.pricing_catalog.empty:
+        data.pricing = data.pricing_catalog
+    if data.pricing_catalog.empty and not data.pricing.empty:
+        data.pricing_catalog = data.pricing
+    if data.classified_line_items.empty and not data.line_item_classifications.empty:
+        data.classified_line_items = data.line_item_classifications
+    if data.line_item_classifications.empty and not data.classified_line_items.empty:
+        data.line_item_classifications = data.classified_line_items
+    return data
+
 
 def _records_from_json(value: Any) -> list[dict[str, Any]]:
     if isinstance(value, list):
@@ -98,7 +158,7 @@ def _load_estimator_data_from_local_files(root: Path) -> EstimatorData:
             data.classified_line_items = classify_line_items(data.line_items)
         except Exception as exc:
             data.warnings.append(f"Could not classify local estimate line items: {type(exc).__name__}")
-    return data
+    return normalize_estimator_data(data)
 
 
 def _read_sql_dataframe(connection: Any, query: str) -> pd.DataFrame:
@@ -202,7 +262,7 @@ def load_estimator_data_from_database(database_url: str) -> EstimatorData:
         )
     if data.pricing_catalog.empty:
         data.warnings.append("pricing_catalog is empty; current material pricing is limited.")
-    return data
+    return normalize_estimator_data(data)
 
 
 def load_estimator_data(

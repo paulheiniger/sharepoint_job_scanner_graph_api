@@ -81,6 +81,7 @@ def test_ui_override_takes_priority_over_dimension_math() -> None:
 
     assert recommendation.parsed_fields["estimated_sqft"] == 15000
     assert recommendation.draft_workbook_inputs["header"]["C12_estimated_sqft"] == 15000
+    assert recommendation.draft_workbook_inputs["header"]["net_area_sqft"] == 12000
     assert recommendation.parsed_fields["dimension_summary"]["net_area_sqft"] == 12000
     assert any("override differs from dimension math" in flag.lower() for flag in recommendation.review_flags)
 

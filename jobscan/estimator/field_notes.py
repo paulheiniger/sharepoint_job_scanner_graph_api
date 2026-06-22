@@ -180,9 +180,11 @@ def parsed_to_scope(parsed: ParsedFieldNotes, field_input: FieldNotesInput) -> d
     scope.update(
         {
             "notes": field_input.raw_notes,
+            "estimated_sqft": parsed.estimated_sqft,
             "surface_area_sqft": parsed.estimated_sqft,
             "gross_area_sqft": dimension_summary.get("gross_area_sqft"),
             "deduction_area_sqft": dimension_summary.get("deduction_area_sqft"),
+            "net_area_sqft": dimension_summary.get("net_area_sqft"),
             "dimension_warnings": dimension_summary.get("warnings") or [],
             "warranty_target": parsed.warranty_target_years,
             "coating_required": bool(parsed.coating_type or parsed.warranty_target_years),

@@ -3540,9 +3540,9 @@ def estimator_prototype_page() -> None:
     if field_estimator_import_warning:
         st.warning(field_estimator_import_warning)
     use_historical_calibration = st.checkbox(
-        "Use historical calibration",
-        value=False,
-        help="Optional. Uses database-backed historical labor/material calibration. Leave off while testing rough project notes and dimension math.",
+        "Use historical labor/template calibration",
+        value=True,
+        help="Uses database-backed pricing and historical labor/material calibration. Turn off only to isolate rough-note parsing and dimension math.",
         key="use_historical_calibration",
     )
     field_notes_data = data if use_historical_calibration else None

@@ -363,6 +363,30 @@ def similar_examples(similar: pd.DataFrame) -> list[dict[str, Any]]:
     return similar[[column for column in keep if column in similar.columns]].head(8).to_dict(orient="records")
 
 
+def _dimension_summary_value(summary: Any, key: str) -> Any:
+    if isinstance(summary, dict):
+        return summary.get(key)
+    return getattr(summary, key, None)
+
+
+def resolve_estimated_sqft(parsed: Any, scope: dict[str, Any], overrides: dict[str, Any]) -> float | None:
+    dimension_summary = getattr(parsed, "dimension_summary", {}) or scope.get("dimension_summary") or {}
+    candidates = [
+        overrides.get("estimated_sqft"),
+        overrides.get("surface_area_sqft"),
+        overrides.get("sqft_override"),
+        _dimension_summary_value(dimension_summary, "net_area_sqft"),
+        getattr(parsed, "estimated_sqft", None),
+        scope.get("estimated_sqft"),
+        scope.get("surface_area_sqft"),
+    ]
+    for candidate in candidates:
+        number = optional_positive_float(candidate)
+        if number is not None:
+            return number
+    return None
+
+
 def draft_workbook_inputs(field_input: FieldNotesInput, scope: dict[str, Any], material_plan: list[dict[str, Any]], labor_plan: list[dict[str, Any]], travel_plan: dict[str, Any], review_flags: list[str]) -> dict[str, Any]:
     city_state_zip = " ".join(
         part
@@ -372,16 +396,19 @@ def draft_workbook_inputs(field_input: FieldNotesInput, scope: dict[str, Any], m
         ]
         if part
     )
+    dimension_summary = scope.get("dimension_summary") or {}
+    resolved_sqft = optional_positive_float(scope.get("estimated_sqft")) or optional_positive_float(scope.get("surface_area_sqft"))
     return {
         "header": {
             "C2_job_name": first_nonblank(field_input.job_name, scope.get("project_type"), "Field Notes Estimate Draft"),
             "C3_job_type": scope.get("project_type"),
             "C4_site_address": field_input.site_address,
             "C5_city_state_zip": city_state_zip,
-            "C12_estimated_sqft": scope.get("surface_area_sqft"),
-            "gross_area_sqft": scope.get("gross_area_sqft"),
-            "deduction_area_sqft": scope.get("deduction_area_sqft"),
-            "dimension_notes": scope.get("dimension_warnings") or [],
+            "C12_estimated_sqft": resolved_sqft,
+            "gross_area_sqft": scope.get("gross_area_sqft") or _dimension_summary_value(dimension_summary, "gross_area_sqft"),
+            "deduction_area_sqft": scope.get("deduction_area_sqft") or _dimension_summary_value(dimension_summary, "deduction_area_sqft"),
+            "net_area_sqft": scope.get("net_area_sqft") or _dimension_summary_value(dimension_summary, "net_area_sqft"),
+            "dimension_notes": scope.get("dimension_warnings") or _dimension_summary_value(dimension_summary, "warnings") or [],
         },
         "material_rows": material_plan,
         "labor_rows": labor_plan,
@@ -421,6 +448,17 @@ def estimate_from_field_notes(
         data = load_estimator_data(database_url=database_url, prefer_database=bool(database_url))
     parsed = parse_field_notes(field_input)
     scope = parsed_to_scope(parsed, field_input)
+    resolved_sqft = resolve_estimated_sqft(parsed, scope, optional_overrides)
+    if resolved_sqft is not None:
+        parsed.estimated_sqft = resolved_sqft
+        parsed.missing_info = [item for item in parsed.missing_info if item != "estimated_sqft"]
+        scope["estimated_sqft"] = resolved_sqft
+        scope["surface_area_sqft"] = resolved_sqft
+    dimension_summary = parsed.dimension_summary or {}
+    scope["dimension_summary"] = dimension_summary
+    scope["gross_area_sqft"] = scope.get("gross_area_sqft") or _dimension_summary_value(dimension_summary, "gross_area_sqft")
+    scope["deduction_area_sqft"] = scope.get("deduction_area_sqft") or _dimension_summary_value(dimension_summary, "deduction_area_sqft")
+    scope["net_area_sqft"] = scope.get("net_area_sqft") or _dimension_summary_value(dimension_summary, "net_area_sqft")
     similar = find_similar_jobs(data, scope, limit=8)
     legacy_calibration = calibrate_from_history(similar, data.line_items, scope)
     template_calibration = historical_template_calibration(data, similar)
@@ -476,8 +514,12 @@ def estimate_from_field_notes(
         review_flags.append("pricing_catalog unavailable or empty; current material pricing is limited.")
     if data.template_rows.empty and not data.classified_line_items.empty:
         review_flags.append("Using estimate_line_item_classifications fallback evidence.")
+    parsed_fields = asdict(parsed)
+    if resolved_sqft is not None:
+        parsed_fields["estimated_sqft"] = resolved_sqft
+        parsed_fields["surface_area_sqft"] = resolved_sqft
     return EstimateRecommendation(
-        parsed_fields=asdict(parsed),
+        parsed_fields=parsed_fields,
         recommended_scope=decision.get("recommended_scope") or [],
         material_plan=material_plan,
         labor_plan=labor_plan,
