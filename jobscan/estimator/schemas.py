@@ -69,6 +69,8 @@ class ParsedFieldNotes:
     city: str = ""
     state: str = ""
     missing_info: list[str] = field(default_factory=list)
+    review_flags: list[str] = field(default_factory=list)
+    dimension_summary: dict = field(default_factory=dict)
     confidence: float = 0.0
 
 

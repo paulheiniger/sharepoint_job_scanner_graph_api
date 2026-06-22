@@ -331,6 +331,9 @@ def draft_workbook_inputs(field_input: FieldNotesInput, scope: dict[str, Any], m
             "C4_site_address": field_input.site_address,
             "C5_city_state_zip": city_state_zip,
             "C12_estimated_sqft": scope.get("surface_area_sqft"),
+            "gross_area_sqft": scope.get("gross_area_sqft"),
+            "deduction_area_sqft": scope.get("deduction_area_sqft"),
+            "dimension_notes": scope.get("dimension_warnings") or [],
         },
         "material_rows": material_plan,
         "labor_rows": labor_plan,
@@ -389,6 +392,7 @@ def estimate_from_field_notes(
     estimate_target = (estimate_low + estimate_high) / 2
     review_flags = []
     review_flags.extend(f"Missing: {item}" for item in parsed.missing_info)
+    review_flags.extend(parsed.review_flags)
     review_flags.extend(decision.get("human_review_flags") or [])
     review_flags.extend(material_review_flags)
     if travel_plan.get("needs_travel_review"):

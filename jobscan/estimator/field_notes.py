@@ -4,6 +4,7 @@ import re
 from dataclasses import asdict
 from typing import Any
 
+from .dimensions import parse_dimensions
 from .rules import clean_text, extract_scope, first_nonblank, to_float
 from .schemas import FieldNotesInput, ParsedFieldNotes
 
@@ -74,7 +75,21 @@ def parse_field_notes(field_input: FieldNotesInput | str, overrides: dict[str, A
     scope = extract_scope(field_input.raw_notes, input_overrides)
     notes = clean_text(field_input.raw_notes)
     text = notes.lower()
-    sqft = to_float(scope.get("surface_area_sqft")) or parse_field_sqft(notes)
+    dimension_summary = parse_dimensions(notes)
+    dimension_dict = dimension_summary.to_dict()
+    override_sqft = to_float(field_input.estimated_sqft) or to_float(overrides.get("surface_area_sqft"))
+    stated_sqft = to_float(dimension_dict.get("stated_sqft")) or parse_field_sqft(notes)
+    dimension_net_sqft = None
+    if dimension_summary.included_areas or dimension_summary.deducted_areas:
+        dimension_net_sqft = to_float(dimension_dict.get("net_area_sqft"))
+    if override_sqft:
+        sqft = override_sqft
+    elif dimension_net_sqft:
+        sqft = dimension_net_sqft
+    elif stated_sqft:
+        sqft = stated_sqft
+    else:
+        sqft = to_float(scope.get("surface_area_sqft"))
     city, state = parse_city_state(" ".join(first_nonblank(value) for value in (field_input.city, field_input.state, notes)))
     city = first_nonblank(field_input.city, city)
     state = first_nonblank(field_input.state, state)
@@ -120,7 +135,13 @@ def parse_field_notes(field_input: FieldNotesInput | str, overrides: dict[str, A
     if not first_nonblank(field_input.site_address, city):
         missing.append("address/city for travel")
 
+    review_flags = list(dimension_summary.warnings)
+    if override_sqft and dimension_net_sqft and abs(override_sqft - dimension_net_sqft) / max(override_sqft, 1) > 0.10:
+        review_flags.append("Sqft override differs from dimension math; override was used.")
+
     confidence = max(0.25, min(0.9, 0.9 - len(missing) * 0.08))
+    if review_flags:
+        confidence = min(confidence, 0.75)
     return ParsedFieldNotes(
         project_type=project_type,
         division=first_nonblank(scope.get("division")),
@@ -137,16 +158,22 @@ def parse_field_notes(field_input: FieldNotesInput | str, overrides: dict[str, A
         city=city,
         state=state,
         missing_info=missing,
+        review_flags=review_flags,
+        dimension_summary=dimension_dict,
         confidence=round(confidence, 2),
     )
 
 
 def parsed_to_scope(parsed: ParsedFieldNotes, field_input: FieldNotesInput) -> dict[str, Any]:
     scope = asdict(parsed)
+    dimension_summary = parsed.dimension_summary or {}
     scope.update(
         {
             "notes": field_input.raw_notes,
             "surface_area_sqft": parsed.estimated_sqft,
+            "gross_area_sqft": dimension_summary.get("gross_area_sqft"),
+            "deduction_area_sqft": dimension_summary.get("deduction_area_sqft"),
+            "dimension_warnings": dimension_summary.get("warnings") or [],
             "warranty_target": parsed.warranty_target_years,
             "coating_required": bool(parsed.coating_type or parsed.warranty_target_years),
             "location": ", ".join(part for part in (parsed.city, parsed.state) if part),

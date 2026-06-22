@@ -3570,6 +3570,35 @@ def estimator_prototype_page() -> None:
         )
         st.markdown("**Parsed Fields**")
         st.dataframe(pd.DataFrame([field_recommendation.parsed_fields]), use_container_width=True, hide_index=True)
+        dimension_summary = field_recommendation.parsed_fields.get("dimension_summary") or {}
+        if isinstance(dimension_summary, dict) and (
+            dimension_summary.get("net_area_sqft") or dimension_summary.get("included_areas") or dimension_summary.get("deducted_areas")
+        ):
+            st.markdown("**Dimension Math**")
+            metric_row(
+                [
+                    ("Gross Area", f"{dimension_summary.get('gross_area_sqft') or 0:,.0f} sqft"),
+                    ("Deductions", f"{dimension_summary.get('deduction_area_sqft') or 0:,.0f} sqft"),
+                    ("Net Area", f"{dimension_summary.get('net_area_sqft') or 0:,.0f} sqft"),
+                ]
+            )
+            d1, d2 = st.columns(2)
+            with d1:
+                st.caption("Included areas")
+                show_table(
+                    dataframe_from_records(dimension_summary.get("included_areas") or []),
+                    ["label", "length", "width", "quantity", "area_each", "total_area", "source_text"],
+                    height=180,
+                )
+            with d2:
+                st.caption("Deducted areas")
+                show_table(
+                    dataframe_from_records(dimension_summary.get("deducted_areas") or []),
+                    ["label", "length", "width", "quantity", "area_each", "total_area", "source_text"],
+                    height=180,
+                )
+            if dimension_summary.get("warnings"):
+                st.warning("\n".join(dimension_summary.get("warnings") or []))
         if field_recommendation.review_flags:
             st.warning("\n".join(field_recommendation.review_flags))
         c1, c2 = st.columns(2)
