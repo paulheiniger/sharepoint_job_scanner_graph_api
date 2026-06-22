@@ -12,12 +12,24 @@ class EstimatorData:
     estimates: pd.DataFrame = field(default_factory=pd.DataFrame)
     line_items: pd.DataFrame = field(default_factory=pd.DataFrame)
     classified_line_items: pd.DataFrame = field(default_factory=pd.DataFrame)
+    line_item_classifications: pd.DataFrame = field(default_factory=pd.DataFrame)
     template_rows: pd.DataFrame = field(default_factory=pd.DataFrame)
     tracking_summary: pd.DataFrame = field(default_factory=pd.DataFrame)
     tracking_daily: pd.DataFrame = field(default_factory=pd.DataFrame)
     pricing: pd.DataFrame = field(default_factory=pd.DataFrame)
+    pricing_catalog: pd.DataFrame = field(default_factory=pd.DataFrame)
     warnings: list[str] = field(default_factory=list)
     source_files_used: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.pricing.empty and not self.pricing_catalog.empty:
+            self.pricing = self.pricing_catalog
+        if self.pricing_catalog.empty and not self.pricing.empty:
+            self.pricing_catalog = self.pricing
+        if self.classified_line_items.empty and not self.line_item_classifications.empty:
+            self.classified_line_items = self.line_item_classifications
+        if self.line_item_classifications.empty and not self.classified_line_items.empty:
+            self.line_item_classifications = self.classified_line_items
 
 
 @dataclass

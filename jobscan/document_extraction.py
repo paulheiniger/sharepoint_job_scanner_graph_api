@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import time
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -15,7 +16,7 @@ from xml.etree import ElementTree as ET
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Connection, Engine
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError, PendingRollbackError, SQLAlchemyError
 
 from .graph_client import GraphClient, GraphError, SharePointTarget
 from .job_search import first_nonblank, normalize_search_text, tokenize_search_text
@@ -27,6 +28,10 @@ MAX_XLSX_COLUMNS_PER_SHEET = 120
 
 
 class DocumentAcquisitionError(RuntimeError):
+    pass
+
+
+class TransientDocumentDatabaseError(RuntimeError):
     pass
 
 
@@ -52,6 +57,32 @@ class ExtractionResult:
 def text_or_none(value: Any) -> str | None:
     text_value = str(value or "").strip()
     return text_value or None
+
+
+def is_transient_database_error(exc: Exception) -> bool:
+    if isinstance(exc, PendingRollbackError):
+        return True
+    if isinstance(exc, (OperationalError, InterfaceError, DBAPIError)) and getattr(exc, "connection_invalidated", False):
+        return True
+    message = str(exc).lower()
+    return isinstance(exc, (OperationalError, InterfaceError, DBAPIError, PendingRollbackError)) and any(
+        marker in message
+        for marker in (
+            "ssl connection has been closed unexpectedly",
+            "server closed the connection unexpectedly",
+            "connection already closed",
+            "can't reconnect until invalid transaction is rolled back",
+            "connection not open",
+            "connection is closed",
+        )
+    )
+
+
+def rollback_connection(connection: Connection) -> None:
+    try:
+        connection.rollback()
+    except Exception:
+        pass
 
 
 def safe_filename(value: Any) -> str:
@@ -651,8 +682,51 @@ def extract_one_document(connection: Connection, document: dict[str, Any], cache
         row_count = replace_document_content(connection, document, path, result, current_hash)
         return "extracted", row_count
     except Exception as exc:
-        update_document_failure(connection, document_id, str(exc))
+        if is_transient_database_error(exc):
+            rollback_connection(connection)
+            raise TransientDocumentDatabaseError(
+                "Database connection dropped during document extraction; rolled back and will retry/resume safely."
+            ) from exc
+        try:
+            update_document_failure(connection, document_id, str(exc))
+        except Exception as failure_exc:
+            if is_transient_database_error(failure_exc):
+                rollback_connection(connection)
+                raise TransientDocumentDatabaseError(
+                    "Database connection dropped while recording document extraction failure; "
+                    "rolled back and will retry/resume safely."
+                ) from failure_exc
+            raise
         return "failed", 0
+
+
+def extract_one_document_with_retry(
+    engine: Engine,
+    document: dict[str, Any],
+    cache_root: Path,
+    *,
+    force: bool = False,
+    retries: int = 2,
+    backoff_seconds: float = 0.25,
+) -> tuple[str, int]:
+    max_attempts = max(1, retries + 1)
+    for attempt in range(1, max_attempts + 1):
+        try:
+            with engine.begin() as connection:
+                return extract_one_document(connection, document, cache_root, force=force)
+        except TransientDocumentDatabaseError:
+            print(
+                "Database connection dropped during document extraction; rolled back and will retry/resume safely.",
+                flush=True,
+            )
+            try:
+                engine.dispose()
+            except Exception:
+                pass
+            if attempt >= max_attempts:
+                raise
+            time.sleep(min(1.0, backoff_seconds * (2 ** (attempt - 1))))
+    raise TransientDocumentDatabaseError("Database connection dropped during document extraction.")
 
 
 def document_selection_sql(*, document_id: str | None, job_id: str | None, pending: bool, document_type: str | None) -> tuple[str, dict[str, Any]]:
@@ -939,8 +1013,12 @@ def main(argv: list[str] | None = None) -> int:
         )
     total = len(documents)
     for index, document in enumerate(documents, start=1):
-        with engine.begin() as conn:
-            status, count = extract_one_document(conn, document, args.cache_root, force=args.force)
+        try:
+            status, count = extract_one_document_with_retry(engine, document, args.cache_root, force=args.force)
+        except TransientDocumentDatabaseError as exc:
+            label = first_nonblank(document.get("file_name"), document.get("document_id"))
+            print(f"[{index}/{total}] {label} — database connection failure: {str(exc)[:240]}", flush=True)
+            return 1
         label = first_nonblank(document.get("file_name"), document.get("document_id"))
         acquisition_method = planned_acquisition_method(document, args.cache_root, force_download=args.force)
         print(f"[{index}/{total}] {label} — {status} {count} content rows — acquisition: {acquisition_method}")

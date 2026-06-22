@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pandas as pd
 
-from jobscan.estimator.field_estimator import estimate_from_field_notes
+from jobscan.estimator.field_estimator import build_labor_plan, estimate_from_field_notes
 from jobscan.estimator.field_notes import parse_field_notes, parse_field_sqft
-from jobscan.estimator.schemas import EstimatorData
+from jobscan.estimator.schemas import EstimatorAssumptions, EstimatorData
 
 
 def field_data(*, with_template_rows: bool = True, with_pricing: bool = True, with_fallback: bool = False) -> EstimatorData:
@@ -173,6 +173,49 @@ def test_template_rows_labor_calibration_is_used() -> None:
 
     assert recommendation.historical_calibration["source"] == "estimate_template_rows"
     assert any(row["evidence_count"] > 0 for row in recommendation.labor_plan)
+
+
+def test_build_labor_plan_handles_nan_historical_labor_values() -> None:
+    plan, low, high, crew_size, duration_days, labor_hours = build_labor_plan(
+        {"surface_area_sqft": 12000},
+        {
+            "labor_by_bucket": [
+                {
+                    "template_bucket": "labor_prep",
+                    "median_days": float("nan"),
+                    "median_crew_size": float("nan"),
+                    "median_total_hours": float("nan"),
+                    "median_estimated_cost": float("nan"),
+                    "evidence_count": float("nan"),
+                }
+            ]
+        },
+        {
+            "labor_modifiers": {"combined_labor_multiplier": 1.0, "adjusted_productivity_sqft_per_day": 3000},
+            "crew_assumptions": {"recommended_crew_size": float("nan")},
+        },
+        EstimatorAssumptions(),
+    )
+
+    assert plan[0]["crew_size"] == 4
+    assert plan[0]["evidence_count"] == 0
+    assert "missing historical labor values used defaults" in plan[0]["notes"]
+    assert low == 0
+    assert high == 0
+    assert crew_size == 4
+    assert duration_days == 1
+    assert labor_hours == 0
+
+
+def test_field_estimator_does_not_crash_with_nan_template_labor_history() -> None:
+    data = field_data()
+    data.template_rows.loc[data.template_rows["line_item_kind"] == "labor", ["days", "crew_size", "total_hours", "estimated_cost"]] = float("nan")
+
+    recommendation = estimate_from_field_notes("Metal roof 12000 sqft silicone coating Louisville KY", data=data)
+
+    assert recommendation.estimate_high >= recommendation.estimate_low
+    assert any(row["crew_size"] == 4 for row in recommendation.labor_plan)
+    assert any(row["evidence_count"] == 1 for row in recommendation.labor_plan)
 
 
 def test_line_item_classification_fallback_remains_available() -> None:

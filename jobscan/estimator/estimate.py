@@ -53,7 +53,12 @@ def build_estimate(
     similar = find_similar_jobs(data, scope, limit=8)
     similar_job_ids = similar["job_id"].dropna().astype(str).tolist() if "job_id" in similar.columns else []
     line_stats = aggregate_line_items(data.line_items, similar_job_ids)
-    classified_source = data.classified_line_items if not data.classified_line_items.empty else data.line_items
+    if not data.classified_line_items.empty:
+        classified_source = data.classified_line_items
+    elif not data.line_items.empty:
+        classified_source = data.line_items
+    else:
+        classified_source = data.template_rows
     template_line_item_summary = summarize_similar_job_buckets(classified_source, similar)
     calibration = calibrate_from_history(similar, data.line_items, scope)
     decision = evaluate_decision_tree(scope, calibration)

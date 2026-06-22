@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import asdict
 from typing import Any
 
@@ -15,6 +16,39 @@ from .rules import first_nonblank, to_float
 from .schemas import EstimateRecommendation, EstimatorAssumptions, EstimatorData, FieldNotesInput
 from .similarity import find_similar_jobs
 from .travel import build_travel_plan
+
+
+def is_missing_number(value: Any) -> bool:
+    if value is None:
+        return True
+    try:
+        return math.isnan(float(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def to_int_or_default(value: Any, default: int) -> int:
+    number = to_float(value)
+    if number is None:
+        return default
+    try:
+        if math.isnan(number):
+            return default
+    except TypeError:
+        pass
+    return int(number)
+
+
+def to_float_or_default(value: Any, default: float) -> float:
+    number = to_float(value)
+    if number is None:
+        return default
+    try:
+        if math.isnan(number):
+            return default
+    except TypeError:
+        pass
+    return float(number)
 
 
 def warranty_wet_mils(warranty_target: Any, coating_type: str) -> float:
@@ -197,20 +231,30 @@ def build_labor_plan(
     decision: dict[str, Any],
     assumptions: EstimatorAssumptions,
 ) -> tuple[list[dict[str, Any]], float, float, int, int, int]:
-    area = to_float(scope.get("surface_area_sqft")) or 0.0
-    multiplier = to_float(decision.get("labor_modifiers", {}).get("combined_labor_multiplier")) or 1.0
-    crew_size = int(to_float(decision.get("crew_assumptions", {}).get("recommended_crew_size")) or 4)
+    area = to_float_or_default(scope.get("surface_area_sqft"), 0.0)
+    multiplier = to_float_or_default(decision.get("labor_modifiers", {}).get("combined_labor_multiplier"), 1.0)
+    crew_size = to_int_or_default(decision.get("crew_assumptions", {}).get("recommended_crew_size"), 4)
     rows = calibration.get("labor_by_bucket") or []
     plan: list[dict[str, Any]] = []
+    incomplete_calibration = False
     total_hours = 0.0
     total_cost = 0.0
     if rows:
         for row in rows:
-            hours = to_float(row.get("median_total_hours"))
-            days = to_float(row.get("median_days"))
-            cost = to_float(row.get("median_estimated_cost"))
-            adjusted_days = (days or 0) * multiplier if days else None
-            adjusted_hours = (hours or 0) * multiplier if hours else (adjusted_days or 0) * crew_size * 8
+            hours_missing = is_missing_number(row.get("median_total_hours"))
+            days_missing = is_missing_number(row.get("median_days"))
+            crew_missing = is_missing_number(row.get("median_crew_size"))
+            cost_missing = is_missing_number(row.get("median_estimated_cost"))
+            evidence_missing = is_missing_number(row.get("evidence_count"))
+            incomplete_calibration = incomplete_calibration or any(
+                [hours_missing, days_missing, crew_missing, cost_missing, evidence_missing]
+            )
+            hours = None if hours_missing else to_float(row.get("median_total_hours"))
+            days = None if days_missing else to_float(row.get("median_days"))
+            cost = None if cost_missing else to_float(row.get("median_estimated_cost"))
+            row_crew_size = to_int_or_default(row.get("median_crew_size"), crew_size)
+            adjusted_days = days * multiplier if days else None
+            adjusted_hours = hours * multiplier if hours else (adjusted_days or 0) * row_crew_size * 8
             estimated_cost = (cost * multiplier) if cost else adjusted_hours * assumptions.blended_hourly_rate
             total_hours += adjusted_hours or 0
             total_cost += estimated_cost or 0
@@ -219,11 +263,15 @@ def build_labor_plan(
                     "task": row.get("template_bucket"),
                     "base_days": days,
                     "adjusted_days": round(adjusted_days, 2) if adjusted_days else None,
-                    "crew_size": int(to_float(row.get("median_crew_size")) or crew_size),
+                    "crew_size": row_crew_size,
                     "total_hours": round(adjusted_hours, 1),
                     "estimated_cost": round(estimated_cost, 2),
-                    "evidence_count": int(row.get("evidence_count") or 0),
-                    "notes": "Calibrated from estimate_template_rows.",
+                    "evidence_count": to_int_or_default(row.get("evidence_count"), 0),
+                    "notes": (
+                        "Calibrated from estimate_template_rows; missing historical labor values used defaults."
+                        if incomplete_calibration
+                        else "Calibrated from estimate_template_rows."
+                    ),
                 }
             )
     if not plan:
@@ -245,8 +293,8 @@ def build_labor_plan(
         )
     low = total_cost * 0.85
     high = total_cost * 1.2
-    duration_days = max(1, int(round(sum(to_float(row.get("adjusted_days")) or 0 for row in plan))) or 1)
-    return plan, round(low, 2), round(high, 2), crew_size, duration_days, int(round(total_hours))
+    duration_days = max(1, int(round(sum(to_float_or_default(row.get("adjusted_days"), 0.0) for row in plan))) or 1)
+    return plan, round(low, 2), round(high, 2), crew_size, duration_days, int(round(to_float_or_default(total_hours, 0.0)))
 
 
 def similar_examples(similar: pd.DataFrame) -> list[dict[str, Any]]:
@@ -312,7 +360,7 @@ def estimate_from_field_notes(
         substrate=optional_overrides.get("substrate"),
         roof_condition=optional_overrides.get("roof_condition"),
         coating_type=optional_overrides.get("coating_type"),
-        warranty_target_years=int(to_float(optional_overrides.get("warranty_target_years")) or 0) or None,
+        warranty_target_years=to_int_or_default(optional_overrides.get("warranty_target_years"), 0) or None,
         access_complexity=optional_overrides.get("access_complexity"),
         penetrations_complexity=optional_overrides.get("penetrations_complexity"),
         insulation_present=optional_overrides.get("insulation_present"),

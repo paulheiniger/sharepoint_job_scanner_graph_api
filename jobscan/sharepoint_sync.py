@@ -4,6 +4,7 @@ import argparse
 import copy
 import json
 import os
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -11,6 +12,7 @@ from pathlib import PurePosixPath, Path
 from typing import Any
 from urllib.parse import quote, unquote, urlparse
 
+import requests
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Connection, Engine, make_url
@@ -33,6 +35,7 @@ class SyncStats:
     downloaded_files: int = 0
     files_skipped: int = 0
     skipped_images: int = 0
+    download_failures: int = 0
     folders_created: int = 0
     manifest_files_written: int = 0
     bytes_downloaded: int = 0
@@ -100,6 +103,15 @@ class InventoryUpsertResult:
     skipped_unchanged: int = 0
 
 
+@dataclass(frozen=True)
+class ConfiguredFolderRoot:
+    folder_path: str
+    division: str | None = None
+    pipeline_status: str | None = None
+    site_url: str | None = None
+    library: str | None = None
+
+
 def _safe_name(name: str) -> str:
     bad = '<>:"/\\|?*'
     cleaned = "".join("_" if c in bad else c for c in name).strip()
@@ -156,6 +168,54 @@ def _should_download(item: dict[str, Any], max_file_mb: float) -> bool:
 
 def _is_image_item(item: dict[str, Any]) -> bool:
     return Path(item.get("name", "")).suffix.lower() in IMAGE_EXTS
+
+
+TRANSIENT_DOWNLOAD_ERRORS = (
+    requests.exceptions.ConnectTimeout,
+    requests.exceptions.ReadTimeout,
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+    requests.exceptions.RequestException,
+)
+
+
+def download_item_with_retry(
+    client: GraphClient,
+    drive_id: str,
+    item_id: str,
+    destination: Path,
+    *,
+    file_name: str,
+    sharepoint_path: str,
+    retries: int = 2,
+    backoff_seconds: float = 0.5,
+) -> bool:
+    max_attempts = max(1, retries + 1)
+    for attempt in range(1, max_attempts + 1):
+        try:
+            client.download_item(drive_id, item_id, destination)
+            return True
+        except TRANSIENT_DOWNLOAD_ERRORS as exc:
+            if attempt >= max_attempts:
+                try:
+                    if destination.exists():
+                        destination.unlink()
+                except OSError:
+                    pass
+                print(
+                    f"WARNING: skipped SharePoint file after download timeout/error: "
+                    f"{file_name} ({sharepoint_path}) — {type(exc).__name__}: {exc}",
+                    flush=True,
+                )
+                return False
+            sleep_seconds = min(5.0, backoff_seconds * (2 ** (attempt - 1)))
+            print(
+                f"WARNING: transient SharePoint download error for {file_name} "
+                f"({sharepoint_path}); retry {attempt}/{retries} in {sleep_seconds:g}s: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            time.sleep(sleep_seconds)
 
 
 def _image_manifest_entry(child: dict[str, Any], relative_path: Path, drive_id: str | None = None) -> dict[str, Any]:
@@ -356,7 +416,19 @@ def sync_sharepoint_folder(
                 stats.files_skipped += 1
                 continue
 
-            client.download_item(drive["id"], child["id"], destination)
+            child_relative_file = name if relative_folder == "." else f"{relative_folder}/{name}"
+            sharepoint_path = joined_folder_path(target.folder_path, child_relative_file)
+            if not download_item_with_retry(
+                client,
+                drive["id"],
+                child["id"],
+                destination,
+                file_name=name,
+                sharepoint_path=sharepoint_path,
+            ):
+                stats.files_skipped += 1
+                stats.download_failures += 1
+                continue
             stats.downloaded_files += 1
             stats.bytes_downloaded += int(child.get("size") or 0)
 
@@ -508,6 +580,125 @@ def load_configured_roots(config_path: Path | None) -> list[str]:
             if isinstance(root, dict) and root.get("folder"):
                 out.append(normalize_drive_path(str(root["folder"])))
     return out
+
+
+def load_configured_folder_roots(
+    config_path: Path,
+    *,
+    default_site_url: str | None = None,
+    default_library: str = "Documents",
+) -> list[ConfiguredFolderRoot]:
+    try:
+        import yaml
+    except ImportError as exc:
+        raise RuntimeError("Install pyyaml to use --config: pip install pyyaml") from exc
+
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("SharePoint scan config must be a YAML mapping.")
+    sharepoint = payload.get("sharepoint") if isinstance(payload.get("sharepoint"), dict) else {}
+    config_site_url = str(sharepoint.get("site_url") or default_site_url or "").strip() or None
+    config_library = str(sharepoint.get("library") or default_library or "Documents")
+    raw_roots = payload.get("scan_roots")
+    if not isinstance(raw_roots, list):
+        raw_roots = payload.get("roots")
+    if not isinstance(raw_roots, list):
+        raise ValueError("Config must set roots or scan_roots to a list.")
+
+    roots: list[ConfiguredFolderRoot] = []
+    for index, raw_root in enumerate(raw_roots, start=1):
+        if not isinstance(raw_root, dict):
+            raise ValueError(f"Configured root {index} must be a mapping.")
+        folder_path = raw_root.get("folder") or raw_root.get("path")
+        if not folder_path:
+            raise ValueError(f"Configured root {index} must set folder or path.")
+        roots.append(
+            ConfiguredFolderRoot(
+                folder_path=normalize_drive_path(folder_path),
+                division=text_or_none(raw_root.get("division")),
+                pipeline_status=text_or_none(raw_root.get("pipeline_status")),
+                site_url=text_or_none(raw_root.get("site_url")) or config_site_url,
+                library=text_or_none(raw_root.get("library")) or config_library,
+            )
+        )
+    return roots
+
+
+def text_or_none(value: Any) -> str | None:
+    text_value = str(value or "").strip()
+    return text_value or None
+
+
+def infer_source_year_from_path(value: Any) -> int | None:
+    match = re.search(r"\b(20\d{2})\b", str(value or ""))
+    return int(match.group(1)) if match else None
+
+
+def apply_configured_root_context(records: list[Any], root: ConfiguredFolderRoot) -> None:
+    for record in records:
+        record.division = root.division
+        record.pipeline_status = root.pipeline_status
+        record.scan_root = root.folder_path
+        if getattr(record, "source_year", None) is None:
+            record.source_year = infer_source_year_from_path(root.folder_path)
+
+
+def sync_configured_sharepoint_folders(
+    *,
+    client: GraphClient,
+    roots: list[ConfiguredFolderRoot],
+    cache_dir: Path,
+    max_depth: int,
+    max_file_mb: float,
+    force: bool,
+    skip_images: bool,
+) -> tuple[list[Any], list[dict[str, Any]]]:
+    all_records: list[Any] = []
+    summaries: list[dict[str, Any]] = []
+    total = len(roots)
+    for index, root in enumerate(roots, start=1):
+        if not root.site_url:
+            raise ValueError(f"Configured root '{root.folder_path}' does not have a site_url.")
+        library = root.library or "Documents"
+        print(f"[{index}/{total}] SharePoint root: {root.folder_path}", flush=True)
+        print(f"  division: {root.division or ''}", flush=True)
+        print(f"  pipeline_status: {root.pipeline_status or ''}", flush=True)
+        target = SharePointTarget.from_url(root.site_url, library=library, folder_path=root.folder_path)
+        cache_root, stats = sync_sharepoint_folder(
+            client=client,
+            target=target,
+            cache_dir=cache_dir,
+            max_depth=max_depth,
+            max_file_mb=max_file_mb,
+            force=force,
+            skip_images=skip_images,
+        )
+        root_records = scan_root(cache_root, scan_context=root.folder_path)
+        apply_configured_root_context(root_records, root)
+        attach_folder_urls(root_records, cache_root)
+        attach_document_urls(root_records, cache_root)
+        all_records.extend(root_records)
+        print(
+            f"  jobs found: {len(root_records)}; files downloaded: {stats.downloaded_files}; "
+            f"files skipped: {stats.files_skipped}; download failures: {stats.download_failures}",
+            flush=True,
+        )
+        summaries.append(
+            {
+                "folder": root.folder_path,
+                "division": root.division,
+                "pipeline_status": root.pipeline_status,
+                "site_url": root.site_url,
+                "library": library,
+                "cache_root": str(cache_root),
+                "jobs_found": len(root_records),
+                "files_downloaded": stats.downloaded_files,
+                "files_skipped": stats.files_skipped,
+                "download_failures": stats.download_failures,
+                "stats": stats,
+            }
+        )
+    return all_records, summaries
 
 
 def normalize_drive_path(value: Any) -> str:
@@ -2027,11 +2218,11 @@ def main() -> None:
         return
 
     site_url = args.site_url or args.sharepoint_url
-    if not site_url:
-        raise SystemExit("Set --site-url or --sharepoint-url.")
-    target = SharePointTarget.from_url(site_url, library=args.library, folder_path=args.folder)
     client = GraphClient()
     if args.delta:
+        if not site_url:
+            raise SystemExit("Set --site-url or --sharepoint-url.")
+        target = SharePointTarget.from_url(site_url, library=args.library, folder_path=args.folder)
         if not args.database_url:
             raise SystemExit("Set --database-url, DATABASE_URL, or NEON_DATABASE_URL.")
         engine = create_sharepoint_engine(args.database_url)
@@ -2056,6 +2247,37 @@ def main() -> None:
         print_delta_stats(stats)
         return
 
+    if args.config:
+        configured_roots = load_configured_folder_roots(
+            args.config,
+            default_site_url=site_url,
+            default_library=args.library,
+        )
+        records, root_summaries = sync_configured_sharepoint_folders(
+            client=client,
+            roots=configured_roots,
+            cache_dir=args.cache,
+            max_depth=args.max_depth,
+            max_file_mb=args.max_file_mb,
+            force=args.force,
+            skip_images=args.skip_images,
+        )
+        write_csv(records, args.out)
+        write_json(records, args.json)
+        write_excel(records, args.xlsx)
+        jobs_with_folder_url = sum(1 for record in records if is_url(record.folder_url))
+        print(f"Configured roots scanned: {len(root_summaries)}")
+        print(f"Jobs indexed: {len(records)}")
+        print(f"Jobs with folder_url: {jobs_with_folder_url}")
+        print(f"Jobs missing folder_url: {len(records) - jobs_with_folder_url}")
+        print(f"CSV: {args.out}")
+        print(f"JSON: {args.json}")
+        print(f"Excel: {args.xlsx}")
+        return
+
+    if not site_url:
+        raise SystemExit("Set --site-url or --sharepoint-url.")
+    target = SharePointTarget.from_url(site_url, library=args.library, folder_path=args.folder)
     cache_root, stats = sync_sharepoint_folder(
         client=client,
         target=target,
@@ -2079,6 +2301,7 @@ def main() -> None:
     print(f"Files downloaded: {stats.downloaded_files}")
     print(f"Files skipped: {stats.files_skipped}")
     print(f"Skipped images: {stats.skipped_images}")
+    print(f"Download failures skipped: {stats.download_failures}")
     print(f"Folders created: {stats.folders_created}")
     print(f"Image manifest files written: {stats.manifest_files_written}")
     print(f"Jobs indexed: {len(records)}")

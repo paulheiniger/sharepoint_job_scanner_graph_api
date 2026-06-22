@@ -4,6 +4,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from sqlalchemy.exc import OperationalError, PendingRollbackError
 
 from jobscan import document_extraction as de
 
@@ -76,6 +77,42 @@ class FakeEngine:
 
     def begin(self):
         return FakeContext(FakeConnection(self.docs))
+
+
+class SequenceEngine:
+    def __init__(self, connections):
+        self.connections = list(connections)
+        self.disposed = 0
+
+    def begin(self):
+        return FakeContext(self.connections.pop(0))
+
+    def dispose(self):
+        self.disposed += 1
+
+
+class TransientDeleteConnection(FakeConnection):
+    def __init__(self):
+        super().__init__()
+        self.rollback_called = False
+        self.failure_update_attempted = False
+
+    def rollback(self):
+        self.rollback_called = True
+
+    def execute(self, stmt, params=None):
+        sql = str(stmt)
+        if "DELETE FROM document_content" in sql:
+            raise OperationalError(
+                "DELETE FROM document_content",
+                params or {},
+                Exception("SSL connection has been closed unexpectedly"),
+                connection_invalidated=True,
+            )
+        if "extraction_status = 'failed'" in sql:
+            self.failure_update_attempted = True
+            raise PendingRollbackError("Can't reconnect until invalid transaction is rolled back.")
+        return super().execute(stmt, params)
 
 
 def make_docx(path: Path) -> None:
@@ -290,6 +327,63 @@ def test_successful_replacement_deletes_then_inserts_content(tmp_path: Path) -> 
     assert conn.deleted is True
     assert conn.inserted[0]["job_id"] == "JOB"
     assert conn.inserted[0]["normalized_text"] == "hello spray tec"
+
+
+def test_db_drop_during_write_rolls_back_without_pending_failure_update(tmp_path: Path) -> None:
+    path = tmp_path / "notes.txt"
+    path.write_text("Hello Spray-Tec", encoding="utf-8")
+    conn = TransientDeleteConnection()
+
+    with pytest.raises(de.TransientDocumentDatabaseError):
+        de.extract_one_document(
+            conn,
+            {"document_id": "DOC", "job_id": "JOB", "cached_file_path": str(path), "file_extension": ".txt"},
+            tmp_path,
+        )
+
+    assert conn.rollback_called is True
+    assert conn.failure_update_attempted is False
+
+
+def test_transient_db_failure_retries_with_fresh_transaction(tmp_path: Path, capsys) -> None:
+    path = tmp_path / "notes.txt"
+    path.write_text("Hello Spray-Tec", encoding="utf-8")
+    first = TransientDeleteConnection()
+    second = FakeConnection()
+    engine = SequenceEngine([first, second])
+
+    status, count = de.extract_one_document_with_retry(
+        engine,
+        {"document_id": "DOC", "job_id": "JOB", "cached_file_path": str(path), "file_extension": ".txt"},
+        tmp_path,
+        retries=1,
+        backoff_seconds=0,
+    )
+
+    assert status == "extracted"
+    assert count == 1
+    assert first.rollback_called is True
+    assert engine.disposed == 1
+    assert second.deleted is True
+    assert "Database connection dropped during document extraction" in capsys.readouterr().out
+
+
+def test_transient_db_failure_exits_cleanly_after_retries(tmp_path: Path, capsys) -> None:
+    path = tmp_path / "notes.txt"
+    path.write_text("Hello Spray-Tec", encoding="utf-8")
+    engine = SequenceEngine([TransientDeleteConnection(), TransientDeleteConnection()])
+
+    with pytest.raises(de.TransientDocumentDatabaseError):
+        de.extract_one_document_with_retry(
+            engine,
+            {"document_id": "DOC", "job_id": "JOB", "cached_file_path": str(path), "file_extension": ".txt"},
+            tmp_path,
+            retries=1,
+            backoff_seconds=0,
+        )
+
+    assert engine.disposed == 2
+    assert "Database connection dropped during document extraction" in capsys.readouterr().out
 
 
 def test_search_results_include_source_metadata_and_exact_url() -> None:

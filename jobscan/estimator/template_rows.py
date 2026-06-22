@@ -553,6 +553,95 @@ def delete_template_rows_by_id(conn: Connection, template_row_ids: list[str]) ->
     return int(result.rowcount or 0)
 
 
+def fetch_template_candidate_documents(
+    conn: Connection,
+    *,
+    document_id: str | None = None,
+    limit_documents: int | None = None,
+    document_type: str | None = None,
+    xlsx_only: bool = True,
+    only_unparsed: bool = False,
+) -> list[dict[str, Any]]:
+    params: dict[str, Any] = {
+        "document_id": document_id,
+        "document_type": document_type,
+        "limit_documents": limit_documents,
+        "parser_version": PARSER_VERSION,
+    }
+    extension_filter = "AND LOWER(COALESCE(d.file_extension, '')) IN ('.xlsx', '.xlsm')" if xlsx_only else ""
+    only_unparsed_filter = (
+        """
+          AND NOT EXISTS (
+              SELECT 1
+              FROM estimate_template_rows t
+              WHERE t.document_id = c.document_id
+                AND t.parser_version = :parser_version
+          )
+        """
+        if only_unparsed
+        else ""
+    )
+    limit_sql = "LIMIT :limit_documents" if limit_documents is not None else ""
+    statement = text(
+        f"""
+        SELECT
+            c.document_id,
+            COALESCE(d.file_name, c.document_id) AS source_file,
+            COUNT(*) AS rows_available
+        FROM document_content c
+        LEFT JOIN documents d ON d.document_id = c.document_id
+        WHERE LOWER(COALESCE(c.sheet_name, '')) = 'estimate'
+          AND c.row_number IS NOT NULL
+          AND c.text_content ~ '[A-Z]{{1,4}}[0-9]+:'
+          {extension_filter}
+          AND (:document_id IS NULL OR c.document_id = :document_id)
+          AND (:document_type IS NULL OR d.document_type = :document_type)
+          {only_unparsed_filter}
+        GROUP BY c.document_id, COALESCE(d.file_name, c.document_id)
+        ORDER BY COALESCE(d.file_name, c.document_id), c.document_id
+        {limit_sql}
+        """
+    )
+    try:
+        rows = conn.execute(statement, params).mappings().all()
+    except Exception:
+        sqlite_extension_filter = "AND LOWER(COALESCE(d.file_extension, '')) IN ('.xlsx', '.xlsm')" if xlsx_only else ""
+        sqlite_only_unparsed_filter = (
+            """
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM estimate_template_rows t
+                  WHERE t.document_id = c.document_id
+                    AND t.parser_version = :parser_version
+              )
+            """
+            if only_unparsed
+            else ""
+        )
+        sqlite_statement = text(
+            f"""
+            SELECT
+                c.document_id,
+                COALESCE(d.file_name, c.document_id) AS source_file,
+                COUNT(*) AS rows_available
+            FROM document_content c
+            LEFT JOIN documents d ON d.document_id = c.document_id
+            WHERE LOWER(COALESCE(c.sheet_name, '')) = 'estimate'
+              AND c.row_number IS NOT NULL
+              AND c.text_content LIKE '%:%'
+              {sqlite_extension_filter}
+              AND (:document_id IS NULL OR c.document_id = :document_id)
+              AND (:document_type IS NULL OR d.document_type = :document_type)
+              {sqlite_only_unparsed_filter}
+            GROUP BY c.document_id, COALESCE(d.file_name, c.document_id)
+            ORDER BY COALESCE(d.file_name, c.document_id), c.document_id
+            {limit_sql}
+            """
+        )
+        rows = conn.execute(sqlite_statement, params).mappings().all()
+    return [dict(row) for row in rows]
+
+
 def fetch_document_content_rows(conn: Connection, document_id: str | None = None) -> list[dict[str, Any]]:
     params: dict[str, Any] = {"document_id": document_id}
     statement = text(
@@ -570,6 +659,7 @@ def fetch_document_content_rows(conn: Connection, document_id: str | None = None
         WHERE LOWER(COALESCE(c.sheet_name, '')) = 'estimate'
           AND c.row_number IS NOT NULL
           AND c.text_content ~ '[A-Z]{1,4}[0-9]+:'
+          AND LOWER(COALESCE(d.file_extension, '')) IN ('.xlsx', '.xlsm')
           AND (:document_id IS NULL OR c.document_id = :document_id)
         ORDER BY c.document_id, c.row_number, c.cell_range
         """
@@ -592,6 +682,7 @@ def fetch_document_content_rows(conn: Connection, document_id: str | None = None
             WHERE LOWER(COALESCE(c.sheet_name, '')) = 'estimate'
               AND c.row_number IS NOT NULL
               AND c.text_content LIKE '%:%'
+              AND LOWER(COALESCE(d.file_extension, '')) IN ('.xlsx', '.xlsm')
               AND (:document_id IS NULL OR c.document_id = :document_id)
             ORDER BY c.document_id, c.row_number, c.cell_range
             """
@@ -600,26 +691,73 @@ def fetch_document_content_rows(conn: Connection, document_id: str | None = None
     return [dict(row) for row in rows]
 
 
-def parse_existing_document_content(engine: Engine, document_id: str | None = None, batch_size: int = 1000) -> dict[str, Any]:
+def parse_existing_document_content(
+    engine: Engine,
+    document_id: str | None = None,
+    batch_size: int = 1000,
+    *,
+    limit_documents: int | None = None,
+    document_type: str | None = None,
+    xlsx_only: bool = True,
+    only_unparsed: bool = False,
+    progress: bool = False,
+) -> dict[str, Any]:
     with engine.connect() as conn:
-        source_rows = fetch_document_content_rows(conn, document_id=document_id)
-    unused_placeholder_ids = [template_row_id_for_content_row(row) for row in source_rows if is_unused_placeholder_adder_row(row)]
-    parsed_rows = parse_document_content_rows(source_rows)
-    with engine.begin() as conn:
-        rows_deleted = delete_template_rows_by_id(conn, unused_placeholder_ids)
-        rows_upserted = upsert_template_rows(conn, parsed_rows, batch_size=batch_size)
-    documents_considered = len({row.get("document_id") for row in source_rows})
-    skipped = len(source_rows) - len(parsed_rows)
-    bucket_counts = Counter(row.get("template_bucket") for row in parsed_rows)
-    kind_counts = Counter(row.get("line_item_kind") for row in parsed_rows)
+        candidate_documents = fetch_template_candidate_documents(
+            conn,
+            document_id=document_id,
+            limit_documents=limit_documents,
+            document_type=document_type,
+            xlsx_only=xlsx_only,
+            only_unparsed=only_unparsed,
+        )
+
+    documents_considered = len(candidate_documents)
+    if progress:
+        print(f"Template row parse: documents considered: {documents_considered}", flush=True)
+
+    rows_read = 0
+    rows_parsed = 0
+    rows_upserted = 0
+    rows_deleted = 0
+    review_rows = 0
+    bucket_counts: Counter[str] = Counter()
+    kind_counts: Counter[str] = Counter()
+
+    for index, document in enumerate(candidate_documents, start=1):
+        current_document_id = str(document.get("document_id") or "")
+        source_file = str(document.get("source_file") or current_document_id)
+        with engine.connect() as conn:
+            source_rows = fetch_document_content_rows(conn, document_id=current_document_id)
+        parsed_rows = parse_document_content_rows(source_rows)
+        unused_placeholder_ids = [template_row_id_for_content_row(row) for row in source_rows if is_unused_placeholder_adder_row(row)]
+        with engine.begin() as conn:
+            deleted_for_document = delete_template_rows_by_id(conn, unused_placeholder_ids)
+            upserted_for_document = upsert_template_rows(conn, parsed_rows, batch_size=batch_size)
+
+        rows_read += len(source_rows)
+        rows_parsed += len(parsed_rows)
+        rows_upserted += upserted_for_document
+        rows_deleted += deleted_for_document
+        review_rows += sum(1 for row in parsed_rows if row.get("needs_review"))
+        bucket_counts.update(str(row.get("template_bucket")) for row in parsed_rows)
+        kind_counts.update(str(row.get("line_item_kind")) for row in parsed_rows)
+        if progress:
+            print(
+                f"[{index}/{documents_considered}] {source_file} — "
+                f"rows read: {len(source_rows)}, parsed/upserted: {len(parsed_rows)}/{upserted_for_document}",
+                flush=True,
+            )
+
+    skipped = rows_read - rows_parsed
     return {
         "documents_considered": documents_considered,
-        "rows_read": len(source_rows),
-        "rows_parsed": len(parsed_rows),
+        "rows_read": rows_read,
+        "rows_parsed": rows_parsed,
         "rows_skipped": skipped,
         "rows_upserted": rows_upserted,
         "placeholder_rows_deleted": rows_deleted,
-        "rows_needing_review": sum(1 for row in parsed_rows if row.get("needs_review")),
+        "rows_needing_review": review_rows,
         "by_template_bucket": dict(sorted(bucket_counts.items())),
         "by_line_item_kind": dict(sorted(kind_counts.items())),
     }
@@ -723,6 +861,7 @@ def totals_for_document(template_rows: pd.DataFrame) -> dict[str, float | None]:
 
 
 def print_summary(summary: dict[str, Any]) -> None:
+    print("Template row parse final summary:")
     print(f"Documents considered: {summary.get('documents_considered', 0)}")
     print(f"Rows read: {summary.get('rows_read', 0)}")
     print(f"Rows parsed: {summary.get('rows_parsed', 0)}")
@@ -741,6 +880,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Parse document_content XLSX Estimate rows into structured template rows.")
     parser.add_argument("--parse-existing", action="store_true", help="Parse all existing document_content Estimate rows.")
     parser.add_argument("--document-id", help="Parse one document_id from document_content.")
+    parser.add_argument("--limit-documents", type=int, help="Maximum number of candidate documents to parse.")
+    parser.add_argument("--document-type", help="Only parse documents with this documents.document_type value.")
+    parser.add_argument("--xlsx-only", action="store_true", default=True, help="Restrict parsing to .xlsx/.xlsm documents. This is the default.")
+    parser.add_argument("--only-unparsed", action="store_true", help="Only parse documents without rows for the current parser version.")
     parser.add_argument("--database-url", default=os.getenv("DATABASE_URL") or os.getenv("NEON_DATABASE_URL"))
     parser.add_argument("--batch-size", type=int, default=1000)
     args = parser.parse_args(argv)
@@ -754,7 +897,16 @@ def main(argv: list[str] | None = None) -> int:
     if not args.database_url:
         raise SystemExit("Set --database-url, DATABASE_URL, or NEON_DATABASE_URL.")
     engine = create_engine(args.database_url, future=True)
-    summary = parse_existing_document_content(engine, document_id=args.document_id, batch_size=args.batch_size)
+    summary = parse_existing_document_content(
+        engine,
+        document_id=args.document_id,
+        batch_size=args.batch_size,
+        limit_documents=args.limit_documents,
+        document_type=args.document_type,
+        xlsx_only=args.xlsx_only,
+        only_unparsed=args.only_unparsed,
+        progress=True,
+    )
     print_summary(summary)
     return 0
 

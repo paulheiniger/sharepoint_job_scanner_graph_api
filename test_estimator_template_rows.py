@@ -30,7 +30,9 @@ def create_sqlite_schema(engine) -> None:
                 CREATE TABLE documents (
                     document_id TEXT PRIMARY KEY,
                     job_id TEXT,
-                    file_name TEXT
+                    file_name TEXT,
+                    file_extension TEXT,
+                    document_type TEXT
                 )
                 """
             )
@@ -287,7 +289,14 @@ def test_idempotent_upsert_preserves_document_content() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     create_sqlite_schema(engine)
     with engine.begin() as conn:
-        conn.execute(text("INSERT INTO documents (document_id, job_id, file_name) VALUES ('DOC1', 'JOB1', 'Estimate.xlsx')"))
+        conn.execute(
+            text(
+                """
+                INSERT INTO documents (document_id, job_id, file_name, file_extension, document_type)
+                VALUES ('DOC1', 'JOB1', 'Estimate.xlsx', '.xlsx', 'estimate')
+                """
+            )
+        )
         conn.execute(
             text(
                 """
@@ -316,12 +325,125 @@ def test_idempotent_upsert_preserves_document_content() -> None:
     assert "Pwash/Prep" in raw_text
 
 
+def test_parse_existing_is_bounded_visible_and_xlsx_only(capsys) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    create_sqlite_schema(engine)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO documents (document_id, job_id, file_name, file_extension, document_type)
+                VALUES
+                    ('DOC1', 'JOB1', 'Estimate 1.xlsx', '.xlsx', 'estimate'),
+                    ('DOC2', 'JOB2', 'Proposal.pdf', '.pdf', 'proposal'),
+                    ('DOC3', 'JOB3', 'Estimate 3.xlsx', '.xlsx', 'estimate')
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO document_content (
+                    content_id, document_id, job_id, sheet_name, row_number, cell_range, text_content
+                )
+                VALUES
+                    (
+                        'CONTENT1', 'DOC1', 'JOB1', 'Estimate', 116, 'A116:J116',
+                        'A116: Pwash/Prep | B116: 4 | C116: 5 | D116: 220 | H116: 7607.6'
+                    ),
+                    (
+                        'CONTENT2', 'DOC2', 'JOB2', NULL, NULL, NULL,
+                        'PDF paragraph that should not be scanned A116: fake'
+                    ),
+                    (
+                        'CONTENT3', 'DOC3', 'JOB3', 'Estimate', 26, 'A26:H26',
+                        'A26: 11 | B26: Silicone | C26: 10 | E26: 40 | H26: 400'
+                    )
+                """
+            )
+        )
+
+    summary = tr.parse_existing_document_content(engine, limit_documents=1, progress=True)
+
+    assert summary["documents_considered"] == 1
+    assert summary["rows_read"] == 1
+    assert summary["rows_upserted"] == 1
+    captured = capsys.readouterr().out
+    assert "Template row parse: documents considered: 1" in captured
+    assert "[1/1] Estimate 1.xlsx" in captured
+    with engine.connect() as conn:
+        parsed_documents = conn.execute(text("SELECT DISTINCT document_id FROM estimate_template_rows")).scalars().all()
+    assert parsed_documents == ["DOC1"]
+
+
+def test_parse_existing_only_unparsed_skips_current_parser_rows() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    create_sqlite_schema(engine)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO documents (document_id, job_id, file_name, file_extension, document_type)
+                VALUES
+                    ('DOC1', 'JOB1', 'Estimate 1.xlsx', '.xlsx', 'estimate'),
+                    ('DOC2', 'JOB2', 'Estimate 2.xlsx', '.xlsx', 'estimate')
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO document_content (
+                    content_id, document_id, job_id, sheet_name, row_number, cell_range, text_content
+                )
+                VALUES
+                    (
+                        'CONTENT1', 'DOC1', 'JOB1', 'Estimate', 116, 'A116:J116',
+                        'A116: Pwash/Prep | B116: 4 | C116: 5 | D116: 220 | H116: 7607.6'
+                    ),
+                    (
+                        'CONTENT2', 'DOC2', 'JOB2', 'Estimate', 26, 'A26:H26',
+                        'A26: 11 | B26: Silicone | C26: 10 | E26: 40 | H26: 400'
+                    )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO estimate_template_rows (
+                    template_row_id, document_id, job_id, sheet_name, row_number,
+                    cell_range, template_bucket, line_item_kind, needs_review, parser_version
+                )
+                VALUES ('existing', 'DOC1', 'JOB1', 'Estimate', 116, 'A116:J116', 'labor_prep', 'labor', false, :parser_version)
+                """
+            ),
+            {"parser_version": tr.PARSER_VERSION},
+        )
+
+    summary = tr.parse_existing_document_content(engine, only_unparsed=True)
+
+    assert summary["documents_considered"] == 1
+    with engine.connect() as conn:
+        parsed_documents = conn.execute(
+            text("SELECT DISTINCT document_id FROM estimate_template_rows ORDER BY document_id")
+        ).scalars().all()
+    assert parsed_documents == ["DOC1", "DOC2"]
+
+
 def test_unused_placeholder_adder_deletes_stale_template_row() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     create_sqlite_schema(engine)
     stale_id = tr.stable_template_row_id("DOC1", "Estimate", 176, "A176:J176")
     with engine.begin() as conn:
-        conn.execute(text("INSERT INTO documents (document_id, job_id, file_name) VALUES ('DOC1', 'JOB1', 'Estimate.xlsx')"))
+        conn.execute(
+            text(
+                """
+                INSERT INTO documents (document_id, job_id, file_name, file_extension, document_type)
+                VALUES ('DOC1', 'JOB1', 'Estimate.xlsx', '.xlsx', 'estimate')
+                """
+            )
+        )
         conn.execute(
             text(
                 """

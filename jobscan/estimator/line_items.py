@@ -205,7 +205,7 @@ def _row_text(row: dict[str, Any] | pd.Series) -> str:
 
 
 def _line_total(row: dict[str, Any] | pd.Series) -> float | None:
-    for column in ("line_total", "extended_cost", "total", "amount"):
+    for column in ("line_total", "extended_cost", "estimated_cost", "total", "amount"):
         value = to_float(row.get(column))
         if value is not None:
             return value
@@ -330,8 +330,10 @@ def summarize_similar_job_buckets(
             for _, row in similar_jobs.iterrows()
             if to_float(row.get("estimated_sqft"))
         }
-    if {"template_bucket", "template_section", "classification_confidence", "needs_review"}.issubset(filtered.columns):
+    if {"template_bucket", "template_section", "needs_review"}.issubset(filtered.columns):
         classified = filtered.copy()
+        if "classification_confidence" not in classified.columns:
+            classified["classification_confidence"] = 1.0
         if "line_total" not in classified.columns:
             classified["line_total"] = classified.apply(_line_total, axis=1)
     else:
@@ -362,7 +364,10 @@ def summarize_similar_job_buckets(
         )
         .sort_values(["frequency", "median_total_cost"], ascending=[False, False])
     )
-    name_col = "line_item_name" if "line_item_name" in classified.columns else "item_name"
+    name_col = next(
+        (column for column in ("line_item_name", "item_name", "selected_item_name", "row_label", "raw_item_name") if column in classified.columns),
+        "template_bucket",
+    )
     common_items = (
         classified.groupby(["template_bucket", name_col], dropna=False, as_index=False)
         .agg(

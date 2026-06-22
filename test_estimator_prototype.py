@@ -195,6 +195,44 @@ def test_estimate_range_generation() -> None:
     assert result["similar_jobs"].iloc[0]["job_id"] == "J1"
 
 
+def test_build_estimate_uses_template_rows_when_classifications_missing() -> None:
+    data = EstimatorData(
+        jobs=pd.DataFrame(
+            [
+                {
+                    "job_id": "J1",
+                    "division": "Roofing",
+                    "job_name": "Metal Roof Silicone",
+                    "job_type": "roof coating",
+                    "estimated_sqft": 10000,
+                    "estimated_value": 100000,
+                }
+            ]
+        ),
+        template_rows=pd.DataFrame(
+            [
+                {
+                    "template_row_id": "T1",
+                    "job_id": "J1",
+                    "template_bucket": "coating",
+                    "template_section": "materials",
+                    "line_item_kind": "material",
+                    "selected_item_name": "Silicone",
+                    "estimated_cost": 1200,
+                    "needs_review": False,
+                }
+            ]
+        ),
+        pricing=pd.DataFrame(),
+    )
+
+    result = build_estimate("Roofing metal roof 10,000 sqft silicone coating", data)
+    bucket_summary = result["template_line_item_summary"]["bucket_summary"]
+
+    assert not bucket_summary.empty
+    assert bucket_summary.iloc[0]["template_bucket"] == "coating"
+
+
 def test_missing_address_triggers_travel_review() -> None:
     travel = estimate_travel_impact({}, recommended_crew_size=4, estimated_work_days=3)
 

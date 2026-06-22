@@ -1,0 +1,60 @@
+roots:
+  # 2025 Roofing
+  - division: Roofing
+    pipeline_status: Completed
+    path: "2025 MASTER FILES/2025 ROOFING/COMPLETED"
+
+  - division: Roofing
+    pipeline_status: Contracted
+    path: "2025 MASTER FILES/2025 ROOFING/CONTRACTED"
+
+  - division: Roofing
+    pipeline_status: Proposed
+    path: "2025 MASTER FILES/2025 ROOFING/PROPOSED"
+
+  # 2025 Insulation
+  - division: Insulation
+    pipeline_status: Contracted
+    path: "2025 MASTER FILES/2025 INSULATION/CONTRACTED"
+
+  - division: Insulation
+    pipeline_status: Proposed
+    path: "2025 MASTER FILES/2025 INSULATION/PROPOSED"
+
+  - division: Insulation
+    pipeline_status: Budgetary
+    path: "2025 MASTER FILES/2025 INSULATION/BUDGETARY"
+
+  - division: Insulation
+    pipeline_status: Subcontracted
+    path: "2025 MASTER FILES/2025 INSULATION/SUBCONTRACTED"
+
+  - division: Insulation
+    pipeline_status: Cancelled
+    path: "2025 MASTER FILES/2025 INSULATION/CANCELLED"
+
+  - division: Insulation
+    pipeline_status: Did Not Get
+    path: "2025 MASTER FILES/2025 INSULATION/DID NOT GET"
+
+  # 2025 Flooring
+  - division: Flooring
+    pipeline_status: Completed
+    path: "2025 MASTER FILES/2025 FLOORING/COMPLETED"
+
+  - division: Flooring
+    pipeline_status: Contracted
+    path: "2025 MASTER FILES/2025 FLOORING/CONTRACTED"
+
+  - division: Flooring
+    pipeline_status: Proposed
+    path: "2025 MASTER FILES/2025 FLOORING/PROPOSED"
+
+  - division: Flooring
+    pipeline_status: Did Not Get
+    path: "2025 MASTER FILES/2025 FLOORING/DID NOT GET"
+
+  # 2025 Specialty
+  - division: Specialty
+    pipeline_status: Completed
+    path: "2025 MASTER FILES/2025 SPECIALTY PROJECTS/COMPLETED"
