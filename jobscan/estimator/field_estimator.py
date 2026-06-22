@@ -19,6 +19,13 @@ from .travel import build_travel_plan
 
 
 def is_finite_number(value: Any) -> bool:
+    if value is None:
+        return False
+    try:
+        if pd.isna(value):
+            return False
+    except Exception:
+        pass
     number = to_float(value)
     if number is None:
         return False
@@ -27,6 +34,18 @@ def is_finite_number(value: Any) -> bool:
 
 def is_missing_number(value: Any) -> bool:
     return not is_finite_number(value)
+
+
+def is_missing_or_bad_number(value: Any) -> bool:
+    return not is_finite_number(value)
+
+
+def safe_float(value: Any, default: float = 0.0) -> float:
+    return to_float_or_default(value, default)
+
+
+def safe_int(value: Any, default: int = 0) -> int:
+    return to_int_or_default(value, default)
 
 
 def to_int_or_default(value: Any, default: int) -> int:
@@ -46,7 +65,9 @@ def to_float_or_default(value: Any, default: float) -> float:
 def optional_positive_float(value: Any) -> float | None:
     if not is_finite_number(value):
         return None
-    number = float(to_float(value) or 0)
+    number = to_float(value)
+    if number is None:
+        return None
     return number if number > 0 else None
 
 
@@ -235,73 +256,93 @@ def build_labor_plan(
     decision: dict[str, Any],
     assumptions: EstimatorAssumptions,
 ) -> tuple[list[dict[str, Any]], float, float, int, int, int]:
-    area = to_float_or_default(scope.get("surface_area_sqft"), 0.0)
+    area = safe_float(scope.get("surface_area_sqft"), 0.0)
     multiplier = to_float_or_default(decision.get("labor_modifiers", {}).get("combined_labor_multiplier"), 1.0)
-    crew_size = to_int_or_default(decision.get("crew_assumptions", {}).get("recommended_crew_size"), 4)
+    crew_size = safe_int(decision.get("crew_assumptions", {}).get("recommended_crew_size"), 4)
+    if crew_size <= 0:
+        crew_size = 4
     rows = calibration.get("labor_by_bucket") or []
     plan: list[dict[str, Any]] = []
     incomplete_calibration = False
+    skipped_rows: list[str] = []
     total_hours = 0.0
     total_cost = 0.0
     if rows:
         for row in rows:
-            hours_missing = is_missing_number(row.get("median_total_hours"))
-            days_missing = is_missing_number(row.get("median_days"))
-            crew_missing = is_missing_number(row.get("median_crew_size"))
-            cost_missing = is_missing_number(row.get("median_estimated_cost"))
-            evidence_missing = is_missing_number(row.get("evidence_count"))
-            incomplete_calibration = incomplete_calibration or any(
-                [hours_missing, days_missing, crew_missing, cost_missing, evidence_missing]
-            )
-            days = 1.0 if days_missing else max(to_float_or_default(row.get("median_days"), 1.0), 0.0)
-            hours = None if hours_missing else max(to_float_or_default(row.get("median_total_hours"), 0.0), 0.0)
-            cost = None if cost_missing else max(to_float_or_default(row.get("median_estimated_cost"), 0.0), 0.0)
-            row_crew_size = to_int_or_default(row.get("median_crew_size"), crew_size)
-            if row_crew_size <= 0:
-                row_crew_size = 4
-            adjusted_days = days * multiplier
-            adjusted_hours = hours * multiplier if hours is not None else adjusted_days * row_crew_size * 10
-            estimated_cost = cost * multiplier if cost is not None else 0.0
-            total_hours += adjusted_hours or 0
-            total_cost += estimated_cost or 0
-            plan.append(
-                {
-                    "task": row.get("template_bucket"),
-                    "base_days": days,
-                    "adjusted_days": round(adjusted_days, 2),
-                    "crew_size": row_crew_size,
-                    "total_hours": round(adjusted_hours, 1),
-                    "estimated_cost": round(estimated_cost, 2),
-                    "evidence_count": to_int_or_default(row.get("evidence_count"), 0),
-                    "notes": (
-                        "Historical labor calibration was incomplete for one or more tasks; defaults were used."
-                        if incomplete_calibration
-                        else "Calibrated from estimate_template_rows."
-                    ),
-                }
-            )
+            try:
+                hours_missing = is_missing_or_bad_number(row.get("median_total_hours"))
+                days_missing = is_missing_or_bad_number(row.get("median_days"))
+                crew_missing = is_missing_or_bad_number(row.get("median_crew_size"))
+                cost_missing = is_missing_or_bad_number(row.get("median_estimated_cost"))
+                evidence_missing = is_missing_or_bad_number(row.get("evidence_count"))
+                row_incomplete = any([hours_missing, days_missing, crew_missing, cost_missing, evidence_missing])
+                incomplete_calibration = incomplete_calibration or row_incomplete
+                days = 1.0 if days_missing else max(safe_float(row.get("median_days"), 1.0), 0.0)
+                row_crew_size = safe_int(row.get("median_crew_size"), crew_size)
+                if row_crew_size <= 0:
+                    row_crew_size = 4
+                hours = None if hours_missing else max(safe_float(row.get("median_total_hours"), 0.0), 0.0)
+                cost_value = row.get("median_estimated_cost")
+                if is_missing_or_bad_number(cost_value):
+                    cost_value = row.get("median_cost")
+                if is_missing_or_bad_number(cost_value):
+                    cost_missing = True
+                    row_incomplete = True
+                    incomplete_calibration = True
+                    cost = None
+                else:
+                    cost = max(safe_float(cost_value, 0.0), 0.0)
+                adjusted_days = safe_float(days * multiplier, 1.0)
+                adjusted_hours = safe_float(hours * multiplier, 0.0) if hours is not None else adjusted_days * row_crew_size * 10
+                estimated_cost = safe_float(cost * multiplier, 0.0) if cost is not None else 0.0
+                total_hours += adjusted_hours
+                total_cost += estimated_cost
+                plan.append(
+                    {
+                        "task": row.get("template_bucket") or "labor_calibration",
+                        "base_days": round(days, 2),
+                        "adjusted_days": round(adjusted_days, 2),
+                        "crew_size": row_crew_size,
+                        "total_hours": round(adjusted_hours, 1),
+                        "estimated_cost": round(estimated_cost, 2),
+                        "evidence_count": safe_int(row.get("evidence_count"), 0),
+                        "needs_review": bool(row_incomplete),
+                        "notes": (
+                            "Historical labor calibration was incomplete for one or more tasks; defaults were used."
+                            if row_incomplete
+                            else "Calibrated from estimate_template_rows."
+                        ),
+                    }
+                )
+            except Exception as err:
+                incomplete_calibration = True
+                skipped_rows.append(f"Skipped malformed labor calibration row: {type(err).__name__}")
+                continue
     if not plan:
-        productivity = to_float(decision.get("labor_modifiers", {}).get("adjusted_productivity_sqft_per_day")) or assumptions.crew_productivity_sqft_per_day_high
-        days = max(area / max(productivity, 1), 1) if area else 1
-        total_hours = days * crew_size * 10
-        total_cost = total_hours * assumptions.blended_hourly_rate
+        days = 1.0
+        total_hours = 40.0
+        total_cost = 0.0
         plan.append(
             {
-                "task": "overall_labor",
-                "base_days": round(days, 2),
-                "adjusted_days": round(days, 2),
-                "crew_size": crew_size,
-                "total_hours": round(total_hours, 1),
-                "estimated_cost": round(total_cost, 2),
+                "task": "labor_allowance",
+                "base_days": 1.0,
+                "adjusted_days": 1.0,
+                "crew_size": 4,
+                "total_hours": 40,
+                "estimated_cost": 0.0,
                 "evidence_count": 0,
-                "notes": "Fallback production-rate assumption; review required.",
+                "needs_review": True,
+                "notes": "Historical labor calibration unavailable; estimator must price labor manually.",
             }
         )
+        crew_size = 4
     low = total_cost * 0.85
     high = total_cost * 1.2
-    duration_total = sum(to_float_or_default(row.get("adjusted_days"), 0.0) for row in plan)
-    duration_days = max(1, to_int_or_default(round(duration_total), 1))
-    return plan, round(low, 2), round(high, 2), crew_size, duration_days, to_int_or_default(round(total_hours), 0)
+    if skipped_rows:
+        plan[0]["notes"] = f"{plan[0].get('notes', '')} {'; '.join(skipped_rows[:3])}".strip()
+    duration_total = sum(safe_float(row.get("adjusted_days"), 0.0) for row in plan)
+    duration_days = max(1, safe_int(round(duration_total), 1))
+    return plan, round(low, 2), round(high, 2), crew_size, duration_days, safe_int(round(total_hours), 0)
 
 
 def similar_examples(similar: pd.DataFrame) -> list[dict[str, Any]]:
@@ -386,7 +427,27 @@ def estimate_from_field_notes(
     calibration = {**legacy_calibration, **template_calibration}
     decision = evaluate_decision_tree(scope, calibration)
     material_plan, material_low, material_high, material_review_flags = build_material_plan(scope, data, calibration, decision, assumptions)
-    labor_plan, labor_low, labor_high, crew_size, duration_days, _labor_hours = build_labor_plan(scope, calibration, decision, assumptions)
+    labor_review_flags: list[str] = []
+    try:
+        labor_plan, labor_low, labor_high, crew_size, duration_days, _labor_hours = build_labor_plan(scope, calibration, decision, assumptions)
+    except Exception as err:
+        labor_plan = [
+            {
+                "task": "labor_allowance",
+                "base_days": 1.0,
+                "adjusted_days": 1.0,
+                "crew_size": 4,
+                "total_hours": 40,
+                "estimated_cost": 0.0,
+                "needs_review": True,
+                "notes": f"Labor calibration failed; manual labor pricing required. Error: {type(err).__name__}",
+            }
+        ]
+        labor_low = 0.0
+        labor_high = 0.0
+        crew_size = 4
+        duration_days = 1
+        labor_review_flags = ["Historical labor calibration failed; manual labor pricing required."]
     travel_plan = build_travel_plan(scope, recommended_crew_size=crew_size, estimated_work_days=duration_days, assumptions=assumptions)
     equipment_low = sum(to_float(row.get("estimated_cost")) or 0 for row in material_plan if row.get("category") == "equipment") * 0.85
     equipment_high = equipment_low * 1.25
@@ -402,8 +463,11 @@ def estimate_from_field_notes(
     review_flags.extend(parsed.review_flags)
     review_flags.extend(decision.get("human_review_flags") or [])
     review_flags.extend(material_review_flags)
+    review_flags.extend(labor_review_flags)
     if any("Historical labor calibration was incomplete" in str(row.get("notes") or "") for row in labor_plan):
         review_flags.append("Historical labor calibration was incomplete for one or more tasks.")
+    if any("Historical labor calibration unavailable" in str(row.get("notes") or "") for row in labor_plan):
+        review_flags.append("Historical labor calibration unavailable or incomplete.")
     if travel_plan.get("needs_travel_review"):
         review_flags.append("Travel assumptions require review.")
     if data.template_rows.empty:

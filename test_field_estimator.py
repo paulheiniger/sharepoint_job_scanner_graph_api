@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+import jobscan.estimator.field_estimator as field_estimator_module
 from jobscan.estimator.field_estimator import build_labor_plan, estimate_from_field_notes
 from jobscan.estimator.field_notes import parse_field_notes, parse_field_sqft
 from jobscan.estimator.schemas import EstimatorAssumptions, EstimatorData
@@ -207,6 +208,26 @@ def test_build_labor_plan_handles_nan_historical_labor_values() -> None:
     assert labor_hours == 40
 
 
+def test_build_labor_plan_falls_back_when_labor_rows_are_malformed() -> None:
+    plan, low, high, crew_size, duration_days, labor_hours = build_labor_plan(
+        {"surface_area_sqft": 9536},
+        {"labor_by_bucket": [None]},
+        {"labor_modifiers": {"combined_labor_multiplier": 1.0}, "crew_assumptions": {"recommended_crew_size": float("nan")}},
+        EstimatorAssumptions(),
+    )
+
+    assert plan[0]["task"] == "labor_allowance"
+    assert plan[0]["crew_size"] == 4
+    assert plan[0]["total_hours"] == 40
+    assert plan[0]["estimated_cost"] == 0.0
+    assert plan[0]["needs_review"] is True
+    assert low == 0
+    assert high == 0
+    assert crew_size == 4
+    assert duration_days == 1
+    assert labor_hours == 40
+
+
 def test_field_estimator_does_not_crash_with_nan_template_labor_history() -> None:
     data = field_data()
     data.template_rows.loc[data.template_rows["line_item_kind"] == "labor", ["days", "crew_size", "total_hours", "estimated_cost"]] = float("nan")
@@ -234,6 +255,23 @@ def test_field_estimator_handles_sample_dimension_note_with_zero_sqft_override()
     assert dimensions["net_area_sqft"] == 9536
     assert recommendation.parsed_fields["estimated_sqft"] == 9536
     assert recommendation.draft_workbook_inputs["header"]["C12_estimated_sqft"] == 9536
+
+
+def test_field_estimator_sample_note_works_with_data_none(monkeypatch) -> None:
+    monkeypatch.setattr(field_estimator_module, "load_estimator_data", lambda *args, **kwargs: EstimatorData())
+    note = (
+        "Roof coating estimate. Metal roof in Louisville KY. Main roof is 120 ft by 80 ft. "
+        "Deduct two skylight areas, each 4 ft by 8 ft. Roof condition is fair with some rusted fasteners. "
+        "Customer wants a 10-year silicone coating system. Access is easy. Few penetrations."
+    )
+
+    recommendation = estimate_from_field_notes(note, {"estimated_sqft": 0, "warranty_target_years": 0}, data=None)
+
+    assert recommendation.parsed_fields["estimated_sqft"] == 9536
+    assert recommendation.parsed_fields["dimension_summary"]["gross_area_sqft"] == 9600
+    assert recommendation.parsed_fields["dimension_summary"]["deduction_area_sqft"] == 64
+    assert recommendation.parsed_fields["dimension_summary"]["net_area_sqft"] == 9536
+    assert any("Historical labor calibration unavailable or incomplete" in flag for flag in recommendation.review_flags)
 
 
 def test_line_item_classification_fallback_remains_available() -> None:

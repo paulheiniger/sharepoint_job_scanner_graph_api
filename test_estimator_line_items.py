@@ -199,6 +199,30 @@ def test_similar_job_bucket_summary_falls_back_to_template_bucket() -> None:
     assert summary["common_items"].iloc[0]["item_display_name"] == "primer"
 
 
+def test_similar_job_bucket_summary_prefers_total_cost_when_present() -> None:
+    line_items = pd.DataFrame(
+        [
+            {
+                "job_id": "J1",
+                "template_bucket": "coating",
+                "template_section": "materials",
+                "line_item_kind": "material",
+                "selected_item_name": "Silicone",
+                "line_total": float("nan"),
+                "estimated_cost": 200,
+                "total_cost": 500,
+                "needs_review": False,
+            }
+        ]
+    )
+    similar = pd.DataFrame([{"job_id": "J1", "estimated_sqft": 1000}])
+
+    summary = summarize_similar_job_buckets(line_items, similar)
+
+    assert summary["common_items"].iloc[0]["median_total_cost"] == 500
+    assert summary["bucket_summary"].iloc[0]["median_total_cost"] == 500
+
+
 def test_similar_job_bucket_summary_empty_inputs_return_stable_columns() -> None:
     summary = summarize_similar_job_buckets(pd.DataFrame(), pd.DataFrame([{"job_id": "J1"}]))
 

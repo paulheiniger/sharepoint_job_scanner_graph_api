@@ -3638,12 +3638,9 @@ def estimator_prototype_page() -> None:
     assumptions = EstimatorAssumptions()
     try:
         result = build_estimate(notes, data, overrides, assumptions)
-    except (KeyError, ValueError, TypeError) as exc:
+    except Exception as exc:
         logger.exception("Legacy estimator summary failed")
-        st.warning(
-            "Historical estimate summary is unavailable for this data shape. "
-            "The field-notes recommendation above is still available."
-        )
+        st.warning("Legacy historical summary is unavailable for this input.")
         with st.expander("Estimator summary debug", expanded=False):
             st.write(f"{type(exc).__name__}: {exc}")
         return

@@ -208,7 +208,7 @@ def _row_text(row: dict[str, Any] | pd.Series) -> str:
 
 
 def _line_total(row: dict[str, Any] | pd.Series) -> float | None:
-    for column in ("line_total", "extended_cost", "estimated_cost", "total", "amount"):
+    for column in ("total_cost", "line_total", "extended_cost", "estimated_cost", "total", "amount"):
         value = to_float(row.get(column))
         if value is not None:
             return value
@@ -365,8 +365,6 @@ def summarize_similar_job_buckets(
         classified = filtered.copy()
         if "classification_confidence" not in classified.columns:
             classified["classification_confidence"] = 1.0
-        if "line_total" not in classified.columns:
-            classified["line_total"] = classified.apply(_line_total, axis=1)
     else:
         classified = classify_line_items(filtered)
     if classified.empty:
@@ -383,6 +381,7 @@ def summarize_similar_job_buckets(
     classified["line_item_kind"] = classified["line_item_kind"].fillna("unknown").replace("", "unknown")
     if "needs_review" not in classified.columns:
         classified["needs_review"] = False
+    classified["line_total"] = classified.apply(_line_total, axis=1)
     classified["line_total"] = pd.to_numeric(classified["line_total"], errors="coerce").fillna(0)
     name_sources = [
         column
