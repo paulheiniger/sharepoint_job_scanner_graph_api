@@ -347,7 +347,7 @@ def test_roof_coating_allowances_are_priced_and_reviewable() -> None:
     )
 
     recommendation = estimate_from_field_notes(note, {"estimated_sqft": 0}, data=field_data())
-    allowance_rows = [row for row in recommendation.material_plan if row.get("category") == "allowance"]
+    allowance_rows = [row for row in recommendation.material_plan if row.get("category") in {"primer", "seam_treatment", "fastener_treatment"}]
     allowance_names = {row["item"] for row in allowance_rows}
     priced_review_allowances = [row for row in allowance_rows if row.get("needs_review") and row.get("estimated_cost") is not None]
 
@@ -399,6 +399,68 @@ def test_primer_allowance_absent_without_primer_trigger() -> None:
     )
 
     assert not any(row.get("item") == "Primer allowance" for row in recommendation.material_plan)
+
+
+def test_secondary_material_allowances_use_historical_ratios_with_current_pricing() -> None:
+    data = field_data()
+    extra_jobs = pd.DataFrame(
+        [
+            {"job_id": "J2", "estimated_sqft": 12000, "job_name": "Metal roof 2", "division": "ROOFING"},
+            {"job_id": "J3", "estimated_sqft": 8000, "job_name": "Metal roof 3", "division": "ROOFING"},
+        ]
+    )
+    data.jobs = pd.concat([data.jobs, extra_jobs], ignore_index=True)
+    material_rows = pd.DataFrame(
+        [
+            {"job_id": "J1", "selected_item_name": "Rust primer", "line_item_kind": "material", "quantity": 24, "unit": "gal", "estimated_cost": 960},
+            {"job_id": "J2", "selected_item_name": "Epoxy primer", "line_item_kind": "material", "quantity": 24, "unit": "gal", "estimated_cost": 960},
+            {"job_id": "J3", "selected_item_name": "Primer", "line_item_kind": "material", "quantity": 16, "unit": "gal", "estimated_cost": 640},
+            {"job_id": "J1", "selected_item_name": "Seam sealer", "line_item_kind": "material", "quantity": 960, "unit": "lf", "estimated_cost": 2880},
+            {"job_id": "J2", "selected_item_name": "Seam tape", "line_item_kind": "material", "quantity": 960, "unit": "lf", "estimated_cost": 2880},
+            {"job_id": "J3", "selected_item_name": "Detail tape", "line_item_kind": "material", "quantity": 640, "unit": "lf", "estimated_cost": 1920},
+            {"job_id": "J1", "selected_item_name": "Fastener screws", "line_item_kind": "material", "quantity": 600, "unit": "ea", "estimated_cost": 900},
+            {"job_id": "J2", "selected_item_name": "Rusted fasteners", "line_item_kind": "material", "quantity": 600, "unit": "ea", "estimated_cost": 900},
+            {"job_id": "J3", "selected_item_name": "Washer fastener detail", "line_item_kind": "material", "quantity": 400, "unit": "ea", "estimated_cost": 600},
+        ]
+    )
+    data.template_rows = pd.concat([data.template_rows, material_rows], ignore_index=True)
+    data.pricing = pd.concat(
+        [
+            data.pricing,
+            pd.DataFrame(
+                [
+                    {"pricing_item_id": "P2", "product_name": "Rust Primer", "category": "Primer", "unit_price": 42, "status": "active", "is_current": True, "needs_review": False},
+                    {"pricing_item_id": "P3", "product_name": "Seam Sealer", "category": "Seam", "unit_price": 3, "status": "active", "is_current": True, "needs_review": False},
+                    {"pricing_item_id": "P4", "product_name": "Fastener Dab", "category": "Fastener", "price_per_unit": 1.75, "status": "active", "is_current": True, "needs_review": False},
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+    data.pricing_catalog = data.pricing
+
+    recommendation = estimate_from_field_notes("Metal roof 12000 sqft rusted fasteners silicone coating Louisville KY", data=data)
+    rows_by_category = {row["category"]: row for row in recommendation.material_plan}
+
+    assert rows_by_category["primer"]["estimated_cost"] is not None
+    assert rows_by_category["primer"]["calibration_method"] == "historical_quantity_ratio"
+    assert rows_by_category["primer"]["selected_price_source"] == "current_pricing + historical_quantity_ratio"
+    assert rows_by_category["primer"]["needs_review"] is True
+    assert rows_by_category["seam_treatment"]["estimated_cost"] is not None
+    assert rows_by_category["fastener_treatment"]["estimated_cost"] is not None
+    assert recommendation.estimate_low > sum(row["cost_low"] for row in recommendation.material_plan if row.get("cost_low"))
+
+
+def test_secondary_material_allowances_fallback_without_historical_evidence() -> None:
+    recommendation = estimate_from_field_notes(
+        "Metal roof 12000 sqft rusted fasteners silicone coating Louisville KY",
+        data=field_data(),
+    )
+    rows_by_category = {row["category"]: row for row in recommendation.material_plan}
+
+    assert rows_by_category["primer"]["calibration_method"] == "deterministic_fallback"
+    assert rows_by_category["primer"]["estimated_cost"] is not None
+    assert rows_by_category["primer"]["needs_review"] is True
 
 
 def test_roof_coating_includes_ir_scan_when_requested() -> None:
