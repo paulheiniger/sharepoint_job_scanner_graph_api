@@ -196,6 +196,9 @@ def _row_text(row: dict[str, Any] | pd.Series) -> str:
             "line_item_category",
             "line_item_name",
             "item_name",
+            "selected_item_name",
+            "row_label",
+            "template_bucket",
             "description",
             "unit",
             "notes",
@@ -310,19 +313,47 @@ def summarize_similar_job_buckets(
     *,
     job_sqft: dict[str, float] | None = None,
 ) -> dict[str, Any]:
+    empty_bucket_summary = pd.DataFrame(
+        columns=[
+            "template_bucket",
+            "line_item_kind",
+            "item_display_name",
+            "frequency",
+            "median_cost_per_sqft",
+            "low_cost_per_sqft",
+            "high_cost_per_sqft",
+            "median_total_cost",
+            "average_total_cost",
+            "needs_review_count",
+        ]
+    )
+    empty_common_items = pd.DataFrame(
+        columns=[
+            "template_bucket",
+            "line_item_kind",
+            "item_display_name",
+            "frequency",
+            "median_total_cost",
+            "average_total_cost",
+            "needs_review",
+            "raw_item_name",
+            "count",
+            "median_line_total",
+        ]
+    )
     if line_items.empty or similar_jobs.empty or "job_id" not in line_items.columns or "job_id" not in similar_jobs.columns:
         return {
             "classified_rows": pd.DataFrame(),
-            "bucket_summary": pd.DataFrame(),
-            "common_items": pd.DataFrame(),
+            "bucket_summary": empty_bucket_summary,
+            "common_items": empty_common_items,
         }
     similar_ids = [str(job_id) for job_id in similar_jobs["job_id"].dropna().astype(str)]
     filtered = line_items[line_items["job_id"].astype(str).isin(similar_ids)].copy()
     if filtered.empty:
         return {
             "classified_rows": pd.DataFrame(),
-            "bucket_summary": pd.DataFrame(),
-            "common_items": pd.DataFrame(),
+            "bucket_summary": empty_bucket_summary,
+            "common_items": empty_common_items,
         }
     if job_sqft is None:
         job_sqft = {
@@ -338,14 +369,41 @@ def summarize_similar_job_buckets(
             classified["line_total"] = classified.apply(_line_total, axis=1)
     else:
         classified = classify_line_items(filtered)
+    if classified.empty:
+        return {
+            "classified_rows": classified,
+            "bucket_summary": empty_bucket_summary,
+            "common_items": empty_common_items,
+        }
+    if "template_bucket" not in classified.columns:
+        classified["template_bucket"] = "unknown"
+    classified["template_bucket"] = classified["template_bucket"].fillna("unknown").replace("", "unknown")
+    if "line_item_kind" not in classified.columns:
+        classified["line_item_kind"] = "unknown"
+    classified["line_item_kind"] = classified["line_item_kind"].fillna("unknown").replace("", "unknown")
+    if "needs_review" not in classified.columns:
+        classified["needs_review"] = False
     classified["line_total"] = pd.to_numeric(classified["line_total"], errors="coerce").fillna(0)
+    name_sources = [
+        column
+        for column in ("line_item_name", "item_name", "selected_item_name", "row_label", "template_bucket")
+        if column in classified.columns
+    ]
+    if not name_sources:
+        classified["item_display_name"] = "unknown"
+    else:
+        display = pd.Series("", index=classified.index, dtype=object)
+        for column in name_sources:
+            candidate = classified[column].fillna("").astype(str).str.strip()
+            display = display.where(display.astype(str).str.strip() != "", candidate)
+        classified["item_display_name"] = display.replace("", "unknown")
     classified["estimated_sqft"] = classified["job_id"].astype(str).map(job_sqft)
     classified["cost_per_sqft"] = classified.apply(
         lambda row: row["line_total"] / row["estimated_sqft"] if row.get("estimated_sqft") else None,
         axis=1,
     )
     by_job_bucket = (
-        classified.groupby(["job_id", "template_bucket"], dropna=False, as_index=False)
+        classified.groupby(["job_id", "template_bucket", "line_item_kind"], dropna=False, as_index=False)
         .agg(
             bucket_cost=("line_total", "sum"),
             cost_per_sqft=("cost_per_sqft", "sum"),
@@ -353,32 +411,32 @@ def summarize_similar_job_buckets(
         )
     )
     bucket_summary = (
-        by_job_bucket.groupby("template_bucket", dropna=False, as_index=False)
+        by_job_bucket.groupby(["template_bucket", "line_item_kind"], dropna=False, as_index=False)
         .agg(
             frequency=("job_id", "nunique"),
             median_cost_per_sqft=("cost_per_sqft", "median"),
             low_cost_per_sqft=("cost_per_sqft", lambda values: values.quantile(0.25)),
             high_cost_per_sqft=("cost_per_sqft", lambda values: values.quantile(0.75)),
             median_total_cost=("bucket_cost", "median"),
+            average_total_cost=("bucket_cost", "mean"),
             needs_review_count=("needs_review", "sum"),
         )
         .sort_values(["frequency", "median_total_cost"], ascending=[False, False])
     )
-    name_col = next(
-        (column for column in ("line_item_name", "item_name", "selected_item_name", "row_label", "raw_item_name") if column in classified.columns),
-        "template_bucket",
-    )
     common_items = (
-        classified.groupby(["template_bucket", name_col], dropna=False, as_index=False)
+        classified.groupby(["template_bucket", "line_item_kind", "item_display_name"], dropna=False, as_index=False)
         .agg(
-            count=(name_col, "size"),
-            median_line_total=("line_total", "median"),
+            frequency=("item_display_name", "size"),
+            median_total_cost=("line_total", "median"),
+            average_total_cost=("line_total", "mean"),
             needs_review=("needs_review", "max"),
         )
-        .rename(columns={name_col: "raw_item_name"})
-        .sort_values(["count", "median_line_total"], ascending=[False, False])
+        .sort_values(["frequency", "median_total_cost"], ascending=[False, False])
         .head(50)
     )
+    common_items["raw_item_name"] = common_items["item_display_name"]
+    common_items["count"] = common_items["frequency"]
+    common_items["median_line_total"] = common_items["median_total_cost"]
     return {
         "classified_rows": classified,
         "bucket_summary": bucket_summary,

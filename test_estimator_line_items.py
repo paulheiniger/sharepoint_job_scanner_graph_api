@@ -130,6 +130,106 @@ def test_similar_job_bucket_summary() -> None:
     assert not summary["classified_rows"].empty
 
 
+def test_similar_job_bucket_summary_uses_selected_item_name_without_item_name() -> None:
+    line_items = pd.DataFrame(
+        [
+            {
+                "job_id": "J1",
+                "template_bucket": "coating",
+                "template_section": "materials",
+                "line_item_kind": "material",
+                "selected_item_name": "High Solids Silicone",
+                "estimated_cost": 1200,
+                "needs_review": False,
+            }
+        ]
+    )
+    similar = pd.DataFrame([{"job_id": "J1", "estimated_sqft": 1200}])
+
+    summary = summarize_similar_job_buckets(line_items, similar)
+    common = summary["common_items"].iloc[0]
+    bucket = summary["bucket_summary"].iloc[0]
+
+    assert common["item_display_name"] == "High Solids Silicone"
+    assert common["raw_item_name"] == "High Solids Silicone"
+    assert common["count"] == 1
+    assert common["median_line_total"] == 1200
+    assert bucket["median_total_cost"] == 1200
+
+
+def test_similar_job_bucket_summary_falls_back_to_row_label() -> None:
+    line_items = pd.DataFrame(
+        [
+            {
+                "job_id": "J1",
+                "template_bucket": "labor_prep",
+                "template_section": "labor",
+                "line_item_kind": "labor",
+                "selected_item_name": "",
+                "row_label": "Prep Days",
+                "estimated_cost": 800,
+                "needs_review": False,
+            }
+        ]
+    )
+    similar = pd.DataFrame([{"job_id": "J1", "estimated_sqft": 1000}])
+
+    summary = summarize_similar_job_buckets(line_items, similar)
+
+    assert summary["common_items"].iloc[0]["item_display_name"] == "Prep Days"
+
+
+def test_similar_job_bucket_summary_falls_back_to_template_bucket() -> None:
+    line_items = pd.DataFrame(
+        [
+            {
+                "job_id": "J1",
+                "template_bucket": "primer",
+                "template_section": "materials",
+                "line_item_kind": "material",
+                "estimated_cost": 300,
+                "needs_review": False,
+            }
+        ]
+    )
+    similar = pd.DataFrame([{"job_id": "J1", "estimated_sqft": 1000}])
+
+    summary = summarize_similar_job_buckets(line_items, similar)
+
+    assert summary["common_items"].iloc[0]["item_display_name"] == "primer"
+
+
+def test_similar_job_bucket_summary_empty_inputs_return_stable_columns() -> None:
+    summary = summarize_similar_job_buckets(pd.DataFrame(), pd.DataFrame([{"job_id": "J1"}]))
+
+    assert summary["bucket_summary"].empty
+    assert "median_total_cost" in summary["bucket_summary"].columns
+    assert summary["common_items"].empty
+    assert "item_display_name" in summary["common_items"].columns
+    assert "median_line_total" in summary["common_items"].columns
+
+
+def test_similar_job_bucket_summary_no_matching_jobs_return_stable_columns() -> None:
+    line_items = pd.DataFrame(
+        [
+            {
+                "job_id": "J1",
+                "template_bucket": "coating",
+                "selected_item_name": "Silicone",
+                "estimated_cost": 100,
+            }
+        ]
+    )
+    similar = pd.DataFrame([{"job_id": "J2", "estimated_sqft": 1000}])
+
+    summary = summarize_similar_job_buckets(line_items, similar)
+
+    assert summary["bucket_summary"].empty
+    assert "template_bucket" in summary["bucket_summary"].columns
+    assert summary["common_items"].empty
+    assert "item_display_name" in summary["common_items"].columns
+
+
 def test_classification_row_has_template_fields() -> None:
     classified = classification_row_from_line_item(
         row(

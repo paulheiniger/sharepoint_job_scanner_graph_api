@@ -3590,7 +3590,17 @@ def estimator_prototype_page() -> None:
             st.json(field_recommendation.draft_workbook_inputs)
 
     assumptions = EstimatorAssumptions()
-    result = build_estimate(notes, data, overrides, assumptions)
+    try:
+        result = build_estimate(notes, data, overrides, assumptions)
+    except (KeyError, ValueError, TypeError) as exc:
+        logger.exception("Legacy estimator summary failed")
+        st.warning(
+            "Historical estimate summary is unavailable for this data shape. "
+            "The field-notes recommendation above is still available."
+        )
+        with st.expander("Estimator summary debug", expanded=False):
+            st.write(f"{type(exc).__name__}: {exc}")
+        return
     scope = result["scope"]
     estimate_range = result["estimate_range"]
     materials = result["materials"]
