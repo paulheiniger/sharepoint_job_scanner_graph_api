@@ -42,6 +42,7 @@ except ImportError:
     estimate_from_field_notes = None
 from jobscan.estimator.schemas import EstimatorAssumptions
 from jobscan.estimator.workbook_template import DEFAULT_TEMPLATE_PATH, fill_estimate_workbook
+from jobscan.estimator.workbook_writer import DEFAULT_ESTIMATE_OUTPUT_DIR, generate_estimate_workbook, resolve_default_template_path
 
 try:
     from streamlit_calendar import calendar
@@ -3644,6 +3645,29 @@ def estimator_prototype_page() -> None:
             show_table(dataframe_from_records(field_recommendation.similar_examples), ["job_id", "customer", "job_name", "estimated_sqft", "estimated_value", "price_per_sqft", "estimate_file", "similarity_score", "reason_matched"], height=260)
         with st.expander("Draft workbook input preview", expanded=False):
             st.json(field_recommendation.draft_workbook_inputs)
+        st.markdown("**Excel Estimate Draft**")
+        if st.button("Generate Excel Estimate Draft", key="generate_field_notes_excel_workbook"):
+            template_path = resolve_default_template_path()
+            if not template_path.exists():
+                st.warning("Estimate template workbook not found. Add it to templates/Estimate - Full Turnkey.xlsx.")
+            else:
+                try:
+                    output_path = generate_estimate_workbook(
+                        field_recommendation.draft_workbook_inputs,
+                        template_path,
+                        DEFAULT_ESTIMATE_OUTPUT_DIR,
+                    )
+                    st.success(f"Excel estimate draft created: {output_path}")
+                    st.download_button(
+                        "Download Excel Estimate Draft",
+                        data=output_path.read_bytes(),
+                        file_name=output_path.name,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="download_field_notes_excel_workbook",
+                    )
+                except Exception as exc:
+                    logger.exception("Field notes Excel draft generation failed")
+                    st.error(f"Could not generate Excel estimate draft: {safe_exception_text(exc)}")
 
     run_legacy_estimator = st.checkbox(
         "Run legacy historical estimator summary",

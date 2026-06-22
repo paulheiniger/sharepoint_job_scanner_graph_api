@@ -339,6 +339,68 @@ def test_roof_coating_filters_labor_calibration_and_travel_hours() -> None:
     assert any("Rusted fasteners/seams require detail review" in flag for flag in recommendation.review_flags)
 
 
+def test_roof_coating_allowances_are_priced_and_reviewable() -> None:
+    note = (
+        "Roof coating estimate. Metal roof in Louisville KY. Main roof is 120 ft by 80 ft. "
+        "Deduct two skylight areas, each 4 ft by 8 ft. Roof condition is fair with some rusted fasteners. "
+        "Customer wants a 10-year silicone coating system. Access is easy. Few penetrations."
+    )
+
+    recommendation = estimate_from_field_notes(note, {"estimated_sqft": 0}, data=field_data())
+    allowance_rows = [row for row in recommendation.material_plan if row.get("category") == "allowance"]
+    allowance_names = {row["item"] for row in allowance_rows}
+    priced_review_allowances = [row for row in allowance_rows if row.get("needs_review") and row.get("estimated_cost") is not None]
+
+    assert {"Primer allowance", "Seam treatment allowance", "Fastener treatment allowance"}.issubset(allowance_names)
+    assert len(priced_review_allowances) >= 3
+    assert all(row["selected_price_source"] == "rule_based_allowance" for row in priced_review_allowances)
+    assert sum(row["estimated_cost"] for row in priced_review_allowances) > 0
+    assert sum(row["cost_low"] for row in priced_review_allowances) > 0
+    assert sum(row["cost_high"] for row in priced_review_allowances) > sum(row["estimated_cost"] for row in priced_review_allowances)
+
+
+def test_priced_review_allowances_affect_estimate_range() -> None:
+    base = estimate_from_field_notes(
+        "Roof coating estimate. Metal roof in Louisville KY. Main roof is 120 ft by 80 ft. "
+        "Deduct two skylight areas, each 4 ft by 8 ft. Roof condition is good. "
+        "Customer wants a 10-year silicone coating system. Access is easy. Few penetrations.",
+        {"estimated_sqft": 0},
+        data=field_data(),
+    )
+    with_allowances = estimate_from_field_notes(
+        "Roof coating estimate. Metal roof in Louisville KY. Main roof is 120 ft by 80 ft. "
+        "Deduct two skylight areas, each 4 ft by 8 ft. Roof condition is fair with some rusted fasteners. "
+        "Customer wants a 10-year silicone coating system. Access is easy. Few penetrations.",
+        {"estimated_sqft": 0},
+        data=field_data(),
+    )
+
+    assert any(row.get("needs_review") and row.get("estimated_cost") for row in with_allowances.material_plan)
+    assert with_allowances.estimate_low > base.estimate_low
+    assert with_allowances.estimate_high > base.estimate_high
+
+
+def test_allowances_remain_unpriced_when_sqft_missing() -> None:
+    recommendation = estimate_from_field_notes("Metal roof rusted fasteners silicone coating Louisville KY", data=field_data())
+    allowance_rows = [row for row in recommendation.material_plan if row.get("category") == "allowance"]
+
+    assert allowance_rows
+    assert all(row.get("estimated_cost") is None for row in allowance_rows)
+    assert any("allowance could not be priced because estimated_sqft is missing" in flag for flag in recommendation.review_flags)
+
+
+def test_primer_allowance_absent_without_primer_trigger() -> None:
+    recommendation = estimate_from_field_notes(
+        "Roof coating estimate. Metal roof in Louisville KY. Main roof is 120 ft by 80 ft. "
+        "Deduct two skylight areas, each 4 ft by 8 ft. Roof condition is good. "
+        "Customer wants a 10-year silicone coating system. Access is easy. Few penetrations.",
+        {"estimated_sqft": 0},
+        data=field_data(),
+    )
+
+    assert not any(row.get("item") == "Primer allowance" for row in recommendation.material_plan)
+
+
 def test_roof_coating_includes_ir_scan_when_requested() -> None:
     recommendation = estimate_from_field_notes(
         "Metal roof 12000 sqft silicone coating Louisville KY include IR scan",

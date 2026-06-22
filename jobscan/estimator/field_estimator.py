@@ -268,6 +268,85 @@ def _median_positive(values: pd.Series) -> float | None:
     return float(numeric.median()) if not numeric.empty else None
 
 
+def _round_to_nearest(value: float, increment: int) -> int:
+    if increment <= 0:
+        return int(round(value))
+    return int(round(value / increment) * increment)
+
+
+def _scope_text(scope: dict[str, Any]) -> str:
+    return " ".join(str(value or "") for value in (scope.get("notes"), scope.get("roof_condition"), scope.get("substrate"), scope.get("coating_type"))).lower()
+
+
+def _primer_needed(scope: dict[str, Any], material_assumptions: dict[str, Any]) -> bool:
+    text = _scope_text(scope)
+    return bool(material_assumptions.get("primer_allowance_recommended")) or any(
+        phrase in text
+        for phrase in (
+            "rust",
+            "rusted",
+            "oxidized",
+            "old coating",
+            "adhesion concern",
+            "poor condition",
+            "poor/rusted",
+            "primer",
+        )
+    )
+
+
+def _fastener_treatment_needed(scope: dict[str, Any], material_assumptions: dict[str, Any]) -> bool:
+    text = _scope_text(scope)
+    return bool(material_assumptions.get("fastener_treatment_recommended")) or any(phrase in text for phrase in ("rusted fastener", "fastener", "screw", "metal roof"))
+
+
+def _matching_current_price(pricing: pd.DataFrame, keywords: list[str], preferred_columns: list[str]) -> dict[str, Any] | None:
+    for column in preferred_columns:
+        price = find_current_price(pricing, keywords, column)
+        if price and price.get("matched_price_column") == column:
+            return price
+    return None
+
+
+def _priced_allowance_row(
+    *,
+    item: str,
+    category: str,
+    quantity: float | int | None,
+    unit: str,
+    unit_price: float | None,
+    selected_price_source: str,
+    notes: str,
+    low_multiplier: float = 0.8,
+    high_multiplier: float = 1.25,
+) -> dict[str, Any]:
+    estimated_cost = None if quantity is None or unit_price is None else float(quantity) * unit_price
+    return {
+        "item": item,
+        "category": category,
+        "quantity": quantity,
+        "unit": unit,
+        "selected_price_source": selected_price_source,
+        "price_source_type": selected_price_source,
+        "unit_price": unit_price,
+        "estimated_cost": round(estimated_cost, 2) if estimated_cost is not None else None,
+        "cost_low": round(estimated_cost * low_multiplier, 2) if estimated_cost is not None else None,
+        "cost_high": round(estimated_cost * high_multiplier, 2) if estimated_cost is not None else None,
+        "needs_review": True,
+        "notes": notes,
+    }
+
+
+def _add_allowance_cost_to_totals(row: dict[str, Any], totals: tuple[float, float]) -> tuple[float, float]:
+    low_total, high_total = totals
+    estimated_cost = optional_positive_float(row.get("estimated_cost"))
+    if estimated_cost is None:
+        return low_total, high_total
+    low = to_float_or_default(row.get("cost_low"), estimated_cost)
+    high = to_float_or_default(row.get("cost_high"), estimated_cost)
+    return low_total + low, high_total + high
+
+
 def build_material_plan(
     scope: dict[str, Any],
     data: EstimatorData,
@@ -326,25 +405,102 @@ def build_material_plan(
             }
         )
     material_assumptions = decision.get("material_assumptions", {})
-    for flag_name, item_name in [
-        ("primer_allowance_recommended", "Primer allowance"),
-        ("seam_treatment_recommended", "Seam treatment allowance"),
-        ("fastener_treatment_recommended", "Fastener treatment allowance"),
-    ]:
-        if material_assumptions.get(flag_name):
-            plan.append(
-                {
-                    "item": item_name,
-                    "category": "allowance",
-                    "quantity": None,
-                    "unit": "",
-                    "selected_price_source": "review_allowance",
-                    "unit_price": None,
-                    "estimated_cost": None,
-                    "needs_review": True,
-                    "notes": "Estimator should price this allowance from current scope details.",
-                }
+    is_metal_roof_coating = bool(scope.get("coating_required")) and first_nonblank(scope.get("substrate")).lower() == "metal"
+    if _primer_needed(scope, material_assumptions):
+        if area <= 0:
+            row = _priced_allowance_row(
+                item="Primer allowance",
+                category="allowance",
+                quantity=None,
+                unit="sqft",
+                unit_price=None,
+                selected_price_source="review_allowance",
+                notes="Primer allowance could not be priced because estimated square footage is missing.",
             )
+            review_flags.append("Primer allowance could not be priced because estimated_sqft is missing.")
+        else:
+            primer_price = _matching_current_price(data.pricing, ["primer"], ["price_per_sqft", "price_per_unit"])
+            if primer_price:
+                unit_price = to_float(primer_price.get("matched_price"))
+                row = _priced_allowance_row(
+                    item=first_nonblank(primer_price.get("product_name"), "Primer allowance"),
+                    category="allowance",
+                    quantity=round(area, 1),
+                    unit="sqft",
+                    unit_price=unit_price,
+                    selected_price_source="current_pricing_allowance",
+                    notes="Current pricing catalog primer allowance; estimator should verify coverage and requirement.",
+                )
+            else:
+                text = _scope_text(scope)
+                unit_price = 0.4 if any(token in text for token in ("poor", "heavy rust", "severe rust", "oxidized")) else 0.25
+                row = _priced_allowance_row(
+                    item="Primer allowance",
+                    category="allowance",
+                    quantity=round(area, 1),
+                    unit="sqft",
+                    unit_price=unit_price,
+                    selected_price_source="rule_based_allowance",
+                    notes="Rule-based primer allowance due to rust/condition; estimator should verify primer requirement.",
+                )
+        plan.append(row)
+        low_total, high_total = _add_allowance_cost_to_totals(row, (low_total, high_total))
+
+    if is_metal_roof_coating and material_assumptions.get("seam_treatment_recommended"):
+        if area <= 0:
+            row = _priced_allowance_row(
+                item="Seam treatment allowance",
+                category="allowance",
+                quantity=None,
+                unit="lf",
+                unit_price=None,
+                selected_price_source="review_allowance",
+                notes="Seam treatment allowance could not be priced because estimated square footage is missing.",
+            )
+            review_flags.append("Seam treatment allowance could not be priced because estimated_sqft is missing.")
+        else:
+            seam_lf = _round_to_nearest(math.sqrt(area) * 8, 10)
+            seam_price = _matching_current_price(data.pricing, ["seam"], ["price_per_lf", "price_per_unit", "unit_price"])
+            unit_price = to_float(seam_price.get("matched_price")) if seam_price else 3.0
+            row = _priced_allowance_row(
+                item=first_nonblank(seam_price.get("product_name") if seam_price else "", "Seam treatment allowance"),
+                category="allowance",
+                quantity=seam_lf,
+                unit="lf",
+                unit_price=unit_price,
+                selected_price_source="current_pricing_allowance" if seam_price else "rule_based_allowance",
+                notes="Rule-based seam/detail LF allowance for metal roof coating; estimator should verify seam layout and detail requirements.",
+            )
+        plan.append(row)
+        low_total, high_total = _add_allowance_cost_to_totals(row, (low_total, high_total))
+
+    if _fastener_treatment_needed(scope, material_assumptions):
+        if area <= 0:
+            row = _priced_allowance_row(
+                item="Fastener treatment allowance",
+                category="allowance",
+                quantity=None,
+                unit="ea",
+                unit_price=None,
+                selected_price_source="review_allowance",
+                notes="Fastener treatment allowance could not be priced because estimated square footage is missing.",
+            )
+            review_flags.append("Fastener treatment allowance could not be priced because estimated_sqft is missing.")
+        else:
+            fasteners = _round_to_nearest(area / 20, 25)
+            fastener_price = _matching_current_price(data.pricing, ["fastener"], ["price_per_unit", "unit_price"])
+            unit_price = to_float(fastener_price.get("matched_price")) if fastener_price else 1.5
+            row = _priced_allowance_row(
+                item=first_nonblank(fastener_price.get("product_name") if fastener_price else "", "Fastener treatment allowance"),
+                category="allowance",
+                quantity=fasteners,
+                unit="ea",
+                unit_price=unit_price,
+                selected_price_source="current_pricing_allowance" if fastener_price else "rule_based_allowance",
+                notes="Rule-based fastener treatment allowance; estimator should verify count and detail requirements.",
+            )
+        plan.append(row)
+        low_total, high_total = _add_allowance_cost_to_totals(row, (low_total, high_total))
     return plan, round(low_total, 2), round(high_total, 2), review_flags
 
 
