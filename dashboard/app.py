@@ -3497,6 +3497,7 @@ def estimator_prototype_page() -> None:
         height=120,
         placeholder="Metal roof, about 12,000 sqft, rusted fasteners, restaurant in Louisville, silicone coating, medium access.",
     )
+    st.caption("Edit notes here, then click Generate Estimate Recommendation from Notes. Command+Enter only updates the text box; it does not generate the estimate.")
 
     with st.expander("Optional structured overrides", expanded=True):
         c1, c2, c3 = st.columns(3)
@@ -3551,7 +3552,7 @@ def estimator_prototype_page() -> None:
             field_sqft = st.number_input("Sqft override", min_value=0.0, value=surface_area or 0.0, step=500.0, key="field_estimator_sqft")
     field_sqft_override = optional_positive_number(field_sqft) or surface_area_override
     field_warranty_override = optional_positive_number(field_warranty)
-    if st.button("Generate Estimate Recommendation", key="generate_field_estimate_recommendation"):
+    if st.button("Generate Estimate Recommendation from Notes", key="generate_field_estimate_recommendation"):
         if field_estimator_fn is None:
             st.warning("Field notes estimator is not available in this deployment yet.")
         else:
@@ -3572,9 +3573,11 @@ def estimator_prototype_page() -> None:
                     },
                     data=data,
                 )
-            except ImportError:
-                logger.exception("field-notes estimator became unavailable")
-                st.warning("Field notes estimator is not available in this deployment yet.")
+            except Exception as err:
+                logger.exception("Field notes estimator failed")
+                st.error("Field notes estimator failed for this input.")
+                st.warning(f"{type(err).__name__}: {err}")
+                st.session_state["field_estimate_recommendation"] = None
     field_recommendation = st.session_state.get("field_estimate_recommendation")
     if field_recommendation:
         metric_row(
@@ -3635,14 +3638,24 @@ def estimator_prototype_page() -> None:
         with st.expander("Draft workbook input preview", expanded=False):
             st.json(field_recommendation.draft_workbook_inputs)
 
-    assumptions = EstimatorAssumptions()
-    try:
-        result = build_estimate(notes, data, overrides, assumptions)
-    except Exception as exc:
-        logger.exception("Legacy estimator summary failed")
-        st.warning("Legacy historical summary is unavailable for this input.")
-        with st.expander("Estimator summary debug", expanded=False):
-            st.write(f"{type(exc).__name__}: {exc}")
+    run_legacy_estimator = st.checkbox(
+        "Run legacy historical estimator summary",
+        value=False,
+        help="Optional. Uses older line-item summary logic and may be incomplete while the estimator is being migrated.",
+        key="run_legacy_estimator_summary",
+    )
+    result = None
+    if run_legacy_estimator:
+        assumptions = EstimatorAssumptions()
+        try:
+            result = build_estimate(notes, data, overrides, assumptions)
+        except Exception as exc:
+            logger.exception("Legacy estimator summary failed")
+            st.warning("Legacy historical summary is unavailable for this input.")
+            with st.expander("Estimator summary debug", expanded=False):
+                st.write(f"{type(exc).__name__}: {exc}")
+            result = None
+    if result is None:
         return
     scope = result["scope"]
     estimate_range = result["estimate_range"]

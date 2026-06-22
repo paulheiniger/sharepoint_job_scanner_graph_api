@@ -274,6 +274,20 @@ def test_field_estimator_sample_note_works_with_data_none(monkeypatch) -> None:
     assert any("Historical labor calibration unavailable or incomplete" in flag for flag in recommendation.review_flags)
 
 
+def test_field_estimator_returns_recommendation_when_labor_plan_raises(monkeypatch) -> None:
+    def broken_labor_plan(*args, **kwargs):
+        raise ValueError("bad labor history")
+
+    monkeypatch.setattr(field_estimator_module, "build_labor_plan", broken_labor_plan)
+
+    recommendation = estimate_from_field_notes("Metal roof 12000 sqft silicone coating Louisville KY", data=field_data())
+
+    assert recommendation.parsed_fields["estimated_sqft"] == 12000
+    assert recommendation.labor_plan[0]["task"] == "labor_allowance"
+    assert recommendation.labor_plan[0]["needs_review"] is True
+    assert any("Historical labor calibration failed" in flag for flag in recommendation.review_flags)
+
+
 def test_line_item_classification_fallback_remains_available() -> None:
     recommendation = estimate_from_field_notes(
         "Metal roof 12000 sqft silicone coating Louisville KY",
