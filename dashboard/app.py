@@ -3539,6 +3539,13 @@ def estimator_prototype_page() -> None:
     field_estimator_fn, field_estimator_import_warning = optional_field_notes_estimator()
     if field_estimator_import_warning:
         st.warning(field_estimator_import_warning)
+    use_historical_calibration = st.checkbox(
+        "Use historical calibration",
+        value=False,
+        help="Optional. Uses database-backed historical labor/material calibration. Leave off while testing rough project notes and dimension math.",
+        key="use_historical_calibration",
+    )
+    field_notes_data = data if use_historical_calibration else None
     with st.expander("Field notes recommendation overrides", expanded=False):
         f1, f2, f3 = st.columns(3)
         with f1:
@@ -3571,7 +3578,7 @@ def estimator_prototype_page() -> None:
                         "warranty_target_years": field_warranty_override,
                         "access_complexity": access_complexity,
                     },
-                    data=data,
+                    data=field_notes_data,
                 )
             except Exception as err:
                 logger.exception("Field notes estimator failed")
