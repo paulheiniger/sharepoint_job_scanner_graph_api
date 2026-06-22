@@ -1241,6 +1241,18 @@ def number_metric(value: int | float | None) -> str:
     return fmt_count(value)
 
 
+def optional_positive_number(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
 def safe_sum(df: pd.DataFrame, column: str) -> float:
     return float(numeric_series(df, column).sum()) if column in df.columns else 0.0
 
@@ -3505,18 +3517,21 @@ def estimator_prototype_page() -> None:
             access_complexity = st.selectbox("Access complexity", ["", "low", "medium", "high"], key="estimator_access")
             location = st.text_input("Location", key="estimator_location", placeholder="Louisville, KY")
         target_wet_mils = st.number_input("Target warranty/coating wet mils", min_value=0.0, value=0.0, step=1.0, key="estimator_wet_mils")
+    surface_area_override = optional_positive_number(surface_area)
+    foam_thickness_override = optional_positive_number(foam_thickness)
+    target_wet_mils_override = optional_positive_number(target_wet_mils)
 
     overrides = {
         "project_type": project_type,
         "division": division,
-        "surface_area_sqft": surface_area or None,
+        "surface_area_sqft": surface_area_override,
         "substrate": substrate,
         "coating_type": coating_type,
-        "foam_thickness_inches": foam_thickness or None,
+        "foam_thickness_inches": foam_thickness_override,
         "roof_condition": roof_condition,
         "access_complexity": access_complexity,
         "location": location,
-        "target_wet_mils": target_wet_mils or None,
+        "target_wet_mils": target_wet_mils_override,
     }
 
     st.subheader("Field Notes Estimate Recommendation")
@@ -3534,6 +3549,8 @@ def estimator_prototype_page() -> None:
         with f3:
             field_warranty = st.number_input("Warranty target years", min_value=0, value=0, step=5, key="field_estimator_warranty")
             field_sqft = st.number_input("Sqft override", min_value=0.0, value=surface_area or 0.0, step=500.0, key="field_estimator_sqft")
+    field_sqft_override = optional_positive_number(field_sqft) or surface_area_override
+    field_warranty_override = optional_positive_number(field_warranty)
     if st.button("Generate Estimate Recommendation", key="generate_field_estimate_recommendation"):
         if field_estimator_fn is None:
             st.warning("Field notes estimator is not available in this deployment yet.")
@@ -3546,11 +3563,11 @@ def estimator_prototype_page() -> None:
                         "site_address": field_site_address,
                         "city": field_city,
                         "state": field_state,
-                        "estimated_sqft": field_sqft or surface_area or None,
+                        "estimated_sqft": field_sqft_override,
                         "substrate": substrate,
                         "roof_condition": roof_condition,
                         "coating_type": coating_type,
-                        "warranty_target_years": field_warranty or None,
+                        "warranty_target_years": field_warranty_override,
                         "access_complexity": access_complexity,
                     },
                     data=data,

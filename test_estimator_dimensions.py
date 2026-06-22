@@ -3,6 +3,7 @@ from __future__ import annotations
 from jobscan.estimator.dimensions import parse_dimensions
 from jobscan.estimator.field_estimator import estimate_from_field_notes
 from jobscan.estimator.field_notes import parse_field_notes
+from dashboard.app import optional_positive_number
 from test_field_estimator import field_data
 
 
@@ -82,3 +83,11 @@ def test_ui_override_takes_priority_over_dimension_math() -> None:
     assert recommendation.draft_workbook_inputs["header"]["C12_estimated_sqft"] == 15000
     assert recommendation.parsed_fields["dimension_summary"]["net_area_sqft"] == 12000
     assert any("override differs from dimension math" in flag.lower() for flag in recommendation.review_flags)
+
+
+def test_dashboard_optional_positive_number_sanitizes_empty_defaults() -> None:
+    assert optional_positive_number(0) is None
+    assert optional_positive_number(0.0) is None
+    assert optional_positive_number("") is None
+    assert optional_positive_number(float("nan")) is None
+    assert optional_positive_number(15000) == 15000

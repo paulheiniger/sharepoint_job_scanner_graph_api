@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import math
 from dataclasses import asdict
 from typing import Any
 
@@ -18,6 +19,15 @@ STATE_BY_CITY = {
     "nashville": "TN",
     "columbus": "OH",
 }
+
+
+def optional_positive_float(value: Any) -> float | None:
+    number = to_float(value)
+    if number is None:
+        return None
+    if not math.isfinite(number):
+        return None
+    return number if number > 0 else None
 
 
 def parse_field_sqft(text: str) -> float | None:
@@ -77,7 +87,7 @@ def parse_field_notes(field_input: FieldNotesInput | str, overrides: dict[str, A
     text = notes.lower()
     dimension_summary = parse_dimensions(notes)
     dimension_dict = dimension_summary.to_dict()
-    override_sqft = to_float(field_input.estimated_sqft) or to_float(overrides.get("surface_area_sqft"))
+    override_sqft = optional_positive_float(field_input.estimated_sqft) or optional_positive_float(overrides.get("surface_area_sqft"))
     stated_sqft = to_float(dimension_dict.get("stated_sqft")) or parse_field_sqft(notes)
     dimension_net_sqft = None
     if dimension_summary.included_areas or dimension_summary.deducted_areas:

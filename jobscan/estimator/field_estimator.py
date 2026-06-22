@@ -18,37 +18,41 @@ from .similarity import find_similar_jobs
 from .travel import build_travel_plan
 
 
-def is_missing_number(value: Any) -> bool:
-    if value is None:
-        return True
-    try:
-        return math.isnan(float(value))
-    except (TypeError, ValueError):
+def is_finite_number(value: Any) -> bool:
+    number = to_float(value)
+    if number is None:
         return False
+    return math.isfinite(number)
+
+
+def is_missing_number(value: Any) -> bool:
+    return not is_finite_number(value)
 
 
 def to_int_or_default(value: Any, default: int) -> int:
-    number = to_float(value)
-    if number is None:
+    if not is_finite_number(value):
         return default
-    try:
-        if math.isnan(number):
-            return default
-    except TypeError:
-        pass
-    return int(number)
+    number = to_float(value)
+    return int(number) if number is not None else default
 
 
 def to_float_or_default(value: Any, default: float) -> float:
-    number = to_float(value)
-    if number is None:
+    if not is_finite_number(value):
         return default
-    try:
-        if math.isnan(number):
-            return default
-    except TypeError:
-        pass
-    return float(number)
+    number = to_float(value)
+    return float(number) if number is not None else default
+
+
+def optional_positive_float(value: Any) -> float | None:
+    if not is_finite_number(value):
+        return None
+    number = float(to_float(value) or 0)
+    return number if number > 0 else None
+
+
+def optional_positive_int(value: Any) -> int | None:
+    number = optional_positive_float(value)
+    return int(number) if number is not None else None
 
 
 def warranty_wet_mils(warranty_target: Any, coating_type: str) -> float:
@@ -249,26 +253,28 @@ def build_labor_plan(
             incomplete_calibration = incomplete_calibration or any(
                 [hours_missing, days_missing, crew_missing, cost_missing, evidence_missing]
             )
-            hours = None if hours_missing else to_float(row.get("median_total_hours"))
-            days = None if days_missing else to_float(row.get("median_days"))
-            cost = None if cost_missing else to_float(row.get("median_estimated_cost"))
+            days = 1.0 if days_missing else max(to_float_or_default(row.get("median_days"), 1.0), 0.0)
+            hours = None if hours_missing else max(to_float_or_default(row.get("median_total_hours"), 0.0), 0.0)
+            cost = None if cost_missing else max(to_float_or_default(row.get("median_estimated_cost"), 0.0), 0.0)
             row_crew_size = to_int_or_default(row.get("median_crew_size"), crew_size)
-            adjusted_days = days * multiplier if days else None
-            adjusted_hours = hours * multiplier if hours else (adjusted_days or 0) * row_crew_size * 8
-            estimated_cost = (cost * multiplier) if cost else adjusted_hours * assumptions.blended_hourly_rate
+            if row_crew_size <= 0:
+                row_crew_size = 4
+            adjusted_days = days * multiplier
+            adjusted_hours = hours * multiplier if hours is not None else adjusted_days * row_crew_size * 10
+            estimated_cost = cost * multiplier if cost is not None else 0.0
             total_hours += adjusted_hours or 0
             total_cost += estimated_cost or 0
             plan.append(
                 {
                     "task": row.get("template_bucket"),
                     "base_days": days,
-                    "adjusted_days": round(adjusted_days, 2) if adjusted_days else None,
+                    "adjusted_days": round(adjusted_days, 2),
                     "crew_size": row_crew_size,
                     "total_hours": round(adjusted_hours, 1),
                     "estimated_cost": round(estimated_cost, 2),
                     "evidence_count": to_int_or_default(row.get("evidence_count"), 0),
                     "notes": (
-                        "Calibrated from estimate_template_rows; missing historical labor values used defaults."
+                        "Historical labor calibration was incomplete for one or more tasks; defaults were used."
                         if incomplete_calibration
                         else "Calibrated from estimate_template_rows."
                     ),
@@ -277,7 +283,7 @@ def build_labor_plan(
     if not plan:
         productivity = to_float(decision.get("labor_modifiers", {}).get("adjusted_productivity_sqft_per_day")) or assumptions.crew_productivity_sqft_per_day_high
         days = max(area / max(productivity, 1), 1) if area else 1
-        total_hours = days * crew_size * 8
+        total_hours = days * crew_size * 10
         total_cost = total_hours * assumptions.blended_hourly_rate
         plan.append(
             {
@@ -293,8 +299,9 @@ def build_labor_plan(
         )
     low = total_cost * 0.85
     high = total_cost * 1.2
-    duration_days = max(1, int(round(sum(to_float_or_default(row.get("adjusted_days"), 0.0) for row in plan))) or 1)
-    return plan, round(low, 2), round(high, 2), crew_size, duration_days, int(round(to_float_or_default(total_hours, 0.0)))
+    duration_total = sum(to_float_or_default(row.get("adjusted_days"), 0.0) for row in plan)
+    duration_days = max(1, to_int_or_default(round(duration_total), 1))
+    return plan, round(low, 2), round(high, 2), crew_size, duration_days, to_int_or_default(round(total_hours), 0)
 
 
 def similar_examples(similar: pd.DataFrame) -> list[dict[str, Any]]:
@@ -359,11 +366,11 @@ def estimate_from_field_notes(
         city=optional_overrides.get("city"),
         state=optional_overrides.get("state"),
         zip_code=optional_overrides.get("zip_code"),
-        estimated_sqft=to_float(optional_overrides.get("estimated_sqft")),
+        estimated_sqft=optional_positive_float(optional_overrides.get("estimated_sqft")),
         substrate=optional_overrides.get("substrate"),
         roof_condition=optional_overrides.get("roof_condition"),
         coating_type=optional_overrides.get("coating_type"),
-        warranty_target_years=to_int_or_default(optional_overrides.get("warranty_target_years"), 0) or None,
+        warranty_target_years=optional_positive_int(optional_overrides.get("warranty_target_years")),
         access_complexity=optional_overrides.get("access_complexity"),
         penetrations_complexity=optional_overrides.get("penetrations_complexity"),
         insulation_present=optional_overrides.get("insulation_present"),
@@ -395,6 +402,8 @@ def estimate_from_field_notes(
     review_flags.extend(parsed.review_flags)
     review_flags.extend(decision.get("human_review_flags") or [])
     review_flags.extend(material_review_flags)
+    if any("Historical labor calibration was incomplete" in str(row.get("notes") or "") for row in labor_plan):
+        review_flags.append("Historical labor calibration was incomplete for one or more tasks.")
     if travel_plan.get("needs_travel_review"):
         review_flags.append("Travel assumptions require review.")
     if data.template_rows.empty:
