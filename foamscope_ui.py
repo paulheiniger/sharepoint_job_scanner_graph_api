@@ -8,6 +8,10 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
+from jobscan.env import graph_env_status, load_project_env
+
+load_project_env()
+
 from indexing.graph_builder import build_reference_graph, expand_neighbors, foam_seed_nodes, graph_edges_table
 from indexing.page_classifier import classify_pages
 from indexing.progressive_pipeline import ProgressiveBudgets, candidate_priority, run_progressive_package_analysis
@@ -32,6 +36,13 @@ from takeoff.insulation_scope_tree import build_measurement_tree, relevant_pages
 
 def dataframe_from_records(rows: list[dict[str, Any]]) -> pd.DataFrame:
     return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
+def render_graph_config_debug_panel() -> None:
+    with st.expander("Graph config debug", expanded=False):
+        st.caption("Environment variable values are hidden; only FOUND/MISSING status is shown.")
+        status_rows = [{"setting": key, "status": value} for key, value in graph_env_status().items()]
+        st.dataframe(pd.DataFrame(status_rows), use_container_width=True, hide_index=True)
 
 
 def documents_table(documents: list[PdfDocumentInput]) -> pd.DataFrame:
@@ -250,6 +261,7 @@ def render_foamscope_page() -> None:
         package_source = str(path_obj)
     else:
         st.caption("SharePoint links require SharePoint/Graph intake.")
+        render_graph_config_debug_panel()
         url_value = st.text_input(
             "SharePoint folder URL",
             value="",

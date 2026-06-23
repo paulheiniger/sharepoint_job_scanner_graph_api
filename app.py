@@ -5,8 +5,11 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from jobscan.env import load_project_env
 from jobscan.scan import scan_root, records_as_dicts
 from jobscan.models import get_estimated_value
+
+load_project_env()
 
 st.set_page_config(page_title="SharePoint Job Folder Scanner + Graph", layout="wide")
 st.title("SharePoint Job Folder Scanner + Graph")
