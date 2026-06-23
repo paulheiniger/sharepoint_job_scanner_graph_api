@@ -16,8 +16,9 @@ def build_reference_graph(pages: list[PageRecord]) -> nx.DiGraph:
     graph = nx.DiGraph()
     sheet_nodes: dict[str, list[str]] = {}
     for page in pages:
-        if page.sheet_number and page.sheet_id_confidence >= 0.6:
-            sheet_nodes.setdefault(page.sheet_number.upper().replace(".", "-"), []).append(page_node_id(page))
+        sheet_id = page.canonical_sheet_id or page.sheet_number
+        if sheet_id and page.sheet_id_confidence >= 0.6:
+            sheet_nodes.setdefault(sheet_id.upper().replace(".", "-"), []).append(page_node_id(page))
     warnings: list[str] = []
     for sheet_id, node_ids in sorted(sheet_nodes.items()):
         if len(node_ids) > 1:
@@ -33,8 +34,11 @@ def build_reference_graph(pages: list[PageRecord]) -> nx.DiGraph:
             document_type=page.document_type,
             page_number=page.page_number,
             page_num=page.page_num,
-            sheet_number=page.sheet_number,
-            sheet_id=page.sheet_number,
+            sheet_number=page.canonical_sheet_id or page.sheet_number,
+            sheet_id=page.canonical_sheet_id or page.sheet_number,
+            filename_sheet_id=page.filename_sheet_id,
+            extracted_sheet_id=page.extracted_sheet_id,
+            canonical_sheet_id=page.canonical_sheet_id,
             sheet_title=page.sheet_title,
             sheet_id_confidence=page.sheet_id_confidence,
             sheet_id_source=page.sheet_id_source,
@@ -114,12 +118,33 @@ def expand_neighbors(graph: nx.DiGraph, seed_nodes: list[str], *, depth: int = 2
         node, distance = queue.popleft()
         if distance >= depth:
             continue
+        node_type = graph.nodes.get(node, {}).get("node_type")
+        if node_type in {"unresolved_reference", "partition_type"}:
+            continue
         neighbors = set(graph.successors(node)) | set(graph.predecessors(node))
         for neighbor in neighbors:
+            neighbor_type = graph.nodes.get(neighbor, {}).get("node_type")
+            if neighbor_type == "unresolved_reference":
+                continue
             if neighbor not in selected:
                 selected.add(neighbor)
-                queue.append((neighbor, distance + 1))
+                if neighbor_type != "partition_type":
+                    queue.append((neighbor, distance + 1))
     return selected
+
+
+def apply_graph_measurement_roles(pages: list[PageRecord], graph: nx.DiGraph, selected_nodes: set[str], seed_nodes: list[str]) -> None:
+    measurement_source_roles = {"floor_plan", "roof_plan", "elevation", "section_sheet"}
+    for page in pages:
+        node = page_node_id(page)
+        if node not in selected_nodes or node in seed_nodes:
+            if page.foam_seed_level == "generic_only" and node not in selected_nodes:
+                page.role = "candidate_only"
+            continue
+        if page.role in measurement_source_roles and path_labels_to_seed(graph, seed_nodes, node):
+            page.role = "measurement_page"
+        if node in graph:
+            graph.nodes[node]["role"] = page.role
 
 
 def graph_edges_table(graph: nx.DiGraph) -> list[dict[str, Any]]:

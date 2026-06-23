@@ -85,6 +85,7 @@ def classify_role(page: PageRecord, config: dict[str, Any] | None = None) -> str
     config = config or load_keyword_config()
     title = (page.sheet_title or "").lower()
     text = f"{page.sheet_title}\n{page.text}".lower()
+    sheet_id = (page.canonical_sheet_id or page.sheet_id or page.sheet_number or "").upper()
     if any(term in text for term in ("addendum", "asi ", "architect supplemental instruction", "bulletin", "revision")):
         return "addendum_or_override"
     if any(term in text for term in ("07 21 00", "section 07", "specification", "project manual")) and page.foam_seed_level in {
@@ -92,17 +93,19 @@ def classify_role(page: PageRecord, config: dict[str, Any] | None = None) -> str
         "candidate",
     }:
         return "spec_definition"
-    if any(term in title for term in ("wall type", "partition type", "assembly")) or any(
+    if any(term in title for term in ("wall type", "partition type", "assembly", "schedule")) or any(
         term in text for term in ("wall type schedule", "partition schedule", "wall schedule")
-    ):
+    ) or sheet_id.startswith(("A0-", "A7-", "A8-", "A9-")):
         return "wall_type_schedule"
-    if "floor plan" in text or "roof plan" in text or "overall plan" in text or "enlarged plan" in text:
-        return "measurement_page"
-    if "elevation" in title or "exterior elevation" in text:
+    if "floor plan" in text or "overall plan" in text or "enlarged plan" in text or sheet_id.startswith("A2-"):
+        return "floor_plan"
+    if "roof plan" in text or (sheet_id.startswith("A3-") and "section" not in text):
+        return "roof_plan"
+    if "elevation" in title or "exterior elevation" in text or sheet_id.startswith(("A4-", "A5-")):
         return "elevation"
     if "window schedule" in text or "door schedule" in text or "opening" in text:
         return "height_or_opening_confirmation"
-    if "section" in title or ("building section" in text or "wall section" in text):
+    if "section" in title or ("building section" in text or "wall section" in text) or sheet_id.startswith("A6-"):
         return "section_sheet"
     if "detail" in title or "detail" in text:
         return "detail_sheet"

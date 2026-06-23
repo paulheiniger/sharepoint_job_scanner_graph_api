@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -36,6 +37,9 @@ class PageRecord:
     original_page_number: int | None = None
     sheet_id_confidence: float = 0.0
     sheet_id_source: str = ""
+    filename_sheet_id: str = ""
+    extracted_sheet_id: str = ""
+    canonical_sheet_id: str = ""
     foam_seed_level: str = "none"
     foam_specific_evidence: list[str] = field(default_factory=list)
     generic_evidence: list[str] = field(default_factory=list)
@@ -45,11 +49,11 @@ class PageRecord:
 
     @property
     def sheet_id(self) -> str:
-        return self.sheet_number
+        return self.canonical_sheet_id or self.sheet_number
 
     @property
     def page_type(self) -> str:
-        return self.document_type
+        return self.role if self.role not in {"unknown", "irrelevant", "candidate_only"} else self.document_type
 
     @property
     def foam_relevance(self) -> str:
@@ -70,6 +74,23 @@ def classify_document_type(document_name: str, text: str = "") -> str:
     haystack = f"{document_name}\n{text}".lower()
     if any(term in haystack for term in ("spec", "specification", "project manual")):
         return "specifications"
+    filename = Path(document_name or "").stem.upper().replace(".", "-").replace("_", "-")
+    if filename.startswith("A") or re.search(r"\bA\d?-\d{2,4}\b", filename):
+        return "architectural_drawings"
+    if filename.startswith("S") or re.search(r"\bS\d?-\d{2,4}\b", filename):
+        return "structural_drawings"
+    if filename.startswith("M") or re.search(r"\bM\d?-\d{2,4}\b", filename):
+        return "mechanical_drawings"
+    if filename.startswith("P") or re.search(r"\bP\d?-\d{2,4}\b", filename):
+        return "plumbing_drawings"
+    if filename.startswith("E") or re.search(r"\bE\d?-\d{2,4}\b", filename):
+        return "electrical_drawings"
+    if filename.startswith(("FP", "FA")):
+        return "fire_protection_drawings"
+    if filename.startswith("C") or re.search(r"\bC\d?-\d{2,4}\b", filename):
+        return "civil_drawings"
+    if filename.startswith("L") or re.search(r"\bL\d?-\d{2,4}\b", filename):
+        return "landscape_drawings"
     if any(term in haystack for term in ("architectural", "floor plan", "wall section")) or "a-" in haystack:
         return "architectural_drawings"
     if "structural" in haystack or "s-" in haystack:

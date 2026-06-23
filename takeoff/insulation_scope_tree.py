@@ -47,6 +47,9 @@ def relevant_pages_table(
                 "page_number": page.page_number,
                 "sheet_id": page.sheet_id,
                 "sheet_number": page.sheet_number,
+                "filename_sheet_id": page.filename_sheet_id,
+                "extracted_sheet_id": page.extracted_sheet_id,
+                "canonical_sheet_id": page.canonical_sheet_id,
                 "sheet_title": page.sheet_title,
                 "sheet_id_confidence": page.sheet_id_confidence,
                 "sheet_id_source": page.sheet_id_source,
@@ -113,6 +116,7 @@ def build_measurement_tree(
             for source, _, data in graph.in_edges(node, data=True)
             if source in selected_nodes
         ]
+        inclusion_path = path_labels_to_seed(graph, seed_nodes, node)
         tree_nodes.append(
             {
                 "node_id": node,
@@ -126,6 +130,9 @@ def build_measurement_tree(
                 "page_number": page.page_number,
                 "sheet_id": page.sheet_id,
                 "sheet_number": page.sheet_number,
+                "filename_sheet_id": page.filename_sheet_id,
+                "extracted_sheet_id": page.extracted_sheet_id,
+                "canonical_sheet_id": page.canonical_sheet_id,
                 "sheet_title": page.sheet_title,
                 "sheet_id_confidence": page.sheet_id_confidence,
                 "sheet_id_source": page.sheet_id_source,
@@ -135,10 +142,10 @@ def build_measurement_tree(
                 "foam_specific_evidence": page.foam_specific_evidence,
                 "generic_evidence": page.generic_evidence,
                 "evidence": page.evidence,
-                "inclusion_path": path_labels_to_seed(graph, seed_nodes, node),
+                "inclusion_path": inclusion_path,
                 "outgoing_references": outgoing,
                 "incoming_references": incoming,
-                "measurement_guidance": measurement_guidance(page),
+                "measurement_guidance": measurement_guidance(page, inclusion_path),
             }
         )
     return {
@@ -167,14 +174,18 @@ def build_measurement_tree(
     }
 
 
-def measurement_guidance(page: PageRecord) -> str:
+def measurement_guidance(page: PageRecord, inclusion_path: list[str] | None = None) -> str:
     role = page.role
+    path_text = " -> ".join(inclusion_path or [])
     if role == "spec_definition":
         return "Review foam type, R-value, air/vapor barrier, and product requirements."
     if role == "assembly_definition":
         return "Use this sheet to determine which assemblies receive spray foam insulation."
     if role == "measurement_page":
-        return "Measure affected wall/roof/ceiling surface areas from this sheet; confirm assembly source from the inclusion path."
+        sheet = page.sheet_id or page.sheet_title or page.document_name
+        if path_text:
+            return f"Measure connected assembly/wall type on {sheet}, because path is {path_text}."
+        return "Candidate measurement page; assembly not resolved."
     if role == "height_or_opening_confirmation":
         return "Use to confirm wall heights, openings, parapets, and deductions."
     if role in {"detail_reference", "detail_sheet"}:

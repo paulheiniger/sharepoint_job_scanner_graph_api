@@ -354,6 +354,62 @@ def test_foam_seed_connected_to_floor_plan_produces_measurement_path() -> None:
     assert relevant_by_sheet["A-101"]["inclusion_path"]
 
 
+def test_filename_sheet_id_preferred_over_noisy_extracted_text() -> None:
+    package = ingest_uploaded_package([FakeUpload("A6.13.pdf", make_pdf("S130\nA6.13 Wall Section\nspray foam insulation"))])
+
+    result = analyze_documents(package.documents, depth=1, use_ocr=False)
+    page = result["pages"][0]
+
+    assert page.filename_sheet_id == "A6-13"
+    assert page.canonical_sheet_id == "A6-13"
+    assert page.sheet_id == "A6-13"
+    assert page.sheet_id_source == "filename"
+    assert page.extracted_sheet_id == "S-130"
+
+
+def test_plumbing_filename_sheet_id_preferred_over_noisy_text() -> None:
+    package = ingest_uploaded_package([FakeUpload("P6.02.pdf", make_pdf("CO-300\nP6.02 Plumbing Plan"))])
+
+    result = analyze_documents(package.documents, depth=1, use_ocr=False)
+    page = result["pages"][0]
+
+    assert page.filename_sheet_id == "P6-02"
+    assert page.canonical_sheet_id == "P6-02"
+    assert page.sheet_id == "P6-02"
+
+
+def test_partition_types_are_not_sheet_references() -> None:
+    package = ingest_uploaded_package([FakeUpload("A0.01.pdf", make_pdf("A0.01 Partition Schedule\nPartition Type P01 and P31"))])
+
+    result = analyze_documents(package.documents, depth=1, use_ocr=False)
+    page = result["pages"][0]
+
+    assert any(ref["type"] == "partition_type" and ref["label"].upper() in {"P01", "P31"} for ref in page.references)
+    assert not any(ref["type"] == "sheet" and ref["target"] in {"P-01", "P-31"} for ref in page.references)
+
+
+def test_short_unresolved_references_do_not_expand_graph() -> None:
+    seed = make_pdf("A6.13 Wall Section\nspray foam insulation. Notes mention H1 J1 A1 D1 E1.")
+    package = ingest_uploaded_package([FakeUpload("A6.13.pdf", seed)])
+
+    result = analyze_documents(package.documents, depth=6, use_ocr=False)
+
+    assert not any(row["type"] == "unresolved_sheet" and row["reference"] in {"H1", "J1", "A1", "D1", "E1"} for row in result["edge_rows"])
+    assert len(result["selected_nodes"]) <= 1
+
+
+def test_generic_plan_only_becomes_measurement_when_connected_to_foam_seed() -> None:
+    seed = make_pdf("A6.13 Wall Section\nspray foam insulation. See A2.01.")
+    plan = make_pdf("A2.01 Floor Plan\ninsulation partition type exterior wall assembly")
+    package = ingest_uploaded_package([FakeUpload("A6.13.pdf", seed), FakeUpload("A2.01.pdf", plan)])
+
+    result = analyze_documents(package.documents, depth=3, use_ocr=False)
+    relevant_by_sheet = {row["sheet_id"]: row for row in result["relevant_rows"]}
+
+    assert relevant_by_sheet["A2-01"]["role"] == "measurement_page"
+    assert relevant_by_sheet["A2-01"]["inclusion_path"]
+
+
 def test_progressive_cache_resume_avoids_reprocessing() -> None:
     inspection = triage_inspection(
         inspect_uploaded_package([FakeUpload("architectural_A-101.pdf", make_pdf("A-101 Floor Plan\nspray foam insulation"))])

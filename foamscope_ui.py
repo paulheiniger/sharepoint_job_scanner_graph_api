@@ -16,7 +16,7 @@ from jobscan.env import graph_env_debug_info, graph_env_status, load_project_env
 
 load_project_env()
 
-from indexing.graph_builder import build_reference_graph, expand_neighbors, foam_seed_nodes, graph_edges_table
+from indexing.graph_builder import apply_graph_measurement_roles, build_reference_graph, expand_neighbors, foam_seed_nodes, graph_edges_table
 from indexing.page_classifier import classify_pages
 from indexing.progressive_pipeline import ProgressiveBudgets, candidate_priority, run_progressive_package_analysis
 from indexing.reference_extractor import attach_references
@@ -175,6 +175,7 @@ def analyze_documents(
     selected_nodes = expand_neighbors(graph, seeds, depth=depth) if seeds else set()
     if not selected_nodes:
         selected_nodes = {page.global_page_id for page in pages if page.global_page_id and page.foam_seed_level == "generic_only"}
+    apply_graph_measurement_roles(pages, graph, selected_nodes, seeds)
     tree = build_measurement_tree(pages, graph, selected_nodes, seeds)
     return {
         "documents": documents,
@@ -545,6 +546,9 @@ def render_foamscope_page() -> None:
                     "document_name": page.document_name,
                     "page_num": page.page_num,
                     "sheet_id": page.sheet_id,
+                    "filename_sheet_id": page.filename_sheet_id,
+                    "extracted_sheet_id": page.extracted_sheet_id,
+                    "canonical_sheet_id": page.canonical_sheet_id,
                     "sheet_title": page.sheet_title,
                     "role": page.role,
                     "foam_seed_level": page.foam_seed_level,
@@ -563,6 +567,9 @@ def render_foamscope_page() -> None:
                     "document_name": page.document_name,
                     "page_num": page.page_num,
                     "sheet_id": page.sheet_id,
+                    "filename_sheet_id": page.filename_sheet_id,
+                    "extracted_sheet_id": page.extracted_sheet_id,
+                    "canonical_sheet_id": page.canonical_sheet_id,
                     "sheet_title": page.sheet_title,
                     "role": page.role,
                     "generic_evidence": ", ".join(page.generic_evidence),
@@ -600,6 +607,9 @@ def render_foamscope_page() -> None:
         display_cols = [
             "document_name",
             "sheet_id",
+            "filename_sheet_id",
+            "extracted_sheet_id",
+            "canonical_sheet_id",
             "sheet_title",
             "sheet_id_confidence",
             "page_num",
@@ -638,6 +648,9 @@ def render_foamscope_page() -> None:
                     "page_num": page.page_num,
                     "page_type": page.page_type,
                     "sheet_id": page.sheet_id,
+                    "filename_sheet_id": page.filename_sheet_id,
+                    "extracted_sheet_id": page.extracted_sheet_id,
+                    "canonical_sheet_id": page.canonical_sheet_id,
                     "sheet_title": page.sheet_title,
                     "sheet_id_confidence": page.sheet_id_confidence,
                     "sheet_id_source": page.sheet_id_source,

@@ -9,14 +9,29 @@ from ingest.pdf_ingest import PageRecord
 REFERENCE_PATTERNS = [
     ("detail_sheet", re.compile(r"\b(?:detail|section)?\s*(\d{1,2})\s*/\s*([A-Z]{1,3}[A-Z0-9]?[-.]?\d{1,4}(?:\.\d+)?)\b", re.I)),
     ("spec_section", re.compile(r"\b(?:division\s*)?(0?7(?:\s+\d{2}\s+\d{2}|[\s.-]*21[\s.-]*00))\b", re.I)),
-    ("sheet", re.compile(r"\b([A-Z]{1,3}[A-Z0-9]?[-.]?\d{1,4}(?:\.\d+)?)\b", re.I)),
     ("wall_type", re.compile(r"\b(?:wall|partition)\s+type\s+([A-Z]?-?\d+[A-Z]?)\b", re.I)),
     ("partition_type", re.compile(r"\bP(?:artition)?[- ]?(\d+[A-Z]?)\b", re.I)),
+    ("sheet", re.compile(r"\b([A-Z]{1,3}[A-Z0-9]?[-.]?\d{1,4}(?:\.\d+)?)\b", re.I)),
 ]
 
 
 def normalize_sheet(value: str) -> str:
-    return value.upper().replace(".", "-").strip()
+    cleaned = value.upper().replace(".", "-").strip()
+    compact = re.match(r"^([A-Z]{1,2}\d?)(\d{2,4})$", cleaned)
+    if compact and "-" not in cleaned:
+        return f"{compact.group(1)}-{compact.group(2)}"
+    return cleaned
+
+
+def is_plausible_sheet_reference(value: str) -> bool:
+    target = normalize_sheet(value)
+    if re.match(r"^(?:W|WT)-?\d", target):
+        return False
+    if re.match(r"^P-?\d{1,2}[A-Z]?$", target):
+        return False
+    if re.match(r"^[A-Z]\d$", target):
+        return False
+    return bool(re.match(r"^(?:FP|FA|A\d?|S\d?|M\d?|P\d?|E\d?|C\d?|L\d?|G\d?)-\d{2,4}(?:-\d+)?$", target))
 
 
 def extract_references(text: str) -> list[dict[str, Any]]:
@@ -26,10 +41,12 @@ def extract_references(text: str) -> list[dict[str, Any]]:
         for match in pattern.finditer(text or ""):
             if ref_type == "detail_sheet":
                 target = normalize_sheet(match.group(2))
+                if not is_plausible_sheet_reference(target):
+                    continue
                 label = f"{match.group(1)}/{target}"
             elif ref_type == "sheet":
                 target = normalize_sheet(match.group(1))
-                if re.match(r"^(?:W|WT)-?\d", target):
+                if not is_plausible_sheet_reference(target):
                     continue
                 label = target
             elif ref_type == "spec_section":

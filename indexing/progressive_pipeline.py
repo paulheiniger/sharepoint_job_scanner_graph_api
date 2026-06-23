@@ -7,7 +7,7 @@ import pickle
 from pathlib import Path
 from typing import Any
 
-from indexing.graph_builder import build_reference_graph, expand_neighbors, foam_seed_nodes, graph_edges_table, page_node_id
+from indexing.graph_builder import apply_graph_measurement_roles, build_reference_graph, expand_neighbors, foam_seed_nodes, graph_edges_table, page_node_id
 from indexing.page_classifier import classify_pages
 from indexing.reference_extractor import attach_references
 from indexing.sheet_indexer import index_sheets
@@ -249,6 +249,7 @@ def run_progressive_package_analysis(
     warnings.extend(graph.graph.get("warnings", []))
     seeds = foam_seed_nodes(indexed_pages)
     selected_nodes = expand_neighbors(graph, seeds, depth=depth) if seeds else set()
+    apply_graph_measurement_roles(indexed_pages, graph, selected_nodes, seeds)
     selected_page_nodes = {node for node in selected_nodes if node in {page_node_id(page) for page in indexed_pages}}
 
     deep_analyzed_count = 0
@@ -269,6 +270,11 @@ def run_progressive_package_analysis(
     relevant_rows = relevant_pages_table(indexed_pages, selected_nodes, graph, seeds)
     tree = build_measurement_tree(indexed_pages, graph, selected_nodes, seeds)
     exported_selected_nodes = [node["node_id"] for node in tree.get("nodes", [])]
+    edge_rows = graph_edges_table(graph)
+    resolved_reference_count = sum(1 for row in edge_rows if row.get("type") not in {"unresolved_sheet"})
+    unresolved_reference_count = sum(1 for row in edge_rows if row.get("type") == "unresolved_sheet")
+    measurement_nodes = [node for node in tree.get("nodes", []) if node.get("role") == "measurement_page"]
+    measurement_pages_with_paths = sum(1 for node in measurement_nodes if node.get("inclusion_path"))
     scan_completeness = {
         "total_documents_discovered": len(candidates),
         "total_pages_discovered": total_estimated_pages,
@@ -280,6 +286,13 @@ def run_progressive_package_analysis(
         "budget_hit_reason": budget_hit_reason,
         "analysis_mode": analysis_mode,
         "cache_resume_used": False,
+        "high_confidence_seed_count": len(seeds),
+        "generic_candidate_count": sum(1 for page in indexed_pages if page.foam_seed_level == "generic_only"),
+        "resolved_reference_count": resolved_reference_count,
+        "unresolved_reference_count": unresolved_reference_count,
+        "graph_expansion_depth": depth,
+        "measurement_pages_with_resolved_paths": measurement_pages_with_paths,
+        "measurement_pages_without_resolved_paths": max(0, len(measurement_nodes) - measurement_pages_with_paths),
     }
     result = {
         "documents": [document.to_dict() for document in materialized_by_id.values()],
@@ -293,7 +306,7 @@ def run_progressive_package_analysis(
         "seed_nodes": seeds,
         "tree": tree,
         "relevant_rows": relevant_rows,
-        "edge_rows": graph_edges_table(graph),
+        "edge_rows": edge_rows,
         "sheet_map": sheet_map,
         "warnings": sorted(set(warnings)),
         "partial": partial,

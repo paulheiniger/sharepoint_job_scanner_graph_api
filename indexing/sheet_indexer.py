@@ -10,6 +10,7 @@ from ingest.pdf_ingest import PageRecord
 
 
 DEFAULT_CONFIG = Path("configs/sheet_patterns.yaml")
+ALLOWED_SHEET_PREFIXES = ("A", "S", "M", "P", "E", "FP", "FA", "C", "L", "G")
 
 
 def load_sheet_patterns(path: Path = DEFAULT_CONFIG) -> dict[str, Any]:
@@ -26,11 +27,47 @@ def _normalize_sheet_id(value: str) -> str:
     return cleaned
 
 
+def _known_sheet_prefix(value: str) -> bool:
+    prefix = re.match(r"^([A-Z]+)", value.upper())
+    return bool(prefix and prefix.group(1) in ALLOWED_SHEET_PREFIXES)
+
+
+def _looks_like_real_sheet_id(value: str) -> bool:
+    normalized = _normalize_sheet_id(value)
+    return _known_sheet_prefix(normalized) and bool(
+        re.match(r"^(?:FP|FA|[ASMEPCLG]\d?|[ASMEPCLG])-\d{2,4}(?:-\d+)?$", normalized)
+        or re.match(r"^(?:FP|FA|[ASMEPCLG])\d{3,4}$", normalized.replace("-", ""))
+    )
+
+
+def detect_filename_sheet_id(document_name: str, source_path: str = "") -> str:
+    candidates = [Path(document_name or "").name]
+    if source_path:
+        candidates.append(Path(str(source_path).split(":", 1)[-1]).name)
+    for candidate in candidates:
+        stem = Path(candidate).stem.strip()
+        split_page_match = re.match(r"(?P<original>.+?\.pdf)\s+Page\s+\d+$", stem, flags=re.I)
+        if split_page_match:
+            stem = Path(split_page_match.group("original")).stem
+        match = re.match(r"^(?P<prefix>FP|FA|[ASMEPCLG]\d?)[._ -](?P<number>\d{2,4})(?:\D.*)?$", stem, flags=re.I)
+        if match:
+            return f"{match.group('prefix').upper()}-{match.group('number')}"
+        match = re.match(r"^(?P<prefix>FP|FA|[ASMEPCLG])(?P<number>\d{3,4})(?:\D.*)?$", stem, flags=re.I)
+        if match:
+            number = match.group("number")
+            return f"{match.group('prefix').upper()}-{number}"
+    return ""
+
+
 def _sheet_id_confidence(value: str, line: str, line_number: int) -> tuple[float, str]:
     normalized = _normalize_sheet_id(value)
     if re.match(r"^[A-Z]{1,3}[A-Z0-9]?-\d{2,4}(?:-\d+)?$", normalized):
+        if not _known_sheet_prefix(normalized):
+            return 0.25, "unknown_prefix"
         return 0.95 if line_number <= 8 else 0.8, "title_block_or_header"
     if re.match(r"^[A-Z]{1,3}\d{3,4}$", value.upper()):
+        if not _known_sheet_prefix(normalized):
+            return 0.25, "unknown_prefix"
         return 0.85 if line_number <= 12 else 0.65, "compact_sheet_id"
     if re.match(r"^[A-Z]\d$", value.upper()):
         if re.search(r"\b(?:sheet|drawing|page)\b", line, flags=re.I) and line_number <= 8:
@@ -55,7 +92,7 @@ def detect_sheet_number_with_metadata(text: str, config: dict[str, Any] | None =
                     continue
                 if re.match(r"^(?:W|WT)-?\d", value):
                     continue
-                if not re.match(r"^(?:A|S|M|E|P|G|C|FA)[A-Z0-9]*-?\d", value):
+                if not _looks_like_real_sheet_id(value):
                     continue
                 matches.append((value, confidence, source))
     if not matches:
@@ -98,10 +135,25 @@ def detect_sheet_title(text: str, sheet_number: str = "", config: dict[str, Any]
 def index_sheets(pages: list[PageRecord], config_path: Path = DEFAULT_CONFIG) -> list[PageRecord]:
     config = load_sheet_patterns(config_path)
     for page in pages:
-        sheet_number, confidence, source, uncertain = detect_sheet_number_with_metadata(page.text, config)
-        page.sheet_number = sheet_number if confidence >= 0.6 else ""
-        page.sheet_id_confidence = confidence
-        page.sheet_id_source = source
+        filename_sheet_id = detect_filename_sheet_id(page.document_name, page.source_path)
+        extracted_sheet_id, confidence, source, uncertain = detect_sheet_number_with_metadata(page.text, config)
+        page.filename_sheet_id = filename_sheet_id
+        page.extracted_sheet_id = extracted_sheet_id if confidence >= 0.6 else ""
+        if filename_sheet_id and (confidence < 0.98 or extracted_sheet_id != filename_sheet_id):
+            page.canonical_sheet_id = filename_sheet_id
+            page.sheet_number = filename_sheet_id
+            page.sheet_id_confidence = 0.97
+            page.sheet_id_source = "filename"
+        elif extracted_sheet_id and confidence >= 0.6:
+            page.canonical_sheet_id = extracted_sheet_id
+            page.sheet_number = extracted_sheet_id
+            page.sheet_id_confidence = confidence
+            page.sheet_id_source = source
+        else:
+            page.canonical_sheet_id = ""
+            page.sheet_number = ""
+            page.sheet_id_confidence = confidence
+            page.sheet_id_source = source
         if uncertain:
             page.warnings.append(f"Untrusted sheet id candidates ignored: {', '.join(sorted(set(uncertain))[:6])}")
         page.sheet_title = detect_sheet_title(page.text, page.sheet_number, config)
