@@ -32,6 +32,8 @@ class PdfDocumentInput:
     compressed_size: int = 0
     uncompressed_size: int = 0
     content: bytes | None = None
+    original_document_name: str = ""
+    original_page_number: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -113,6 +115,13 @@ def _temp_root() -> Path:
 
 def _stable_document_id(name: str, file_hash: str, index: int) -> str:
     return f"{_safe_stem(name)}-{index + 1}-{file_hash[:12]}"
+
+
+def split_page_pdf_metadata(name: str) -> tuple[str, int | None]:
+    match = re.match(r"(?P<original>.+?\.pdf)\s+Page\s+(?P<page>\d+)\.pdf$", Path(name).name, flags=re.I)
+    if not match:
+        return Path(name).name, None
+    return match.group("original"), int(match.group("page"))
 
 
 def _candidate_id(source_path: str, file_hash: str, index: int) -> str:
@@ -345,16 +354,19 @@ def normalize_pdf_document(
             file_hash = _sha1_bytes(content or b"")
     if file_path is None and content is not None:
         file_path = str(_stage_bytes(content, filename=name, digest=file_hash, subdir="direct"))
+    original_document_name, original_page_number = split_page_pdf_metadata(name)
     return PdfDocumentInput(
         document_id=_stable_document_id(name, file_hash, index),
         document_name=Path(name).name,
-        document_type=document_type or classify_document_type(name),
+        document_type=document_type or classify_document_type(original_document_name),
         source_path=source_path or name,
         file_path=file_path or "",
         file_hash=file_hash,
         compressed_size=int(compressed_size if compressed_size is not None else len(content or b"")),
         uncompressed_size=int(uncompressed_size if uncompressed_size is not None else len(content or b"")),
         content=content if file_path is None else None,
+        original_document_name=original_document_name,
+        original_page_number=original_page_number,
     )
 
 

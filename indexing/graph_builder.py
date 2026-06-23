@@ -16,7 +16,7 @@ def build_reference_graph(pages: list[PageRecord]) -> nx.DiGraph:
     graph = nx.DiGraph()
     sheet_nodes: dict[str, list[str]] = {}
     for page in pages:
-        if page.sheet_number:
+        if page.sheet_number and page.sheet_id_confidence >= 0.6:
             sheet_nodes.setdefault(page.sheet_number.upper().replace(".", "-"), []).append(page_node_id(page))
     warnings: list[str] = []
     for sheet_id, node_ids in sorted(sheet_nodes.items()):
@@ -36,9 +36,12 @@ def build_reference_graph(pages: list[PageRecord]) -> nx.DiGraph:
             sheet_number=page.sheet_number,
             sheet_id=page.sheet_number,
             sheet_title=page.sheet_title,
+            sheet_id_confidence=page.sheet_id_confidence,
+            sheet_id_source=page.sheet_id_source,
             role=page.role,
             relevance_score=page.relevance_score,
             relevance_level=page.relevance_level,
+            foam_seed_level=page.foam_seed_level,
             node_type="page",
         )
         for ref in page.references:
@@ -55,6 +58,21 @@ def build_reference_graph(pages: list[PageRecord]) -> nx.DiGraph:
                     callout_node = ""
                 target_nodes = sheet_nodes.get(target, [])
                 if not target_nodes:
+                    graph.add_node(
+                        f"unresolved_sheet::{target}",
+                        sheet_number=target,
+                        sheet_id=target,
+                        node_type="unresolved_reference",
+                        reference_only=True,
+                        label=ref.get("label") or target,
+                    )
+                    graph.add_edge(
+                        node,
+                        f"unresolved_sheet::{target}",
+                        label=ref.get("label") or target,
+                        ref_type="unresolved_sheet",
+                        context=ref.get("context"),
+                    )
                     continue
                 if len(target_nodes) > 1:
                     warnings.append(f"Reference {ref.get('label') or target} from {page.document_name} page {page.page_num} matches multiple sheets.")
@@ -82,27 +100,9 @@ def high_confidence_nodes(pages: list[PageRecord]) -> list[str]:
 
 
 def foam_seed_nodes(pages: list[PageRecord]) -> list[str]:
-    seed_terms = (
-        "spray foam",
-        "spf",
-        "closed-cell",
-        "closed cell",
-        "open-cell",
-        "open cell",
-        "polyurethane foam",
-        "thermal insulation",
-        "division 07",
-        "07 21 00",
-        "r-value",
-        "air barrier",
-        "vapor barrier",
-        "wall assembly",
-        "exterior wall",
-    )
     seeds: list[str] = []
     for page in pages:
-        text = f"{page.sheet_title}\n{page.text}".lower()
-        if page.relevance_level in {"high", "medium"} or any(term in text for term in seed_terms):
+        if page.foam_seed_level == "high" or page.role == "spec_definition":
             seeds.append(page_node_id(page))
     return seeds
 

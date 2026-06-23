@@ -106,6 +106,8 @@ def ingest_pdf_cached(
     document_name: str,
     document_type: str,
     source_path: str,
+    original_document_name: str,
+    original_page_number: int | None,
 ) -> list[dict[str, Any]]:
     pages = ingest_pdf(
         file_path,
@@ -114,6 +116,8 @@ def ingest_pdf_cached(
         document_name=document_name,
         document_type=document_type,
         source_path=source_path,
+        original_document_name=original_document_name,
+        original_page_number=original_page_number,
     )
     return [page.to_dict() for page in pages]
 
@@ -143,6 +147,8 @@ def analyze_documents(
                     document.document_name,
                     document.document_type,
                     document.source_path,
+                    document.original_document_name,
+                    document.original_page_number,
                 )
                 pages.extend(PageRecord(**page_dict) for page_dict in page_dicts)
             else:
@@ -154,6 +160,8 @@ def analyze_documents(
                         document_name=document.document_name,
                         document_type=document.document_type,
                         source_path=document.source_path,
+                        original_document_name=document.original_document_name,
+                        original_page_number=document.original_page_number,
                     )
                 )
         except Exception as exc:
@@ -166,7 +174,7 @@ def analyze_documents(
     seeds = foam_seed_nodes(pages)
     selected_nodes = expand_neighbors(graph, seeds, depth=depth) if seeds else set()
     if not selected_nodes:
-        selected_nodes = {page.global_page_id for page in pages if page.global_page_id}
+        selected_nodes = {page.global_page_id for page in pages if page.global_page_id and page.foam_seed_level == "generic_only"}
     tree = build_measurement_tree(pages, graph, selected_nodes, seeds)
     return {
         "documents": documents,
@@ -178,6 +186,29 @@ def analyze_documents(
         "relevant_rows": relevant_pages_table(pages, selected_nodes, graph, seeds),
         "edge_rows": graph_edges_table(graph),
         "warnings": sorted(set(warnings)),
+    }
+
+
+def build_export_payload(result: dict[str, Any], pages: list[PageRecord], *, analysis_mode: str = "Standard") -> dict[str, Any]:
+    return {
+        "documents": result["documents"],
+        "manifest": result["manifest"],
+        "progress": result["progress"],
+        "scan_completeness": result.get("scan_completeness", {}),
+        "partial": result["partial"],
+        "analysis_mode": analysis_mode,
+        "selected_node_count_internal": result.get("selected_node_count_internal"),
+        "exported_node_count": result.get("exported_node_count"),
+        "selected_nodes_exported": result.get("selected_nodes_exported", []),
+        "pages": [page.to_dict() for page in pages],
+        "relevant_pages": result["relevant_rows"],
+        "reference_graph": {
+            "nodes": [{"node_id": node, **data} for node, data in result["graph"].nodes(data=True)],
+            "edges": result["edge_rows"],
+            "warnings": result["graph"].graph.get("warnings", []),
+        },
+        "measurement_tree": result["tree"],
+        "warnings": result["warnings"],
     }
 
 
@@ -348,6 +379,8 @@ def render_foamscope_page() -> None:
 
     if inspection is None:
         return
+    with st.spinner("Running lightweight document triage..."):
+        inspection = triage_inspection_cached(inspection)
     if inspection.warnings:
         with st.expander("Package warnings", expanded=True):
             for warning in inspection.warnings:
@@ -446,6 +479,7 @@ def render_foamscope_page() -> None:
                 depth=depth,
                 budgets=budgets,
                 use_disk_cache=analysis_mode == "Full Package Analysis",
+                analysis_mode=analysis_mode,
             )
         except Exception as exc:
             st.error(f"Could not analyze PDF package: {type(exc).__name__}: {exc}")
@@ -456,6 +490,7 @@ def render_foamscope_page() -> None:
     relevant_df = dataframe_from_records(result["relevant_rows"])
     edge_df = dataframe_from_records(result["edge_rows"])
     progress = result["progress"]
+    scan_completeness = result.get("scan_completeness", {})
     if result.get("partial"):
         st.warning("Processing budget was hit. Results are partial, and deferred pages were not discarded.")
         if analysis_mode != "Full Package Analysis" and st.button("Continue expanding analysis", type="primary"):
@@ -490,6 +525,8 @@ def render_foamscope_page() -> None:
         f"Foam seed pages found: {seed_count:,}. "
         f"Reference-expanded pages included even without foam keywords: {low_connected_count:,}."
     )
+    with st.expander("Scan completeness", expanded=True):
+        st.json(scan_completeness)
     if result.get("cache_hit"):
         st.caption("Loaded progressive analysis from cache.")
     st.caption(f"Analysis mode: {analysis_mode}. Full lightweight index: {progress.get('full_lightweight_index', False)}.")
@@ -500,6 +537,62 @@ def render_foamscope_page() -> None:
             for warning in result["warnings"]:
                 st.warning(warning)
 
+    with st.expander("FoamScope debug", expanded=False):
+        st.caption(f"Graph expansion depth: {depth}")
+        seed_debug = dataframe_from_records(
+            [
+                {
+                    "document_name": page.document_name,
+                    "page_num": page.page_num,
+                    "sheet_id": page.sheet_id,
+                    "sheet_title": page.sheet_title,
+                    "role": page.role,
+                    "foam_seed_level": page.foam_seed_level,
+                    "foam_specific_evidence": ", ".join(page.foam_specific_evidence),
+                    "generic_evidence": ", ".join(page.generic_evidence),
+                    "relevance_score": page.relevance_score,
+                }
+                for page in sorted(pages, key=lambda item: item.relevance_score, reverse=True)[:25]
+            ]
+        )
+        st.markdown("**Top foam seed candidates**")
+        st.dataframe(seed_debug, use_container_width=True, hide_index=True)
+        generic_only = dataframe_from_records(
+            [
+                {
+                    "document_name": page.document_name,
+                    "page_num": page.page_num,
+                    "sheet_id": page.sheet_id,
+                    "sheet_title": page.sheet_title,
+                    "role": page.role,
+                    "generic_evidence": ", ".join(page.generic_evidence),
+                }
+                for page in pages
+                if page.foam_seed_level == "generic_only"
+            ]
+        )
+        st.markdown("**Pages rejected as generic-only**")
+        st.dataframe(generic_only, use_container_width=True, hide_index=True)
+        sheet_confidence = dataframe_from_records(
+            [
+                {
+                    "document_name": page.document_name,
+                    "page_num": page.page_num,
+                    "sheet_id": page.sheet_id,
+                    "sheet_title": page.sheet_title,
+                    "sheet_id_confidence": page.sheet_id_confidence,
+                    "sheet_id_source": page.sheet_id_source,
+                    "warnings": "; ".join(page.warnings),
+                }
+                for page in pages
+            ]
+        )
+        st.markdown("**Sheet ID confidence**")
+        st.dataframe(sheet_confidence, use_container_width=True, hide_index=True)
+        unresolved_refs = edge_df[edge_df["type"].astype(str).str.contains("unresolved", na=False)] if not edge_df.empty and "type" in edge_df.columns else pd.DataFrame()
+        st.markdown("**Unresolved references**")
+        st.dataframe(unresolved_refs, use_container_width=True, hide_index=True)
+
     st.subheader("Relevant Sheets")
     if relevant_df.empty:
         st.info("No relevant foam insulation sheets were identified. Review keyword configs or try OCR.")
@@ -508,9 +601,11 @@ def render_foamscope_page() -> None:
             "document_name",
             "sheet_id",
             "sheet_title",
+            "sheet_id_confidence",
             "page_num",
             "page_type",
             "foam_relevance",
+            "foam_seed_level",
             "role",
             "relevance_score",
             "evidence",
@@ -544,8 +639,11 @@ def render_foamscope_page() -> None:
                     "page_type": page.page_type,
                     "sheet_id": page.sheet_id,
                     "sheet_title": page.sheet_title,
+                    "sheet_id_confidence": page.sheet_id_confidence,
+                    "sheet_id_source": page.sheet_id_source,
                     "role": page.role,
                     "foam_relevance": page.foam_relevance,
+                    "foam_seed_level": page.foam_seed_level,
                     "relevance_score": page.relevance_score,
                     "evidence": ", ".join(page.evidence),
                     "word_count": page.word_count,
@@ -576,21 +674,7 @@ def render_foamscope_page() -> None:
         )
         st.dataframe(dataframe_from_records(indexed_not_included), use_container_width=True, hide_index=True)
 
-    export_payload = {
-        "documents": result["documents"],
-        "manifest": result["manifest"],
-        "progress": result["progress"],
-        "partial": result["partial"],
-        "pages": [page.to_dict() for page in pages],
-        "relevant_pages": result["relevant_rows"],
-        "reference_graph": {
-            "nodes": [{"node_id": node, **data} for node, data in result["graph"].nodes(data=True)],
-            "edges": result["edge_rows"],
-            "warnings": result["graph"].graph.get("warnings", []),
-        },
-        "measurement_tree": tree,
-        "warnings": result["warnings"],
-    }
+    export_payload = build_export_payload(result, pages, analysis_mode=analysis_mode)
     st.subheader("Exports")
     e1, e2 = st.columns(2)
     with e1:

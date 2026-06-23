@@ -32,6 +32,13 @@ class PageRecord:
     used_ocr: bool = False
     warnings: list[str] = field(default_factory=list)
     processing_status: str = "manifested"
+    original_document_name: str = ""
+    original_page_number: int | None = None
+    sheet_id_confidence: float = 0.0
+    sheet_id_source: str = ""
+    foam_seed_level: str = "none"
+    foam_specific_evidence: list[str] = field(default_factory=list)
+    generic_evidence: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -100,6 +107,8 @@ def ingest_pdf(
     document_name: str | None = None,
     document_type: str | None = None,
     source_path: str | None = None,
+    original_document_name: str | None = None,
+    original_page_number: int | None = None,
 ) -> list[PageRecord]:
     """Split a PDF into page records with text and basic geometry."""
     try:
@@ -153,6 +162,8 @@ def ingest_pdf(
                     height=float(rect.height),
                     used_ocr=used_ocr,
                     warnings=warnings,
+                    original_document_name=original_document_name or document_name,
+                    original_page_number=original_page_number,
                 )
             )
     finally:

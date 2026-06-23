@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 import zipfile
 from io import BytesIO
 
-from foamscope_ui import analyze_documents
+from foamscope_ui import analyze_documents, build_export_payload
 from indexing.progressive_pipeline import _PROGRESSIVE_CACHE, ProgressiveBudgets, run_progressive_package_analysis
 from ingest.package_ingest import inspect_path_package, inspect_uploaded_package, ingest_uploaded_package, materialize_selected_documents, triage_inspection
 
@@ -280,6 +281,77 @@ def test_full_package_analysis_indexes_all_pages_and_low_priority_docs() -> None
     assert result["progress"]["deferred_pages"] == 0
     assert any(row["priority"] == "low" and row["status"] == "manifested" for row in result["manifest"])
     assert result["progress"]["full_lightweight_index"] is True
+
+
+def test_exported_json_is_parseable_and_node_counts_match() -> None:
+    inspection = triage_inspection(
+        inspect_uploaded_package([FakeUpload("architectural_A-601.pdf", make_pdf("A-601 Wall Types\nspray foam insulation. See A-101."))])
+    )
+    result = run_progressive_package_analysis(
+        inspection,
+        budgets=ProgressiveBudgets(max_initial_sample_pages=None, max_light_index_pages=None, max_runtime_seconds=None, full_lightweight_index=True),
+        use_cache=False,
+        analysis_mode="Full Package Analysis",
+    )
+
+    payload = build_export_payload(result, result["pages"], analysis_mode="Full Package Analysis")
+    loaded = json.loads(json.dumps(payload, default=str))
+
+    assert loaded["measurement_tree"]["selected_node_count"] == len(loaded["measurement_tree"]["nodes"])
+    assert loaded["exported_node_count"] == len(loaded["selected_nodes_exported"])
+    assert loaded["scan_completeness"]["analysis_mode"] == "Full Package Analysis"
+
+
+def test_split_page_pdfs_preserve_original_document_context() -> None:
+    package = ingest_uploaded_package([FakeUpload("Original Plan Set.pdf Page 116.pdf", make_pdf("A-116 Wall Section\nspray foam insulation"))])
+
+    assert package.documents[0].original_document_name == "Original Plan Set.pdf"
+    assert package.documents[0].original_page_number == 116
+    result = analyze_documents(package.documents, depth=1, use_ocr=False)
+    page = result["pages"][0]
+    assert page.original_document_name == "Original Plan Set.pdf"
+    assert page.original_page_number == 116
+
+
+def test_short_fake_sheet_ids_are_not_trusted() -> None:
+    package = ingest_uploaded_package([FakeUpload("notes.pdf", make_pdf("A1\nA2\nA4\nGeneral insulation notes only"))])
+
+    result = analyze_documents(package.documents, depth=1, use_ocr=False)
+    page = result["pages"][0]
+
+    assert page.sheet_id == ""
+    assert page.sheet_id_confidence < 0.6
+    assert any("Untrusted sheet id" in warning for warning in page.warnings)
+
+
+def test_generic_insulation_alone_does_not_create_high_confidence_seed() -> None:
+    package = ingest_uploaded_package([FakeUpload("generic.pdf", make_pdf("A-101 Floor Plan\ninsulation partition type exterior wall assembly"))])
+
+    result = analyze_documents(package.documents, depth=2, use_ocr=False)
+
+    assert result["seed_nodes"] == []
+    assert result["tree"]["high_confidence_scope_nodes"] == []
+    assert "No foam-specific scope seed found" in result["tree"]["seed_guidance"]
+
+
+def test_foam_seed_connected_to_floor_plan_produces_measurement_path() -> None:
+    wall = make_pdf("A-601 Wall Types\nWall Type W3 requires spray foam insulation. See A-301.")
+    section = make_pdf("A-301 Building Section\nWall Type W3. See A-101 Floor Plan.")
+    plan = make_pdf("A-101 Floor Plan\nExterior wall layout.")
+    package = ingest_uploaded_package(
+        [
+            FakeUpload("Wall Types.pdf", wall),
+            FakeUpload("Sections.pdf", section),
+            FakeUpload("Plans.pdf", plan),
+        ]
+    )
+
+    result = analyze_documents(package.documents, depth=6, use_ocr=False)
+    relevant_by_sheet = {row["sheet_id"]: row for row in result["relevant_rows"]}
+
+    assert relevant_by_sheet["A-101"]["role"] == "measurement_page"
+    assert "A-101" in relevant_by_sheet["A-101"]["inclusion_path"]
+    assert relevant_by_sheet["A-101"]["inclusion_path"]
 
 
 def test_progressive_cache_resume_avoids_reprocessing() -> None:

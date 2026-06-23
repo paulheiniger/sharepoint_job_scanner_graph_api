@@ -22,37 +22,90 @@ def keyword_hits(text: str, keywords: list[str]) -> list[str]:
     return [keyword for keyword in keywords if keyword.lower() in lowered]
 
 
+FOAM_SPECIFIC_TERMS = [
+    "spray foam",
+    "sprayed polyurethane foam",
+    "polyurethane foam",
+    "closed-cell",
+    "closed cell",
+    "open-cell",
+    "open cell",
+    "spf",
+    "07 21 00",
+    "thermal insulation",
+    "r-value",
+    "air barrier",
+    "vapor barrier",
+]
+
+GENERIC_CONTEXT_TERMS = [
+    "insulation",
+    "partition type",
+    "exterior wall",
+    "assembly",
+    "wall type",
+    "wall section",
+    "building section",
+]
+
+
 def score_page(page: PageRecord, config: dict[str, Any] | None = None) -> PageRecord:
     config = config or load_keyword_config()
     foam = config.get("foam_keywords") or {}
-    high_hits = keyword_hits(page.text, foam.get("high") or [])
-    medium_hits = keyword_hits(page.text, foam.get("medium") or [])
-    context_hits = keyword_hits(page.text, foam.get("context") or [])
-    score = len(high_hits) * 5 + len(medium_hits) * 3 + len(context_hits)
+    text = f"{page.sheet_title}\n{page.text}"
+    specific_hits = keyword_hits(text, FOAM_SPECIFIC_TERMS)
+    high_hits = keyword_hits(text, foam.get("high") or [])
+    medium_hits = [hit for hit in keyword_hits(text, foam.get("medium") or []) if hit != "insulation"]
+    context_hits = keyword_hits(text, foam.get("context") or [])
+    generic_hits = [hit for hit in keyword_hits(text, GENERIC_CONTEXT_TERMS) if hit not in specific_hits]
+    score = len(high_hits) * 6 + len(specific_hits) * 4 + len(medium_hits) * 2 + min(len(context_hits), 3)
     if page.sheet_title and keyword_hits(page.sheet_title, foam.get("high") or []):
         score += 4
     page.relevance_score = float(score)
-    page.relevance_level = "high" if score >= 9 else "medium" if score >= 4 else "low"
-    page.evidence = high_hits[:6] + medium_hits[:6] + context_hits[:6]
+    if high_hits or score >= 10:
+        page.relevance_level = "high"
+        page.foam_seed_level = "high"
+    elif specific_hits:
+        page.relevance_level = "medium"
+        page.foam_seed_level = "high"
+    elif generic_hits:
+        page.relevance_level = "low"
+        page.foam_seed_level = "generic_only"
+    else:
+        page.relevance_level = "low"
+        page.foam_seed_level = "none"
+    page.foam_specific_evidence = list(dict.fromkeys((high_hits + specific_hits + medium_hits)[:8]))
+    page.generic_evidence = list(dict.fromkeys(generic_hits[:8]))
+    page.evidence = page.foam_specific_evidence + [f"generic: {hit}" for hit in page.generic_evidence[:4]]
     page.role = classify_role(page, config)
     return page
 
 
 def classify_role(page: PageRecord, config: dict[str, Any] | None = None) -> str:
     config = config or load_keyword_config()
+    title = (page.sheet_title or "").lower()
     text = f"{page.sheet_title}\n{page.text}".lower()
     if any(term in text for term in ("addendum", "asi ", "architect supplemental instruction", "bulletin", "revision")):
         return "addendum_or_override"
-    if "wall type" in text or "partition type" in text or "wall schedule" in text or "partition schedule" in text:
+    if any(term in text for term in ("07 21 00", "section 07", "specification", "project manual")) and page.foam_seed_level in {
+        "high",
+        "candidate",
+    }:
+        return "spec_definition"
+    if any(term in title for term in ("wall type", "partition type", "assembly")) or any(
+        term in text for term in ("wall type schedule", "partition schedule", "wall schedule")
+    ):
         return "wall_type_schedule"
     if "floor plan" in text or "roof plan" in text or "overall plan" in text or "enlarged plan" in text:
         return "measurement_page"
-    if "elevation" in text or "window schedule" in text or "door schedule" in text or "opening" in text:
+    if "elevation" in title or "exterior elevation" in text:
+        return "elevation"
+    if "window schedule" in text or "door schedule" in text or "opening" in text:
         return "height_or_opening_confirmation"
-    if "section" in text and "specification" not in text:
-        return "section_reference"
-    if "detail" in text:
-        return "detail_reference"
+    if "section" in title or ("building section" in text or "wall section" in text):
+        return "section_sheet"
+    if "detail" in title or "detail" in text:
+        return "detail_sheet"
     role_scores: dict[str, int] = {}
     for role, keywords in (config.get("role_keywords") or {}).items():
         role_scores[role] = len(keyword_hits(text, keywords or []))
@@ -60,9 +113,11 @@ def classify_role(page: PageRecord, config: dict[str, Any] | None = None) -> str
         role, score = max(role_scores.items(), key=lambda item: (item[1], item[0]))
         if score > 0:
             return role
+    if page.foam_seed_level == "generic_only":
+        return "candidate_only"
     if page.relevance_score <= 0:
-        return "irrelevant"
-    return "assembly_definition" if page.relevance_score >= 4 else "irrelevant"
+        return "unknown"
+    return "assembly_definition" if page.relevance_score >= 4 else "candidate_only"
 
 
 def classify_pages(pages: list[PageRecord], config_path: Path = DEFAULT_CONFIG) -> list[PageRecord]:

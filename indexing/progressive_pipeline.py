@@ -141,12 +141,14 @@ def run_progressive_package_analysis(
     budgets: ProgressiveBudgets | None = None,
     use_cache: bool = True,
     use_disk_cache: bool = False,
+    analysis_mode: str = "Standard",
 ) -> dict[str, Any]:
     budgets = budgets or ProgressiveBudgets()
     key = package_cache_key(inspection, budgets, depth)
     if use_cache and key in _PROGRESSIVE_CACHE:
         cached = _PROGRESSIVE_CACHE[key].copy()
         cached["cache_hit"] = True
+        cached.setdefault("scan_completeness", {})["cache_resume_used"] = True
         return cached
     run_digest = _cache_digest(key)
     if use_cache and use_disk_cache:
@@ -154,11 +156,13 @@ def run_progressive_package_analysis(
         if isinstance(cached, dict):
             cached = cached.copy()
             cached["cache_hit"] = True
+            cached.setdefault("scan_completeness", {})["cache_resume_used"] = True
             return cached
 
     started = time.monotonic()
     warnings = list(inspection.warnings)
     partial = False
+    budget_hit_reason = ""
     candidates = list(inspection.candidates)
     manifest_rows = []
     total_estimated_pages = len(candidates)
@@ -188,10 +192,12 @@ def run_progressive_package_analysis(
             continue
         if budgets.max_runtime_seconds is not None and time.monotonic() - started > budgets.max_runtime_seconds:
             partial = True
+            budget_hit_reason = "runtime"
             warnings.append("Runtime budget hit during document fast scan; results are partial.")
             break
         if _budget_hit(sampled_page_count, budgets.max_initial_sample_pages) or _budget_hit(light_index_count, budgets.max_light_index_pages):
             partial = True
+            budget_hit_reason = "page_index"
             warnings.append("Page indexing budget hit during document fast scan; results are partial.")
             break
 
@@ -262,12 +268,28 @@ def run_progressive_package_analysis(
     deferred_pages = max(0, total_estimated_pages - len(indexed_pages))
     relevant_rows = relevant_pages_table(indexed_pages, selected_nodes, graph, seeds)
     tree = build_measurement_tree(indexed_pages, graph, selected_nodes, seeds)
+    exported_selected_nodes = [node["node_id"] for node in tree.get("nodes", [])]
+    scan_completeness = {
+        "total_documents_discovered": len(candidates),
+        "total_pages_discovered": total_estimated_pages,
+        "total_pages_sampled": sampled_page_count,
+        "total_pages_lightly_indexed": light_index_count,
+        "total_pages_deep_analyzed": deep_analyzed_count,
+        "total_pages_deferred": deferred_pages,
+        "processing_budget_hit": partial and bool(budget_hit_reason),
+        "budget_hit_reason": budget_hit_reason,
+        "analysis_mode": analysis_mode,
+        "cache_resume_used": False,
+    }
     result = {
         "documents": [document.to_dict() for document in materialized_by_id.values()],
         "manifest": manifest_rows,
         "pages": indexed_pages,
         "graph": graph,
         "selected_nodes": selected_nodes,
+        "selected_nodes_exported": exported_selected_nodes,
+        "selected_node_count_internal": len(selected_nodes),
+        "exported_node_count": len(exported_selected_nodes),
         "seed_nodes": seeds,
         "tree": tree,
         "relevant_rows": relevant_rows,
@@ -292,6 +314,7 @@ def run_progressive_package_analysis(
             "stage": "partial" if partial else "initial_tree_complete",
             "full_lightweight_index": budgets.full_lightweight_index,
         },
+        "scan_completeness": scan_completeness,
     }
     if use_cache:
         _PROGRESSIVE_CACHE[key] = result.copy()
@@ -348,6 +371,8 @@ def sample_document_pages(document: Any, budgets: ProgressiveBudgets, already_sa
                     width=float(rect.width),
                     height=float(rect.height),
                     processing_status="sampled",
+                    original_document_name=getattr(document, "original_document_name", "") or document.document_name,
+                    original_page_number=getattr(document, "original_page_number", None),
                 )
             )
     finally:
