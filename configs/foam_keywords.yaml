@@ -1,0 +1,61 @@
+foam_keywords:
+  high:
+    - spray foam
+    - sprayed polyurethane foam
+    - polyurethane foam
+    - closed-cell
+    - closed cell
+    - open-cell
+    - open cell
+    - spf
+  medium:
+    - r-value
+    - thermal insulation
+    - air barrier
+    - vapor barrier
+    - building envelope
+    - envelope
+    - continuous insulation
+    - insulation
+  context:
+    - wall section
+    - building section
+    - roof section
+    - wall type
+    - partition type
+    - assembly
+    - exterior wall
+    - roof assembly
+role_keywords:
+  spec_definition:
+    - specification
+    - product data
+    - section 07
+    - insulation requirements
+    - thermal resistance
+    - r-value
+  assembly_definition:
+    - wall type
+    - partition type
+    - assembly
+    - roof assembly
+    - exterior wall
+  measurement_page:
+    - floor plan
+    - roof plan
+    - reflected ceiling plan
+    - overall plan
+    - enlarged plan
+  height_or_opening_confirmation:
+    - elevation
+    - window schedule
+    - door schedule
+    - opening
+    - ceiling height
+    - parapet
+  detail_reference:
+    - detail
+    - section
+    - wall section
+    - building section
+    - roof section

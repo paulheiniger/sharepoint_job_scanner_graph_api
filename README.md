@@ -909,8 +909,6 @@ Run the parser after document extraction, then open Streamlit:
 python -m jobscan.estimator.template_rows \
   --parse-existing \
   --database-url "$NEON_DATABASE_URL"
-
-streamlit run dashboard/app.py
 ```
 
 Limitations:
@@ -921,12 +919,6 @@ Limitations:
 - Labor calibration is strongest when `estimate_template_rows` has standard Spray-Tec workbook rows with labor days/hours/costs.
 - Workbook generation remains a draft/internal review step.
 
-Run locally:
-
-```bash
-streamlit run dashboard/app.py
-```
-
 Estimator limitations:
 
 - No external maps, OCR, routing, or LLM APIs are used.
@@ -935,13 +927,34 @@ Estimator limitations:
 - Labor is inferred from similar estimate/tracking history or configurable productivity assumptions.
 - Every result requires estimator review before quoting.
 
-## Streamlit dashboard prototype
+## Streamlit app
+
+Run the Streamlit app:
 
 ```bash
-streamlit run dashboard/app.py
+streamlit run app.py
 ```
 
-The dashboard includes an **Ask Spray-Tec** page for conversational job and document lookup. It searches structured job fields and stored SharePoint document links, then shows matching job records and available folder/proposal/estimate/contract/invoice links.
+The root page is the local SharePoint scanner app. FoamScope AI is available from the Streamlit sidebar pages menu.
+
+## FoamScope AI prototype
+
+FoamScope AI is a Streamlit page for construction plan/spec PDFs. It identifies sheets relevant to spray foam insulation takeoff, extracts sheet references, builds a directed reference graph, and produces an estimator-reviewed measurement tree.
+
+What it does:
+
+- Upload a PDF plan/spec set.
+- Split the PDF into page records using PyMuPDF.
+- Extract embedded text and use optional pytesseract OCR only when text is sparse.
+- Detect sheet numbers and sheet titles.
+- Score pages with deterministic spray-foam and envelope keywords.
+- Extract references such as `1/A-301`, `Detail 5/A-502`, `Wall Type W3`, and `Partition Type P-2`.
+- Build a NetworkX directed graph of sheet references.
+- Expand high-confidence foam pages to referenced neighbors up to depth 2.
+- Classify selected sheets into roles such as `spec_definition`, `assembly_definition`, `measurement_page`, `height_or_opening_confirmation`, and `detail_reference`.
+- Export the measurement tree as JSON and relevant sheets as CSV.
+
+FoamScope AI does not calculate a final bid. It produces a measurement map for estimator review. No paid API key is required. TODO markers in the code show where an LLM could later summarize evidence or resolve ambiguous sheet relationships.
 
 ## Recommended rollout
 
