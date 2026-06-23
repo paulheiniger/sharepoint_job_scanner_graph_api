@@ -53,6 +53,8 @@ class PdfCandidate:
     file_path: str = ""
     zip_path: str = ""
     zip_member: str = ""
+    graph_drive_id: str = ""
+    graph_item_id: str = ""
     triage_score: int = 0
     triage_classification: str = "untriaged"
     triage_evidence: list[str] | None = None
@@ -554,6 +556,30 @@ def materialize_selected_documents(
                 except Exception as exc:
                     warnings.append(f"Skipped {candidate.source_path}: could not extract selected PDF ({type(exc).__name__}: {exc})")
                     continue
+        elif candidate.source_kind == "sharepoint_pdf":
+            target = _temp_root() / "sharepoint" / f"{_safe_stem(candidate.document_name)}-{candidate.file_hash[:12]}.pdf"
+            if not target.exists() or target.stat().st_size != candidate.uncompressed_size:
+                try:
+                    from jobscan.graph_client import GraphClient
+
+                    GraphClient(max_retries=2).download_item(candidate.graph_drive_id, candidate.graph_item_id, target)
+                except Exception as exc:
+                    warnings.append(f"Skipped {candidate.source_path}: could not download SharePoint PDF ({type(exc).__name__}: {exc})")
+                    continue
+            file_path = str(target)
+            file_hash = _file_fingerprint(target)
+        elif candidate.source_kind == "sharepoint_zip":
+            target_zip = _temp_root() / "sharepoint" / f"{_safe_stem(candidate.document_name)}-{candidate.file_hash[:12]}.zip"
+            if not target_zip.exists() or target_zip.stat().st_size != candidate.uncompressed_size:
+                try:
+                    from jobscan.graph_client import GraphClient
+
+                    GraphClient(max_retries=2).download_item(candidate.graph_drive_id, candidate.graph_item_id, target_zip)
+                except Exception as exc:
+                    warnings.append(f"Skipped {candidate.source_path}: could not download SharePoint ZIP ({type(exc).__name__}: {exc})")
+                    continue
+            warnings.append(f"SharePoint ZIP downloaded to cache but nested PDF selection is not expanded yet: {candidate.document_name}")
+            continue
         else:
             file_path = candidate.file_path
             file_hash = candidate.file_hash

@@ -25,6 +25,8 @@ from ingest.package_ingest import (
     triage_pdf_candidate,
 )
 from ingest.pdf_ingest import PageRecord, ingest_pdf
+from ingest.sharepoint_package_ingest import SHAREPOINT_NOT_CONFIGURED_MESSAGE, inspect_sharepoint_url_package
+from intake.source_detector import detect_source_type
 from takeoff.insulation_scope_tree import build_measurement_tree, relevant_pages_table
 
 
@@ -202,14 +204,14 @@ def render_foamscope_page() -> None:
     st.subheader("Package Intake")
     intake_mode = st.radio(
         "Intake mode",
-        ["Use local/server ZIP or folder path", "Small upload"],
+        ["SharePoint folder URL", "Local/server path", "Upload small package"],
         horizontal=True,
-        help="Use path mode for large bid packages. Browser upload is intended for smaller packages.",
+        help="Use SharePoint URL mode for web links, local/server path for files visible to the Streamlit server, or upload for small packages.",
     )
 
     inspection: PackageInspectionResult | None = None
     package_source = ""
-    if intake_mode == "Small upload":
+    if intake_mode == "Upload small package":
         st.warning(
             f"Small Upload Mode is intended for packages under {SMALL_UPLOAD_WARNING_BYTES / MB:,.0f} MB. "
             "For larger ZIPs, use local/server path mode to avoid browser memory pressure."
@@ -225,7 +227,8 @@ def render_foamscope_page() -> None:
         with st.spinner("Writing uploads to a temporary project directory and creating package manifest..."):
             inspection = inspect_uploaded_package(uploaded_files)
         package_source = "browser upload"
-    else:
+    elif intake_mode == "Local/server path":
+        st.caption("Local/server path must be a path visible to the machine running this app. Use this only for paths on the machine running Streamlit.")
         path_value = st.text_input(
             "Local/server ZIP or folder path",
             value="",
@@ -234,6 +237,10 @@ def render_foamscope_page() -> None:
         if not path_value.strip():
             st.info("Enter a local/server path to a ZIP, PDF, or folder containing PDFs/ZIPs.")
             return
+        source_type = detect_source_type(path_value)
+        if source_type == "sharepoint_url":
+            st.error("This is a SharePoint URL, not a local path. Choose SharePoint folder URL mode.")
+            return
         path_obj = Path(path_value).expanduser()
         if not path_obj.exists():
             st.error(f"Path does not exist: {path_obj}")
@@ -241,6 +248,25 @@ def render_foamscope_page() -> None:
         with st.spinner("Inspecting local/server path and creating package manifest..."):
             inspection = inspect_path_package(path_obj)
         package_source = str(path_obj)
+    else:
+        st.caption("SharePoint links require SharePoint/Graph intake.")
+        url_value = st.text_input(
+            "SharePoint folder URL",
+            value="",
+            placeholder="https://contoso.sharepoint.com/:f:/s/...",
+        )
+        if not url_value.strip():
+            st.info("Paste a SharePoint or OneDrive folder link, or use a synced local OneDrive folder in Local/server path mode.")
+            return
+        source_type = detect_source_type(url_value)
+        if source_type != "sharepoint_url":
+            st.error("Enter a SharePoint or OneDrive folder URL, or choose Local/server path mode for filesystem paths.")
+            return
+        with st.spinner("Inspecting SharePoint folder through Microsoft Graph..."):
+            inspection = inspect_sharepoint_url_package(url_value.strip())
+        if inspection.warnings and not inspection.candidates:
+            st.error(SHAREPOINT_NOT_CONFIGURED_MESSAGE)
+        package_source = "SharePoint folder URL"
 
     if inspection is None:
         return
