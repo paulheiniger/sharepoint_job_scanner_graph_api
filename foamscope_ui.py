@@ -190,11 +190,25 @@ def render_foamscope_page() -> None:
 
     with st.sidebar:
         st.header("FoamScope Analysis")
+        analysis_mode = st.selectbox(
+            "Analysis mode",
+            ["Quick Scan", "Standard", "Full Package Analysis"],
+            index=1,
+            help=(
+                "Quick Scan returns early for preview. Standard uses moderate budgets. "
+                "Full Package Analysis lightweight-indexes all selected PDFs/pages and builds the full reference graph."
+            ),
+        )
         depth = st.slider("Reference expansion depth", min_value=0, max_value=8, value=5)
         use_ocr = st.checkbox(
-            "Use OCR fallback for sparse pages",
+            "Enable OCR fallback",
             value=False,
             help="Advanced. Uses pytesseract when embedded PDF text is sparse; keep off for large packages unless needed.",
+        )
+        render_graph_images = st.checkbox(
+            "Render page images for graph-included pages only",
+            value=False,
+            help="Reserved for visual review. FoamScope will not render/OCR every page in Full Package Analysis.",
         )
         st.markdown("**No paid API key required.**")
         st.caption("TODO: optional LLM summaries could later explain ambiguous scope evidence.")
@@ -214,11 +228,55 @@ def render_foamscope_page() -> None:
             help="Build the manifest, sheet map, foam seeds, and reference-expanded tree without marking pages for deep analysis.",
         )
         budget_multiplier = st.session_state.get("foamscope_budget_multiplier", 1)
+        if analysis_mode == "Quick Scan":
+            default_initial_pages = 60 * budget_multiplier
+            default_light_pages = 120 * budget_multiplier
+            default_deep_pages = 40 * budget_multiplier
+            default_runtime_seconds = 12 * budget_multiplier
+        elif analysis_mode == "Full Package Analysis":
+            default_initial_pages = None
+            default_light_pages = None
+            default_deep_pages = 5000
+            default_runtime_seconds = None
+        else:
+            default_initial_pages = 200 * budget_multiplier
+            default_light_pages = 500 * budget_multiplier
+            default_deep_pages = 150 * budget_multiplier
+            default_runtime_seconds = 25 * budget_multiplier
         with st.expander("Processing budgets", expanded=False):
-            max_initial_sample_pages = st.number_input("Max initial sample pages", min_value=10, max_value=5000, value=200 * budget_multiplier)
-            max_light_index_pages = st.number_input("Max light index pages", min_value=10, max_value=10000, value=500 * budget_multiplier)
-            max_deep_analysis_pages = st.number_input("Max deep analysis pages", min_value=1, max_value=2000, value=150 * budget_multiplier)
-            max_runtime_seconds = st.number_input("Max runtime seconds", min_value=5, max_value=300, value=25 * budget_multiplier)
+            if analysis_mode == "Full Package Analysis":
+                st.caption(
+                    "Full Package Analysis disables light-index page and runtime stop budgets. "
+                    "It still keeps OCR off unless you enable OCR fallback."
+                )
+                max_initial_sample_pages = None
+                max_light_index_pages = None
+                max_runtime_seconds = None
+            else:
+                max_initial_sample_pages = st.number_input(
+                    "Max initial sample pages",
+                    min_value=10,
+                    max_value=5000,
+                    value=int(default_initial_pages or 200),
+                )
+                max_light_index_pages = st.number_input(
+                    "Max light index pages",
+                    min_value=10,
+                    max_value=10000,
+                    value=int(default_light_pages or 500),
+                )
+                max_runtime_seconds = st.number_input(
+                    "Max runtime seconds",
+                    min_value=5,
+                    max_value=300,
+                    value=int(default_runtime_seconds or 25),
+                )
+            max_deep_analysis_pages = st.number_input(
+                "Max deep analysis pages",
+                min_value=1,
+                max_value=10000,
+                value=int(default_deep_pages),
+            )
 
     st.subheader("Package Intake")
     intake_mode = st.radio(
@@ -369,15 +427,26 @@ def render_foamscope_page() -> None:
     )
 
     budgets = ProgressiveBudgets(
-        max_initial_sample_pages=int(max_initial_sample_pages),
-        max_light_index_pages=int(max_light_index_pages),
+        max_initial_sample_pages=None if max_initial_sample_pages is None else int(max_initial_sample_pages),
+        max_light_index_pages=None if max_light_index_pages is None else int(max_light_index_pages),
         max_deep_analysis_pages=0 if stop_after_initial_tree else int(max_deep_analysis_pages),
-        max_ocr_pages=0,
-        max_runtime_seconds=int(max_runtime_seconds),
+        max_ocr_pages=10000 if use_ocr else 0,
+        max_runtime_seconds=None if max_runtime_seconds is None else int(max_runtime_seconds),
+        include_low_priority_documents=analysis_mode == "Full Package Analysis",
+        full_lightweight_index=analysis_mode == "Full Package Analysis",
     )
+    if render_graph_images:
+        st.info("Page image rendering is limited to graph-included pages and is reserved for a later visual review step.")
+    if analysis_mode == "Full Package Analysis":
+        st.caption("Full Package Analysis saves per-document progress to disk cache and resumes after reruns when possible.")
     with st.spinner("Building progressive package manifest, sheet map, foam seeds, and reference-expanded tree..."):
         try:
-            result = run_progressive_package_analysis(selected_inspection, depth=depth, budgets=budgets)
+            result = run_progressive_package_analysis(
+                selected_inspection,
+                depth=depth,
+                budgets=budgets,
+                use_disk_cache=analysis_mode == "Full Package Analysis",
+            )
         except Exception as exc:
             st.error(f"Could not analyze PDF package: {type(exc).__name__}: {exc}")
             return
@@ -389,9 +458,11 @@ def render_foamscope_page() -> None:
     progress = result["progress"]
     if result.get("partial"):
         st.warning("Processing budget was hit. Results are partial, and deferred pages were not discarded.")
-        if st.button("Continue expanding analysis", type="primary"):
+        if analysis_mode != "Full Package Analysis" and st.button("Continue expanding analysis", type="primary"):
             st.session_state["foamscope_budget_multiplier"] = st.session_state.get("foamscope_budget_multiplier", 1) + 1
             st.rerun()
+    if analysis_mode == "Full Package Analysis" and st.button("Continue/resume full analysis", type="primary"):
+        st.rerun()
 
     high_count = sum(1 for page in pages if page.relevance_level == "high")
     medium_count = sum(1 for page in pages if page.relevance_level == "medium")
@@ -421,6 +492,7 @@ def render_foamscope_page() -> None:
     )
     if result.get("cache_hit"):
         st.caption("Loaded progressive analysis from cache.")
+    st.caption(f"Analysis mode: {analysis_mode}. Full lightweight index: {progress.get('full_lightweight_index', False)}.")
 
     st.warning("FoamScope AI produces an estimator-reviewed measurement map. It does not calculate a final bid.")
     if result["warnings"]:

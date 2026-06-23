@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import time
 from dataclasses import asdict, dataclass
+import hashlib
+import pickle
 from pathlib import Path
 from typing import Any
 
@@ -16,14 +18,17 @@ from takeoff.insulation_scope_tree import build_measurement_tree, relevant_pages
 
 @dataclass(frozen=True)
 class ProgressiveBudgets:
-    max_initial_sample_pages: int = 200
-    max_light_index_pages: int = 500
+    max_initial_sample_pages: int | None = 200
+    max_light_index_pages: int | None = 500
     max_deep_analysis_pages: int = 150
     max_ocr_pages: int = 0
-    max_runtime_seconds: int = 25
+    max_runtime_seconds: int | None = 25
+    include_low_priority_documents: bool = False
+    full_lightweight_index: bool = False
 
 
 _PROGRESSIVE_CACHE: dict[str, dict[str, Any]] = {}
+CACHE_VERSION = "foamscope-progressive-v2"
 
 
 def current_memory_rss_mb() -> float | None:
@@ -77,12 +82,65 @@ def package_cache_key(inspection: PackageInspectionResult, budgets: ProgressiveB
     return "|".join(parts) + f"|depth={depth}|budgets={asdict(budgets)}"
 
 
+def _cache_digest(key: str) -> str:
+    return hashlib.sha1(f"{CACHE_VERSION}|{key}".encode("utf-8")).hexdigest()
+
+
+def _cache_dir() -> Path:
+    path = Path(".cache") / "foamscope_progressive"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _candidate_page_cache_path(run_digest: str, candidate_id: str) -> Path:
+    candidate_digest = hashlib.sha1(candidate_id.encode("utf-8")).hexdigest()
+    return _cache_dir() / f"{run_digest}_{candidate_digest}_pages.pkl"
+
+
+def _result_cache_path(run_digest: str) -> Path:
+    return _cache_dir() / f"{run_digest}_result.pkl"
+
+
+def _load_pickle(path: Path) -> Any | None:
+    try:
+        if path.exists():
+            with path.open("rb") as handle:
+                return pickle.load(handle)
+    except Exception:
+        return None
+    return None
+
+
+def _save_pickle(path: Path, payload: Any) -> None:
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    try:
+        with tmp_path.open("wb") as handle:
+            pickle.dump(payload, handle)
+        tmp_path.replace(path)
+    except Exception:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+
+
+def _budget_hit(value: int, budget: int | None) -> bool:
+    return budget is not None and value >= budget
+
+
+def _remaining_budget(value: int, budget: int | None) -> int | None:
+    if budget is None:
+        return None
+    return max(0, budget - value)
+
+
 def run_progressive_package_analysis(
     inspection: PackageInspectionResult,
     *,
     depth: int = 5,
     budgets: ProgressiveBudgets | None = None,
     use_cache: bool = True,
+    use_disk_cache: bool = False,
 ) -> dict[str, Any]:
     budgets = budgets or ProgressiveBudgets()
     key = package_cache_key(inspection, budgets, depth)
@@ -90,6 +148,13 @@ def run_progressive_package_analysis(
         cached = _PROGRESSIVE_CACHE[key].copy()
         cached["cache_hit"] = True
         return cached
+    run_digest = _cache_digest(key)
+    if use_cache and use_disk_cache:
+        cached = _load_pickle(_result_cache_path(run_digest))
+        if isinstance(cached, dict):
+            cached = cached.copy()
+            cached["cache_hit"] = True
+            return cached
 
     started = time.monotonic()
     warnings = list(inspection.warnings)
@@ -107,7 +172,7 @@ def run_progressive_package_analysis(
                 "priority": priority,
                 "compressed_size": candidate.compressed_size,
                 "uncompressed_size": candidate.uncompressed_size,
-                "status": "deferred" if priority == "low" else "manifested",
+                "status": "manifested" if budgets.include_low_priority_documents or priority != "low" else "deferred",
             }
         )
 
@@ -119,13 +184,13 @@ def run_progressive_package_analysis(
 
     for candidate in sorted(candidates, key=lambda item: {"high": 0, "medium": 1, "low": 2}[candidate_priority(item)]):
         priority = candidate_priority(candidate)
-        if priority == "low":
+        if priority == "low" and not budgets.include_low_priority_documents:
             continue
-        if time.monotonic() - started > budgets.max_runtime_seconds:
+        if budgets.max_runtime_seconds is not None and time.monotonic() - started > budgets.max_runtime_seconds:
             partial = True
             warnings.append("Runtime budget hit during document fast scan; results are partial.")
             break
-        if sampled_page_count >= budgets.max_initial_sample_pages or light_index_count >= budgets.max_light_index_pages:
+        if _budget_hit(sampled_page_count, budgets.max_initial_sample_pages) or _budget_hit(light_index_count, budgets.max_light_index_pages):
             partial = True
             warnings.append("Page indexing budget hit during document fast scan; results are partial.")
             break
@@ -136,15 +201,33 @@ def run_progressive_package_analysis(
             continue
         document = package.documents[0]
         materialized_by_id[candidate.candidate_id] = document
-        sampled = sample_document_pages(document, budgets, sampled_page_count)
+        page_cache_path = _candidate_page_cache_path(run_digest, candidate.candidate_id)
+        cached_sampled = _load_pickle(page_cache_path) if use_disk_cache else None
+        if isinstance(cached_sampled, dict):
+            sampled = {
+                "page_count": cached_sampled.get("page_count", 0),
+                "pages": [PageRecord(**page) for page in cached_sampled.get("pages", [])],
+            }
+        else:
+            sampled = sample_document_pages(document, budgets, sampled_page_count)
+            if use_disk_cache:
+                _save_pickle(
+                    page_cache_path,
+                    {
+                        "page_count": sampled.get("page_count", 0),
+                        "pages": [page.to_dict() for page in sampled.get("pages", [])],
+                    },
+                )
         if sampled["page_count"]:
             total_estimated_pages += max(0, int(sampled["page_count"]) - 1)
         pages = sampled["pages"]
         if not pages:
             continue
-        remaining_sample_budget = budgets.max_initial_sample_pages - sampled_page_count
-        remaining_light_budget = budgets.max_light_index_pages - light_index_count
-        pages = pages[: max(0, min(remaining_sample_budget, remaining_light_budget))]
+        remaining_sample_budget = _remaining_budget(sampled_page_count, budgets.max_initial_sample_pages)
+        remaining_light_budget = _remaining_budget(light_index_count, budgets.max_light_index_pages)
+        remaining_budgets = [value for value in (remaining_sample_budget, remaining_light_budget) if value is not None]
+        if remaining_budgets:
+            pages = pages[: max(0, min(remaining_budgets))]
         sampled_page_count += len(pages)
         light_index_count += len(pages)
         fast_scanned_docs += 1
@@ -207,10 +290,13 @@ def run_progressive_package_analysis(
             "elapsed_seconds": round(time.monotonic() - started, 2),
             "memory_rss_mb": current_memory_rss_mb(),
             "stage": "partial" if partial else "initial_tree_complete",
+            "full_lightweight_index": budgets.full_lightweight_index,
         },
     }
     if use_cache:
         _PROGRESSIVE_CACHE[key] = result.copy()
+        if use_disk_cache:
+            _save_pickle(_result_cache_path(run_digest), result)
     return result
 
 
@@ -230,16 +316,20 @@ def sample_document_pages(document: Any, budgets: ProgressiveBudgets, already_sa
     pages: list[PageRecord] = []
     try:
         page_count = pdf.page_count
-        sample_indexes = set(range(min(2, page_count)))
-        for index in range(max(0, page_count - 2), page_count):
-            sample_indexes.add(index)
-        for index in range(min(page_count, 12)):
-            text = pdf[index].get_text("text") or ""
-            lowered = text.lower()
-            if "table of contents" in lowered or "drawing index" in lowered or "sheet index" in lowered or lowered.strip().startswith("index"):
+        if budgets.full_lightweight_index:
+            sample_indexes = set(range(page_count))
+        else:
+            sample_indexes = set(range(min(2, page_count)))
+            for index in range(max(0, page_count - 2), page_count):
                 sample_indexes.add(index)
-        remaining = max(0, budgets.max_initial_sample_pages - already_sampled)
-        for index in sorted(sample_indexes)[:remaining]:
+            for index in range(min(page_count, 12)):
+                text = pdf[index].get_text("text") or ""
+                lowered = text.lower()
+                if "table of contents" in lowered or "drawing index" in lowered or "sheet index" in lowered or lowered.strip().startswith("index"):
+                    sample_indexes.add(index)
+        remaining = _remaining_budget(already_sampled, budgets.max_initial_sample_pages)
+        indexes = sorted(sample_indexes) if remaining is None else sorted(sample_indexes)[:remaining]
+        for index in indexes:
             page = pdf[index]
             text = page.get_text("text") or ""
             rect = page.rect

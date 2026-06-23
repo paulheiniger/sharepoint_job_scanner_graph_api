@@ -4,7 +4,7 @@ import zipfile
 from io import BytesIO
 
 from foamscope_ui import analyze_documents
-from indexing.progressive_pipeline import ProgressiveBudgets, run_progressive_package_analysis
+from indexing.progressive_pipeline import _PROGRESSIVE_CACHE, ProgressiveBudgets, run_progressive_package_analysis
 from ingest.package_ingest import inspect_path_package, inspect_uploaded_package, ingest_uploaded_package, materialize_selected_documents, triage_inspection
 
 
@@ -23,6 +23,18 @@ def make_pdf(text: str) -> bytes:
     document = fitz.open()
     page = document.new_page()
     page.insert_text((72, 72), text, fontsize=11)
+    payload = document.tobytes()
+    document.close()
+    return payload
+
+
+def make_pdf_pages(texts: list[str]) -> bytes:
+    import fitz
+
+    document = fitz.open()
+    for text in texts:
+        page = document.new_page()
+        page.insert_text((72, 72), text, fontsize=11)
     payload = document.tobytes()
     document.close()
     return payload
@@ -231,6 +243,45 @@ def test_progressive_budget_hit_returns_partial_results() -> None:
     assert result["progress"]["fast_scanned_pages"] <= 1
 
 
+def test_full_package_analysis_indexes_all_pages_and_low_priority_docs() -> None:
+    entries = {
+        "architectural/A-601.pdf": make_pdf_pages(
+            [
+                "A-601 Wall Types\nWall Type W3 requires spray foam insulation. See A-301.",
+                "A-602 Exterior Wall Assemblies\nclosed-cell SPF",
+                "A-603 Air Barrier Notes",
+            ]
+        ),
+        "electrical/E-101.pdf": make_pdf_pages(
+            [
+                "E-101 Electrical Plan\nlighting only",
+                "E-102 Electrical Details",
+            ]
+        ),
+    }
+    inspection = triage_inspection(inspect_uploaded_package([FakeUpload("full_bid.zip", make_zip(entries))]))
+
+    result = run_progressive_package_analysis(
+        inspection,
+        budgets=ProgressiveBudgets(
+            max_initial_sample_pages=None,
+            max_light_index_pages=None,
+            max_deep_analysis_pages=100,
+            max_runtime_seconds=None,
+            include_low_priority_documents=True,
+            full_lightweight_index=True,
+        ),
+        use_cache=False,
+    )
+
+    assert result["partial"] is False
+    assert result["progress"]["fast_scanned_documents"] == 2
+    assert result["progress"]["fast_scanned_pages"] == 5
+    assert result["progress"]["deferred_pages"] == 0
+    assert any(row["priority"] == "low" and row["status"] == "manifested" for row in result["manifest"])
+    assert result["progress"]["full_lightweight_index"] is True
+
+
 def test_progressive_cache_resume_avoids_reprocessing() -> None:
     inspection = triage_inspection(
         inspect_uploaded_package([FakeUpload("architectural_A-101.pdf", make_pdf("A-101 Floor Plan\nspray foam insulation"))])
@@ -242,6 +293,28 @@ def test_progressive_cache_resume_avoids_reprocessing() -> None:
 
     assert first["cache_hit"] is False
     assert second["cache_hit"] is True
+
+
+def test_progressive_disk_cache_resume_avoids_reprocessing(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    inspection = triage_inspection(
+        inspect_uploaded_package([FakeUpload("architectural_A-601.pdf", make_pdf("A-601 Wall Types\nspray foam insulation"))])
+    )
+    budgets = ProgressiveBudgets(
+        max_initial_sample_pages=None,
+        max_light_index_pages=None,
+        max_runtime_seconds=None,
+        include_low_priority_documents=True,
+        full_lightweight_index=True,
+    )
+
+    first = run_progressive_package_analysis(inspection, budgets=budgets, use_cache=True, use_disk_cache=True)
+    _PROGRESSIVE_CACHE.clear()
+    second = run_progressive_package_analysis(inspection, budgets=budgets, use_cache=True, use_disk_cache=True)
+
+    assert first["cache_hit"] is False
+    assert second["cache_hit"] is True
+    assert (tmp_path / ".cache" / "foamscope_progressive").exists()
 
 
 def test_path_based_zip_intake_works_without_file_uploader(tmp_path) -> None:
