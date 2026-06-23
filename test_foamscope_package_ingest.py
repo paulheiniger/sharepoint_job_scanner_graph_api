@@ -4,7 +4,7 @@ import zipfile
 from io import BytesIO
 
 from foamscope_ui import analyze_documents
-from ingest.package_ingest import ingest_uploaded_package
+from ingest.package_ingest import inspect_uploaded_package, ingest_uploaded_package, materialize_selected_documents
 
 
 class FakeUpload:
@@ -73,6 +73,7 @@ def test_zip_with_pdfs_extracts_pdf_documents() -> None:
     assert len(package.documents) == 1
     assert package.documents[0].document_name == "specifications.pdf"
     assert package.documents[0].source_path == "bid_package.zip:docs/specifications.pdf"
+    assert package.documents[0].file_path
 
 
 def test_zip_with_non_pdf_files_skips_with_warnings() -> None:
@@ -103,3 +104,31 @@ def test_duplicate_sheet_ids_produce_warning() -> None:
     result = analyze_documents(package.documents, depth=1, use_ocr=False)
 
     assert any("Duplicate sheet_id A-101" in warning for warning in result["warnings"])
+
+
+def test_zip_inspection_does_not_extract_until_selected() -> None:
+    pdf_a = make_pdf("A-101 Floor Plan\nspray foam insulation")
+    pdf_e = make_pdf("E-101 Electrical Plan\nlighting panel schedule")
+    payload = make_zip({"drawings/A-101.pdf": pdf_a, "electrical/E-101.pdf": pdf_e})
+
+    inspection = inspect_uploaded_package([FakeUpload("package.zip", payload)])
+
+    assert len(inspection.candidates) == 2
+    assert all(not candidate.file_path for candidate in inspection.candidates)
+    selected = {candidate.candidate_id for candidate in inspection.candidates if candidate.document_name == "A-101.pdf"}
+    package = materialize_selected_documents(inspection, selected)
+
+    assert [document.document_name for document in package.documents] == ["A-101.pdf"]
+    assert package.documents[0].file_path
+
+
+def test_default_selection_prefers_architectural_and_unselects_mep() -> None:
+    pdf_a = make_pdf("A-101 Floor Plan\nspray foam insulation")
+    pdf_m = make_pdf("M-101 Mechanical Plan\nductwork")
+    payload = make_zip({"drawings/A-101.pdf": pdf_a, "mechanical/M-101.pdf": pdf_m})
+
+    inspection = inspect_uploaded_package([FakeUpload("package.zip", payload)])
+    selected_by_name = {candidate.document_name: candidate.default_selected for candidate in inspection.candidates}
+
+    assert selected_by_name["A-101.pdf"] is True
+    assert selected_by_name["M-101.pdf"] is False

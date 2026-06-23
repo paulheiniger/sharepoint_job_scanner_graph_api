@@ -10,8 +10,14 @@ from indexing.graph_builder import build_reference_graph, expand_neighbors, grap
 from indexing.page_classifier import classify_pages
 from indexing.reference_extractor import attach_references
 from indexing.sheet_indexer import index_sheets
-from ingest.package_ingest import PdfDocumentInput, ingest_uploaded_package, normalize_pdf_document
-from ingest.pdf_ingest import ingest_pdf
+from ingest.package_ingest import (
+    MB,
+    PdfDocumentInput,
+    inspect_uploaded_package,
+    materialize_selected_documents,
+    normalize_pdf_document,
+)
+from ingest.pdf_ingest import PageRecord, ingest_pdf
 from takeoff.insulation_scope_tree import build_measurement_tree, relevant_pages_table
 
 
@@ -21,6 +27,45 @@ def dataframe_from_records(rows: list[dict[str, Any]]) -> pd.DataFrame:
 
 def documents_table(documents: list[PdfDocumentInput]) -> pd.DataFrame:
     return dataframe_from_records([document.to_dict() for document in documents])
+
+
+def candidates_table(candidates: list[Any]) -> pd.DataFrame:
+    rows = []
+    for candidate in candidates:
+        rows.append(
+            {
+                "selected": candidate.default_selected,
+                "candidate_id": candidate.candidate_id,
+                "filename": candidate.document_name,
+                "source": candidate.source_path,
+                "source_kind": candidate.source_kind,
+                "guessed_document_type": candidate.document_type,
+                "compressed_size_mb": round(candidate.compressed_size / MB, 2),
+                "uncompressed_size_mb": round(candidate.uncompressed_size / MB, 2),
+            }
+        )
+    return dataframe_from_records(rows)
+
+
+@st.cache_data(show_spinner=False)
+def ingest_pdf_cached(
+    file_path: str,
+    file_hash: str,
+    use_ocr: bool,
+    document_id: str,
+    document_name: str,
+    document_type: str,
+    source_path: str,
+) -> list[dict[str, Any]]:
+    pages = ingest_pdf(
+        file_path,
+        ocr_sparse_pages=use_ocr,
+        document_id=document_id,
+        document_name=document_name,
+        document_type=document_type,
+        source_path=source_path,
+    )
+    return [page.to_dict() for page in pages]
 
 
 def analyze_pdf(pdf_bytes: bytes, *, depth: int, use_ocr: bool) -> dict[str, Any]:
@@ -39,16 +84,28 @@ def analyze_documents(
     warnings = list(package_warnings or [])
     for document in documents:
         try:
-            pages.extend(
-                ingest_pdf(
-                    document.content,
-                    ocr_sparse_pages=use_ocr,
-                    document_id=document.document_id,
-                    document_name=document.document_name,
-                    document_type=document.document_type,
-                    source_path=document.source_path,
+            if document.file_path:
+                page_dicts = ingest_pdf_cached(
+                    document.file_path,
+                    document.file_hash,
+                    use_ocr,
+                    document.document_id,
+                    document.document_name,
+                    document.document_type,
+                    document.source_path,
                 )
-            )
+                pages.extend(PageRecord(**page_dict) for page_dict in page_dicts)
+            else:
+                pages.extend(
+                    ingest_pdf(
+                        document.content or b"",
+                        ocr_sparse_pages=use_ocr,
+                        document_id=document.document_id,
+                        document_name=document.document_name,
+                        document_type=document.document_type,
+                        source_path=document.source_path,
+                    )
+                )
         except Exception as exc:
             warnings.append(f"Could not analyze {document.document_name}: {type(exc).__name__}: {exc}")
     pages = index_sheets(pages)
@@ -100,16 +157,59 @@ def render_foamscope_page() -> None:
         st.info("Upload one or more plan/spec PDFs or ZIP files containing PDFs to begin.")
         return
 
-    package = ingest_uploaded_package(uploaded_files)
-    if package.warnings:
+    inspection = inspect_uploaded_package(uploaded_files)
+    if inspection.warnings:
         with st.expander("Package warnings", expanded=True):
-            for warning in package.warnings:
+            for warning in inspection.warnings:
                 st.warning(warning)
-    if not package.documents:
+    if not inspection.candidates:
         st.warning("No PDF documents were found in the uploaded files.")
         return
 
-    st.subheader("Uploaded Documents")
+    st.subheader("PDF Document Selection")
+    st.caption("Review the package contents and choose the PDFs FoamScope should analyze. ZIP PDFs are extracted only after selection.")
+    candidate_df = candidates_table(inspection.candidates)
+    edited_candidates = st.data_editor(
+        candidate_df,
+        use_container_width=True,
+        hide_index=True,
+        disabled=[
+            "candidate_id",
+            "filename",
+            "source",
+            "source_kind",
+            "guessed_document_type",
+            "compressed_size_mb",
+            "uncompressed_size_mb",
+        ],
+        column_config={
+            "selected": st.column_config.CheckboxColumn("Analyze", help="Only selected PDFs are extracted and processed."),
+            "candidate_id": None,
+        },
+        key="foamscope_candidate_selector",
+    )
+    selected_ids = set(edited_candidates.loc[edited_candidates["selected"] == True, "candidate_id"].astype(str).tolist())
+    selected_uncompressed = sum(candidate.uncompressed_size for candidate in inspection.candidates if candidate.candidate_id in selected_ids)
+    st.caption(
+        f"{len(selected_ids):,} of {len(inspection.candidates):,} PDFs selected. "
+        f"Selected uncompressed size: {selected_uncompressed / MB:,.1f} MB."
+    )
+    if not selected_ids:
+        st.info("Select at least one PDF to analyze.")
+        return
+    if not st.button("Analyze selected documents", type="primary"):
+        return
+
+    package = materialize_selected_documents(inspection, selected_ids)
+    if package.warnings:
+        with st.expander("Selection/extraction warnings", expanded=True):
+            for warning in package.warnings:
+                st.warning(warning)
+    if not package.documents:
+        st.warning("No selected PDF documents could be extracted for analysis.")
+        return
+
+    st.subheader("Selected Documents")
     st.dataframe(documents_table(package.documents), use_container_width=True, hide_index=True)
 
     with st.spinner("Reading PDF pages, scoring insulation relevance, and building package reference graph..."):

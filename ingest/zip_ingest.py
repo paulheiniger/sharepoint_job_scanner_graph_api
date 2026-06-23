@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import tempfile
 import zipfile
-from io import BytesIO
 from pathlib import Path, PurePosixPath
 
 
-def _safe_pdf_member(member_name: str) -> tuple[bool, str | None]:
+def safe_zip_pdf_member(member_name: str) -> tuple[bool, str | None]:
     path = PurePosixPath(member_name)
     parts = path.parts
     if not parts or member_name.endswith("/"):
@@ -20,45 +18,37 @@ def _safe_pdf_member(member_name: str) -> tuple[bool, str | None]:
     return True, None
 
 
-def extract_zip_pdfs(zip_name: str, zip_bytes: bytes, *, starting_index: int = 0):
-    """Extract PDF members from a ZIP into a temp project folder and return normalized document inputs."""
-    from .package_ingest import normalize_pdf_document
-
-    documents = []
+def inspect_zip_pdfs(zip_path: Path) -> tuple[list[dict[str, object]], list[str]]:
+    pdfs: list[dict[str, object]] = []
     warnings: list[str] = []
-    project_dir = Path(tempfile.mkdtemp(prefix="foamscope_package_"))
     try:
-        with zipfile.ZipFile(BytesIO(zip_bytes)) as archive:
+        with zipfile.ZipFile(zip_path) as archive:
             for member in archive.infolist():
-                ok, warning = _safe_pdf_member(member.filename)
+                ok, warning = safe_zip_pdf_member(member.filename)
                 if warning:
                     warnings.append(warning)
                 if not ok:
                     continue
-                member_path = PurePosixPath(member.filename)
-                filename = member_path.name
-                target = (project_dir / filename).resolve()
-                if project_dir.resolve() not in target.parents:
-                    warnings.append(f"Skipped unsafe ZIP path: {member.filename}")
-                    continue
-                try:
-                    content = archive.read(member)
-                except Exception as exc:
-                    warnings.append(f"Skipped {member.filename}: could not read ZIP member ({type(exc).__name__})")
-                    continue
-                try:
-                    target.write_bytes(content)
-                except OSError as exc:
-                    warnings.append(f"Could not stage {member.filename}: {exc}")
-                source_path = f"{zip_name}:{member.filename}"
-                documents.append(
-                    normalize_pdf_document(
-                        filename,
-                        content,
-                        index=starting_index + len(documents),
-                        source_path=source_path,
-                    )
+                pdfs.append(
+                    {
+                        "member_name": member.filename,
+                        "filename": PurePosixPath(member.filename).name,
+                        "compressed_size": int(member.compress_size or 0),
+                        "uncompressed_size": int(member.file_size or 0),
+                        "crc": int(member.CRC or 0),
+                    }
                 )
     except zipfile.BadZipFile:
-        warnings.append(f"Skipped {zip_name}: not a readable ZIP file")
-    return documents, warnings
+        warnings.append(f"Skipped {zip_path.name}: not a readable ZIP file")
+    return pdfs, warnings
+
+
+def extract_zip_pdf_member(zip_path: Path, member_name: str, target_path: Path) -> bytes:
+    ok, warning = safe_zip_pdf_member(member_name)
+    if not ok:
+        raise ValueError(warning or f"Unsafe or unsupported ZIP member: {member_name}")
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path) as archive:
+        content = archive.read(member_name)
+    target_path.write_bytes(content)
+    return content

@@ -943,8 +943,10 @@ FoamScope AI is a Streamlit page for construction plan/spec PDFs and ZIP bid pac
 
 What it does:
 
-- Upload a single PDF, multiple PDFs, or one or more ZIP files containing PDFs.
+- Upload a single PDF, multiple PDFs, or one or more ZIP files containing PDFs. Streamlit is configured for uploads up to 2 GB.
 - Scan ZIP files for PDFs only; folders, macOS metadata, and non-PDF files are skipped with warnings.
+- Review the discovered PDF table before analysis. FoamScope default-selects likely architectural/specification/addendum PDFs and leaves likely mechanical, electrical, plumbing, civil, fire alarm, and low-voltage PDFs unselected.
+- Extract and analyze only the selected PDFs. Large uploads warn above 500 MB, and selected documents warn when they exceed 1 GB or approach the temp-disk safety threshold.
 - Split the PDF into page records using PyMuPDF.
 - Extract embedded text and use optional pytesseract OCR only when text is sparse.
 - Detect sheet numbers and sheet titles.
