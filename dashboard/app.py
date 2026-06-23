@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
+from foamscope_ui import render_foamscope_page
 from jobscan.db_connections import (
     ReadQueryResult,
     create_resilient_engine,
@@ -3974,6 +3975,7 @@ def main() -> None:
                 "Job Board",
                 "Schedule Calendar",
                 "Estimator Prototype",
+                "FoamScope AI",
                 "Pipeline / Money",
                 "Sales Follow-Up",
                 "Contracted Backlog / Scheduling",
@@ -4007,6 +4009,8 @@ def main() -> None:
         schedule_calendar_page()
     elif page == "Estimator Prototype":
         estimator_prototype_page()
+    elif page == "FoamScope AI":
+        render_foamscope_page()
     elif page == "Pipeline / Money":
         pipeline_money_page()
     elif page == "Sales Follow-Up":

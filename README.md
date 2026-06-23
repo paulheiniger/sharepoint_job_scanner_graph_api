@@ -935,7 +935,7 @@ Run the Streamlit app:
 streamlit run app.py
 ```
 
-The root page is the local SharePoint scanner app. FoamScope AI is available from the Streamlit sidebar pages menu.
+The root page is the local SharePoint scanner app. FoamScope AI is available from the Streamlit sidebar pages menu. If the deployed app uses the richer `dashboard/app.py` entrypoint, FoamScope AI is also listed explicitly in that dashboard sidebar navigation.
 
 ## FoamScope AI prototype
 
