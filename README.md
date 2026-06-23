@@ -939,17 +939,19 @@ The root page is the local SharePoint scanner app. FoamScope AI is available fro
 
 ## FoamScope AI prototype
 
-FoamScope AI is a Streamlit page for construction plan/spec PDFs. It identifies sheets relevant to spray foam insulation takeoff, extracts sheet references, builds a directed reference graph, and produces an estimator-reviewed measurement tree.
+FoamScope AI is a Streamlit page for construction plan/spec PDFs and ZIP bid packages. It identifies sheets relevant to spray foam insulation takeoff, extracts sheet references, builds a directed reference graph, and produces an estimator-reviewed measurement tree.
 
 What it does:
 
-- Upload a PDF plan/spec set.
+- Upload a single PDF, multiple PDFs, or one or more ZIP files containing PDFs.
+- Scan ZIP files for PDFs only; folders, macOS metadata, and non-PDF files are skipped with warnings.
 - Split the PDF into page records using PyMuPDF.
 - Extract embedded text and use optional pytesseract OCR only when text is sparse.
 - Detect sheet numbers and sheet titles.
 - Score pages with deterministic spray-foam and envelope keywords.
 - Extract references such as `1/A-301`, `Detail 5/A-502`, `Wall Type W3`, and `Partition Type P-2`.
 - Build a NetworkX directed graph of sheet references.
+- Resolve references across all uploaded documents in the package and warn when duplicate sheet IDs make a reference ambiguous.
 - Expand high-confidence foam pages to referenced neighbors up to depth 2.
 - Classify selected sheets into roles such as `spec_definition`, `assembly_definition`, `measurement_page`, `height_or_opening_confirmation`, and `detail_reference`.
 - Export the measurement tree as JSON and relevant sheets as CSV.
