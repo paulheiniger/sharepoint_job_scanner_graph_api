@@ -5,19 +5,32 @@ from typing import Any
 import networkx as nx
 
 from ingest.pdf_ingest import PageRecord
-from indexing.graph_builder import page_node_id
+from indexing.graph_builder import page_node_id, path_labels_to_seed
 
 
-MEASUREMENT_ROLES = {"measurement_page", "assembly_definition", "height_or_opening_confirmation", "detail_reference"}
+MEASUREMENT_ROLES = {
+    "measurement_page",
+    "assembly_definition",
+    "wall_type_schedule",
+    "section_reference",
+    "height_or_opening_confirmation",
+    "detail_reference",
+}
 
 
-def relevant_pages_table(pages: list[PageRecord], selected_nodes: set[str] | None = None) -> list[dict[str, Any]]:
+def relevant_pages_table(
+    pages: list[PageRecord],
+    selected_nodes: set[str] | None = None,
+    graph: nx.DiGraph | None = None,
+    seed_nodes: list[str] | None = None,
+) -> list[dict[str, Any]]:
     selected_nodes = selected_nodes or {page_node_id(page) for page in pages if page.relevance_level in {"high", "medium"}}
     rows: list[dict[str, Any]] = []
     for page in pages:
         node = page_node_id(page)
         if node not in selected_nodes and page.relevance_level == "low":
             continue
+        inclusion_path = path_labels_to_seed(graph, seed_nodes or [], node) if graph is not None else []
         rows.append(
             {
                 "document_name": page.document_name,
@@ -34,6 +47,7 @@ def relevant_pages_table(pages: list[PageRecord], selected_nodes: set[str] | Non
                 "relevance_level": page.relevance_level,
                 "relevance_score": page.relevance_score,
                 "evidence": ", ".join(page.evidence),
+                "inclusion_path": " -> ".join(inclusion_path),
                 "references": ", ".join(ref.get("label", "") for ref in page.references[:12]),
                 "needs_measurement": page.role in MEASUREMENT_ROLES or page.relevance_level == "high",
                 "used_ocr": page.used_ocr,
@@ -43,7 +57,13 @@ def relevant_pages_table(pages: list[PageRecord], selected_nodes: set[str] | Non
     return rows
 
 
-def build_measurement_tree(pages: list[PageRecord], graph: nx.DiGraph, selected_nodes: set[str]) -> dict[str, Any]:
+def build_measurement_tree(
+    pages: list[PageRecord],
+    graph: nx.DiGraph,
+    selected_nodes: set[str],
+    seed_nodes: list[str] | None = None,
+) -> dict[str, Any]:
+    seed_nodes = seed_nodes or []
     page_by_node = {page_node_id(page): page for page in pages}
     high_confidence = [node for node in selected_nodes if node in page_by_node and page_by_node[node].relevance_level == "high"]
     tree_nodes: list[dict[str, Any]] = []
@@ -88,6 +108,7 @@ def build_measurement_tree(pages: list[PageRecord], graph: nx.DiGraph, selected_
                 "role": page.role,
                 "relevance_score": page.relevance_score,
                 "evidence": page.evidence,
+                "inclusion_path": path_labels_to_seed(graph, seed_nodes, node),
                 "outgoing_references": outgoing,
                 "incoming_references": incoming,
                 "measurement_guidance": measurement_guidance(page),

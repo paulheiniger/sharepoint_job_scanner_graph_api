@@ -29,7 +29,16 @@ def detect_sheet_number(text: str, config: dict[str, Any] | None = None) -> str:
                 matches.append(value)
     if not matches:
         return ""
-    return sorted(set(matches), key=lambda value: (len(value), value))[0]
+    unique_matches = list(dict.fromkeys(matches))
+    preferred = [
+        value
+        for value in unique_matches
+        if re.match(r"^(?:A|S|M|E|P|G|C|FA)[A-Z0-9]*-?\d", value) and not re.match(r"^(?:W|WT)-?\d", value)
+    ]
+    if preferred:
+        return preferred[0]
+    fallback = [value for value in unique_matches if not re.match(r"^(?:W|WT)-?\d", value)]
+    return fallback[0] if fallback else ""
 
 
 def detect_sheet_title(text: str, sheet_number: str = "", config: dict[str, Any] | None = None) -> str:

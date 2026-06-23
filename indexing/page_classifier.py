@@ -41,8 +41,18 @@ def score_page(page: PageRecord, config: dict[str, Any] | None = None) -> PageRe
 def classify_role(page: PageRecord, config: dict[str, Any] | None = None) -> str:
     config = config or load_keyword_config()
     text = f"{page.sheet_title}\n{page.text}".lower()
-    if page.relevance_score <= 0:
-        return "irrelevant"
+    if any(term in text for term in ("addendum", "asi ", "architect supplemental instruction", "bulletin", "revision")):
+        return "addendum_or_override"
+    if "wall type" in text or "partition type" in text or "wall schedule" in text or "partition schedule" in text:
+        return "wall_type_schedule"
+    if "floor plan" in text or "roof plan" in text or "overall plan" in text or "enlarged plan" in text:
+        return "measurement_page"
+    if "elevation" in text or "window schedule" in text or "door schedule" in text or "opening" in text:
+        return "height_or_opening_confirmation"
+    if "section" in text and "specification" not in text:
+        return "section_reference"
+    if "detail" in text:
+        return "detail_reference"
     role_scores: dict[str, int] = {}
     for role, keywords in (config.get("role_keywords") or {}).items():
         role_scores[role] = len(keyword_hits(text, keywords or []))
@@ -50,10 +60,8 @@ def classify_role(page: PageRecord, config: dict[str, Any] | None = None) -> str
         role, score = max(role_scores.items(), key=lambda item: (item[1], item[0]))
         if score > 0:
             return role
-    if "plan" in text:
-        return "measurement_page"
-    if "section" in text or "detail" in text:
-        return "detail_reference"
+    if page.relevance_score <= 0:
+        return "irrelevant"
     return "assembly_definition" if page.relevance_score >= 4 else "irrelevant"
 
 

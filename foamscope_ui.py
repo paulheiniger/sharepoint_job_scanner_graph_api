@@ -1,21 +1,25 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from typing import Any
 
 import pandas as pd
 import streamlit as st
 
-from indexing.graph_builder import build_reference_graph, expand_neighbors, graph_edges_table, high_confidence_nodes
+from indexing.graph_builder import build_reference_graph, expand_neighbors, foam_seed_nodes, graph_edges_table
 from indexing.page_classifier import classify_pages
 from indexing.reference_extractor import attach_references
 from indexing.sheet_indexer import index_sheets
 from ingest.package_ingest import (
     MB,
+    PackageInspectionResult,
+    PdfCandidate,
     PdfDocumentInput,
     inspect_uploaded_package,
     materialize_selected_documents,
     normalize_pdf_document,
+    triage_pdf_candidate,
 )
 from ingest.pdf_ingest import PageRecord, ingest_pdf
 from takeoff.insulation_scope_tree import build_measurement_tree, relevant_pages_table
@@ -40,11 +44,32 @@ def candidates_table(candidates: list[Any]) -> pd.DataFrame:
                 "source": candidate.source_path,
                 "source_kind": candidate.source_kind,
                 "guessed_document_type": candidate.document_type,
+                "triage_classification": candidate.triage_classification,
+                "triage_score": candidate.triage_score,
+                "triage_evidence": "; ".join(candidate.triage_evidence or []),
+                "sample_pages": ", ".join(str(page) for page in (candidate.triage_sample_pages or [])),
                 "compressed_size_mb": round(candidate.compressed_size / MB, 2),
                 "uncompressed_size_mb": round(candidate.uncompressed_size / MB, 2),
             }
         )
     return dataframe_from_records(rows)
+
+
+@st.cache_data(show_spinner=False)
+def triage_candidate_cached(candidate_data: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    candidate = PdfCandidate(**candidate_data)
+    triaged, warnings = triage_pdf_candidate(candidate)
+    return triaged.to_dict(), warnings
+
+
+def triage_inspection_cached(inspection: PackageInspectionResult) -> PackageInspectionResult:
+    candidates: list[PdfCandidate] = []
+    warnings = list(inspection.warnings)
+    for candidate in inspection.candidates:
+        triaged_data, triage_warnings = triage_candidate_cached(candidate.to_dict())
+        candidates.append(PdfCandidate(**triaged_data))
+        warnings.extend(f"{candidate.document_name}: {warning}" for warning in triage_warnings)
+    return replace(inspection, candidates=candidates, warnings=warnings)
 
 
 @st.cache_data(show_spinner=False)
@@ -113,18 +138,19 @@ def analyze_documents(
     pages = classify_pages(pages)
     graph = build_reference_graph(pages)
     warnings.extend(graph.graph.get("warnings", []))
-    seeds = high_confidence_nodes(pages)
+    seeds = foam_seed_nodes(pages)
     selected_nodes = expand_neighbors(graph, seeds, depth=depth) if seeds else set()
     if not selected_nodes:
         selected_nodes = {page.global_page_id for page in pages if page.global_page_id}
-    tree = build_measurement_tree(pages, graph, selected_nodes)
+    tree = build_measurement_tree(pages, graph, selected_nodes, seeds)
     return {
         "documents": documents,
         "pages": pages,
         "graph": graph,
         "selected_nodes": selected_nodes,
         "tree": tree,
-        "relevant_rows": relevant_pages_table(pages, selected_nodes),
+        "seed_nodes": seeds,
+        "relevant_rows": relevant_pages_table(pages, selected_nodes, graph, seeds),
         "edge_rows": graph_edges_table(graph),
         "warnings": sorted(set(warnings)),
     }
@@ -139,14 +165,24 @@ def render_foamscope_page() -> None:
 
     with st.sidebar:
         st.header("FoamScope Analysis")
-        depth = st.slider("Reference expansion depth", min_value=0, max_value=3, value=2)
+        depth = st.slider("Reference expansion depth", min_value=0, max_value=8, value=5)
         use_ocr = st.checkbox(
             "Use OCR fallback for sparse pages",
-            value=True,
-            help="Uses pytesseract only when embedded PDF text is sparse and OCR is installed locally.",
+            value=False,
+            help="Advanced. Uses pytesseract when embedded PDF text is sparse; keep off for large packages unless needed.",
         )
         st.markdown("**No paid API key required.**")
         st.caption("TODO: optional LLM summaries could later explain ambiguous scope evidence.")
+        review_selection = st.checkbox(
+            "Review document selection before deep analysis",
+            value=False,
+            help="Advanced: lets you override FoamScope's automatic triage selection.",
+        )
+        analyze_all = st.checkbox(
+            "Analyze all documents anyway",
+            value=False,
+            help="Overrides triage and may be slow for large bid packages.",
+        )
 
     uploaded_files = st.file_uploader(
         "Upload construction PDFs or ZIP bid packages",
@@ -157,7 +193,8 @@ def render_foamscope_page() -> None:
         st.info("Upload one or more plan/spec PDFs or ZIP files containing PDFs to begin.")
         return
 
-    inspection = inspect_uploaded_package(uploaded_files)
+    with st.spinner("Running lightweight document triage..."):
+        inspection = triage_inspection_cached(inspect_uploaded_package(uploaded_files))
     if inspection.warnings:
         with st.expander("Package warnings", expanded=True):
             for warning in inspection.warnings:
@@ -166,38 +203,64 @@ def render_foamscope_page() -> None:
         st.warning("No PDF documents were found in the uploaded files.")
         return
 
-    st.subheader("PDF Document Selection")
-    st.caption("Review the package contents and choose the PDFs FoamScope should analyze. ZIP PDFs are extracted only after selection.")
-    candidate_df = candidates_table(inspection.candidates)
-    edited_candidates = st.data_editor(
-        candidate_df,
-        use_container_width=True,
-        hide_index=True,
-        disabled=[
-            "candidate_id",
-            "filename",
-            "source",
-            "source_kind",
-            "guessed_document_type",
-            "compressed_size_mb",
-            "uncompressed_size_mb",
-        ],
-        column_config={
-            "selected": st.column_config.CheckboxColumn("Analyze", help="Only selected PDFs are extracted and processed."),
-            "candidate_id": None,
-        },
-        key="foamscope_candidate_selector",
+    st.subheader("Document Triage")
+    st.caption(
+        "FoamScope samples cheap PDF metadata/text signals for priority and transparency. "
+        "By default, every PDF remains in the lightweight global index before the foam reference tree is built."
     )
-    selected_ids = set(edited_candidates.loc[edited_candidates["selected"] == True, "candidate_id"].astype(str).tolist())
+    candidate_df = candidates_table(inspection.candidates)
+    if analyze_all:
+        st.warning("Analyze all documents is enabled. This may be slow for large bid packages.")
+        candidate_df["selected"] = True
+        selected_ids = set(candidate_df["candidate_id"].astype(str).tolist())
+        st.dataframe(
+            candidate_df.drop(columns=["candidate_id"]),
+            use_container_width=True,
+            hide_index=True,
+        )
+    elif review_selection:
+        edited_candidates = st.data_editor(
+            candidate_df,
+            use_container_width=True,
+            hide_index=True,
+            disabled=[
+                "candidate_id",
+                "filename",
+                "source",
+                "source_kind",
+                "guessed_document_type",
+                "triage_classification",
+                "triage_score",
+                "triage_evidence",
+                "sample_pages",
+                "compressed_size_mb",
+                "uncompressed_size_mb",
+            ],
+            column_config={
+                "selected": st.column_config.CheckboxColumn("Analyze", help="Only selected PDFs are extracted and processed."),
+                "candidate_id": None,
+            },
+            key="foamscope_candidate_selector",
+        )
+        selected_ids = set(edited_candidates.loc[edited_candidates["selected"] == True, "candidate_id"].astype(str).tolist())
+    else:
+        candidate_df["selected"] = True
+        selected_ids = set(candidate_df["candidate_id"].astype(str).tolist())
+        st.dataframe(
+            candidate_df.drop(columns=["candidate_id"]),
+            use_container_width=True,
+            hide_index=True,
+        )
+
     selected_uncompressed = sum(candidate.uncompressed_size for candidate in inspection.candidates if candidate.candidate_id in selected_ids)
     st.caption(
         f"{len(selected_ids):,} of {len(inspection.candidates):,} PDFs selected. "
         f"Selected uncompressed size: {selected_uncompressed / MB:,.1f} MB."
     )
     if not selected_ids:
-        st.info("Select at least one PDF to analyze.")
+        st.info("Select at least one PDF for the global index.")
         return
-    if not st.button("Analyze selected documents", type="primary"):
+    if review_selection and not analyze_all and not st.button("Analyze selected documents", type="primary"):
         return
 
     package = materialize_selected_documents(inspection, selected_ids)
@@ -212,7 +275,7 @@ def render_foamscope_page() -> None:
     st.subheader("Selected Documents")
     st.dataframe(documents_table(package.documents), use_container_width=True, hide_index=True)
 
-    with st.spinner("Reading PDF pages, scoring insulation relevance, and building package reference graph..."):
+    with st.spinner("Building lightweight global page index, scoring foam seeds, and expanding the reference graph..."):
         try:
             result = analyze_documents(package.documents, depth=depth, use_ocr=use_ocr, package_warnings=package.warnings)
         except Exception as exc:
@@ -227,14 +290,22 @@ def render_foamscope_page() -> None:
     high_count = sum(1 for page in pages if page.relevance_level == "high")
     medium_count = sum(1 for page in pages if page.relevance_level == "medium")
     selected_count = len(result["selected_nodes"])
+    seed_count = len(result["seed_nodes"])
+    selected_page_ids = {node for node in result["selected_nodes"] if node in {page.global_page_id for page in pages}}
+    low_connected_count = sum(1 for page in pages if page.global_page_id in selected_page_ids and page.relevance_level == "low")
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Documents", f"{len(package.documents):,}")
-    c2.metric("Pages", f"{len(pages):,}")
-    c3.metric("High Confidence", f"{high_count:,}")
-    c4.metric("Selected for Review", f"{selected_count:,}")
+    c1.metric("Package indexed", f"{len(package.documents):,} docs")
+    c2.metric("Pages indexed", f"{len(pages):,}")
+    c3.metric("Foam seed pages", f"{seed_count:,}")
+    c4.metric("Reference-expanded nodes", f"{selected_count:,}")
     m1, m2 = st.columns(2)
-    m1.metric("Medium Confidence", f"{medium_count:,}")
+    m1.metric("Connected low-keyword pages", f"{low_connected_count:,}")
     m2.metric("Warnings", f"{len(result['warnings']):,}")
+    st.caption(
+        f"Package indexed: {len(package.documents):,} documents, {len(pages):,} pages. "
+        f"Foam seed pages found: {seed_count:,}. "
+        f"Reference-expanded pages included even without foam keywords: {low_connected_count:,}."
+    )
 
     st.warning("FoamScope AI produces an estimator-reviewed measurement map. It does not calculate a final bid.")
     if result["warnings"]:
@@ -256,6 +327,7 @@ def render_foamscope_page() -> None:
             "role",
             "relevance_score",
             "evidence",
+            "inclusion_path",
             "needs_measurement",
             "references",
             "used_ocr",
@@ -296,6 +368,25 @@ def render_foamscope_page() -> None:
             ]
         )
         st.dataframe(all_pages, use_container_width=True, hide_index=True)
+
+    indexed_not_included = [
+        {
+            "document_name": page.document_name,
+            "page_num": page.page_num,
+            "sheet_id": page.sheet_id,
+            "sheet_title": page.sheet_title,
+            "role": page.role,
+            "foam_relevance": page.foam_relevance,
+        }
+        for page in pages
+        if page.global_page_id not in selected_page_ids
+    ]
+    with st.expander("Indexed pages not in expanded FoamScope tree", expanded=False):
+        st.caption(
+            "These pages remained in the lightweight global index and reference graph, "
+            "but were not connected to the current foam seed subgraph within the selected expansion depth."
+        )
+        st.dataframe(dataframe_from_records(indexed_not_included), use_container_width=True, hide_index=True)
 
     export_payload = {
         "documents": [document.to_dict() for document in result["documents"]],

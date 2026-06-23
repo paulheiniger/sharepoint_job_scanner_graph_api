@@ -39,6 +39,7 @@ def build_reference_graph(pages: list[PageRecord]) -> nx.DiGraph:
             role=page.role,
             relevance_score=page.relevance_score,
             relevance_level=page.relevance_level,
+            node_type="page",
         )
         for ref in page.references:
             target = ref.get("target") or ref.get("label")
@@ -46,6 +47,12 @@ def build_reference_graph(pages: list[PageRecord]) -> nx.DiGraph:
                 continue
             target = str(target).upper().replace(".", "-")
             if ref.get("type") in {"sheet", "detail_sheet"}:
+                if ref.get("type") == "detail_sheet":
+                    callout_node = f"detail::{ref.get('label') or target}"
+                    graph.add_node(callout_node, node_type="detail_callout", label=ref.get("label"), sheet_number=target)
+                    graph.add_edge(node, callout_node, label=ref.get("label"), ref_type=ref.get("type"), context=ref.get("context"))
+                else:
+                    callout_node = ""
                 target_nodes = sheet_nodes.get(target, [])
                 if not target_nodes:
                     continue
@@ -53,9 +60,18 @@ def build_reference_graph(pages: list[PageRecord]) -> nx.DiGraph:
                     warnings.append(f"Reference {ref.get('label') or target} from {page.document_name} page {page.page_num} matches multiple sheets.")
                 for target_node in target_nodes:
                     graph.add_edge(node, target_node, label=ref.get("label"), ref_type=ref.get("type"), context=ref.get("context"))
+                    if callout_node:
+                        graph.add_edge(callout_node, target_node, label=target, ref_type="detail_target", context=ref.get("context"))
             else:
-                reference_node = f"reference::{target}"
-                graph.add_node(reference_node, sheet_number=target, sheet_id=target, reference_only=True)
+                reference_node = f"{ref.get('type') or 'reference'}::{target}"
+                graph.add_node(
+                    reference_node,
+                    sheet_number=target,
+                    sheet_id=target,
+                    node_type=ref.get("type") or "reference",
+                    reference_only=True,
+                    label=ref.get("label"),
+                )
                 graph.add_edge(node, reference_node, label=ref.get("label"), ref_type=ref.get("type"), context=ref.get("context"))
     graph.graph["warnings"] = sorted(set(warnings))
     return graph
@@ -63,6 +79,32 @@ def build_reference_graph(pages: list[PageRecord]) -> nx.DiGraph:
 
 def high_confidence_nodes(pages: list[PageRecord]) -> list[str]:
     return [page_node_id(page) for page in pages if page.relevance_level == "high"]
+
+
+def foam_seed_nodes(pages: list[PageRecord]) -> list[str]:
+    seed_terms = (
+        "spray foam",
+        "spf",
+        "closed-cell",
+        "closed cell",
+        "open-cell",
+        "open cell",
+        "polyurethane foam",
+        "thermal insulation",
+        "division 07",
+        "07 21 00",
+        "r-value",
+        "air barrier",
+        "vapor barrier",
+        "wall assembly",
+        "exterior wall",
+    )
+    seeds: list[str] = []
+    for page in pages:
+        text = f"{page.sheet_title}\n{page.text}".lower()
+        if page.relevance_level in {"high", "medium"} or any(term in text for term in seed_terms):
+            seeds.append(page_node_id(page))
+    return seeds
 
 
 def expand_neighbors(graph: nx.DiGraph, seed_nodes: list[str], *, depth: int = 2) -> set[str]:
@@ -99,3 +141,27 @@ def graph_edges_table(graph: nx.DiGraph) -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+def path_labels_to_seed(graph: nx.DiGraph, seed_nodes: list[str], target_node: str) -> list[str]:
+    if target_node in seed_nodes:
+        return [node_display_label(graph, target_node)]
+    undirected = graph.to_undirected()
+    best_path: list[str] | None = None
+    for seed in seed_nodes:
+        if seed not in undirected or target_node not in undirected:
+            continue
+        try:
+            path = nx.shortest_path(undirected, seed, target_node)
+        except nx.NetworkXNoPath:
+            continue
+        if best_path is None or len(path) < len(best_path):
+            best_path = path
+    return [node_display_label(graph, node) for node in best_path] if best_path else []
+
+
+def node_display_label(graph: nx.DiGraph, node: str) -> str:
+    data = graph.nodes.get(node, {})
+    if data.get("node_type") == "page":
+        return str(data.get("sheet_number") or data.get("sheet_title") or data.get("document_name") or node)
+    return str(data.get("label") or data.get("sheet_number") or node.split("::", 1)[-1])

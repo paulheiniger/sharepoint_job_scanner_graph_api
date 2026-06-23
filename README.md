@@ -945,8 +945,12 @@ What it does:
 
 - Upload a single PDF, multiple PDFs, or one or more ZIP files containing PDFs. Streamlit is configured for uploads up to 2 GB.
 - Scan ZIP files for PDFs only; folders, macOS metadata, and non-PDF files are skipped with warnings.
-- Review the discovered PDF table before analysis. FoamScope default-selects likely architectural/specification/addendum PDFs and leaves likely mechanical, electrical, plumbing, civil, fire alarm, and low-voltage PDFs unselected.
-- Extract and analyze only the selected PDFs. Large uploads warn above 500 MB, and selected documents warn when they exceed 1 GB or approach the temp-disk safety threshold.
+- FoamScope performs a lightweight triage scan across package PDFs for transparency and priority. It samples filenames, paths, PDF metadata/text from first/last/index pages, and sheet ID signals without OCRing or rendering every page.
+- Triage classifies each PDF as `likely_relevant`, `possibly_relevant`, or `likely_irrelevant`, but the default FoamScope architecture keeps every PDF in the lightweight global index before building the reference tree.
+- FoamScope builds a package-wide page/reference graph first, then finds foam seed pages and expands through sheet references, wall types, partition types, spec sections, and detail callouts.
+- Connected measurement pages are included even if they do not contain foam keywords. For example, a floor plan can be included through a path such as `A-601 Wall Types -> W3 -> A-301 Section -> A-101 Floor Plan`.
+- The triage decision table is shown for transparency. Advanced controls allow manual selection review or "Analyze all documents anyway" for unusual packages.
+- Large uploads warn above 500 MB, and selected/indexed documents warn when they exceed 1 GB or approach the temp-disk safety threshold.
 - Split the PDF into page records using PyMuPDF.
 - Extract embedded text and use optional pytesseract OCR only when text is sparse.
 - Detect sheet numbers and sheet titles.

@@ -4,7 +4,7 @@ import zipfile
 from io import BytesIO
 
 from foamscope_ui import analyze_documents
-from ingest.package_ingest import inspect_uploaded_package, ingest_uploaded_package, materialize_selected_documents
+from ingest.package_ingest import inspect_uploaded_package, ingest_uploaded_package, materialize_selected_documents, triage_inspection
 
 
 class FakeUpload:
@@ -132,3 +132,67 @@ def test_default_selection_prefers_architectural_and_unselects_mep() -> None:
 
     assert selected_by_name["A-101.pdf"] is True
     assert selected_by_name["M-101.pdf"] is False
+
+
+def test_triage_classifies_relevant_and_irrelevant_documents() -> None:
+    pdf_arch = make_pdf("A-101 Floor Plan\nspray foam insulation wall section R-value")
+    pdf_elec = make_pdf("E-101 Electrical Plan\nfire alarm low voltage lighting")
+    payload = make_zip({"architectural/A-101.pdf": pdf_arch, "electrical/E-101.pdf": pdf_elec})
+
+    inspection = triage_inspection(inspect_uploaded_package([FakeUpload("bid.zip", payload)]))
+    by_name = {candidate.document_name: candidate for candidate in inspection.candidates}
+
+    assert by_name["A-101.pdf"].triage_classification == "likely_relevant"
+    assert by_name["A-101.pdf"].default_selected is True
+    assert by_name["E-101.pdf"].triage_classification == "likely_irrelevant"
+    assert by_name["E-101.pdf"].default_selected is False
+
+
+def test_possibly_relevant_a_sheet_is_selected() -> None:
+    pdf = make_pdf("A-601 Exterior Wall Sections\nbuilding envelope notes")
+    inspection = triage_inspection(inspect_uploaded_package([FakeUpload("drawings_A-601.pdf", pdf)]))
+
+    assert inspection.candidates[0].triage_classification in {"possibly_relevant", "likely_relevant"}
+    assert inspection.candidates[0].default_selected is True
+
+
+def test_reference_expansion_includes_measurement_page_without_foam_keywords() -> None:
+    wall_types = make_pdf("A-601 Wall Types\nWall Type W3 requires spray foam thermal insulation and air barrier.")
+    section = make_pdf("A-301 Building Section\nWall Type W3. See A-101 Floor Plan for dimensions.")
+    plan = make_pdf("A-101 Floor Plan\nPlan layout and dimensions for perimeter surfaces.")
+    package = ingest_uploaded_package(
+        [
+            FakeUpload("A-601 Wall Types.pdf", wall_types),
+            FakeUpload("A-301 Sections.pdf", section),
+            FakeUpload("A-101 Floor Plan.pdf", plan),
+        ]
+    )
+
+    result = analyze_documents(package.documents, depth=5, use_ocr=False)
+    relevant_by_sheet = {row["sheet_id"]: row for row in result["relevant_rows"]}
+
+    assert "A-101" in relevant_by_sheet
+    assert relevant_by_sheet["A-101"]["role"] == "measurement_page"
+    assert relevant_by_sheet["A-101"]["foam_relevance"] == "low"
+    assert "W3" in relevant_by_sheet["A-101"]["inclusion_path"]
+
+
+def test_references_resolve_across_multiple_pdfs() -> None:
+    spec = make_pdf("Project Manual\n07 21 00 spray foam thermal insulation. Applies to Wall Type W3.")
+    wall_types = make_pdf("A-601 Wall Types\nWall Type W3 references A-301 Building Section.")
+    section = make_pdf("A-301 Building Section\nWall Type W3. See A-101 Floor Plan.")
+    plan = make_pdf("A-101 Floor Plan\nExterior elevation and exterior wall layout.")
+    package = ingest_uploaded_package(
+        [
+            FakeUpload("Project Manual.pdf", spec),
+            FakeUpload("Wall Types.pdf", wall_types),
+            FakeUpload("Sections.pdf", section),
+            FakeUpload("Plans.pdf", plan),
+        ]
+    )
+
+    result = analyze_documents(package.documents, depth=6, use_ocr=False)
+    relevant_by_sheet = {row["sheet_id"]: row for row in result["relevant_rows"]}
+
+    assert {"A-601", "A-301", "A-101"}.issubset(relevant_by_sheet)
+    assert relevant_by_sheet["A-101"]["role"] == "measurement_page"
