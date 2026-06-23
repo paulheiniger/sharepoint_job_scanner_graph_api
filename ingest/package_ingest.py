@@ -16,6 +16,7 @@ from .zip_ingest import extract_zip_pdf_member, inspect_zip_pdfs
 MB = 1024 * 1024
 GB = 1024 * MB
 PACKAGE_WARNING_BYTES = 500 * MB
+SMALL_UPLOAD_WARNING_BYTES = 200 * MB
 SELECTED_WARNING_BYTES = 1 * GB
 DISK_SAFETY_FRACTION = 0.80
 
@@ -89,6 +90,12 @@ def _upload_bytes(upload: bytes | BinaryIO | Any) -> bytes:
 
 def _sha1_bytes(content: bytes) -> str:
     return hashlib.sha1(content).hexdigest()
+
+
+def _file_fingerprint(path: Path) -> str:
+    stat = path.stat()
+    payload = f"{path.resolve()}\0{stat.st_size}\0{stat.st_mtime_ns}".encode("utf-8")
+    return hashlib.sha1(payload).hexdigest()
 
 
 def _safe_stem(name: str) -> str:
@@ -423,12 +430,94 @@ def inspect_uploaded_package(uploaded_files: list[Any] | Any) -> PackageInspecti
 
     if total_upload_size > PACKAGE_WARNING_BYTES:
         warnings.append(f"Total uploaded package size is {total_upload_size / MB:,.0f} MB; select only needed PDFs before analysis.")
+    elif total_upload_size > SMALL_UPLOAD_WARNING_BYTES:
+        warnings.append(
+            f"Browser upload size is {total_upload_size / MB:,.0f} MB. Small Upload Mode is intended for packages under "
+            f"{SMALL_UPLOAD_WARNING_BYTES / MB:,.0f} MB; use local/server path mode for larger packages."
+        )
     return PackageInspectionResult(
         candidates=candidates,
         warnings=warnings,
         temp_dir=str(_temp_root()),
         total_upload_size=total_upload_size,
     )
+
+
+def inspect_path_package(path_value: str | Path) -> PackageInspectionResult:
+    """Inspect a local/server PDF, ZIP, or folder without loading large package bytes into memory."""
+    root = Path(path_value).expanduser()
+    warnings: list[str] = []
+    candidates: list[PdfCandidate] = []
+    if not root.exists():
+        return PackageInspectionResult(candidates=[], warnings=[f"Path does not exist: {root}"], temp_dir=str(_temp_root()))
+
+    files: list[Path]
+    if root.is_file():
+        files = [root]
+    else:
+        files = [path for path in root.rglob("*") if path.is_file() and path.suffix.lower() in {".pdf", ".zip"}]
+
+    total_size = 0
+    for file_path in sorted(files):
+        suffix = file_path.suffix.lower()
+        try:
+            size = file_path.stat().st_size
+        except OSError as exc:
+            warnings.append(f"Skipped {file_path}: could not stat file ({exc})")
+            continue
+        total_size += size
+        if suffix == ".pdf":
+            file_hash = _file_fingerprint(file_path)
+            name = file_path.name
+            document_type = classify_document_type(name)
+            source_path = str(file_path)
+            candidates.append(
+                PdfCandidate(
+                    candidate_id=_candidate_id(source_path, file_hash, len(candidates)),
+                    document_name=name,
+                    document_type=document_type,
+                    source_kind="pdf",
+                    source_path=source_path,
+                    compressed_size=size,
+                    uncompressed_size=size,
+                    default_selected=guess_default_selected(str(file_path), document_type),
+                    file_hash=file_hash,
+                    file_path=str(file_path),
+                )
+            )
+        elif suffix == ".zip":
+            zip_hash = _file_fingerprint(file_path)
+            member_rows, zip_warnings = inspect_zip_pdfs(file_path)
+            warnings.extend(zip_warnings)
+            for member in member_rows:
+                member_name = str(member["member_name"])
+                filename = str(member["filename"])
+                file_hash = hashlib.sha1(
+                    f"{zip_hash}\0{member_name}\0{member.get('crc')}\0{member.get('uncompressed_size')}".encode("utf-8")
+                ).hexdigest()
+                document_type = classify_document_type(filename)
+                source_path = f"{file_path}:{member_name}"
+                candidates.append(
+                    PdfCandidate(
+                        candidate_id=_candidate_id(source_path, file_hash, len(candidates)),
+                        document_name=filename,
+                        document_type=document_type,
+                        source_kind="zip",
+                        source_path=source_path,
+                        compressed_size=int(member["compressed_size"]),
+                        uncompressed_size=int(member["uncompressed_size"]),
+                        default_selected=guess_default_selected(member_name, document_type),
+                        file_hash=file_hash,
+                        zip_path=str(file_path),
+                        zip_member=member_name,
+                    )
+                )
+
+    if not candidates:
+        warnings.append(f"No PDF candidates found under: {root}")
+    if total_size > PACKAGE_WARNING_BYTES:
+        warnings.append(f"Package source size is {total_size / MB:,.0f} MB; progressive path mode will avoid browser upload memory pressure.")
+    return PackageInspectionResult(candidates=candidates, warnings=warnings, temp_dir=str(_temp_root()), total_upload_size=total_size)
 
 
 def materialize_selected_documents(

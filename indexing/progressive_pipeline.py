@@ -26,6 +26,19 @@ class ProgressiveBudgets:
 _PROGRESSIVE_CACHE: dict[str, dict[str, Any]] = {}
 
 
+def current_memory_rss_mb() -> float | None:
+    try:
+        import resource
+    except Exception:
+        return None
+    try:
+        usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    except Exception:
+        return None
+    # macOS reports bytes, Linux reports KiB.
+    return round(usage / (1024 * 1024), 2) if usage > 10_000_000 else round(usage / 1024, 2)
+
+
 def candidate_priority(candidate: PdfCandidate) -> str:
     text = f"{candidate.document_name} {candidate.source_path}".lower().replace("\\", "/")
     high_terms = (
@@ -157,7 +170,8 @@ def run_progressive_package_analysis(
                 deep_analyzed_count += 1
             else:
                 page.processing_status = "graph_included"
-                partial = True
+                if budgets.max_deep_analysis_pages > 0:
+                    partial = True
         elif page.processing_status != "deep_analyzed":
             page.processing_status = "sampled"
 
@@ -190,6 +204,9 @@ def run_progressive_package_analysis(
             "reference_expanded_pages": len(selected_page_nodes),
             "deep_analyzed_pages": deep_analyzed_count,
             "deferred_pages": deferred_pages,
+            "elapsed_seconds": round(time.monotonic() - started, 2),
+            "memory_rss_mb": current_memory_rss_mb(),
+            "stage": "partial" if partial else "initial_tree_complete",
         },
     }
     if use_cache:

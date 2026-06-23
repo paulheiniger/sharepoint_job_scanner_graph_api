@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -17,6 +18,8 @@ from ingest.package_ingest import (
     PackageInspectionResult,
     PdfCandidate,
     PdfDocumentInput,
+    SMALL_UPLOAD_WARNING_BYTES,
+    inspect_path_package,
     inspect_uploaded_package,
     normalize_pdf_document,
     triage_pdf_candidate,
@@ -184,6 +187,11 @@ def render_foamscope_page() -> None:
             value=False,
             help="Overrides triage and may be slow for large bid packages.",
         )
+        stop_after_initial_tree = st.checkbox(
+            "Stop after initial tree",
+            value=False,
+            help="Build the manifest, sheet map, foam seeds, and reference-expanded tree without marking pages for deep analysis.",
+        )
         budget_multiplier = st.session_state.get("foamscope_budget_multiplier", 1)
         with st.expander("Processing budgets", expanded=False):
             max_initial_sample_pages = st.number_input("Max initial sample pages", min_value=10, max_value=5000, value=200 * budget_multiplier)
@@ -191,17 +199,51 @@ def render_foamscope_page() -> None:
             max_deep_analysis_pages = st.number_input("Max deep analysis pages", min_value=1, max_value=2000, value=150 * budget_multiplier)
             max_runtime_seconds = st.number_input("Max runtime seconds", min_value=5, max_value=300, value=25 * budget_multiplier)
 
-    uploaded_files = st.file_uploader(
-        "Upload construction PDFs or ZIP bid packages",
-        type=["pdf", "zip"],
-        accept_multiple_files=True,
+    st.subheader("Package Intake")
+    intake_mode = st.radio(
+        "Intake mode",
+        ["Use local/server ZIP or folder path", "Small upload"],
+        horizontal=True,
+        help="Use path mode for large bid packages. Browser upload is intended for smaller packages.",
     )
-    if not uploaded_files:
-        st.info("Upload one or more plan/spec PDFs or ZIP files containing PDFs to begin.")
-        return
 
-    with st.spinner("Running lightweight document triage..."):
-        inspection = triage_inspection_cached(inspect_uploaded_package(uploaded_files))
+    inspection: PackageInspectionResult | None = None
+    package_source = ""
+    if intake_mode == "Small upload":
+        st.warning(
+            f"Small Upload Mode is intended for packages under {SMALL_UPLOAD_WARNING_BYTES / MB:,.0f} MB. "
+            "For larger ZIPs, use local/server path mode to avoid browser memory pressure."
+        )
+        uploaded_files = st.file_uploader(
+            "Upload construction PDFs or ZIP bid packages",
+            type=["pdf", "zip"],
+            accept_multiple_files=True,
+        )
+        if not uploaded_files:
+            st.info("Upload one or more plan/spec PDFs or ZIP files containing PDFs to begin.")
+            return
+        with st.spinner("Writing uploads to a temporary project directory and creating package manifest..."):
+            inspection = inspect_uploaded_package(uploaded_files)
+        package_source = "browser upload"
+    else:
+        path_value = st.text_input(
+            "Local/server ZIP or folder path",
+            value="",
+            placeholder="/path/to/bid-package.zip or /path/to/bid-folder",
+        )
+        if not path_value.strip():
+            st.info("Enter a local/server path to a ZIP, PDF, or folder containing PDFs/ZIPs.")
+            return
+        path_obj = Path(path_value).expanduser()
+        if not path_obj.exists():
+            st.error(f"Path does not exist: {path_obj}")
+            return
+        with st.spinner("Inspecting local/server path and creating package manifest..."):
+            inspection = inspect_path_package(path_obj)
+        package_source = str(path_obj)
+
+    if inspection is None:
+        return
     if inspection.warnings:
         with st.expander("Package warnings", expanded=True):
             for warning in inspection.warnings:
@@ -210,12 +252,16 @@ def render_foamscope_page() -> None:
         st.warning("No PDF documents were found in the uploaded files.")
         return
 
-    st.subheader("Document Triage")
+    st.subheader("Package Manifest")
     st.caption(
-        "FoamScope samples cheap PDF metadata/text signals for priority and transparency. "
-        "By default, every PDF remains in the lightweight global index before the foam reference tree is built."
+        "FoamScope inspects package files first. ZIP central directories are read without extracting every PDF. "
+        "Low-priority documents remain deferred, not discarded."
     )
     candidate_df = candidates_table(inspection.candidates)
+    s1, s2, s3 = st.columns(3)
+    s1.metric("Package source", package_source if len(package_source) < 28 else "path/upload")
+    s2.metric("Package size", f"{inspection.total_upload_size / MB:,.1f} MB")
+    s3.metric("PDFs discovered", f"{len(inspection.candidates):,}")
     if analyze_all:
         st.warning("Analyze all documents is enabled. This may be slow for large bid packages.")
         candidate_df["selected"] = True
@@ -279,7 +325,7 @@ def render_foamscope_page() -> None:
     budgets = ProgressiveBudgets(
         max_initial_sample_pages=int(max_initial_sample_pages),
         max_light_index_pages=int(max_light_index_pages),
-        max_deep_analysis_pages=int(max_deep_analysis_pages),
+        max_deep_analysis_pages=0 if stop_after_initial_tree else int(max_deep_analysis_pages),
         max_ocr_pages=0,
         max_runtime_seconds=int(max_runtime_seconds),
     )
@@ -317,6 +363,11 @@ def render_foamscope_page() -> None:
     m2.metric("Deep analyzed pages", f"{progress['deep_analyzed_pages']:,}")
     m3.metric("Deferred pages", f"{progress['deferred_pages']:,}")
     m4.metric("Warnings", f"{len(result['warnings']):,}")
+    p1, p2, p3 = st.columns(3)
+    p1.metric("Current stage", str(progress.get("stage") or "unknown"))
+    p2.metric("Runtime", f"{progress.get('elapsed_seconds', 0):,.1f}s")
+    memory_value = progress.get("memory_rss_mb")
+    p3.metric("Process memory", f"{memory_value:,.1f} MB" if memory_value is not None else "n/a")
     st.caption(
         f"Package indexed: {progress['pdf_count']:,} documents, {progress['estimated_total_pages']:,} estimated pages. "
         f"Foam seed pages found: {seed_count:,}. "

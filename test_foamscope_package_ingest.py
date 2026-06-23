@@ -5,7 +5,7 @@ from io import BytesIO
 
 from foamscope_ui import analyze_documents
 from indexing.progressive_pipeline import ProgressiveBudgets, run_progressive_package_analysis
-from ingest.package_ingest import inspect_uploaded_package, ingest_uploaded_package, materialize_selected_documents, triage_inspection
+from ingest.package_ingest import inspect_path_package, inspect_uploaded_package, ingest_uploaded_package, materialize_selected_documents, triage_inspection
 
 
 class FakeUpload:
@@ -242,3 +242,40 @@ def test_progressive_cache_resume_avoids_reprocessing() -> None:
 
     assert first["cache_hit"] is False
     assert second["cache_hit"] is True
+
+
+def test_path_based_zip_intake_works_without_file_uploader(tmp_path) -> None:
+    zip_path = tmp_path / "server_bid.zip"
+    zip_path.write_bytes(make_zip({"architectural/A-101.pdf": make_pdf("A-101 Floor Plan\nspray foam insulation")}))
+
+    inspection = inspect_path_package(zip_path)
+    result = run_progressive_package_analysis(inspection, budgets=ProgressiveBudgets(max_initial_sample_pages=10), use_cache=False)
+
+    assert len(inspection.candidates) == 1
+    assert inspection.candidates[0].source_kind == "zip"
+    assert result["progress"]["pdf_count"] == 1
+    assert result["progress"]["fast_scanned_documents"] == 1
+
+
+def test_folder_intake_finds_pdfs_and_zips(tmp_path) -> None:
+    (tmp_path / "drawings").mkdir()
+    (tmp_path / "drawings" / "A-101.pdf").write_bytes(make_pdf("A-101 Floor Plan\nspray foam"))
+    (tmp_path / "specs.zip").write_bytes(make_zip({"specs/project_manual.pdf": make_pdf("Project Manual\n07 21 00 thermal insulation")}))
+
+    inspection = inspect_path_package(tmp_path)
+    names = {candidate.document_name for candidate in inspection.candidates}
+
+    assert {"A-101.pdf", "project_manual.pdf"}.issubset(names)
+    assert len(inspection.candidates) == 2
+
+
+def test_large_zip_manifest_inspected_without_extracting_all_files(tmp_path) -> None:
+    zip_path = tmp_path / "large_manifest.zip"
+    entries = {f"electrical/E-{index}.pdf": make_pdf(f"E-{index} Electrical Plan") for index in range(20)}
+    zip_path.write_bytes(make_zip(entries))
+
+    inspection = inspect_path_package(zip_path)
+
+    assert len(inspection.candidates) == 20
+    assert all(candidate.source_kind == "zip" for candidate in inspection.candidates)
+    assert all(not candidate.file_path for candidate in inspection.candidates)
