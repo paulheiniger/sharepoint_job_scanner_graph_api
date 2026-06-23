@@ -949,6 +949,9 @@ What it does:
 - Triage classifies each PDF as `likely_relevant`, `possibly_relevant`, or `likely_irrelevant`, but the default FoamScope architecture keeps every PDF in the lightweight global index before building the reference tree.
 - FoamScope builds a package-wide page/reference graph first, then finds foam seed pages and expands through sheet references, wall types, partition types, spec sections, and detail callouts.
 - Connected measurement pages are included even if they do not contain foam keywords. For example, a floor plan can be included through a path such as `A-601 Wall Types -> W3 -> A-301 Section -> A-101 Floor Plan`.
+- Large bid packages use progressive indexing. FoamScope manifests every PDF first, fast-scans high/medium priority PDFs, builds a sheet map and reference graph from sampled/index pages, and defers low-priority pages instead of discarding them.
+- Page processing statuses include `manifested`, `sampled`, `lightly_indexed`, `graph_included`, `deep_analyzed`, and `deferred`.
+- Processing budgets limit initial sampling, light indexing, deep analysis, OCR, and runtime. If a budget is hit, FoamScope returns partial results and offers a continuation control rather than failing.
 - The triage decision table is shown for transparency. Advanced controls allow manual selection review or "Analyze all documents anyway" for unusual packages.
 - Large uploads warn above 500 MB, and selected/indexed documents warn when they exceed 1 GB or approach the temp-disk safety threshold.
 - Split the PDF into page records using PyMuPDF.

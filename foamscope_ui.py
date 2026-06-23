@@ -9,6 +9,7 @@ import streamlit as st
 
 from indexing.graph_builder import build_reference_graph, expand_neighbors, foam_seed_nodes, graph_edges_table
 from indexing.page_classifier import classify_pages
+from indexing.progressive_pipeline import ProgressiveBudgets, candidate_priority, run_progressive_package_analysis
 from indexing.reference_extractor import attach_references
 from indexing.sheet_indexer import index_sheets
 from ingest.package_ingest import (
@@ -17,7 +18,6 @@ from ingest.package_ingest import (
     PdfCandidate,
     PdfDocumentInput,
     inspect_uploaded_package,
-    materialize_selected_documents,
     normalize_pdf_document,
     triage_pdf_candidate,
 )
@@ -43,6 +43,7 @@ def candidates_table(candidates: list[Any]) -> pd.DataFrame:
                 "filename": candidate.document_name,
                 "source": candidate.source_path,
                 "source_kind": candidate.source_kind,
+                "priority": candidate_priority(candidate),
                 "guessed_document_type": candidate.document_type,
                 "triage_classification": candidate.triage_classification,
                 "triage_score": candidate.triage_score,
@@ -183,6 +184,12 @@ def render_foamscope_page() -> None:
             value=False,
             help="Overrides triage and may be slow for large bid packages.",
         )
+        budget_multiplier = st.session_state.get("foamscope_budget_multiplier", 1)
+        with st.expander("Processing budgets", expanded=False):
+            max_initial_sample_pages = st.number_input("Max initial sample pages", min_value=10, max_value=5000, value=200 * budget_multiplier)
+            max_light_index_pages = st.number_input("Max light index pages", min_value=10, max_value=10000, value=500 * budget_multiplier)
+            max_deep_analysis_pages = st.number_input("Max deep analysis pages", min_value=1, max_value=2000, value=150 * budget_multiplier)
+            max_runtime_seconds = st.number_input("Max runtime seconds", min_value=5, max_value=300, value=25 * budget_multiplier)
 
     uploaded_files = st.file_uploader(
         "Upload construction PDFs or ZIP bid packages",
@@ -228,6 +235,7 @@ def render_foamscope_page() -> None:
                 "filename",
                 "source",
                 "source_kind",
+                "priority",
                 "guessed_document_type",
                 "triage_classification",
                 "triage_score",
@@ -263,21 +271,21 @@ def render_foamscope_page() -> None:
     if review_selection and not analyze_all and not st.button("Analyze selected documents", type="primary"):
         return
 
-    package = materialize_selected_documents(inspection, selected_ids)
-    if package.warnings:
-        with st.expander("Selection/extraction warnings", expanded=True):
-            for warning in package.warnings:
-                st.warning(warning)
-    if not package.documents:
-        st.warning("No selected PDF documents could be extracted for analysis.")
-        return
+    selected_inspection = replace(
+        inspection,
+        candidates=[candidate for candidate in inspection.candidates if candidate.candidate_id in selected_ids],
+    )
 
-    st.subheader("Selected Documents")
-    st.dataframe(documents_table(package.documents), use_container_width=True, hide_index=True)
-
-    with st.spinner("Building lightweight global page index, scoring foam seeds, and expanding the reference graph..."):
+    budgets = ProgressiveBudgets(
+        max_initial_sample_pages=int(max_initial_sample_pages),
+        max_light_index_pages=int(max_light_index_pages),
+        max_deep_analysis_pages=int(max_deep_analysis_pages),
+        max_ocr_pages=0,
+        max_runtime_seconds=int(max_runtime_seconds),
+    )
+    with st.spinner("Building progressive package manifest, sheet map, foam seeds, and reference-expanded tree..."):
         try:
-            result = analyze_documents(package.documents, depth=depth, use_ocr=use_ocr, package_warnings=package.warnings)
+            result = run_progressive_package_analysis(selected_inspection, depth=depth, budgets=budgets)
         except Exception as exc:
             st.error(f"Could not analyze PDF package: {type(exc).__name__}: {exc}")
             return
@@ -286,6 +294,12 @@ def render_foamscope_page() -> None:
     tree = result["tree"]
     relevant_df = dataframe_from_records(result["relevant_rows"])
     edge_df = dataframe_from_records(result["edge_rows"])
+    progress = result["progress"]
+    if result.get("partial"):
+        st.warning("Processing budget was hit. Results are partial, and deferred pages were not discarded.")
+        if st.button("Continue expanding analysis", type="primary"):
+            st.session_state["foamscope_budget_multiplier"] = st.session_state.get("foamscope_budget_multiplier", 1) + 1
+            st.rerun()
 
     high_count = sum(1 for page in pages if page.relevance_level == "high")
     medium_count = sum(1 for page in pages if page.relevance_level == "medium")
@@ -294,18 +308,22 @@ def render_foamscope_page() -> None:
     selected_page_ids = {node for node in result["selected_nodes"] if node in {page.global_page_id for page in pages}}
     low_connected_count = sum(1 for page in pages if page.global_page_id in selected_page_ids and page.relevance_level == "low")
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Package indexed", f"{len(package.documents):,} docs")
-    c2.metric("Pages indexed", f"{len(pages):,}")
-    c3.metric("Foam seed pages", f"{seed_count:,}")
-    c4.metric("Reference-expanded nodes", f"{selected_count:,}")
-    m1, m2 = st.columns(2)
-    m1.metric("Connected low-keyword pages", f"{low_connected_count:,}")
-    m2.metric("Warnings", f"{len(result['warnings']):,}")
+    c1.metric("Package manifest", f"{progress['pdf_count']:,} PDFs")
+    c2.metric("Fast scanned", f"{progress['fast_scanned_documents']:,} docs / {progress['fast_scanned_pages']:,} pages")
+    c3.metric("Sheet map found", f"{progress['sheet_count']:,} sheets")
+    c4.metric("Foam seeds found", f"{progress['foam_seed_pages']:,}")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Reference-expanded pages", f"{progress['reference_expanded_pages']:,}")
+    m2.metric("Deep analyzed pages", f"{progress['deep_analyzed_pages']:,}")
+    m3.metric("Deferred pages", f"{progress['deferred_pages']:,}")
+    m4.metric("Warnings", f"{len(result['warnings']):,}")
     st.caption(
-        f"Package indexed: {len(package.documents):,} documents, {len(pages):,} pages. "
+        f"Package indexed: {progress['pdf_count']:,} documents, {progress['estimated_total_pages']:,} estimated pages. "
         f"Foam seed pages found: {seed_count:,}. "
         f"Reference-expanded pages included even without foam keywords: {low_connected_count:,}."
     )
+    if result.get("cache_hit"):
+        st.caption("Loaded progressive analysis from cache.")
 
     st.warning("FoamScope AI produces an estimator-reviewed measurement map. It does not calculate a final bid.")
     if result["warnings"]:
@@ -363,6 +381,7 @@ def render_foamscope_page() -> None:
                     "evidence": ", ".join(page.evidence),
                     "word_count": page.word_count,
                     "used_ocr": page.used_ocr,
+                    "processing_status": page.processing_status,
                 }
                 for page in pages
             ]
@@ -389,7 +408,10 @@ def render_foamscope_page() -> None:
         st.dataframe(dataframe_from_records(indexed_not_included), use_container_width=True, hide_index=True)
 
     export_payload = {
-        "documents": [document.to_dict() for document in result["documents"]],
+        "documents": result["documents"],
+        "manifest": result["manifest"],
+        "progress": result["progress"],
+        "partial": result["partial"],
         "pages": [page.to_dict() for page in pages],
         "relevant_pages": result["relevant_rows"],
         "reference_graph": {

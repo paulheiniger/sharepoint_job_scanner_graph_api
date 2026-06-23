@@ -31,6 +31,7 @@ class PageRecord:
     evidence: list[str] = field(default_factory=list)
     used_ocr: bool = False
     warnings: list[str] = field(default_factory=list)
+    processing_status: str = "manifested"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

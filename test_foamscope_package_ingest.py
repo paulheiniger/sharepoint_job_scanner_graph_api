@@ -4,6 +4,7 @@ import zipfile
 from io import BytesIO
 
 from foamscope_ui import analyze_documents
+from indexing.progressive_pipeline import ProgressiveBudgets, run_progressive_package_analysis
 from ingest.package_ingest import inspect_uploaded_package, ingest_uploaded_package, materialize_selected_documents, triage_inspection
 
 
@@ -196,3 +197,48 @@ def test_references_resolve_across_multiple_pdfs() -> None:
 
     assert {"A-601", "A-301", "A-101"}.issubset(relevant_by_sheet)
     assert relevant_by_sheet["A-101"]["role"] == "measurement_page"
+
+
+def test_progressive_large_low_priority_package_does_not_process_every_page() -> None:
+    arch = make_pdf("A-601 Wall Types\nWall Type W3 requires spray foam insulation. See A-101.")
+    entries = {"architectural/A-601.pdf": arch}
+    for index in range(12):
+        entries[f"electrical/E-{100 + index}.pdf"] = make_pdf(f"E-{100 + index} Electrical Plan\nlighting only")
+    inspection = triage_inspection(inspect_uploaded_package([FakeUpload("large_bid.zip", make_zip(entries))]))
+
+    result = run_progressive_package_analysis(inspection, budgets=ProgressiveBudgets(max_initial_sample_pages=20), use_cache=False)
+
+    assert result["progress"]["pdf_count"] == 13
+    assert result["progress"]["fast_scanned_documents"] < result["progress"]["pdf_count"]
+    assert result["progress"]["deferred_pages"] > 0
+    assert any(row["priority"] == "low" and row["status"] == "deferred" for row in result["manifest"])
+
+
+def test_progressive_budget_hit_returns_partial_results() -> None:
+    entries = {
+        "architectural/A-601.pdf": make_pdf("A-601 Wall Types\nspray foam insulation"),
+        "architectural/A-301.pdf": make_pdf("A-301 Section\nWall Type W3"),
+    }
+    inspection = triage_inspection(inspect_uploaded_package([FakeUpload("budget.zip", make_zip(entries))]))
+
+    result = run_progressive_package_analysis(
+        inspection,
+        budgets=ProgressiveBudgets(max_initial_sample_pages=1, max_light_index_pages=1, max_deep_analysis_pages=1),
+        use_cache=False,
+    )
+
+    assert result["partial"] is True
+    assert result["progress"]["fast_scanned_pages"] <= 1
+
+
+def test_progressive_cache_resume_avoids_reprocessing() -> None:
+    inspection = triage_inspection(
+        inspect_uploaded_package([FakeUpload("architectural_A-101.pdf", make_pdf("A-101 Floor Plan\nspray foam insulation"))])
+    )
+    budgets = ProgressiveBudgets(max_initial_sample_pages=10)
+
+    first = run_progressive_package_analysis(inspection, budgets=budgets, use_cache=True)
+    second = run_progressive_package_analysis(inspection, budgets=budgets, use_cache=True)
+
+    assert first["cache_hit"] is False
+    assert second["cache_hit"] is True
