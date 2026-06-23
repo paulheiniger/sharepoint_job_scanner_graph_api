@@ -8,7 +8,11 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
-from jobscan.env import graph_env_status, load_project_env
+from dotenv import load_dotenv
+
+load_dotenv()
+
+from jobscan.env import graph_env_debug_info, graph_env_status, load_project_env
 
 load_project_env()
 
@@ -41,6 +45,10 @@ def dataframe_from_records(rows: list[dict[str, Any]]) -> pd.DataFrame:
 def render_graph_config_debug_panel() -> None:
     with st.expander("Graph config debug", expanded=False):
         st.caption("Environment variable values are hidden; only FOUND/MISSING status is shown.")
+        debug_info = graph_env_debug_info()
+        st.write("Current working directory:", debug_info["current_working_directory"])
+        st.write(".env exists in current working directory:", "FOUND" if debug_info["cwd_dotenv_exists"] else "MISSING")
+        st.write(".env exists in repository root:", "FOUND" if debug_info["repo_dotenv_exists"] else "MISSING")
         status_rows = [{"setting": key, "status": value} for key, value in graph_env_status().items()]
         st.dataframe(pd.DataFrame(status_rows), use_container_width=True, hide_index=True)
 

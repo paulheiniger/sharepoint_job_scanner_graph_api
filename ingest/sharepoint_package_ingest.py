@@ -5,6 +5,11 @@ import hashlib
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
+from jobscan.env import load_project_env
 from ingest.package_ingest import (
     PackageInspectionResult,
     PdfCandidate,
@@ -13,6 +18,8 @@ from ingest.package_ingest import (
     classify_document_type,
     guess_default_selected,
 )
+
+load_project_env()
 
 SHAREPOINT_NOT_CONFIGURED_MESSAGE = (
     "This is a SharePoint URL, not a local path. Configure Microsoft Graph/SharePoint intake or use a synced local OneDrive path."

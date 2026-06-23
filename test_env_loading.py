@@ -23,6 +23,24 @@ def test_load_project_env_loads_graph_keys_from_dotenv(tmp_path, monkeypatch) ->
     assert os.environ["MS_CLIENT_SECRET"] == "test-secret"
 
 
+def test_load_project_env_fills_blank_graph_env_values(tmp_path, monkeypatch) -> None:
+    dotenv_path = tmp_path / ".env"
+    dotenv_path.write_text(
+        "MS_TENANT_ID=test-tenant\n"
+        "MS_CLIENT_ID=test-client\n"
+        "MS_CLIENT_SECRET=test-secret\n",
+        encoding="utf-8",
+    )
+    for key in GRAPH_ENV_KEYS:
+        monkeypatch.setenv(key, "")
+
+    assert load_project_env(dotenv_path) is True
+
+    assert os.environ["MS_TENANT_ID"] == "test-tenant"
+    assert os.environ["MS_CLIENT_ID"] == "test-client"
+    assert os.environ["MS_CLIENT_SECRET"] == "test-secret"
+
+
 def test_graph_env_status_hides_secret_values() -> None:
     status = graph_env_status(
         {

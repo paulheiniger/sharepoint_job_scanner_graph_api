@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import hashlib
 import json
 import logging
@@ -17,9 +21,12 @@ if str(REPO_ROOT) not in sys.path:
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-from dotenv import load_dotenv
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
+
+from jobscan.env import load_project_env
+
+load_project_env()
 
 from foamscope_ui import render_foamscope_page
 from jobscan.db_connections import (
@@ -50,8 +57,6 @@ try:
 except ImportError:
     calendar = None
 
-
-load_dotenv(dotenv_path=Path.cwd() / ".env")
 
 logger = logging.getLogger(__name__)
 
