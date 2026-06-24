@@ -33,6 +33,7 @@ likely_measurement_page_types:
   - elevation
   - ceiling_plan
   - attic_plan
+  - section_sheet
 measurement_type_rules:
   perimeter:
     - perimeter

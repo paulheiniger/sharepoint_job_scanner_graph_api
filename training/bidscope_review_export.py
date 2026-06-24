@@ -74,7 +74,7 @@ def build_run_summary(
     progress = export_payload.get("progress") or {}
     tree = export_payload.get("measurement_tree") or {}
     nodes = tree.get("nodes") or []
-    measurement_nodes = [node for node in nodes if node.get("role") == "measurement_page"]
+    measurement_nodes = [node for node in nodes if _selection_tier(node) == "likely_measurement_pages"]
     return {
         "project_name": project_name,
         "trade_type": export_payload.get("trade_type") or scan.get("trade_type"),
@@ -103,6 +103,9 @@ def build_run_summary(
         ),
         "takeoff_eval_recall": (takeoff_evaluation or {}).get("recall"),
         "takeoff_eval_precision": (takeoff_evaluation or {}).get("precision"),
+        "takeoff_eval_precision_at_10": (takeoff_evaluation or {}).get("precision_at_10"),
+        "takeoff_eval_precision_at_25": (takeoff_evaluation or {}).get("precision_at_25"),
+        "takeoff_eval_precision_at_50": (takeoff_evaluation or {}).get("precision_at_50"),
         "warnings_count": len(export_payload.get("warnings") or []) + len(_reference_graph(export_payload).get("warnings") or []),
     }
 
@@ -178,14 +181,34 @@ def _selected_page_rows(export_payload: dict[str, Any]) -> list[dict[str, Any]]:
             "seed_evidence_score": node.get("seed_evidence_score"),
             "reference_path": _join(node.get("inclusion_path") or [], separator=" -> "),
             "measurement_guidance": node.get("measurement_guidance"),
+            "selection_tier": _selection_tier(node),
         }
         for node in _nodes(export_payload)
+        if _selection_tier(node) != "debug_only_connected_pages"
     ]
 
 
 def _rejected_page_rows(export_payload: dict[str, Any], *, limit: int = 200) -> list[dict[str, Any]]:
-    selected = {str(node.get("global_page_id") or node.get("node_id")) for node in _nodes(export_payload)}
+    selected = {str(node.get("global_page_id") or node.get("node_id")) for node in _nodes(export_payload) if _selection_tier(node) != "debug_only_connected_pages"}
     rows = []
+    for node in _nodes(export_payload):
+        if _selection_tier(node) != "debug_only_connected_pages":
+            continue
+        rows.append(
+            {
+                "page_id": node.get("global_page_id") or node.get("node_id"),
+                "document_name": node.get("document_name"),
+                "canonical_sheet_id": node.get("canonical_sheet_id"),
+                "page_type": node.get("page_type"),
+                "role": node.get("role"),
+                "seed_evidence_score": node.get("seed_evidence_score"),
+                "measurement_likelihood_score": node.get("measurement_likelihood_score"),
+                "final_selection_score": node.get("final_selection_score"),
+                "reason_rejected": "connected for debugging/reference only; low measurement likelihood or penalized discipline",
+            }
+        )
+        if len(rows) >= limit:
+            return rows
     for page in export_payload.get("pages") or []:
         page_id = str(page.get("global_page_id") or "")
         if page_id in selected:
@@ -356,7 +379,16 @@ def _number(value: Any) -> float | None:
 
 def _predicted_measurement_type(node: dict[str, Any]) -> str:
     page_type = str(node.get("page_type") or node.get("role") or "").lower()
-    title = f"{node.get('sheet_title') or ''} {node.get('measurement_guidance') or ''}".lower()
+    sheet_id = str(node.get("canonical_sheet_id") or node.get("sheet_id") or "").upper()
+    title = f"{node.get('sheet_title') or ''} {node.get('measurement_guidance') or ''} {_join(node.get('inclusion_path') or [])}".lower()
+    if "attic" in page_type or "attic" in title:
+        return "attic_area"
+    if "perimeter" in title or "ln ft" in title or "edge" in title:
+        return "perimeter"
+    if sheet_id.startswith(("A4-", "A5-")) or "elevation" in page_type or "elevation" in title:
+        return "elevation_area"
+    if sheet_id.startswith("A2-") or "floor_plan" in page_type:
+        return "area"
     if "elevation" in page_type or "elevation" in title:
         return "elevation_area"
     if "roof" in page_type or "roof" in title:
@@ -366,6 +398,26 @@ def _predicted_measurement_type(node: dict[str, Any]) -> str:
     if "plan" in page_type:
         return "area"
     return "unknown"
+
+
+def _selection_tier(node: dict[str, Any]) -> str:
+    role = str(node.get("role") or "")
+    sheet_id = str(node.get("canonical_sheet_id") or node.get("sheet_id") or "").upper()
+    seed_score = _number(node.get("seed_evidence_score")) or 0.0
+    measurement_score = _number(node.get("measurement_likelihood_score")) or 0.0
+    if role == "measurement_page" and measurement_score >= 50 and not _penalized_sheet(sheet_id, seed_score):
+        return "likely_measurement_pages"
+    if str(node.get("foam_seed_level") or "") == "high" or role in {"spec_definition"}:
+        return "seed_pages"
+    if role in {"assembly_definition", "detail_reference", "section_sheet", "wall_type_schedule"} and (seed_score > 0 or measurement_score >= 20):
+        return "supporting_reference_pages"
+    return "debug_only_connected_pages"
+
+
+def _penalized_sheet(sheet_id: str, seed_score: float) -> bool:
+    if seed_score > 0:
+        return False
+    return sheet_id.startswith(("C", "E", "M", "P", "FP", "L", "T", "EL", "EP"))
 
 
 def _why_candidate(node: dict[str, Any]) -> str:
@@ -463,6 +515,7 @@ def _selected_page_columns() -> list[str]:
         "seed_evidence_score",
         "reference_path",
         "measurement_guidance",
+        "selection_tier",
     ]
 
 

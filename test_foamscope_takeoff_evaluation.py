@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+import csv
+import io
+import zipfile
 
 from foamscope_ui import analyze_documents, build_export_payload
 from ingest.package_ingest import ingest_uploaded_package
+from training.bidscope_review_export import build_bidscope_review_export_zip
 from takeoff.evaluation import (
     canonical_sheet_id_from_plan_name,
     compare_foamscope_output_to_takeoff_export,
@@ -11,6 +15,7 @@ from takeoff.evaluation import (
     original_page_number_from_plan_name,
     parse_stack_takeoff_csv,
 )
+from training.bidscope_review_export import build_bidscope_review_export_zip
 from training.completed_takeoff_parser import parse_stack_takeoff_csv as training_parse_stack_takeoff_csv
 from training.foamscope_evaluator import compare_foamscope_output_to_takeoff_export as training_compare
 
@@ -275,3 +280,159 @@ def test_roofing_evaluation_metrics_work() -> None:
     assert evaluation["counts"]["expected"] == 1
     assert evaluation["recall"] == 1
     assert evaluation["precision_at_10"] > 0
+
+
+def test_foam_a2_sheets_classify_as_floor_plans_even_with_spec_or_revision_text() -> None:
+    package = ingest_uploaded_package(
+        [
+            FakeUpload("A2.00.pdf", make_pdf("A2.00 Floor Plan\nAddendum revision specification notes")),
+            FakeUpload("A2.03.pdf", make_pdf("A2.03 Floor Plan\nProject manual references")),
+            FakeUpload("A2.05.pdf", make_pdf("A2.05 Overall Floor Plan\nSpecification reference")),
+        ]
+    )
+
+    result = analyze_documents(package.documents, depth=1, use_ocr=False, trade_type="foam_insulation")
+    by_sheet = {page.sheet_id: page for page in result["pages"]}
+
+    assert by_sheet["A2-00"].role == "floor_plan"
+    assert by_sheet["A2-03"].role == "floor_plan"
+    assert by_sheet["A2-05"].role == "floor_plan"
+
+
+def test_foam_a4_sheets_classify_as_elevations_and_export_elevation_area() -> None:
+    package = ingest_uploaded_package(
+        [
+            FakeUpload("A6.13.pdf", make_pdf("A6.13 Wall Section\nspray foam insulation. See A4.04 and A4.05.")),
+            FakeUpload("A4.04.pdf", make_pdf("A4.04 Exterior Elevation\nNorth wall")),
+            FakeUpload("A4.05.pdf", make_pdf("A4.05 Exterior Elevation\nSouth wall")),
+        ]
+    )
+    result = analyze_documents(package.documents, depth=3, use_ocr=False, trade_type="foam_insulation")
+    payload = _payload_from_result(package, result)
+    rows = _review_csv_rows(payload, "measurement_candidates.csv")
+    by_sheet = {page.sheet_id: page for page in result["pages"]}
+    by_candidate = {row["canonical_sheet_id"]: row for row in rows}
+
+    assert by_sheet["A4-04"].role == "measurement_page"
+    assert by_sheet["A4-05"].role == "measurement_page"
+    assert by_candidate["A4-04"]["predicted_measurement_type"] == "elevation_area"
+    assert by_candidate["A4-05"]["predicted_measurement_type"] == "elevation_area"
+
+
+def test_foam_a2_sheets_become_measurement_candidates_when_connected_to_seed() -> None:
+    package = ingest_uploaded_package(
+        [
+            FakeUpload("A6.13.pdf", make_pdf("A6.13 Wall Section\nspray foam insulation. See A2.00, A2.03, and A2.05.")),
+            FakeUpload("A2.00.pdf", make_pdf("A2.00 Floor Plan\nFirst floor layout")),
+            FakeUpload("A2.03.pdf", make_pdf("A2.03 Floor Plan\nThird floor layout")),
+            FakeUpload("A2.05.pdf", make_pdf("A2.05 Floor Plan\nFifth floor layout")),
+        ]
+    )
+
+    result = analyze_documents(package.documents, depth=3, use_ocr=False, trade_type="foam_insulation")
+    by_sheet = {page.sheet_id: page for page in result["pages"]}
+
+    for sheet_id in ("A2-00", "A2-03", "A2-05"):
+        assert by_sheet[sheet_id].role == "measurement_page"
+        assert by_sheet[sheet_id].measurement_likelihood_score >= 80
+        assert by_sheet[sheet_id].inclusion_path
+
+
+def test_penalized_discipline_sheets_do_not_become_final_measurement_pages_without_direct_foam() -> None:
+    package = ingest_uploaded_package(
+        [
+            FakeUpload("A6.13.pdf", make_pdf("A6.13 Wall Section\nspray foam insulation. See E1.01, M1.01, P1.01, C1.01, L1.01, FP1.01.")),
+            FakeUpload("E1.01.pdf", make_pdf("E1.01 Electrical Plan\nlighting layout")),
+            FakeUpload("M1.01.pdf", make_pdf("M1.01 Mechanical Plan\nduct layout")),
+            FakeUpload("P1.01.pdf", make_pdf("P1.01 Plumbing Plan\nfixture layout")),
+            FakeUpload("C1.01.pdf", make_pdf("C1.01 Civil Plan\nsite layout")),
+            FakeUpload("L1.01.pdf", make_pdf("L1.01 Landscape Plan\nplanting layout")),
+            FakeUpload("FP1.01.pdf", make_pdf("FP1.01 Fire Protection Plan\nsprinklers")),
+        ]
+    )
+
+    result = analyze_documents(package.documents, depth=3, use_ocr=False, trade_type="foam_insulation")
+    by_sheet = {page.sheet_id: page for page in result["pages"]}
+
+    for sheet_id in ("E1-01", "M1-01", "P1-01", "C1-01", "L1-01", "FP1-01"):
+        assert by_sheet[sheet_id].role != "measurement_page"
+
+
+def test_review_selected_pages_excludes_low_score_debug_connected_pages() -> None:
+    package = ingest_uploaded_package(
+        [
+            FakeUpload("A6.13.pdf", make_pdf("A6.13 Wall Section\nspray foam insulation. See A2.00 and E1.01.")),
+            FakeUpload("A2.00.pdf", make_pdf("A2.00 Floor Plan\nExterior wall layout")),
+            FakeUpload("E1.01.pdf", make_pdf("E1.01 Electrical Plan\nlighting layout")),
+        ]
+    )
+    result = analyze_documents(package.documents, depth=3, use_ocr=False, trade_type="foam_insulation")
+    payload = _payload_from_result(package, result)
+    selected_rows = _review_csv_rows(payload, "selected_pages.csv")
+    rejected_rows = _review_csv_rows(payload, "rejected_pages_sample.csv")
+
+    selected_sheets = {row["canonical_sheet_id"] for row in selected_rows}
+    rejected_sheets = {row["canonical_sheet_id"] for row in rejected_rows}
+
+    assert "A2-00" in selected_sheets
+    assert "E1-01" not in selected_sheets
+    assert "E1-01" in rejected_sheets
+
+
+def test_depauw_takeoff_eval_expected_sheets_are_ranked_and_matched() -> None:
+    package = ingest_uploaded_package(
+        [
+            FakeUpload("A6.13.pdf", make_pdf("A6.13 Wall Section\nspray foam insulation. See A2.00, A2.03, A2.05, A4.04, and A4.05.")),
+            FakeUpload("A2.00.pdf", make_pdf("A2.00 Floor Plan\nFirst floor perimeter")),
+            FakeUpload("A2.03.pdf", make_pdf("A2.03 Floor Plan\nThird floor perimeter")),
+            FakeUpload("A2.05.pdf", make_pdf("A2.05 Floor Plan\nFifth floor perimeter")),
+            FakeUpload("A4.04.pdf", make_pdf("A4.04 Exterior Elevation\nNorth elevation")),
+            FakeUpload("A4.05.pdf", make_pdf("A4.05 Exterior Elevation\nSouth elevation")),
+        ]
+    )
+    result = analyze_documents(package.documents, depth=4, use_ocr=False, trade_type="foam_insulation")
+    payload = _payload_from_result(package, result)
+    takeoff_csv = "\n".join(
+        [
+            "Takeoff Name,Takeoff Description,Sq Ft,Ln Ft,Cu Yd,EA,Drop Count,Takeoff Quantity,Takeoff Unit,Scale,Plan Name",
+            "Perimeter,First floor perimeter,,100,,,,100,Ln Ft,1/8\"=1',A2.00.pdf",
+            "Perimeter,Third floor perimeter,,100,,,,100,Ln Ft,1/8\"=1',A2.03.pdf",
+            "Perimeter,Fifth floor perimeter,,100,,,,100,Ln Ft,1/8\"=1',A2.05.pdf",
+            "Wall Area,North elevation,1200,,,,,1200,Sq Ft,1/8\"=1',A4.04.pdf",
+            "Wall Area,South elevation,1200,,,,,1200,Sq Ft,1/8\"=1',A4.05.pdf",
+        ]
+    )
+
+    evaluation = training_compare(json.dumps(payload, default=str), takeoff_csv, trade_type="foam_insulation")
+
+    assert evaluation["counts"]["expected"] == 5
+    assert evaluation["recall"] == 1
+    assert evaluation["precision_at_10"] > 0
+    assert not evaluation["missed_pages"]
+
+
+def _payload_from_result(package, result):
+    return build_export_payload(
+        {
+            "documents": [document.to_dict() for document in package.documents],
+            "manifest": [],
+            "progress": {},
+            "scan_completeness": {"trade_type": result.get("trade_type"), "trade_name": result.get("trade_name")},
+            "partial": False,
+            "selected_node_count_internal": len(result["selected_nodes"]),
+            "exported_node_count": len(result["tree"]["nodes"]),
+            "selected_nodes_exported": [node["node_id"] for node in result["tree"]["nodes"]],
+            **result,
+        },
+        result["pages"],
+    )
+
+
+def _review_csv_rows(payload: dict, filename: str) -> list[dict[str, str]]:
+    bundle = build_bidscope_review_export_zip(
+        payload,
+        trade_profile={"trade_type": "foam_insulation", "trade_name": "Foam Insulation"},
+        takeoff_evaluation=None,
+    )
+    with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
+        return list(csv.DictReader(io.StringIO(archive.read(filename).decode("utf-8"))))

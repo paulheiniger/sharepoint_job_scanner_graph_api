@@ -62,7 +62,33 @@ def classify_role(page: PageRecord, config: dict[str, Any] | None = None, trade_
     title = (page.sheet_title or "").lower()
     text = f"{page.sheet_title}\n{page.text}".lower()
     sheet_id = (page.canonical_sheet_id or page.sheet_id or page.sheet_number or "").upper()
-    if any(term in text for term in ("addendum", "asi ", "architect supplemental instruction", "bulletin", "revision")):
+    if sheet_id.startswith(("AD-", "AD")):
+        return "addendum_or_override"
+    if sheet_id.startswith("A2-"):
+        return "attic_plan" if "attic" in text else "floor_plan"
+    if sheet_id.startswith("A4-"):
+        return "elevation"
+    if sheet_id.startswith("A5-"):
+        return "section_sheet" if "section" in text else "elevation"
+    if sheet_id.startswith("A6-"):
+        if "detail" in title or "detail" in text:
+            return "detail_reference" if page.foam_seed_level == "high" else "detail_sheet"
+        return "assembly_definition" if page.foam_seed_level == "high" else "section_sheet"
+    if sheet_id.startswith("A9-"):
+        return "detail_reference" if page.foam_seed_level == "high" else "detail_sheet"
+    if sheet_id.startswith(("C", "E", "M", "P", "FP", "L", "T", "EL", "EP")):
+        if page.foam_seed_level == "high" and any(term in text for term in ("foam", "spray foam", "thermal insulation", "r-value", "air barrier", "vapor barrier")):
+            return "detail_reference" if "detail" in text else "candidate_only"
+        return "unknown"
+    if sheet_id.startswith("A0-"):
+        if any(term in text for term in ("specification", "project manual", "section 07", "07 21 00", "07 54 00", "07 56 00")) and page.foam_seed_level == "high":
+            return "spec_definition"
+        if any(term in title for term in ("wall type", "partition type", "assembly", "schedule")) or any(
+            term in text for term in ("wall type schedule", "partition schedule", "wall schedule")
+        ):
+            return "wall_type_schedule"
+        return "general_notes"
+    if any(term in text for term in ("addendum", "asi ", "architect supplemental instruction", "bulletin", "revision")) and not sheet_id.startswith("A"):
         return "addendum_or_override"
     if any(term in text for term in ("specification", "project manual", "section 07", "07 21 00", "07 54 00", "07 56 00")) and page.foam_seed_level == "high":
         return "spec_definition"

@@ -163,7 +163,7 @@ def apply_graph_measurement_roles(
             if node in graph:
                 _sync_graph_scoring(graph, node, page)
             continue
-        if page.role in measurement_source_roles and inclusion_path:
+        if page.role in measurement_source_roles and inclusion_path and page.measurement_likelihood_score > 0 and not _is_penalized_without_direct_evidence(page, trade_profile):
             page.role = "measurement_page"
         if node in graph:
             _sync_graph_scoring(graph, node, page)
@@ -239,6 +239,16 @@ def _measurement_likelihood_score(page: PageRecord, *, connected: bool, trade_pr
     if page.foam_seed_level == "generic_only":
         score -= 10.0
     return max(0.0, score)
+
+
+def _is_penalized_without_direct_evidence(page: PageRecord, trade_profile: dict[str, Any]) -> bool:
+    if page.foam_seed_level == "high":
+        return False
+    sheet_id = (page.canonical_sheet_id or page.sheet_id or "").upper()
+    for prefix in (trade_profile.get("discipline_penalties") or {}):
+        if sheet_id.startswith(str(prefix).upper()):
+            return True
+    return False
 
 
 def graph_edges_table(graph: nx.DiGraph) -> list[dict[str, Any]]:
