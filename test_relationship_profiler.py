@@ -5,7 +5,13 @@ import json
 import pandas as pd
 from sqlalchemy import create_engine, inspect
 
-from relationship_profiler import profile_relationships, profile_relationships_from_database, sanitize_frame_for_sql
+from relationship_profiler import (
+    build_material_qty_ratios,
+    material_qty_ratios_from_summary,
+    profile_relationships,
+    profile_relationships_from_database,
+    sanitize_frame_for_sql,
+)
 
 
 def assert_no_nested_sql_values(frame: pd.DataFrame) -> None:
@@ -51,6 +57,58 @@ def test_sanitize_generic_object_columns_serializes_nested_values() -> None:
     assert json.loads(cleaned.loc[0, "source_ids"]) == ["L1", "L2"]
     assert isinstance(cleaned.loc[0, "tags"], str)
     assert_no_nested_sql_values(cleaned)
+
+
+def test_material_qty_ratios_from_summary_tolerates_missing_warranty_years() -> None:
+    summary = pd.DataFrame(
+        [
+            {
+                "job_id": "J1",
+                "package": "coating",
+                "total_quantity": 120,
+                "unit": "gal",
+                "total_cost": 4560,
+                "area_sqft": 8000,
+                "division": "Roofing",
+                "project_type": "roof coating",
+                "substrate": "membrane",
+                "coating_type": "silicone",
+            }
+        ]
+    )
+
+    ratios = material_qty_ratios_from_summary(summary)
+
+    assert "warranty_years" in ratios.columns
+    assert not ratios.empty
+    assert pd.isna(ratios.loc[0, "warranty_years"])
+
+
+def test_build_material_qty_ratios_groups_without_warranty_years() -> None:
+    rows = pd.DataFrame(
+        [
+            {
+                "job_id": "J1",
+                "package": "seam_treatment",
+                "quantity": 900,
+                "unit": "lf",
+                "total_cost": 2700,
+                "area_sqft": 12000,
+                "division": "Roofing",
+                "project_type": "roof coating",
+                "substrate": "metal",
+                "coating_type": "silicone",
+                "is_material": True,
+            }
+        ]
+    )
+
+    ratios = build_material_qty_ratios(rows)
+
+    assert not ratios.empty
+    assert "warranty_years" in ratios.columns
+    assert ratios.loc[0, "package"] == "seam_treatment"
+    assert pd.isna(ratios.loc[0, "warranty_years"])
 
 
 def test_relationship_profiler_writes_relationship_outputs(tmp_path) -> None:

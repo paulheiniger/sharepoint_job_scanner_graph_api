@@ -46,12 +46,42 @@ PHYSICAL_UNITS = {
 
 ALLOWANCE_UNITS = {"allowance", "ls", "lump sum", "lot", "sum"}
 PROFILER_PARSER_VERSION = "relationship-profiler-v1"
+JOB_CONTEXT_COLUMNS = [
+    "source_year",
+    "division",
+    "pipeline_status",
+    "status",
+    "customer",
+    "job_name",
+    "template_type",
+    "project_type",
+    "substrate",
+    "area_sqft",
+    "area_bucket",
+    "warranty_years",
+    "wet_mils",
+    "coating_type",
+    "roof_condition",
+    "access_complexity",
+    "final_price",
+    "invoice_amount",
+]
+MATERIAL_RATIO_GROUP_COLS = ["project_type", "substrate", "coating_type", "warranty_years", "package", "unit"]
+LABOR_RATE_GROUP_COLS = ["project_type", "substrate", "coating_type", "warranty_years", "labor_package"]
 
 
 def read_csv_if_exists(path: Path | None) -> pd.DataFrame:
     if not path or not path.exists():
         return pd.DataFrame()
     return pd.read_csv(path)
+
+
+def ensure_columns(frame: pd.DataFrame, columns: list[str], default: Any = None) -> pd.DataFrame:
+    out = frame.copy()
+    for column in columns:
+        if column not in out.columns:
+            out[column] = default
+    return out
 
 
 def first_existing(df: pd.DataFrame, names: list[str]) -> str | None:
@@ -243,34 +273,38 @@ def is_labor_row(row: pd.Series) -> bool:
 
 def merge_job_context(rows: pd.DataFrame, jobs: pd.DataFrame) -> pd.DataFrame:
     if rows.empty:
-        return rows
+        return ensure_columns(rows, JOB_CONTEXT_COLUMNS)
     if jobs.empty or "job_id" not in jobs.columns:
-        rows = rows.copy()
-        for column in ["project_type", "substrate", "coating_type", "warranty_years", "area_sqft", "area_bucket", "roof_condition", "access_complexity"]:
-            rows[column] = rows.get(column, "unknown")
-        return rows
+        return ensure_columns(rows, JOB_CONTEXT_COLUMNS)
+    jobs = ensure_columns(jobs, ["job_id", *JOB_CONTEXT_COLUMNS])
     keep = [
         column
         for column in [
             "job_id",
-            "project_type",
-            "substrate",
-            "coating_type",
-            "warranty_years",
-            "area_sqft",
-            "area_bucket",
-            "roof_condition",
-            "access_complexity",
-            "final_price",
+            *JOB_CONTEXT_COLUMNS,
         ]
         if column in jobs.columns
     ]
     merged = rows.merge(jobs[keep].drop_duplicates("job_id"), on="job_id", how="left", suffixes=("", "_job"))
+    for column in JOB_CONTEXT_COLUMNS:
+        job_column = f"{column}_job"
+        if job_column in merged.columns:
+            if column in merged.columns:
+                merged[column] = merged[column].where(merged[column].notna(), merged[job_column])
+                empty_mask = merged[column].astype(str).str.strip().isin({"", "nan", "None"})
+                merged.loc[empty_mask, column] = merged.loc[empty_mask, job_column]
+            else:
+                merged[column] = merged[job_column]
+            merged = merged.drop(columns=[job_column])
+    merged = ensure_columns(merged, JOB_CONTEXT_COLUMNS)
     for column in ["project_type", "substrate", "coating_type", "area_bucket"]:
         if column in merged.columns:
             merged[column] = merged[column].fillna("unknown").astype(str).replace("", "unknown")
     if "warranty_years" in merged.columns:
         merged["warranty_years"] = pd.to_numeric(merged["warranty_years"], errors="coerce")
+    for column in ["source_year", "area_sqft", "wet_mils", "final_price", "invoice_amount"]:
+        if column in merged.columns:
+            merged[column] = pd.to_numeric(merged[column], errors="coerce")
     return merged
 
 
@@ -377,7 +411,12 @@ def build_material_qty_ratios(materials: pd.DataFrame) -> pd.DataFrame:
     if materials.empty or "is_material" not in materials.columns:
         return pd.DataFrame(columns=columns)
     rows = materials[materials["is_material"]].copy()
+    rows = ensure_columns(rows, ["job_id", "quantity", "total_cost", "area_sqft", "physical_quantity_valid", *MATERIAL_RATIO_GROUP_COLS])
     rows = rows[pd.to_numeric(rows.get("area_sqft"), errors="coerce") > 0]
+    if rows.empty:
+        return pd.DataFrame(columns=columns)
+    rows["quantity"] = pd.to_numeric(rows["quantity"], errors="coerce")
+    rows["total_cost"] = pd.to_numeric(rows["total_cost"], errors="coerce")
     rows["physical_quantity_valid"] = rows.apply(
         lambda row: to_number(row.get("quantity")) is not None and canonical_unit(row.get("unit")) in PHYSICAL_UNITS and canonical_unit(row.get("unit")) not in ALLOWANCE_UNITS,
         axis=1,
@@ -385,7 +424,8 @@ def build_material_qty_ratios(materials: pd.DataFrame) -> pd.DataFrame:
     rows["qty_per_sqft"] = rows.apply(lambda row: row["quantity"] / row["area_sqft"] if row.get("physical_quantity_valid") else math.nan, axis=1)
     rows["cost_per_sqft"] = rows["total_cost"] / rows["area_sqft"]
     out = []
-    group_cols = ["project_type", "substrate", "coating_type", "warranty_years", "package", "unit"]
+    group_cols = MATERIAL_RATIO_GROUP_COLS
+    rows = ensure_columns(rows, group_cols)
     for keys, group in rows.groupby(group_cols, dropna=False):
         valid_qty = group[group["physical_quantity_valid"]]
         job_ids = sorted(set(group["job_id"].dropna().astype(str)))
@@ -426,6 +466,7 @@ def build_labor_rates(labor: pd.DataFrame) -> pd.DataFrame:
     if labor.empty or "is_labor" not in labor.columns:
         return pd.DataFrame(columns=columns)
     rows = labor[labor["is_labor"]].copy()
+    rows = ensure_columns(rows, ["job_id", "package", "item_name", "labor_hours", "labor_days", "crew_size", "total_cost", "area_sqft", *LABOR_RATE_GROUP_COLS])
     rows = rows[pd.to_numeric(rows.get("area_sqft"), errors="coerce") > 0]
     if rows.empty:
         return pd.DataFrame(columns=columns)
@@ -435,7 +476,8 @@ def build_labor_rates(labor: pd.DataFrame) -> pd.DataFrame:
     rows["hours_per_1000_sqft"] = rows["hours"] / rows["area_sqft"] * 1000
     rows["cost_per_sqft"] = rows["total_cost"] / rows["area_sqft"]
     out = []
-    group_cols = ["project_type", "substrate", "coating_type", "warranty_years", "labor_package"]
+    group_cols = LABOR_RATE_GROUP_COLS
+    rows = ensure_columns(rows, group_cols)
     for keys, group in rows.groupby(group_cols, dropna=False):
         job_ids = sorted(set(group["job_id"].dropna().astype(str)))
         out.append(
@@ -748,25 +790,10 @@ def normalize_jobs_from_database(jobs: pd.DataFrame, estimates: pd.DataFrame) ->
     source["area_bucket"] = source["area_sqft"].apply(area_bucket) if "area_sqft" in source.columns else "unknown"
     keep = [
         "job_id",
-        "source_year",
-        "division",
-        "pipeline_status",
-        "status",
-        "customer",
-        "job_name",
-        "project_type",
-        "substrate",
-        "area_sqft",
-        "area_bucket",
-        "warranty_years",
-        "wet_mils",
-        "coating_type",
-        "roof_condition",
-        "access_complexity",
-        "final_price",
-        "invoice_amount",
+        *JOB_CONTEXT_COLUMNS,
     ]
-    return source[[column for column in keep if column in source.columns]].drop_duplicates("job_id")
+    source = ensure_columns(source, keep)
+    return source[keep].drop_duplicates("job_id")
 
 
 def source_type_for_row(row: pd.Series) -> str:
@@ -936,10 +963,23 @@ def apply_job_filters(jobs: pd.DataFrame, source_year: str | None, division: str
 
 def material_qty_ratios_from_summary(summary_with_jobs: pd.DataFrame) -> pd.DataFrame:
     rows = summary_with_jobs.copy()
+    rows = ensure_columns(rows, ["package", "total_quantity", "total_cost", *JOB_CONTEXT_COLUMNS])
     rows["is_material"] = ~rows["package"].astype(str).str.startswith("labor")
     rows["quantity"] = rows.get("total_quantity")
     rows["total_cost"] = rows.get("total_cost")
     return build_material_qty_ratios(rows)
+
+
+def print_relationship_generation_summary(summary_with_jobs: pd.DataFrame) -> None:
+    expected = ["source_year", "division", "template_type", *MATERIAL_RATIO_GROUP_COLS, "area_sqft", "roof_condition"]
+    missing = [column for column in expected if column not in summary_with_jobs.columns]
+    print(
+        "Relationship generation input:",
+        f"rows={len(summary_with_jobs)}",
+        f"columns_present={sorted(summary_with_jobs.columns.tolist())}",
+        f"missing_expected_context_columns={missing}",
+        flush=True,
+    )
 
 
 def profile_relationships_from_database(
@@ -975,6 +1015,7 @@ def profile_relationships_from_database(
     filtered_summary = package_summary[package_summary["job_id"].astype(str).isin(job_ids)].copy() if job_ids else package_summary.iloc[0:0].copy()
     filtered_normalized = normalized[normalized["job_id"].astype(str).isin(job_ids)].copy() if job_ids else normalized.iloc[0:0].copy()
     summary_with_jobs = merge_job_context(filtered_summary, filtered_jobs)
+    print_relationship_generation_summary(summary_with_jobs)
     material_rows = material_rows_from_package_summary(filtered_summary, filtered_jobs)
     labor_rows = labor_rows_from_normalized(filtered_normalized, filtered_jobs)
     normalized_material_rows = filtered_normalized[filtered_normalized["line_type"].ne("labor")].copy()
