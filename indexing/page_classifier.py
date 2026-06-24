@@ -50,7 +50,8 @@ def score_page(page: PageRecord, config: dict[str, Any] | None = None, trade_pro
     page.foam_specific_evidence = list(dict.fromkeys(high_hits[:8]))
     page.generic_evidence = list(dict.fromkeys(generic_hits[:8]))
     page.evidence = page.foam_specific_evidence + [f"generic: {hit}" for hit in page.generic_evidence[:4]]
-    page.role = classify_role(page, config, trade_profile)
+    page.page_type = classify_role(page, config, trade_profile)
+    page.role = page.page_type
     page.measurement_likelihood_score = 0.0
     page.final_selection_score = page.seed_evidence_score
     return page
@@ -70,6 +71,8 @@ def classify_role(page: PageRecord, config: dict[str, Any] | None = None, trade_
         return "elevation"
     if sheet_id.startswith("A5-"):
         return "section_sheet" if "section" in text else "elevation"
+    if "attic" in text and page.original_page_number is not None:
+        return "attic_plan"
     if sheet_id.startswith("A6-"):
         if "detail" in title or "detail" in text:
             return "detail_reference" if page.foam_seed_level == "high" else "detail_sheet"

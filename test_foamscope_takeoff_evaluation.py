@@ -151,7 +151,8 @@ def test_seed_sheet_scores_high_but_is_not_measurement_page() -> None:
 
     assert page.seed_evidence_score > 0
     assert page.foam_seed_level == "high"
-    assert page.role in {"assembly_definition", "detail_reference"}
+    assert page.page_type in {"assembly_definition", "detail_reference"}
+    assert page.role == "seed_page"
     assert page.role != "measurement_page"
     assert page.measurement_likelihood_score == 0
 
@@ -238,7 +239,8 @@ def test_roofing_profile_identifies_seed_and_connected_roof_plan() -> None:
     by_sheet = {page.sheet_id: page for page in result["pages"]}
 
     assert by_sheet["A6-01"].seed_evidence_score > 0
-    assert by_sheet["A6-01"].role in {"detail_reference", "assembly_definition"}
+    assert by_sheet["A6-01"].page_type in {"detail_reference", "assembly_definition"}
+    assert by_sheet["A6-01"].role == "seed_page"
     assert by_sheet["A6-01"].role != "measurement_page"
     assert by_sheet["A3-01"].role == "measurement_page"
     assert by_sheet["A3-01"].measurement_likelihood_score > 0
@@ -294,9 +296,9 @@ def test_foam_a2_sheets_classify_as_floor_plans_even_with_spec_or_revision_text(
     result = analyze_documents(package.documents, depth=1, use_ocr=False, trade_type="foam_insulation")
     by_sheet = {page.sheet_id: page for page in result["pages"]}
 
-    assert by_sheet["A2-00"].role == "floor_plan"
-    assert by_sheet["A2-03"].role == "floor_plan"
-    assert by_sheet["A2-05"].role == "floor_plan"
+    assert by_sheet["A2-00"].page_type == "floor_plan"
+    assert by_sheet["A2-03"].page_type == "floor_plan"
+    assert by_sheet["A2-05"].page_type == "floor_plan"
 
 
 def test_foam_a4_sheets_classify_as_elevations_and_export_elevation_area() -> None:
@@ -315,6 +317,8 @@ def test_foam_a4_sheets_classify_as_elevations_and_export_elevation_area() -> No
 
     assert by_sheet["A4-04"].role == "measurement_page"
     assert by_sheet["A4-05"].role == "measurement_page"
+    assert by_sheet["A4-04"].page_type == "elevation"
+    assert by_sheet["A4-05"].page_type == "elevation"
     assert by_candidate["A4-04"]["predicted_measurement_type"] == "elevation_area"
     assert by_candidate["A4-05"]["predicted_measurement_type"] == "elevation_area"
 
@@ -334,8 +338,70 @@ def test_foam_a2_sheets_become_measurement_candidates_when_connected_to_seed() -
 
     for sheet_id in ("A2-00", "A2-03", "A2-05"):
         assert by_sheet[sheet_id].role == "measurement_page"
+        assert by_sheet[sheet_id].page_type == "floor_plan"
         assert by_sheet[sheet_id].measurement_likelihood_score >= 80
         assert by_sheet[sheet_id].inclusion_path
+
+
+def test_foam_a2_seed_pages_can_also_be_measurement_candidates() -> None:
+    package = ingest_uploaded_package(
+        [
+            FakeUpload("A6.13.pdf", make_pdf("A6.13 Wall Section\nspray foam insulation. See A2.05.")),
+            FakeUpload("A2.05.pdf", make_pdf("A2.05 Attic Plan\nattic insulation area")),
+        ]
+    )
+
+    result = analyze_documents(package.documents, depth=3, use_ocr=False, trade_type="foam_insulation")
+    payload = _payload_from_result(package, result)
+    seed_rows = _review_csv_rows(payload, "seed_pages.csv")
+    candidate_rows = _review_csv_rows(payload, "measurement_candidates.csv")
+    by_sheet = {page.sheet_id: page for page in result["pages"]}
+
+    assert by_sheet["A2-05"].foam_seed_level == "high"
+    assert by_sheet["A2-05"].page_type == "attic_plan"
+    assert by_sheet["A2-05"].role == "measurement_page"
+    assert by_sheet["A2-05"].measurement_likelihood_score > 0
+    assert "A2-05" in {row["canonical_sheet_id"] for row in seed_rows}
+    assert "A2-05" in {row["canonical_sheet_id"] for row in candidate_rows}
+    assert next(row for row in candidate_rows if row["canonical_sheet_id"] == "A2-05")["predicted_measurement_type"] == "attic_area"
+
+
+def test_split_page_131_attic_page_matches_as_measurement_candidate_by_original_page_number() -> None:
+    package = ingest_uploaded_package([FakeUpload("DePauw Bid Set.pdf Page 131.pdf", make_pdf("A9.01 Attic plan\nattic insulation area"))])
+    result = analyze_documents(package.documents, depth=2, use_ocr=False, trade_type="foam_insulation")
+    payload = _payload_from_result(package, result)
+    takeoff_csv = "\n".join(
+        [
+            "Takeoff Name,Takeoff Description,Sq Ft,Ln Ft,Cu Yd,EA,Drop Count,Takeoff Quantity,Takeoff Unit,Scale,Plan Name",
+            "Attic,Attic Main Bldg,900,,,,,900,Sq Ft,1/8\"=1',DePauw Bid Set.pdf Page 131.pdf",
+        ]
+    )
+
+    evaluation = training_compare(json.dumps(payload, default=str), takeoff_csv, trade_type="foam_insulation")
+    matched = evaluation["matched_pages"][0]
+    page = result["pages"][0]
+
+    assert page.original_page_number == 131
+    assert page.page_type == "attic_plan"
+    assert page.role == "measurement_page"
+    assert matched["match_by_original_page_number"] is True
+    assert matched["actual_page_number_match"] is True
+
+
+def test_foam_a4_pages_do_not_all_receive_identical_scores_from_prefix_only() -> None:
+    package = ingest_uploaded_package(
+        [
+            FakeUpload("A6.13.pdf", make_pdf("A6.13 Wall Section\nspray foam insulation. See A4.00, A4.04, and A4.05.")),
+            FakeUpload("A4.00.pdf", make_pdf("A4.00 Exterior Elevation\n1")),
+            FakeUpload("A4.04.pdf", make_pdf("A4.04 Exterior Elevation\nNorth elevation wall area")),
+            FakeUpload("A4.05.pdf", make_pdf("A4.05 Exterior Elevation\nWest elevation wall area")),
+        ]
+    )
+    result = analyze_documents(package.documents, depth=3, use_ocr=False, trade_type="foam_insulation")
+    by_sheet = {page.sheet_id: page for page in result["pages"]}
+
+    assert by_sheet["A4-00"].measurement_likelihood_score <= by_sheet["A4-04"].measurement_likelihood_score
+    assert len({by_sheet[sheet].final_selection_score for sheet in ("A4-00", "A4-04", "A4-05")}) > 1
 
 
 def test_penalized_discipline_sheets_do_not_become_final_measurement_pages_without_direct_foam() -> None:
@@ -408,15 +474,17 @@ def test_depauw_takeoff_eval_expected_sheets_and_original_page_are_ranked_and_ma
     evaluation = training_compare(json.dumps(payload, default=str), takeoff_csv, trade_type="foam_insulation")
 
     assert evaluation["counts"]["expected"] == 6
-    assert round(evaluation["recall"], 3) == 0.833
+    assert evaluation["recall"] == 1
     assert evaluation["precision_at_10"] > 0
-    assert {row["match_key"] for row in evaluation["missed_pages"]} == {"page:131"}
+    assert not evaluation["missed_pages"]
     matched_by_key = {row["match_key"]: row for row in evaluation["matched_pages"]}
-    assert matched_by_key["sheet:A2-00"]["predicted_measurement_type"] == "area"
-    assert matched_by_key["sheet:A2-03"]["predicted_measurement_type"] == "area"
-    assert matched_by_key["sheet:A2-05"]["predicted_measurement_type"] == "area"
+    assert matched_by_key["sheet:A2-00"]["predicted_measurement_type"] == "perimeter"
+    assert matched_by_key["sheet:A2-03"]["predicted_measurement_type"] == "perimeter"
+    assert matched_by_key["sheet:A2-05"]["predicted_measurement_type"] == "attic_area"
     assert matched_by_key["sheet:A4-04"]["predicted_measurement_type"] == "elevation_area"
     assert matched_by_key["sheet:A4-05"]["predicted_measurement_type"] == "elevation_area"
+    assert matched_by_key["page:131"]["match_by_original_page_number"] is True
+    assert matched_by_key["page:131"]["actual_page_number_match"] is True
 
 
 def test_review_export_takeoff_eval_rows_include_page_match_and_type_fields() -> None:
@@ -452,7 +520,8 @@ def test_review_export_takeoff_eval_rows_include_page_match_and_type_fields() ->
     assert all((row.get("learned_measurement_prior_score") or "0") in {"", "0", "0.0"} for row in candidates)
     assert takeoff_by_sheet["A2-00"]["match_by_sheet_id"] == "True"
     page_131 = next(row for row in takeoff_rows if "Page 131" in row["actual_plan_name"])
-    assert page_131["match_type"] == "missed"
+    assert page_131["match_type"] == "matched"
+    assert page_131["match_by_original_page_number"] == "True"
     assert not any(row.get("learned_measurement_prior_score") and float(row["learned_measurement_prior_score"]) > 0 for row in selected)
 
 

@@ -106,6 +106,8 @@ def build_run_summary(
         "takeoff_eval_precision_at_10": (takeoff_evaluation or {}).get("precision_at_10"),
         "takeoff_eval_precision_at_25": (takeoff_evaluation or {}).get("precision_at_25"),
         "takeoff_eval_precision_at_50": (takeoff_evaluation or {}).get("precision_at_50"),
+        "completed_takeoff_uploaded": takeoff_evaluation is not None,
+        "evaluation_mode_enabled": takeoff_evaluation is not None,
         "warnings_count": len(export_payload.get("warnings") or []) + len(_reference_graph(export_payload).get("warnings") or []),
     }
 
@@ -308,9 +310,11 @@ def _takeoff_eval_rows(takeoff_evaluation: dict[str, Any]) -> list[dict[str, Any
             predictions.setdefault(key, row)
             rank_by_key.setdefault(key, index)
     matched_by_key = {row.get("match_key"): row for row in takeoff_evaluation.get("matched_pages") or []}
+    missed_by_key = {row.get("match_key"): row for row in takeoff_evaluation.get("missed_pages") or []}
     rows = []
     for actual in takeoff_evaluation.get("expected_measurement_pages") or []:
         key = actual.get("match_key")
+        actual_detail = missed_by_key.get(key) or actual
         predicted = predictions.get(key) or {}
         matched = matched_by_key.get(key) or {}
         rows.append(
@@ -329,7 +333,10 @@ def _takeoff_eval_rows(takeoff_evaluation: dict[str, Any]) -> list[dict[str, Any
                 "actual_page_number_match": matched.get("actual_page_number_match", False),
                 "predicted_page_type": predicted.get("page_type"),
                 "predicted_measurement_type": predicted.get("predicted_measurement_type"),
-                "reason_missed": "" if matched else actual.get("reason_missed", "No predicted page matched."),
+                "found_as_seed_only": actual_detail.get("found_as_seed_only", False),
+                "eligible_as_measurement_candidate": actual_detail.get("eligible_as_measurement_candidate", bool(predicted)),
+                "selected_as_measurement_page": matched.get("was_selected", bool(predicted and matched)),
+                "reason_missed": "" if matched else actual_detail.get("reason_missed", "No predicted page matched."),
             }
         )
     for extra in takeoff_evaluation.get("extra_pages") or takeoff_evaluation.get("extra_selected_pages") or []:
@@ -349,6 +356,9 @@ def _takeoff_eval_rows(takeoff_evaluation: dict[str, Any]) -> list[dict[str, Any
                 "actual_page_number_match": extra.get("actual_page_number_match", False),
                 "predicted_page_type": extra.get("page_type"),
                 "predicted_measurement_type": extra.get("predicted_measurement_type"),
+                "found_as_seed_only": False,
+                "eligible_as_measurement_candidate": True,
+                "selected_as_measurement_page": True,
                 "reason_missed": "",
             }
         )
@@ -630,5 +640,8 @@ def _takeoff_eval_columns() -> list[str]:
         "actual_page_number_match",
         "predicted_page_type",
         "predicted_measurement_type",
+        "found_as_seed_only",
+        "eligible_as_measurement_candidate",
+        "selected_as_measurement_page",
         "reason_missed",
     ]

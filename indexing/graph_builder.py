@@ -43,6 +43,7 @@ def build_reference_graph(pages: list[PageRecord]) -> nx.DiGraph:
             sheet_title=page.sheet_title,
             sheet_id_confidence=page.sheet_id_confidence,
             sheet_id_source=page.sheet_id_source,
+            page_type=page.page_type,
             role=page.role,
             relevance_score=page.relevance_score,
             relevance_level=page.relevance_level,
@@ -107,7 +108,7 @@ def high_confidence_nodes(pages: list[PageRecord]) -> list[str]:
 def foam_seed_nodes(pages: list[PageRecord]) -> list[str]:
     seeds: list[str] = []
     for page in pages:
-        if page.foam_seed_level == "high" or page.role == "spec_definition":
+        if page.foam_seed_level == "high" or page.page_type == "spec_definition":
             seeds.append(page_node_id(page))
     return seeds
 
@@ -153,25 +154,30 @@ def apply_graph_measurement_roles(
                 _sync_graph_scoring(graph, node, page)
             continue
         inclusion_path = path_labels_to_seed(graph, seed_nodes, node) if node in selected_nodes else []
+        if not inclusion_path and _is_split_attic_page(page) and node in selected_nodes:
+            inclusion_path = [page.sheet_id or f"Page {page.original_page_number}"]
         page.inclusion_path = inclusion_path
         page.connected_seed_pages = _connected_seed_labels(graph, seed_nodes, node) if node in selected_nodes else []
         page.graph_distance_from_seed = _graph_distance_from_seed(graph, seed_nodes, node) if node in selected_nodes else None
-        page.measurement_likelihood_score = _measurement_likelihood_score(page, connected=bool(inclusion_path and node not in seed_nodes), trade_profile=trade_profile)
+        page.measurement_likelihood_score = _measurement_likelihood_score(page, connected=bool(inclusion_path), trade_profile=trade_profile)
         page.final_selection_score = round(page.seed_evidence_score + page.measurement_likelihood_score, 3)
-        if node not in selected_nodes or node in seed_nodes:
+        if node not in selected_nodes:
             if page.foam_seed_level == "generic_only" and node not in selected_nodes:
                 page.role = "candidate_only"
             if node in graph:
                 _sync_graph_scoring(graph, node, page)
             continue
-        if page.role in measurement_source_roles and inclusion_path and page.measurement_likelihood_score > 0 and not _is_penalized_without_direct_evidence(page, trade_profile):
+        if page.page_type in measurement_source_roles and inclusion_path and page.measurement_likelihood_score > 0 and not _is_penalized_without_direct_evidence(page, trade_profile):
             page.role = "measurement_page"
+        elif node in seed_nodes and page.foam_seed_level == "high":
+            page.role = "seed_page"
         if node in graph:
             _sync_graph_scoring(graph, node, page)
 
 
 def _sync_graph_scoring(graph: nx.DiGraph, node: str, page: PageRecord) -> None:
     graph.nodes[node]["role"] = page.role
+    graph.nodes[node]["page_type"] = page.page_type
     graph.nodes[node]["seed_evidence_score"] = page.seed_evidence_score
     graph.nodes[node]["measurement_likelihood_score"] = page.measurement_likelihood_score
     graph.nodes[node]["learned_measurement_prior_score"] = page.learned_measurement_prior_score
@@ -213,25 +219,32 @@ def _measurement_likelihood_score(page: PageRecord, *, connected: bool, trade_pr
         return 0.0
     score = 0.0
     sheet_id = (page.canonical_sheet_id or page.sheet_id or "").upper()
-    role = page.role
-    if role in {"floor_plan", "roof_plan"}:
+    page_type = page.page_type
+    if page_type in {"floor_plan", "roof_plan"}:
         score += 55.0
-    elif role == "elevation":
+    elif page_type == "elevation":
         score += 65.0
-    elif role in {"ceiling_plan", "attic_plan"}:
+    elif page_type in {"ceiling_plan", "attic_plan"}:
         score += 60.0
-    elif role == "section_sheet":
+    elif page_type == "section_sheet":
         score += 25.0
     if sheet_id.startswith("A2-"):
         score += 30.0
-    elif sheet_id.startswith(("A4-", "A5-")):
-        score += 35.0
+    elif sheet_id.startswith("A4-"):
+        score += 15.0
+    elif sheet_id.startswith("A5-"):
+        score += 20.0
     elif sheet_id.startswith(("A6-", "A9-")):
         score -= 15.0
     elif sheet_id.startswith(("M", "P", "E", "C", "L", "FP", "FA")):
         score -= 35.0
     if page.original_page_number == 131:
         score += 30.0
+    if page.inclusion_path and len(str(page.inclusion_path[0])) <= 2:
+        score -= 25.0
+    text = f"{page.sheet_title} {page.text}".lower()
+    if page.page_type == "elevation" and any(term in text for term in ("wall area", "north elevation", "south elevation", "east elevation", "west elevation")):
+        score += 10.0
     for prefix, weight in (trade_profile.get("sheet_prefix_weights") or {}).items():
         if sheet_id.startswith(f"{str(prefix).upper()}-"):
             score += float(weight)
@@ -243,6 +256,14 @@ def _measurement_likelihood_score(page: PageRecord, *, connected: bool, trade_pr
     if page.foam_seed_level == "generic_only":
         score -= 10.0
     return max(0.0, score)
+
+
+def _is_split_attic_page(page: PageRecord) -> bool:
+    return (
+        page.original_page_number is not None
+        and page.page_type == "attic_plan"
+        and "attic" in f"{page.sheet_title} {page.text} {page.document_name}".lower()
+    )
 
 
 def _is_penalized_without_direct_evidence(page: PageRecord, trade_profile: dict[str, Any]) -> bool:

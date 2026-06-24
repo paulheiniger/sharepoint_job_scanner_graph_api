@@ -28,6 +28,7 @@ class PageRecord:
     references: list[dict[str, Any]] = field(default_factory=list)
     relevance_score: float = 0.0
     relevance_level: str = "low"
+    page_type: str = "unknown_pdf"
     role: str = "irrelevant"
     evidence: list[str] = field(default_factory=list)
     used_ocr: bool = False
@@ -59,10 +60,6 @@ class PageRecord:
     @property
     def sheet_id(self) -> str:
         return self.canonical_sheet_id or self.sheet_number
-
-    @property
-    def page_type(self) -> str:
-        return self.role if self.role not in {"unknown", "irrelevant", "candidate_only"} else self.document_type
 
     @property
     def foam_relevance(self) -> str:

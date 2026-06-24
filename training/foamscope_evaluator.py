@@ -24,7 +24,8 @@ def compare_foamscope_output_to_takeoff_export(
     expected_labels = parse_stack_takeoff_csv(takeoff_csv, project_id=project_id, trade_type=trade_type)
     expected_by_key = {label.match_key: label for label in expected_labels}
     expected_keys = set(expected_by_key)
-    predicted_pages = _predicted_measurement_pages(foamscope, trade_type=trade_type)
+    all_candidates = _predicted_measurement_pages(foamscope, trade_type=trade_type)
+    predicted_pages = all_candidates
     final_predictions = _final_predictions(predicted_pages, trade_type)
 
     matches: dict[str, dict[str, Any]] = {}
@@ -44,7 +45,7 @@ def compare_foamscope_output_to_takeoff_export(
         "selected_measurement_pages": final_predictions,
         "top_predicted_measurement_pages": predicted_pages,
         "matched_pages": [_merge_match(expected_by_key[key], matches[key]) for key in sorted(matches)],
-        "missed_pages": [_missed(expected_by_key[key]) for key in sorted(missed_keys)],
+        "missed_pages": [_missed(expected_by_key[key], foamscope, all_candidates, final_predictions) for key in sorted(missed_keys)],
         "extra_pages": extra_predictions,
         "extra_selected_pages": extra_predictions,
         "recall": _ratio(len(matches), len(expected_keys)),
@@ -111,6 +112,15 @@ def _find_matching_prediction(expected: TakeoffMeasurementLabel, predictions: li
     for prediction in predictions:
         if set(prediction.get("match_keys") or []) & expected_keys:
             return prediction
+    return None
+
+
+def _find_matching_node(expected: TakeoffMeasurementLabel, foamscope: dict[str, Any]) -> dict[str, Any] | None:
+    expected_keys = _label_match_keys(expected)
+    all_nodes = list((foamscope.get("measurement_tree") or {}).get("nodes") or []) + list(foamscope.get("pages") or [])
+    for node in all_nodes:
+        if set(_node_match_keys(node)) & expected_keys:
+            return node
     return None
 
 
@@ -202,9 +212,29 @@ def _merge_match(expected: TakeoffMeasurementLabel, predicted: dict[str, Any]) -
     return out
 
 
-def _missed(expected: TakeoffMeasurementLabel) -> dict[str, Any]:
+def _missed(
+    expected: TakeoffMeasurementLabel,
+    foamscope: dict[str, Any],
+    all_candidates: list[dict[str, Any]],
+    final_predictions: list[dict[str, Any]],
+) -> dict[str, Any]:
     out = expected.to_dict()
-    out["reason_missed"] = "No live predicted page matched sheet id, original page number, or normalized plan name."
+    node = _find_matching_node(expected, foamscope)
+    candidate = _find_matching_prediction(expected, all_candidates)
+    selected = _find_matching_prediction(expected, final_predictions)
+    out["found_as_seed_only"] = bool(node and (node.get("foam_seed_level") == "high" or node.get("role") in {"seed_page", "spec_definition"}))
+    out["eligible_as_measurement_candidate"] = bool(candidate)
+    out["was_selected"] = bool(selected)
+    if selected:
+        out["reason_missed"] = ""
+    elif candidate:
+        out["reason_missed"] = "found_but_below_selection_cutoff"
+    elif node and out["found_as_seed_only"]:
+        out["reason_missed"] = "found_as_seed_only"
+    elif node:
+        out["reason_missed"] = "found_but_not_measurement_candidate"
+    else:
+        out["reason_missed"] = "no_matching_node_found"
     return out
 
 

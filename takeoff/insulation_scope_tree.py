@@ -64,6 +64,7 @@ def relevant_pages_table(
                 "inclusion_path": " -> ".join(inclusion_path),
                 "seed_evidence_score": page.seed_evidence_score,
                 "measurement_likelihood_score": page.measurement_likelihood_score,
+                "learned_measurement_prior_score": page.learned_measurement_prior_score,
                 "final_selection_score": page.final_selection_score,
                 "graph_distance_from_seed": page.graph_distance_from_seed,
                 "connected_seed_pages": ", ".join(page.connected_seed_pages),
@@ -176,9 +177,7 @@ def build_measurement_tree(
             else ""
         ),
         "generic_candidate_nodes": generic_candidates,
-        "spec_definition_pages": [
-            node for node in selected_nodes if node in page_by_node and page_by_node[node].role == "spec_definition"
-        ],
+        "spec_definition_pages": [node for node in selected_nodes if node in page_by_node and page_by_node[node].page_type == "spec_definition"],
         "drawing_measurement_pages": [
             node
             for node in selected_nodes
@@ -204,6 +203,10 @@ def measurement_guidance(page: PageRecord, inclusion_path: list[str] | None = No
         return f"Use this sheet to determine which assemblies receive {trade_profile.get('trade_name', 'trade')} scope."
     if role == "measurement_page":
         sheet = page.sheet_id or page.sheet_title or page.document_name
+        if page.page_type == "attic_plan" or "attic" in f"{page.sheet_title} {page.document_name}".lower():
+            return f"Review and measure attic area quantity on {sheet}; confirm scope path {path_text or 'from attic insulation evidence'}."
+        if page.page_type == "floor_plan" and (page.sheet_id or "").upper().startswith("A2-"):
+            return f"Review floor-plan area/perimeter quantities on {sheet}; confirm whether the STACK takeoff should be area or linear footage."
         templates = trade_profile.get("output_guidance_templates") or {}
         if path_text:
             template = templates.get("measurement_page") or "Measure connected assembly/wall type on {sheet}, because path is {path}."

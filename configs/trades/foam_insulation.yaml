@@ -54,8 +54,8 @@ measurement_type_rules:
 sheet_prefix_weights:
   A2: 30
   A3: 20
-  A4: 35
-  A5: 35
+  A4: 10
+  A5: 15
   A6: -15
   A9: -15
 discipline_penalties:
