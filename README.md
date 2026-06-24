@@ -886,6 +886,29 @@ The prototype can also generate a filled draft copy of the Spray-Tec estimate wo
 
 Current approved pricing is preferred from the exported pricing catalog. Historical estimate line-item pricing is used only for calibration or fallback; any fallback is marked for pricing review. Missing square footage, missing location, ambiguous coating/foam assumptions, distant travel, and unavailable current pricing trigger human review warnings.
 
+### Estimator relationship profiler
+
+Use `relationship_profiler.py` to analyze exported job/estimate/material/labor CSVs and discover repeatable estimating relationships before turning them into estimator rules:
+
+```bash
+python relationship_profiler.py \
+  --estimate-summary output/estimate_summary.csv \
+  --line-items output/estimate_line_items.csv \
+  --jobs output/job_index.csv \
+  --out-dir output/relationships
+```
+
+The profiler writes reviewable training artifacts:
+
+- `relationship_warranty_coating.csv` groups coating type and warranty by inferred wet mils, gallons per square foot, job count, and confidence.
+- `relationship_work_package_cooccurrence.csv` shows which material work packages tend to appear together for each project type and substrate.
+- `relationship_material_qty_ratios.csv` reports median and percentile quantity/cost ratios by project type, substrate, coating, warranty, package, and unit. Cost allowance rows are not treated as physical quantity ratios unless they have a valid quantity and physical unit.
+- `relationship_labor_rates.csv` reports package-level labor hours per 1,000 sqft and cost per sqft, using medians and percentiles.
+- `relationship_anomalies.csv` flags suspicious relationships such as implausible primer pails per sqft, coating gallons outside wet-mil review ranges, allowance dollars used as quantities, primer labor without primer material, and fastener treatment on non-metal roofs.
+- `estimator_rule_suggestions.json` summarizes candidate rules such as warranty-to-wet-mil assumptions, likely work packages by scope, primer/fastener triggers, and default labor production rates.
+
+Confidence is based on supporting job counts: `high` for 10 or more jobs, `medium` for 4-9 jobs, and `low` below 4 jobs. The output includes supporting job IDs for debug/review; treat these files as training evidence, not automatic production rules.
+
 ### Field-notes estimator
 
 The first field-notes-to-estimate engine is available inside the Streamlit **Estimator Prototype** page. It accepts rough notes such as:
