@@ -43,6 +43,14 @@ class PageRecord:
     foam_seed_level: str = "none"
     foam_specific_evidence: list[str] = field(default_factory=list)
     generic_evidence: list[str] = field(default_factory=list)
+    seed_evidence_score: float = 0.0
+    measurement_likelihood_score: float = 0.0
+    final_selection_score: float = 0.0
+    graph_distance_from_seed: int | None = None
+    connected_seed_pages: list[str] = field(default_factory=list)
+    inclusion_path: list[str] = field(default_factory=list)
+    trade_type: str = "foam_insulation"
+    trade_name: str = "Foam Insulation"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

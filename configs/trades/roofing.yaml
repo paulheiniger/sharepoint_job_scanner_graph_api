@@ -1,0 +1,84 @@
+trade_name: Roofing
+high_confidence_seed_keywords:
+  - roof replacement
+  - roof coating
+  - silicone coating
+  - acrylic coating
+  - TPO
+  - EPDM
+  - modified bitumen
+  - metal roof
+  - tear off
+  - tear-off
+  - recover
+  - roof insulation
+  - cover board
+  - parapet
+  - coping
+  - flashing
+  - edge metal
+  - roof drain
+  - gutter
+  - downspout
+generic_keywords:
+  - roof
+  - roofing
+  - drain
+  - curb
+  - penetration
+  - gutter
+  - flashing
+  - detail
+likely_seed_page_types:
+  - spec_definition
+  - assembly_definition
+  - detail_reference
+  - section_sheet
+likely_measurement_page_types:
+  - roof_plan
+  - floor_plan
+  - elevation
+  - section_sheet
+measurement_type_rules:
+  perimeter:
+    - perimeter
+    - coping
+    - edge metal
+    - flashing
+  elevation_area:
+    - parapet
+    - wall area
+  area:
+    - roof area
+    - coating area
+    - sq ft
+    - sqft
+  linear:
+    - ln ft
+    - lf
+    - gutter
+    - downspout
+  count:
+    - ea
+    - drain
+    - curb
+    - penetration
+    - drop count
+sheet_prefix_weights:
+  A2: 20
+  A3: 45
+  A4: 25
+  A5: 25
+  A6: 5
+  A9: -10
+discipline_penalties:
+  M: -20
+  P: -20
+  E: -35
+  C: -25
+  L: -35
+  FP: -30
+  FA: -35
+output_guidance_templates:
+  measurement_page: "Measure roofing scope on {sheet}; use roof plans for area, edges/perimeters from plans/details/elevations, and counts for drains/curbs/penetrations. Path: {path}."
+  unresolved_measurement: "Candidate roofing measurement page; roof assembly/path not resolved."

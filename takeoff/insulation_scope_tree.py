@@ -62,6 +62,11 @@ def relevant_pages_table(
                 "generic_evidence": ", ".join(page.generic_evidence),
                 "evidence": ", ".join(page.evidence),
                 "inclusion_path": " -> ".join(inclusion_path),
+                "seed_evidence_score": page.seed_evidence_score,
+                "measurement_likelihood_score": page.measurement_likelihood_score,
+                "final_selection_score": page.final_selection_score,
+                "graph_distance_from_seed": page.graph_distance_from_seed,
+                "connected_seed_pages": ", ".join(page.connected_seed_pages),
                 "references": ", ".join(ref.get("label", "") for ref in page.references[:12]),
                 "needs_measurement": page.role in MEASUREMENT_ROLES or page.relevance_level == "high",
                 "used_ocr": page.used_ocr,
@@ -76,8 +81,10 @@ def build_measurement_tree(
     graph: nx.DiGraph,
     selected_nodes: set[str],
     seed_nodes: list[str] | None = None,
+    trade_profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     seed_nodes = seed_nodes or []
+    trade_profile = trade_profile or {}
     page_by_node = {page_node_id(page): page for page in pages}
     high_confidence = [
         node
@@ -143,13 +150,20 @@ def build_measurement_tree(
                 "generic_evidence": page.generic_evidence,
                 "evidence": page.evidence,
                 "inclusion_path": inclusion_path,
+                "seed_evidence_score": page.seed_evidence_score,
+                "measurement_likelihood_score": page.measurement_likelihood_score,
+                "final_selection_score": page.final_selection_score,
+                "graph_distance_from_seed": page.graph_distance_from_seed,
+                "connected_seed_pages": page.connected_seed_pages,
                 "outgoing_references": outgoing,
                 "incoming_references": incoming,
-                "measurement_guidance": measurement_guidance(page, inclusion_path),
+                "measurement_guidance": measurement_guidance(page, inclusion_path, trade_profile),
             }
         )
     return {
-        "prototype": "FoamScope AI",
+        "prototype": "BidScope AI",
+        "trade_type": trade_profile.get("trade_type", page_by_node[next(iter(page_by_node))].trade_type if page_by_node else "foam_insulation"),
+        "trade_name": trade_profile.get("trade_name", page_by_node[next(iter(page_by_node))].trade_name if page_by_node else "Foam Insulation"),
         "disclaimer": "Estimator-reviewed measurement map only. This does not calculate a final bid.",
         "high_confidence_scope_nodes": high_confidence,
         "selected_node_count": len(tree_nodes),
@@ -157,7 +171,7 @@ def build_measurement_tree(
         "exported_node_count": len(tree_nodes),
         "export_note": "Only selected page nodes are exported in measurement_tree.nodes; reference-only nodes remain in reference_graph.",
         "seed_guidance": (
-            "No foam-specific scope seed found. Candidate insulation pages found only."
+            _missing_seed_guidance(trade_profile)
             if not high_confidence and generic_candidates
             else ""
         ),
@@ -174,18 +188,28 @@ def build_measurement_tree(
     }
 
 
-def measurement_guidance(page: PageRecord, inclusion_path: list[str] | None = None) -> str:
+def _missing_seed_guidance(trade_profile: dict[str, Any]) -> str:
+    if str(trade_profile.get("trade_type") or "").lower() == "foam_insulation":
+        return "No foam-specific scope seed found. Candidate insulation pages found only."
+    return f"No high-confidence {trade_profile.get('trade_name', 'trade')} scope seed found. Candidate context pages found only."
+
+
+def measurement_guidance(page: PageRecord, inclusion_path: list[str] | None = None, trade_profile: dict[str, Any] | None = None) -> str:
+    trade_profile = trade_profile or {}
     role = page.role
     path_text = " -> ".join(inclusion_path or [])
     if role == "spec_definition":
-        return "Review foam type, R-value, air/vapor barrier, and product requirements."
+        return f"Review {trade_profile.get('trade_name', 'trade')} specification requirements and scope exclusions."
     if role == "assembly_definition":
-        return "Use this sheet to determine which assemblies receive spray foam insulation."
+        return f"Use this sheet to determine which assemblies receive {trade_profile.get('trade_name', 'trade')} scope."
     if role == "measurement_page":
         sheet = page.sheet_id or page.sheet_title or page.document_name
+        templates = trade_profile.get("output_guidance_templates") or {}
         if path_text:
-            return f"Measure connected assembly/wall type on {sheet}, because path is {path_text}."
-        return "Candidate measurement page; assembly not resolved."
+            template = templates.get("measurement_page") or "Measure connected assembly/wall type on {sheet}, because path is {path}."
+            return template.format(sheet=sheet, path=path_text)
+        template = templates.get("unresolved_measurement") or "Candidate measurement page; assembly not resolved."
+        return template.format(sheet=sheet, path=path_text)
     if role == "height_or_opening_confirmation":
         return "Use to confirm wall heights, openings, parapets, and deductions."
     if role in {"detail_reference", "detail_sheet"}:
@@ -193,5 +217,5 @@ def measurement_guidance(page: PageRecord, inclusion_path: list[str] | None = No
     if role == "elevation":
         return "Use to confirm exterior heights, openings, and wall deductions."
     if role == "candidate_only":
-        return "Candidate context only; do not measure unless tied to a foam-specific assembly path."
+        return "Candidate context only; do not measure unless tied to a high-confidence scope path."
     return "No measurement action suggested."

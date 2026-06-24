@@ -3980,7 +3980,7 @@ def main() -> None:
                 "Job Board",
                 "Schedule Calendar",
                 "Estimator Prototype",
-                "FoamScope AI",
+                "BidScope AI",
                 "Pipeline / Money",
                 "Sales Follow-Up",
                 "Contracted Backlog / Scheduling",
@@ -4014,7 +4014,7 @@ def main() -> None:
         schedule_calendar_page()
     elif page == "Estimator Prototype":
         estimator_prototype_page()
-    elif page == "FoamScope AI":
+    elif page == "BidScope AI":
         render_foamscope_page()
     elif page == "Pipeline / Money":
         pipeline_money_page()

@@ -1,0 +1,69 @@
+trade_name: Foam Insulation
+high_confidence_seed_keywords:
+  - spray foam
+  - sprayed polyurethane foam
+  - SPF
+  - closed-cell
+  - closed cell
+  - open-cell
+  - open cell
+  - polyurethane foam
+  - thermal insulation
+  - R-value
+  - air barrier
+  - vapor barrier
+  - attic insulation
+  - exterior wall insulation
+generic_keywords:
+  - insulation
+  - partition type
+  - exterior wall
+  - assembly
+  - wall type
+  - wall section
+  - building section
+likely_seed_page_types:
+  - spec_definition
+  - assembly_definition
+  - detail_reference
+  - section_sheet
+likely_measurement_page_types:
+  - floor_plan
+  - roof_plan
+  - elevation
+  - ceiling_plan
+  - attic_plan
+measurement_type_rules:
+  perimeter:
+    - perimeter
+  elevation_area:
+    - elevation
+  attic_area:
+    - attic
+  area:
+    - sq ft
+    - sqft
+  linear:
+    - ln ft
+    - lf
+  count:
+    - ea
+    - drop count
+sheet_prefix_weights:
+  A2: 30
+  A3: 20
+  A4: 35
+  A5: 35
+  A6: -15
+  A9: -15
+discipline_penalties:
+  M: -35
+  P: -35
+  E: -35
+  C: -35
+  L: -35
+  FP: -35
+  FA: -35
+output_guidance_templates:
+  measurement_page: "Measure connected foam/insulation assembly on {sheet}, because path is {path}."
+  unresolved_measurement: "Candidate measurement page; foam/insulation assembly not resolved."

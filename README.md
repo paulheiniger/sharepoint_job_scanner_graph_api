@@ -935,37 +935,39 @@ Run the Streamlit app:
 streamlit run app.py
 ```
 
-The root page is the local SharePoint scanner app. FoamScope AI is available from the Streamlit sidebar pages menu. If the deployed app uses the richer `dashboard/app.py` entrypoint, FoamScope AI is also listed explicitly in that dashboard sidebar navigation.
+The root page is the local SharePoint scanner app. BidScope AI is available from the Streamlit sidebar pages menu. If the deployed app uses the richer `dashboard/app.py` entrypoint, BidScope AI is also listed explicitly in that dashboard sidebar navigation.
 
-## FoamScope AI prototype
+## BidScope AI prototype
 
-FoamScope AI is a Streamlit page for construction plan/spec PDFs and ZIP bid packages. It identifies sheets relevant to spray foam insulation takeoff, extracts sheet references, builds a directed reference graph, and produces an estimator-reviewed measurement tree.
+BidScope AI is a Streamlit page for construction plan/spec PDFs and ZIP bid packages. It identifies trade scope evidence, extracts sheet references, builds a directed reference graph, and produces an estimator-reviewed measurement tree. The current trade profiles are `Foam Insulation` and `Roofing`.
 
 What it does:
 
 - Upload a single PDF, multiple PDFs, or one or more ZIP files containing PDFs. Streamlit is configured for uploads up to 2 GB.
 - Scan ZIP files for PDFs only; folders, macOS metadata, and non-PDF files are skipped with warnings.
-- FoamScope performs a lightweight triage scan across package PDFs for transparency and priority. It samples filenames, paths, PDF metadata/text from first/last/index pages, and sheet ID signals without OCRing or rendering every page.
-- Triage classifies each PDF as `likely_relevant`, `possibly_relevant`, or `likely_irrelevant`, but the default FoamScope architecture keeps every PDF in the lightweight global index before building the reference tree.
-- FoamScope builds a package-wide page/reference graph first, then finds foam seed pages and expands through sheet references, wall types, partition types, spec sections, and detail callouts.
-- Connected measurement pages are included even if they do not contain foam keywords. For example, a floor plan can be included through a path such as `A-601 Wall Types -> W3 -> A-301 Section -> A-101 Floor Plan`.
-- Large bid packages use progressive indexing. FoamScope manifests every PDF first, fast-scans high/medium priority PDFs, builds a sheet map and reference graph from sampled/index pages, and defers low-priority pages instead of discarding them.
+- BidScope performs a lightweight triage scan across package PDFs for transparency and priority. It samples filenames, paths, PDF metadata/text from first/last/index pages, and sheet ID signals without OCRing or rendering every page.
+- Triage classifies each PDF as `likely_relevant`, `possibly_relevant`, or `likely_irrelevant`, but the default BidScope architecture keeps every PDF in the lightweight global index before building the reference tree.
+- BidScope builds a package-wide page/reference graph first, then finds high-confidence trade seed pages and expands through sheet references, wall types, partition types, spec sections, and detail callouts.
+- Connected measurement pages are included even if they do not contain direct trade keywords. For example, a floor plan can be included through a path such as `A-601 Wall Types -> W3 -> A-301 Section -> A-101 Floor Plan`.
+- Large bid packages use progressive indexing. BidScope manifests every PDF first, fast-scans high/medium priority PDFs, builds a sheet map and reference graph from sampled/index pages, and defers low-priority pages instead of discarding them.
 - Page processing statuses include `manifested`, `sampled`, `lightly_indexed`, `graph_included`, `deep_analyzed`, and `deferred`.
-- Processing budgets limit initial sampling, light indexing, deep analysis, OCR, and runtime. If a budget is hit, FoamScope returns partial results and offers a continuation control rather than failing.
+- Processing budgets limit initial sampling, light indexing, deep analysis, OCR, and runtime. If a budget is hit, BidScope returns partial results and offers a continuation control rather than failing.
 - The triage decision table is shown for transparency. Advanced controls allow manual selection review or "Analyze all documents anyway" for unusual packages.
 - Large uploads warn above 500 MB, and selected/indexed documents warn when they exceed 1 GB or approach the temp-disk safety threshold.
 - Split the PDF into page records using PyMuPDF.
 - Extract embedded text and use optional pytesseract OCR only when text is sparse.
 - Detect sheet numbers and sheet titles.
-- Score pages with deterministic spray-foam and envelope keywords.
+- Score pages with deterministic trade-profile keywords. Foam insulation uses SPF, closed-cell/open-cell, R-value, air/vapor barrier, and envelope terms. Roofing uses roof replacement/coating, TPO, EPDM, modified bitumen, metal roof, cover board, parapet, coping, flashing, drains, gutters, and downspouts.
 - Extract references such as `1/A-301`, `Detail 5/A-502`, `Wall Type W3`, and `Partition Type P-2`.
 - Build a NetworkX directed graph of sheet references.
 - Resolve references across all uploaded documents in the package and warn when duplicate sheet IDs make a reference ambiguous.
-- Expand high-confidence foam pages to referenced neighbors up to depth 2.
+- Expand high-confidence trade scope pages to referenced neighbors up to the selected depth.
 - Classify selected sheets into roles such as `spec_definition`, `assembly_definition`, `measurement_page`, `height_or_opening_confirmation`, and `detail_reference`.
+- Optionally upload completed STACK Takeoff Quantity CSV exports for evaluation/training feedback. BidScope reports expected pages, predicted pages, matches, misses, extras, recall, precision, and precision@10/25/50.
+- Roofing guidance focuses on roof areas from roof plans, edge/perimeter/coping/flashing from plans/details/elevations, and counts for drains, curbs, and penetrations.
 - Export the measurement tree as JSON and relevant sheets as CSV.
 
-FoamScope AI does not calculate a final bid. It produces a measurement map for estimator review. No paid API key is required. TODO markers in the code show where an LLM could later summarize evidence or resolve ambiguous sheet relationships.
+BidScope AI does not calculate a final bid. It produces a measurement map for estimator review. No paid API key is required. TODO markers in the code show where an LLM could later summarize evidence or resolve ambiguous sheet relationships.
 
 ## Recommended rollout
 

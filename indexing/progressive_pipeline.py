@@ -14,6 +14,7 @@ from indexing.sheet_indexer import index_sheets
 from ingest.package_ingest import PackageInspectionResult, PdfCandidate, materialize_selected_documents
 from ingest.pdf_ingest import PageRecord
 from takeoff.insulation_scope_tree import build_measurement_tree, relevant_pages_table
+from indexing.trade_profiles import load_trade_profile
 
 
 @dataclass(frozen=True)
@@ -142,9 +143,11 @@ def run_progressive_package_analysis(
     use_cache: bool = True,
     use_disk_cache: bool = False,
     analysis_mode: str = "Standard",
+    trade_type: str = "foam_insulation",
 ) -> dict[str, Any]:
     budgets = budgets or ProgressiveBudgets()
-    key = package_cache_key(inspection, budgets, depth)
+    key = package_cache_key(inspection, budgets, depth) + f"|trade={trade_type}"
+    trade_profile = load_trade_profile(trade_type)
     if use_cache and key in _PROGRESSIVE_CACHE:
         cached = _PROGRESSIVE_CACHE[key].copy()
         cached["cache_hit"] = True
@@ -241,7 +244,7 @@ def run_progressive_package_analysis(
 
     indexed_pages = index_sheets(indexed_pages)
     indexed_pages = attach_references(indexed_pages)
-    indexed_pages = classify_pages(indexed_pages)
+    indexed_pages = classify_pages(indexed_pages, trade_type=trade_type)
     for page in indexed_pages:
         page.processing_status = "lightly_indexed"
 
@@ -249,7 +252,7 @@ def run_progressive_package_analysis(
     warnings.extend(graph.graph.get("warnings", []))
     seeds = foam_seed_nodes(indexed_pages)
     selected_nodes = expand_neighbors(graph, seeds, depth=depth) if seeds else set()
-    apply_graph_measurement_roles(indexed_pages, graph, selected_nodes, seeds)
+    apply_graph_measurement_roles(indexed_pages, graph, selected_nodes, seeds, trade_profile)
     selected_page_nodes = {node for node in selected_nodes if node in {page_node_id(page) for page in indexed_pages}}
 
     deep_analyzed_count = 0
@@ -268,7 +271,7 @@ def run_progressive_package_analysis(
     sheet_map = build_sheet_map(indexed_pages)
     deferred_pages = max(0, total_estimated_pages - len(indexed_pages))
     relevant_rows = relevant_pages_table(indexed_pages, selected_nodes, graph, seeds)
-    tree = build_measurement_tree(indexed_pages, graph, selected_nodes, seeds)
+    tree = build_measurement_tree(indexed_pages, graph, selected_nodes, seeds, trade_profile=trade_profile)
     exported_selected_nodes = [node["node_id"] for node in tree.get("nodes", [])]
     edge_rows = graph_edges_table(graph)
     resolved_reference_count = sum(1 for row in edge_rows if row.get("type") not in {"unresolved_sheet"})
@@ -285,6 +288,8 @@ def run_progressive_package_analysis(
         "processing_budget_hit": partial and bool(budget_hit_reason),
         "budget_hit_reason": budget_hit_reason,
         "analysis_mode": analysis_mode,
+        "trade_type": trade_type,
+        "trade_name": trade_profile.get("trade_name"),
         "cache_resume_used": False,
         "high_confidence_seed_count": len(seeds),
         "generic_candidate_count": sum(1 for page in indexed_pages if page.foam_seed_level == "generic_only"),
@@ -312,6 +317,8 @@ def run_progressive_package_analysis(
         "partial": partial,
         "cache_hit": False,
         "budgets": asdict(budgets),
+        "trade_type": trade_type,
+        "trade_name": trade_profile.get("trade_name"),
         "progress": {
             "pdf_count": len(candidates),
             "estimated_total_pages": total_estimated_pages,

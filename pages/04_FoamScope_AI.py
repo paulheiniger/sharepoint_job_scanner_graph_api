@@ -16,5 +16,5 @@ import streamlit as st
 from foamscope_ui import render_foamscope_page
 
 
-st.set_page_config(page_title="FoamScope AI", layout="wide")
+st.set_page_config(page_title="BidScope AI", layout="wide")
 render_foamscope_page()

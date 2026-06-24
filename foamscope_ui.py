@@ -21,6 +21,7 @@ from indexing.page_classifier import classify_pages
 from indexing.progressive_pipeline import ProgressiveBudgets, candidate_priority, run_progressive_package_analysis
 from indexing.reference_extractor import attach_references
 from indexing.sheet_indexer import index_sheets
+from indexing.trade_profiles import available_trade_types, load_trade_profile
 from ingest.package_ingest import (
     MB,
     PackageInspectionResult,
@@ -36,6 +37,7 @@ from ingest.pdf_ingest import PageRecord, ingest_pdf
 from ingest.sharepoint_package_ingest import SHAREPOINT_NOT_CONFIGURED_MESSAGE, inspect_sharepoint_url_package
 from intake.source_detector import detect_source_type
 from takeoff.insulation_scope_tree import build_measurement_tree, relevant_pages_table
+from training.foamscope_evaluator import compare_foamscope_output_to_takeoff_export
 
 
 def dataframe_from_records(rows: list[dict[str, Any]]) -> pd.DataFrame:
@@ -122,9 +124,9 @@ def ingest_pdf_cached(
     return [page.to_dict() for page in pages]
 
 
-def analyze_pdf(pdf_bytes: bytes, *, depth: int, use_ocr: bool) -> dict[str, Any]:
+def analyze_pdf(pdf_bytes: bytes, *, depth: int, use_ocr: bool, trade_type: str = "foam_insulation") -> dict[str, Any]:
     document = normalize_pdf_document("uploaded.pdf", pdf_bytes, index=0)
-    return analyze_documents([document], depth=depth, use_ocr=use_ocr, package_warnings=[])
+    return analyze_documents([document], depth=depth, use_ocr=use_ocr, package_warnings=[], trade_type=trade_type)
 
 
 def analyze_documents(
@@ -133,7 +135,9 @@ def analyze_documents(
     depth: int,
     use_ocr: bool,
     package_warnings: list[str] | None = None,
+    trade_type: str = "foam_insulation",
 ) -> dict[str, Any]:
+    trade_profile = load_trade_profile(trade_type)
     pages = []
     warnings = list(package_warnings or [])
     for document in documents:
@@ -168,16 +172,18 @@ def analyze_documents(
             warnings.append(f"Could not analyze {document.document_name}: {type(exc).__name__}: {exc}")
     pages = index_sheets(pages)
     pages = attach_references(pages)
-    pages = classify_pages(pages)
+    pages = classify_pages(pages, trade_type=trade_type)
     graph = build_reference_graph(pages)
     warnings.extend(graph.graph.get("warnings", []))
     seeds = foam_seed_nodes(pages)
     selected_nodes = expand_neighbors(graph, seeds, depth=depth) if seeds else set()
     if not selected_nodes:
         selected_nodes = {page.global_page_id for page in pages if page.global_page_id and page.foam_seed_level == "generic_only"}
-    apply_graph_measurement_roles(pages, graph, selected_nodes, seeds)
-    tree = build_measurement_tree(pages, graph, selected_nodes, seeds)
+    apply_graph_measurement_roles(pages, graph, selected_nodes, seeds, trade_profile)
+    tree = build_measurement_tree(pages, graph, selected_nodes, seeds, trade_profile=trade_profile)
     return {
+        "trade_type": trade_profile.get("trade_type", trade_type),
+        "trade_name": trade_profile.get("trade_name", trade_type.replace("_", " ").title()),
         "documents": documents,
         "pages": pages,
         "graph": graph,
@@ -192,6 +198,9 @@ def analyze_documents(
 
 def build_export_payload(result: dict[str, Any], pages: list[PageRecord], *, analysis_mode: str = "Standard") -> dict[str, Any]:
     return {
+        "tool_name": "BidScope AI",
+        "trade_type": result.get("trade_type") or (result.get("scan_completeness") or {}).get("trade_type"),
+        "trade_name": result.get("trade_name") or (result.get("scan_completeness") or {}).get("trade_name"),
         "documents": result["documents"],
         "manifest": result["manifest"],
         "progress": result["progress"],
@@ -214,14 +223,19 @@ def build_export_payload(result: dict[str, Any], pages: list[PageRecord], *, ana
 
 
 def render_foamscope_page() -> None:
-    st.title("FoamScope AI")
+    st.title("BidScope AI")
     st.caption(
-        "Upload construction plan/spec PDFs or ZIP bid packages to identify spray-foam insulation scope sheets, "
+        "Upload construction plan/spec PDFs or ZIP bid packages to identify trade scope evidence, "
         "referenced sheets, and likely measurement pages. Prototype only: estimator review required."
     )
 
     with st.sidebar:
-        st.header("FoamScope Analysis")
+        st.header("BidScope Analysis")
+        trade_options = available_trade_types()
+        trade_labels = list(trade_options.values())
+        selected_trade_label = st.selectbox("Trade", trade_labels, index=0)
+        trade_type = {label: key for key, label in trade_options.items()}[selected_trade_label]
+        trade_profile = load_trade_profile(trade_type)
         analysis_mode = st.selectbox(
             "Analysis mode",
             ["Quick Scan", "Standard", "Full Package Analysis"],
@@ -240,14 +254,14 @@ def render_foamscope_page() -> None:
         render_graph_images = st.checkbox(
             "Render page images for graph-included pages only",
             value=False,
-            help="Reserved for visual review. FoamScope will not render/OCR every page in Full Package Analysis.",
+            help="Reserved for visual review. BidScope will not render/OCR every page in Full Package Analysis.",
         )
         st.markdown("**No paid API key required.**")
         st.caption("TODO: optional LLM summaries could later explain ambiguous scope evidence.")
         review_selection = st.checkbox(
             "Review document selection before deep analysis",
             value=False,
-            help="Advanced: lets you override FoamScope's automatic triage selection.",
+            help="Advanced: lets you override BidScope's automatic triage selection.",
         )
         analyze_all = st.checkbox(
             "Analyze all documents anyway",
@@ -257,7 +271,7 @@ def render_foamscope_page() -> None:
         stop_after_initial_tree = st.checkbox(
             "Stop after initial tree",
             value=False,
-            help="Build the manifest, sheet map, foam seeds, and reference-expanded tree without marking pages for deep analysis.",
+            help="Build the manifest, sheet map, trade seed pages, and reference-expanded tree without marking pages for deep analysis.",
         )
         budget_multiplier = st.session_state.get("foamscope_budget_multiplier", 1)
         if analysis_mode == "Quick Scan":
@@ -392,7 +406,7 @@ def render_foamscope_page() -> None:
 
     st.subheader("Package Manifest")
     st.caption(
-        "FoamScope inspects package files first. ZIP central directories are read without extracting every PDF. "
+        "BidScope inspects package files first. ZIP central directories are read without extracting every PDF. "
         "Low-priority documents remain deferred, not discarded."
     )
     candidate_df = candidates_table(inspection.candidates)
@@ -473,7 +487,7 @@ def render_foamscope_page() -> None:
         st.info("Page image rendering is limited to graph-included pages and is reserved for a later visual review step.")
     if analysis_mode == "Full Package Analysis":
         st.caption("Full Package Analysis saves per-document progress to disk cache and resumes after reruns when possible.")
-    with st.spinner("Building progressive package manifest, sheet map, foam seeds, and reference-expanded tree..."):
+    with st.spinner("Building progressive package manifest, sheet map, trade seed pages, and reference-expanded tree..."):
         try:
             result = run_progressive_package_analysis(
                 selected_inspection,
@@ -481,6 +495,7 @@ def render_foamscope_page() -> None:
                 budgets=budgets,
                 use_disk_cache=analysis_mode == "Full Package Analysis",
                 analysis_mode=analysis_mode,
+                trade_type=trade_type,
             )
         except Exception as exc:
             st.error(f"Could not analyze PDF package: {type(exc).__name__}: {exc}")
@@ -510,7 +525,7 @@ def render_foamscope_page() -> None:
     c1.metric("Package manifest", f"{progress['pdf_count']:,} PDFs")
     c2.metric("Fast scanned", f"{progress['fast_scanned_documents']:,} docs / {progress['fast_scanned_pages']:,} pages")
     c3.metric("Sheet map found", f"{progress['sheet_count']:,} sheets")
-    c4.metric("Foam seeds found", f"{progress['foam_seed_pages']:,}")
+    c4.metric("Seed pages found", f"{progress['foam_seed_pages']:,}")
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Reference-expanded pages", f"{progress['reference_expanded_pages']:,}")
     m2.metric("Deep analyzed pages", f"{progress['deep_analyzed_pages']:,}")
@@ -523,8 +538,8 @@ def render_foamscope_page() -> None:
     p3.metric("Process memory", f"{memory_value:,.1f} MB" if memory_value is not None else "n/a")
     st.caption(
         f"Package indexed: {progress['pdf_count']:,} documents, {progress['estimated_total_pages']:,} estimated pages. "
-        f"Foam seed pages found: {seed_count:,}. "
-        f"Reference-expanded pages included even without foam keywords: {low_connected_count:,}."
+        f"{trade_profile.get('trade_name', selected_trade_label)} seed pages found: {seed_count:,}. "
+        f"Reference-expanded pages included even without direct trade keywords: {low_connected_count:,}."
     )
     with st.expander("Scan completeness", expanded=True):
         st.json(scan_completeness)
@@ -532,13 +547,62 @@ def render_foamscope_page() -> None:
         st.caption("Loaded progressive analysis from cache.")
     st.caption(f"Analysis mode: {analysis_mode}. Full lightweight index: {progress.get('full_lightweight_index', False)}.")
 
-    st.warning("FoamScope AI produces an estimator-reviewed measurement map. It does not calculate a final bid.")
+    st.warning("BidScope AI produces an estimator-reviewed measurement map. It does not calculate a final bid.")
     if result["warnings"]:
         with st.expander("Analysis warnings", expanded=False):
             for warning in result["warnings"]:
                 st.warning(warning)
 
-    with st.expander("FoamScope debug", expanded=False):
+    tree_nodes_df = dataframe_from_records((tree or {}).get("nodes", []))
+    st.subheader("Scope Evidence and Measurement Pages")
+    if tree_nodes_df.empty:
+        st.info("No reference-expanded pages are available yet.")
+    else:
+        seed_roles = {"spec_definition", "scope_definition", "assembly_definition", "detail_reference", "section_sheet", "wall_type_schedule"}
+        seed_df = tree_nodes_df[
+            (tree_nodes_df.get("role", pd.Series(dtype=str)).isin(seed_roles))
+            | (
+                (tree_nodes_df.get("foam_seed_level", pd.Series(dtype=str)) == "high")
+                & (tree_nodes_df.get("role", pd.Series(dtype=str)) != "measurement_page")
+            )
+        ]
+        measurement_df = tree_nodes_df[tree_nodes_df.get("role", pd.Series(dtype=str)) == "measurement_page"]
+        seed_cols = [
+            "document_name",
+            "canonical_sheet_id",
+            "sheet_id",
+            "sheet_title",
+            "role",
+            "seed_evidence_score",
+            "foam_specific_evidence",
+            "inclusion_path",
+        ]
+        measurement_cols = [
+            "document_name",
+            "canonical_sheet_id",
+            "sheet_id",
+            "sheet_title",
+            "role",
+            "measurement_likelihood_score",
+            "final_selection_score",
+            "graph_distance_from_seed",
+            "connected_seed_pages",
+            "inclusion_path",
+            "measurement_guidance",
+        ]
+        left, right = st.columns(2)
+        with left:
+            st.markdown("**Seed / scope evidence pages**")
+            st.dataframe(seed_df[[col for col in seed_cols if col in seed_df.columns]], use_container_width=True, hide_index=True)
+        with right:
+            st.markdown("**Predicted measurement pages**")
+            st.dataframe(
+                measurement_df[[col for col in measurement_cols if col in measurement_df.columns]],
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    with st.expander("BidScope debug", expanded=False):
         st.caption(f"Graph expansion depth: {depth}")
         seed_debug = dataframe_from_records(
             [
@@ -559,7 +623,7 @@ def render_foamscope_page() -> None:
                 for page in sorted(pages, key=lambda item: item.relevance_score, reverse=True)[:25]
             ]
         )
-        st.markdown("**Top foam seed candidates**")
+        st.markdown("**Top seed candidates**")
         st.dataframe(seed_debug, use_container_width=True, hide_index=True)
         generic_only = dataframe_from_records(
             [
@@ -602,7 +666,7 @@ def render_foamscope_page() -> None:
 
     st.subheader("Relevant Sheets")
     if relevant_df.empty:
-        st.info("No relevant foam insulation sheets were identified. Review keyword configs or try OCR.")
+        st.info("No relevant trade scope sheets were identified. Review the selected trade profile or try OCR.")
     else:
         display_cols = [
             "document_name",
@@ -618,6 +682,11 @@ def render_foamscope_page() -> None:
             "foam_seed_level",
             "role",
             "relevance_score",
+            "seed_evidence_score",
+            "measurement_likelihood_score",
+            "final_selection_score",
+            "graph_distance_from_seed",
+            "connected_seed_pages",
             "evidence",
             "inclusion_path",
             "needs_measurement",
@@ -658,6 +727,10 @@ def render_foamscope_page() -> None:
                     "foam_relevance": page.foam_relevance,
                     "foam_seed_level": page.foam_seed_level,
                     "relevance_score": page.relevance_score,
+                    "seed_evidence_score": page.seed_evidence_score,
+                    "measurement_likelihood_score": page.measurement_likelihood_score,
+                    "final_selection_score": page.final_selection_score,
+                    "graph_distance_from_seed": page.graph_distance_from_seed,
                     "evidence": ", ".join(page.evidence),
                     "word_count": page.word_count,
                     "used_ocr": page.used_ocr,
@@ -680,21 +753,62 @@ def render_foamscope_page() -> None:
         for page in pages
         if page.global_page_id not in selected_page_ids
     ]
-    with st.expander("Indexed pages not in expanded FoamScope tree", expanded=False):
+    with st.expander("Indexed pages not in expanded BidScope tree", expanded=False):
         st.caption(
             "These pages remained in the lightweight global index and reference graph, "
-            "but were not connected to the current foam seed subgraph within the selected expansion depth."
+            "but were not connected to the current trade seed subgraph within the selected expansion depth."
         )
         st.dataframe(dataframe_from_records(indexed_not_included), use_container_width=True, hide_index=True)
 
     export_payload = build_export_payload(result, pages, analysis_mode=analysis_mode)
+    st.subheader("Evaluate against completed takeoff export")
+    st.caption(
+        "Upload a completed STACK-style takeoff CSV to compare BidScope-predicted measurement pages "
+        "against known takeoff pages. This is evaluation/training data only."
+    )
+    takeoff_upload = st.file_uploader(
+        "Completed takeoff CSV",
+        type=["csv"],
+        key="foamscope_takeoff_evaluation_csv",
+    )
+    if takeoff_upload is not None:
+        try:
+            evaluation = compare_foamscope_output_to_takeoff_export(
+                export_payload,
+                takeoff_upload.getvalue(),
+                trade_type=trade_type,
+            )
+        except Exception as exc:
+            st.error(f"Could not evaluate takeoff CSV: {type(exc).__name__}: {exc}")
+        else:
+            counts = evaluation["counts"]
+            e1, e2, e3, e4, e5 = st.columns(5)
+            e1.metric("Expected pages", f"{counts['expected']:,}")
+            e2.metric("Selected pages", f"{counts['selected']:,}")
+            e3.metric("Matched pages", f"{counts['matched']:,}")
+            e4.metric("Recall", f"{evaluation['recall']:.0%}")
+            e5.metric("Precision", f"{evaluation['precision']:.0%}")
+            with st.expander("Takeoff evaluation detail", expanded=True):
+                st.markdown("**Top 25 predicted measurement pages**")
+                st.dataframe(
+                    dataframe_from_records(evaluation.get("top_predicted_measurement_pages", [])[:25]),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+                st.markdown("**Matched pages**")
+                st.dataframe(dataframe_from_records(evaluation["matched_pages"]), use_container_width=True, hide_index=True)
+                st.markdown("**Missed pages**")
+                st.dataframe(dataframe_from_records(evaluation["missed_pages"]), use_container_width=True, hide_index=True)
+                st.markdown("**Extra selected pages**")
+                st.dataframe(dataframe_from_records(evaluation.get("extra_pages", evaluation["extra_selected_pages"])), use_container_width=True, hide_index=True)
+
     st.subheader("Exports")
     e1, e2 = st.columns(2)
     with e1:
         st.download_button(
             "Download JSON",
             data=json.dumps(export_payload, indent=2, default=str).encode("utf-8"),
-            file_name="foamscope_ai_measurement_tree.json",
+            file_name="bidscope_ai_measurement_tree.json",
             mime="application/json",
         )
     with e2:
@@ -702,7 +816,7 @@ def render_foamscope_page() -> None:
         st.download_button(
             "Download Relevant Sheets CSV",
             data=csv_bytes,
-            file_name="foamscope_ai_relevant_sheets.csv",
+            file_name="bidscope_ai_relevant_sheets.csv",
             mime="text/csv",
             disabled=relevant_df.empty,
         )
