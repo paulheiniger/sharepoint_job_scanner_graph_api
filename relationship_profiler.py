@@ -582,7 +582,36 @@ def read_table(engine: Engine, table_name: str) -> pd.DataFrame:
         return pd.read_sql_query(text(f"SELECT * FROM {table_name}"), conn)
 
 
+def sanitize_frame_for_sql(frame: pd.DataFrame | None, table_name: str | None = None) -> pd.DataFrame:
+    if frame is None:
+        return pd.DataFrame()
+    cleaned = frame.copy()
+
+    # raw_json already preserves the full raw payload; do not also write raw dicts.
+    if table_name == "estimate_line_items_raw" and "raw" in cleaned.columns and "raw_json" in cleaned.columns:
+        cleaned = cleaned.drop(columns=["raw"])
+
+    def clean_value(value: Any) -> Any:
+        if value is None:
+            return None
+        try:
+            if pd.isna(value):
+                return None
+        except Exception:
+            pass
+        if isinstance(value, (dict, list, tuple, set)):
+            return json.dumps(value, default=str, sort_keys=True)
+        return value
+
+    for column in cleaned.columns:
+        if cleaned[column].dtype == "object":
+            cleaned[column] = cleaned[column].map(clean_value)
+
+    return cleaned
+
+
 def write_table(engine: Engine, table_name: str, frame: pd.DataFrame) -> None:
+    frame = sanitize_frame_for_sql(frame, table_name)
     frame.to_sql(table_name, engine, if_exists="replace", index=False, chunksize=1000)
 
 

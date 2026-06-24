@@ -5,7 +5,52 @@ import json
 import pandas as pd
 from sqlalchemy import create_engine, inspect
 
-from relationship_profiler import profile_relationships, profile_relationships_from_database
+from relationship_profiler import profile_relationships, profile_relationships_from_database, sanitize_frame_for_sql
+
+
+def assert_no_nested_sql_values(frame: pd.DataFrame) -> None:
+    values = frame.to_numpy().ravel()
+    assert not any(isinstance(value, (dict, list, tuple, set)) for value in values)
+
+
+def test_sanitize_estimate_line_items_raw_drops_raw_dict_when_raw_json_exists() -> None:
+    raw_payload = {"job_id": "J1", "notes": None, "unit": None, "nested": {"package": "coating"}}
+    frame = pd.DataFrame(
+        [
+            {
+                "line_item_id": "L1",
+                "raw": raw_payload,
+                "raw_json": json.dumps(raw_payload, default=str, sort_keys=True),
+            }
+        ]
+    )
+
+    cleaned = sanitize_frame_for_sql(frame, "estimate_line_items_raw")
+
+    assert "raw" not in cleaned.columns
+    assert "raw_json" in cleaned.columns
+    assert cleaned.loc[0, "raw_json"] == json.dumps(raw_payload, default=str, sort_keys=True)
+    assert_no_nested_sql_values(cleaned)
+
+
+def test_sanitize_generic_object_columns_serializes_nested_values() -> None:
+    frame = pd.DataFrame(
+        [
+            {
+                "row_id": "R1",
+                "payload": {"package": "primer", "quantity": 5},
+                "source_ids": ["L1", "L2"],
+                "tags": {"review", "allowance"},
+            }
+        ]
+    )
+
+    cleaned = sanitize_frame_for_sql(frame, "relationship_debug")
+
+    assert json.loads(cleaned.loc[0, "payload"]) == {"package": "primer", "quantity": 5}
+    assert json.loads(cleaned.loc[0, "source_ids"]) == ["L1", "L2"]
+    assert isinstance(cleaned.loc[0, "tags"], str)
+    assert_no_nested_sql_values(cleaned)
 
 
 def test_relationship_profiler_writes_relationship_outputs(tmp_path) -> None:
