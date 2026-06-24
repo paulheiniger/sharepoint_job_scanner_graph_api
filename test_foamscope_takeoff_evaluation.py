@@ -15,9 +15,9 @@ from takeoff.evaluation import (
     original_page_number_from_plan_name,
     parse_stack_takeoff_csv,
 )
-from training.bidscope_review_export import build_bidscope_review_export_zip
 from training.completed_takeoff_parser import parse_stack_takeoff_csv as training_parse_stack_takeoff_csv
 from training.foamscope_evaluator import compare_foamscope_output_to_takeoff_export as training_compare
+from training.measurement_priors import build_learned_measurement_priors, learned_measurement_prior_score
 
 
 class FakeUpload:
@@ -379,15 +379,16 @@ def test_review_selected_pages_excludes_low_score_debug_connected_pages() -> Non
     assert "E1-01" in rejected_sheets
 
 
-def test_depauw_takeoff_eval_expected_sheets_are_ranked_and_matched() -> None:
+def test_depauw_takeoff_eval_expected_sheets_and_original_page_are_ranked_and_matched() -> None:
     package = ingest_uploaded_package(
         [
             FakeUpload("A6.13.pdf", make_pdf("A6.13 Wall Section\nspray foam insulation. See A2.00, A2.03, A2.05, A4.04, and A4.05.")),
             FakeUpload("A2.00.pdf", make_pdf("A2.00 Floor Plan\nFirst floor perimeter")),
             FakeUpload("A2.03.pdf", make_pdf("A2.03 Floor Plan\nThird floor perimeter")),
-            FakeUpload("A2.05.pdf", make_pdf("A2.05 Floor Plan\nFifth floor perimeter")),
+            FakeUpload("A2.05.pdf", make_pdf("A2.05 Floor Plan\nAttic Main Bldg double check")),
             FakeUpload("A4.04.pdf", make_pdf("A4.04 Exterior Elevation\nNorth elevation")),
             FakeUpload("A4.05.pdf", make_pdf("A4.05 Exterior Elevation\nSouth elevation")),
+            FakeUpload("DePauw Bid Set.pdf Page 131.pdf", make_pdf("A9.01 Attic plan\nAttic Main Bldg double check")),
         ]
     )
     result = analyze_documents(package.documents, depth=4, use_ocr=False, trade_type="foam_insulation")
@@ -397,18 +398,88 @@ def test_depauw_takeoff_eval_expected_sheets_are_ranked_and_matched() -> None:
             "Takeoff Name,Takeoff Description,Sq Ft,Ln Ft,Cu Yd,EA,Drop Count,Takeoff Quantity,Takeoff Unit,Scale,Plan Name",
             "Perimeter,First floor perimeter,,100,,,,100,Ln Ft,1/8\"=1',A2.00.pdf",
             "Perimeter,Third floor perimeter,,100,,,,100,Ln Ft,1/8\"=1',A2.03.pdf",
-            "Perimeter,Fifth floor perimeter,,100,,,,100,Ln Ft,1/8\"=1',A2.05.pdf",
+            "Attic,Attic Main Bldg double check,900,,,,,900,Sq Ft,1/8\"=1',A2.05.pdf",
             "Wall Area,North elevation,1200,,,,,1200,Sq Ft,1/8\"=1',A4.04.pdf",
             "Wall Area,South elevation,1200,,,,,1200,Sq Ft,1/8\"=1',A4.05.pdf",
+            "Attic,Attic Main Bldg,900,,,,,900,Sq Ft,1/8\"=1',DePauw Bid Set.pdf Page 131.pdf",
         ]
     )
 
     evaluation = training_compare(json.dumps(payload, default=str), takeoff_csv, trade_type="foam_insulation")
 
-    assert evaluation["counts"]["expected"] == 5
-    assert evaluation["recall"] == 1
+    assert evaluation["counts"]["expected"] == 6
+    assert round(evaluation["recall"], 3) == 0.833
     assert evaluation["precision_at_10"] > 0
-    assert not evaluation["missed_pages"]
+    assert {row["match_key"] for row in evaluation["missed_pages"]} == {"page:131"}
+    matched_by_key = {row["match_key"]: row for row in evaluation["matched_pages"]}
+    assert matched_by_key["sheet:A2-00"]["predicted_measurement_type"] == "area"
+    assert matched_by_key["sheet:A2-03"]["predicted_measurement_type"] == "area"
+    assert matched_by_key["sheet:A2-05"]["predicted_measurement_type"] == "area"
+    assert matched_by_key["sheet:A4-04"]["predicted_measurement_type"] == "elevation_area"
+    assert matched_by_key["sheet:A4-05"]["predicted_measurement_type"] == "elevation_area"
+
+
+def test_review_export_takeoff_eval_rows_include_page_match_and_type_fields() -> None:
+    package = ingest_uploaded_package(
+        [
+            FakeUpload("A6.13.pdf", make_pdf("A6.13 Wall Section\nspray foam insulation. See A2.00.")),
+            FakeUpload("A2.00.pdf", make_pdf("A2.00 Floor Plan\nGround floor perimeter")),
+            FakeUpload("DePauw Bid Set.pdf Page 131.pdf", make_pdf("A9.01 Attic plan\nAttic Main Bldg double check")),
+        ]
+    )
+    result = analyze_documents(package.documents, depth=4, use_ocr=False, trade_type="foam_insulation")
+    payload = _payload_from_result(package, result)
+    takeoff_csv = "\n".join(
+        [
+            "Takeoff Name,Takeoff Description,Sq Ft,Ln Ft,Cu Yd,EA,Drop Count,Takeoff Quantity,Takeoff Unit,Scale,Plan Name",
+            "Perimeter,Ground Floor Perimeter,,100,,,,100,Ln Ft,1/8\"=1',A2.00.pdf",
+            "Attic,Attic Main Bldg,900,,,,,900,Sq Ft,1/8\"=1',DePauw Bid Set.pdf Page 131.pdf",
+        ]
+    )
+    evaluation = training_compare(json.dumps(payload, default=str), takeoff_csv, trade_type="foam_insulation")
+    bundle = build_bidscope_review_export_zip(
+        payload,
+        trade_profile={"trade_type": "foam_insulation", "trade_name": "Foam Insulation", "max_final_measurement_pages": 25},
+        takeoff_evaluation=evaluation,
+    )
+    with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
+        candidates = list(csv.DictReader(io.StringIO(archive.read("measurement_candidates.csv").decode("utf-8"))))
+        selected = list(csv.DictReader(io.StringIO(archive.read("selected_pages.csv").decode("utf-8"))))
+        takeoff_rows = list(csv.DictReader(io.StringIO(archive.read("takeoff_eval.csv").decode("utf-8"))))
+
+    takeoff_by_sheet = {row["actual_sheet_id"] or row["actual_plan_name"]: row for row in takeoff_rows}
+    assert "learned_measurement_prior_score" in candidates[0]
+    assert all((row.get("learned_measurement_prior_score") or "0") in {"", "0", "0.0"} for row in candidates)
+    assert takeoff_by_sheet["A2-00"]["match_by_sheet_id"] == "True"
+    page_131 = next(row for row in takeoff_rows if "Page 131" in row["actual_plan_name"])
+    assert page_131["match_type"] == "missed"
+    assert not any(row.get("learned_measurement_prior_score") and float(row["learned_measurement_prior_score"]) > 0 for row in selected)
+
+
+def test_training_mode_builds_learned_measurement_priors_without_current_answer_key_boost() -> None:
+    takeoff_csv = "\n".join(
+        [
+            "Takeoff Name,Takeoff Description,Sq Ft,Ln Ft,Cu Yd,EA,Drop Count,Takeoff Quantity,Takeoff Unit,Scale,Plan Name",
+            "Perimeter,Ground Floor Perimeter,,100,,,,100,Ln Ft,1/8\"=1',A2.00.pdf",
+            "Attic,Attic Main Bldg,900,,,,,900,Sq Ft,1/8\"=1',A2.05.pdf",
+            "Wall Area,North elevation,1200,,,,,1200,Sq Ft,1/8\"=1',A4.04.pdf",
+        ]
+    )
+    model = build_learned_measurement_priors([takeoff_csv], trade_type="foam_insulation")
+
+    assert model["mode"] == "training"
+    assert model["trade_type"] == "foam_insulation"
+    assert model["sheet_prefix_counts"]["A2"] == 2
+    assert model["page_type_counts"]["floor_plan"] == 1
+    assert model["page_type_counts"]["attic_plan"] == 1
+
+    class Page:
+        canonical_sheet_id = "A2-00"
+        sheet_id = "A2-00"
+        role = "floor_plan"
+        page_type = "floor_plan"
+
+    assert learned_measurement_prior_score(Page(), {"learned_measurement_priors": model}) > 0
 
 
 def _payload_from_result(package, result):

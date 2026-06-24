@@ -6,6 +6,8 @@ from typing import Any
 
 import yaml
 
+from training.measurement_priors import load_learned_measurement_priors
+
 
 DEFAULT_TRADE_TYPE = "foam_insulation"
 TRADE_PROFILE_DIR = Path("configs/trades")
@@ -34,4 +36,6 @@ def load_trade_profile(trade_type: str = DEFAULT_TRADE_TYPE) -> dict[str, Any]:
     data.setdefault("sheet_prefix_weights", {})
     data.setdefault("discipline_penalties", {})
     data.setdefault("output_guidance_templates", {})
+    priors_path = TRADE_PROFILE_DIR / f"{key}_learned_measurement_priors.json"
+    data.setdefault("learned_measurement_priors", load_learned_measurement_priors(priors_path))
     return data

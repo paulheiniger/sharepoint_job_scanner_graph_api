@@ -215,3 +215,74 @@ def test_bidscope_review_export_stays_small() -> None:
     )
 
     assert len(payload) < 100_000
+
+
+def test_blank_measurement_sheet_paths_are_low_confidence() -> None:
+    payload = _sample_payload()
+    payload["measurement_tree"]["nodes"].append(
+        {
+            "node_id": "blank::page_1",
+            "global_page_id": "blank::page_1",
+            "document_name": "Unknown.pdf",
+            "canonical_sheet_id": "",
+            "sheet_id": "",
+            "page_type": "floor_plan",
+            "role": "measurement_page",
+            "measurement_likelihood_score": 90,
+            "final_selection_score": 90,
+            "graph_distance_from_seed": 1,
+            "inclusion_path": ["A6-01", ""],
+        }
+    )
+
+    bundle = build_bidscope_review_export_zip(payload, trade_profile={"trade_type": "foam_insulation", "trade_name": "Foam Insulation"})
+    with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
+        paths = list(csv.DictReader(io.StringIO(archive.read("reference_paths.csv").decode("utf-8"))))
+
+    blank_paths = [row for row in paths if not row["measurement_sheet"]]
+    assert blank_paths
+    assert all(row["path_confidence"] == "low" for row in blank_paths)
+
+
+def test_foam_selected_measurement_pages_are_capped_without_takeoff_answer_key_boost() -> None:
+    payload = _sample_payload()
+    payload["measurement_tree"]["nodes"] = []
+    for index in range(30):
+        sheet = f"A2-{index:02d}"
+        payload["measurement_tree"]["nodes"].append(
+            {
+                "node_id": f"{sheet}::page_1",
+                "global_page_id": f"{sheet}::page_1",
+                "document_name": f"{sheet}.pdf",
+                "canonical_sheet_id": sheet,
+                "sheet_id": sheet,
+                "page_type": "floor_plan",
+                "role": "measurement_page",
+                "measurement_likelihood_score": 80 - index,
+                "final_selection_score": 80 - index,
+                "graph_distance_from_seed": 1,
+                "inclusion_path": ["A6-01", sheet],
+            }
+        )
+    takeoff_eval = {
+        "top_predicted_measurement_pages": [
+            {"match_key": "sheet:A2-29", "match_keys": ["sheet:A2-29"], "canonical_sheet_id": "A2-29", "predicted_measurement_type": "perimeter"}
+        ],
+        "matched_pages": [{"match_key": "sheet:A2-29"}],
+        "expected_measurement_pages": [{"match_key": "sheet:A2-29", "canonical_sheet_id": "A2-29"}],
+        "extra_pages": [],
+        "recall": 1,
+        "precision": 1,
+    }
+
+    bundle = build_bidscope_review_export_zip(
+        payload,
+        trade_profile={"trade_type": "foam_insulation", "trade_name": "Foam Insulation", "max_final_measurement_pages": 25},
+        takeoff_evaluation=takeoff_eval,
+    )
+    with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
+        selected = list(csv.DictReader(io.StringIO(archive.read("selected_pages.csv").decode("utf-8"))))
+
+    likely = [row for row in selected if row["selection_tier"] == "likely_measurement_pages"]
+    assert len(likely) == 25
+    assert "A2-29" not in {row["canonical_sheet_id"] for row in likely}

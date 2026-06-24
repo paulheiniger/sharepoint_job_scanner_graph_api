@@ -40,6 +40,7 @@ from intake.source_detector import detect_source_type
 from takeoff.insulation_scope_tree import build_measurement_tree, relevant_pages_table
 from training.bidscope_review_export import build_bidscope_review_export_zip
 from training.foamscope_evaluator import compare_foamscope_output_to_takeoff_export
+from training.measurement_priors import build_learned_measurement_priors
 
 
 def dataframe_from_records(rows: list[dict[str, Any]]) -> pd.DataFrame:
@@ -786,15 +787,42 @@ def render_foamscope_page() -> None:
 
     export_payload = build_export_payload(result, pages, analysis_mode=analysis_mode)
     takeoff_evaluation_for_export: dict[str, Any] | None = None
-    st.subheader("Evaluate against completed takeoff export")
+    st.subheader("Completed STACK Takeoffs")
+    takeoff_mode = st.radio(
+        "Completed takeoff mode",
+        ["Live mode", "Evaluation mode", "Training mode"],
+        horizontal=True,
+        help=(
+            "Live mode does not use completed takeoffs. Evaluation mode compares predictions after the run. "
+            "Training mode builds a reusable learned-prior artifact from completed jobs."
+        ),
+    )
     st.caption(
-        "Upload a completed STACK-style takeoff CSV to compare BidScope-predicted measurement pages "
-        "against known takeoff pages. This is evaluation/training data only."
+        "Completed takeoffs are never used as current-job answer keys in live selection. "
+        "Use Evaluation mode to score this run, or Training mode to create historical priors for future live bids."
     )
     embedded_takeoff_csvs = inspection.takeoff_csvs or []
-    if embedded_takeoff_csvs:
+    if embedded_takeoff_csvs and takeoff_mode in {"Evaluation mode", "Training mode"}:
         st.markdown("**STACK takeoff CSVs found inside package**")
         st.dataframe(dataframe_from_records(embedded_takeoff_csvs), use_container_width=True, hide_index=True)
+    if embedded_takeoff_csvs and takeoff_mode == "Training mode":
+        csv_payloads: list[bytes] = []
+        for takeoff_csv in embedded_takeoff_csvs:
+            try:
+                csv_payloads.append(Path(str(takeoff_csv["file_path"])).read_bytes())
+            except Exception as exc:
+                st.warning(f"Could not read {takeoff_csv.get('filename')} for training: {type(exc).__name__}: {exc}")
+        if csv_payloads:
+            learned_priors = build_learned_measurement_priors(csv_payloads, trade_type=trade_type)
+            st.json(learned_priors)
+            st.download_button(
+                "Download learned measurement priors",
+                data=json.dumps(learned_priors, indent=2, sort_keys=True).encode("utf-8"),
+                file_name=f"{trade_type}_learned_measurement_priors.json",
+                mime="application/json",
+                help=f"Save this as configs/trades/{trade_type}_learned_measurement_priors.json to use it in future live bids.",
+            )
+    if embedded_takeoff_csvs and takeoff_mode == "Evaluation mode":
         for index, takeoff_csv in enumerate(embedded_takeoff_csvs, start=1):
             try:
                 csv_payload = Path(str(takeoff_csv["file_path"])).read_bytes()
@@ -824,11 +852,11 @@ def render_foamscope_page() -> None:
                 st.markdown("**Missed pages**")
                 st.dataframe(dataframe_from_records(evaluation["missed_pages"]), use_container_width=True, hide_index=True)
     takeoff_upload = st.file_uploader(
-        "Completed takeoff CSV",
+        "Completed takeoff CSV for evaluation/training",
         type=["csv"],
         key="foamscope_takeoff_evaluation_csv",
     )
-    if takeoff_upload is not None:
+    if takeoff_upload is not None and takeoff_mode == "Evaluation mode":
         try:
             evaluation = compare_foamscope_output_to_takeoff_export(
                 export_payload,
@@ -859,6 +887,18 @@ def render_foamscope_page() -> None:
                 st.dataframe(dataframe_from_records(evaluation["missed_pages"]), use_container_width=True, hide_index=True)
                 st.markdown("**Extra selected pages**")
                 st.dataframe(dataframe_from_records(evaluation.get("extra_pages", evaluation["extra_selected_pages"])), use_container_width=True, hide_index=True)
+    elif takeoff_upload is not None and takeoff_mode == "Training mode":
+        learned_priors = build_learned_measurement_priors([takeoff_upload.getvalue()], trade_type=trade_type)
+        st.json(learned_priors)
+        st.download_button(
+            "Download learned measurement priors",
+            data=json.dumps(learned_priors, indent=2, sort_keys=True).encode("utf-8"),
+            file_name=f"{trade_type}_learned_measurement_priors.json",
+            mime="application/json",
+            help=f"Save this as configs/trades/{trade_type}_learned_measurement_priors.json to use it in future live bids.",
+        )
+    elif takeoff_upload is not None:
+        st.info("Switch to Evaluation mode or Training mode to use the completed takeoff CSV.")
 
     st.subheader("Exports")
     review_zip = build_bidscope_review_export_zip(

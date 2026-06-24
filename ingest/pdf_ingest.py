@@ -45,6 +45,7 @@ class PageRecord:
     generic_evidence: list[str] = field(default_factory=list)
     seed_evidence_score: float = 0.0
     measurement_likelihood_score: float = 0.0
+    learned_measurement_prior_score: float = 0.0
     final_selection_score: float = 0.0
     graph_distance_from_seed: int | None = None
     connected_seed_pages: list[str] = field(default_factory=list)

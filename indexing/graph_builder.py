@@ -6,6 +6,7 @@ from typing import Any
 import networkx as nx
 
 from ingest.pdf_ingest import PageRecord
+from training.measurement_priors import learned_measurement_prior_score
 
 
 def page_node_id(page: PageRecord) -> str:
@@ -173,6 +174,7 @@ def _sync_graph_scoring(graph: nx.DiGraph, node: str, page: PageRecord) -> None:
     graph.nodes[node]["role"] = page.role
     graph.nodes[node]["seed_evidence_score"] = page.seed_evidence_score
     graph.nodes[node]["measurement_likelihood_score"] = page.measurement_likelihood_score
+    graph.nodes[node]["learned_measurement_prior_score"] = page.learned_measurement_prior_score
     graph.nodes[node]["final_selection_score"] = page.final_selection_score
     graph.nodes[node]["graph_distance_from_seed"] = page.graph_distance_from_seed
     graph.nodes[node]["connected_seed_pages"] = page.connected_seed_pages
@@ -233,6 +235,8 @@ def _measurement_likelihood_score(page: PageRecord, *, connected: bool, trade_pr
     for prefix, weight in (trade_profile.get("sheet_prefix_weights") or {}).items():
         if sheet_id.startswith(f"{str(prefix).upper()}-"):
             score += float(weight)
+    page.learned_measurement_prior_score = learned_measurement_prior_score(page, trade_profile)
+    score += page.learned_measurement_prior_score
     for prefix, penalty in (trade_profile.get("discipline_penalties") or {}).items():
         if sheet_id.startswith(str(prefix).upper()):
             score += float(penalty)

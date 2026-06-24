@@ -45,7 +45,7 @@ def build_bidscope_review_export_zip(
         "trade_profile_used.json": _json_bytes(trade_profile),
         "seed_pages.csv": _csv_bytes(_seed_page_rows(export_payload), _seed_page_columns()),
         "measurement_candidates.csv": _csv_bytes(_measurement_candidate_rows(export_payload), _measurement_candidate_columns()),
-        "selected_pages.csv": _csv_bytes(_selected_page_rows(export_payload), _selected_page_columns()),
+        "selected_pages.csv": _csv_bytes(_selected_page_rows(export_payload, trade_profile=trade_profile), _selected_page_columns()),
         "rejected_pages_sample.csv": _csv_bytes(_rejected_page_rows(export_payload), _rejected_page_columns()),
         "reference_paths.csv": _csv_bytes(_reference_path_rows(export_payload), _reference_path_columns()),
         "unresolved_references.csv": _csv_bytes(_unresolved_reference_rows(export_payload), _unresolved_reference_columns()),
@@ -144,7 +144,7 @@ def _measurement_candidate_rows(export_payload: dict[str, Any]) -> list[dict[str
         for node in _nodes(export_payload)
         if _number(node.get("measurement_likelihood_score")) or node.get("role") == "measurement_page"
     ]
-    candidates = sorted(candidates, key=lambda node: -(_number(node.get("final_selection_score")) or 0.0))
+    candidates = sorted(candidates, key=lambda node: -_selection_score(node))
     rows = []
     for index, node in enumerate(candidates, start=1):
         path = node.get("inclusion_path") or []
@@ -154,10 +154,12 @@ def _measurement_candidate_rows(export_payload: dict[str, Any]) -> list[dict[str
                 "page_id": node.get("global_page_id") or node.get("node_id"),
                 "document_name": node.get("document_name"),
                 "canonical_sheet_id": node.get("canonical_sheet_id"),
+                "original_page_number": node.get("original_page_number"),
                 "page_type": node.get("page_type"),
                 "measurement_likelihood_score": node.get("measurement_likelihood_score"),
                 "seed_evidence_score": node.get("seed_evidence_score"),
-                "final_selection_score": node.get("final_selection_score"),
+                "learned_measurement_prior_score": node.get("learned_measurement_prior_score", 0),
+                "final_selection_score": _selection_score(node),
                 "graph_distance_from_seed": node.get("graph_distance_from_seed"),
                 "connected_seed_pages": _join(node.get("connected_seed_pages") or []),
                 "best_reference_path": _join(path, separator=" -> "),
@@ -168,24 +170,41 @@ def _measurement_candidate_rows(export_payload: dict[str, Any]) -> list[dict[str
     return rows
 
 
-def _selected_page_rows(export_payload: dict[str, Any]) -> list[dict[str, Any]]:
-    return [
-        {
-            "page_id": node.get("global_page_id") or node.get("node_id"),
-            "canonical_sheet_id": node.get("canonical_sheet_id"),
-            "document_name": node.get("document_name"),
-            "page_type": node.get("page_type"),
-            "role": node.get("role"),
-            "final_selection_score": node.get("final_selection_score"),
-            "measurement_likelihood_score": node.get("measurement_likelihood_score"),
-            "seed_evidence_score": node.get("seed_evidence_score"),
-            "reference_path": _join(node.get("inclusion_path") or [], separator=" -> "),
-            "measurement_guidance": node.get("measurement_guidance"),
-            "selection_tier": _selection_tier(node),
-        }
-        for node in _nodes(export_payload)
-        if _selection_tier(node) != "debug_only_connected_pages"
-    ]
+def _selected_page_rows(
+    export_payload: dict[str, Any],
+    *,
+    trade_profile: dict[str, Any],
+) -> list[dict[str, Any]]:
+    rows = []
+    nodes = sorted(_nodes(export_payload), key=lambda node: -_selection_score(node))
+    max_measurements = int(trade_profile.get("max_final_measurement_pages") or 50)
+    measurement_count = 0
+    for node in nodes:
+        tier = _selection_tier(node)
+        if tier == "debug_only_connected_pages":
+            continue
+        if tier == "likely_measurement_pages":
+            if measurement_count >= max_measurements:
+                continue
+            measurement_count += 1
+        rows.append(
+            {
+                "page_id": node.get("global_page_id") or node.get("node_id"),
+                "canonical_sheet_id": node.get("canonical_sheet_id"),
+                "document_name": node.get("document_name"),
+                "original_page_number": node.get("original_page_number"),
+                "page_type": node.get("page_type"),
+                "role": node.get("role"),
+                "final_selection_score": _selection_score(node),
+                "measurement_likelihood_score": node.get("measurement_likelihood_score"),
+                "seed_evidence_score": node.get("seed_evidence_score"),
+                "learned_measurement_prior_score": node.get("learned_measurement_prior_score", 0),
+                "reference_path": _join(node.get("inclusion_path") or [], separator=" -> "),
+                "measurement_guidance": node.get("measurement_guidance"),
+                "selection_tier": tier,
+            }
+        )
+    return rows
 
 
 def _rejected_page_rows(export_payload: dict[str, Any], *, limit: int = 200) -> list[dict[str, Any]]:
@@ -277,13 +296,23 @@ def _unresolved_reference_rows(export_payload: dict[str, Any]) -> list[dict[str,
 
 
 def _takeoff_eval_rows(takeoff_evaluation: dict[str, Any]) -> list[dict[str, Any]]:
-    predictions = {row.get("match_key"): row for row in takeoff_evaluation.get("top_predicted_measurement_pages") or []}
-    ranked_keys = [row.get("match_key") for row in takeoff_evaluation.get("top_predicted_measurement_pages") or []]
-    matched = {row.get("match_key") for row in takeoff_evaluation.get("matched_pages") or []}
+    predictions = {}
+    ranked_keys = []
+    rank_by_key = {}
+    for index, row in enumerate(takeoff_evaluation.get("top_predicted_measurement_pages") or [], start=1):
+        keys = list(row.get("match_keys") or [])
+        if row.get("match_key"):
+            keys.append(row["match_key"])
+            ranked_keys.append(row["match_key"])
+        for key in keys:
+            predictions.setdefault(key, row)
+            rank_by_key.setdefault(key, index)
+    matched_by_key = {row.get("match_key"): row for row in takeoff_evaluation.get("matched_pages") or []}
     rows = []
     for actual in takeoff_evaluation.get("expected_measurement_pages") or []:
         key = actual.get("match_key")
         predicted = predictions.get(key) or {}
+        matched = matched_by_key.get(key) or {}
         rows.append(
             {
                 "actual_plan_name": actual.get("plan_name"),
@@ -291,9 +320,16 @@ def _takeoff_eval_rows(takeoff_evaluation: dict[str, Any]) -> list[dict[str, Any
                 "takeoff_name": actual.get("takeoff_name"),
                 "quantity": actual.get("quantity"),
                 "unit": actual.get("unit"),
-                "predicted_rank": ranked_keys.index(key) + 1 if key in ranked_keys else "",
+                "predicted_rank": rank_by_key.get(key, ""),
                 "was_selected": bool(predicted),
-                "match_type": "matched" if key in matched else "missed",
+                "match_type": "matched" if matched else "missed",
+                "match_by_sheet_id": matched.get("match_by_sheet_id", False),
+                "match_by_original_page_number": matched.get("match_by_original_page_number", False),
+                "match_by_plan_name_fuzzy": matched.get("match_by_plan_name_fuzzy", False),
+                "actual_page_number_match": matched.get("actual_page_number_match", False),
+                "predicted_page_type": predicted.get("page_type"),
+                "predicted_measurement_type": predicted.get("predicted_measurement_type"),
+                "reason_missed": "" if matched else actual.get("reason_missed", "No predicted page matched."),
             }
         )
     for extra in takeoff_evaluation.get("extra_pages") or takeoff_evaluation.get("extra_selected_pages") or []:
@@ -307,6 +343,13 @@ def _takeoff_eval_rows(takeoff_evaluation: dict[str, Any]) -> list[dict[str, Any
                 "predicted_rank": ranked_keys.index(extra.get("match_key")) + 1 if extra.get("match_key") in ranked_keys else "",
                 "was_selected": True,
                 "match_type": "extra_selected",
+                "match_by_sheet_id": False,
+                "match_by_original_page_number": False,
+                "match_by_plan_name_fuzzy": False,
+                "actual_page_number_match": extra.get("actual_page_number_match", False),
+                "predicted_page_type": extra.get("page_type"),
+                "predicted_measurement_type": extra.get("predicted_measurement_type"),
+                "reason_missed": "",
             }
         )
     return rows
@@ -377,6 +420,11 @@ def _number(value: Any) -> float | None:
         return None
 
 
+def _int_or_none(value: Any) -> int | None:
+    number = _number(value)
+    return int(number) if number is not None else None
+
+
 def _predicted_measurement_type(node: dict[str, Any]) -> str:
     page_type = str(node.get("page_type") or node.get("role") or "").lower()
     sheet_id = str(node.get("canonical_sheet_id") or node.get("sheet_id") or "").upper()
@@ -400,7 +448,13 @@ def _predicted_measurement_type(node: dict[str, Any]) -> str:
     return "unknown"
 
 
-def _selection_tier(node: dict[str, Any]) -> str:
+def _selection_score(node: dict[str, Any]) -> float:
+    return _number(node.get("final_selection_score")) or 0.0
+
+
+def _selection_tier(
+    node: dict[str, Any],
+) -> str:
     role = str(node.get("role") or "")
     sheet_id = str(node.get("canonical_sheet_id") or node.get("sheet_id") or "").upper()
     seed_score = _number(node.get("seed_evidence_score")) or 0.0
@@ -432,6 +486,10 @@ def _why_candidate(node: dict[str, Any]) -> str:
 
 
 def _path_confidence(node: dict[str, Any]) -> str:
+    if not (node.get("canonical_sheet_id") or node.get("sheet_id")):
+        return "low"
+    if node.get("role") != "measurement_page":
+        return "low"
     if node.get("graph_distance_from_seed") in (None, ""):
         return "low"
     distance = int(node.get("graph_distance_from_seed") or 0)
@@ -491,9 +549,11 @@ def _measurement_candidate_columns() -> list[str]:
         "page_id",
         "document_name",
         "canonical_sheet_id",
+        "original_page_number",
         "page_type",
         "measurement_likelihood_score",
         "seed_evidence_score",
+        "learned_measurement_prior_score",
         "final_selection_score",
         "graph_distance_from_seed",
         "connected_seed_pages",
@@ -508,11 +568,13 @@ def _selected_page_columns() -> list[str]:
         "page_id",
         "canonical_sheet_id",
         "document_name",
+        "original_page_number",
         "page_type",
         "role",
         "final_selection_score",
         "measurement_likelihood_score",
         "seed_evidence_score",
+        "learned_measurement_prior_score",
         "reference_path",
         "measurement_guidance",
         "selection_tier",
@@ -553,4 +615,20 @@ def _unresolved_reference_columns() -> list[str]:
 
 
 def _takeoff_eval_columns() -> list[str]:
-    return ["actual_plan_name", "actual_sheet_id", "takeoff_name", "quantity", "unit", "predicted_rank", "was_selected", "match_type"]
+    return [
+        "actual_plan_name",
+        "actual_sheet_id",
+        "takeoff_name",
+        "quantity",
+        "unit",
+        "predicted_rank",
+        "was_selected",
+        "match_type",
+        "match_by_sheet_id",
+        "match_by_original_page_number",
+        "match_by_plan_name_fuzzy",
+        "actual_page_number_match",
+        "predicted_page_type",
+        "predicted_measurement_type",
+        "reason_missed",
+    ]
