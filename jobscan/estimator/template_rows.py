@@ -14,8 +14,11 @@ from sqlalchemy import bindparam, create_engine, text
 from sqlalchemy.engine import Connection, Engine
 
 PARSER_VERSION = "document-content-template-v1"
+TEMPLATE_TYPE_ROOFING = "roofing"
+TEMPLATE_TYPE_INSULATION = "insulation"
+TEMPLATE_TYPE_UNKNOWN = "unknown"
 
-HEADER_BUCKETS = {
+ROOFING_HEADER_BUCKETS = {
     1: "estimate_date",
     2: "job_name",
     3: "job_type",
@@ -26,8 +29,9 @@ HEADER_BUCKETS = {
     9: "phone",
     12: "estimated_square_feet",
 }
+HEADER_BUCKETS = ROOFING_HEADER_BUCKETS
 
-MATERIAL_BUCKETS = {
+ROOFING_MATERIAL_BUCKETS = {
     19: "foam",
     20: "foam",
     21: "foam",
@@ -67,8 +71,9 @@ MATERIAL_BUCKETS = {
     106: "sales_inspection_trips",
     108: "truck_expense",
 }
+MATERIAL_BUCKETS = ROOFING_MATERIAL_BUCKETS
 
-LABOR_BUCKETS = {
+ROOFING_LABOR_BUCKETS = {
     116: "labor_prep",
     118: "labor_prime",
     120: "labor_seam_sealer",
@@ -84,8 +89,9 @@ LABOR_BUCKETS = {
     142: "infrared_scan",
     145: "meals_lodging",
 }
+LABOR_BUCKETS = ROOFING_LABOR_BUCKETS
 
-TOTAL_BUCKETS = {
+ROOFING_TOTAL_BUCKETS = {
     154: "warranty",
     156: "misc_insurance",
     158: "permits",
@@ -94,6 +100,71 @@ TOTAL_BUCKETS = {
     167: "profit",
     169: "worksheet_price",
     170: "worksheet_price_adjusted",
+}
+TOTAL_BUCKETS = ROOFING_TOTAL_BUCKETS
+
+INSULATION_HEADER_BUCKETS = {
+    1: "estimate_date",
+    2: "job_name",
+    3: "job_type",
+    4: "site_address",
+    5: "city_state_zip",
+    6: "contact",
+    8: "email",
+    9: "phone",
+    12: "estimated_square_feet",
+}
+
+INSULATION_MATERIAL_BUCKETS = {
+    19: "foam",
+    20: "foam",
+    21: "foam",
+    24: "membrane",
+    26: "primer",
+    30: "thermal_barrier_coating",
+    31: "thermal_barrier_coating",
+    32: "thermal_barrier_coating",
+    37: "thinner",
+    41: "caulk_sealant",
+    43: "caulk_sealant",
+    47: "lift",
+    48: "lift",
+    50: "delivery_fee",
+    53: "generator",
+    55: "space_heater",
+    57: "misc",
+    59: "freight",
+    61: "abaa_audit",
+    63: "abaa_fee",
+    65: "drum_disposal",
+    68: "sales_inspection_trips",
+    70: "truck_expense",
+    72: "subtotal_materials",
+    73: "sales_tax",
+}
+
+INSULATION_LABOR_BUCKETS = {
+    78: "labor_set_up",
+    80: "labor_mask",
+    82: "labor_prime",
+    84: "labor_membrane",
+    86: "labor_foam",
+    88: "labor_dc_315",
+    90: "labor_misc",
+    92: "labor_clean_up",
+    95: "labor_loading",
+    97: "labor_traveling",
+    100: "meals_lodging",
+    103: "labor_subtotal",
+}
+
+INSULATION_TOTAL_BUCKETS = {
+    116: "total_job_cost",
+    118: "overhead",
+    120: "profit",
+    122: "worksheet_price",
+    123: "worksheet_price_adjusted",
+    137: "price_per_sqft_estimated_sets",
 }
 
 ADDER_ROWS = set(range(173, 181))
@@ -107,14 +178,41 @@ TEMPLATE_BUCKET_BY_ROW = {
     **ADDER_BUCKETS,
 }
 
-EQUIPMENT_BUCKETS = {"dumpsters", "lift", "generator", "delivery_fee"}
+EQUIPMENT_BUCKETS = {"dumpsters", "lift", "generator", "delivery_fee", "space_heater", "drum_disposal"}
 TRAVEL_BUCKETS = {"sales_inspection_trips", "truck_expense", "labor_traveling", "meals_lodging", "freight"}
-WARRANTY_BUCKETS = {"warranty", "misc_insurance", "permits"}
-TOTAL_LINE_BUCKETS = {"total_job_cost", "worksheet_price", "worksheet_price_adjusted"}
+WARRANTY_BUCKETS = {"warranty", "misc_insurance", "permits", "abaa_audit", "abaa_fee"}
+TOTAL_LINE_BUCKETS = {"total_job_cost", "worksheet_price", "worksheet_price_adjusted", "subtotal_materials", "sales_tax", "labor_subtotal", "price_per_sqft_estimated_sets"}
 ADDER_TEMPLATE_BUCKETS = {"estimate_adder", "estimate_adder_no_markup", "misc_materials", "misc_equipment"}
 ADDER_AMOUNT_COLUMNS = ("F", "H", "G", "E")
 
 CELL_FRAGMENT_RE = re.compile(r"^\s*([A-Z]{1,4}\d+)\s*:\s*(.*)\s*$")
+
+
+def maps_for_template_type(template_type: str) -> dict[str, dict[int, str]]:
+    if template_type == TEMPLATE_TYPE_INSULATION:
+        return {
+            "header": INSULATION_HEADER_BUCKETS,
+            "materials": INSULATION_MATERIAL_BUCKETS,
+            "labor": INSULATION_LABOR_BUCKETS,
+            "totals": INSULATION_TOTAL_BUCKETS,
+        }
+    return {
+        "header": ROOFING_HEADER_BUCKETS,
+        "materials": ROOFING_MATERIAL_BUCKETS,
+        "labor": ROOFING_LABOR_BUCKETS,
+        "totals": ROOFING_TOTAL_BUCKETS,
+    }
+
+
+def template_bucket_by_row(template_type: str) -> dict[int, str]:
+    maps = maps_for_template_type(template_type)
+    return {
+        **maps["header"],
+        **maps["materials"],
+        **maps["labor"],
+        **maps["totals"],
+        **ADDER_BUCKETS,
+    }
 
 
 def numeric_or_text(value: str) -> int | float | str:
@@ -185,18 +283,21 @@ def parse_cell_labeled_text(text_content: str) -> tuple[dict[str, Any], dict[str
     return cell_values, formula_cells, malformed_count
 
 
-def template_section_for_bucket(bucket: str) -> str:
-    if bucket in HEADER_BUCKETS.values():
+def template_section_for_bucket(bucket: str, template_type: str = TEMPLATE_TYPE_ROOFING) -> str:
+    maps = maps_for_template_type(template_type)
+    if bucket in maps["header"].values():
         return "job_header"
-    if bucket in MATERIAL_BUCKETS.values():
+    if bucket in maps["materials"].values():
         if bucket in TRAVEL_BUCKETS:
             return "travel"
         if bucket in EQUIPMENT_BUCKETS:
             return "materials"
         return "materials"
-    if bucket in LABOR_BUCKETS.values():
+    if bucket in maps["labor"].values():
         if bucket in TRAVEL_BUCKETS:
             return "travel"
+        if bucket == "labor_subtotal":
+            return "totals"
         return "labor"
     if bucket in WARRANTY_BUCKETS:
         return "warranty_bonding_insurance"
@@ -209,16 +310,44 @@ def template_section_for_bucket(bucket: str) -> str:
     return "other"
 
 
-def line_item_kind_for_bucket(bucket: str) -> str:
-    if bucket in HEADER_BUCKETS.values():
+def line_item_kind_for_bucket(bucket: str, template_type: str = TEMPLATE_TYPE_ROOFING) -> str:
+    maps = maps_for_template_type(template_type)
+    if bucket in maps["header"].values():
         return "header"
-    if bucket in {"foam", "coating", "thinner", "granules", "primer", "caulk_sealant", "seams_misc", "penetrations", "hvac_units", "drains", "board_stock", "fasteners", "plates", "fabric", "edge_metal", "gutter", "downspouts", "roof_hatch", "scuppers", "curbs", "ladders", "pitch_pockets", "misc", "misc_materials"}:
+    if bucket in {
+        "foam",
+        "coating",
+        "thermal_barrier_coating",
+        "membrane",
+        "thinner",
+        "granules",
+        "primer",
+        "caulk_sealant",
+        "seams_misc",
+        "penetrations",
+        "hvac_units",
+        "drains",
+        "board_stock",
+        "fasteners",
+        "plates",
+        "fabric",
+        "edge_metal",
+        "gutter",
+        "downspouts",
+        "roof_hatch",
+        "scuppers",
+        "curbs",
+        "ladders",
+        "pitch_pockets",
+        "misc",
+        "misc_materials",
+    }:
         return "material"
     if bucket in EQUIPMENT_BUCKETS or bucket == "misc_equipment":
         return "equipment"
     if bucket in TRAVEL_BUCKETS:
         return "travel"
-    if bucket in LABOR_BUCKETS.values():
+    if bucket in maps["labor"].values() and bucket != "labor_subtotal":
         return "labor"
     if bucket == "warranty":
         return "warranty"
@@ -228,6 +357,8 @@ def line_item_kind_for_bucket(bucket: str) -> str:
         return "permit"
     if bucket in {"overhead", "profit"}:
         return "overhead_profit"
+    if bucket == "sales_tax":
+        return "tax"
     if bucket in TOTAL_LINE_BUCKETS:
         return "total"
     return "unknown" if bucket == "unknown" else "other"
@@ -299,7 +430,53 @@ def numeric_at(cell_values: dict[str, Any], row_number: int, column: str) -> flo
     return to_float(value_at(cell_values, row_number, column))
 
 
-def parse_document_content_row(row: dict[str, Any] | pd.Series) -> dict[str, Any] | None:
+def detect_template_type_from_rows(rows: list[dict[str, Any] | pd.Series]) -> str:
+    source_text_parts: list[str] = []
+    row_numbers: set[int] = set()
+    parsed_by_row: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        record = row.to_dict() if isinstance(row, pd.Series) else dict(row)
+        row_number = int(record.get("row_number") or 0)
+        row_numbers.add(row_number)
+        source_text_parts.append(str(record.get("source_file") or record.get("file_name") or ""))
+        source_text_parts.append(str(record.get("text_content") or ""))
+        if row_number in {3, 12, 78, 86, 103, 116, 122, 123, 137}:
+            cell_values, _formula_cells, _malformed_count = parse_cell_labeled_text(str(record.get("text_content") or ""))
+            parsed_by_row[row_number] = cell_values
+    source_text = " ".join(source_text_parts).lower()
+    if "estimate insulation" in source_text or "insulation" in str(value_at(parsed_by_row.get(3, {}), 3, "C")).lower():
+        return TEMPLATE_TYPE_INSULATION
+    if 103 in row_numbers and 116 in row_numbers:
+        row_103_label = str(value_at(parsed_by_row.get(103, {}), 103, "A") or "").lower()
+        row_116_label = str(value_at(parsed_by_row.get(116, {}), 116, "A") or "").lower()
+        if "total hours" in row_103_label or "total job cost" in row_116_label:
+            return TEMPLATE_TYPE_INSULATION
+    if any(row_number in row_numbers for row_number in (78, 80, 86, 88, 92)):
+        return TEMPLATE_TYPE_INSULATION
+    return TEMPLATE_TYPE_ROOFING
+
+
+def detect_workbook_template_type(path: Path) -> str:
+    try:
+        import openpyxl
+    except ImportError:
+        return TEMPLATE_TYPE_UNKNOWN
+    workbook = openpyxl.load_workbook(path, data_only=False, read_only=True)
+    if "Estimate" not in workbook.sheetnames:
+        return TEMPLATE_TYPE_UNKNOWN
+    if "Sq Ft Calculation" in workbook.sheetnames:
+        return TEMPLATE_TYPE_INSULATION
+    ws = workbook["Estimate"]
+    job_type = str(ws["C3"].value or "").lower()
+    if "insulation" in job_type:
+        return TEMPLATE_TYPE_INSULATION
+    labels = " ".join(str(ws.cell(row=row, column=1).value or "") for row in (78, 86, 103, 116, 122, 123)).lower()
+    if "total job cost" in labels and ("foam" in labels or "total hours" in labels):
+        return TEMPLATE_TYPE_INSULATION
+    return TEMPLATE_TYPE_ROOFING
+
+
+def parse_document_content_row(row: dict[str, Any] | pd.Series, template_type: str | None = None) -> dict[str, Any] | None:
     record = row.to_dict() if isinstance(row, pd.Series) else dict(row)
     sheet_name = str(record.get("sheet_name") or "")
     row_number = int(record.get("row_number") or 0)
@@ -310,7 +487,8 @@ def parse_document_content_row(row: dict[str, Any] | pd.Series) -> dict[str, Any
         return None
 
     cell_values, formula_cells, malformed_count = parse_cell_labeled_text(raw_text)
-    bucket = TEMPLATE_BUCKET_BY_ROW.get(row_number, "unknown")
+    template_type = template_type or record.get("template_type") or detect_template_type_from_rows([record])
+    bucket = template_bucket_by_row(template_type).get(row_number, "unknown")
     row_label = value_at(cell_values, row_number, "A")
     if row_number in ADDER_ROWS:
         label_text = adder_label_text(row_label, cell_values, raw_text)
@@ -320,8 +498,8 @@ def parse_document_content_row(row: dict[str, Any] | pd.Series) -> dict[str, Any
         bucket, kind = classify_estimate_adder(label_text)
         section = "estimate_adders"
     else:
-        section = template_section_for_bucket(bucket)
-        kind = line_item_kind_for_bucket(bucket)
+        section = template_section_for_bucket(bucket, template_type)
+        kind = line_item_kind_for_bucket(bucket, template_type)
     selected_item_name = value_at(cell_values, row_number, "B")
     parsed_confidence = 0.95 if bucket != "unknown" and malformed_count == 0 else 0.55
     needs_review = bucket == "unknown" or malformed_count > 0
@@ -331,6 +509,7 @@ def parse_document_content_row(row: dict[str, Any] | pd.Series) -> dict[str, Any
         "document_id": record.get("document_id"),
         "job_id": record.get("job_id"),
         "source_file": record.get("source_file") or record.get("file_name"),
+        "template_type": template_type,
         "sheet_name": sheet_name,
         "row_number": row_number,
         "cell_range": record.get("cell_range"),
@@ -373,15 +552,26 @@ def parse_document_content_row(row: dict[str, Any] | pd.Series) -> dict[str, Any
         out["round_trip_miles"] = numeric_at(cell_values, row_number, "C")
         out["cost_per_mile"] = numeric_at(cell_values, row_number, "E")
         out["estimated_cost"] = numeric_at(cell_values, row_number, "H")
-    if 116 <= row_number <= 134:
+    if template_type == TEMPLATE_TYPE_ROOFING and 116 <= row_number <= 134:
         out["days"] = numeric_at(cell_values, row_number, "B")
         out["crew_size"] = numeric_at(cell_values, row_number, "C")
         out["total_hours"] = numeric_at(cell_values, row_number, "D")
         out["estimated_cost"] = numeric_at(cell_values, row_number, "H")
         out["daily_rate"] = numeric_at(cell_values, row_number, "J")
-    if row_number in {137, 139}:
+    if template_type == TEMPLATE_TYPE_INSULATION and row_number in {78, 80, 82, 84, 86, 88, 90, 92}:
+        out["days"] = numeric_at(cell_values, row_number, "B")
+        out["crew_size"] = numeric_at(cell_values, row_number, "C")
+        out["total_hours"] = numeric_at(cell_values, row_number, "D")
+        out["estimated_cost"] = numeric_at(cell_values, row_number, "H")
+        out["daily_rate"] = numeric_at(cell_values, row_number, "J")
+    if (template_type == TEMPLATE_TYPE_ROOFING and row_number in {137, 139}) or (template_type == TEMPLATE_TYPE_INSULATION and row_number in {95, 97}):
         out["days"] = numeric_at(cell_values, row_number, "C")
         out["total_hours"] = numeric_at(cell_values, row_number, "C")
+        out["crew_size"] = numeric_at(cell_values, row_number, "E")
+        out["unit_price"] = numeric_at(cell_values, row_number, "G")
+        out["estimated_cost"] = numeric_at(cell_values, row_number, "H")
+    if template_type == TEMPLATE_TYPE_INSULATION and row_number == 100:
+        out["days"] = numeric_at(cell_values, row_number, "C")
         out["crew_size"] = numeric_at(cell_values, row_number, "E")
         out["unit_price"] = numeric_at(cell_values, row_number, "G")
         out["estimated_cost"] = numeric_at(cell_values, row_number, "H")
@@ -389,16 +579,21 @@ def parse_document_content_row(row: dict[str, Any] | pd.Series) -> dict[str, Any
         out["warranty_years"] = numeric_at(cell_values, row_number, "C")
         out["quantity"] = numeric_at(cell_values, row_number, "E")
         out["estimated_cost"] = numeric_at(cell_values, row_number, "H")
-    if row_number == 165:
+    if (template_type == TEMPLATE_TYPE_ROOFING and row_number == 165) or (template_type == TEMPLATE_TYPE_INSULATION and row_number == 118):
         out["overhead_pct"] = numeric_at(cell_values, row_number, "F")
         out["estimated_cost"] = numeric_at(cell_values, row_number, "H")
-    if row_number == 167:
+    if (template_type == TEMPLATE_TYPE_ROOFING and row_number == 167) or (template_type == TEMPLATE_TYPE_INSULATION and row_number == 120):
         out["profit_pct"] = numeric_at(cell_values, row_number, "F")
         out["estimated_cost"] = numeric_at(cell_values, row_number, "H")
-    if row_number in {163, 169}:
+    if (template_type == TEMPLATE_TYPE_ROOFING and row_number in {163, 169}) or (template_type == TEMPLATE_TYPE_INSULATION and row_number in {72, 73, 103, 116, 122}):
         out["estimated_cost"] = numeric_at(cell_values, row_number, "H")
-    if row_number == 170:
+    if template_type == TEMPLATE_TYPE_ROOFING and row_number == 170:
         out["estimated_cost"] = numeric_at(cell_values, row_number, "F") or numeric_at(cell_values, row_number, "H")
+    if template_type == TEMPLATE_TYPE_INSULATION and row_number == 123:
+        out["estimated_cost"] = numeric_at(cell_values, row_number, "H")
+    if template_type == TEMPLATE_TYPE_INSULATION and row_number == 137:
+        out["unit_price"] = numeric_at(cell_values, row_number, "B")
+        out["estimated_units"] = numeric_at(cell_values, row_number, "D")
     if row_number in ADDER_ROWS:
         out["row_label"] = row_label
         out["selected_item_name"] = row_label
@@ -423,10 +618,16 @@ def parse_document_content_row(row: dict[str, Any] | pd.Series) -> dict[str, Any
 
 def parse_document_content_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     parsed: list[dict[str, Any]] = []
+    by_document: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
-        parsed_row = parse_document_content_row(row)
-        if parsed_row:
-            parsed.append(parsed_row)
+        document_id = str(row.get("document_id") or "")
+        by_document.setdefault(document_id, []).append(row)
+    for document_rows in by_document.values():
+        template_type = detect_template_type_from_rows(document_rows)
+        for row in document_rows:
+            parsed_row = parse_document_content_row(row, template_type=template_type)
+            if parsed_row:
+                parsed.append(parsed_row)
     return parsed
 
 
@@ -435,6 +636,7 @@ TEMPLATE_ROW_COLUMNS = [
     "document_id",
     "job_id",
     "source_file",
+    "template_type",
     "sheet_name",
     "row_number",
     "cell_range",
@@ -477,7 +679,7 @@ def db_row(row: dict[str, Any]) -> dict[str, Any]:
 UPSERT_TEMPLATE_ROW_SQL = text(
     """
     INSERT INTO estimate_template_rows (
-        template_row_id, document_id, job_id, source_file, sheet_name, row_number,
+        template_row_id, document_id, job_id, source_file, template_type, sheet_name, row_number,
         cell_range, template_bucket, template_section, line_item_kind, row_label,
         raw_text, cell_values, formula_cells, selected_item_name, quantity, unit,
         unit_price, estimated_units, estimated_cost, days, crew_size, total_hours,
@@ -485,7 +687,7 @@ UPSERT_TEMPLATE_ROW_SQL = text(
         overhead_pct, profit_pct, parsed_confidence, needs_review, parser_version
     )
     VALUES (
-        :template_row_id, :document_id, :job_id, :source_file, :sheet_name, :row_number,
+        :template_row_id, :document_id, :job_id, :source_file, :template_type, :sheet_name, :row_number,
         :cell_range, :template_bucket, :template_section, :line_item_kind, :row_label,
         :raw_text, :cell_values, :formula_cells, :selected_item_name, :quantity, :unit,
         :unit_price, :estimated_units, :estimated_cost, :days, :crew_size, :total_hours,
@@ -495,6 +697,7 @@ UPSERT_TEMPLATE_ROW_SQL = text(
     ON CONFLICT (template_row_id) DO UPDATE SET
         job_id = excluded.job_id,
         source_file = excluded.source_file,
+        template_type = excluded.template_type,
         sheet_name = excluded.sheet_name,
         row_number = excluded.row_number,
         cell_range = excluded.cell_range,

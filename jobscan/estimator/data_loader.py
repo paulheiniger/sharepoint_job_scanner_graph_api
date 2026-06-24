@@ -17,6 +17,7 @@ TEMPLATE_ROW_COLUMNS = [
     "document_id",
     "job_id",
     "source_file",
+    "template_type",
     "sheet_name",
     "row_number",
     "template_bucket",

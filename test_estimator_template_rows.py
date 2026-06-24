@@ -60,6 +60,7 @@ def create_sqlite_schema(engine) -> None:
                     document_id TEXT NOT NULL,
                     job_id TEXT,
                     source_file TEXT,
+                    template_type TEXT,
                     sheet_name TEXT,
                     row_number INTEGER,
                     cell_range TEXT,
@@ -496,3 +497,58 @@ def test_query_helpers_and_summaries() -> None:
     assert labor.iloc[0]["median_total_hours"] == 64
     assert met.iloc[0]["median_unit_price"] == 40
     assert totals["worksheet_price"] == 10000
+
+
+def test_detect_workbook_template_type_insulation(tmp_path) -> None:
+    import openpyxl
+
+    workbook = openpyxl.Workbook()
+    ws = workbook.active
+    ws.title = "Estimate"
+    ws["C3"] = "Insulation - Walls Only"
+    ws["A116"] = "Total Job Cost"
+    workbook.create_sheet("People")
+    workbook.create_sheet("Materials")
+    workbook.create_sheet("General")
+    workbook.create_sheet("Sq Ft Calculation")
+    workbook.create_sheet("Performance & Payment Bonds")
+    path = tmp_path / "Estimate Insulation - Test.xlsx"
+    workbook.save(path)
+
+    assert tr.detect_workbook_template_type(path) == "insulation"
+
+
+def test_insulation_document_rows_use_insulation_template_map() -> None:
+    rows = tr.parse_document_content_rows(
+        [
+            content_row(3, "A3: Job Type: | C3: Insulation - Walls Only", document_id="DOCINS", source_file="Estimate Insulation - Test.xlsx"),
+            content_row(19, "A19: 11 | B19: Gaco 2.0 lb. | C19: 2800 | D19: 4.25 | E19: 1.63 | G19: 740 | H19: 1206.2", document_id="DOCINS", source_file="Estimate Insulation - Test.xlsx"),
+            content_row(26, "A26: Primer | C26: 100 | E26: 30 | G26: 0.4 | H26: 12", document_id="DOCINS", source_file="Estimate Insulation - Test.xlsx"),
+            content_row(78, "A78: Set Up | B78: 0.1 | C78: 3 | D78: 2.4 | H78: 250", document_id="DOCINS", source_file="Estimate Insulation - Test.xlsx"),
+            content_row(86, "A86: Foam | B86: 1.5 | C86: 3 | D86: 36 | H86: 1200", document_id="DOCINS", source_file="Estimate Insulation - Test.xlsx"),
+            content_row(116, "A116: Total Job Cost | H116: 10000", document_id="DOCINS", source_file="Estimate Insulation - Test.xlsx"),
+            content_row(118, "A118: Estimated O/H | F118: 30 | H118: 3000", document_id="DOCINS", source_file="Estimate Insulation - Test.xlsx"),
+            content_row(120, "A120: Profit | F120: 10 | H120: 1300", document_id="DOCINS", source_file="Estimate Insulation - Test.xlsx"),
+            content_row(122, "A122: Work Sheet Price | H122: 14300", document_id="DOCINS", source_file="Estimate Insulation - Test.xlsx"),
+            content_row(123, "A123: Work Sheet Price + Additional Amount w/o Markup | F123: 500 | H123: 14800", document_id="DOCINS", source_file="Estimate Insulation - Test.xlsx"),
+            content_row(137, "A137: Price / Sq. Ft: | B137: 5.42 | C137: Est. Sets: | D137: 0.74", document_id="DOCINS", source_file="Estimate Insulation - Test.xlsx"),
+        ]
+    )
+
+    by_row = {row["row_number"]: row for row in rows}
+    assert by_row[19]["template_type"] == "insulation"
+    assert by_row[19]["template_bucket"] == "foam"
+    assert by_row[19]["line_item_kind"] == "material"
+    assert by_row[26]["template_bucket"] == "primer"
+    assert by_row[78]["template_bucket"] == "labor_set_up"
+    assert by_row[78]["line_item_kind"] == "labor"
+    assert by_row[86]["template_bucket"] == "labor_foam"
+    assert by_row[116]["template_bucket"] == "total_job_cost"
+    assert by_row[116]["line_item_kind"] == "total"
+    assert by_row[118]["overhead_pct"] == 30
+    assert by_row[120]["profit_pct"] == 10
+    assert by_row[122]["estimated_cost"] == 14300
+    assert by_row[123]["estimated_cost"] == 14800
+    assert by_row[137]["unit_price"] == 5.42
+    assert by_row[137]["estimated_units"] == 0.74
+    assert not any(row["template_bucket"] == "labor_prep" for row in rows)

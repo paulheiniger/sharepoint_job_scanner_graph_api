@@ -120,3 +120,59 @@ def test_generate_estimate_workbook_fills_header_and_rows(tmp_path: Path) -> Non
     manual_labels = [ws[f"A{row}"].value for row in range(173, 181)]
     assert any("Seam treatment allowance" in str(value) for value in manual_labels)
     assert any("Travel / vehicle cost allowance" in str(value) for value in manual_labels)
+
+
+def test_generate_insulation_workbook_uses_sqft_calculation_and_insulation_rows(tmp_path: Path) -> None:
+    template_path = tmp_path / "Estimate Insulation Template.xlsx"
+    workbook = openpyxl.Workbook()
+    ws = workbook.active
+    ws.title = "Estimate"
+    workbook.create_sheet("People")
+    workbook.create_sheet("Materials")
+    workbook.create_sheet("General")
+    sqft_ws = workbook.create_sheet("Sq Ft Calculation")
+    workbook.create_sheet("Performance & Payment Bonds")
+    ws["C3"] = "Insulation"
+    ws["D12"] = "='Sq Ft Calculation'!F15"
+    ws["H19"] = "=E19*G19"
+    ws["H86"] = "=IF(G86=0,B86*J86,D86*G86)"
+    sqft_ws["E4"] = "=C4*D4"
+    sqft_ws["F15"] = "=SUM(E4:E15)"
+    workbook.save(template_path)
+
+    inputs = {
+        "template_type": "insulation",
+        "header": {
+            "C2_job_name": "McCall Residence",
+            "C3_job_type": "Insulation - Walls Only",
+            "C4_site_address": "2333 Todds Point Rd.",
+            "C5_city_state_zip": "Simpsonville, KY",
+            "C12_estimated_sqft": 2637,
+        },
+        "material_rows": [
+            {"item": "Gaco 2.0 lb.", "category": "foam", "quantity": 2637, "unit_price": 1.63, "estimated_cost": 4298.31},
+            {"item": "DC 315 thermal barrier", "category": "thermal_barrier_coating", "quantity": 2637, "unit_price": 52},
+        ],
+        "labor_rows": [
+            {"task": "labor_foam", "adjusted_days": 1.5, "crew_size": 3, "total_hours": 36, "estimated_cost": 1200}
+        ],
+        "travel_rows": [],
+        "adders_review_rows": [],
+    }
+
+    output_path = generate_estimate_workbook(inputs, template_path, tmp_path, "insulation_draft.xlsx")
+    generated = openpyxl.load_workbook(output_path, data_only=False)
+    ws = generated["Estimate"]
+    sqft_ws = generated["Sq Ft Calculation"]
+
+    assert ws["C2"].value == "McCall Residence"
+    assert ws["C3"].value == "Insulation - Walls Only"
+    assert ws["C4"].value == "2333 Todds Point Rd."
+    assert ws["C5"].value == "Simpsonville, KY"
+    assert ws["D12"].value == "='Sq Ft Calculation'!F15"
+    assert sqft_ws["B4"].value == "Estimated area from field notes"
+    assert sqft_ws["C4"].value == 1
+    assert sqft_ws["D4"].value == 2637
+    assert ws["C19"].value == 2637
+    assert ws["E19"].value == 1.63
+    assert ws["C86"].value == 3

@@ -3,6 +3,7 @@ CREATE TABLE IF NOT EXISTS estimate_template_rows (
     document_id TEXT NOT NULL,
     job_id TEXT,
     source_file TEXT,
+    template_type TEXT,
     sheet_name TEXT,
     row_number INTEGER,
     cell_range TEXT,
@@ -39,6 +40,7 @@ CREATE TABLE IF NOT EXISTS estimate_template_rows (
 ALTER TABLE estimate_template_rows
     ADD COLUMN IF NOT EXISTS job_id TEXT,
     ADD COLUMN IF NOT EXISTS source_file TEXT,
+    ADD COLUMN IF NOT EXISTS template_type TEXT,
     ADD COLUMN IF NOT EXISTS sheet_name TEXT,
     ADD COLUMN IF NOT EXISTS row_number INTEGER,
     ADD COLUMN IF NOT EXISTS cell_range TEXT,
@@ -75,5 +77,6 @@ CREATE INDEX IF NOT EXISTS idx_estimate_template_rows_document_id ON estimate_te
 CREATE INDEX IF NOT EXISTS idx_estimate_template_rows_job_id ON estimate_template_rows(job_id);
 CREATE INDEX IF NOT EXISTS idx_estimate_template_rows_sheet_row ON estimate_template_rows(sheet_name, row_number);
 CREATE INDEX IF NOT EXISTS idx_estimate_template_rows_template_bucket ON estimate_template_rows(template_bucket);
+CREATE INDEX IF NOT EXISTS idx_estimate_template_rows_template_type ON estimate_template_rows(template_type);
 CREATE INDEX IF NOT EXISTS idx_estimate_template_rows_line_item_kind ON estimate_template_rows(line_item_kind);
 CREATE INDEX IF NOT EXISTS idx_estimate_template_rows_needs_review ON estimate_template_rows(needs_review);
