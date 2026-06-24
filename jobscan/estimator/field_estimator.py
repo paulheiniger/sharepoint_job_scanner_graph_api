@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from typing import Any
 
 import pandas as pd
@@ -17,6 +17,17 @@ from .rules import first_nonblank, to_float
 from .schemas import EstimateRecommendation, EstimatorAssumptions, EstimatorData, FieldNotesInput
 from .similarity import find_similar_jobs
 from .travel import build_travel_plan
+
+
+@dataclass(frozen=True)
+class WorkPackageDecision:
+    package_name: str
+    applies: bool | str
+    confidence: float
+    reason: str
+    basis: str
+    quantity_scope: str
+    review_required: bool
 
 
 def is_finite_number(value: Any) -> bool:
@@ -213,10 +224,21 @@ def selected_labor_buckets(scope: dict[str, Any], decision: dict[str, Any]) -> s
     coating_type = first_nonblank(scope.get("coating_type")).lower()
     coating_required = bool(scope.get("coating_required") or coating_type)
     foam_required = bool(scope.get("foam_required") or scope.get("foam_thickness_inches"))
+    work_packages = ensure_work_package_decisions(scope, decision)
 
     is_roof_coating = coating_required and ("roof" in project_type or "roof" in notes or substrate in {"metal", "tpo", "epdm"})
     if is_roof_coating:
         buckets = set(ROOF_COATING_LABOR_BUCKETS)
+        primer_decision = work_packages.get("primer")
+        if not _decision_applies(primer_decision, include_review=True):
+            buckets.discard("labor_prime")
+        if not _decision_applies(work_packages.get("prep_powerwash"), include_review=True):
+            buckets.discard("labor_prep")
+        if not _decision_applies(work_packages.get("seam_treatment"), include_review=True):
+            buckets.discard("labor_seam_sealer")
+        if not _decision_applies(work_packages.get("caulk_detail"), include_review=True):
+            buckets.discard("labor_caulk")
+            buckets.discard("labor_details")
         for bucket, triggers in OPTIONAL_LABOR_BUCKET_TRIGGERS.items():
             if _text_has_any(notes, triggers):
                 buckets.add(bucket)
@@ -279,26 +301,170 @@ def _scope_text(scope: dict[str, Any]) -> str:
     return " ".join(str(value or "") for value in (scope.get("notes"), scope.get("roof_condition"), scope.get("substrate"), scope.get("coating_type"))).lower()
 
 
-def _primer_needed(scope: dict[str, Any], material_assumptions: dict[str, Any]) -> bool:
+def _decision_applies(decision: dict[str, Any] | None, *, include_review: bool = True) -> bool:
+    if not decision:
+        return False
+    applies = decision.get("applies")
+    return applies is True or (include_review and applies == "review")
+
+
+def _work_package_dict(decision: WorkPackageDecision) -> dict[str, Any]:
+    return asdict(decision)
+
+
+def _build_work_package_decisions(scope: dict[str, Any], decision: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
     text = _scope_text(scope)
-    return bool(material_assumptions.get("primer_allowance_recommended")) or any(
-        phrase in text
-        for phrase in (
-            "rust",
-            "rusted",
-            "oxidized",
-            "old coating",
-            "adhesion concern",
-            "poor condition",
-            "poor/rusted",
-            "primer",
-        )
+    notes = first_nonblank(scope.get("notes")).lower()
+    substrate = first_nonblank(scope.get("substrate")).lower()
+    project_type = first_nonblank(scope.get("project_type")).lower()
+    coating_type = first_nonblank(scope.get("coating_type")).lower()
+    coating_required = bool(scope.get("coating_required") or coating_type or "coating" in text)
+    metal_context = substrate == "metal" or "metal roof" in text or "standing seam" in text or "r panel" in text
+    flat_membrane_context = any(term in text for term in ("flat roof", "membrane", "tpo", "epdm", "modified bitumen", "mod bit"))
+    foam_context = bool(scope.get("foam_required") or scope.get("foam_thickness_inches")) or any(term in text for term in ("foam", "spf", "polyurethane foam"))
+
+    packages: dict[str, WorkPackageDecision] = {}
+    packages["coating"] = WorkPackageDecision(
+        "coating",
+        coating_required,
+        0.9 if coating_required else 0.4,
+        "Coating scope detected from notes or structured fields." if coating_required else "No coating scope detected.",
+        "sqft",
+        "full_area" if coating_required else "none",
+        not coating_required,
     )
+
+    primer_terms = (
+        "primer",
+        "prime",
+        "adhesion concern",
+        "adhesion test",
+        "compatibility",
+        "manufacturer requirement",
+        "manufacturer required",
+        "warranty requirement",
+        "asphalt bleed",
+        "bleed-through",
+        "bleed through",
+        "concrete",
+        "modified bitumen",
+        "mod bit",
+        "severe weathering",
+        "chalking",
+    )
+    rusted_metal = metal_context and any(term in text for term in ("rust", "rusted", "oxidized"))
+    explicit_primer = any(term in text for term in primer_terms)
+    if coating_required and (explicit_primer or rusted_metal or foam_context):
+        primer_applies: bool | str = True if ("primer" in text or "prime" in text or rusted_metal or "asphalt bleed" in text or "bleed" in text) else "review"
+        primer_reason = "Primer trigger found from substrate/condition/manufacturer language."
+        primer_confidence = 0.78 if primer_applies is True else 0.58
+    else:
+        primer_applies = False
+        primer_reason = "No primer trigger found; verify adhesion/manufacturer requirement."
+        primer_confidence = 0.72 if coating_required else 0.45
+    packages["primer"] = WorkPackageDecision(
+        "primer",
+        primer_applies,
+        primer_confidence,
+        primer_reason,
+        "sqft",
+        "full_area" if primer_applies is True else "unknown" if primer_applies == "review" else "none",
+        primer_applies != True,
+    )
+
+    seam_terms = ("seam", "seams", "lap", "laps", "opening up", "open seams", "seam treatment")
+    seam_applies = coating_required and (any(term in text for term in seam_terms) or metal_context)
+    packages["seam_treatment"] = WorkPackageDecision(
+        "seam_treatment",
+        seam_applies,
+        0.82 if seam_applies else 0.5,
+        "Seam treatment indicated by roof coating seam language or metal roof scope." if seam_applies else "No seam treatment trigger found.",
+        "detail_density",
+        "spot_area" if seam_applies else "none",
+        not seam_applies,
+    )
+
+    explicit_fastener = any(term in text for term in ("exposed fastener", "rusted fastener", "fastener leak", "fastener leaks", "screw", "screws", "fasteners"))
+    fastener_applies = coating_required and explicit_fastener and (metal_context or any(term in text for term in ("exposed fastener", "rusted fastener", "screw", "screws", "fastener leak")))
+    fastener_reason = (
+        "Fastener treatment indicated by metal/exposed fastener language."
+        if fastener_applies
+        else "No metal/exposed fastener trigger found; do not include fastener treatment by default."
+    )
+    if explicit_fastener and flat_membrane_context and not metal_context:
+        fastener_reason = "Fastener/detail language appears on a flat membrane scope; verify before adding fastener treatment."
+    packages["fastener_treatment"] = WorkPackageDecision(
+        "fastener_treatment",
+        fastener_applies,
+        0.82 if fastener_applies else 0.62,
+        fastener_reason,
+        "detail_density",
+        "spot_area" if fastener_applies else "none",
+        bool(explicit_fastener and not fastener_applies),
+    )
+
+    caulk_applies: bool | str = "review" if _caulk_detail_needed(scope) else False
+    packages["caulk_detail"] = WorkPackageDecision(
+        "caulk_detail",
+        caulk_applies,
+        0.62 if caulk_applies else 0.5,
+        "Details/penetrations/drains indicate a caulk/detail allowance should be reviewed." if caulk_applies else "No detail allowance trigger found.",
+        "detail_density",
+        "spot_area" if caulk_applies else "none",
+        bool(caulk_applies),
+    )
+
+    prep_applies = coating_required or any(term in text for term in ("power wash", "powerwash", "wash", "prep"))
+    packages["prep_powerwash"] = WorkPackageDecision(
+        "prep_powerwash",
+        prep_applies,
+        0.82 if prep_applies else 0.45,
+        "Prep/power wash belongs to coating surface preparation." if prep_applies else "No prep/power wash trigger found.",
+        "sqft",
+        "full_area" if prep_applies else "none",
+        False,
+    )
+
+    packages["foam"] = WorkPackageDecision(
+        "foam",
+        foam_context,
+        0.82 if foam_context else 0.4,
+        "Foam scope detected." if foam_context else "No foam scope detected.",
+        "sqft",
+        "full_area" if foam_context else "none",
+        False,
+    )
+
+    repair_terms = ("tear off", "tear-off", "tearoff", "wet insulation", "saturated", "rotten", "replace roof", "major repair")
+    repair_review_terms = ("ponding", "seams opening", "opening up", "few ponding", "repair")
+    repair_applies: bool | str = True if any(term in text for term in repair_terms) else "review" if any(term in text for term in repair_review_terms) else False
+    packages["tearoff_or_repair"] = WorkPackageDecision(
+        "tearoff_or_repair",
+        repair_applies,
+        0.78 if repair_applies is True else 0.55 if repair_applies == "review" else 0.5,
+        "Repair/tear-off trigger found." if repair_applies is True else "Localized repair review indicated." if repair_applies == "review" else "No tear-off/repair trigger found.",
+        "manual",
+        "spot_area" if repair_applies else "none",
+        repair_applies != False,
+    )
+
+    return {name: _work_package_dict(package) for name, package in packages.items()}
+
+
+def ensure_work_package_decisions(scope: dict[str, Any], decision: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    packages = decision.get("work_package_decisions")
+    if not isinstance(packages, dict):
+        packages = _build_work_package_decisions(scope, decision)
+        decision["work_package_decisions"] = packages
+    return packages
+
+
+def _primer_needed(scope: dict[str, Any], material_assumptions: dict[str, Any]) -> bool:
+    return _decision_applies(_build_work_package_decisions(scope).get("primer"), include_review=False)
 
 
 def _fastener_treatment_needed(scope: dict[str, Any], material_assumptions: dict[str, Any]) -> bool:
-    text = _scope_text(scope)
-    return bool(material_assumptions.get("fastener_treatment_recommended")) or any(phrase in text for phrase in ("rusted fastener", "fastener", "screw", "metal roof"))
+    return _decision_applies(_build_work_package_decisions(scope).get("fastener_treatment"), include_review=False)
 
 
 def _caulk_detail_needed(scope: dict[str, Any]) -> bool:
@@ -356,6 +522,115 @@ def _add_allowance_cost_to_totals(row: dict[str, Any], totals: tuple[float, floa
     return low_total + low, high_total + high
 
 
+def _row_with_package_context(
+    row: dict[str, Any],
+    package_decision: dict[str, Any] | None,
+    *,
+    source_type: str | None = None,
+    matched_comparable_job_count: int | None = None,
+) -> dict[str, Any]:
+    package_decision = package_decision or {}
+    row["applies_reason"] = package_decision.get("reason") or row.get("applies_reason") or ""
+    row["review_required"] = bool(package_decision.get("review_required") or row.get("needs_review"))
+    if matched_comparable_job_count is not None:
+        row["matched_comparable_job_count"] = matched_comparable_job_count
+    else:
+        row.setdefault("matched_comparable_job_count", safe_int(row.get("evidence_count"), 0))
+    if source_type:
+        row["source_type"] = source_type
+    else:
+        row.setdefault("source_type", row.get("price_source_type") or row.get("selected_price_source") or "manual_review")
+    row.setdefault("sanity_check_status", "ok")
+    return row
+
+
+def _sanity_check_material_row(row: dict[str, Any], area: float, package_name: str) -> dict[str, Any]:
+    status = "ok"
+    quantity = optional_positive_float(row.get("quantity"))
+    unit = first_nonblank(row.get("unit")).lower()
+    unit_price = optional_positive_float(row.get("unit_price"))
+    notes: list[str] = []
+
+    if package_name == "primer" and area > 0 and quantity is not None and unit in {"pail", "pails", "container", "containers", "drum", "drums"}:
+        sqft_per_unit = area / quantity if quantity else None
+        if sqft_per_unit is not None and sqft_per_unit < 500:
+            status = "blocked: implausible primer quantity"
+            notes.append(f"Implied {sqft_per_unit:.0f} sqft per {unit}; removed from base estimate pending review.")
+    if unit in {"pail", "pails", "drum", "drums", "item", "each", "ea"} and unit_price is not None and unit_price < 20:
+        notes.append(f"Unit price ${unit_price:g} for {unit} looks low; verify pricing.")
+        if status == "ok":
+            status = "warning: suspicious unit price"
+    if package_name == "coating" and area > 0 and quantity is not None and unit in {"gal", "gallon", "gallons"}:
+        sqft_per_gallon = area / quantity if quantity else None
+        if sqft_per_gallon is not None and (sqft_per_gallon < 25 or sqft_per_gallon > 120):
+            notes.append(f"Coating coverage {sqft_per_gallon:.0f} sqft/gal is outside a typical review range.")
+            if status == "ok":
+                status = "warning: coating coverage review"
+
+    if status.startswith("blocked"):
+        row["estimated_cost"] = None
+        row["cost_low"] = None
+        row["cost_high"] = None
+        row["needs_review"] = True
+        row["review_required"] = True
+    if notes:
+        row["notes"] = f"{row.get('notes') or ''} {' '.join(notes)}".strip()
+    row["sanity_check_status"] = status
+    return row
+
+
+LABOR_BUCKET_TO_PACKAGE = {
+    "labor_prep": "prep_powerwash",
+    "labor_prime": "primer",
+    "labor_seam_sealer": "seam_treatment",
+    "labor_base": "coating",
+    "labor_top_coat": "coating",
+    "labor_caulk": "caulk_detail",
+    "labor_details": "caulk_detail",
+    "labor_cleanup": "coating",
+    "labor_loading": "coating",
+    "labor_traveling": "coating",
+    "traveling": "coating",
+    "roof_repair": "tearoff_or_repair",
+    "tear_off": "tearoff_or_repair",
+    "replacement": "tearoff_or_repair",
+    "substrate_repair": "tearoff_or_repair",
+}
+
+
+def _labor_package_for_bucket(bucket: Any) -> str:
+    key = first_nonblank(bucket).strip().lower()
+    return LABOR_BUCKET_TO_PACKAGE.get(key, key or "labor_allowance")
+
+
+def _labor_row_with_package_context(
+    row: dict[str, Any],
+    package_decision: dict[str, Any] | None,
+    *,
+    production_rate: float,
+    evidence_count: int,
+    source_type: str,
+) -> dict[str, Any]:
+    package_decision = package_decision or {}
+    adjusted_days = safe_float(row.get("adjusted_days"), safe_float(row.get("crew_days"), 0.0))
+    total_hours = safe_float(row.get("total_hours"), safe_float(row.get("labor_hours"), 0.0))
+    crew_size = safe_int(row.get("crew_size"), 4)
+    row["labor_package"] = package_decision.get("package_name") or _labor_package_for_bucket(row.get("task"))
+    row["applies"] = package_decision.get("applies", True)
+    row["basis"] = package_decision.get("basis") or "historical_calibration"
+    row["production_rate"] = production_rate
+    row["labor_hours"] = round(total_hours, 1)
+    row["crew_days"] = round(adjusted_days, 2)
+    row["reason"] = package_decision.get("reason") or "Labor calibrated from matching historical estimate rows."
+    row["confidence"] = package_decision.get("confidence", 0.55)
+    row["applies_reason"] = row["reason"]
+    row["review_required"] = bool(package_decision.get("review_required") or row.get("needs_review"))
+    row["matched_comparable_job_count"] = evidence_count
+    row["source_type"] = source_type
+    row["sanity_check_status"] = "ok" if total_hours >= 0 and crew_size > 0 else "warning: labor assumptions require review"
+    return row
+
+
 def _allowance_from_calibration(
     *,
     bucket: str,
@@ -368,6 +643,7 @@ def _allowance_from_calibration(
     fallback_unit_price: float | None,
     fallback_notes: str,
     review_flags: list[str],
+    package_decision: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     calibration = material_calibration.get(bucket) or {}
     evidence_count = safe_int(calibration.get("evidence_count"), 0)
@@ -389,7 +665,11 @@ def _allowance_from_calibration(
             unit_price=current_price,
             selected_price_source="current_pricing + historical_quantity_ratio",
             notes=f"Estimated from historical {item.lower()} quantity per sqft and current pricing; estimator should verify requirement.",
-        ) | {"evidence_count": evidence_count, "calibration_method": "historical_quantity_ratio"}
+        ) | {
+            "evidence_count": evidence_count,
+            "calibration_method": "historical_quantity_ratio",
+            "source_type": "physical_quantity_ratio",
+        }
 
     if evidence_count >= 3 and cost_ratio is not None:
         estimated_cost = cost_ratio * area
@@ -403,7 +683,11 @@ def _allowance_from_calibration(
             estimated_cost=estimated_cost,
             selected_price_source="historical_cost_ratio",
             notes=f"Estimated from historical {item.lower()} cost per sqft; estimator should verify quantity and price.",
-        ) | {"evidence_count": evidence_count, "calibration_method": "historical_cost_ratio"}
+        ) | {
+            "evidence_count": evidence_count,
+            "calibration_method": "historical_cost_ratio",
+            "source_type": "cost_allowance_ratio",
+        }
 
     if fallback_quantity is not None and (fallback_unit_price is not None or current_price is not None):
         if evidence_count < 3:
@@ -418,7 +702,11 @@ def _allowance_from_calibration(
             unit_price=unit_price,
             selected_price_source=price_source,
             notes=fallback_notes,
-        ) | {"evidence_count": evidence_count, "calibration_method": "deterministic_fallback"}
+        ) | {
+            "evidence_count": evidence_count,
+            "calibration_method": "deterministic_fallback",
+            "source_type": "current_pricing" if current_price is not None else "manual_review",
+        }
 
     return _priced_allowance_row(
         item=item,
@@ -428,7 +716,7 @@ def _allowance_from_calibration(
         unit_price=None,
         selected_price_source="review_allowance",
         notes=f"{item} could not be priced; estimator should verify quantity and pricing.",
-    ) | {"evidence_count": evidence_count, "calibration_method": "unpriced_review"}
+    ) | {"evidence_count": evidence_count, "calibration_method": "unpriced_review", "source_type": "manual_review"}
 
 
 def build_material_plan(
@@ -444,7 +732,9 @@ def build_material_plan(
     review_flags: list[str] = []
     low_total = 0.0
     high_total = 0.0
+    work_packages = ensure_work_package_decisions(scope, decision)
     if scope.get("coating_required") and area:
+        coating_decision = work_packages.get("coating")
         wet_mils = warranty_wet_mils(scope.get("warranty_target"), coating_type)
         gallons = coating_gallons(area, wet_mils, assumptions.coating_waste_factor)
         price = find_current_price(data.pricing, [coating_type] if coating_type else ["coating"], "price_per_gallon")
@@ -472,7 +762,7 @@ def build_material_plan(
         high = cost_target * 1.15
         low_total += low
         high_total += high
-        plan.append(
+        coating_row = _row_with_package_context(
             {
                 "item": item_name,
                 "category": "coating",
@@ -486,13 +776,18 @@ def build_material_plan(
                 "cost_high": round(high, 2),
                 "needs_review": needs_review,
                 "notes": f"{wet_mils:g} wet mils with {assumptions.coating_waste_factor:.0%} waste factor.",
-            }
+            },
+            coating_decision,
+            source_type=price_source,
         )
+        coating_row = _sanity_check_material_row(coating_row, area, "coating")
+        plan.append(coating_row)
     material_assumptions = decision.get("material_assumptions", {})
     is_metal_roof_coating = bool(scope.get("coating_required")) and first_nonblank(scope.get("substrate")).lower() == "metal"
     material_calibration = calibration.get("material_calibration") or build_material_calibration(data, scope)
     calibration["material_calibration"] = material_calibration
-    if _primer_needed(scope, material_assumptions):
+    primer_decision = work_packages.get("primer")
+    if _decision_applies(primer_decision, include_review=False):
         if area <= 0:
             row = _priced_allowance_row(
                 item="Primer allowance",
@@ -518,11 +813,17 @@ def build_material_plan(
                 fallback_unit_price=fallback_unit_price,
                 fallback_notes="Rule-based primer allowance due to rust/condition; estimator should verify primer requirement.",
                 review_flags=review_flags,
+                package_decision=primer_decision,
             )
+        row = _row_with_package_context(row, primer_decision)
+        row = _sanity_check_material_row(row, area, "primer")
         plan.append(row)
         low_total, high_total = _add_allowance_cost_to_totals(row, (low_total, high_total))
+    elif primer_decision and primer_decision.get("review_required"):
+        review_flags.append(primer_decision.get("reason") or "Primer requirement should be verified.")
 
-    if is_metal_roof_coating and material_assumptions.get("seam_treatment_recommended"):
+    seam_decision = work_packages.get("seam_treatment")
+    if _decision_applies(seam_decision, include_review=False):
         if area <= 0:
             row = _priced_allowance_row(
                 item="Seam treatment allowance",
@@ -547,11 +848,15 @@ def build_material_plan(
                 fallback_unit_price=3.0,
                 fallback_notes="Rule-based seam/detail LF allowance for metal roof coating; estimator should verify seam layout and detail requirements.",
                 review_flags=review_flags,
+                package_decision=seam_decision,
             )
+        row = _row_with_package_context(row, seam_decision)
+        row = _sanity_check_material_row(row, area, "seam_treatment")
         plan.append(row)
         low_total, high_total = _add_allowance_cost_to_totals(row, (low_total, high_total))
 
-    if _fastener_treatment_needed(scope, material_assumptions):
+    fastener_decision = work_packages.get("fastener_treatment")
+    if _decision_applies(fastener_decision, include_review=False):
         if area <= 0:
             row = _priced_allowance_row(
                 item="Fastener treatment allowance",
@@ -576,10 +881,17 @@ def build_material_plan(
                 fallback_unit_price=1.5,
                 fallback_notes="Rule-based fastener treatment allowance; estimator should verify count and detail requirements.",
                 review_flags=review_flags,
+                package_decision=fastener_decision,
             )
+        row = _row_with_package_context(row, fastener_decision)
+        row = _sanity_check_material_row(row, area, "fastener_treatment")
         plan.append(row)
         low_total, high_total = _add_allowance_cost_to_totals(row, (low_total, high_total))
-    if _caulk_detail_needed(scope):
+    elif fastener_decision and fastener_decision.get("review_required"):
+        review_flags.append(fastener_decision.get("reason") or "Fastener treatment should be verified.")
+
+    caulk_decision = work_packages.get("caulk_detail")
+    if _decision_applies(caulk_decision, include_review=True):
         if area <= 0:
             row = _priced_allowance_row(
                 item="Caulk/detail allowance",
@@ -604,7 +916,10 @@ def build_material_plan(
                 fallback_unit_price=150.0,
                 fallback_notes="Rule-based caulk/detail allowance for penetrations and roof details; estimator should verify count.",
                 review_flags=review_flags,
+                package_decision=caulk_decision,
             )
+        row = _row_with_package_context(row, caulk_decision)
+        row = _sanity_check_material_row(row, area, "caulk_detail")
         plan.append(row)
         low_total, high_total = _add_allowance_cost_to_totals(row, (low_total, high_total))
     return plan, round(low_total, 2), round(high_total, 2), review_flags
@@ -618,9 +933,11 @@ def build_labor_plan(
 ) -> tuple[list[dict[str, Any]], float, float, int, int, int]:
     area = safe_float(scope.get("surface_area_sqft"), 0.0)
     multiplier = to_float_or_default(decision.get("labor_modifiers", {}).get("combined_labor_multiplier"), 1.0)
+    production_rate = to_float_or_default(decision.get("labor_modifiers", {}).get("adjusted_productivity_sqft_per_day"), 0.0)
     crew_size = safe_int(decision.get("crew_assumptions", {}).get("recommended_crew_size"), 4)
     if crew_size <= 0:
         crew_size = 4
+    work_packages = ensure_work_package_decisions(scope, decision)
     raw_rows = calibration.get("labor_by_bucket") or []
     rows, excluded_buckets = filter_labor_calibration_rows(raw_rows, scope, decision)
     if excluded_buckets:
@@ -663,22 +980,31 @@ def build_labor_plan(
                 estimated_cost = safe_float(cost * multiplier, 0.0) if cost is not None else 0.0
                 total_hours += adjusted_hours
                 total_cost += estimated_cost
+                task = row.get("template_bucket") or "labor_calibration"
+                labor_package = _labor_package_for_bucket(task)
+                evidence_count = safe_int(row.get("evidence_count"), 0)
                 plan.append(
-                    {
-                        "task": row.get("template_bucket") or "labor_calibration",
-                        "base_days": round(days, 2),
-                        "adjusted_days": round(adjusted_days, 2),
-                        "crew_size": row_crew_size,
-                        "total_hours": round(adjusted_hours, 1),
-                        "estimated_cost": round(estimated_cost, 2),
-                        "evidence_count": safe_int(row.get("evidence_count"), 0),
-                        "needs_review": bool(row_incomplete),
-                        "notes": (
-                            "Historical labor calibration was incomplete for one or more tasks; defaults were used."
-                            if row_incomplete
-                            else "Calibrated from estimate_template_rows."
-                        ),
-                    }
+                    _labor_row_with_package_context(
+                        {
+                            "task": task,
+                            "base_days": round(days, 2),
+                            "adjusted_days": round(adjusted_days, 2),
+                            "crew_size": row_crew_size,
+                            "total_hours": round(adjusted_hours, 1),
+                            "estimated_cost": round(estimated_cost, 2),
+                            "evidence_count": evidence_count,
+                            "needs_review": bool(row_incomplete),
+                            "notes": (
+                                "Historical labor calibration was incomplete for one or more tasks; defaults were used."
+                                if row_incomplete
+                                else "Calibrated from estimate_template_rows."
+                            ),
+                        },
+                        work_packages.get(labor_package),
+                        production_rate=production_rate,
+                        evidence_count=evidence_count,
+                        source_type="historical_calibration",
+                    )
                 )
             except Exception as err:
                 incomplete_calibration = True
@@ -689,7 +1015,8 @@ def build_labor_plan(
         total_hours = 40.0
         total_cost = 0.0
         plan.append(
-            {
+            _labor_row_with_package_context(
+                {
                 "task": "labor_allowance",
                 "base_days": 1.0,
                 "adjusted_days": 1.0,
@@ -699,7 +1026,12 @@ def build_labor_plan(
                 "evidence_count": 0,
                 "needs_review": True,
                 "notes": "Historical labor calibration unavailable; estimator must price labor manually.",
-            }
+                },
+                None,
+                production_rate=production_rate,
+                evidence_count=0,
+                source_type="manual_review",
+            )
         )
         crew_size = 4
     elif filtered_crew_sizes:
@@ -833,6 +1165,7 @@ def estimate_from_field_notes(
     template_calibration = historical_template_calibration(data, similar)
     calibration = {**legacy_calibration, **template_calibration}
     decision = evaluate_decision_tree(scope, calibration)
+    calibration["work_package_decisions"] = ensure_work_package_decisions(scope, decision)
     material_plan, material_low, material_high, material_review_flags = build_material_plan(scope, data, calibration, decision, assumptions)
     labor_review_flags: list[str] = []
     try:

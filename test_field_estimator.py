@@ -401,6 +401,33 @@ def test_primer_allowance_absent_without_primer_trigger() -> None:
     assert not any(row.get("item") == "Primer allowance" for row in recommendation.material_plan)
 
 
+def test_flat_membrane_silicone_scope_does_not_add_primer_or_fasteners() -> None:
+    note = (
+        "Customer has an older flat roof on a small commercial building in Louisville. "
+        "Roof is about 12,000 sqft. Existing membrane is weathered but mostly intact. "
+        "Some seams opening up and a few ponding areas near drains. They want a silicone coating system if possible. "
+        "Access is decent from rear parking lot. Need include power wash, seam treatment, fasteners/details, and coating. "
+        "No interior leaks reported."
+    )
+
+    recommendation = estimate_from_field_notes(note, data=field_data())
+    categories = {row.get("category") for row in recommendation.material_plan}
+    labor_tasks = {row.get("task") for row in recommendation.labor_plan}
+    packages = recommendation.historical_calibration["work_package_decisions"]
+
+    assert "coating" in categories
+    assert "seam_treatment" in categories
+    assert "caulk_detail" in categories
+    assert "primer" not in categories
+    assert "fastener_treatment" not in categories
+    assert packages["primer"]["applies"] is False
+    assert packages["fastener_treatment"]["applies"] is False
+    assert "labor_prime" not in labor_tasks
+    assert all("applies_reason" in row for row in recommendation.material_plan)
+    assert all("source_type" in row for row in recommendation.material_plan)
+    assert all("labor_package" in row for row in recommendation.labor_plan)
+
+
 def test_secondary_material_allowances_use_historical_ratios_with_current_pricing() -> None:
     data = field_data()
     extra_jobs = pd.DataFrame(
