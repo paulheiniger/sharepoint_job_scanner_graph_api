@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 from .pdf_ingest import classify_document_type
-from .zip_ingest import extract_zip_pdf_member, inspect_zip_pdfs
+from .zip_ingest import extract_zip_member, extract_zip_pdf_member, inspect_zip_members
 
 
 MB = 1024 * 1024
@@ -34,6 +34,9 @@ class PdfDocumentInput:
     content: bytes | None = None
     original_document_name: str = ""
     original_page_number: int | None = None
+    source_sharepoint_url: str = ""
+    source_zip_name: str = ""
+    internal_zip_path: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -61,6 +64,9 @@ class PdfCandidate:
     triage_classification: str = "untriaged"
     triage_evidence: list[str] | None = None
     triage_sample_pages: list[int] | None = None
+    source_sharepoint_url: str = ""
+    source_zip_name: str = ""
+    internal_zip_path: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -72,6 +78,8 @@ class PackageInspectionResult:
     warnings: list[str]
     temp_dir: str
     total_upload_size: int = 0
+    zip_members: list[dict[str, Any]] | None = None
+    takeoff_csvs: list[dict[str, Any]] | None = None
 
 
 @dataclass
@@ -127,6 +135,55 @@ def split_page_pdf_metadata(name: str) -> tuple[str, int | None]:
 def _candidate_id(source_path: str, file_hash: str, index: int) -> str:
     digest = hashlib.sha1(f"{source_path}\0{file_hash}\0{index}".encode("utf-8")).hexdigest()[:16]
     return f"candidate-{digest}"
+
+
+def _zip_member_manifest_row(
+    *,
+    zip_name: str,
+    zip_source_path: str,
+    member: dict[str, object],
+    source_kind: str,
+    source_sharepoint_url: str = "",
+) -> dict[str, Any]:
+    return {
+        "source_kind": source_kind,
+        "source_zip_name": zip_name,
+        "source_zip_path": zip_source_path,
+        "source_sharepoint_url": source_sharepoint_url,
+        "internal_path": str(member.get("internal_path") or member.get("member_name") or ""),
+        "filename": str(member.get("filename") or ""),
+        "extension": str(member.get("extension") or ""),
+        "compressed_size": int(member.get("compressed_size") or 0),
+        "uncompressed_size": int(member.get("uncompressed_size") or 0),
+        "inferred_type": str(member.get("inferred_type") or "metadata_other"),
+    }
+
+
+def _takeoff_csv_manifest_row(
+    *,
+    zip_path: Path,
+    zip_name: str,
+    zip_source_path: str,
+    member: dict[str, object],
+    source_kind: str,
+    source_sharepoint_url: str = "",
+) -> dict[str, Any]:
+    member_name = str(member.get("member_name") or member.get("internal_path") or "")
+    target = _temp_root() / "takeoff_csvs" / f"{_safe_stem(zip_name)}-{_safe_stem(member_name)}-{int(member.get('crc') or 0):x}.csv"
+    if not target.exists() or target.stat().st_size != int(member.get("uncompressed_size") or 0):
+        extract_zip_member(zip_path, member_name, target)
+    return {
+        "source_kind": source_kind,
+        "source_sharepoint_url": source_sharepoint_url,
+        "source_zip_name": zip_name,
+        "source_zip_path": zip_source_path,
+        "internal_zip_path": member_name,
+        "filename": str(member.get("filename") or Path(member_name).name),
+        "file_path": str(target),
+        "compressed_size": int(member.get("compressed_size") or 0),
+        "uncompressed_size": int(member.get("uncompressed_size") or 0),
+        "inferred_type": str(member.get("inferred_type") or "takeoff_quantity_csv"),
+    }
 
 
 def _stage_bytes(content: bytes, *, filename: str, digest: str, subdir: str) -> Path:
@@ -255,6 +312,19 @@ def classify_triage(score: int) -> str:
 
 
 def triage_pdf_candidate(candidate: PdfCandidate) -> tuple[PdfCandidate, list[str]]:
+    if candidate.source_kind == "sharepoint_zip":
+        return (
+            replace(
+                candidate,
+                document_type="stack_export_zip",
+                default_selected=True,
+                triage_score=100,
+                triage_classification="pending_manifest",
+                triage_evidence=["ZIP container: pending manifest scan"],
+                triage_sample_pages=[],
+            ),
+            [],
+        )
     candidate, warnings = ensure_candidate_file_for_triage(candidate)
     sample_text, sample_pages, sample_warnings = sample_pdf_for_triage(candidate.file_path) if candidate.file_path else ("", [], [])
     warnings.extend(sample_warnings)
@@ -335,6 +405,104 @@ def triage_inspection(inspection: PackageInspectionResult) -> PackageInspectionR
     return replace(inspection, candidates=candidates, warnings=warnings)
 
 
+def expand_sharepoint_zip_candidates(inspection: PackageInspectionResult) -> PackageInspectionResult:
+    """Download SharePoint ZIP containers and expose supported internal files.
+
+    The original ZIP container is a manifest source, not a plan document. Internal
+    PDFs become normal ZIP-backed candidates and STACK takeoff CSVs are captured
+    for evaluation/training.
+    """
+    candidates: list[PdfCandidate] = []
+    warnings = list(inspection.warnings)
+    zip_members = list(inspection.zip_members or [])
+    takeoff_csvs = list(inspection.takeoff_csvs or [])
+    for candidate in inspection.candidates:
+        if candidate.source_kind != "sharepoint_zip":
+            candidates.append(candidate)
+            continue
+        try:
+            target_zip = _download_sharepoint_zip_to_cache(candidate)
+        except Exception as exc:
+            warnings.append(f"Skipped {candidate.source_path}: could not download SharePoint ZIP ({type(exc).__name__}: {exc})")
+            continue
+        member_rows, zip_warnings = inspect_zip_members(target_zip)
+        warnings.extend(f"{candidate.document_name}: {warning}" for warning in zip_warnings)
+        if member_rows:
+            warnings.append("ZIP detected. Reading files inside ZIP. No manual extraction required.")
+        supported_count = 0
+        for member in member_rows:
+            zip_members.append(
+                _zip_member_manifest_row(
+                    zip_name=candidate.document_name,
+                    zip_source_path=candidate.source_path,
+                    member=member,
+                    source_kind="sharepoint_zip",
+                    source_sharepoint_url=candidate.source_sharepoint_url or candidate.source_path,
+                )
+            )
+            inferred_type = str(member.get("inferred_type") or "")
+            member_name = str(member.get("member_name") or member.get("internal_path") or "")
+            if inferred_type == "takeoff_quantity_csv":
+                supported_count += 1
+                try:
+                    takeoff_csvs.append(
+                        _takeoff_csv_manifest_row(
+                            zip_path=target_zip,
+                            zip_name=candidate.document_name,
+                            zip_source_path=candidate.source_path,
+                            member=member,
+                            source_kind="sharepoint_zip",
+                            source_sharepoint_url=candidate.source_sharepoint_url or candidate.source_path,
+                        )
+                    )
+                except Exception as exc:
+                    warnings.append(f"Skipped takeoff CSV {candidate.document_name}:{member_name}: {type(exc).__name__}: {exc}")
+                continue
+            if str(member.get("extension") or "").lower() != ".pdf":
+                continue
+            supported_count += 1
+            filename = str(member.get("filename") or Path(member_name).name)
+            file_hash = hashlib.sha1(
+                f"{candidate.file_hash}\0{member_name}\0{member.get('crc')}\0{member.get('uncompressed_size')}".encode("utf-8")
+            ).hexdigest()
+            document_type = classify_document_type(filename)
+            source_path = f"{candidate.source_path}:{member_name}"
+            candidates.append(
+                PdfCandidate(
+                    candidate_id=_candidate_id(source_path, file_hash, len(candidates)),
+                    document_name=filename,
+                    document_type=document_type,
+                    source_kind="zip",
+                    source_path=source_path,
+                    compressed_size=int(member.get("compressed_size") or 0),
+                    uncompressed_size=int(member.get("uncompressed_size") or 0),
+                    default_selected=guess_default_selected(member_name, document_type),
+                    file_hash=file_hash,
+                    zip_path=str(target_zip),
+                    zip_member=member_name,
+                    graph_drive_id=candidate.graph_drive_id,
+                    graph_item_id=candidate.graph_item_id,
+                    source_sharepoint_url=candidate.source_sharepoint_url or candidate.source_path,
+                    source_zip_name=candidate.document_name,
+                    internal_zip_path=member_name,
+                )
+            )
+        if supported_count == 0:
+            warnings.append(f"No supported PDF or STACK takeoff CSV files were found inside ZIP: {candidate.document_name}")
+    return replace(inspection, candidates=candidates, warnings=warnings, zip_members=zip_members, takeoff_csvs=takeoff_csvs)
+
+
+def _download_sharepoint_zip_to_cache(candidate: PdfCandidate) -> Path:
+    target_zip = _temp_root() / "sharepoint" / f"{_safe_stem(candidate.document_name)}-{candidate.file_hash[:12]}.zip"
+    if target_zip.exists() and (candidate.uncompressed_size <= 0 or target_zip.stat().st_size == candidate.uncompressed_size):
+        return target_zip
+    from jobscan.graph_client import GraphClient
+
+    target_zip.parent.mkdir(parents=True, exist_ok=True)
+    GraphClient(max_retries=2).download_item(candidate.graph_drive_id, candidate.graph_item_id, target_zip)
+    return target_zip
+
+
 def normalize_pdf_document(
     name: str,
     content: bytes | None = None,
@@ -346,6 +514,9 @@ def normalize_pdf_document(
     compressed_size: int | None = None,
     uncompressed_size: int | None = None,
     document_type: str | None = None,
+    source_sharepoint_url: str = "",
+    source_zip_name: str = "",
+    internal_zip_path: str = "",
 ) -> PdfDocumentInput:
     if file_hash is None:
         if content is None and file_path:
@@ -367,6 +538,9 @@ def normalize_pdf_document(
         content=content if file_path is None else None,
         original_document_name=original_document_name,
         original_page_number=original_page_number,
+        source_sharepoint_url=source_sharepoint_url,
+        source_zip_name=source_zip_name,
+        internal_zip_path=internal_zip_path,
     )
 
 
@@ -378,6 +552,8 @@ def inspect_uploaded_package(uploaded_files: list[Any] | Any) -> PackageInspecti
 
     candidates: list[PdfCandidate] = []
     warnings: list[str] = []
+    zip_members: list[dict[str, Any]] = []
+    takeoff_csvs: list[dict[str, Any]] = []
     total_upload_size = 0
     for upload in uploaded_files:
         name = _upload_name(upload)
@@ -414,9 +590,36 @@ def inspect_uploaded_package(uploaded_files: list[Any] | Any) -> PackageInspecti
             zip_path.parent.mkdir(parents=True, exist_ok=True)
             if not zip_path.exists() or zip_path.stat().st_size != len(content):
                 zip_path.write_bytes(content)
-            member_rows, zip_warnings = inspect_zip_pdfs(zip_path)
+            member_rows, zip_warnings = inspect_zip_members(zip_path)
             warnings.extend(zip_warnings)
             for member in member_rows:
+                zip_members.append(
+                    _zip_member_manifest_row(
+                        zip_name=name,
+                        zip_source_path=name,
+                        member=member,
+                        source_kind="zip",
+                    )
+                )
+                inferred_type = str(member.get("inferred_type") or "")
+                if inferred_type == "takeoff_quantity_csv":
+                    try:
+                        takeoff_csvs.append(
+                            _takeoff_csv_manifest_row(
+                                zip_path=zip_path,
+                                zip_name=name,
+                                zip_source_path=name,
+                                member=member,
+                                source_kind="zip",
+                            )
+                        )
+                    except Exception as exc:
+                        warnings.append(f"Skipped takeoff CSV {name}:{member.get('member_name')}: {type(exc).__name__}: {exc}")
+                    continue
+                if inferred_type == "metadata_other":
+                    warnings.append(f"Skipped non-PDF ZIP member: {name}:{member.get('member_name')}")
+                if str(member.get("extension") or "").lower() != ".pdf":
+                    continue
                 member_name = str(member["member_name"])
                 filename = str(member["filename"])
                 file_hash = hashlib.sha1(
@@ -437,6 +640,8 @@ def inspect_uploaded_package(uploaded_files: list[Any] | Any) -> PackageInspecti
                         file_hash=file_hash,
                         zip_path=str(zip_path),
                         zip_member=member_name,
+                        source_zip_name=name,
+                        internal_zip_path=member_name,
                     )
                 )
         else:
@@ -454,6 +659,8 @@ def inspect_uploaded_package(uploaded_files: list[Any] | Any) -> PackageInspecti
         warnings=warnings,
         temp_dir=str(_temp_root()),
         total_upload_size=total_upload_size,
+        zip_members=zip_members,
+        takeoff_csvs=takeoff_csvs,
     )
 
 
@@ -462,6 +669,8 @@ def inspect_path_package(path_value: str | Path) -> PackageInspectionResult:
     root = Path(path_value).expanduser()
     warnings: list[str] = []
     candidates: list[PdfCandidate] = []
+    zip_members: list[dict[str, Any]] = []
+    takeoff_csvs: list[dict[str, Any]] = []
     if not root.exists():
         return PackageInspectionResult(candidates=[], warnings=[f"Path does not exist: {root}"], temp_dir=str(_temp_root()))
 
@@ -501,9 +710,36 @@ def inspect_path_package(path_value: str | Path) -> PackageInspectionResult:
             )
         elif suffix == ".zip":
             zip_hash = _file_fingerprint(file_path)
-            member_rows, zip_warnings = inspect_zip_pdfs(file_path)
+            member_rows, zip_warnings = inspect_zip_members(file_path)
             warnings.extend(zip_warnings)
             for member in member_rows:
+                zip_members.append(
+                    _zip_member_manifest_row(
+                        zip_name=file_path.name,
+                        zip_source_path=str(file_path),
+                        member=member,
+                        source_kind="zip",
+                    )
+                )
+                inferred_type = str(member.get("inferred_type") or "")
+                if inferred_type == "takeoff_quantity_csv":
+                    try:
+                        takeoff_csvs.append(
+                            _takeoff_csv_manifest_row(
+                                zip_path=file_path,
+                                zip_name=file_path.name,
+                                zip_source_path=str(file_path),
+                                member=member,
+                                source_kind="zip",
+                            )
+                        )
+                    except Exception as exc:
+                        warnings.append(f"Skipped takeoff CSV {file_path}:{member.get('member_name')}: {type(exc).__name__}: {exc}")
+                    continue
+                if inferred_type == "metadata_other":
+                    warnings.append(f"Skipped non-PDF ZIP member: {file_path}:{member.get('member_name')}")
+                if str(member.get("extension") or "").lower() != ".pdf":
+                    continue
                 member_name = str(member["member_name"])
                 filename = str(member["filename"])
                 file_hash = hashlib.sha1(
@@ -524,6 +760,8 @@ def inspect_path_package(path_value: str | Path) -> PackageInspectionResult:
                         file_hash=file_hash,
                         zip_path=str(file_path),
                         zip_member=member_name,
+                        source_zip_name=file_path.name,
+                        internal_zip_path=member_name,
                     )
                 )
 
@@ -531,7 +769,14 @@ def inspect_path_package(path_value: str | Path) -> PackageInspectionResult:
         warnings.append(f"No PDF candidates found under: {root}")
     if total_size > PACKAGE_WARNING_BYTES:
         warnings.append(f"Package source size is {total_size / MB:,.0f} MB; progressive path mode will avoid browser upload memory pressure.")
-    return PackageInspectionResult(candidates=candidates, warnings=warnings, temp_dir=str(_temp_root()), total_upload_size=total_size)
+    return PackageInspectionResult(
+        candidates=candidates,
+        warnings=warnings,
+        temp_dir=str(_temp_root()),
+        total_upload_size=total_size,
+        zip_members=zip_members,
+        takeoff_csvs=takeoff_csvs,
+    )
 
 
 def materialize_selected_documents(
@@ -581,16 +826,45 @@ def materialize_selected_documents(
             file_path = str(target)
             file_hash = _file_fingerprint(target)
         elif candidate.source_kind == "sharepoint_zip":
-            target_zip = _temp_root() / "sharepoint" / f"{_safe_stem(candidate.document_name)}-{candidate.file_hash[:12]}.zip"
-            if not target_zip.exists() or target_zip.stat().st_size != candidate.uncompressed_size:
+            try:
+                target_zip = _download_sharepoint_zip_to_cache(candidate)
+            except Exception as exc:
+                warnings.append(f"Skipped {candidate.source_path}: could not download SharePoint ZIP ({type(exc).__name__}: {exc})")
+                continue
+            member_rows, zip_warnings = inspect_zip_members(target_zip)
+            warnings.extend(f"{candidate.document_name}: {warning}" for warning in zip_warnings)
+            pdf_members = [member for member in member_rows if str(member.get("extension") or "").lower() == ".pdf"]
+            if not pdf_members:
+                warnings.append(f"No supported PDF files were found inside ZIP: {candidate.document_name}")
+                continue
+            for member in pdf_members:
+                member_name = str(member.get("member_name") or member.get("internal_path") or "")
+                filename = str(member.get("filename") or Path(member_name).name)
+                member_hash = hashlib.sha1(
+                    f"{candidate.file_hash}\0{member_name}\0{member.get('crc')}\0{member.get('uncompressed_size')}".encode("utf-8")
+                ).hexdigest()
+                target = _temp_root() / "extracted" / f"{_safe_stem(filename)}-{member_hash[:12]}.pdf"
                 try:
-                    from jobscan.graph_client import GraphClient
-
-                    GraphClient(max_retries=2).download_item(candidate.graph_drive_id, candidate.graph_item_id, target_zip)
+                    content = extract_zip_pdf_member(target_zip, member_name, target)
+                    actual_hash = _sha1_bytes(content)
                 except Exception as exc:
-                    warnings.append(f"Skipped {candidate.source_path}: could not download SharePoint ZIP ({type(exc).__name__}: {exc})")
+                    warnings.append(f"Skipped {candidate.source_path}:{member_name}: could not extract selected PDF ({type(exc).__name__}: {exc})")
                     continue
-            warnings.append(f"SharePoint ZIP downloaded to cache but nested PDF selection is not expanded yet: {candidate.document_name}")
+                documents.append(
+                    normalize_pdf_document(
+                        filename,
+                        index=len(documents),
+                        source_path=f"{candidate.source_path}:{member_name}",
+                        file_path=str(target),
+                        file_hash=actual_hash,
+                        compressed_size=int(member.get("compressed_size") or 0),
+                        uncompressed_size=int(member.get("uncompressed_size") or 0),
+                        document_type=classify_document_type(filename),
+                        source_sharepoint_url=candidate.source_sharepoint_url or candidate.source_path,
+                        source_zip_name=candidate.document_name,
+                        internal_zip_path=member_name,
+                    )
+                )
             continue
         else:
             file_path = candidate.file_path
@@ -606,6 +880,9 @@ def materialize_selected_documents(
                 compressed_size=candidate.compressed_size,
                 uncompressed_size=candidate.uncompressed_size,
                 document_type=candidate.document_type,
+                source_sharepoint_url=candidate.source_sharepoint_url,
+                source_zip_name=candidate.source_zip_name,
+                internal_zip_path=candidate.internal_zip_path or candidate.zip_member,
             )
         )
     return PackageIngestResult(documents=documents, warnings=warnings)

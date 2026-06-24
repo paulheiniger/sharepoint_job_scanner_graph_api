@@ -65,6 +65,8 @@ def inspect_sharepoint_url_package(url: str) -> PackageInspectionResult:
         fingerprint = hashlib.sha1(f"{item_drive_id}\0{item_id}\0{size}\0{item.get('lastModifiedDateTime')}".encode("utf-8")).hexdigest()
         document_type = classify_document_type(name)
         source_kind = "sharepoint_pdf" if suffix == ".pdf" else "sharepoint_zip"
+        if source_kind == "sharepoint_zip":
+            document_type = "stack_export_zip"
         candidates.append(
             PdfCandidate(
                 candidate_id=_candidate_id(web_url, fingerprint, len(candidates)),
@@ -74,10 +76,15 @@ def inspect_sharepoint_url_package(url: str) -> PackageInspectionResult:
                 source_path=web_url,
                 compressed_size=size,
                 uncompressed_size=size,
-                default_selected=guess_default_selected(web_url, document_type),
+                default_selected=True if source_kind == "sharepoint_zip" else guess_default_selected(web_url, document_type),
                 file_hash=fingerprint,
                 graph_drive_id=item_drive_id,
                 graph_item_id=item_id,
+                triage_score=100 if source_kind == "sharepoint_zip" else 0,
+                triage_classification="pending_manifest" if source_kind == "sharepoint_zip" else "untriaged",
+                triage_evidence=["ZIP container: pending manifest scan"] if source_kind == "sharepoint_zip" else None,
+                source_sharepoint_url=web_url,
+                source_zip_name=name if source_kind == "sharepoint_zip" else "",
             )
         )
     if not candidates:

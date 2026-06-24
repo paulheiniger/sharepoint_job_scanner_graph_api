@@ -5,8 +5,19 @@ import zipfile
 from io import BytesIO
 
 from foamscope_ui import analyze_documents, build_export_payload
-from indexing.progressive_pipeline import _PROGRESSIVE_CACHE, ProgressiveBudgets, run_progressive_package_analysis
-from ingest.package_ingest import inspect_path_package, inspect_uploaded_package, ingest_uploaded_package, materialize_selected_documents, triage_inspection
+from indexing.progressive_pipeline import _PROGRESSIVE_CACHE, ProgressiveBudgets, candidate_priority, run_progressive_package_analysis
+from ingest.package_ingest import (
+    PackageInspectionResult,
+    PdfCandidate,
+    expand_sharepoint_zip_candidates,
+    inspect_path_package,
+    inspect_uploaded_package,
+    ingest_uploaded_package,
+    materialize_selected_documents,
+    triage_inspection,
+    triage_pdf_candidate,
+)
+from training.completed_takeoff_parser import parse_stack_takeoff_csv
 
 
 class FakeUpload:
@@ -480,3 +491,105 @@ def test_large_zip_manifest_inspected_without_extracting_all_files(tmp_path) -> 
     assert len(inspection.candidates) == 20
     assert all(candidate.source_kind == "zip" for candidate in inspection.candidates)
     assert all(not candidate.file_path for candidate in inspection.candidates)
+
+
+def test_sharepoint_zip_container_is_pending_manifest_not_irrelevant() -> None:
+    candidate = PdfCandidate(
+        candidate_id="zip-1",
+        document_name="Structural Export.zip",
+        document_type="stack_export_zip",
+        source_kind="sharepoint_zip",
+        source_path="https://example.sharepoint.com/sites/Data/Structural%20Export.zip",
+        compressed_size=100,
+        uncompressed_size=100,
+        default_selected=True,
+        file_hash="abc123",
+        graph_drive_id="drive",
+        graph_item_id="item",
+        source_sharepoint_url="https://example.sharepoint.com/sites/Data/Structural%20Export.zip",
+        source_zip_name="Structural Export.zip",
+    )
+
+    triaged, warnings = triage_pdf_candidate(candidate)
+
+    assert warnings == []
+    assert triaged.document_type == "stack_export_zip"
+    assert triaged.triage_classification == "pending_manifest"
+    assert triaged.default_selected is True
+    assert candidate_priority(triaged) == "high"
+
+
+def test_sharepoint_zip_with_pdfs_processes_without_manual_extraction(tmp_path, monkeypatch) -> None:
+    zip_path = tmp_path / "stack_export.zip"
+    zip_path.write_bytes(make_zip({"Plans/A3.01.pdf": make_pdf("A3.01 Roof Plan\nTPO roof replacement")}))
+    candidate = PdfCandidate(
+        candidate_id="zip-1",
+        document_name="STACK Export.zip",
+        document_type="stack_export_zip",
+        source_kind="sharepoint_zip",
+        source_path="https://example.sharepoint.com/:u:/stack-export",
+        compressed_size=zip_path.stat().st_size,
+        uncompressed_size=zip_path.stat().st_size,
+        default_selected=True,
+        file_hash="ziphash",
+        source_sharepoint_url="https://example.sharepoint.com/:u:/stack-export",
+        source_zip_name="STACK Export.zip",
+    )
+    inspection = PackageInspectionResult(candidates=[candidate], warnings=[], temp_dir=str(tmp_path), total_upload_size=zip_path.stat().st_size)
+    monkeypatch.setattr("ingest.package_ingest._download_sharepoint_zip_to_cache", lambda _candidate: zip_path)
+
+    expanded = expand_sharepoint_zip_candidates(inspection)
+    package = materialize_selected_documents(expanded, {expanded.candidates[0].candidate_id})
+    result = analyze_documents(package.documents, depth=1, use_ocr=False, trade_type="roofing")
+
+    assert len(expanded.candidates) == 1
+    assert expanded.candidates[0].document_name == "A3.01.pdf"
+    assert package.documents[0].source_sharepoint_url == candidate.source_sharepoint_url
+    assert package.documents[0].source_zip_name == "STACK Export.zip"
+    assert package.documents[0].internal_zip_path == "Plans/A3.01.pdf"
+    assert result["pages"][0].document_name == "A3.01.pdf"
+
+
+def test_sharepoint_zip_with_takeoff_csv_routes_to_parser(tmp_path, monkeypatch) -> None:
+    takeoff_csv = "\n".join(
+        [
+            "Takeoff Name,Takeoff Description,Sq Ft,Ln Ft,Cu Yd,EA,Drop Count,Takeoff Quantity,Takeoff Unit,Scale,Plan Name",
+            "Roof Area,TPO roof area,1200,,,,,1200,Sq Ft,1/8\"=1',A3.01.pdf",
+        ]
+    )
+    zip_path = tmp_path / "stack_export.zip"
+    zip_path.write_bytes(make_zip({"Takeoff Quantity.csv": takeoff_csv, "Plans/A3.01.pdf": make_pdf("A3.01 Roof Plan")}))
+    candidate = PdfCandidate(
+        candidate_id="zip-1",
+        document_name="STACK Export.zip",
+        document_type="stack_export_zip",
+        source_kind="sharepoint_zip",
+        source_path="https://example.sharepoint.com/:u:/stack-export",
+        compressed_size=zip_path.stat().st_size,
+        uncompressed_size=zip_path.stat().st_size,
+        default_selected=True,
+        file_hash="ziphash",
+        source_sharepoint_url="https://example.sharepoint.com/:u:/stack-export",
+        source_zip_name="STACK Export.zip",
+    )
+    inspection = PackageInspectionResult(candidates=[candidate], warnings=[], temp_dir=str(tmp_path), total_upload_size=zip_path.stat().st_size)
+    monkeypatch.setattr("ingest.package_ingest._download_sharepoint_zip_to_cache", lambda _candidate: zip_path)
+
+    expanded = expand_sharepoint_zip_candidates(inspection)
+    labels = parse_stack_takeoff_csv(expanded.takeoff_csvs[0]["file_path"], trade_type="roofing")
+
+    assert len(expanded.candidates) == 1
+    assert len(expanded.takeoff_csvs or []) == 1
+    assert expanded.takeoff_csvs[0]["internal_zip_path"] == "Takeoff Quantity.csv"
+    assert expanded.takeoff_csvs[0]["source_sharepoint_url"] == candidate.source_sharepoint_url
+    assert labels[0].canonical_sheet_id == "A3-01"
+    assert labels[0].trade_type == "roofing"
+
+
+def test_zip_provenance_is_preserved_for_uploaded_zip() -> None:
+    payload = make_zip({"Plans/A2.00.pdf": make_pdf("A2.00 Floor Plan\nspray foam")})
+
+    package = ingest_uploaded_package([FakeUpload("stack_export.zip", payload)])
+
+    assert package.documents[0].source_zip_name == "stack_export.zip"
+    assert package.documents[0].internal_zip_path == "Plans/A2.00.pdf"

@@ -46,6 +46,8 @@ def current_memory_rss_mb() -> float | None:
 
 
 def candidate_priority(candidate: PdfCandidate) -> str:
+    if candidate.source_kind == "sharepoint_zip" or candidate.document_type == "stack_export_zip":
+        return "high"
     text = f"{candidate.document_name} {candidate.source_path}".lower().replace("\\", "/")
     high_terms = (
         "architectural",

@@ -28,6 +28,7 @@ from ingest.package_ingest import (
     PdfCandidate,
     PdfDocumentInput,
     SMALL_UPLOAD_WARNING_BYTES,
+    expand_sharepoint_zip_candidates,
     inspect_path_package,
     inspect_uploaded_package,
     normalize_pdf_document,
@@ -390,6 +391,10 @@ def render_foamscope_page() -> None:
             inspection = inspect_sharepoint_url_package(url_value.strip())
         if inspection.warnings and not inspection.candidates:
             st.error(SHAREPOINT_NOT_CONFIGURED_MESSAGE)
+        if any(candidate.source_kind == "sharepoint_zip" for candidate in inspection.candidates):
+            st.info("ZIP detected. Reading files inside ZIP. No manual extraction required.")
+            with st.spinner("Downloading SharePoint ZIP and reading its manifest..."):
+                inspection = expand_sharepoint_zip_candidates(inspection)
         package_source = "SharePoint folder URL"
 
     if inspection is None:
@@ -410,6 +415,23 @@ def render_foamscope_page() -> None:
         "Low-priority documents remain deferred, not discarded."
     )
     candidate_df = candidates_table(inspection.candidates)
+    zip_member_df = dataframe_from_records(inspection.zip_members or [])
+    if not zip_member_df.empty:
+        with st.expander("ZIP contents", expanded=True):
+            st.caption("ZIP detected. Reading files inside ZIP. No manual extraction required.")
+            display_cols = [
+                "source_zip_name",
+                "internal_path",
+                "filename",
+                "extension",
+                "compressed_size",
+                "uncompressed_size",
+                "inferred_type",
+                "source_sharepoint_url",
+            ]
+            st.dataframe(zip_member_df[[col for col in display_cols if col in zip_member_df.columns]], use_container_width=True, hide_index=True)
+    if inspection.zip_members and not inspection.candidates and not (inspection.takeoff_csvs or []):
+        st.warning("No supported PDF or STACK takeoff CSV files were found inside the ZIP.")
     s1, s2, s3 = st.columns(3)
     s1.metric("Package source", package_source if len(package_source) < 28 else "path/upload")
     s2.metric("Package size", f"{inspection.total_upload_size / MB:,.1f} MB")
@@ -766,6 +788,37 @@ def render_foamscope_page() -> None:
         "Upload a completed STACK-style takeoff CSV to compare BidScope-predicted measurement pages "
         "against known takeoff pages. This is evaluation/training data only."
     )
+    embedded_takeoff_csvs = inspection.takeoff_csvs or []
+    if embedded_takeoff_csvs:
+        st.markdown("**STACK takeoff CSVs found inside package**")
+        st.dataframe(dataframe_from_records(embedded_takeoff_csvs), use_container_width=True, hide_index=True)
+        for index, takeoff_csv in enumerate(embedded_takeoff_csvs, start=1):
+            try:
+                csv_payload = Path(str(takeoff_csv["file_path"])).read_bytes()
+                evaluation = compare_foamscope_output_to_takeoff_export(
+                    export_payload,
+                    csv_payload,
+                    trade_type=trade_type,
+                )
+            except Exception as exc:
+                st.warning(f"Could not evaluate {takeoff_csv.get('filename')}: {type(exc).__name__}: {exc}")
+                continue
+            counts = evaluation["counts"]
+            with st.expander(f"Embedded takeoff evaluation {index}: {takeoff_csv.get('filename')}", expanded=index == 1):
+                e1, e2, e3, e4, e5 = st.columns(5)
+                e1.metric("Expected pages", f"{counts['expected']:,}")
+                e2.metric("Predicted pages", f"{counts['predicted']:,}")
+                e3.metric("Matched pages", f"{counts['matched']:,}")
+                e4.metric("Recall", f"{evaluation['recall']:.0%}")
+                e5.metric("Precision", f"{evaluation['precision']:.0%}")
+                st.markdown("**Top 25 predicted measurement pages**")
+                st.dataframe(
+                    dataframe_from_records(evaluation.get("top_predicted_measurement_pages", [])[:25]),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+                st.markdown("**Missed pages**")
+                st.dataframe(dataframe_from_records(evaluation["missed_pages"]), use_container_width=True, hide_index=True)
     takeoff_upload = st.file_uploader(
         "Completed takeoff CSV",
         type=["csv"],
