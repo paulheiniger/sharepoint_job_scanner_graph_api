@@ -38,6 +38,7 @@ from ingest.pdf_ingest import PageRecord, ingest_pdf
 from ingest.sharepoint_package_ingest import SHAREPOINT_NOT_CONFIGURED_MESSAGE, inspect_sharepoint_url_package
 from intake.source_detector import detect_source_type
 from takeoff.insulation_scope_tree import build_measurement_tree, relevant_pages_table
+from training.bidscope_review_export import build_bidscope_review_export_zip
 from training.foamscope_evaluator import compare_foamscope_output_to_takeoff_export
 
 
@@ -326,6 +327,7 @@ def render_foamscope_page() -> None:
             )
 
     st.subheader("Package Intake")
+    project_name = st.text_input("Project name for exports", value="", placeholder="Optional project or bid package name")
     intake_mode = st.radio(
         "Intake mode",
         ["SharePoint folder URL", "Local/server path", "Upload small package"],
@@ -783,6 +785,7 @@ def render_foamscope_page() -> None:
         st.dataframe(dataframe_from_records(indexed_not_included), use_container_width=True, hide_index=True)
 
     export_payload = build_export_payload(result, pages, analysis_mode=analysis_mode)
+    takeoff_evaluation_for_export: dict[str, Any] | None = None
     st.subheader("Evaluate against completed takeoff export")
     st.caption(
         "Upload a completed STACK-style takeoff CSV to compare BidScope-predicted measurement pages "
@@ -803,6 +806,7 @@ def render_foamscope_page() -> None:
             except Exception as exc:
                 st.warning(f"Could not evaluate {takeoff_csv.get('filename')}: {type(exc).__name__}: {exc}")
                 continue
+            takeoff_evaluation_for_export = evaluation
             counts = evaluation["counts"]
             with st.expander(f"Embedded takeoff evaluation {index}: {takeoff_csv.get('filename')}", expanded=index == 1):
                 e1, e2, e3, e4, e5 = st.columns(5)
@@ -834,6 +838,7 @@ def render_foamscope_page() -> None:
         except Exception as exc:
             st.error(f"Could not evaluate takeoff CSV: {type(exc).__name__}: {exc}")
         else:
+            takeoff_evaluation_for_export = evaluation
             counts = evaluation["counts"]
             e1, e2, e3, e4, e5 = st.columns(5)
             e1.metric("Expected pages", f"{counts['expected']:,}")
@@ -856,6 +861,21 @@ def render_foamscope_page() -> None:
                 st.dataframe(dataframe_from_records(evaluation.get("extra_pages", evaluation["extra_selected_pages"])), use_container_width=True, hide_index=True)
 
     st.subheader("Exports")
+    review_zip = build_bidscope_review_export_zip(
+        export_payload,
+        trade_profile=trade_profile,
+        project_name=project_name,
+        source_type=intake_mode,
+        package_name=package_source,
+        takeoff_evaluation=takeoff_evaluation_for_export,
+    )
+    st.download_button(
+        "Export analysis summary for review",
+        data=review_zip,
+        file_name="bidscope_analysis_review.zip",
+        mime="application/zip",
+        help="Exports CSV/JSON/text review files only. Original PDFs, page images, and large binary files are not included.",
+    )
     e1, e2 = st.columns(2)
     with e1:
         st.download_button(
