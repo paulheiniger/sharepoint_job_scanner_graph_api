@@ -888,24 +888,42 @@ Current approved pricing is preferred from the exported pricing catalog. Histori
 
 ### Estimator relationship profiler
 
-Use `relationship_profiler.py` to analyze exported job/estimate/material/labor CSVs and discover repeatable estimating relationships before turning them into estimator rules:
+Use `relationship_profiler.py` to analyze extracted database line items and discover repeatable estimating relationships before turning them into estimator rules. The extracted database tables are the source of truth; CSV files are only output/review artifacts.
+
+Optional schema bootstrap:
+
+```bash
+psql "$NEON_DATABASE_URL" -f db/relationship_mining_schema.sql
+```
 
 ```bash
 python relationship_profiler.py \
-  --estimate-summary output/estimate_summary.csv \
-  --line-items output/estimate_line_items.csv \
-  --jobs output/job_index.csv \
-  --out-dir output/relationships
+  --db-url "$NEON_DATABASE_URL" \
+  --source-year 2026 \
+  --division Roofing \
+  --status Completed \
+  --output-dir output/relationships \
+  --min-job-count 3 \
+  --write-review-sheet
 ```
+
+The profiler reads `jobs`, `estimates`, and `estimate_line_items`, then materializes a traceable relationship-mining pipeline:
+
+- `source_documents`: source file/sheet metadata and profiler parser version.
+- `estimate_line_items_raw`: raw extracted line items with source document IDs and raw row JSON.
+- `estimate_line_items_normalized`: cleaned rows with `line_type`, `package`, normalized item name, numeric quantity/unit/cost fields, `source_type`, `physical_quantity_valid`, `review_required`, confidence, and normalization reason.
+- `estimate_jobs`: job-level extracted facts used for segmentation and filtering.
+- `job_package_summary`: one row per job/package with quantity/cost per sqft, allowance/physical-quantity flags, review flags, and supporting normalized line item IDs.
 
 The profiler writes reviewable training artifacts:
 
 - `relationship_warranty_coating.csv` groups coating type and warranty by inferred wet mils, gallons per square foot, job count, and confidence.
-- `relationship_work_package_cooccurrence.csv` shows which material work packages tend to appear together for each project type and substrate.
+- `relationship_package_cooccurrence.csv` shows which material work packages tend to appear together for each project type and substrate. `relationship_work_package_cooccurrence.csv` is also written as a compatibility alias.
 - `relationship_material_qty_ratios.csv` reports median and percentile quantity/cost ratios by project type, substrate, coating, warranty, package, and unit. Cost allowance rows are not treated as physical quantity ratios unless they have a valid quantity and physical unit.
 - `relationship_labor_rates.csv` reports package-level labor hours per 1,000 sqft and cost per sqft, using medians and percentiles.
 - `relationship_anomalies.csv` flags suspicious relationships such as implausible primer pails per sqft, coating gallons outside wet-mil review ranges, allowance dollars used as quantities, primer labor without primer material, and fastener treatment on non-metal roofs.
 - `estimator_rule_suggestions.json` summarizes candidate rules such as warranty-to-wet-mil assumptions, likely work packages by scope, primer/fastener triggers, and default labor production rates.
+- `relationship_review_sheet.xlsx` is optional when `--write-review-sheet` is supplied.
 
 Confidence is based on supporting job counts: `high` for 10 or more jobs, `medium` for 4-9 jobs, and `low` below 4 jobs. The output includes supporting job IDs for debug/review; treat these files as training evidence, not automatic production rules.
 

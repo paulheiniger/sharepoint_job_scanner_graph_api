@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 
 import pandas as pd
+from sqlalchemy import create_engine, inspect
 
-from relationship_profiler import profile_relationships
+from relationship_profiler import profile_relationships, profile_relationships_from_database
 
 
 def test_relationship_profiler_writes_relationship_outputs(tmp_path) -> None:
@@ -100,3 +101,87 @@ def test_relationship_profiler_writes_relationship_outputs(tmp_path) -> None:
     suggestions = json.loads(paths["estimator_rule_suggestions.json"].read_text())
     assert "warranty_years_to_wet_mils" in suggestions
     assert "default_production_rates_by_labor_package" in suggestions
+
+
+def test_relationship_profiler_database_pipeline_uses_normalized_tables(tmp_path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'relationships.db'}")
+    out_dir = tmp_path / "db_relationships"
+    pd.DataFrame(
+        [
+            {
+                "job_id": "J1",
+                "source_year": 2026,
+                "division": "Roofing",
+                "pipeline_status": "Completed",
+                "status": "Completed",
+                "customer": "Acme",
+                "job_name": "Acme roof",
+                "job_type": "roof coating",
+                "estimated_sqft": 12000,
+                "invoice_amount": 100000,
+            },
+            {
+                "job_id": "J2",
+                "source_year": 2026,
+                "division": "Roofing",
+                "pipeline_status": "Completed",
+                "status": "Completed",
+                "customer": "Beta",
+                "job_name": "Beta roof",
+                "job_type": "roof coating",
+                "estimated_sqft": 8000,
+                "invoice_amount": 70000,
+            },
+        ]
+    ).to_sql("jobs", engine, index=False)
+    pd.DataFrame(
+        [
+            {"estimate_id": "E1", "job_id": "J1", "project_type": "roof coating", "substrate": "metal", "estimated_sqft": 12000, "coating_type": "silicone", "warranty_years": 10, "final_price": 100000},
+            {"estimate_id": "E2", "job_id": "J2", "project_type": "roof coating", "substrate": "membrane", "estimated_sqft": 8000, "coating_type": "silicone", "warranty_years": 10, "final_price": 70000},
+        ]
+    ).to_sql("estimates", engine, index=False)
+    pd.DataFrame(
+        [
+            {"line_item_id": "L1", "estimate_id": "E1", "job_id": "J1", "estimate_file": "Estimate 1.xlsx", "source_sheet": "Estimate", "source_row": 26, "section": "Materials", "line_item_name": "Silicone coating", "quantity": 180, "unit": "gal", "unit_cost": 38, "extended_cost": 6840},
+            {"line_item_id": "L2", "estimate_id": "E1", "job_id": "J1", "estimate_file": "Estimate 1.xlsx", "source_sheet": "Estimate", "source_row": 39, "section": "Materials", "line_item_name": "Epoxy Primer", "quantity": 40, "unit": "pail", "unit_cost": 5, "extended_cost": 200},
+            {"line_item_id": "L3", "estimate_id": "E1", "job_id": "J1", "estimate_file": "Estimate 1.xlsx", "source_sheet": "Estimate", "source_row": 116, "section": "Labor / Subcontractor", "line_item_name": "Prime", "labor_days": 1, "crew_size": 4, "labor_hours": 32, "extended_cost": 2500},
+            {"line_item_id": "L4", "estimate_id": "E2", "job_id": "J2", "estimate_file": "Estimate 2.xlsx", "source_sheet": "Estimate", "source_row": 26, "section": "Materials", "line_item_name": "Silicone coating", "quantity": 120, "unit": "gal", "unit_cost": 38, "extended_cost": 4560},
+            {"line_item_id": "L5", "estimate_id": "E2", "job_id": "J2", "estimate_file": "Estimate 2.xlsx", "source_sheet": "Estimate", "source_row": 173, "section": "Materials", "line_item_name": "Misc allowance", "quantity": 1, "unit": "allowance", "unit_cost": 500, "extended_cost": 500},
+            {"line_item_id": "L6", "estimate_id": "E2", "job_id": "J2", "estimate_file": "Estimate 2.xlsx", "source_sheet": "Estimate", "source_row": 116, "section": "Labor / Subcontractor", "line_item_name": "Prime", "labor_days": 1, "crew_size": 4, "labor_hours": 32, "extended_cost": 2500},
+        ]
+    ).to_sql("estimate_line_items", engine, index=False)
+
+    paths = profile_relationships_from_database(
+        engine=engine,
+        out_dir=out_dir,
+        source_year="2026",
+        division="Roofing",
+        status="Completed",
+        min_job_count=1,
+        write_review_sheet=True,
+    )
+
+    inspector = inspect(engine)
+    for table in [
+        "source_documents",
+        "estimate_line_items_raw",
+        "estimate_line_items_normalized",
+        "estimate_jobs",
+        "job_package_summary",
+        "relationship_warranty_coating",
+        "relationship_package_cooccurrence",
+    ]:
+        assert inspector.has_table(table)
+
+    normalized = pd.read_sql_table("estimate_line_items_normalized", engine)
+    assert {"raw_line_item_id", "source_document_id", "source_type", "physical_quantity_valid", "normalization_reason"}.issubset(normalized.columns)
+    assert "cost_allowance" in set(normalized["source_type"])
+
+    package_summary = pd.read_sql_table("job_package_summary", engine)
+    assert {"job_id", "package", "qty_per_sqft", "cost_per_sqft", "evidence_line_item_ids"}.issubset(package_summary.columns)
+
+    anomalies = pd.read_csv(paths["relationship_anomalies.csv"])
+    assert "primer_pails_implausible" in set(anomalies["anomaly_type"])
+    assert "allowance_as_quantity" in set(anomalies["anomaly_type"])
+    assert "primer_labor_without_primer_material" in set(anomalies["anomaly_type"])
+    assert paths["relationship_review_sheet.xlsx"].exists()
