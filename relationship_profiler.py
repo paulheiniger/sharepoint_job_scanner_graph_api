@@ -46,6 +46,39 @@ PHYSICAL_UNITS = {
 
 ALLOWANCE_UNITS = {"allowance", "ls", "lump sum", "lot", "sum"}
 PROFILER_PARSER_VERSION = "relationship-profiler-v1"
+SPECIFIC_LABOR_BUCKETS = {
+    "labor_foam",
+    "labor_clean_up",
+    "labor_set_up",
+    "labor_traveling",
+    "labor_loading",
+    "labor_mask",
+    "labor_prime",
+    "labor_dc_315",
+    "labor_misc",
+    "labor_membrane",
+    "labor_prep",
+    "labor_seam_sealer",
+    "labor_base",
+    "labor_top_coat",
+    "labor_caulk",
+    "labor_details",
+}
+SPECIFIC_MATERIAL_BUCKETS = {
+    "coating",
+    "primer",
+    "seam_treatment",
+    "fastener_treatment",
+    "caulk_detail",
+    "foam",
+    "membrane",
+    "thermal_barrier_coating",
+    "lift",
+    "generator",
+    "space_heater",
+    "delivery_fee",
+    "freight",
+}
 JOB_CONTEXT_COLUMNS = [
     "source_year",
     "division",
@@ -66,8 +99,8 @@ JOB_CONTEXT_COLUMNS = [
     "final_price",
     "invoice_amount",
 ]
-MATERIAL_RATIO_GROUP_COLS = ["project_type", "substrate", "coating_type", "warranty_years", "package", "unit"]
-LABOR_RATE_GROUP_COLS = ["project_type", "substrate", "coating_type", "warranty_years", "labor_package"]
+MATERIAL_RATIO_GROUP_COLS = ["source_year", "division", "template_type", "project_type", "substrate", "coating_type", "warranty_years", "wet_mils", "package", "unit"]
+LABOR_RATE_GROUP_COLS = ["source_year", "division", "template_type", "project_type", "substrate", "package", "unit"]
 
 
 def read_csv_if_exists(path: Path | None) -> pd.DataFrame:
@@ -195,18 +228,35 @@ def area_bucket(area: Any) -> str:
 
 def row_text(row: pd.Series) -> str:
     parts = []
-    for column in ("item_name", "line_item_name", "description", "category", "line_item_category", "section", "notes", "labor_package"):
+    for column in ("item_name", "line_item_name", "selected_item_name", "row_label", "description", "category", "line_item_category", "section", "notes", "labor_package", "template_bucket"):
         if column in row.index:
             parts.append(clean_text(row.get(column)))
     return " ".join(parts).lower()
 
 
+def normalized_template_bucket(value: Any) -> str:
+    bucket = clean_text(value).lower().replace(" ", "_").replace("-", "_")
+    bucket = re.sub(r"_+", "_", bucket).strip("_")
+    if bucket in {"", "unknown", "none", "nan"}:
+        return ""
+    return bucket
+
+
 def classify_package(row: pd.Series) -> str:
+    bucket = normalized_template_bucket(row.get("template_bucket"))
+    if bucket in SPECIFIC_LABOR_BUCKETS or bucket in SPECIFIC_MATERIAL_BUCKETS:
+        return bucket
     text = row_text(row)
     category = clean_text(row.get("category") or row.get("line_item_category")).lower()
     section = clean_text(row.get("section")).lower()
-    if "labor" in category or "labor" in section:
-        return clean_text(row.get("labor_package")) or "labor"
+    line_kind = clean_text(row.get("line_item_kind")).lower()
+    if bucket.startswith("labor_"):
+        return bucket
+    if "labor" in category or "labor" in section or line_kind == "labor":
+        labor_package = normalized_template_bucket(row.get("labor_package"))
+        return labor_package or bucket or "labor"
+    if bucket and bucket not in {"materials", "material", "misc", "other"}:
+        return bucket
     if any(term in text for term in ("primer", "prime coat", "epoxy prime")):
         return "primer"
     if any(term in text for term in ("seam", "butter grade", "fabric", "detail tape")):
@@ -219,15 +269,30 @@ def classify_package(row: pd.Series) -> str:
         return "coating"
     if any(term in text for term in ("foam", "spf", "polyurethane")):
         return "foam"
+    if any(term in text for term in ("membrane",)):
+        return "membrane"
+    if any(term in text for term in ("thermal barrier", "dc 315", "dc-315", "ignition barrier")):
+        return "thermal_barrier_coating"
     if any(term in text for term in ("lift", "rental", "equipment")):
-        return "equipment"
-    if any(term in text for term in ("travel", "lodging", "mileage", "freight", "delivery")):
+        return "lift"
+    if any(term in text for term in ("generator",)):
+        return "generator"
+    if any(term in text for term in ("space heater", "heater")):
+        return "space_heater"
+    if any(term in text for term in ("freight",)):
+        return "freight"
+    if any(term in text for term in ("delivery",)):
+        return "delivery_fee"
+    if any(term in text for term in ("travel", "lodging", "mileage")):
         return "travel"
     if any(term in text for term in ("warranty", "bond", "insurance")):
         return "warranty_insurance"
     if category:
-        return category.replace(" ", "_")
-    return "other"
+        normalized_category = normalized_template_bucket(category)
+        if normalized_category in {"materials", "material"}:
+            return "materials"
+        return normalized_category
+    return bucket or "other"
 
 
 def normalize_line_items(path: Path | None) -> pd.DataFrame:
@@ -263,8 +328,12 @@ def normalize_line_items(path: Path | None) -> pd.DataFrame:
 def is_labor_row(row: pd.Series) -> bool:
     category = clean_text(row.get("category")).lower()
     section = clean_text(row.get("section")).lower()
+    bucket = normalized_template_bucket(row.get("template_bucket"))
+    line_kind = clean_text(row.get("line_item_kind")).lower()
     return (
-        "labor" in category
+        bucket.startswith("labor_")
+        or line_kind == "labor"
+        or "labor" in category
         or "labor" in section
         or to_number(row.get("labor_hours")) is not None
         or to_number(row.get("labor_days")) is not None
@@ -292,7 +361,8 @@ def merge_job_context(rows: pd.DataFrame, jobs: pd.DataFrame) -> pd.DataFrame:
             if column in merged.columns:
                 merged[column] = merged[column].where(merged[column].notna(), merged[job_column])
                 empty_mask = merged[column].astype(str).str.strip().isin({"", "nan", "None"})
-                merged.loc[empty_mask, column] = merged.loc[empty_mask, job_column]
+                if empty_mask.any():
+                    merged.loc[empty_mask, column] = merged.loc[empty_mask, job_column]
             else:
                 merged[column] = merged[job_column]
             merged = merged.drop(columns=[job_column])
@@ -395,16 +465,22 @@ def build_work_package_cooccurrence(materials: pd.DataFrame) -> pd.DataFrame:
 
 def build_material_qty_ratios(materials: pd.DataFrame) -> pd.DataFrame:
     columns = [
+        "source_year",
+        "division",
+        "template_type",
         "project_type",
         "substrate",
         "coating_type",
         "warranty_years",
+        "wet_mils",
         "package",
         "unit",
         "median_qty_per_sqft",
+        "median_cost_per_sqft",
+        "evidence_count",
+        "supporting_job_ids",
         "p25_qty_per_sqft",
         "p75_qty_per_sqft",
-        "median_cost_per_sqft",
         "job_count",
         "confidence",
     ]
@@ -427,76 +503,103 @@ def build_material_qty_ratios(materials: pd.DataFrame) -> pd.DataFrame:
     group_cols = MATERIAL_RATIO_GROUP_COLS
     rows = ensure_columns(rows, group_cols)
     for keys, group in rows.groupby(group_cols, dropna=False):
+        key_values = dict(zip(group_cols, keys, strict=True))
         valid_qty = group[group["physical_quantity_valid"]]
         job_ids = sorted(set(group["job_id"].dropna().astype(str)))
         out.append(
             {
-                "project_type": keys[0],
-                "substrate": keys[1],
-                "coating_type": keys[2],
-                "warranty_years": keys[3],
-                "package": keys[4],
-                "unit": keys[5],
+                **key_values,
                 "median_qty_per_sqft": percentile(valid_qty.get("qty_per_sqft", pd.Series(dtype=float)), 0.5),
+                "median_cost_per_sqft": percentile(group.get("cost_per_sqft", pd.Series(dtype=float)), 0.5),
+                "evidence_count": len(job_ids),
+                "supporting_job_ids": json.dumps(job_ids),
                 "p25_qty_per_sqft": percentile(valid_qty.get("qty_per_sqft", pd.Series(dtype=float)), 0.25),
                 "p75_qty_per_sqft": percentile(valid_qty.get("qty_per_sqft", pd.Series(dtype=float)), 0.75),
-                "median_cost_per_sqft": percentile(group.get("cost_per_sqft", pd.Series(dtype=float)), 0.5),
                 "job_count": len(job_ids),
                 "confidence": confidence(len(job_ids)),
-                "supporting_job_ids": json.dumps(job_ids),
             }
         )
-    return pd.DataFrame(out)
+    return pd.DataFrame(out, columns=columns)
 
 
 def build_labor_rates(labor: pd.DataFrame) -> pd.DataFrame:
     columns = [
+        "source_year",
+        "division",
+        "template_type",
         "project_type",
         "substrate",
         "coating_type",
         "warranty_years",
+        "package",
+        "unit",
+        "median_hours_per_sqft",
+        "median_cost_per_sqft",
+        "median_total_hours",
+        "median_total_cost",
+        "median_crew_size",
+        "median_days",
+        "evidence_count",
+        "supporting_job_ids",
         "labor_package",
         "median_hours_per_1000_sqft",
         "p25_hours_per_1000_sqft",
         "p75_hours_per_1000_sqft",
-        "median_cost_per_sqft",
         "job_count",
         "confidence",
     ]
-    if labor.empty or "is_labor" not in labor.columns:
+    if labor.empty:
         return pd.DataFrame(columns=columns)
-    rows = labor[labor["is_labor"]].copy()
-    rows = ensure_columns(rows, ["job_id", "package", "item_name", "labor_hours", "labor_days", "crew_size", "total_cost", "area_sqft", *LABOR_RATE_GROUP_COLS])
+    rows = labor.copy()
+    rows = ensure_columns(rows, ["job_id", "package", "item_name", "labor_hours", "total_hours", "labor_days", "total_days", "days", "crew_size", "total_cost", "area_sqft", "is_labor", *LABOR_RATE_GROUP_COLS])
+    is_labor_flag = rows["is_labor"].map(lambda value: False if value is None or pd.isna(value) else bool(value))
+    rows["is_labor"] = is_labor_flag | rows["package"].astype(str).str.startswith("labor_") | rows["package"].astype(str).eq("labor")
+    rows = rows[rows["is_labor"]].copy()
+    if rows.empty:
+        return pd.DataFrame(columns=columns)
     rows = rows[pd.to_numeric(rows.get("area_sqft"), errors="coerce") > 0]
     if rows.empty:
         return pd.DataFrame(columns=columns)
     rows["labor_package"] = rows["package"].where(rows["package"].ne("labor"), rows.get("item_name", "labor").astype(str).str.lower().str.replace(r"\s+", "_", regex=True))
-    rows["hours"] = rows["labor_hours"]
+    rows["package"] = rows["labor_package"]
+    rows["hours"] = pd.to_numeric(rows["total_hours"], errors="coerce")
+    rows.loc[rows["hours"].isna(), "hours"] = pd.to_numeric(rows.loc[rows["hours"].isna(), "labor_hours"], errors="coerce")
+    labor_days = pd.to_numeric(rows["labor_days"], errors="coerce")
+    rows.loc[labor_days.isna(), "labor_days"] = pd.to_numeric(rows.loc[labor_days.isna(), "total_days"], errors="coerce")
+    labor_days = pd.to_numeric(rows["labor_days"], errors="coerce")
+    rows.loc[labor_days.isna(), "labor_days"] = pd.to_numeric(rows.loc[labor_days.isna(), "days"], errors="coerce")
     rows.loc[rows["hours"].isna() & rows["labor_days"].notna() & rows.get("crew_size").notna(), "hours"] = rows["labor_days"] * rows["crew_size"] * 8
     rows["hours_per_1000_sqft"] = rows["hours"] / rows["area_sqft"] * 1000
+    rows["hours_per_sqft"] = rows["hours"] / rows["area_sqft"]
     rows["cost_per_sqft"] = rows["total_cost"] / rows["area_sqft"]
     out = []
     group_cols = LABOR_RATE_GROUP_COLS
     rows = ensure_columns(rows, group_cols)
     for keys, group in rows.groupby(group_cols, dropna=False):
+        key_values = dict(zip(group_cols, keys, strict=True))
         job_ids = sorted(set(group["job_id"].dropna().astype(str)))
         out.append(
             {
-                "project_type": keys[0],
-                "substrate": keys[1],
-                "coating_type": keys[2],
-                "warranty_years": keys[3],
-                "labor_package": keys[4],
+                **key_values,
+                "coating_type": group.get("coating_type", pd.Series(dtype=object)).dropna().iloc[0] if "coating_type" in group.columns and group["coating_type"].notna().any() else None,
+                "warranty_years": group.get("warranty_years", pd.Series(dtype=object)).dropna().iloc[0] if "warranty_years" in group.columns and group["warranty_years"].notna().any() else None,
+                "median_hours_per_sqft": percentile(group.get("hours_per_sqft", pd.Series(dtype=float)), 0.5),
+                "median_cost_per_sqft": percentile(group.get("cost_per_sqft", pd.Series(dtype=float)), 0.5),
+                "median_total_hours": percentile(group.get("hours", pd.Series(dtype=float)), 0.5),
+                "median_total_cost": percentile(group.get("total_cost", pd.Series(dtype=float)), 0.5),
+                "median_crew_size": percentile(group.get("crew_size", pd.Series(dtype=float)), 0.5),
+                "median_days": percentile(group.get("labor_days", pd.Series(dtype=float)), 0.5),
+                "evidence_count": len(job_ids),
+                "supporting_job_ids": json.dumps(job_ids),
+                "labor_package": key_values.get("package"),
                 "median_hours_per_1000_sqft": percentile(group.get("hours_per_1000_sqft", pd.Series(dtype=float)), 0.5),
                 "p25_hours_per_1000_sqft": percentile(group.get("hours_per_1000_sqft", pd.Series(dtype=float)), 0.25),
                 "p75_hours_per_1000_sqft": percentile(group.get("hours_per_1000_sqft", pd.Series(dtype=float)), 0.75),
-                "median_cost_per_sqft": percentile(group.get("cost_per_sqft", pd.Series(dtype=float)), 0.5),
                 "job_count": len(job_ids),
                 "confidence": confidence(len(job_ids)),
-                "supporting_job_ids": json.dumps(job_ids),
             }
         )
-    return pd.DataFrame(out)
+    return pd.DataFrame(out, columns=columns)
 
 
 def build_anomalies(materials: pd.DataFrame, labor: pd.DataFrame) -> pd.DataFrame:
@@ -552,6 +655,59 @@ def anomaly(job_id: str, anomaly_type: str, message: str, row: pd.Series) -> dic
     }
 
 
+def normalize_suggestion_frame(frame: pd.DataFrame | None, required_columns: list[str]) -> pd.DataFrame:
+    if frame is None:
+        frame = pd.DataFrame()
+    frame = frame.copy()
+    for column in required_columns:
+        if column not in frame.columns:
+            frame[column] = None
+    return frame
+
+
+def ensure_job_count(frame: pd.DataFrame) -> pd.DataFrame:
+    frame = frame.copy()
+    has_usable_job_count = "job_count" in frame.columns and pd.to_numeric(frame["job_count"], errors="coerce").notna().any()
+    if not has_usable_job_count:
+        for candidate in ["evidence_count", "supporting_job_count", "n_jobs", "count"]:
+            if candidate in frame.columns:
+                frame["job_count"] = frame[candidate]
+                break
+        else:
+            frame["job_count"] = 0
+    frame["job_count"] = pd.to_numeric(frame["job_count"], errors="coerce").fillna(0)
+    return frame
+
+
+def ensure_cooccurrence_rate(frame: pd.DataFrame) -> pd.DataFrame:
+    frame = frame.copy()
+    has_usable_rate = "co_occurrence_rate" in frame.columns and pd.to_numeric(frame["co_occurrence_rate"], errors="coerce").notna().any()
+    if not has_usable_rate:
+        for candidate in ["support", "confidence", "rate"]:
+            if candidate in frame.columns:
+                frame["co_occurrence_rate"] = frame[candidate]
+                break
+        else:
+            frame["co_occurrence_rate"] = 0
+    frame["co_occurrence_rate"] = pd.to_numeric(frame["co_occurrence_rate"], errors="coerce").fillna(0)
+    return frame
+
+
+def suggestion_diagnostic(rule_type: str, message: str, frame: pd.DataFrame) -> dict[str, Any]:
+    return {
+        "rule_type": "diagnostic",
+        "category": rule_type,
+        "message": message,
+        "available_columns": list(frame.columns) if frame is not None else [],
+    }
+
+
+def print_suggestion_frame_debug(name: str, frame: pd.DataFrame | None) -> None:
+    columns = list(frame.columns) if isinstance(frame, pd.DataFrame) else []
+    rows = len(frame) if isinstance(frame, pd.DataFrame) else 0
+    print(f"Rule suggestion input: {name} rows={rows} columns={columns}", flush=True)
+
+
 def build_rule_suggestions(
     warranty: pd.DataFrame,
     cooccurrence: pd.DataFrame,
@@ -567,7 +723,22 @@ def build_rule_suggestions(
         "fastener_treatment_triggers": [],
         "default_production_rates_by_labor_package": [],
         "anomaly_summary": {},
+        "diagnostics": [],
     }
+    print_suggestion_frame_debug("warranty", warranty)
+    print_suggestion_frame_debug("cooccurrence", cooccurrence)
+    print_suggestion_frame_debug("material_ratios", material_ratios)
+    print_suggestion_frame_debug("labor_rates", labor_rates)
+    print_suggestion_frame_debug("anomalies", anomalies)
+
+    warranty = ensure_job_count(normalize_suggestion_frame(warranty, ["coating_type", "warranty_years", "wet_mils", "median_gal_per_sqft", "job_count", "confidence"]))
+    cooccurrence = ensure_cooccurrence_rate(ensure_job_count(normalize_suggestion_frame(cooccurrence, ["co_occurrence_rate", "job_count"])))
+    material_ratios = ensure_job_count(normalize_suggestion_frame(material_ratios, ["package", "job_count", "confidence"]))
+    labor_rates = ensure_job_count(normalize_suggestion_frame(labor_rates, ["project_type", "substrate", "coating_type", "warranty_years", "labor_package", "package", "median_hours_per_1000_sqft", "job_count", "confidence"]))
+    anomalies = normalize_suggestion_frame(anomalies, ["anomaly_type"])
+
+    if warranty.empty:
+        rules["diagnostics"].append(suggestion_diagnostic("warranty_years_to_wet_mils", "Skipped warranty/coating suggestions because output was empty", warranty))
     for _, row in warranty.sort_values("job_count", ascending=False).head(50).iterrows():
         rules["warranty_years_to_wet_mils"].append(
             {
@@ -579,9 +750,15 @@ def build_rule_suggestions(
                 "confidence": row.get("confidence"),
             }
         )
-    likely = cooccurrence[cooccurrence.get("co_occurrence_rate", 0) >= 0.5] if not cooccurrence.empty else pd.DataFrame()
+
+    if cooccurrence.empty:
+        rules["diagnostics"].append(suggestion_diagnostic("project_substrate_likely_work_packages", "Skipped package co-occurrence suggestions because output was empty", cooccurrence))
+    likely = cooccurrence[cooccurrence["co_occurrence_rate"] >= 0.5] if not cooccurrence.empty else cooccurrence.iloc[0:0].copy()
     for _, row in likely.sort_values(["job_count", "co_occurrence_rate"], ascending=False).head(100).iterrows():
         rules["project_substrate_likely_work_packages"].append(row.dropna().to_dict())
+
+    if labor_rates.empty:
+        rules["diagnostics"].append(suggestion_diagnostic("default_production_rates_by_labor_package", "Skipped labor rate suggestions because output was empty", labor_rates))
     for _, row in labor_rates.sort_values("job_count", ascending=False).head(100).iterrows():
         rate = to_number(row.get("median_hours_per_1000_sqft"))
         if rate:
@@ -591,19 +768,24 @@ def build_rule_suggestions(
                     "substrate": row.get("substrate"),
                     "coating_type": row.get("coating_type"),
                     "warranty_years": row.get("warranty_years"),
-                    "labor_package": row.get("labor_package"),
+                    "labor_package": row.get("labor_package") or row.get("package"),
                     "median_hours_per_1000_sqft": rate,
                     "supporting_job_count": int(row.get("job_count") or 0),
                     "confidence": row.get("confidence"),
                 }
             )
-    primer_rows = material_ratios[material_ratios["package"].eq("primer")] if not material_ratios.empty and "package" in material_ratios.columns else pd.DataFrame()
+
+    if material_ratios.empty:
+        rules["diagnostics"].append(suggestion_diagnostic("material_package_relationships", "Skipped material trigger suggestions because output was empty", material_ratios))
+    primer_rows = material_ratios[material_ratios["package"].eq("primer")] if not material_ratios.empty and "package" in material_ratios.columns else material_ratios.iloc[0:0].copy()
     for _, row in primer_rows.sort_values("job_count", ascending=False).head(50).iterrows():
         rules["primer_inclusion_triggers"].append(row.dropna().to_dict())
-    fastener_rows = material_ratios[material_ratios["package"].eq("fastener_treatment")] if not material_ratios.empty and "package" in material_ratios.columns else pd.DataFrame()
+    fastener_rows = material_ratios[material_ratios["package"].eq("fastener_treatment")] if not material_ratios.empty and "package" in material_ratios.columns else material_ratios.iloc[0:0].copy()
     for _, row in fastener_rows.sort_values("job_count", ascending=False).head(50).iterrows():
         rules["fastener_treatment_triggers"].append(row.dropna().to_dict())
-    if not anomalies.empty:
+    if anomalies.empty:
+        rules["diagnostics"].append(suggestion_diagnostic("anomaly_summary", "Skipped anomaly summary because output was empty", anomalies))
+    elif "anomaly_type" in anomalies.columns:
         rules["anomaly_summary"] = anomalies["anomaly_type"].value_counts().to_dict()
     return rules
 
@@ -695,6 +877,57 @@ def source_documents_from_line_items(line_items: pd.DataFrame) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows)
+
+
+def line_items_from_template_rows(template_rows: pd.DataFrame) -> pd.DataFrame:
+    if template_rows.empty:
+        return pd.DataFrame()
+    rows = template_rows.copy()
+    rows = rows.rename(
+        columns={
+            "template_row_id": "line_item_id",
+            "source_file": "estimate_file",
+            "sheet_name": "source_sheet",
+            "row_number": "source_row",
+            "selected_item_name": "line_item_name",
+            "template_section": "section",
+            "unit_price": "unit_cost",
+            "estimated_cost": "extended_cost",
+            "days": "labor_days",
+            "total_hours": "labor_hours",
+        }
+    )
+    if "category" not in rows.columns:
+        rows["category"] = rows.get("line_item_kind")
+    if "line_item_name" not in rows.columns:
+        rows["line_item_name"] = None
+    rows["line_item_name"] = rows["line_item_name"].where(rows["line_item_name"].notna(), rows.get("row_label"))
+    rows["line_item_name"] = rows["line_item_name"].where(rows["line_item_name"].notna(), rows.get("template_bucket"))
+    rows["source_type_table"] = "estimate_template_rows"
+    return rows
+
+
+def line_items_from_classifications(classifications: pd.DataFrame) -> pd.DataFrame:
+    if classifications.empty:
+        return pd.DataFrame()
+    rows = classifications.copy()
+    rows = rows.rename(
+        columns={
+            "source_file": "estimate_file",
+            "sheet_name": "source_sheet",
+            "row_number": "source_row",
+            "raw_item_name": "line_item_name",
+            "raw_description": "description",
+            "template_section": "section",
+            "line_total": "extended_cost",
+        }
+    )
+    if "category" not in rows.columns:
+        rows["category"] = rows.get("line_item_kind")
+    if "line_item_name" not in rows.columns:
+        rows["line_item_name"] = rows.get("normalized_item_name")
+    rows["source_type_table"] = "estimate_line_item_classifications"
+    return rows
 
 
 def raw_line_items_from_existing(line_items: pd.DataFrame, source_documents: pd.DataFrame) -> pd.DataFrame:
@@ -796,6 +1029,84 @@ def normalize_jobs_from_database(jobs: pd.DataFrame, estimates: pd.DataFrame) ->
     return source[keep].drop_duplicates("job_id")
 
 
+def first_nonmissing(values: pd.Series) -> Any:
+    for value in values:
+        if clean_text(value):
+            return value
+    return None
+
+
+def value_from_template_row(row: pd.Series) -> float | None:
+    for column in ("quantity", "estimated_units", "estimated_cost", "unit_price", "total_hours", "warranty_years"):
+        number = to_number(row.get(column))
+        if number and number > 0:
+            return number
+    text = " ".join(clean_text(row.get(column)) for column in ("selected_item_name", "row_label", "raw_text", "cell_values") if column in row.index)
+    matches = re.findall(r"\b\d[\d,]*(?:\.\d+)?\b", text)
+    for match in matches:
+        number = to_number(match)
+        if number and number > 0:
+            return number
+    return None
+
+
+def job_context_from_template_rows(template_rows: pd.DataFrame) -> pd.DataFrame:
+    if template_rows.empty or "job_id" not in template_rows.columns:
+        return pd.DataFrame()
+    rows = ensure_columns(template_rows, ["job_id", "template_type", "template_bucket", "selected_item_name", "row_label", "quantity", "estimated_units", "estimated_cost", "unit_price", "warranty_years"])
+    out = []
+    for job_id, group in rows.groupby("job_id", dropna=False):
+        if not clean_text(job_id):
+            continue
+        context: dict[str, Any] = {"job_id": job_id}
+        if group["template_type"].notna().any():
+            context["template_type"] = first_nonmissing(group["template_type"])
+        for bucket, field in {
+            "job_name": "job_name",
+            "job_type": "project_type",
+            "estimated_square_feet": "area_sqft",
+            "warranty": "warranty_years",
+        }.items():
+            bucket_rows = group[group["template_bucket"].astype(str).eq(bucket)]
+            if bucket_rows.empty:
+                continue
+            if field == "area_sqft":
+                for _, row in bucket_rows.iterrows():
+                    value = value_from_template_row(row)
+                    if value:
+                        context[field] = value
+                        break
+            elif field == "warranty_years":
+                value = first_nonmissing(bucket_rows["warranty_years"])
+                if value is None:
+                    for _, row in bucket_rows.iterrows():
+                        value = value_from_template_row(row)
+                        if value:
+                            break
+                context[field] = value
+            else:
+                context[field] = first_nonmissing(bucket_rows.get("selected_item_name", pd.Series(dtype=object))) or first_nonmissing(bucket_rows.get("row_label", pd.Series(dtype=object)))
+        out.append(context)
+    if not out:
+        return pd.DataFrame()
+    context = pd.DataFrame(out)
+    context = ensure_columns(context, ["job_id", *JOB_CONTEXT_COLUMNS])
+    for column in ["area_sqft", "warranty_years"]:
+        context[column] = pd.to_numeric(context[column], errors="coerce")
+    context["area_bucket"] = context["area_sqft"].apply(area_bucket)
+    return context
+
+
+def enrich_jobs_with_template_context(estimate_jobs: pd.DataFrame, template_rows: pd.DataFrame) -> pd.DataFrame:
+    template_context = job_context_from_template_rows(template_rows)
+    if template_context.empty:
+        return ensure_columns(estimate_jobs, ["job_id", *JOB_CONTEXT_COLUMNS]) if not estimate_jobs.empty else estimate_jobs
+    if estimate_jobs.empty:
+        return template_context[["job_id", *JOB_CONTEXT_COLUMNS]].drop_duplicates("job_id")
+    merged = merge_job_context(estimate_jobs, template_context)
+    return ensure_columns(merged, ["job_id", *JOB_CONTEXT_COLUMNS])[["job_id", *JOB_CONTEXT_COLUMNS]].drop_duplicates("job_id")
+
+
 def source_type_for_row(row: pd.Series) -> str:
     if is_labor_row(row):
         return "labor_budget"
@@ -833,6 +1144,9 @@ def normalize_raw_line_items(raw: pd.DataFrame) -> pd.DataFrame:
     normalized["unit"] = normalized["unit"].apply(canonical_unit)
     if "job_id" not in normalized.columns:
         normalized["job_id"] = ""
+    if "template_bucket" not in normalized.columns:
+        normalized["template_bucket"] = ""
+    normalized["template_bucket"] = normalized["template_bucket"].apply(normalized_template_bucket)
     normalized["package"] = normalized.apply(classify_package, axis=1)
     normalized["line_type"] = normalized.apply(lambda row: "labor" if is_labor_row(row) else "material", axis=1)
     normalized["normalized_item_name"] = normalized.get("item_name", "").fillna("").astype(str).str.strip().str.lower().str.replace(r"\s+", " ", regex=True)
@@ -864,6 +1178,9 @@ def normalize_raw_line_items(raw: pd.DataFrame) -> pd.DataFrame:
         "source_row",
         "line_type",
         "package",
+        "template_bucket",
+        "template_type",
+        "line_item_kind",
         "normalized_item_name",
         "item_name",
         "category",
@@ -892,8 +1209,12 @@ def build_job_package_summary(normalized: pd.DataFrame, estimate_jobs: pd.DataFr
     if normalized.empty:
         return pd.DataFrame()
     rows = merge_job_context(normalized.copy(), estimate_jobs)
+    rows = ensure_columns(rows, ["normalized_line_item_id", "package", "source_type", "physical_quantity_valid", "review_required", "labor_hours", "labor_days", "crew_size", "quantity", "total_cost", *JOB_CONTEXT_COLUMNS])
     rows["total_cost"] = pd.to_numeric(rows.get("total_cost"), errors="coerce")
     rows["quantity"] = pd.to_numeric(rows.get("quantity"), errors="coerce")
+    rows["labor_hours"] = pd.to_numeric(rows.get("labor_hours"), errors="coerce")
+    rows["labor_days"] = pd.to_numeric(rows.get("labor_days"), errors="coerce")
+    rows["crew_size"] = pd.to_numeric(rows.get("crew_size"), errors="coerce")
     out = []
     for (job_id, package), group in rows.groupby(["job_id", "package"], dropna=False):
         valid_quantity = group[group["physical_quantity_valid"].astype(bool)]
@@ -902,25 +1223,33 @@ def build_job_package_summary(normalized: pd.DataFrame, estimate_jobs: pd.DataFr
         total_quantity = valid_quantity["quantity"].sum() if not valid_quantity.empty and unit != "mixed" else math.nan
         total_cost = group["total_cost"].sum(min_count=1)
         area = to_number(group["area_sqft"].dropna().iloc[0]) if "area_sqft" in group.columns and group["area_sqft"].notna().any() else None
+        total_hours = group["labor_hours"].sum(min_count=1) if "labor_hours" in group.columns else math.nan
+        total_days = group["labor_days"].sum(min_count=1) if "labor_days" in group.columns else math.nan
+        median_crew_size = group["crew_size"].median() if "crew_size" in group.columns else math.nan
         line_ids = sorted(set(group["normalized_line_item_id"].dropna().astype(str)))
+        context = {column: (group[column].dropna().iloc[0] if column in group.columns and group[column].notna().any() else None) for column in JOB_CONTEXT_COLUMNS}
         out.append(
             {
                 "job_id": job_id,
+                **context,
                 "package": package,
                 "included": True,
                 "total_quantity": total_quantity,
                 "unit": unit,
                 "total_cost": total_cost,
-                "total_hours": group["labor_hours"].sum(min_count=1) if "labor_hours" in group.columns else math.nan,
+                "total_hours": total_hours,
+                "total_days": total_days,
+                "crew_size": median_crew_size,
                 "qty_per_sqft": total_quantity / area if area and total_quantity == total_quantity else math.nan,
                 "cost_per_sqft": total_cost / area if area and total_cost == total_cost else math.nan,
+                "hours_per_sqft": total_hours / area if area and total_hours == total_hours else math.nan,
                 "has_physical_quantity": bool(group["physical_quantity_valid"].astype(bool).any()),
                 "has_allowance": bool(group["source_type"].eq("cost_allowance").any()),
                 "review_required": bool(group["review_required"].astype(bool).any()),
                 "evidence_line_item_ids": json.dumps(line_ids),
             }
         )
-    return pd.DataFrame(out)
+    return ensure_columns(pd.DataFrame(out), ["job_id", *JOB_CONTEXT_COLUMNS, "package", "included", "total_quantity", "unit", "total_cost", "total_hours", "total_days", "crew_size", "qty_per_sqft", "cost_per_sqft", "hours_per_sqft", "has_physical_quantity", "has_allowance", "review_required", "evidence_line_item_ids"])
 
 
 def material_rows_from_package_summary(summary: pd.DataFrame, jobs: pd.DataFrame) -> pd.DataFrame:
@@ -982,6 +1311,92 @@ def print_relationship_generation_summary(summary_with_jobs: pd.DataFrame) -> No
     )
 
 
+def build_relationship_input_diagnostics(package_summary: pd.DataFrame, normalized: pd.DataFrame, estimate_jobs: pd.DataFrame) -> pd.DataFrame:
+    rows = [
+        {"metric": "package_summary_rows", "value": len(package_summary)},
+        {"metric": "normalized_line_item_rows", "value": len(normalized)},
+        {"metric": "estimate_jobs_rows", "value": len(estimate_jobs)},
+    ]
+    if not package_summary.empty:
+        job_summary = package_summary.drop_duplicates("job_id") if "job_id" in package_summary.columns else package_summary
+        rows.extend(
+            [
+                {"metric": "jobs_with_area_sqft", "value": int((pd.to_numeric(job_summary.get("area_sqft"), errors="coerce") > 0).sum()) if "area_sqft" in job_summary.columns else 0},
+                {"metric": "jobs_missing_area_sqft", "value": int((pd.to_numeric(job_summary.get("area_sqft"), errors="coerce").fillna(0) <= 0).sum()) if "area_sqft" in job_summary.columns else len(job_summary)},
+                {"metric": "jobs_with_warranty_years", "value": int(pd.to_numeric(job_summary.get("warranty_years"), errors="coerce").notna().sum()) if "warranty_years" in job_summary.columns else 0},
+                {"metric": "jobs_with_wet_mils", "value": int(pd.to_numeric(job_summary.get("wet_mils"), errors="coerce").notna().sum()) if "wet_mils" in job_summary.columns else 0},
+            ]
+        )
+    if not normalized.empty and "template_bucket" in normalized.columns:
+        for bucket, count in normalized["template_bucket"].fillna("unknown").replace("", "unknown").value_counts().items():
+            rows.append({"metric": f"template_bucket:{bucket}", "value": int(count)})
+    return pd.DataFrame(rows)
+
+
+def build_package_normalization_diagnostics(normalized: pd.DataFrame) -> pd.DataFrame:
+    columns = ["template_bucket", "package", "line_type", "row_count", "rows_with_hours", "rows_with_cost"]
+    if normalized.empty:
+        return pd.DataFrame(columns=columns)
+    rows = ensure_columns(normalized, ["template_bucket", "package", "line_type", "labor_hours", "total_cost"])
+    out = (
+        rows.groupby(["template_bucket", "package", "line_type"], dropna=False, as_index=False)
+        .agg(
+            row_count=("package", "size"),
+            rows_with_hours=("labor_hours", lambda values: int(pd.to_numeric(values, errors="coerce").notna().sum())),
+            rows_with_cost=("total_cost", lambda values: int(pd.to_numeric(values, errors="coerce").notna().sum())),
+        )
+        .sort_values(["row_count", "package"], ascending=[False, True])
+    )
+    return out[columns]
+
+
+def build_missing_job_context(package_summary: pd.DataFrame) -> pd.DataFrame:
+    columns = ["job_id", "missing_context_fields"]
+    if package_summary.empty or "job_id" not in package_summary.columns:
+        return pd.DataFrame(columns=columns)
+    job_rows = ensure_columns(package_summary.drop_duplicates("job_id"), ["job_id", *JOB_CONTEXT_COLUMNS])
+    rows = []
+    for _, row in job_rows.iterrows():
+        missing = []
+        for column in ["area_sqft", "source_year", "division", "pipeline_status", "status", "template_type", "project_type", "substrate", "warranty_years", "wet_mils", "coating_type", "roof_condition", "access_complexity"]:
+            value = row.get(column)
+            if column in {"area_sqft", "warranty_years", "wet_mils"}:
+                if to_number(value) is None:
+                    missing.append(column)
+            elif not clean_text(value):
+                missing.append(column)
+        if missing:
+            rows.append({"job_id": row.get("job_id"), "missing_context_fields": ",".join(missing)})
+    return pd.DataFrame(rows, columns=columns)
+
+
+def build_labor_rate_diagnostics(package_summary: pd.DataFrame) -> pd.DataFrame:
+    columns = ["package", "row_count", "rows_with_total_hours", "rows_with_total_cost", "rows_with_area_sqft", "excluded_missing_area", "excluded_missing_hours_and_cost"]
+    if package_summary.empty or "package" not in package_summary.columns:
+        return pd.DataFrame(columns=columns)
+    rows = package_summary[package_summary["package"].astype(str).str.startswith("labor")].copy()
+    if rows.empty:
+        return pd.DataFrame(columns=columns)
+    rows = ensure_columns(rows, ["package", "total_hours", "total_cost", "area_sqft"])
+    rows["_has_hours"] = pd.to_numeric(rows["total_hours"], errors="coerce").notna()
+    rows["_has_cost"] = pd.to_numeric(rows["total_cost"], errors="coerce").notna()
+    rows["_has_area"] = pd.to_numeric(rows["area_sqft"], errors="coerce") > 0
+    out = (
+        rows.groupby("package", dropna=False, as_index=False)
+        .agg(
+            row_count=("package", "size"),
+            rows_with_total_hours=("_has_hours", "sum"),
+            rows_with_total_cost=("_has_cost", "sum"),
+            rows_with_area_sqft=("_has_area", "sum"),
+            excluded_missing_area=("_has_area", lambda values: int((~values).sum())),
+            excluded_missing_hours_and_cost=("_has_hours", lambda values: 0),
+        )
+    )
+    missing_hours_cost = rows.assign(_missing_hours_cost=~(rows["_has_hours"] | rows["_has_cost"])).groupby("package")["_missing_hours_cost"].sum()
+    out["excluded_missing_hours_and_cost"] = out["package"].map(missing_hours_cost).fillna(0).astype(int)
+    return out[columns]
+
+
 def profile_relationships_from_database(
     *,
     engine: Engine,
@@ -993,15 +1408,27 @@ def profile_relationships_from_database(
     write_review_sheet: bool = False,
 ) -> dict[str, Path]:
     existing_line_items = read_table(engine, "estimate_line_items")
+    existing_template_rows = read_table(engine, "estimate_template_rows")
+    existing_classifications = read_table(engine, "estimate_line_item_classifications")
     existing_jobs = read_table(engine, "jobs")
     existing_estimates = read_table(engine, "estimates")
-    if existing_line_items.empty:
-        raise RuntimeError("estimate_line_items table is empty or missing; load extracted line items before profiling.")
+    if not existing_template_rows.empty:
+        source_line_items = line_items_from_template_rows(existing_template_rows)
+        source_name = "estimate_template_rows"
+    elif not existing_classifications.empty:
+        source_line_items = line_items_from_classifications(existing_classifications)
+        source_name = "estimate_line_item_classifications"
+    else:
+        source_line_items = existing_line_items
+        source_name = "estimate_line_items"
+    if source_line_items.empty:
+        raise RuntimeError("No extracted estimate line item tables have data; load estimate_template_rows, estimate_line_item_classifications, or estimate_line_items before profiling.")
+    print(f"Relationship profiler source table: {source_name} ({len(source_line_items)} rows)", flush=True)
 
-    source_documents = source_documents_from_line_items(existing_line_items)
-    raw = raw_line_items_from_existing(existing_line_items, source_documents)
+    source_documents = source_documents_from_line_items(source_line_items)
+    raw = raw_line_items_from_existing(source_line_items, source_documents)
     normalized = normalize_raw_line_items(raw)
-    estimate_jobs = normalize_jobs_from_database(existing_jobs, existing_estimates)
+    estimate_jobs = enrich_jobs_with_template_context(normalize_jobs_from_database(existing_jobs, existing_estimates), existing_template_rows)
     package_summary = build_job_package_summary(normalized, estimate_jobs)
 
     write_table(engine, "source_documents", source_documents)
@@ -1016,20 +1443,27 @@ def profile_relationships_from_database(
     filtered_normalized = normalized[normalized["job_id"].astype(str).isin(job_ids)].copy() if job_ids else normalized.iloc[0:0].copy()
     summary_with_jobs = merge_job_context(filtered_summary, filtered_jobs)
     print_relationship_generation_summary(summary_with_jobs)
-    material_rows = material_rows_from_package_summary(filtered_summary, filtered_jobs)
-    labor_rows = labor_rows_from_normalized(filtered_normalized, filtered_jobs)
+    package_rows = material_rows_from_package_summary(filtered_summary, filtered_jobs)
+    labor_rows = package_rows[package_rows["package"].astype(str).str.startswith("labor")].copy() if not package_rows.empty and "package" in package_rows.columns else pd.DataFrame()
+    labor_rows_for_anomalies = labor_rows_from_normalized(filtered_normalized, filtered_jobs)
     normalized_material_rows = filtered_normalized[filtered_normalized["line_type"].ne("labor")].copy()
     normalized_material_rows["is_material"] = True
     normalized_material_rows["is_labor"] = False
     normalized_material_rows = merge_job_context(normalized_material_rows, filtered_jobs)
 
     outputs = {
-        "relationship_warranty_coating.csv": build_warranty_coating(material_rows),
-        "relationship_package_cooccurrence.csv": build_work_package_cooccurrence(material_rows),
-        "relationship_work_package_cooccurrence.csv": build_work_package_cooccurrence(material_rows),
+        "relationship_warranty_coating.csv": build_warranty_coating(package_rows),
+        "relationship_package_cooccurrence.csv": build_work_package_cooccurrence(package_rows),
+        "relationship_work_package_cooccurrence.csv": build_work_package_cooccurrence(package_rows),
         "relationship_material_qty_ratios.csv": material_qty_ratios_from_summary(summary_with_jobs),
         "relationship_labor_rates.csv": build_labor_rates(labor_rows),
-        "relationship_anomalies.csv": build_anomalies(normalized_material_rows, labor_rows),
+        "relationship_anomalies.csv": build_anomalies(normalized_material_rows, labor_rows_for_anomalies),
+    }
+    diagnostics = {
+        "relationship_input_diagnostics.csv": build_relationship_input_diagnostics(package_summary, normalized, estimate_jobs),
+        "package_normalization_diagnostics.csv": build_package_normalization_diagnostics(normalized),
+        "missing_job_context.csv": build_missing_job_context(package_summary),
+        "labor_rate_diagnostics.csv": build_labor_rate_diagnostics(package_summary),
     }
     if min_job_count > 1:
         for key in [
@@ -1046,6 +1480,10 @@ def profile_relationships_from_database(
     out_dir.mkdir(parents=True, exist_ok=True)
     paths: dict[str, Path] = {}
     for filename, frame in outputs.items():
+        path = out_dir / filename
+        frame.to_csv(path, index=False)
+        paths[filename] = path
+    for filename, frame in diagnostics.items():
         path = out_dir / filename
         frame.to_csv(path, index=False)
         paths[filename] = path
@@ -1066,6 +1504,7 @@ def profile_relationships_from_database(
             normalized.head(5000).to_excel(writer, sheet_name="normalized_rows", index=False)
             package_summary.head(5000).to_excel(writer, sheet_name="package_summary", index=False)
             outputs["relationship_anomalies.csv"].head(5000).to_excel(writer, sheet_name="anomalies", index=False)
+            diagnostics["labor_rate_diagnostics.csv"].head(5000).to_excel(writer, sheet_name="labor_diagnostics", index=False)
         paths["relationship_review_sheet.xlsx"] = review_path
     return paths
 

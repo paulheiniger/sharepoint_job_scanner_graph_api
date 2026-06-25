@@ -6,7 +6,11 @@ import pandas as pd
 from sqlalchemy import create_engine, inspect
 
 from relationship_profiler import (
+    build_job_package_summary,
+    build_labor_rates,
     build_material_qty_ratios,
+    build_missing_job_context,
+    build_rule_suggestions,
     material_qty_ratios_from_summary,
     profile_relationships,
     profile_relationships_from_database,
@@ -109,6 +113,160 @@ def test_build_material_qty_ratios_groups_without_warranty_years() -> None:
     assert "warranty_years" in ratios.columns
     assert ratios.loc[0, "package"] == "seam_treatment"
     assert pd.isna(ratios.loc[0, "warranty_years"])
+
+
+def test_job_package_summary_preserves_context_and_hours_per_sqft() -> None:
+    normalized = pd.DataFrame(
+        [
+            {
+                "normalized_line_item_id": "N1",
+                "job_id": "J1",
+                "package": "labor_foam",
+                "line_type": "labor",
+                "labor_hours": 48,
+                "labor_days": 2,
+                "crew_size": 3,
+                "total_cost": 2400,
+                "quantity": None,
+                "unit": "",
+                "physical_quantity_valid": False,
+                "source_type": "labor_budget",
+                "review_required": False,
+            }
+        ]
+    )
+    jobs = pd.DataFrame(
+        [
+            {
+                "job_id": "J1",
+                "source_year": 2026,
+                "division": "Insulation",
+                "pipeline_status": "Completed",
+                "status": "Completed",
+                "template_type": "insulation",
+                "project_type": "wall insulation",
+                "substrate": "wall",
+                "area_sqft": 1200,
+            }
+        ]
+    )
+
+    summary = build_job_package_summary(normalized, jobs)
+
+    row = summary.iloc[0]
+    assert row["package"] == "labor_foam"
+    assert row["template_type"] == "insulation"
+    assert row["area_sqft"] == 1200
+    assert row["total_hours"] == 48
+    assert row["hours_per_sqft"] == 0.04
+
+
+def test_specific_labor_buckets_generate_labor_rates() -> None:
+    summary = pd.DataFrame(
+        [
+            {
+                "job_id": "J1",
+                "source_year": 2026,
+                "division": "Insulation",
+                "template_type": "insulation",
+                "project_type": "wall insulation",
+                "substrate": "wall",
+                "package": "labor_foam",
+                "unit": "",
+                "area_sqft": 1200,
+                "total_hours": 48,
+                "total_cost": 2400,
+                "total_days": 2,
+                "crew_size": 3,
+                "is_labor": True,
+            }
+        ]
+    )
+
+    rates = build_labor_rates(summary)
+
+    assert not rates.empty
+    assert rates.iloc[0]["package"] == "labor_foam"
+    assert rates.iloc[0]["median_hours_per_sqft"] == 0.04
+    assert rates.iloc[0]["median_total_hours"] == 48
+    assert rates.iloc[0]["median_crew_size"] == 3
+    assert rates.iloc[0]["evidence_count"] == 1
+
+
+def test_missing_area_does_not_crash_and_appears_in_diagnostics() -> None:
+    summary = pd.DataFrame(
+        [
+            {
+                "job_id": "J1",
+                "package": "labor_foam",
+                "total_hours": 48,
+                "area_sqft": None,
+            }
+        ]
+    )
+
+    rates = build_labor_rates(summary)
+    diagnostics = build_missing_job_context(summary)
+
+    assert rates.empty
+    assert not diagnostics.empty
+    assert "area_sqft" in diagnostics.iloc[0]["missing_context_fields"]
+
+
+def test_build_rule_suggestions_accepts_evidence_count_without_job_count() -> None:
+    cooccurrence = pd.DataFrame(
+        [
+            {
+                "project_type": "roof coating",
+                "substrate": "metal",
+                "package_a": "coating",
+                "package_b": "seam_treatment",
+                "co_occurrence_rate": 0.75,
+                "evidence_count": 4,
+            }
+        ]
+    )
+
+    suggestions = build_rule_suggestions(
+        warranty=pd.DataFrame(),
+        cooccurrence=cooccurrence,
+        material_ratios=pd.DataFrame(),
+        labor_rates=pd.DataFrame(),
+        anomalies=pd.DataFrame(),
+    )
+
+    assert suggestions["project_substrate_likely_work_packages"]
+    assert suggestions["project_substrate_likely_work_packages"][0]["job_count"] == 4
+
+
+def test_build_rule_suggestions_handles_empty_frames() -> None:
+    suggestions = build_rule_suggestions(
+        warranty=pd.DataFrame(),
+        cooccurrence=pd.DataFrame(),
+        material_ratios=pd.DataFrame(),
+        labor_rates=pd.DataFrame(),
+        anomalies=pd.DataFrame(),
+    )
+
+    assert suggestions["diagnostics"]
+    assert suggestions["warranty_years_to_wet_mils"] == []
+    assert suggestions["project_substrate_likely_work_packages"] == []
+    assert suggestions["default_production_rates_by_labor_package"] == []
+
+
+def test_build_rule_suggestions_handles_sparse_optional_columns() -> None:
+    suggestions = build_rule_suggestions(
+        warranty=pd.DataFrame([{"evidence_count": 2}]),
+        cooccurrence=pd.DataFrame([{"support": 0.8, "count": 3}]),
+        material_ratios=pd.DataFrame([{"package": "primer", "evidence_count": 2}]),
+        labor_rates=pd.DataFrame([{"package": "labor_foam", "median_hours_per_1000_sqft": 12, "evidence_count": 3}]),
+        anomalies=pd.DataFrame([{"anomaly_type": "unit_cost_suspicious"}]),
+    )
+
+    assert suggestions["project_substrate_likely_work_packages"][0]["job_count"] == 3
+    assert suggestions["primer_inclusion_triggers"][0]["job_count"] == 2
+    assert suggestions["default_production_rates_by_labor_package"][0]["labor_package"] == "labor_foam"
+    assert suggestions["anomaly_summary"] == {"unit_cost_suspicious": 1}
 
 
 def test_relationship_profiler_writes_relationship_outputs(tmp_path) -> None:
@@ -288,3 +446,87 @@ def test_relationship_profiler_database_pipeline_uses_normalized_tables(tmp_path
     assert "allowance_as_quantity" in set(anomalies["anomaly_type"])
     assert "primer_labor_without_primer_material" in set(anomalies["anomaly_type"])
     assert paths["relationship_review_sheet.xlsx"].exists()
+
+
+def test_database_pipeline_prefers_template_rows_and_preserves_specific_labor_packages(tmp_path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'template_relationships.db'}")
+    out_dir = tmp_path / "template_relationships"
+    pd.DataFrame(
+        [
+            {
+                "job_id": "J1",
+                "source_year": 2026,
+                "division": "Insulation",
+                "pipeline_status": "Completed",
+                "status": "Completed",
+                "customer": "Acme",
+                "job_name": "Acme insulation",
+                "job_type": "wall insulation",
+                "estimated_sqft": 1200,
+            }
+        ]
+    ).to_sql("jobs", engine, index=False)
+    pd.DataFrame(
+        [
+            {
+                "template_row_id": "T1",
+                "document_id": "D1",
+                "job_id": "J1",
+                "source_file": "Estimate Insulation.xlsx",
+                "template_type": "insulation",
+                "sheet_name": "Estimate",
+                "row_number": 86,
+                "template_bucket": "labor_foam",
+                "template_section": "labor",
+                "line_item_kind": "labor",
+                "selected_item_name": "Foam",
+                "days": 2,
+                "crew_size": 3,
+                "total_hours": 48,
+                "estimated_cost": 2400,
+                "needs_review": False,
+            },
+            {
+                "template_row_id": "T2",
+                "document_id": "D1",
+                "job_id": "J1",
+                "source_file": "Estimate Insulation.xlsx",
+                "template_type": "insulation",
+                "sheet_name": "Estimate",
+                "row_number": 19,
+                "template_bucket": "foam",
+                "template_section": "materials",
+                "line_item_kind": "material",
+                "selected_item_name": "Closed cell foam",
+                "quantity": 4,
+                "unit": "unit",
+                "unit_price": 1000,
+                "estimated_cost": 4000,
+                "needs_review": False,
+            },
+        ]
+    ).to_sql("estimate_template_rows", engine, index=False)
+
+    paths = profile_relationships_from_database(
+        engine=engine,
+        out_dir=out_dir,
+        source_year="2026",
+        division="Insulation",
+        status="Completed",
+        min_job_count=1,
+    )
+
+    package_summary = pd.read_sql_table("job_package_summary", engine)
+    assert {"area_sqft", "hours_per_sqft", "template_type", "division"}.issubset(package_summary.columns)
+    assert "labor_foam" in set(package_summary["package"])
+    labor_row = package_summary[package_summary["package"] == "labor_foam"].iloc[0]
+    assert labor_row["area_sqft"] == 1200
+    assert labor_row["hours_per_sqft"] == 0.04
+
+    labor_rates = pd.read_csv(paths["relationship_labor_rates.csv"])
+    assert "labor_foam" in set(labor_rates["package"])
+    assert labor_rates.iloc[0]["median_hours_per_sqft"] == 0.04
+    assert paths["relationship_input_diagnostics.csv"].exists()
+    assert paths["package_normalization_diagnostics.csv"].exists()
+    assert paths["missing_job_context.csv"].exists()
+    assert paths["labor_rate_diagnostics.csv"].exists()
