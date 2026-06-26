@@ -85,6 +85,65 @@ def package_summary(engine: Engine) -> pd.DataFrame:
     )
 
 
+STANDARD_ROOFING_LABOR_BUCKETS = {
+    "labor_prep",
+    "labor_prime",
+    "labor_seam_sealer",
+    "labor_base",
+    "labor_top_coat",
+    "labor_details",
+    "labor_cleanup",
+    "labor_loading",
+    "labor_caulk",
+}
+
+ROOFING_LABOR_LIKE_PATTERN = (
+    "prep|prime|primer|seam|base|top coat|cleanup|clean up|caulk|sealant|setup|set up|safety|"
+    "flash|curb|pitch pocket|expansion joint|pocket|granule|infrared|ir scan"
+)
+
+
+def roofing_template_labor_health(engine: Engine) -> dict[str, Any]:
+    if not table_exists(engine, "estimate_template_rows"):
+        return {}
+    columns = set(table_columns(engine, "estimate_template_rows"))
+    needed = {"template_type", "template_bucket", "line_item_kind", "row_label", "row_number"}
+    if not needed.issubset(columns):
+        return {"warning": "estimate_template_rows exists but lacks columns needed for roofing labor health checks."}
+    rows = read_sql(
+        engine,
+        """
+        SELECT template_type, template_bucket, line_item_kind, row_label, row_number
+        FROM estimate_template_rows
+        WHERE COALESCE(template_type, '') = 'roofing'
+        """,
+    )
+    if rows.empty:
+        return {"roofing_rows": 0}
+    bucket_counts = rows["template_bucket"].fillna("").astype(str).value_counts().to_dict()
+    standard_counts = {bucket: int(bucket_counts.get(bucket, 0)) for bucket in sorted(STANDARD_ROOFING_LABOR_BUCKETS)}
+    standard_total = sum(standard_counts.values())
+    unknown_rows = rows[rows["template_bucket"].fillna("").astype(str).isin({"", "unknown"})].copy()
+    unknown_ratio = len(unknown_rows) / len(rows) if len(rows) else 0
+    labor_like_unknown = unknown_rows[
+        unknown_rows["row_label"].fillna("").astype(str).str.lower().str.contains(ROOFING_LABOR_LIKE_PATTERN, regex=True)
+    ]
+    top_unmapped = (
+        labor_like_unknown["row_label"].fillna("").astype(str).value_counts().head(20).to_dict()
+        if not labor_like_unknown.empty
+        else {}
+    )
+    return {
+        "roofing_rows": int(len(rows)),
+        "standard_roofing_labor_bucket_counts": standard_counts,
+        "standard_roofing_labor_bucket_total": int(standard_total),
+        "unknown_rows": int(len(unknown_rows)),
+        "unknown_ratio": float(unknown_ratio),
+        "labor_like_unknown_rows": int(len(labor_like_unknown)),
+        "top_unmapped_roofing_labor_labels": top_unmapped,
+    }
+
+
 def diagnostic_files_status(output_dir: Path | None, expected_files: list[str]) -> list[dict[str, Any]]:
     if not output_dir:
         return []
@@ -98,7 +157,7 @@ def diagnostic_files_status(output_dir: Path | None, expected_files: list[str]) 
     ]
 
 
-def evaluate_relationships(engine: Engine, checks: dict[str, Any], output_dir: Path | None = None) -> dict[str, Any]:
+def evaluate_relationships(engine: Engine, checks: dict[str, Any], output_dir: Path | None = None, *, strict: bool = False) -> dict[str, Any]:
     failures: list[str] = []
     warnings: list[str] = []
     row_counts: dict[str, int | None] = {}
@@ -169,6 +228,26 @@ def evaluate_relationships(engine: Engine, checks: dict[str, Any], output_dir: P
             template_type_warning = f"template_type mostly null: {null_rows}/{total}"
             warnings.append(template_type_warning)
 
+    roofing_labor_health = roofing_template_labor_health(engine)
+    if roofing_labor_health:
+        health_warning = roofing_labor_health.get("warning")
+        if health_warning:
+            warnings.append(str(health_warning))
+        roofing_rows = int(roofing_labor_health.get("roofing_rows") or 0)
+        standard_total = int(roofing_labor_health.get("standard_roofing_labor_bucket_total") or 0)
+        unknown_ratio = float(roofing_labor_health.get("unknown_ratio") or 0)
+        labor_like_unknown = int(roofing_labor_health.get("labor_like_unknown_rows") or 0)
+        if roofing_rows and standard_total < max(5, roofing_rows * 0.02):
+            message = f"Roofing template rows exist but standard roofing labor buckets are very low: {standard_total}/{roofing_rows}"
+            (failures if strict else warnings).append(message)
+        if roofing_rows and unknown_ratio > 0.5:
+            message = f"Unknown rows dominate estimate_template_rows for roofing: {roofing_labor_health.get('unknown_rows')}/{roofing_rows}"
+            (failures if strict else warnings).append(message)
+        if labor_like_unknown > 0:
+            labels = roofing_labor_health.get("top_unmapped_roofing_labor_labels") or {}
+            message = f"Found {labor_like_unknown} roofing labor-like labels that are unmapped: {labels}"
+            (failures if strict else warnings).append(message)
+
     diagnostics = diagnostic_files_status(output_dir, checks.get("diagnostic_files", []))
     for row in diagnostics:
         if not row["exists"]:
@@ -180,6 +259,7 @@ def evaluate_relationships(engine: Engine, checks: dict[str, Any], output_dir: P
         "warnings": warnings,
         "row_counts": row_counts,
         "package_summary": package_rows,
+        "roofing_labor_health": roofing_labor_health,
         "diagnostic_files": diagnostics,
     }
 
@@ -196,6 +276,9 @@ def print_report(report: dict[str, Any]) -> None:
                 f"  {row.get('package')}: rows={row.get('rows')} area={row.get('rows_with_area')} "
                 f"hours={row.get('rows_with_hours')} hrs/sqft={row.get('rows_with_hours_per_sqft')}"
             )
+    if report.get("roofing_labor_health"):
+        print("Roofing labor health:")
+        print(json.dumps(report["roofing_labor_health"], indent=2, default=str))
     for failure in report["failures"]:
         print(f"failure: {failure}")
     for warning in report["warnings"]:
@@ -208,6 +291,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--checks", type=Path, default=DEFAULT_CHECKS_PATH)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--json-output", type=Path)
+    parser.add_argument("--strict", action="store_true", help="Fail when parser health warnings indicate suspicious relationship inputs.")
     return parser.parse_args(argv)
 
 
@@ -219,7 +303,7 @@ def main(argv: list[str] | None = None) -> int:
     checks = load_checks(args.checks)
     try:
         engine = create_engine(args.db_url, future=True)
-        report = evaluate_relationships(engine, checks, args.output_dir)
+        report = evaluate_relationships(engine, checks, args.output_dir, strict=args.strict)
     except Exception as exc:
         print(f"Relationship mining eval failed to run: {type(exc).__name__}: {exc}")
         return 1

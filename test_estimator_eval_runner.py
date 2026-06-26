@@ -74,3 +74,25 @@ def test_eval_case_report_shape_with_fake_result(monkeypatch) -> None:
     assert report["passed"]
     assert json.dumps(report)
 
+
+def test_print_report_includes_audit_command_for_failures_or_warnings(capsys) -> None:
+    runner.print_report(
+        {
+            "total_cases": 1,
+            "passed_cases": 0,
+            "failed_cases": 1,
+            "results": [
+                {
+                    "case_id": "roof_coating_basic_9536",
+                    "passed": False,
+                    "failures": ["bad"],
+                    "warnings": [],
+                    "actual": {"header": {}, "parsed_fields": {}, "material_items": [], "labor_tasks": [], "review_flags": []},
+                }
+            ],
+        }
+    )
+
+    output = capsys.readouterr().out
+    assert "python -m jobscan.estimator.calibration_audit --case-id roof_coating_basic_9536" in output
+    assert '--database-url "$NEON_DATABASE_URL"' in output

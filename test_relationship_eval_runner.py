@@ -66,3 +66,54 @@ def test_relationship_eval_fails_required_missing_table(tmp_path) -> None:
     assert not report["passed"]
     assert any("Required table missing" in failure for failure in report["failures"])
 
+
+def _seed_required_relationship_tables(engine) -> None:
+    pd.DataFrame(
+        [
+            {
+                "job_id": "J1",
+                "package": "labor",
+                "area_sqft": 1200,
+                "cost_per_sqft": 2,
+                "hours_per_sqft": 0.04,
+                "template_type": "roofing",
+                "total_hours": 48,
+            }
+        ]
+    ).to_sql("job_package_summary", engine, index=False)
+    pd.DataFrame([{"package": "coating", "evidence_count": 1}]).to_sql("relationship_material_qty_ratios", engine, index=False)
+    pd.DataFrame([{"package": "labor", "evidence_count": 1}]).to_sql("relationship_labor_rates", engine, index=False)
+
+
+def test_relationship_eval_warns_when_roofing_labor_like_rows_are_unmapped(tmp_path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'relationships.db'}")
+    _seed_required_relationship_tables(engine)
+    pd.DataFrame(
+        [
+            {"template_type": "roofing", "template_bucket": "unknown", "line_item_kind": "unknown", "row_label": "Pwash/Prep", "row_number": 116},
+            {"template_type": "roofing", "template_bucket": "unknown", "line_item_kind": "unknown", "row_label": "Top Coat", "row_number": 124},
+            {"template_type": "roofing", "template_bucket": "coating", "line_item_kind": "material", "row_label": "Silicone", "row_number": 26},
+        ]
+    ).to_sql("estimate_template_rows", engine, index=False)
+
+    report = runner.evaluate_relationships(engine, runner.load_checks())
+
+    assert report["passed"]
+    assert report["roofing_labor_health"]["labor_like_unknown_rows"] == 2
+    assert any("roofing labor-like labels" in warning for warning in report["warnings"])
+
+
+def test_relationship_eval_strict_fails_when_roofing_labor_health_bad(tmp_path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'relationships.db'}")
+    _seed_required_relationship_tables(engine)
+    pd.DataFrame(
+        [
+            {"template_type": "roofing", "template_bucket": "unknown", "line_item_kind": "unknown", "row_label": "Pwash/Prep", "row_number": 116},
+            {"template_type": "roofing", "template_bucket": "unknown", "line_item_kind": "unknown", "row_label": "Set Up/Safety", "row_number": 118},
+        ]
+    ).to_sql("estimate_template_rows", engine, index=False)
+
+    report = runner.evaluate_relationships(engine, runner.load_checks(), strict=True)
+
+    assert not report["passed"]
+    assert any("standard roofing labor buckets are very low" in failure for failure in report["failures"])

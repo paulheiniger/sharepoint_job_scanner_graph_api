@@ -13,7 +13,7 @@ import pandas as pd
 from sqlalchemy import bindparam, create_engine, text
 from sqlalchemy.engine import Connection, Engine
 
-PARSER_VERSION = "document-content-template-v1"
+PARSER_VERSION = "document-content-template-v2"
 TEMPLATE_TYPE_ROOFING = "roofing"
 TEMPLATE_TYPE_INSULATION = "insulation"
 TEMPLATE_TYPE_UNKNOWN = "unknown"
@@ -186,6 +186,39 @@ ADDER_TEMPLATE_BUCKETS = {"estimate_adder", "estimate_adder_no_markup", "misc_ma
 ADDER_AMOUNT_COLUMNS = ("F", "H", "G", "E")
 
 CELL_FRAGMENT_RE = re.compile(r"^\s*([A-Z]{1,4}\d+)\s*:\s*(.*)\s*$")
+
+ROOFING_LABOR_LABEL_RULES: list[tuple[str, tuple[str, ...]]] = [
+    ("labor_loading", ("set up/safety", "setup/safety", "set-up", "setup", "set up", "mobilization", "loading", "load")),
+    ("labor_cleanup", ("touch/clean up", "touch/cleanup", "clean up", "cleanup", "final clean", "job clean")),
+    ("infrared_scan", ("infrared", "ir scan", "thermal scan", "moisture scan")),
+    ("labor_top_coat_granules", ("granules", "granule", "broadcast")),
+    ("labor_caulk", ("aldo 399", "caulk", "sealant")),
+    ("labor_details", ("flash curbs", "pitch pockets", "expansion joints", "penetrations", "pipe stands", "flashing", "curbs", "skylights", "rtu", "details", "detail work")),
+    ("labor_seam_sealer", ("seam sealer", "seam treatment", "vertical seams", "seams", "seam", "laps")),
+    ("labor_top_coat", ("top coat", "topcoat", "finish coat", "second coat")),
+    ("labor_base", ("to/foam/base", "t.o. foam base", "foam/base", "base coat", "first coat", "base")),
+    ("labor_prep", ("pressure wash", "power wash", "pwash", "pw/prep", "pwash/prep", "clean/prep", "prep/clean", "broom clean", "sweep/prep", "preparation", "prep")),
+    ("labor_prime", ("prime coat", "primer", "prime")),
+]
+
+ROOFING_LABOR_ROW_HINTS = {
+    116: "labor_loading",
+    118: "labor_prime",
+    120: "labor_seam_sealer",
+    122: "labor_base",
+    124: "labor_top_coat",
+    126: "labor_caulk",
+    128: "labor_details",
+    130: "labor_top_coat_granules",
+    132: "labor_cleanup",
+    134: "labor_misc",
+    137: "labor_loading",
+    139: "labor_traveling",
+    142: "infrared_scan",
+    145: "meals_lodging",
+}
+
+ROOFING_LABOR_BUCKET_SET = set(ROOFING_LABOR_BUCKETS.values()) | {"labor_loading", "labor_setup", "labor_mobilization"}
 
 
 def maps_for_template_type(template_type: str) -> dict[str, dict[int, str]]:
@@ -430,6 +463,65 @@ def numeric_at(cell_values: dict[str, Any], row_number: int, column: str) -> flo
     return to_float(value_at(cell_values, row_number, column))
 
 
+def normalize_label_text(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    text = text.replace("&", " and ")
+    text = re.sub(r"\bt\.?\s*o\.?\b", "to", text)
+    text = text.replace("-", " ")
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+
+def _label_matches(text: str, phrase: str) -> bool:
+    normalized_phrase = normalize_label_text(phrase)
+    if "/" in normalized_phrase:
+        return normalized_phrase in text
+    return re.search(rf"(?<![a-z0-9]){re.escape(normalized_phrase)}(?![a-z0-9])", text) is not None
+
+
+def normalize_roofing_labor_bucket(label: Any, description: Any = "", row_number: int | None = None) -> dict[str, Any]:
+    raw_text = " ".join(str(part or "") for part in (label, description))
+    text = normalize_label_text(raw_text)
+    slash_text = re.sub(r"\s*/\s*", "/", text)
+    search_text = f"{text} {slash_text}"
+    matched: list[str] = []
+    matched_phrases: list[str] = []
+    for bucket, phrases in ROOFING_LABOR_LABEL_RULES:
+        bucket_matched = False
+        for phrase in phrases:
+            if _label_matches(search_text, phrase):
+                bucket_matched = True
+                matched_phrases.append(phrase)
+        if bucket_matched and bucket not in matched:
+            matched.append(bucket)
+
+    primary = matched[0] if matched else ""
+    reason = "text_match" if primary else ""
+    if not primary and row_number in ROOFING_LABOR_ROW_HINTS:
+        primary = ROOFING_LABOR_ROW_HINTS[int(row_number)]
+        reason = "row_number_hint"
+
+    if "labor_prep" in matched and "labor_prime" in matched:
+        primary = "labor_prep"
+        reason = "composite_text_match"
+    if "labor_base" in matched and ("foam/base" in search_text or "to/foam/base" in search_text):
+        primary = "labor_base"
+        reason = "composite_text_match"
+    if "labor_cleanup" in matched and "touch" in search_text:
+        primary = "labor_cleanup"
+        reason = "composite_text_match"
+
+    return {
+        "template_bucket": primary,
+        "primary_bucket": primary,
+        "package_tags": matched,
+        "secondary_buckets": [bucket for bucket in matched if bucket != primary],
+        "matched_phrases": sorted(set(matched_phrases)),
+        "mapping_reason": reason,
+        "is_composite": len(matched) > 1 or "/" in str(label or ""),
+    }
+
+
 def detect_template_type_from_rows(rows: list[dict[str, Any] | pd.Series]) -> str:
     source_text_parts: list[str] = []
     row_numbers: set[int] = set()
@@ -444,14 +536,51 @@ def detect_template_type_from_rows(rows: list[dict[str, Any] | pd.Series]) -> st
             cell_values, _formula_cells, _malformed_count = parse_cell_labeled_text(str(record.get("text_content") or ""))
             parsed_by_row[row_number] = cell_values
     source_text = " ".join(source_text_parts).lower()
-    if "estimate insulation" in source_text or "insulation" in str(value_at(parsed_by_row.get(3, {}), 3, "C")).lower():
+    job_type_text = str(value_at(parsed_by_row.get(3, {}), 3, "C") or "").lower()
+    insulation_signals = (
+        "estimate insulation",
+        "spray foam",
+        "closed-cell",
+        "closed cell",
+        "open-cell",
+        "open cell",
+        "dc315",
+        "thermal barrier",
+        "sq ft calculation",
+        "foam wall",
+        "roof deck insulation",
+    )
+    roofing_signals = (
+        "roof",
+        "roofing",
+        "coating",
+        "silicone",
+        "hydrostop",
+        "gaf",
+        "metal roof",
+        "roof replacement",
+        "roof coating",
+        "seams",
+        "fasteners",
+        "top coat",
+        "base coat",
+        "infrared scan",
+        "warranty",
+    )
+    insulation_score = sum(1 for signal in insulation_signals if signal in source_text or signal in job_type_text)
+    roofing_score = sum(1 for signal in roofing_signals if signal in source_text or signal in job_type_text)
+    if "insulation" in job_type_text:
+        insulation_score += 3
+    if "roof" in job_type_text or "coating" in job_type_text:
+        roofing_score += 3
+    if insulation_score >= 2 and insulation_score > roofing_score:
         return TEMPLATE_TYPE_INSULATION
     if 103 in row_numbers and 116 in row_numbers:
         row_103_label = str(value_at(parsed_by_row.get(103, {}), 103, "A") or "").lower()
         row_116_label = str(value_at(parsed_by_row.get(116, {}), 116, "A") or "").lower()
         if "total hours" in row_103_label or "total job cost" in row_116_label:
             return TEMPLATE_TYPE_INSULATION
-    if any(row_number in row_numbers for row_number in (78, 80, 86, 88, 92)):
+    if insulation_score >= 1 and any(row_number in row_numbers for row_number in (78, 80, 86, 88, 92)):
         return TEMPLATE_TYPE_INSULATION
     return TEMPLATE_TYPE_ROOFING
 
@@ -490,6 +619,8 @@ def parse_document_content_row(row: dict[str, Any] | pd.Series, template_type: s
     template_type = template_type or record.get("template_type") or detect_template_type_from_rows([record])
     bucket = template_bucket_by_row(template_type).get(row_number, "unknown")
     row_label = value_at(cell_values, row_number, "A")
+    selected_item_name = value_at(cell_values, row_number, "B")
+    bucket_mapping: dict[str, Any] = {}
     if row_number in ADDER_ROWS:
         label_text = adder_label_text(row_label, cell_values, raw_text)
         estimated_cost = adder_estimated_cost(cell_values, row_number)
@@ -498,9 +629,17 @@ def parse_document_content_row(row: dict[str, Any] | pd.Series, template_type: s
         bucket, kind = classify_estimate_adder(label_text)
         section = "estimate_adders"
     else:
+        if template_type == TEMPLATE_TYPE_ROOFING and (
+            bucket in ROOFING_LABOR_BUCKET_SET
+            or bucket == "unknown"
+            or row_number in ROOFING_LABOR_ROW_HINTS
+        ):
+            bucket_mapping = normalize_roofing_labor_bucket(row_label, selected_item_name or raw_text, row_number)
+            mapped_bucket = bucket_mapping.get("primary_bucket")
+            if mapped_bucket:
+                bucket = str(mapped_bucket)
         section = template_section_for_bucket(bucket, template_type)
         kind = line_item_kind_for_bucket(bucket, template_type)
-    selected_item_name = value_at(cell_values, row_number, "B")
     parsed_confidence = 0.95 if bucket != "unknown" and malformed_count == 0 else 0.55
     needs_review = bucket == "unknown" or malformed_count > 0
 
@@ -521,6 +660,10 @@ def parse_document_content_row(row: dict[str, Any] | pd.Series, template_type: s
         "cell_values": cell_values,
         "formula_cells": formula_cells,
         "selected_item_name": selected_item_name,
+        "package_tags": bucket_mapping.get("package_tags", []),
+        "secondary_buckets": bucket_mapping.get("secondary_buckets", []),
+        "bucket_mapping_reason": bucket_mapping.get("mapping_reason", ""),
+        "is_composite_label": bucket_mapping.get("is_composite", False),
         "quantity": None,
         "unit": None,
         "unit_price": None,

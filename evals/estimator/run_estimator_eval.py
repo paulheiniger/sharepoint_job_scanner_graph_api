@@ -260,7 +260,16 @@ def run_eval(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def print_report(report: dict[str, Any]) -> None:
+def audit_command(case_id: str, audit_output_dir: Path) -> str:
+    return (
+        "python -m jobscan.estimator.calibration_audit "
+        f"--case-id {case_id} "
+        '--database-url "$NEON_DATABASE_URL" '
+        f"--out-dir {audit_output_dir}"
+    )
+
+
+def print_report(report: dict[str, Any], *, audit_output_dir: Path = Path("output/estimator_audit")) -> None:
     print(f"Estimator eval: {report['passed_cases']}/{report['total_cases']} cases passed")
     for result in report["results"]:
         status = "PASS" if result["passed"] else "FAIL"
@@ -269,6 +278,8 @@ def print_report(report: dict[str, Any]) -> None:
             print(f"  failure: {failure}")
         for warning in result["warnings"]:
             print(f"  warning: {warning}")
+        if result["failures"] or result["warnings"]:
+            print(f"  audit: {audit_command(result['case_id'], audit_output_dir)}")
         if result["failures"]:
             actual = result["actual"]
             print(f"  header: {json.dumps(actual.get('header'), default=str)[:1000]}")
@@ -285,6 +296,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--json-output", type=Path)
     parser.add_argument("--allow-db-missing", action="store_true")
     parser.add_argument("--database-url", default=os.getenv("NEON_DATABASE_URL") or os.getenv("DATABASE_URL"))
+    parser.add_argument("--write-audit", action="store_true", help="Write estimator calibration audit packages for selected cases.")
+    parser.add_argument("--audit-output-dir", type=Path, default=Path("output/estimator_audit"))
     return parser.parse_args(argv)
 
 
@@ -295,11 +308,27 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         print(f"Estimator eval failed to run: {type(exc).__name__}: {exc}")
         return 1
-    print_report(report)
+    print_report(report, audit_output_dir=args.audit_output_dir)
     if args.json_output:
         args.json_output.parent.mkdir(parents=True, exist_ok=True)
         args.json_output.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
         print(f"JSON report: {args.json_output}")
+    if args.write_audit:
+        try:
+            from jobscan.estimator.calibration_audit import run_audit_for_case
+
+            for result in report["results"]:
+                paths = run_audit_for_case(
+                    case_id=result["case_id"],
+                    database_url=args.database_url,
+                    out_dir=args.audit_output_dir,
+                    cases_path=args.cases,
+                )
+                print(f"Audit JSON for {result['case_id']}: {paths['json']}")
+                print(f"Audit XLSX for {result['case_id']}: {paths['xlsx']}")
+        except Exception as exc:
+            print(f"Could not write estimator audit package: {type(exc).__name__}: {exc}")
+            return 1
     return 1 if report["failed_cases"] else 0
 
 

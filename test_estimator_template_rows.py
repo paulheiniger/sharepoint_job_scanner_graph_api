@@ -163,6 +163,58 @@ def test_row_116_labor_prep_extracts_labor_fields() -> None:
     assert parsed["daily_rate"] == 1901.9
 
 
+def test_normalize_roofing_labor_bucket_common_labels() -> None:
+    cases = {
+        "Set Up/Safety": "labor_loading",
+        "Setup/Safety": "labor_loading",
+        "Set-Up": "labor_loading",
+        "PW/Prep": "labor_prep",
+        "Pwash/Prep": "labor_prep",
+        "Clean/Prep": "labor_prep",
+        "Prep/Clean": "labor_prep",
+        "Prep/Prime": "labor_prep",
+        "PW/Prep/Prime": "labor_prep",
+        "Prime": "labor_prime",
+        "Primer": "labor_prime",
+        "Prime Coat": "labor_prime",
+        "Flash curbs": "labor_details",
+        "Pitch Pockets": "labor_details",
+        "Expansion Joints": "labor_details",
+        "Touch/Clean Up": "labor_cleanup",
+        "Foam/Base": "labor_base",
+        "TO/Foam/Base": "labor_base",
+        "Seam Sealer": "labor_seam_sealer",
+        "Top Coat": "labor_top_coat",
+        "Caulk": "labor_caulk",
+    }
+
+    for label, expected in cases.items():
+        result = tr.normalize_roofing_labor_bucket(label)
+        assert result["primary_bucket"] == expected, label
+
+
+def test_roofing_labor_setup_safety_does_not_map_to_prep() -> None:
+    parsed = tr.parse_document_content_row(
+        content_row(116, "A116: Set Up/Safety | B116: 1 | C116: 4 | D116: 32 | H116: 2400")
+    )
+
+    assert parsed["template_bucket"] == "labor_loading"
+    assert parsed["template_bucket"] != "labor_prep"
+    assert parsed["line_item_kind"] == "labor"
+    assert parsed["days"] == 1
+    assert parsed["total_hours"] == 32
+
+
+def test_roofing_composite_labor_labels_preserve_secondary_tags() -> None:
+    prep_prime = tr.parse_document_content_row(content_row(116, "A116: PW/Prep/Prime | B116: 2 | C116: 4 | D116: 64 | H116: 4000"))
+    foam_base = tr.parse_document_content_row(content_row(122, "A122: TO/Foam/Base | B122: 3 | C122: 4 | D122: 96 | H122: 7200"))
+
+    assert prep_prime["template_bucket"] == "labor_prep"
+    assert "labor_prime" in prep_prime["package_tags"]
+    assert prep_prime["is_composite_label"] is True
+    assert foam_base["template_bucket"] == "labor_base"
+
+
 def test_row_139_labor_traveling() -> None:
     parsed = tr.parse_document_content_row(content_row(139, "A139: Traveling | C139: 16 | E139: 3 | G139: 72 | H139: 3456"))
 
