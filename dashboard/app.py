@@ -139,6 +139,18 @@ VIEWS = [
     "pricing_catalog",
 ]
 
+HEALTH_TABLES = [
+    ("jobs", "Scanner jobs"),
+    ("documents", "Document manifest"),
+    ("document_content", "Extracted document content"),
+    ("estimate_template_rows", "Estimate template parser"),
+    ("pricing_catalog", "Pricing catalog"),
+    ("estimate_line_item_classifications", "Legacy line-item classifications"),
+    ("job_package_summary", "Relationship package summary"),
+    ("relationship_material_qty_ratios", "Material relationship ratios"),
+    ("relationship_labor_rates", "Labor relationship rates"),
+]
+
 selected_divisions: list[str] = []
 selected_pipeline_statuses: list[str] = []
 selected_statuses: list[str] = []
@@ -1038,6 +1050,214 @@ def query_view(view_name: str) -> pd.DataFrame:
     if view_name not in VIEWS:
         raise ValueError(f"Unsupported dashboard view: {view_name}")
     return safe_load(f"SELECT * FROM {view_name}")
+
+
+def sql_identifier(name: str) -> str:
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        raise ValueError(f"Unsafe SQL identifier: {name}")
+    return name
+
+
+def health_query(query: str, params: dict[str, Any] | None = None) -> tuple[pd.DataFrame, str | None]:
+    result = load_df_uncached(query, params=params)
+    if result.ok:
+        return result.value, None
+    return pd.DataFrame(), safe_exception_text(result.error or RuntimeError("Health query failed."))
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def health_table_exists(table_name: str) -> bool:
+    df, _ = health_query("SELECT to_regclass(:table_name) IS NOT NULL AS table_exists", {"table_name": table_name})
+    if df.empty or "table_exists" not in df.columns:
+        return False
+    return bool(df.iloc[0]["table_exists"])
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def health_table_columns(table_name: str) -> list[str]:
+    df, _ = health_query(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = :table_name
+        ORDER BY ordinal_position
+        """,
+        {"table_name": table_name},
+    )
+    return df["column_name"].astype(str).tolist() if not df.empty and "column_name" in df.columns else []
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def load_admin_health_snapshot() -> dict[str, Any]:
+    snapshot: dict[str, Any] = {
+        "connection_ok": False,
+        "connection_error": None,
+        "row_counts": pd.DataFrame(),
+        "extraction_status_counts": pd.DataFrame(),
+        "template_type_counts": pd.DataFrame(),
+        "recent_problem_documents": pd.DataFrame(),
+        "timestamp_rows": pd.DataFrame(),
+        "warnings": [],
+        "query_errors": [],
+    }
+
+    ping_df, ping_error = health_query("SELECT 1 AS ok")
+    snapshot["connection_ok"] = bool(not ping_df.empty and int(ping_df.iloc[0]["ok"]) == 1)
+    snapshot["connection_error"] = ping_error
+    if ping_error:
+        snapshot["query_errors"].append({"area": "database_connection", "error": ping_error})
+        return snapshot
+
+    row_count_rows: list[dict[str, Any]] = []
+    timestamp_rows: list[dict[str, Any]] = []
+    for table_name, label in HEALTH_TABLES:
+        exists = health_table_exists(table_name)
+        columns = health_table_columns(table_name) if exists else []
+        row: dict[str, Any] = {
+            "table": table_name,
+            "label": label,
+            "exists": exists,
+            "row_count": None,
+        }
+        if exists:
+            identifier = sql_identifier(table_name)
+            count_df, count_error = health_query(f"SELECT COUNT(*)::BIGINT AS row_count FROM {identifier}")
+            if count_error:
+                snapshot["query_errors"].append({"area": f"{table_name}.row_count", "error": count_error})
+            elif not count_df.empty:
+                row["row_count"] = int(count_df.iloc[0]["row_count"] or 0)
+
+            if table_name == "pricing_catalog" and "is_current" in columns:
+                where = "WHERE COALESCE(is_current, false)"
+                if "status" in columns:
+                    where += " AND COALESCE(status, '') = 'active'"
+                current_df, current_error = health_query(f"SELECT COUNT(*)::BIGINT AS current_rows FROM {identifier} {where}")
+                if current_error:
+                    snapshot["query_errors"].append({"area": "pricing_catalog.current_rows", "error": current_error})
+                elif not current_df.empty:
+                    row["current_rows"] = int(current_df.iloc[0]["current_rows"] or 0)
+
+            for timestamp_column in [
+                "last_scanned_at",
+                "last_parsed_at",
+                "parsed_at",
+                "extracted_at",
+                "checkpoint_updated_at",
+                "updated_at",
+                "created_at",
+                "modified_at",
+            ]:
+                if timestamp_column not in columns:
+                    continue
+                ts_df, ts_error = health_query(f"SELECT MAX({sql_identifier(timestamp_column)}) AS latest_value FROM {identifier}")
+                if ts_error:
+                    snapshot["query_errors"].append({"area": f"{table_name}.{timestamp_column}", "error": ts_error})
+                    continue
+                if not ts_df.empty:
+                    timestamp_rows.append(
+                        {
+                            "table": table_name,
+                            "timestamp_column": timestamp_column,
+                            "latest_value": ts_df.iloc[0]["latest_value"],
+                        }
+                    )
+        row_count_rows.append(row)
+
+    row_counts = pd.DataFrame(row_count_rows)
+    snapshot["row_counts"] = row_counts
+    snapshot["timestamp_rows"] = pd.DataFrame(timestamp_rows)
+
+    if health_table_exists("documents") and "extraction_status" in health_table_columns("documents"):
+        extraction_df, extraction_error = health_query(
+            """
+            SELECT COALESCE(NULLIF(extraction_status, ''), 'unknown') AS extraction_status,
+                   COUNT(*)::BIGINT AS row_count
+            FROM documents
+            GROUP BY COALESCE(NULLIF(extraction_status, ''), 'unknown')
+            ORDER BY row_count DESC, extraction_status
+            """
+        )
+        if extraction_error:
+            snapshot["query_errors"].append({"area": "documents.extraction_status_counts", "error": extraction_error})
+        else:
+            snapshot["extraction_status_counts"] = extraction_df
+
+        doc_columns = health_table_columns("documents")
+        display_columns = [
+            column
+            for column in [
+                "document_id",
+                "job_id",
+                "file_name",
+                "document_type",
+                "file_extension",
+                "extraction_status",
+                "extraction_error",
+                "extracted_at",
+                "updated_at",
+            ]
+            if column in doc_columns
+        ]
+        if display_columns:
+            order_column = "updated_at" if "updated_at" in doc_columns else "extracted_at" if "extracted_at" in doc_columns else "document_id"
+            recent_df, recent_error = health_query(
+                f"""
+                SELECT {", ".join(sql_identifier(column) for column in display_columns)}
+                FROM documents
+                WHERE extraction_status IS NULL
+                   OR LOWER(COALESCE(extraction_status, '')) IN ('', 'failed', 'error', 'pending', 'not_started', 'not started', 'queued')
+                ORDER BY {sql_identifier(order_column)} DESC NULLS LAST
+                LIMIT 25
+                """
+            )
+            if recent_error:
+                snapshot["query_errors"].append({"area": "documents.recent_problem_documents", "error": recent_error})
+            else:
+                snapshot["recent_problem_documents"] = recent_df
+
+    if health_table_exists("estimate_template_rows") and "template_type" in health_table_columns("estimate_template_rows"):
+        template_df, template_error = health_query(
+            """
+            SELECT COALESCE(NULLIF(template_type, ''), 'null') AS template_type,
+                   COUNT(*)::BIGINT AS row_count
+            FROM estimate_template_rows
+            GROUP BY COALESCE(NULLIF(template_type, ''), 'null')
+            ORDER BY row_count DESC, template_type
+            """
+        )
+        if template_error:
+            snapshot["query_errors"].append({"area": "estimate_template_rows.template_type_counts", "error": template_error})
+        else:
+            snapshot["template_type_counts"] = template_df
+
+    row_counts_by_table = {str(row.get("table")): row for row in row_count_rows}
+    pricing = row_counts_by_table.get("pricing_catalog", {})
+    if pricing.get("exists") and int(pricing.get("current_rows") or 0) == 0:
+        snapshot["warnings"].append("pricing_catalog current active rows = 0")
+    templates = row_counts_by_table.get("estimate_template_rows", {})
+    if templates.get("exists") and int(templates.get("row_count") or 0) == 0:
+        snapshot["warnings"].append("estimate_template_rows has 0 rows")
+    labor_rates = row_counts_by_table.get("relationship_labor_rates", {})
+    if labor_rates.get("exists") and int(labor_rates.get("row_count") or 0) == 0:
+        snapshot["warnings"].append("relationship_labor_rates has 0 rows")
+
+    extraction_counts = snapshot["extraction_status_counts"]
+    if isinstance(extraction_counts, pd.DataFrame) and not extraction_counts.empty:
+        pending_mask = extraction_counts["extraction_status"].astype(str).str.lower().isin({"", "unknown", "pending", "not_started", "not started", "queued"})
+        pending_count = int(pd.to_numeric(extraction_counts.loc[pending_mask, "row_count"], errors="coerce").fillna(0).sum())
+        total_docs = int(pd.to_numeric(extraction_counts["row_count"], errors="coerce").fillna(0).sum())
+        if pending_count >= 100 or (total_docs and pending_count / total_docs >= 0.25):
+            snapshot["warnings"].append(f"documents pending extraction is high: {pending_count:,} of {total_docs:,}")
+
+    template_counts = snapshot["template_type_counts"]
+    if isinstance(template_counts, pd.DataFrame) and not template_counts.empty:
+        total_templates = int(pd.to_numeric(template_counts["row_count"], errors="coerce").fillna(0).sum())
+        null_templates = int(pd.to_numeric(template_counts.loc[template_counts["template_type"].astype(str).str.lower().eq("null"), "row_count"], errors="coerce").fillna(0).sum())
+        if total_templates and null_templates / total_templates >= 0.5:
+            snapshot["warnings"].append(f"template_type is mostly null: {null_templates:,} of {total_templates:,}")
+
+    return snapshot
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -3961,6 +4181,83 @@ def raw_tables_page() -> None:
     )
 
 
+def admin_health_page() -> None:
+    st.title("Admin / Health")
+    st.caption("Read-only operational checks for scanner, extraction, parser, estimator data, and relationship profiler outputs.")
+
+    if st.button("Refresh health checks"):
+        load_admin_health_snapshot.clear()
+        health_table_exists.clear()
+        health_table_columns.clear()
+        st.rerun()
+
+    snapshot = load_admin_health_snapshot()
+
+    connection_status = "OK" if snapshot.get("connection_ok") else "Unavailable"
+    connection_help = None if snapshot.get("connection_ok") else snapshot.get("connection_error")
+    st.metric("Database Connection", connection_status, help=connection_help)
+    render_database_target_debug()
+
+    if not snapshot.get("connection_ok"):
+        st.warning("Database connection is unavailable. Other health checks could not run.")
+        return
+
+    warnings = snapshot.get("warnings") or []
+    if warnings:
+        st.subheader("Warnings")
+        for warning in warnings:
+            st.warning(warning)
+    else:
+        st.success("No health warnings triggered.")
+
+    row_counts = snapshot.get("row_counts")
+    if isinstance(row_counts, pd.DataFrame) and not row_counts.empty:
+        st.subheader("Core Table Row Counts")
+        metric_columns = st.columns(3)
+        for index, row in row_counts.iterrows():
+            exists = bool(row.get("exists"))
+            count_value = row.get("row_count")
+            label = str(row.get("table"))
+            help_text = str(row.get("label") or "")
+            value = fmt_count(int(count_value)) if exists and pd.notna(count_value) else "Missing"
+            metric_columns[index % 3].metric(label, value, help=help_text)
+
+        display_columns = [column for column in ["table", "label", "exists", "row_count", "current_rows"] if column in row_counts.columns]
+        st.dataframe(row_counts[display_columns], use_container_width=True, hide_index=True)
+
+    extraction_counts = snapshot.get("extraction_status_counts")
+    if isinstance(extraction_counts, pd.DataFrame) and not extraction_counts.empty:
+        st.subheader("Document Extraction Status")
+        st.dataframe(extraction_counts, use_container_width=True, hide_index=True)
+    elif health_table_exists("documents"):
+        st.info("documents table exists, but extraction_status is unavailable or has no values.")
+
+    template_counts = snapshot.get("template_type_counts")
+    if isinstance(template_counts, pd.DataFrame) and not template_counts.empty:
+        st.subheader("Estimate Template Types")
+        st.dataframe(template_counts, use_container_width=True, hide_index=True)
+    elif health_table_exists("estimate_template_rows"):
+        st.info("estimate_template_rows exists, but template_type is unavailable or has no values.")
+
+    recent_docs = snapshot.get("recent_problem_documents")
+    if isinstance(recent_docs, pd.DataFrame) and not recent_docs.empty:
+        st.subheader("Recent Failed / Pending Documents")
+        st.dataframe(recent_docs, use_container_width=True, hide_index=True)
+    else:
+        st.subheader("Recent Failed / Pending Documents")
+        st.caption("No failed or pending documents found, or extraction_status is unavailable.")
+
+    timestamp_rows = snapshot.get("timestamp_rows")
+    if isinstance(timestamp_rows, pd.DataFrame) and not timestamp_rows.empty:
+        st.subheader("Latest Activity Timestamps")
+        st.dataframe(timestamp_rows, use_container_width=True, hide_index=True)
+
+    query_errors = snapshot.get("query_errors") or []
+    if query_errors:
+        with st.expander("Health query diagnostics"):
+            st.dataframe(pd.DataFrame(query_errors), use_container_width=True, hide_index=True)
+
+
 def main() -> None:
     database_startup_error: Exception | None = None
     try:
@@ -3981,6 +4278,7 @@ def main() -> None:
                 "Schedule Calendar",
                 "Estimator Prototype",
                 "BidScope AI",
+                "Admin / Health",
                 "Pipeline / Money",
                 "Sales Follow-Up",
                 "Contracted Backlog / Scheduling",
@@ -4000,7 +4298,7 @@ def main() -> None:
             ],
         )
 
-    if database_startup_error and page != "Estimator Prototype":
+    if database_startup_error and page not in {"Estimator Prototype", "Admin / Health"}:
         show_database_error(database_startup_error)
         st.stop()
 
@@ -4016,6 +4314,8 @@ def main() -> None:
         estimator_prototype_page()
     elif page == "BidScope AI":
         render_foamscope_page()
+    elif page == "Admin / Health":
+        admin_health_page()
     elif page == "Pipeline / Money":
         pipeline_money_page()
     elif page == "Sales Follow-Up":

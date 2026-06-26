@@ -1,0 +1,48 @@
+{
+  "required_tables": [
+    "job_package_summary",
+    "relationship_material_qty_ratios",
+    "relationship_labor_rates"
+  ],
+  "row_count_tables": [
+    "job_package_summary",
+    "relationship_material_qty_ratios",
+    "relationship_labor_rates",
+    "relationship_package_cooccurrence",
+    "relationship_warranty_coating",
+    "relationship_anomalies"
+  ],
+  "job_package_summary_required_columns": [
+    "job_id",
+    "package",
+    "area_sqft",
+    "cost_per_sqft",
+    "hours_per_sqft",
+    "template_type"
+  ],
+  "generic_packages": [
+    "labor",
+    "materials",
+    "material",
+    "misc",
+    "travel"
+  ],
+  "recommended_packages": [
+    "coating",
+    "primer",
+    "seam_treatment",
+    "fastener_treatment",
+    "labor_prep",
+    "labor_top_coat",
+    "labor_cleanup",
+    "labor_foam",
+    "labor_set_up",
+    "labor_clean_up"
+  ],
+  "diagnostic_files": [
+    "relationship_input_diagnostics.csv",
+    "package_normalization_diagnostics.csv",
+    "missing_job_context.csv",
+    "labor_rate_diagnostics.csv"
+  ]
+}

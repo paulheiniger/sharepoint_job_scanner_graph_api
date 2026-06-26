@@ -1,0 +1,63 @@
+[
+  {
+    "case_id": "roof_coating_basic_9536",
+    "notes": "Roof coating estimate for a commercial metal roof in Louisville KY. Main roof is 120 ft by 80 ft. Deduct two skylights, each 4 ft by 8 ft. Roof is fair overall but has rusted fasteners and some open seams. Customer wants a 10-year silicone coating system. Access is easy. Few penetrations. Use standard white silicone if available.",
+    "expected": {
+      "estimated_sqft": 9536,
+      "gross_area_sqft": 9600,
+      "deduction_area_sqft": 64,
+      "net_area_sqft": 9536,
+      "project_type_contains": ["roof", "coating"],
+      "substrate_contains": ["metal"],
+      "coating_type_contains": ["silicone"],
+      "warranty_years": 10,
+      "must_include_material_packages": ["coating"],
+      "should_include_or_flag": ["primer", "seam_treatment", "fastener_treatment"],
+      "must_not_include_labor_packages": ["infrared_scan", "labor_top_coat_granules"],
+      "travel_labor_hours_max": 8
+    }
+  },
+  {
+    "case_id": "ir_scan_trigger",
+    "notes": "Roof restoration estimate in Louisville KY. Roof is roughly 18,000 sqft. Customer wants an infrared moisture scan before coating because there are active leaks and possible trapped moisture. Metal substrate, rusted fasteners, lots of penetrations. Considering 15-year silicone system.",
+    "expected": {
+      "estimated_sqft": 18000,
+      "warranty_years": 15,
+      "should_include_labor_or_review": ["infrared_scan"],
+      "must_include_review_text_any": ["infrared", "moisture", "scan", "review"]
+    }
+  },
+  {
+    "case_id": "granules_trigger",
+    "notes": "Metal roof coating job in Bowling Green KY. Roof is 150 ft by 100 ft. Customer wants a 20-year silicone system with granules broadcast into the top coat. Roof has rusted seams and fasteners. Medium access with several rooftop units.",
+    "expected": {
+      "estimated_sqft": 15000,
+      "warranty_years": 20,
+      "should_include_labor_or_review": ["labor_top_coat_granules", "granules"]
+    }
+  },
+  {
+    "case_id": "poor_condition_review",
+    "notes": "Commercial roof in Frankfort KY. Roof is approximately 22,000 sqft. Existing roof has active leaks, ponding water, soft areas, and possible wet insulation. Some areas may need tear-off or substrate repair before coating. Customer asked for a 20-year system if possible. Access is difficult.",
+    "expected": {
+      "estimated_sqft": 22000,
+      "warranty_years": 20,
+      "must_include_review_text_any": ["tear-off", "substrate", "wet insulation", "ponding", "review"],
+      "should_not_treat_as_clean_simple_coating": true
+    }
+  },
+  {
+    "case_id": "insulation_walls_with_deductions",
+    "notes": "Spray foam insulation estimate in Louisville KY. North wall is 120 ft by 18 ft. South wall is 120 ft by 18 ft. East wall is 80 ft by 18 ft. West wall is 80 ft by 18 ft. Deduct 8 overhead doors at 12 ft by 14 ft and 10 windows at 4 ft by 5 ft. Customer wants closed-cell foam, about 2 inches thick. Access is easy.",
+    "expected": {
+      "project_type_contains": ["insulation", "foam"],
+      "foam_type_contains": ["closed"],
+      "thickness_inches": 2,
+      "gross_area_sqft": 7200,
+      "deduction_area_sqft": 1544,
+      "estimated_sqft": 5656,
+      "net_area_sqft": 5656,
+      "must_not_include_material_packages": ["coating"]
+    }
+  }
+]
