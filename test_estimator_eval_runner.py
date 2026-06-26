@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from evals.estimator import run_estimator_eval as runner
 
 
@@ -138,3 +140,50 @@ def test_eval_fails_when_simple_roof_labor_hours_are_extreme(monkeypatch) -> Non
 
     assert not report["passed"]
     assert any("labor hours per 1000 sqft" in failure for failure in report["failures"])
+
+
+def test_parse_args_requires_neon_database_url_not_database_url(monkeypatch) -> None:
+    monkeypatch.delenv("NEON_DATABASE_URL", raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://local.example/test")
+
+    args = runner.parse_args([])
+
+    assert args.database_url is None
+
+
+def test_load_data_for_eval_requires_neon_url() -> None:
+    with pytest.raises(RuntimeError, match="NEON_DATABASE_URL is required"):
+        runner.load_data_for_eval(None)
+
+
+def test_load_data_for_eval_prints_database_preflight(monkeypatch, capsys) -> None:
+    class FakeData:
+        pass
+
+    monkeypatch.setattr(
+        runner,
+        "estimator_database_preflight",
+        lambda _database_url: {
+            "database_engine": "postgresql+psycopg2",
+            "database_host": "example-pooler.neon.tech",
+            "database_name": "spraytec",
+            "counts": {
+                "estimate_template_rows": 66570,
+                "relationship_material_qty_ratios": 12,
+                "relationship_labor_rates": 34,
+            },
+        },
+    )
+    monkeypatch.setattr(runner, "load_estimator_data", lambda *args, **kwargs: FakeData())
+
+    data = runner.load_data_for_eval("postgresql://user:secret@example-pooler.neon.tech/spraytec")
+
+    output = capsys.readouterr().out
+    assert isinstance(data, FakeData)
+    assert "database engine: postgresql+psycopg2" in output
+    assert "database host: example-pooler.neon.tech" in output
+    assert "database name: spraytec" in output
+    assert "estimate_template_rows count: 66570" in output
+    assert "relationship_material_qty_ratios count: 12" in output
+    assert "relationship_labor_rates count: 34" in output
+    assert "secret" not in output

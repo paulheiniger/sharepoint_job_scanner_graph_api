@@ -3,9 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
+import pytest
 from sqlalchemy import create_engine, text
 
+import jobscan.estimator.data_loader as estimator_data_loader
 from jobscan.estimator import build_estimate, estimate_from_field_notes, load_estimator_data
+from jobscan.estimator.schemas import EstimatorData
 
 
 def test_estimator_package_exports_dashboard_imports() -> None:
@@ -37,15 +40,42 @@ def test_load_estimator_data_accepts_database_url_positional(tmp_path: Path) -> 
     assert data.jobs.empty
 
 
-def test_load_estimator_data_falls_back_when_database_unavailable(tmp_path: Path) -> None:
+def test_load_estimator_data_falls_back_when_database_unavailable_without_strict_database_mode(tmp_path: Path) -> None:
     output = tmp_path / "output"
     output.mkdir()
     (output / "job_index.json").write_text('[{"job_id": "J1"}]', encoding="utf-8")
 
-    data = load_estimator_data(tmp_path, database_url="sqlite:///:memory:", prefer_database=True)
+    data = load_estimator_data(tmp_path, database_url="sqlite:///:memory:")
 
     assert len(data.jobs) == 1
     assert any("Database estimator load failed" in warning for warning in data.warnings)
+
+
+def test_load_estimator_data_strict_database_mode_does_not_fall_back(tmp_path: Path) -> None:
+    output = tmp_path / "output"
+    output.mkdir()
+    (output / "job_index.json").write_text('[{"job_id": "J1"}]', encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="local fallback is disabled"):
+        load_estimator_data(tmp_path, database_url="sqlite:///:memory:", prefer_database=True)
+
+
+def test_load_estimator_data_strict_database_mode_prefers_neon_env(monkeypatch, tmp_path: Path) -> None:
+    captured = {}
+
+    def fake_load_from_database(database_url: str) -> EstimatorData:
+        captured["database_url"] = database_url
+        data = EstimatorData()
+        data.source_files_used.append("database: fake")
+        return data
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://local.example/local")
+    monkeypatch.setenv("NEON_DATABASE_URL", "postgresql://neon.example/prod")
+    monkeypatch.setattr(estimator_data_loader, "load_estimator_data_from_database", fake_load_from_database)
+
+    load_estimator_data(tmp_path, prefer_database=True)
+
+    assert captured["database_url"] == "postgresql://neon.example/prod"
 
 
 def test_load_estimator_data_loads_template_rows_and_pricing_from_database(tmp_path: Path) -> None:

@@ -8,11 +8,21 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import text
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(REPO_ROOT / ".env")
+except Exception:
+    pass
+
+from jobscan.db_connections import create_resilient_engine, database_target
 from jobscan.estimator import estimate_from_field_notes, load_estimator_data
 
 
@@ -261,18 +271,61 @@ def evaluate_case(case: dict[str, Any], estimator_data: Any = None) -> dict[str,
     }
 
 
-def load_data_for_eval(database_url: str | None, allow_db_missing: bool) -> Any:
+PREFLIGHT_TABLES = (
+    "estimate_template_rows",
+    "relationship_material_qty_ratios",
+    "relationship_labor_rates",
+)
+
+
+def _safe_table_count(connection: Any, table_name: str) -> int:
+    exists = connection.execute(
+        text("SELECT to_regclass(:table_name)"),
+        {"table_name": table_name},
+    ).scalar()
+    if not exists:
+        return 0
+    return int(connection.execute(text(f"SELECT count(*) FROM {table_name}")).scalar() or 0)
+
+
+def estimator_database_preflight(database_url: str) -> dict[str, Any]:
+    target = database_target(database_url)
+    engine = create_resilient_engine(database_url)
+    counts: dict[str, int] = {}
+    with engine.connect() as connection:
+        dialect_name = connection.dialect.name
+        driver_name = connection.dialect.driver
+        for table_name in PREFLIGHT_TABLES:
+            counts[table_name] = _safe_table_count(connection, table_name)
+    return {
+        "database_engine": f"{dialect_name}+{driver_name}" if driver_name else dialect_name,
+        "database_host": target.host,
+        "database_name": target.database,
+        "counts": counts,
+    }
+
+
+def print_estimator_database_preflight(info: dict[str, Any]) -> None:
+    print("Estimator calibration database preflight:", flush=True)
+    print(f"  database engine: {info.get('database_engine') or 'unknown'}", flush=True)
+    print(f"  database host: {info.get('database_host') or 'unknown'}", flush=True)
+    print(f"  database name: {info.get('database_name') or 'unknown'}", flush=True)
+    counts = info.get("counts") or {}
+    for table_name in PREFLIGHT_TABLES:
+        print(f"  {table_name} count: {counts.get(table_name, 0)}", flush=True)
+
+
+def load_data_for_eval(database_url: str | None) -> Any:
     if not database_url:
-        print("NEON_DATABASE_URL not set; estimator eval will run with local/default data only.")
-        return None
+        raise RuntimeError(
+            "NEON_DATABASE_URL is required for estimator evaluation. "
+            "Set NEON_DATABASE_URL to the production Neon database URL before running evals."
+        )
     try:
+        print_estimator_database_preflight(estimator_database_preflight(database_url))
         return load_estimator_data(REPO_ROOT, database_url=database_url, prefer_database=True)
     except Exception as exc:
         message = f"Could not load estimator data from database: {type(exc).__name__}: {exc}"
-        if allow_db_missing:
-            print(message)
-            print("Continuing with data=None because --allow-db-missing was supplied.")
-            return None
         raise RuntimeError(message) from exc
 
 
@@ -282,7 +335,7 @@ def run_eval(args: argparse.Namespace) -> dict[str, Any]:
         cases = [case for case in cases if case.get("case_id") == args.case_id]
         if not cases:
             raise SystemExit(f"No estimator eval case found for --case-id {args.case_id!r}")
-    data = load_data_for_eval(args.database_url, args.allow_db_missing)
+    data = load_data_for_eval(args.database_url)
     results = [evaluate_case(case, data) for case in cases]
     return {
         "total_cases": len(results),
@@ -326,8 +379,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--cases", type=Path, default=DEFAULT_CASES_PATH)
     parser.add_argument("--case-id")
     parser.add_argument("--json-output", type=Path)
-    parser.add_argument("--allow-db-missing", action="store_true")
-    parser.add_argument("--database-url", default=os.getenv("NEON_DATABASE_URL") or os.getenv("DATABASE_URL"))
+    parser.add_argument("--database-url", default=os.getenv("NEON_DATABASE_URL"))
     parser.add_argument("--write-audit", action="store_true", help="Write estimator calibration audit packages for selected cases.")
     parser.add_argument("--audit-output-dir", type=Path, default=Path("output/estimator_audit"))
     return parser.parse_args(argv)

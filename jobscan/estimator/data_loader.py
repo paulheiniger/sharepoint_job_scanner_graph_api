@@ -292,11 +292,17 @@ def load_estimator_data(
     prefer_database: bool = False,
 ) -> EstimatorData:
     root = Path(base_dir or Path.cwd())
-    resolved_database_url = database_url or os.getenv("DATABASE_URL") or os.getenv("NEON_DATABASE_URL")
+    resolved_database_url = database_url or (
+        os.getenv("NEON_DATABASE_URL") if prefer_database else os.getenv("DATABASE_URL") or os.getenv("NEON_DATABASE_URL")
+    )
+    if prefer_database and not resolved_database_url:
+        raise RuntimeError("Database-backed estimator data was required, but no database URL was provided.")
     if resolved_database_url:
         try:
             return load_estimator_data_from_database(resolved_database_url)
         except Exception as exc:
+            if prefer_database:
+                raise RuntimeError(f"Database estimator load failed and local fallback is disabled. ({type(exc).__name__})") from exc
             data = _load_estimator_data_from_local_files(root)
             data.warnings.insert(0, f"Database estimator load failed; using local staging files. ({type(exc).__name__})")
             return data

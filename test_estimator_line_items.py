@@ -400,7 +400,7 @@ def test_load_classified_line_items_for_job() -> None:
     assert df.iloc[0]["template_bucket"] == "primer"
 
 
-def test_database_first_loader_falls_back_to_local_files(tmp_path) -> None:
+def test_database_loader_falls_back_to_local_files_when_not_strict(tmp_path) -> None:
     output = tmp_path / "output"
     output.mkdir()
     (output / "job_index.json").write_text('[{"job_id": "J1", "job_name": "Fallback Job"}]', encoding="utf-8")
@@ -409,7 +409,7 @@ def test_database_first_loader_falls_back_to_local_files(tmp_path) -> None:
         encoding="utf-8",
     )
 
-    data = load_estimator_data(tmp_path, database_url="sqlite:///:memory:", prefer_database=True)
+    data = load_estimator_data(tmp_path, database_url="sqlite:///:memory:")
 
     assert len(data.jobs) == 1
     assert len(data.line_items) == 1
