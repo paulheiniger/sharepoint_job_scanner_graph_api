@@ -185,8 +185,21 @@ def historical_template_calibration(data: EstimatorData, similar_jobs: pd.DataFr
             template_rows[column] = pd.to_numeric(template_rows[column], errors="coerce")
     labor_rows = relevant[relevant.get("line_item_kind", pd.Series(dtype=str)).astype(str).eq("labor")].copy()
     all_labor_rows = template_rows[template_rows.get("line_item_kind", pd.Series(dtype=str)).astype(str).eq("labor")].copy()
+    for labor_frame in (labor_rows, all_labor_rows):
+        if not labor_frame.empty:
+            if "template_bucket" not in labor_frame.columns:
+                labor_frame["template_bucket"] = ""
+            labor_frame["template_bucket"] = labor_frame.apply(
+                lambda row: _task_name_from_row(row.to_dict()) or first_nonblank(row.get("template_bucket")),
+                axis=1,
+            )
     material_rows = relevant[relevant.get("line_item_kind", pd.Series(dtype=str)).astype(str).isin(["material", "equipment", "travel"])].copy()
-    totals = relevant[relevant.get("template_bucket", pd.Series(dtype=str)).astype(str).eq("worksheet_price")].copy()
+    template_bucket_series = (
+        relevant["template_bucket"]
+        if "template_bucket" in relevant.columns
+        else pd.Series("", index=relevant.index, dtype=str)
+    )
+    totals = relevant[template_bucket_series.astype(str).eq("worksheet_price")].copy()
     if not labor_rows.empty:
         labor_rows["cost_per_sqft"] = labor_rows["estimated_cost"] / labor_rows["historical_sqft"]
     if not material_rows.empty:
@@ -416,8 +429,72 @@ def _fallback_labor_row(
     )
 
 
+LABOR_PACKAGE_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "labor_prep": ("labor_prep", "prep", "preparation", "pressure wash", "power wash", "powerwash", "clean substrate", "substrate prep"),
+    "labor_prime": ("labor_prime", "prime", "primer"),
+    "labor_seam_sealer": ("labor_seam_sealer", "seam", "seams", "seam sealer", "seam treatment", "butter grade", "laps"),
+    "labor_base": ("labor_base", "base coat", "base", "first coat", "coating base"),
+    "labor_top_coat": ("labor_top_coat", "top coat", "topcoat", "finish coat", "second coat"),
+    "labor_details": ("labor_details", "details", "detail work", "flashing", "penetrations", "curbs", "skylights", "rtu", "hvac"),
+    "labor_caulk": ("labor_caulk", "caulk", "sealant", "aldo 399"),
+    "labor_cleanup": ("labor_cleanup", "clean up", "cleanup", "job clean", "final clean", "touch/cleanup", "touch up"),
+    "labor_loading": ("labor_loading", "loading", "load", "mobilization setup"),
+    "labor_traveling": ("labor_traveling", "traveling", "travel"),
+    "infrared_scan": ("infrared_scan", "infrared", "ir scan", "moisture scan", "thermal scan"),
+    "labor_top_coat_granules": ("labor_top_coat_granules", "granules", "granule", "broadcast"),
+}
+
+LABOR_ROW_NUMBER_MAP = {
+    116: "labor_prep",
+    118: "labor_prime",
+    120: "labor_seam_sealer",
+    122: "labor_base",
+    124: "labor_top_coat",
+    126: "labor_caulk",
+    128: "labor_details",
+    132: "labor_cleanup",
+    136: "labor_loading",
+    138: "labor_traveling",
+    141: "infrared_scan",
+    130: "labor_top_coat_granules",
+}
+
+
+def _canonical_labor_task_name(value: Any) -> str:
+    key = first_nonblank(value).strip().lower().replace("-", "_").replace(" ", "_")
+    if key in LABOR_BUCKET_TO_PACKAGE or key in LABOR_PACKAGE_KEYWORDS:
+        return key
+    compact = key.replace("_", " ")
+    for task, keywords in LABOR_PACKAGE_KEYWORDS.items():
+        if any(keyword in compact or keyword.replace(" ", "_") in key for keyword in keywords):
+            return task
+    return key
+
+
 def _task_name_from_row(row: dict[str, Any]) -> str:
-    return first_nonblank(row.get("template_bucket"), row.get("labor_package"), row.get("package"), row.get("task")).strip()
+    explicit = first_nonblank(row.get("template_bucket"), row.get("labor_package"), row.get("package"), row.get("task")).strip()
+    canonical = _canonical_labor_task_name(explicit)
+    if canonical in LABOR_PACKAGE_KEYWORDS or canonical in LABOR_BUCKET_TO_PACKAGE:
+        return canonical
+    row_number = optional_positive_int(row.get("row_number"))
+    if row_number in LABOR_ROW_NUMBER_MAP:
+        return LABOR_ROW_NUMBER_MAP[row_number]
+    text = " ".join(
+        str(row.get(column) or "")
+        for column in (
+            "row_label",
+            "selected_item_name",
+            "item_name",
+            "line_item_name",
+            "description",
+            "category",
+            "notes",
+        )
+    ).lower()
+    for task, keywords in LABOR_PACKAGE_KEYWORDS.items():
+        if any(keyword in text for keyword in keywords):
+            return task
+    return canonical
 
 
 def _normal_context(value: Any) -> str:
@@ -543,23 +620,16 @@ def _labor_evidence_row_from_template(
     selection_level: str,
 ) -> dict[str, Any]:
     hours_values: list[float] = []
-    cost_values: list[float] = []
     days_values: list[float] = []
     crew_values: list[float] = []
     for row in selected_rows:
         hours = optional_positive_float(row.get("total_hours"))
         sqft = optional_positive_float(first_nonblank(row.get("historical_sqft"), row.get("area_sqft"), row.get("job_area_sqft")))
-        cost = optional_positive_float(row.get("estimated_cost"))
         if hours is not None:
             if sqft and area:
                 hours_values.append((hours / sqft) * area)
             else:
                 hours_values.append(hours)
-        if cost is not None:
-            if sqft and area:
-                cost_values.append((cost / sqft) * area)
-            else:
-                cost_values.append(cost)
         days = optional_positive_float(row.get("days"))
         if days is not None:
             days_values.append(days)
@@ -567,10 +637,9 @@ def _labor_evidence_row_from_template(
         if crew is not None and 0 < crew <= 8:
             crew_values.append(crew)
     hours = (_median(hours_values) or 0.0) * multiplier
-    cost = (_median(cost_values) or (hours * 72.0))
     crew_size = int(round(_median(crew_values) or default_crew_size))
     crew_size = sane_crew_size(crew_size, default_crew_size, max_size=8)
-    days = _median(days_values) or (hours / max(crew_size * 8, 1) if hours else 1.0)
+    days = hours / max(crew_size * 8, 1) if hours else (_median(days_values) or 1.0)
     note = "Calibrated from estimate_template_rows."
     method = "historical_calibration"
     if selection_level not in {"exact_template_project_substrate_warranty", "relaxed_warranty"}:
@@ -581,7 +650,7 @@ def _labor_evidence_row_from_template(
         "median_days": days,
         "median_crew_size": crew_size,
         "median_total_hours": hours,
-        "median_estimated_cost": cost,
+        "median_estimated_cost": hours * 72.0,
         "evidence_count": len(selected_rows),
         "calibration_method": method,
         "selection_level": selection_level,
@@ -672,28 +741,11 @@ def select_historical_labor_evidence(
     selected: dict[str, dict[str, Any]] = {}
     area = safe_float(scope.get("surface_area_sqft"), 0.0)
     default_crew = 4
-    relationship_rows = [row for row in calibration.get("relationship_labor_rates") or [] if isinstance(row, dict)]
     template_rows = [row for row in calibration.get("all_labor_rows") or [] if isinstance(row, dict)]
+    package_rows = [row for row in calibration.get("job_package_summary") or [] if isinstance(row, dict)]
+    relationship_rows = [row for row in calibration.get("relationship_labor_rates") or [] if isinstance(row, dict)]
     for task in expected_tasks:
         task_diag = diagnostics["tasks"][task]
-        rel_candidates = _candidate_rows_for_task(relationship_rows, task)
-        rel_valid = []
-        for row in rel_candidates:
-            valid, reason = _relationship_row_valid_for_labor(row)
-            if valid:
-                rel_valid.append(row)
-            elif len(task_diag["rejected_rows"]) < 10:
-                task_diag["rejected_rows"].append({"source": "relationship_labor_rates", "reason": reason})
-        rel_selected, rel_level = _select_rows_by_relaxation(rel_valid, scope)
-        if rel_selected:
-            selected[task] = _labor_evidence_row_from_relationship(task, rel_selected, area=area, default_crew_size=default_crew, selection_level=rel_level)
-            task_diag["selected_source"] = "relationship_labor_rates"
-            task_diag["selected_calibration_rows"] = len(rel_selected)
-            task_diag["selection_level"] = rel_level
-            task_diag["after_project_template_filter"] = len(rel_selected)
-            task_diag["after_area_filter"] = len(rel_selected)
-            continue
-
         tmpl_candidates = _candidate_rows_for_task(template_rows, task)
         tmpl_valid = []
         for row in tmpl_candidates:
@@ -715,6 +767,44 @@ def select_historical_labor_evidence(
             task_diag["selected_source"] = "estimate_template_rows"
             task_diag["selected_calibration_rows"] = len(tmpl_selected)
             task_diag["selection_level"] = tmpl_level
+            continue
+
+        package_candidates = _candidate_rows_for_task(package_rows, task)
+        package_valid = []
+        for row in package_candidates:
+            valid, reason = _relationship_row_valid_for_labor(row)
+            if valid:
+                package_valid.append(row)
+            elif len(task_diag["rejected_rows"]) < 10:
+                task_diag["rejected_rows"].append({"source": "job_package_summary", "reason": reason})
+        package_selected, package_level = _select_rows_by_relaxation(package_valid, scope)
+        if package_selected:
+            selected[task] = _labor_evidence_row_from_relationship(task, package_selected, area=area, default_crew_size=default_crew, selection_level=package_level)
+            selected[task]["calibration_method"] = "job_package_summary"
+            selected[task]["notes"] = "Calibrated from job_package_summary."
+            task_diag["selected_source"] = "job_package_summary"
+            task_diag["selected_calibration_rows"] = len(package_selected)
+            task_diag["selection_level"] = package_level
+            task_diag["after_project_template_filter"] = len(package_selected)
+            task_diag["after_area_filter"] = len(package_selected)
+            continue
+
+        rel_candidates = _candidate_rows_for_task(relationship_rows, task)
+        rel_valid = []
+        for row in rel_candidates:
+            valid, reason = _relationship_row_valid_for_labor(row)
+            if valid:
+                rel_valid.append(row)
+            elif len(task_diag["rejected_rows"]) < 10:
+                task_diag["rejected_rows"].append({"source": "relationship_labor_rates", "reason": reason})
+        rel_selected, rel_level = _select_rows_by_relaxation(rel_valid, scope)
+        if rel_selected:
+            selected[task] = _labor_evidence_row_from_relationship(task, rel_selected, area=area, default_crew_size=default_crew, selection_level=rel_level)
+            task_diag["selected_source"] = "relationship_labor_rates"
+            task_diag["selected_calibration_rows"] = len(rel_selected)
+            task_diag["selection_level"] = rel_level
+            task_diag["after_project_template_filter"] = len(rel_selected)
+            task_diag["after_area_filter"] = len(rel_selected)
             continue
         task_diag["selected_source"] = "rule_based_fallback"
         task_diag["selection_level"] = "no_valid_historical_evidence"
@@ -1233,6 +1323,7 @@ def _allowance_from_calibration(
         if safe:
             quantity = quantity_ratio * area
             review_flags.append(f"{item} quantity estimated from historical ratio; verify requirement.")
+            estimated_cost = quantity * current_price
             return _priced_allowance_row(
                 item=f"{current_item_name} - historically calibrated",
                 category=category,
@@ -1245,37 +1336,27 @@ def _allowance_from_calibration(
                 "evidence_count": evidence_count,
                 "calibration_method": "historical_quantity_ratio",
                 "source_type": "physical_quantity_ratio",
+                "quantity_source": "historical_physical_quantity_ratio",
+                "unit_price_source": "current_pricing",
+                "current_pricing_item": current_item_name,
+                "current_unit_price": current_price,
+                "current_price_unit": unit,
+                "median_quantity_per_sqft": quantity_ratio,
+                "p25_quantity_per_sqft": calibration.get("p25_quantity_per_sqft"),
+                "p75_quantity_per_sqft": calibration.get("p75_quantity_per_sqft"),
+                "estimated_quantity": round(quantity, 2),
+                "estimated_cost_current_pricing": round(estimated_cost, 2),
+                "historical_physical_quantity_rows_considered": calibration.get("historical_physical_quantity_rows_considered"),
+                "historical_cost_fallback_rows_considered": calibration.get("historical_cost_fallback_rows_considered"),
             }
         review_flags.append(reason)
 
-    if evidence_count >= 3 and cost_ratio is not None:
-        safe, reason = _cost_ratio_is_safe(bucket, item, area, cost_ratio, max_estimated_cost)
-        if not safe:
-            review_flags.append(reason)
-        else:
-            estimated_cost = cost_ratio * area
-            review_flags.append(f"{item} estimated from historical cost ratio; verify scope.")
-            return _priced_allowance_row(
-                item=f"{item} - historically calibrated",
-                category=category,
-                quantity=None,
-                unit="sqft",
-                unit_price=None,
-                estimated_cost=estimated_cost,
-                selected_price_source="historical_cost_ratio",
-                notes=f"Estimated from historical {item.lower()} cost per sqft; estimator should verify primer requirement." if bucket == "primer" else f"Estimated from historical {item.lower()} cost per sqft; estimator should verify scope.",
-            ) | {
-                "evidence_count": evidence_count,
-                "calibration_method": "historical_cost_ratio",
-                "source_type": "cost_allowance_ratio",
-            }
-
     current_price_compatible = current_price is not None and _units_compatible(fallback_unit, current_item, calibration.get("selected_current_price_column"))
-    if fallback_quantity is not None and (fallback_unit_price is not None or current_price_compatible):
+    if fallback_quantity is not None and current_price_compatible:
         if evidence_count < 3:
             review_flags.append(f"Low historical evidence for {item.lower()}; fallback allowance used.")
-        unit_price = current_price if current_price_compatible else fallback_unit_price
-        price_source = "current_pricing + deterministic_quantity" if current_price_compatible else "rule_based_allowance"
+        unit_price = current_price
+        price_source = "current_pricing + deterministic_quantity"
         estimated_cost = float(fallback_quantity) * unit_price if fallback_quantity is not None and unit_price is not None else None
         if max_estimated_cost is not None and estimated_cost is not None and estimated_cost > max_estimated_cost:
             review_flags.append(f"Rejected {item.lower()} deterministic allowance because estimated cost exceeded coating cost safety cap.")
@@ -1291,7 +1372,67 @@ def _allowance_from_calibration(
             ) | {
                 "evidence_count": evidence_count,
                 "calibration_method": "deterministic_fallback",
-                "source_type": "current_pricing" if current_price_compatible else "manual_review",
+                "source_type": "current_pricing",
+                "quantity_source": "deterministic_rule",
+                "unit_price_source": "current_pricing",
+                "current_pricing_item": current_item_name,
+                "current_unit_price": current_price,
+                "current_price_unit": fallback_unit,
+                "estimated_quantity": fallback_quantity,
+                "estimated_cost_current_pricing": estimated_cost,
+                "fallback_reason": "No valid compatible historical physical quantity ratio was available.",
+            }
+
+    if evidence_count >= 3 and cost_ratio is not None:
+        safe, reason = _cost_ratio_is_safe(bucket, item, area, cost_ratio, max_estimated_cost)
+        if not safe:
+            review_flags.append(reason)
+        else:
+            estimated_cost = cost_ratio * area
+            review_flags.append(f"{item} estimated from historical cost ratio fallback; verify scope and current pricing.")
+            return _priced_allowance_row(
+                item=f"{item} - historical cost review allowance",
+                category=category,
+                quantity=None,
+                unit="",
+                unit_price=None,
+                estimated_cost=estimated_cost,
+                selected_price_source="historical_cost_ratio_fallback",
+                notes=f"Last-resort review allowance from historical {item.lower()} cost per sqft; no compatible physical quantity plus current pricing was available.",
+            ) | {
+                "evidence_count": evidence_count,
+                "calibration_method": "historical_cost_ratio_fallback",
+                "source_type": "cost_allowance_ratio",
+                "quantity_source": "none",
+                "unit_price_source": "none",
+                "needs_review": True,
+                "fallback_reason": "No valid physical quantity ratio/current pricing match was available.",
+                "historical_cost_fallback_rows_considered": calibration.get("historical_cost_fallback_rows_considered"),
+            }
+
+    if fallback_quantity is not None and fallback_unit_price is not None:
+        if evidence_count < 3:
+            review_flags.append(f"Low historical evidence for {item.lower()}; fallback allowance used.")
+        estimated_cost = float(fallback_quantity) * fallback_unit_price
+        if max_estimated_cost is not None and estimated_cost > max_estimated_cost:
+            review_flags.append(f"Rejected {item.lower()} rule-based allowance because estimated cost exceeded coating cost safety cap.")
+        else:
+            return _priced_allowance_row(
+                item=item,
+                category=category,
+                quantity=fallback_quantity,
+                unit=fallback_unit,
+                unit_price=fallback_unit_price,
+                selected_price_source="rule_based_allowance",
+                notes=fallback_notes,
+            ) | {
+                "evidence_count": evidence_count,
+                "calibration_method": "deterministic_fallback",
+                "source_type": "manual_review",
+                "quantity_source": "deterministic_rule",
+                "unit_price_source": "rule_based_allowance",
+                "estimated_quantity": fallback_quantity,
+                "fallback_reason": "No valid compatible current pricing or historical cost fallback was available.",
             }
 
     return _priced_allowance_row(
@@ -1302,7 +1443,14 @@ def _allowance_from_calibration(
         unit_price=None,
         selected_price_source="review_allowance",
         notes=f"{item} could not be priced; estimator should verify quantity and pricing.",
-    ) | {"evidence_count": evidence_count, "calibration_method": "unpriced_review", "source_type": "manual_review"}
+    ) | {
+        "evidence_count": evidence_count,
+        "calibration_method": "unpriced_review",
+        "source_type": "manual_review",
+        "quantity_source": "none",
+        "unit_price_source": "none",
+        "fallback_reason": "No valid current pricing, deterministic quantity, or historical fallback was available.",
+    }
 
 
 def build_material_plan(

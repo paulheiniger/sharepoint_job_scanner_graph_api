@@ -275,8 +275,35 @@ def _material_evidence_rows(recommendation: dict[str, Any], data: Any) -> list[d
     rows: list[dict[str, Any]] = []
     calibration = recommendation.get("historical_calibration") or {}
     material_calibration = calibration.get("material_calibration") if isinstance(calibration, dict) else None
-    for row in _records(material_calibration):
-        rows.append({**row, "evidence_source_table": "recommendation.historical_calibration.material_calibration", "included_as_evidence": True})
+    if isinstance(material_calibration, dict):
+        for package, detail in material_calibration.items():
+            if isinstance(detail, dict):
+                selected_item = detail.get("selected_current_price_item") or {}
+                rows.append(
+                    {
+                        "package": package,
+                        "current_pricing_item_selected": selected_item.get("product_name") if isinstance(selected_item, dict) else "",
+                        "current_unit_price": detail.get("selected_current_unit_price"),
+                        "current_price_unit": detail.get("unit"),
+                        "historical_physical_quantity_rows_considered": detail.get("historical_physical_quantity_rows_considered"),
+                        "historical_cost_fallback_rows_considered": detail.get("historical_cost_fallback_rows_considered"),
+                        "candidate_physical_rows_count": detail.get("candidate_physical_rows_count"),
+                        "rejected_physical_rows_count": detail.get("rejected_physical_rows_count"),
+                        "valid_quantity_ratio_count": detail.get("valid_quantity_ratio_count"),
+                        "median_quantity_per_sqft": detail.get("median_quantity_per_sqft"),
+                        "p25_quantity_per_sqft": detail.get("p25_quantity_per_sqft"),
+                        "p75_quantity_per_sqft": detail.get("p75_quantity_per_sqft"),
+                        "median_cost_per_sqft": detail.get("median_cost_per_sqft"),
+                        "historical_cost_ratio_was_used": any(
+                            row.get("category") == package and row.get("calibration_method") == "historical_cost_ratio_fallback"
+                            for row in material_rows
+                        ),
+                        "fallback_reason": next((row.get("fallback_reason") for row in material_rows if row.get("category") == package), ""),
+                        "quantity_ratio_rejection_reasons": "; ".join(str(reason) for reason in detail.get("quantity_ratio_rejection_reasons") or []),
+                        "evidence_source_table": "recommendation.historical_calibration.material_calibration",
+                        "included_as_evidence": True,
+                    }
+                )
     for table_name in ("template_rows", "job_package_summary", "pricing_catalog", "pricing"):
         frame = getattr(data, table_name, pd.DataFrame()) if data is not None else pd.DataFrame()
         for row in _frame_records(frame, source_table=table_name):
@@ -299,7 +326,29 @@ def _labor_evidence_rows(recommendation: dict[str, Any], data: Any) -> list[dict
     tasks = {str(row.get("task") or row.get("labor_package") or "") for row in labor_rows}
     diagnostics = recommendation.get("debug", {}).get("labor_calibration", {}) if isinstance(recommendation.get("debug"), dict) else {}
     task_details = diagnostics.get("tasks", {}) if isinstance(diagnostics, dict) else {}
+    plan_by_task = {str(row.get("task") or ""): row for row in labor_rows}
     rows: list[dict[str, Any]] = []
+    for task, plan_row in plan_by_task.items():
+        rows.append(
+            {
+                "package": task,
+                "requested_package": task,
+                "historical_labels_matched": "",
+                "evidence_count": plan_row.get("evidence_count"),
+                "median_hours_per_sqft": (_safe_float(plan_row.get("total_hours")) / _safe_float(recommendation.get("parsed_fields", {}).get("estimated_sqft") or recommendation.get("parsed_fields", {}).get("surface_area_sqft")))
+                if _safe_float(plan_row.get("total_hours")) and _safe_float(recommendation.get("parsed_fields", {}).get("estimated_sqft") or recommendation.get("parsed_fields", {}).get("surface_area_sqft"))
+                else None,
+                "estimated_hours": plan_row.get("total_hours"),
+                "selected_crew_size": plan_row.get("crew_size"),
+                "estimated_days": plan_row.get("adjusted_days") or plan_row.get("crew_days"),
+                "current_default_labor_rate": 72.0,
+                "estimated_cost": plan_row.get("estimated_cost"),
+                "fallback_used": plan_row.get("calibration_method") == "rule_based_fallback",
+                "fallback_reason": plan_row.get("fallback_reason") or ("Fallback labor assumption." if plan_row.get("calibration_method") == "rule_based_fallback" else ""),
+                "evidence_source_table": "recommendation.labor_plan",
+                "included_as_evidence": True,
+            }
+        )
     for task, detail in task_details.items():
         detail = detail if isinstance(detail, dict) else {}
         for rejected in detail.get("rejected_rows") or []:

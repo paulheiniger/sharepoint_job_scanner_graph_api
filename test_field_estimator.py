@@ -389,6 +389,32 @@ def test_template_rows_used_when_relationship_labor_rates_empty() -> None:
     assert recommendation.debug["labor_calibration"]["tasks"]["labor_prep"]["selected_source"] == "estimate_template_rows"
 
 
+def test_labor_package_normalization_maps_common_row_labels() -> None:
+    data = field_data()
+    data.template_rows = pd.DataFrame(
+        [
+            {"job_id": "J1", "row_label": "Pressure Wash / Prep", "line_item_kind": "labor", "days": 2, "crew_size": 4, "total_hours": 64, "estimated_cost": 4000},
+            {"job_id": "J1", "row_label": "Seam Treatment", "line_item_kind": "labor", "days": 2, "crew_size": 4, "total_hours": 64, "estimated_cost": 4200},
+            {"job_id": "J1", "row_label": "Base Coat", "line_item_kind": "labor", "days": 2, "crew_size": 4, "total_hours": 64, "estimated_cost": 4200},
+            {"job_id": "J1", "row_label": "Top Coat", "line_item_kind": "labor", "days": 2, "crew_size": 4, "total_hours": 64, "estimated_cost": 4200},
+            {"job_id": "J1", "row_label": "Final Cleanup", "line_item_kind": "labor", "days": 1, "crew_size": 3, "total_hours": 24, "estimated_cost": 1600},
+        ]
+    )
+    data.relationship_labor_rates = pd.DataFrame()
+
+    recommendation = estimate_from_field_notes(
+        "Roof coating estimate for a commercial metal roof in Louisville KY. Main roof is 120 ft by 80 ft. "
+        "Customer wants a 10-year silicone coating system. Access is easy.",
+        data=data,
+    )
+    rows_by_task = {row["task"]: row for row in recommendation.labor_plan}
+
+    for task in ["labor_prep", "labor_seam_sealer", "labor_base", "labor_top_coat", "labor_cleanup"]:
+        assert rows_by_task[task]["calibration_method"] in {"historical_calibration", "relaxed_historical_calibration"}
+        assert rows_by_task[task]["evidence_count"] > 0
+        assert recommendation.debug["labor_calibration"]["tasks"][task]["selected_source"] == "estimate_template_rows"
+
+
 def test_relaxed_labor_matching_is_used_when_exact_context_is_missing() -> None:
     data = field_data()
     data.jobs["substrate"] = "concrete"
@@ -749,8 +775,10 @@ def test_primer_sqft_rows_use_cost_or_rule_not_physical_pail_quantity() -> None:
     recommendation = estimate_from_field_notes("Metal roof 9536 sqft rusted fasteners silicone coating Louisville KY", data=data)
     primer = {row["category"]: row for row in recommendation.material_plan}["primer"]
 
-    assert primer["selected_price_source"] == "historical_cost_ratio"
-    assert primer["unit"] == "sqft"
+    assert primer["selected_price_source"] == "historical_cost_ratio_fallback"
+    assert primer["calibration_method"] == "historical_cost_ratio_fallback"
+    assert primer["quantity_source"] == "none"
+    assert primer["unit_price_source"] == "none"
     assert primer["quantity"] is None
     assert primer["estimated_cost"] is not None
     assert primer["estimated_cost"] < {row["category"]: row for row in recommendation.material_plan}["coating"]["estimated_cost"]

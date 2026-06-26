@@ -76,6 +76,20 @@ def median_positive(values: list[float]) -> float | None:
     return float(median(positives)) if positives else None
 
 
+def percentile_positive(values: list[float], percentile: float) -> float | None:
+    positives = sorted(value for value in values if value is not None and value > 0 and math.isfinite(value))
+    if not positives:
+        return None
+    if len(positives) == 1:
+        return float(positives[0])
+    position = (len(positives) - 1) * percentile
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return float(positives[int(position)])
+    return float(positives[lower] + (positives[upper] - positives[lower]) * (position - lower))
+
+
 def row_text(row: dict[str, Any] | pd.Series) -> str:
     return " ".join(str(row.get(column) or "") for column in TEXT_COLUMNS).lower()
 
@@ -256,6 +270,8 @@ def build_bucket_calibration(data: EstimatorData, scope: dict[str, Any], bucket:
     unit_prices: list[float] = []
     units: list[str] = []
     usable_evidence = 0
+    physical_candidate_rows = 0
+    cost_fallback_rows = 0
     rejected_quantity_rows = 0
     rejection_reasons: list[str] = []
     for _, row in rows.iterrows():
@@ -264,6 +280,7 @@ def build_bucket_calibration(data: EstimatorData, scope: dict[str, Any], bucket:
         cost = finite_float(row.get("estimated_cost"))
         quantity_used = False
         if quantity and sqft and sqft > 0:
+            physical_candidate_rows += 1
             is_valid, reason = row_has_valid_physical_quantity(row, bucket, quantity, sqft)
             if is_valid:
                 quantity_ratios.append(quantity / sqft)
@@ -280,6 +297,7 @@ def build_bucket_calibration(data: EstimatorData, scope: dict[str, Any], bucket:
             cost_ratios.append(cost / sqft)
             if not quantity_used:
                 usable_evidence += 1
+                cost_fallback_rows += 1
         unit_price = finite_float(row.get("unit_price"))
         if unit_price:
             unit_prices.append(unit_price)
@@ -288,8 +306,17 @@ def build_bucket_calibration(data: EstimatorData, scope: dict[str, Any], bucket:
     return {
         "bucket": bucket,
         "evidence_count": usable_evidence,
+        "candidate_physical_rows_count": physical_candidate_rows,
+        "historical_physical_quantity_rows_considered": physical_candidate_rows,
+        "historical_cost_fallback_rows_considered": cost_fallback_rows,
+        "valid_quantity_ratio_count": len(quantity_ratios),
+        "rejected_physical_rows_count": rejected_quantity_rows,
         "median_quantity_per_sqft": median_positive(quantity_ratios),
+        "p25_quantity_per_sqft": percentile_positive(quantity_ratios, 0.25),
+        "p75_quantity_per_sqft": percentile_positive(quantity_ratios, 0.75),
         "median_cost_per_sqft": median_positive(cost_ratios),
+        "p25_cost_per_sqft": percentile_positive(cost_ratios, 0.25),
+        "p75_cost_per_sqft": percentile_positive(cost_ratios, 0.75),
         "median_unit_price": median_positive(unit_prices),
         "matching_historical_rows": int(len(rows)),
         "rejected_quantity_ratio_count": rejected_quantity_rows,
