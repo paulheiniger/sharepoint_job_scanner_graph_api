@@ -49,6 +49,7 @@ except ImportError:
 
     estimate_from_field_notes = None
 from jobscan.estimator.schemas import EstimatorAssumptions
+from jobscan.estimator.evidence_export import write_estimator_evidence_export
 from jobscan.estimator.workbook_template import DEFAULT_TEMPLATE_PATH, fill_estimate_workbook
 from jobscan.estimator.workbook_writer import DEFAULT_ESTIMATE_OUTPUT_DIR, generate_estimate_workbook, resolve_default_template_path
 
@@ -3894,6 +3895,41 @@ def estimator_prototype_page() -> None:
                 except Exception as exc:
                     logger.exception("Field notes Excel draft generation failed")
                     st.error(f"Could not generate Excel estimate draft: {safe_exception_text(exc)}")
+        st.markdown("**Estimator Evidence Export**")
+        if st.button("Export Estimator Evidence Package", key="export_field_notes_estimator_evidence"):
+            try:
+                export_paths = write_estimator_evidence_export(
+                    field_recommendation,
+                    data=data,
+                    notes=notes,
+                    output_dir=Path("output/estimator_evidence"),
+                )
+                st.session_state["field_estimator_evidence_export_paths"] = {
+                    key: str(path) for key, path in export_paths.items()
+                }
+                st.success("Estimator evidence package exported.")
+            except Exception as exc:
+                logger.exception("Field notes estimator evidence export failed")
+                st.error(f"Could not export estimator evidence package: {safe_exception_text(exc)}")
+        evidence_paths = st.session_state.get("field_estimator_evidence_export_paths") or {}
+        evidence_xlsx = Path(evidence_paths.get("xlsx", "")) if evidence_paths.get("xlsx") else None
+        evidence_json = Path(evidence_paths.get("json", "")) if evidence_paths.get("json") else None
+        if evidence_xlsx and evidence_xlsx.exists():
+            st.download_button(
+                "Download Estimator Evidence Workbook",
+                data=evidence_xlsx.read_bytes(),
+                file_name=evidence_xlsx.name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_field_notes_estimator_evidence_xlsx",
+            )
+        if evidence_json and evidence_json.exists():
+            st.download_button(
+                "Download Estimator Evidence JSON",
+                data=evidence_json.read_bytes(),
+                file_name=evidence_json.name,
+                mime="application/json",
+                key="download_field_notes_estimator_evidence_json",
+            )
 
     run_legacy_estimator = st.checkbox(
         "Run legacy historical estimator summary",
