@@ -39,6 +39,29 @@ BUCKETS = {
 }
 
 TEXT_COLUMNS = ("selected_item_name", "item_name", "line_item_name", "row_label", "template_bucket", "category", "notes", "description")
+FALSE_VALUES = {"false", "0", "no", "n", "invalid"}
+NON_PHYSICAL_SOURCE_TYPES = {"cost_allowance", "labor_budget", "derived_ratio", "unknown"}
+PHYSICAL_SOURCE_TYPES = {"physical_quantity", "physical", "material_quantity"}
+PHYSICAL_UNITS_BY_BUCKET = {
+    "primer": {"gal", "gallon", "gallons", "pail", "pails", "container", "containers", "drum", "drums"},
+    "seam_treatment": {"lf", "linear foot", "linear feet", "ft", "feet", "roll", "rolls", "tube", "tubes"},
+    "fastener_treatment": {"ea", "each", "count", "counts", "unit", "units", "piece", "pieces", "pc", "pcs"},
+    "caulk_detail": {"case", "cases", "tube", "tubes", "ea", "each", "lf", "linear foot", "linear feet"},
+    "coating": {"gal", "gallon", "gallons", "pail", "pails", "drum", "drums"},
+}
+MAX_QUANTITY_RATIO_BY_BUCKET_UNIT = {
+    ("primer", "gal"): 0.02,
+    ("primer", "gallon"): 0.02,
+    ("primer", "gallons"): 0.02,
+    ("primer", "pail"): 0.004,
+    ("primer", "pails"): 0.004,
+    ("primer", "container"): 0.004,
+    ("primer", "containers"): 0.004,
+    ("primer", "drum"): 0.001,
+    ("primer", "drums"): 0.001,
+    ("caulk_detail", "case"): 0.01,
+    ("caulk_detail", "cases"): 0.01,
+}
 
 
 def finite_float(value: Any) -> float | None:
@@ -55,6 +78,83 @@ def median_positive(values: list[float]) -> float | None:
 
 def row_text(row: dict[str, Any] | pd.Series) -> str:
     return " ".join(str(row.get(column) or "") for column in TEXT_COLUMNS).lower()
+
+
+def normalize_unit(value: Any) -> str:
+    unit = first_nonblank(value).strip().lower()
+    aliases = {
+        "linear feet": "lf",
+        "linear foot": "lf",
+        "feet": "ft",
+        "foot": "ft",
+        "each": "ea",
+        "count": "ea",
+        "counts": "ea",
+        "piece": "ea",
+        "pieces": "ea",
+        "pcs": "ea",
+        "gals": "gal",
+        "gallon": "gal",
+        "gallons": "gal",
+    }
+    return aliases.get(unit, unit)
+
+
+def physical_quantity_valid_flag(row: dict[str, Any] | pd.Series) -> bool:
+    if "physical_quantity_valid" not in row:
+        return True
+    value = row.get("physical_quantity_valid")
+    if value is None or str(value).strip() == "":
+        return True
+    return str(value).strip().lower() not in FALSE_VALUES
+
+
+def source_type_allows_physical_quantity(row: dict[str, Any] | pd.Series) -> bool:
+    source_type = first_nonblank(row.get("source_type")).strip().lower()
+    if not source_type:
+        return True
+    if source_type in NON_PHYSICAL_SOURCE_TYPES:
+        return False
+    return source_type in PHYSICAL_SOURCE_TYPES
+
+
+def sane_quantity_ratio(bucket: str, unit: str, ratio: float) -> bool:
+    if ratio <= 0 or not math.isfinite(ratio):
+        return False
+    normalized = normalize_unit(unit)
+    if normalized == "sqft":
+        return False
+    max_ratio = MAX_QUANTITY_RATIO_BY_BUCKET_UNIT.get((bucket, normalized))
+    if max_ratio is not None:
+        return ratio <= max_ratio
+    if bucket == "seam_treatment" and normalized in {"lf", "ft"}:
+        return ratio <= 0.5
+    if bucket == "fastener_treatment" and normalized == "ea":
+        return ratio <= 0.2
+    if bucket == "caulk_detail" and normalized in {"tube", "tubes", "ea", "lf", "ft"}:
+        return ratio <= 0.1
+    if bucket == "coating" and normalized == "gal":
+        return ratio <= 0.05
+    return True
+
+
+def row_has_valid_physical_quantity(row: dict[str, Any] | pd.Series, bucket: str, quantity: float, sqft: float) -> tuple[bool, str]:
+    unit = normalize_unit(row.get("unit"))
+    if not source_type_allows_physical_quantity(row):
+        return False, "source_type is not physical_quantity"
+    if not physical_quantity_valid_flag(row):
+        return False, "physical_quantity_valid is false"
+    if unit not in {normalize_unit(value) for value in PHYSICAL_UNITS_BY_BUCKET.get(bucket, set())}:
+        return False, f"unit {unit or '<blank>'} is not a valid physical unit for {bucket}"
+    ratio = quantity / sqft
+    if not sane_quantity_ratio(bucket, unit, ratio):
+        return False, f"quantity ratio {ratio:g} {unit}/sqft is unrealistic for {bucket}"
+    if bucket == "primer" and unit in {"pail", "pails", "container", "containers"}:
+        if quantity > sqft / 100:
+            return False, "primer pail quantity exceeds sqft / 100"
+        if sqft / quantity < 100:
+            return False, "primer pail coverage is less than 100 sqft per pail"
+    return True, ""
 
 
 def is_labor_row(row: dict[str, Any] | pd.Series) -> bool:
@@ -156,19 +256,29 @@ def build_bucket_calibration(data: EstimatorData, scope: dict[str, Any], bucket:
     unit_prices: list[float] = []
     units: list[str] = []
     usable_evidence = 0
+    rejected_quantity_rows = 0
+    rejection_reasons: list[str] = []
     for _, row in rows.iterrows():
         sqft = row_sqft(row, sqft_map)
         quantity = finite_float(row.get("quantity")) or finite_float(row.get("estimated_units"))
         cost = finite_float(row.get("estimated_cost"))
+        quantity_used = False
         if quantity and sqft and sqft > 0:
-            quantity_ratios.append(quantity / sqft)
-            usable_evidence += 1
-            unit = first_nonblank(row.get("unit"))
-            if unit:
-                units.append(unit)
+            is_valid, reason = row_has_valid_physical_quantity(row, bucket, quantity, sqft)
+            if is_valid:
+                quantity_ratios.append(quantity / sqft)
+                usable_evidence += 1
+                quantity_used = True
+                unit = first_nonblank(row.get("unit"))
+                if unit:
+                    units.append(unit)
+            else:
+                rejected_quantity_rows += 1
+                if len(rejection_reasons) < 5:
+                    rejection_reasons.append(reason)
         if cost and sqft and sqft > 0:
             cost_ratios.append(cost / sqft)
-            if not quantity:
+            if not quantity_used:
                 usable_evidence += 1
         unit_price = finite_float(row.get("unit_price"))
         if unit_price:
@@ -182,6 +292,8 @@ def build_bucket_calibration(data: EstimatorData, scope: dict[str, Any], bucket:
         "median_cost_per_sqft": median_positive(cost_ratios),
         "median_unit_price": median_positive(unit_prices),
         "matching_historical_rows": int(len(rows)),
+        "rejected_quantity_ratio_count": rejected_quantity_rows,
+        "quantity_ratio_rejection_reasons": sorted(set(rejection_reasons)),
         "selected_current_price_item": current_price,
         "selected_current_unit_price": finite_float(current_price.get("matched_price")) if current_price else None,
         "selected_current_price_column": current_price.get("matched_price_column") if current_price else None,

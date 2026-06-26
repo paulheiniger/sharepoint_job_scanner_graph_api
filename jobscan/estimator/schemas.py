@@ -16,6 +16,8 @@ class EstimatorData:
     template_rows: pd.DataFrame = field(default_factory=pd.DataFrame)
     tracking_summary: pd.DataFrame = field(default_factory=pd.DataFrame)
     tracking_daily: pd.DataFrame = field(default_factory=pd.DataFrame)
+    relationship_labor_rates: pd.DataFrame = field(default_factory=pd.DataFrame)
+    job_package_summary: pd.DataFrame = field(default_factory=pd.DataFrame)
     pricing: pd.DataFrame = field(default_factory=pd.DataFrame)
     pricing_catalog: pd.DataFrame = field(default_factory=pd.DataFrame)
     warnings: list[str] = field(default_factory=list)
@@ -91,6 +93,7 @@ class EstimateRecommendation:
     review_flags: list[str]
     human_review_required: bool
     draft_workbook_inputs: dict
+    debug: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

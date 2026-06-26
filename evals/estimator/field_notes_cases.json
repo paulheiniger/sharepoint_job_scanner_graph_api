@@ -13,6 +13,11 @@
       "warranty_years": 10,
       "must_include_material_packages": ["coating"],
       "should_include_or_flag": ["primer", "seam_treatment", "fastener_treatment"],
+      "minimum_labor_tasks_from": {
+        "tasks": ["labor_prep", "labor_seam_sealer", "labor_base", "labor_top_coat", "labor_details", "labor_cleanup", "labor_loading"],
+        "min_count": 4
+      },
+      "material_cost_max_multiple_of_coating": 2.0,
       "must_not_include_labor_packages": ["infrared_scan", "labor_top_coat_granules"],
       "travel_labor_hours_max": 8
     }

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 import jobscan.estimator.field_estimator as field_estimator_module
-from jobscan.estimator.field_estimator import build_labor_plan, estimate_from_field_notes
+from jobscan.estimator.field_estimator import build_labor_plan, build_material_plan, estimate_from_field_notes
 from jobscan.estimator.field_notes import parse_field_notes, parse_field_sqft
 from jobscan.estimator.schemas import EstimatorAssumptions, EstimatorData
 
@@ -330,13 +330,108 @@ def test_roof_coating_filters_labor_calibration_and_travel_hours() -> None:
 
     assert recommendation.draft_workbook_inputs["header"]["C12_estimated_sqft"] == 9536
     assert recommendation.material_plan[0]["price_source_type"] == "current_pricing"
-    assert {"labor_prep", "labor_seam_sealer", "labor_base", "labor_top_coat"}.issubset(tasks)
+    assert {"labor_prep", "labor_seam_sealer", "labor_base", "labor_top_coat", "labor_details", "labor_cleanup", "labor_loading"}.issubset(tasks)
     assert "infrared_scan" not in tasks
     assert "labor_top_coat_granules" not in tasks
     assert "labor_misc" not in tasks
     assert 4 <= recommendation.travel_plan["travel_labor_hours"] <= 8
     assert not any("Tear-off or substrate repair review required" in flag for flag in recommendation.review_flags)
     assert any("Rusted fasteners/seams require detail review" in flag for flag in recommendation.review_flags)
+
+
+def test_roof_coating_labor_baseline_fills_missing_tasks_when_history_only_has_prime() -> None:
+    data = field_data()
+    data.template_rows = pd.DataFrame(
+        [
+            {
+                "template_row_id": "R118",
+                "job_id": "J1",
+                "template_bucket": "labor_prime",
+                "line_item_kind": "labor",
+                "days": 1,
+                "crew_size": 4,
+                "total_hours": 32,
+                "estimated_cost": 2400,
+            }
+        ]
+    )
+
+    recommendation = estimate_from_field_notes(
+        "Roof coating estimate for a commercial metal roof in Louisville KY. Main roof is 120 ft by 80 ft. "
+        "Deduct two skylights, each 4 ft by 8 ft. Roof is fair overall but has rusted fasteners and some open seams. "
+        "Customer wants a 10-year silicone coating system. Access is easy. Few penetrations.",
+        data=data,
+    )
+    tasks = {row["task"] for row in recommendation.labor_plan}
+
+    assert "labor_prime" in tasks
+    assert {"labor_prep", "labor_seam_sealer", "labor_base", "labor_top_coat", "labor_details", "labor_cleanup", "labor_loading"}.issubset(tasks)
+    assert sum(1 for task in tasks if task.startswith("labor_")) > 4
+    fallback_rows = [row for row in recommendation.labor_plan if row.get("calibration_method") == "rule_based_fallback"]
+    assert fallback_rows
+    assert all(row["needs_review"] for row in fallback_rows)
+
+
+def test_template_rows_used_when_relationship_labor_rates_empty() -> None:
+    data = field_data()
+    data.relationship_labor_rates = pd.DataFrame()
+
+    recommendation = estimate_from_field_notes(
+        "Roof coating estimate for a commercial metal roof in Louisville KY. Main roof is 120 ft by 80 ft. "
+        "Deduct two skylights, each 4 ft by 8 ft. Customer wants a 10-year silicone coating system. Access is easy.",
+        data=data,
+    )
+    tasks = {row["task"]: row for row in recommendation.labor_plan}
+
+    assert {"labor_prep", "labor_seam_sealer", "labor_base", "labor_top_coat"}.issubset(tasks)
+    assert tasks["labor_prep"]["calibration_method"] in {"historical_calibration", "relaxed_historical_calibration"}
+    assert tasks["labor_prep"]["evidence_count"] > 0
+    assert recommendation.debug["labor_calibration"]["tasks"]["labor_prep"]["selected_source"] == "estimate_template_rows"
+
+
+def test_relaxed_labor_matching_is_used_when_exact_context_is_missing() -> None:
+    data = field_data()
+    data.jobs["substrate"] = "concrete"
+    data.estimates["substrate"] = "concrete"
+
+    recommendation = estimate_from_field_notes(
+        "Roof coating estimate for a commercial metal roof in Louisville KY. Main roof is 120 ft by 80 ft. "
+        "Customer wants a 10-year silicone coating system. Access is easy.",
+        data=data,
+    )
+    prep = {row["task"]: row for row in recommendation.labor_plan}["labor_prep"]
+
+    assert prep["calibration_method"] == "relaxed_historical_calibration"
+    assert "relaxed historical roofing labor evidence" in prep["notes"]
+    assert recommendation.debug["labor_calibration"]["tasks"]["labor_prep"]["selection_level"] in {"all_roofing_template_bucket", "all_bucket_rows"}
+
+
+def test_rule_based_labor_fallback_only_when_no_historical_evidence_exists() -> None:
+    data = field_data()
+    data.template_rows = pd.DataFrame()
+    data.relationship_labor_rates = pd.DataFrame()
+    data.job_package_summary = pd.DataFrame()
+
+    recommendation = estimate_from_field_notes(
+        "Roof coating estimate for a commercial metal roof in Louisville KY. Main roof is 120 ft by 80 ft. "
+        "Customer wants a 10-year silicone coating system. Access is easy.",
+        data=data,
+    )
+    tasks = {row["task"]: row for row in recommendation.labor_plan}
+
+    assert tasks["labor_prep"]["calibration_method"] == "rule_based_fallback"
+    assert tasks["labor_prep"]["needs_review"] is True
+    assert recommendation.debug["labor_calibration"]["tasks"]["labor_prep"]["selected_source"] == "rule_based_fallback"
+
+
+def test_invalid_historical_crew_size_is_not_used_as_crew_count() -> None:
+    data = field_data()
+    data.template_rows.loc[data.template_rows["line_item_kind"] == "labor", "crew_size"] = 30
+
+    recommendation = estimate_from_field_notes("Metal roof 12000 sqft silicone coating Louisville KY", data=data)
+
+    assert all(row["crew_size"] <= 8 for row in recommendation.labor_plan)
+    assert any("Historical labor calibration was incomplete" in flag for flag in recommendation.review_flags)
 
 
 def test_louisville_travel_labor_uses_drive_time_not_production_duration() -> None:
@@ -517,6 +612,202 @@ def test_secondary_material_allowances_fallback_without_historical_evidence() ->
     assert rows_by_category["primer"]["calibration_method"] == "deterministic_fallback"
     assert rows_by_category["primer"]["estimated_cost"] is not None
     assert rows_by_category["primer"]["needs_review"] is True
+
+
+def test_bad_primer_pail_ratio_is_rejected_and_capped() -> None:
+    data = field_data()
+    data.jobs = pd.concat(
+        [
+            data.jobs,
+            pd.DataFrame(
+                [
+                    {"job_id": "J2", "estimated_sqft": 10000, "job_name": "Bad primer 2", "division": "ROOFING"},
+                    {"job_id": "J3", "estimated_sqft": 10000, "job_name": "Bad primer 3", "division": "ROOFING"},
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+    data.template_rows = pd.concat(
+        [
+            data.template_rows,
+            pd.DataFrame(
+                [
+                    {"job_id": "J1", "selected_item_name": "Epoxy primer allowance", "line_item_kind": "material", "quantity": 12000, "unit": "pail", "source_type": "physical_quantity", "physical_quantity_valid": True, "estimated_cost": 315000},
+                    {"job_id": "J2", "selected_item_name": "Epoxy primer allowance", "line_item_kind": "material", "quantity": 10000, "unit": "pail", "source_type": "physical_quantity", "physical_quantity_valid": True, "estimated_cost": 262500},
+                    {"job_id": "J3", "selected_item_name": "Epoxy primer allowance", "line_item_kind": "material", "quantity": 10000, "unit": "pail", "source_type": "physical_quantity", "physical_quantity_valid": True, "estimated_cost": 262500},
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+    data.pricing = pd.concat(
+        [
+            data.pricing,
+            pd.DataFrame([{"product_name": "Epoxy Primer 5 Gal", "category": "Primer", "unit_price": 26.25, "unit_of_measure": "pail", "status": "active", "is_current": True, "needs_review": False}]),
+        ],
+        ignore_index=True,
+    )
+    data.pricing_catalog = data.pricing
+
+    recommendation = estimate_from_field_notes(
+        "Roof coating estimate for a commercial metal roof in Louisville KY. Main roof is 120 ft by 80 ft. "
+        "Deduct two skylights, each 4 ft by 8 ft. Roof is fair overall but has rusted fasteners and some open seams. "
+        "Customer wants a 10-year silicone coating system. Access is easy. Few penetrations.",
+        data=data,
+    )
+    rows_by_category = {row["category"]: row for row in recommendation.material_plan}
+    primer = rows_by_category["primer"]
+    coating = rows_by_category["coating"]
+
+    assert primer["selected_price_source"] != "current_pricing + historical_quantity_ratio"
+    assert primer["estimated_cost"] < coating["estimated_cost"]
+    assert not (primer.get("unit") == "pail" and (primer.get("quantity") or 0) > 100)
+    assert any("Rejected primer historical quantity ratio" in flag for flag in recommendation.review_flags)
+
+
+def test_valid_primer_pail_ratio_can_be_used() -> None:
+    data = field_data()
+    data.jobs = pd.concat(
+        [
+            data.jobs,
+            pd.DataFrame(
+                [
+                    {"job_id": "J2", "estimated_sqft": 10000, "job_name": "Primer 2", "division": "ROOFING"},
+                    {"job_id": "J3", "estimated_sqft": 8000, "job_name": "Primer 3", "division": "ROOFING"},
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+    data.template_rows = pd.concat(
+        [
+            data.template_rows,
+            pd.DataFrame(
+                [
+                    {"job_id": "J1", "selected_item_name": "Primer", "line_item_kind": "material", "quantity": 24, "unit": "pail", "source_type": "physical_quantity", "physical_quantity_valid": True, "estimated_cost": 630},
+                    {"job_id": "J2", "selected_item_name": "Primer", "line_item_kind": "material", "quantity": 20, "unit": "pail", "source_type": "physical_quantity", "physical_quantity_valid": True, "estimated_cost": 525},
+                    {"job_id": "J3", "selected_item_name": "Primer", "line_item_kind": "material", "quantity": 16, "unit": "pail", "source_type": "physical_quantity", "physical_quantity_valid": True, "estimated_cost": 420},
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+    data.pricing = pd.concat(
+        [
+            data.pricing,
+            pd.DataFrame([{"product_name": "Primer 5 Gal", "category": "Primer", "unit_price": 26.25, "unit_of_measure": "pail", "status": "active", "is_current": True, "needs_review": False}]),
+        ],
+        ignore_index=True,
+    )
+    data.pricing_catalog = data.pricing
+
+    recommendation = estimate_from_field_notes("Metal roof 9536 sqft rusted fasteners silicone coating Louisville KY", data=data)
+    primer = {row["category"]: row for row in recommendation.material_plan}["primer"]
+
+    assert primer["selected_price_source"] == "current_pricing + historical_quantity_ratio"
+    assert primer["quantity"] < 40
+    assert primer["estimated_cost"] is not None
+
+
+def test_primer_sqft_rows_use_cost_or_rule_not_physical_pail_quantity() -> None:
+    data = field_data()
+    data.jobs = pd.concat(
+        [
+            data.jobs,
+            pd.DataFrame(
+                [
+                    {"job_id": "J2", "estimated_sqft": 10000, "job_name": "Primer sqft 2", "division": "ROOFING"},
+                    {"job_id": "J3", "estimated_sqft": 8000, "job_name": "Primer sqft 3", "division": "ROOFING"},
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+    data.template_rows = pd.concat(
+        [
+            data.template_rows,
+            pd.DataFrame(
+                [
+                    {"job_id": "J1", "selected_item_name": "Primer allowance", "line_item_kind": "material", "quantity": 12000, "unit": "sqft", "source_type": "cost_allowance", "estimated_cost": 3000},
+                    {"job_id": "J2", "selected_item_name": "Primer allowance", "line_item_kind": "material", "quantity": 10000, "unit": "sqft", "source_type": "cost_allowance", "estimated_cost": 2500},
+                    {"job_id": "J3", "selected_item_name": "Primer allowance", "line_item_kind": "material", "quantity": 8000, "unit": "sqft", "source_type": "cost_allowance", "estimated_cost": 2000},
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+    data.pricing = pd.concat(
+        [
+            data.pricing,
+            pd.DataFrame([{"product_name": "Epoxy Primer 5 Gal", "category": "Primer", "unit_price": 26.25, "unit_of_measure": "pail", "status": "active", "is_current": True, "needs_review": False}]),
+        ],
+        ignore_index=True,
+    )
+    data.pricing_catalog = data.pricing
+
+    recommendation = estimate_from_field_notes("Metal roof 9536 sqft rusted fasteners silicone coating Louisville KY", data=data)
+    primer = {row["category"]: row for row in recommendation.material_plan}["primer"]
+
+    assert primer["selected_price_source"] == "historical_cost_ratio"
+    assert primer["unit"] == "sqft"
+    assert primer["quantity"] is None
+    assert primer["estimated_cost"] is not None
+    assert primer["estimated_cost"] < {row["category"]: row for row in recommendation.material_plan}["coating"]["estimated_cost"]
+
+
+def test_sanity_rejected_historical_quantity_row_is_non_cost_bearing() -> None:
+    data = EstimatorData(
+        pricing=pd.DataFrame(
+            [
+                {"product_name": "High Solids Silicone", "category": "Coating", "price_per_gallon": 38, "status": "active", "is_current": True, "needs_review": False},
+                {"product_name": "Epoxy Primer 5 Gal", "category": "Primer", "unit_price": 26.25, "unit_of_measure": "pail", "status": "active", "is_current": True, "needs_review": False},
+            ]
+        )
+    )
+    data.pricing_catalog = data.pricing
+    scope = {
+        "surface_area_sqft": 9536,
+        "estimated_sqft": 9536,
+        "coating_required": True,
+        "coating_type": "silicone",
+        "substrate": "metal",
+        "notes": "Metal roof rusted fasteners silicone coating Louisville KY",
+    }
+    decision = {
+        "work_package_decisions": {
+            "coating": {"package_name": "coating", "applies": True, "review_required": False, "reason": "coating"},
+            "primer": {"package_name": "primer", "applies": True, "review_required": True, "reason": "primer"},
+            "seam_treatment": {"package_name": "seam_treatment", "applies": False, "review_required": False},
+            "fastener_treatment": {"package_name": "fastener_treatment", "applies": False, "review_required": False},
+            "caulk_detail": {"package_name": "caulk_detail", "applies": False, "review_required": False},
+        }
+    }
+    calibration = {
+        "material_calibration": {
+            "primer": {
+                "evidence_count": 3,
+                "median_quantity_per_sqft": 0.003,
+                "selected_current_unit_price": 26.25,
+                "selected_current_price_column": "unit_price",
+                "selected_current_price_item": {"product_name": "Epoxy Primer 5 Gal", "unit_of_measure": "pail"},
+                "unit": "pail",
+            }
+        }
+    }
+
+    material_plan, low, high, review_flags = build_material_plan(scope, data, calibration, decision, EstimatorAssumptions())
+    primer = {row["category"]: row for row in material_plan}["primer"]
+
+    assert primer["selected_price_source"] == "rejected_historical_quantity_ratio"
+    assert primer["quantity"] is None
+    assert primer["estimated_cost"] is None
+    assert primer["cost_low"] is None
+    assert primer["cost_high"] is None
+    assert primer["rejected_quantity"] is not None
+    assert all("262438" not in str(value) for value in primer.values())
+    assert low > 0
+    assert high > 0
 
 
 def test_roof_coating_includes_ir_scan_when_requested() -> None:

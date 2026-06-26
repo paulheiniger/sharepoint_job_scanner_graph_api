@@ -58,6 +58,13 @@ ESTIMATOR_NUMERIC_COLUMNS = [
     "median_total_hours",
     "median_crew_size",
     "evidence_count",
+    "job_count",
+    "area_sqft",
+    "hours_per_sqft",
+    "hours_per_1000_sqft",
+    "cost_per_sqft",
+    "median_hours_per_1000_sqft",
+    "median_cost_per_sqft",
     "days",
     "crew_size",
     "total_hours",
@@ -93,6 +100,10 @@ def normalize_estimator_data(data: EstimatorData) -> EstimatorData:
     data.line_item_classifications = normalize_estimator_dataframe(data.line_item_classifications)
     data.jobs = normalize_estimator_dataframe(data.jobs)
     data.estimates = normalize_estimator_dataframe(data.estimates)
+    data.tracking_summary = normalize_estimator_dataframe(data.tracking_summary)
+    data.tracking_daily = normalize_estimator_dataframe(data.tracking_daily)
+    data.relationship_labor_rates = normalize_estimator_dataframe(data.relationship_labor_rates)
+    data.job_package_summary = normalize_estimator_dataframe(data.job_package_summary)
     if data.pricing.empty and not data.pricing_catalog.empty:
         data.pricing = data.pricing_catalog
     if data.pricing_catalog.empty and not data.pricing.empty:
@@ -251,6 +262,14 @@ def load_estimator_data_from_database(database_url: str) -> EstimatorData:
         if relation_exists(connection, "job_tracking_daily_entries"):
             data.tracking_daily = _read_sql_dataframe(connection, "SELECT * FROM job_tracking_daily_entries")
             data.source_files_used.append("database: job_tracking_daily_entries")
+
+        if relation_exists(connection, "relationship_labor_rates"):
+            data.relationship_labor_rates = _read_sql_dataframe(connection, "SELECT * FROM relationship_labor_rates")
+            data.source_files_used.append("database: relationship_labor_rates")
+
+        if relation_exists(connection, "job_package_summary"):
+            data.job_package_summary = _read_sql_dataframe(connection, "SELECT * FROM job_package_summary")
+            data.source_files_used.append("database: job_package_summary")
 
         data.pricing_catalog = load_current_pricing(connection, data)
         data.pricing = data.pricing_catalog

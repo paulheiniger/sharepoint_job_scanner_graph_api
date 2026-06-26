@@ -53,3 +53,75 @@ def test_build_material_calibration_calculates_median_ratios() -> None:
     assert calibration["fastener_treatment"]["median_quantity_per_sqft"] == 0.05
     assert calibration["fastener_treatment"]["median_cost_per_sqft"] == 0.075
     assert calibration["fastener_treatment"]["selected_current_unit_price"] == 1.75
+
+
+def test_material_calibration_rejects_unrealistic_primer_pail_ratio() -> None:
+    data = EstimatorData(
+        jobs=pd.DataFrame([{"job_id": "J1", "estimated_sqft": 10000}]),
+        template_rows=pd.DataFrame(
+            [
+                {
+                    "job_id": "J1",
+                    "selected_item_name": "Epoxy primer allowance",
+                    "line_item_kind": "material",
+                    "quantity": 10000,
+                    "unit": "pail",
+                    "source_type": "physical_quantity",
+                    "physical_quantity_valid": True,
+                    "estimated_cost": 250000,
+                }
+            ]
+        ),
+        pricing=pd.DataFrame([{"product_name": "Epoxy Primer 5 Gal", "category": "Primer", "unit_price": 26.25, "unit_of_measure": "pail", "status": "active", "is_current": True}]),
+    )
+
+    calibration = build_material_calibration(data, {"surface_area_sqft": 9536})
+
+    assert calibration["primer"]["median_quantity_per_sqft"] is None
+    assert calibration["primer"]["rejected_quantity_ratio_count"] == 1
+    assert "unrealistic" in " ".join(calibration["primer"]["quantity_ratio_rejection_reasons"])
+
+
+def test_material_calibration_allows_valid_primer_pail_ratio() -> None:
+    data = EstimatorData(
+        jobs=pd.DataFrame(
+            [
+                {"job_id": "J1", "estimated_sqft": 10000},
+                {"job_id": "J2", "estimated_sqft": 12000},
+                {"job_id": "J3", "estimated_sqft": 8000},
+            ]
+        ),
+        template_rows=pd.DataFrame(
+            [
+                {"job_id": "J1", "selected_item_name": "Primer", "line_item_kind": "material", "quantity": 20, "unit": "pail", "source_type": "physical_quantity", "physical_quantity_valid": True, "estimated_cost": 500},
+                {"job_id": "J2", "selected_item_name": "Primer", "line_item_kind": "material", "quantity": 24, "unit": "pail", "source_type": "physical_quantity", "physical_quantity_valid": True, "estimated_cost": 600},
+                {"job_id": "J3", "selected_item_name": "Primer", "line_item_kind": "material", "quantity": 16, "unit": "pail", "source_type": "physical_quantity", "physical_quantity_valid": True, "estimated_cost": 400},
+            ]
+        ),
+        pricing=pd.DataFrame([{"product_name": "Primer 5 Gal", "category": "Primer", "unit_price": 26.25, "unit_of_measure": "pail", "status": "active", "is_current": True}]),
+    )
+
+    calibration = build_material_calibration(data, {"surface_area_sqft": 9536})
+
+    assert calibration["primer"]["median_quantity_per_sqft"] == 0.002
+    assert calibration["primer"]["rejected_quantity_ratio_count"] == 0
+
+
+def test_material_calibration_does_not_treat_sqft_units_as_physical_quantity() -> None:
+    data = EstimatorData(
+        jobs=pd.DataFrame([{"job_id": "J1", "estimated_sqft": 10000}]),
+        template_rows=pd.DataFrame(
+            [
+                {"job_id": "J1", "selected_item_name": "Primer allowance", "line_item_kind": "material", "quantity": 10000, "unit": "sqft", "source_type": "cost_allowance", "estimated_cost": 2500},
+                {"job_id": "J1", "selected_item_name": "Seam treatment", "line_item_kind": "material", "quantity": 10000, "unit": "sqft", "source_type": "physical_quantity", "estimated_cost": 3000},
+            ]
+        ),
+        pricing=pd.DataFrame(),
+    )
+
+    calibration = build_material_calibration(data, {"surface_area_sqft": 9536})
+
+    assert calibration["primer"]["median_quantity_per_sqft"] is None
+    assert calibration["primer"]["median_cost_per_sqft"] == 0.25
+    assert calibration["seam_treatment"]["median_quantity_per_sqft"] is None
+    assert calibration["seam_treatment"]["median_cost_per_sqft"] == 0.3

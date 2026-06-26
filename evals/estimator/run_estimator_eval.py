@@ -163,6 +163,38 @@ def evaluate_case(case: dict[str, Any], estimator_data: Any = None) -> dict[str,
         if package_present(labor_rows, package):
             failures.append(f"unexpected labor package present: {package}")
 
+    labor_task_expectation = expected.get("minimum_labor_tasks_from") or {}
+    if labor_task_expectation:
+        required_tasks = {lower_text(task) for task in labor_task_expectation.get("tasks") or []}
+        min_count = int(labor_task_expectation.get("min_count") or 0)
+        present = {
+            lower_text(row.get("task") or row.get("labor_package"))
+            for row in labor_rows
+            if lower_text(row.get("task") or row.get("labor_package")) in required_tasks
+        }
+        if len(present) < min_count:
+            failures.append(f"expected at least {min_count} labor tasks from {sorted(required_tasks)}, found {sorted(present)}")
+
+    material_cost_multiple = expected.get("material_cost_max_multiple_of_coating")
+    if material_cost_multiple is not None:
+        coating_costs = [
+            to_float(row.get("estimated_cost"))
+            for row in material_rows
+            if "coating" in lower_text(row.get("category")) and to_float(row.get("estimated_cost")) is not None
+        ]
+        coating_cost = max(coating_costs) if coating_costs else None
+        if coating_cost:
+            for row in material_rows:
+                estimated_cost = to_float(row.get("estimated_cost"))
+                source_type = lower_text(row.get("source_type") or row.get("selected_price_source"))
+                if estimated_cost is not None and estimated_cost > coating_cost * float(material_cost_multiple) and "manual_override" not in source_type:
+                    failures.append(
+                        f"material row cost exceeds {material_cost_multiple}x coating cost: "
+                        f"{row.get('item') or row.get('category')} cost={estimated_cost} coating={coating_cost}"
+                    )
+                if lower_text(row.get("selected_price_source")) == "rejected_historical_quantity_ratio" and estimated_cost is not None:
+                    failures.append(f"rejected material row retained estimated_cost: {row.get('item') or row.get('category')}")
+
     for item in expected.get("should_include_or_flag") or []:
         if not package_present(material_rows, item) and item.lower() not in all_review_text:
             warnings.append(f"expected material/review signal not found: {item}")
