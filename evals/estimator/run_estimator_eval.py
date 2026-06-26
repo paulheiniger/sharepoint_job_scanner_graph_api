@@ -154,6 +154,28 @@ def numeric_matches(actual: Any, expected: Any, tolerance: float = 1.0) -> bool:
     return abs(actual_number - expected_number) <= tolerance
 
 
+def to_int(value: Any) -> int:
+    number = to_float(value)
+    return int(number) if number is not None else 0
+
+
+def has_heavy_detail_trigger(notes: str) -> bool:
+    text = lower_text(notes)
+    return any(
+        term in text
+        for term in (
+            "many penetrations",
+            "lots of penetrations",
+            "heavy penetrations",
+            "heavy detail",
+            "difficult access",
+            "hard access",
+            "poor condition",
+            "severe rust",
+        )
+    )
+
+
 def evaluate_case(case: dict[str, Any], estimator_data: Any = None) -> dict[str, Any]:
     result_obj = estimate_from_field_notes(case["notes"], {}, data=estimator_data)
     result = object_to_dict(result_obj)
@@ -187,6 +209,11 @@ def evaluate_case(case: dict[str, Any], estimator_data: Any = None) -> dict[str,
 
     if text_field_contains(result, "project_type", ["roof"]) or any("roof" in item for item in result.get("recommended_scope") or []):
         for row in material_rows:
+            if "historical_cost_ratio" in row_method(row) and to_int(row.get("valid_quantity_ratio_count")) > 0:
+                failures.append(
+                    "historical_cost_ratio_fallback material row used despite valid physical quantity evidence: "
+                    f"{row.get('item') or row.get('category')}"
+                )
             if "historical_cost_ratio" in row_method(row) and row_included_in_total(row):
                 failures.append(
                     "historical_cost_ratio_fallback material row was included in total: "
@@ -198,6 +225,18 @@ def evaluate_case(case: dict[str, Any], estimator_data: Any = None) -> dict[str,
             failures.append(
                 f"labor hours per 1000 sqft exceeded max 80: {round(total_labor_hours / estimated_sqft * 1000, 2)}"
             )
+        configured_roof_labor_cap = expected.get("roof_coating_labor_hours_per_1000_max")
+        if configured_roof_labor_cap is not None and estimated_sqft:
+            actual_hours_per_1000 = total_labor_hours / estimated_sqft * 1000
+            if actual_hours_per_1000 > float(configured_roof_labor_cap):
+                failures.append(
+                    f"labor hours per 1000 sqft exceeded configured roof coating cap "
+                    f"{configured_roof_labor_cap}: {round(actual_hours_per_1000, 2)}"
+                )
+        if expected.get("must_not_stack_caulk_details_without_heavy_trigger") and not has_heavy_detail_trigger(case.get("notes") or ""):
+            task_texts = {lower_text(row.get("task") or row.get("labor_package")) for row in labor_rows}
+            if {"labor_caulk", "labor_details", "labor_seam_sealer"}.issubset(task_texts):
+                failures.append("labor_caulk stacked with labor_details and labor_seam_sealer without heavy-detail trigger")
         for row in labor_rows + material_rows:
             if row.get("template_type_match") is False and row.get("included_as_evidence") is True:
                 failures.append("nonmatching template evidence was included in calibration")

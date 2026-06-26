@@ -339,6 +339,21 @@ def test_roof_coating_filters_labor_calibration_and_travel_hours() -> None:
     assert any("Rusted fasteners/seams require detail review" in flag for flag in recommendation.review_flags)
 
 
+def test_simple_roof_coating_labor_bundle_is_capped() -> None:
+    recommendation = estimate_from_field_notes(
+        "Roof coating estimate for a commercial metal roof in Louisville KY. Main roof is 120 ft by 80 ft. "
+        "Deduct two skylights, each 4 ft by 8 ft. Roof is fair overall but has rusted fasteners and some open seams. "
+        "Customer wants a 10-year silicone coating system. Access is easy. Few penetrations.",
+        data=field_data(),
+    )
+    total_hours = sum(float(row.get("total_hours") or 0) for row in recommendation.labor_plan)
+    hours_per_1000 = total_hours / recommendation.parsed_fields["estimated_sqft"] * 1000
+
+    assert hours_per_1000 <= 60
+    summary = recommendation.debug["labor_calibration"]["selection_summary"]
+    assert summary["labor_bundle_after_cap_hours"] <= summary["labor_bundle_cap_hours"]
+
+
 def test_roof_coating_labor_baseline_fills_missing_tasks_when_history_only_has_prime() -> None:
     data = field_data()
     data.template_rows = pd.DataFrame(
@@ -626,6 +641,83 @@ def test_secondary_material_allowances_use_historical_ratios_with_current_pricin
     assert rows_by_category["seam_treatment"]["estimated_cost"] is not None
     assert rows_by_category["fastener_treatment"]["estimated_cost"] is not None
     assert recommendation.estimate_low > sum(row["cost_low"] for row in recommendation.material_plan if row.get("cost_low"))
+
+
+def test_roofing_material_rows_prefer_estimated_units_when_quantity_is_scope_area() -> None:
+    data = field_data()
+    data.template_rows = pd.concat(
+        [
+            data.template_rows,
+            pd.DataFrame(
+                [
+                    {
+                        "job_id": "J1",
+                        "template_type": "roofing",
+                        "template_bucket": "primer",
+                        "selected_item_name": "Epoxy primer",
+                        "line_item_kind": "material",
+                        "quantity": 12000,
+                        "estimated_units": 24,
+                        "unit": "",
+                        "unit_price": 26.25,
+                        "estimated_cost": 630,
+                    },
+                    {
+                        "job_id": "J1",
+                        "template_type": "roofing",
+                        "template_bucket": "seam_treatment",
+                        "selected_item_name": "Seam treatment",
+                        "line_item_kind": "material",
+                        "quantity": 12000,
+                        "estimated_units": 960,
+                        "unit": "",
+                        "unit_price": 3,
+                        "estimated_cost": 2880,
+                    },
+                    {
+                        "job_id": "J1",
+                        "template_type": "roofing",
+                        "template_bucket": "fastener_treatment",
+                        "selected_item_name": "Fastener treatment",
+                        "line_item_kind": "material",
+                        "quantity": 12000,
+                        "estimated_units": 600,
+                        "unit": "",
+                        "unit_price": 1.75,
+                        "estimated_cost": 1050,
+                    },
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+    data.pricing = pd.concat(
+        [
+            data.pricing,
+            pd.DataFrame(
+                [
+                    {"product_name": "Epoxy Primer 5 Gal Pail", "category": "Primer", "unit_price": 26.25, "unit_of_measure": "pail", "status": "active", "is_current": True, "needs_review": False},
+                    {"product_name": "Seam Sealer", "category": "Seam", "unit_price": 3, "price_per_lf": 3, "status": "active", "is_current": True, "needs_review": False},
+                    {"product_name": "Fastener Dab", "category": "Fastener", "price_per_unit": 1.75, "status": "active", "is_current": True, "needs_review": False},
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+    data.pricing_catalog = data.pricing
+
+    recommendation = estimate_from_field_notes("Metal roof 12000 sqft rusted fasteners silicone coating Louisville KY", data=data)
+    rows_by_category = {row["category"]: row for row in recommendation.material_plan}
+
+    for category in ("primer", "seam_treatment", "fastener_treatment"):
+        row = rows_by_category[category]
+        assert row["selected_price_source"] == "current_pricing + historical_quantity_ratio"
+        assert row["selected_material_calibration_field"] == "estimated_units"
+        assert row["estimated_cost"] is not None
+        assert row.get("quantity_evidence_diagnostics")
+        assert row["quantity_evidence_diagnostics"][0]["chosen_material_quantity_field"] == "estimated_units"
+    assert rows_by_category["primer"]["quantity"] < 30
+    assert rows_by_category["seam_treatment"]["quantity"] < 12000
 
 
 def test_secondary_material_allowances_fallback_without_historical_evidence() -> None:

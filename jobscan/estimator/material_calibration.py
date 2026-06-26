@@ -14,7 +14,9 @@ BUCKETS = {
     "primer": {
         "keywords": ("primer", "prime", "epoxy primer", "rust primer"),
         "price_keywords": ("primer",),
-        "preferred_price_columns": ("price_per_gallon", "unit_price", "price_per_sqft", "price_per_unit"),
+        "required_product_keywords": ("primer", "prime"),
+        "excluded_product_keywords": ("granule", "granules"),
+        "preferred_price_columns": ("unit_price", "price_per_unit", "price_per_gallon", "price_per_sqft"),
     },
     "seam_treatment": {
         "keywords": ("seam", "seam sealer", "seam tape", "butter grade", "fabric", "detail tape"),
@@ -71,7 +73,7 @@ PHYSICAL_UNITS_BY_BUCKET = {
     "primer": {"gal", "gallon", "gallons", "pail", "pails", "container", "containers", "drum", "drums"},
     "seam_treatment": {"lf", "linear foot", "linear feet", "ft", "feet", "roll", "rolls", "tube", "tubes"},
     "fastener_treatment": {"ea", "each", "count", "counts", "unit", "units", "piece", "pieces", "pc", "pcs"},
-    "caulk_detail": {"case", "cases", "tube", "tubes", "ea", "each", "lf", "linear foot", "linear feet"},
+    "caulk_detail": {"case", "cases", "tube", "tubes", "ea", "each", "unit", "units", "lf", "linear foot", "linear feet"},
     "coating": {"gal", "gallon", "gallons", "pail", "pails", "drum", "drums"},
 }
 MAX_QUANTITY_RATIO_BY_BUCKET_UNIT = {
@@ -86,6 +88,22 @@ MAX_QUANTITY_RATIO_BY_BUCKET_UNIT = {
     ("primer", "drums"): 0.001,
     ("caulk_detail", "case"): 0.01,
     ("caulk_detail", "cases"): 0.01,
+}
+
+DEFAULT_UNIT_BY_BUCKET = {
+    "primer": "pail",
+    "seam_treatment": "lf",
+    "fastener_treatment": "ea",
+    "caulk_detail": "unit",
+    "coating": "gal",
+}
+
+MAX_ESTIMATED_UNITS_RATIO_BY_BUCKET = {
+    "primer": 0.004,
+    "seam_treatment": 0.5,
+    "fastener_treatment": 0.2,
+    "caulk_detail": 0.1,
+    "coating": 0.05,
 }
 
 
@@ -215,6 +233,108 @@ def normalize_unit(value: Any) -> str:
     return aliases.get(unit, unit)
 
 
+def current_price_unit(price: dict[str, Any] | None, bucket: str) -> str:
+    if not price:
+        return DEFAULT_UNIT_BY_BUCKET.get(bucket, "unit")
+    explicit = normalize_unit(first_nonblank(price.get("unit_of_measure"), price.get("unit"), price.get("price_basis")))
+    if explicit in {"unit cost", "extracted line price"}:
+        explicit = ""
+    if explicit:
+        return explicit
+    column = first_nonblank(price.get("matched_price_column")).lower()
+    if column == "price_per_gallon":
+        return "gal"
+    if column == "price_per_lf":
+        return "lf"
+    if column == "price_per_sqft":
+        return "sqft"
+    if column == "price_per_unit":
+        return "ea"
+    text = pricing_text(price)
+    if any(term in text for term in ("pail", "5 gal", "2 gal", "bucket")):
+        return "pail"
+    if any(term in text for term in ("drum", "54 gal", "55 gal")):
+        return "drum"
+    if any(term in text for term in ("gallon", " gal")):
+        return "gal"
+    if "tube" in text:
+        return "tube"
+    if "case" in text:
+        return "case"
+    if any(term in text for term in ("linear", " lf")):
+        return "lf"
+    return DEFAULT_UNIT_BY_BUCKET.get(bucket, "unit")
+
+
+def row_kind_is_material(row: dict[str, Any] | pd.Series) -> bool:
+    return str(row.get("line_item_kind") or "").strip().lower() in {"", "material", "materials"}
+
+
+def quantity_looks_like_scope_area(quantity: float | None, sqft: float | None, unit: str) -> bool:
+    if quantity is None or quantity <= 0:
+        return False
+    if normalize_unit(unit) in {"sqft", "sf", "square feet", "square foot"}:
+        return True
+    if sqft and sqft > 0 and 0.8 <= quantity / sqft <= 1.25:
+        return True
+    return quantity >= 500
+
+
+def choose_material_quantity(
+    row: dict[str, Any] | pd.Series,
+    *,
+    bucket: str,
+    sqft: float | None,
+    current_price: dict[str, Any] | None,
+    scope_type: str,
+) -> tuple[float | None, float | None, str, str, dict[str, Any]]:
+    raw_quantity = finite_float(row.get("quantity"))
+    estimated_units = finite_float(row.get("estimated_units"))
+    raw_unit = normalize_unit(row.get("unit"))
+    area_unit = raw_unit in {"sqft", "sf", "square feet", "square foot"}
+    inferred_unit = raw_unit or current_price_unit(current_price, bucket)
+    area_used = sqft
+    chosen_field = ""
+    quantity = None
+    if (
+        scope_type == "roofing"
+        and row_kind_is_material(row)
+        and estimated_units
+        and estimated_units > 0
+    ):
+        if area_used is None and raw_quantity and quantity_looks_like_scope_area(raw_quantity, None, raw_unit):
+            area_used = raw_quantity
+        if area_used and area_used > 0:
+            ratio = estimated_units / area_used
+            max_ratio = MAX_ESTIMATED_UNITS_RATIO_BY_BUCKET.get(bucket)
+            if max_ratio is None or ratio <= max_ratio:
+                chosen_field = "estimated_units"
+                quantity = estimated_units
+                if area_unit:
+                    inferred_unit = current_price_unit(current_price, bucket)
+            else:
+                chosen_field = "estimated_units_rejected"
+        if not chosen_field and raw_quantity and raw_quantity > 0 and not quantity_looks_like_scope_area(raw_quantity, area_used, raw_unit):
+            chosen_field = "quantity"
+            quantity = raw_quantity
+    elif raw_quantity and raw_quantity > 0:
+        chosen_field = "quantity"
+        quantity = raw_quantity
+    elif estimated_units and estimated_units > 0:
+        chosen_field = "estimated_units"
+        quantity = estimated_units
+    diagnostics = {
+        "raw_quantity": raw_quantity,
+        "estimated_units": estimated_units,
+        "area_sqft_used": area_used,
+        "chosen_material_quantity_field": chosen_field or "none",
+        "chosen_unit": inferred_unit,
+        "implied_quantity_per_sqft": quantity / area_used if quantity and area_used else None,
+        "rejection_reason": "",
+    }
+    return quantity, area_used, inferred_unit, chosen_field, diagnostics
+
+
 def physical_quantity_valid_flag(row: dict[str, Any] | pd.Series) -> bool:
     if "physical_quantity_valid" not in row:
         return True
@@ -253,8 +373,8 @@ def sane_quantity_ratio(bucket: str, unit: str, ratio: float) -> bool:
     return True
 
 
-def row_has_valid_physical_quantity(row: dict[str, Any] | pd.Series, bucket: str, quantity: float, sqft: float) -> tuple[bool, str]:
-    unit = normalize_unit(row.get("unit"))
+def row_has_valid_physical_quantity(row: dict[str, Any] | pd.Series, bucket: str, quantity: float, sqft: float, unit_override: str | None = None) -> tuple[bool, str]:
+    unit = normalize_unit(unit_override) or normalize_unit(row.get("unit"))
     if not source_type_allows_physical_quantity(row):
         return False, "source_type is not physical_quantity"
     if not physical_quantity_valid_flag(row):
@@ -360,6 +480,11 @@ def pricing_text(row: dict[str, Any] | pd.Series) -> str:
     return " ".join(str(row.get(column) or "") for column in columns).lower()
 
 
+def pricing_product_text(row: dict[str, Any] | pd.Series) -> str:
+    columns = ("product_name", "description")
+    return " ".join(str(row.get(column) or "") for column in columns).lower()
+
+
 def select_current_price(pricing: pd.DataFrame, bucket: str) -> dict[str, Any] | None:
     config = BUCKETS[bucket]
     rows = current_pricing_rows(pricing)
@@ -368,8 +493,15 @@ def select_current_price(pricing: pd.DataFrame, bucket: str) -> dict[str, Any] |
     candidates: list[tuple[int, dict[str, Any]]] = []
     for _, row in rows.iterrows():
         text = pricing_text(row)
+        product_text = pricing_product_text(row)
         matched_keywords = [keyword for keyword in config["price_keywords"] if keyword in text]
         if not matched_keywords:
+            continue
+        required_product_keywords = config.get("required_product_keywords", ())
+        if required_product_keywords and not any(keyword in product_text for keyword in required_product_keywords):
+            continue
+        excluded_product_keywords = config.get("excluded_product_keywords", ())
+        if excluded_product_keywords and any(keyword in product_text for keyword in excluded_product_keywords):
             continue
         row_dict = row.to_dict()
         for index, column in enumerate(config["preferred_price_columns"]):
@@ -404,6 +536,7 @@ def build_bucket_calibration(data: EstimatorData, scope: dict[str, Any], bucket:
     sqft_map = estimate_sqft_by_job(data)
     job_context = context_by_job(data)
     scope_type = scope_template_type(scope)
+    current_price = select_current_price(data.pricing_catalog if not data.pricing_catalog.empty else data.pricing, bucket)
     has_explicit_roofing_rows = False
     if scope_type == "roofing":
         for _, row in rows.iterrows():
@@ -422,6 +555,9 @@ def build_bucket_calibration(data: EstimatorData, scope: dict[str, Any], bucket:
     rejected_template_rows = 0
     rejection_reasons: list[str] = []
     template_rejection_reasons: list[str] = []
+    quantity_diagnostics: list[dict[str, Any]] = []
+    rejected_by_reason: dict[str, int] = {}
+    chosen_quantity_fields: dict[str, int] = {}
     for _, row in rows.iterrows():
         row_dict = enriched_row(row, job_context)
         allowed, template_reason = evidence_allowed_for_scope(
@@ -435,23 +571,42 @@ def build_bucket_calibration(data: EstimatorData, scope: dict[str, Any], bucket:
                 template_rejection_reasons.append(template_reason)
             continue
         sqft = row_sqft(row_dict, sqft_map)
-        quantity = finite_float(row_dict.get("quantity")) or finite_float(row_dict.get("estimated_units"))
+        quantity, sqft, quantity_unit, chosen_field, quantity_diag = choose_material_quantity(
+            row_dict,
+            bucket=bucket,
+            sqft=sqft,
+            current_price=current_price,
+            scope_type=scope_type,
+        )
         cost = finite_float(row_dict.get("estimated_cost"))
         quantity_used = False
         if quantity and sqft and sqft > 0:
             physical_candidate_rows += 1
-            is_valid, reason = row_has_valid_physical_quantity(row_dict, bucket, quantity, sqft)
+            is_valid, reason = row_has_valid_physical_quantity(row_dict, bucket, quantity, sqft, quantity_unit)
+            quantity_diag["rejection_reason"] = reason
             if is_valid:
                 quantity_ratios.append(quantity / sqft)
                 usable_evidence += 1
                 quantity_used = True
-                unit = first_nonblank(row_dict.get("unit"))
+                chosen_quantity_fields[chosen_field or "unknown"] = chosen_quantity_fields.get(chosen_field or "unknown", 0) + 1
+                unit = first_nonblank(quantity_unit, row_dict.get("unit"))
                 if unit:
                     units.append(unit)
             else:
                 rejected_quantity_rows += 1
+                rejected_by_reason[reason] = rejected_by_reason.get(reason, 0) + 1
                 if len(rejection_reasons) < 5:
                     rejection_reasons.append(reason)
+        elif chosen_field.endswith("_rejected"):
+            reason = (
+                f"estimated_units ratio {quantity_diag.get('implied_quantity_per_sqft')} "
+                f"exceeds sane bound for {bucket}"
+            )
+            quantity_diag["rejection_reason"] = reason
+            rejected_quantity_rows += 1
+            rejected_by_reason[reason] = rejected_by_reason.get(reason, 0) + 1
+            if len(rejection_reasons) < 5:
+                rejection_reasons.append(reason)
         if cost and sqft and sqft > 0:
             cost_ratios.append(cost / sqft)
             if not quantity_used:
@@ -460,7 +615,12 @@ def build_bucket_calibration(data: EstimatorData, scope: dict[str, Any], bucket:
         unit_price = finite_float(row_dict.get("unit_price"))
         if unit_price:
             unit_prices.append(unit_price)
-    current_price = select_current_price(data.pricing_catalog if not data.pricing_catalog.empty else data.pricing, bucket)
+        if len(quantity_diagnostics) < 25:
+            quantity_diag["source_file"] = first_nonblank(row_dict.get("source_file"), row_dict.get("estimate_file"))
+            quantity_diag["job_id"] = row_dict.get("job_id")
+            quantity_diag["template_bucket"] = row_dict.get("template_bucket")
+            quantity_diag["row_label"] = first_nonblank(row_dict.get("row_label"), row_dict.get("selected_item_name"))
+            quantity_diagnostics.append(quantity_diag)
     unit = units[0] if units else first_nonblank(current_price.get("unit_of_measure") if current_price else "")
     return {
         "bucket": bucket,
@@ -481,6 +641,10 @@ def build_bucket_calibration(data: EstimatorData, scope: dict[str, Any], bucket:
         "rejected_template_type_rows_count": rejected_template_rows,
         "rejected_quantity_ratio_count": rejected_quantity_rows,
         "quantity_ratio_rejection_reasons": sorted(set(rejection_reasons)),
+        "quantity_ratio_rejections_by_reason": rejected_by_reason,
+        "quantity_evidence_diagnostics": quantity_diagnostics,
+        "chosen_material_quantity_fields": chosen_quantity_fields,
+        "selected_material_calibration_field": max(chosen_quantity_fields, key=chosen_quantity_fields.get) if chosen_quantity_fields else "cost_ratio_fallback" if cost_fallback_rows else "none",
         "template_type_rejection_reasons": sorted(set(template_rejection_reasons)),
         "scope_template_type": scope_type,
         "selected_current_price_item": current_price,

@@ -18,6 +18,8 @@
         "min_count": 4
       },
       "material_cost_max_multiple_of_coating": 2.0,
+      "roof_coating_labor_hours_per_1000_max": 60,
+      "must_not_stack_caulk_details_without_heavy_trigger": true,
       "must_not_include_labor_packages": ["infrared_scan", "labor_top_coat_granules"],
       "travel_labor_hours_max": 8
     }

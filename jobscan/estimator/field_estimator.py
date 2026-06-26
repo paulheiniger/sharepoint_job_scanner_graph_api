@@ -531,7 +531,7 @@ def required_roof_coating_labor_tasks(scope: dict[str, Any], decision: dict[str,
     work_packages = ensure_work_package_decisions(scope, decision)
     if _decision_applies(work_packages.get("primer"), include_review=False):
         tasks.append("labor_prime")
-    if _decision_applies(work_packages.get("caulk_detail"), include_review=True):
+    if _decision_applies(work_packages.get("caulk_detail"), include_review=True) and _roof_coating_heavy_labor_trigger(scope):
         tasks.append("labor_caulk")
     if _text_has_any(notes, OPTIONAL_LABOR_BUCKET_TRIGGERS["infrared_scan"]):
         tasks.append("infrared_scan")
@@ -735,6 +735,113 @@ def select_roof_coating_labor_rows(
                 reason = "Bucket was expected but no selected valid historical row was available."
         audit_rows.append(_labor_selection_audit_row(row, task=task, selected=False, reason=reason, area=area, role=role))
     return selected_rows, audit_rows
+
+
+def _roof_coating_heavy_labor_trigger(scope: dict[str, Any]) -> bool:
+    text = _scope_text(scope)
+    access = first_nonblank(scope.get("access_complexity")).lower()
+    penetrations = first_nonblank(scope.get("penetrations_complexity")).lower()
+    few_penetrations = "few penetration" in text or "few penetrations" in text
+    penetration_heavy = penetrations in {"medium", "high"} and not few_penetrations
+    return (
+        access in {"hard", "difficult", "high"}
+        or penetration_heavy
+        or any(
+            term in text
+            for term in (
+                "poor condition",
+                "active leaks",
+                "many penetrations",
+                "lots of penetrations",
+                "heavy rust",
+                "severe rust",
+                "tear off",
+                "tear-off",
+                "wet insulation",
+                "granules",
+                "broadcast",
+                "infrared",
+                "ir scan",
+            )
+        )
+    )
+
+
+def roof_coating_labor_bundle_cap_per_1000(scope: dict[str, Any]) -> float:
+    if not is_roof_coating_scope(scope):
+        return 0.0
+    return 80.0 if _roof_coating_heavy_labor_trigger(scope) else 60.0
+
+
+def apply_roof_coating_labor_bundle_cap(
+    plan: list[dict[str, Any]],
+    *,
+    total_hours: float,
+    total_cost: float,
+    area: float,
+    scope: dict[str, Any],
+    calibration: dict[str, Any],
+) -> tuple[list[dict[str, Any]], float, float]:
+    cap_per_1000 = roof_coating_labor_bundle_cap_per_1000(scope)
+    if not cap_per_1000 or area <= 0 or total_hours <= 0:
+        return plan, total_hours, total_cost
+    cap_hours = cap_per_1000 * area / 1000
+    diagnostics = calibration.get("labor_calibration_diagnostics")
+    if isinstance(diagnostics, dict):
+        diagnostics.setdefault("selection_summary", {})
+        diagnostics["selection_summary"]["labor_bundle_before_cap_hours"] = round(total_hours, 2)
+        diagnostics["selection_summary"]["labor_bundle_cap_hours"] = round(cap_hours, 2)
+        diagnostics["selection_summary"]["labor_bundle_cap_hours_per_1000_sqft"] = cap_per_1000
+    if total_hours <= cap_hours:
+        if isinstance(diagnostics, dict):
+            diagnostics["selection_summary"]["labor_bundle_after_cap_hours"] = round(total_hours, 2)
+        return plan, total_hours, total_cost
+    # Leave a little headroom so rounded per-row hours cannot sum back above the cap.
+    target_cap_hours = max(0.0, cap_hours * 0.999)
+    scale = target_cap_hours / total_hours
+    capped_plan: list[dict[str, Any]] = []
+    for row in plan:
+        row = dict(row)
+        old_hours = safe_float(row.get("total_hours"), 0.0)
+        old_cost = safe_float(row.get("estimated_cost"), 0.0)
+        new_hours = old_hours * scale
+        new_cost = old_cost * scale
+        row["original_total_hours_before_bundle_cap"] = round(old_hours, 2)
+        row["original_estimated_cost_before_bundle_cap"] = round(old_cost, 2)
+        row["total_hours"] = round(new_hours, 1)
+        row["labor_hours"] = round(new_hours, 1)
+        row["estimated_cost"] = round(new_cost, 2)
+        crew_size = max(safe_int(row.get("crew_size"), 4), 1)
+        days = new_hours / max(crew_size * 8, 1)
+        row["adjusted_days"] = round(days, 2)
+        row["crew_days"] = round(days, 2)
+        row["labor_selection_status"] = "selected_bundle_capped"
+        reason = f"Roof coating labor bundle capped at {cap_per_1000:g} hours per 1000 sqft for this scope."
+        row["labor_selection_reason"] = f"{first_nonblank(row.get('labor_selection_reason'))} {reason}".strip()
+        row["capped_hours"] = round(new_hours, 2)
+        capped_plan.append(row)
+    capped_total_hours = sum(safe_float(row.get("total_hours"), 0.0) for row in capped_plan)
+    capped_total_cost = sum(safe_float(row.get("estimated_cost"), 0.0) for row in capped_plan)
+    if isinstance(diagnostics, dict):
+        diagnostics["selection_summary"]["labor_bundle_after_cap_hours"] = round(capped_total_hours, 2)
+        diagnostics["selection_summary"]["labor_bundle_cap_scale"] = round(scale, 4)
+        diagnostics["selection_summary"]["labor_bundle_target_cap_hours_after_rounding_headroom"] = round(target_cap_hours, 2)
+        diagnostics.setdefault("selection_rows", []).append(
+            {
+                "task": "TOTAL_LABOR_BUNDLE",
+                "selected": True,
+                "labor_bucket_role": "roof_coating_bundle_cap",
+                "reason": f"Reduced overlapping roof coating labor bundle to {cap_per_1000:g} hours per 1000 sqft.",
+                "evidence_count": "",
+                "median_hours_per_1000_sqft": round(total_hours / area * 1000, 2),
+                "median_total_hours": round(total_hours, 2),
+                "capped_hours": round(capped_total_hours, 2),
+                "calibration_method": "bundle_cap",
+                "selection_level": "roof_coating_bundle_cap",
+                "selection_status": "selected_bundle_capped",
+            }
+        )
+    return capped_plan, capped_total_hours, capped_total_cost
 
 
 def _fallback_hours_for_task(task: str, area: float, scope: dict[str, Any]) -> float:
@@ -1445,6 +1552,8 @@ def _price_item_unit(price_item: Any) -> str:
     if not isinstance(price_item, dict):
         return ""
     explicit = normalize_unit(first_nonblank(price_item.get("unit_of_measure"), price_item.get("unit"), price_item.get("price_basis")))
+    if explicit in {"unit cost", "extracted line price"}:
+        explicit = ""
     if explicit:
         return explicit
     text = " ".join(str(price_item.get(column) or "") for column in ("product_name", "description", "category")).lower()
@@ -1715,6 +1824,10 @@ def _allowance_from_calibration(
     calibration = material_calibration.get(bucket) or {}
     evidence_count = safe_int(calibration.get("evidence_count"), 0)
     quantity_ratio = optional_positive_float(calibration.get("median_quantity_per_sqft"))
+    valid_quantity_ratio_count = safe_int(
+        calibration.get("valid_quantity_ratio_count"),
+        evidence_count if quantity_ratio is not None else 0,
+    )
     cost_ratio = optional_positive_float(calibration.get("median_cost_per_sqft"))
     current_price = optional_positive_float(calibration.get("selected_current_unit_price"))
     current_item = calibration.get("selected_current_price_item") or {}
@@ -1724,7 +1837,16 @@ def _allowance_from_calibration(
     if quantity_ratio is None and safe_int(calibration.get("rejected_quantity_ratio_count"), 0) > 0:
         review_flags.append(f"Rejected {message_item} historical quantity ratio because implied usage was unrealistic.")
 
-    if evidence_count >= 3 and quantity_ratio is not None and current_price is not None:
+    calibration_audit_fields = {
+        "selected_material_calibration_field": calibration.get("selected_material_calibration_field"),
+        "chosen_material_quantity_fields": calibration.get("chosen_material_quantity_fields"),
+        "rejected_material_evidence_counts_by_reason": calibration.get("quantity_ratio_rejections_by_reason"),
+        "quantity_evidence_diagnostics": calibration.get("quantity_evidence_diagnostics"),
+        "valid_quantity_ratio_count": valid_quantity_ratio_count,
+        "rejected_quantity_ratio_count": calibration.get("rejected_quantity_ratio_count"),
+    }
+
+    if valid_quantity_ratio_count > 0 and quantity_ratio is not None and current_price is not None:
         safe, reason = _quantity_ratio_is_safe(
             bucket=bucket,
             item=item,
@@ -1764,7 +1886,7 @@ def _allowance_from_calibration(
                 "estimated_cost_current_pricing": round(estimated_cost, 2),
                 "historical_physical_quantity_rows_considered": calibration.get("historical_physical_quantity_rows_considered"),
                 "historical_cost_fallback_rows_considered": calibration.get("historical_cost_fallback_rows_considered"),
-            }
+            } | calibration_audit_fields
         review_flags.append(reason)
 
     current_price_compatible = current_price is not None and _units_compatible(fallback_unit, current_item, calibration.get("selected_current_price_column"))
@@ -1799,7 +1921,7 @@ def _allowance_from_calibration(
                 "estimated_quantity": fallback_quantity,
                 "estimated_cost_current_pricing": estimated_cost,
                 "fallback_reason": "No valid compatible historical physical quantity ratio was available.",
-            }
+            } | calibration_audit_fields
 
     if fallback_quantity is not None and fallback_unit_price is not None:
         if evidence_count < 3:
@@ -1824,7 +1946,7 @@ def _allowance_from_calibration(
                 "unit_price_source": "rule_based_allowance",
                 "estimated_quantity": fallback_quantity,
                 "fallback_reason": "No valid compatible current pricing or historical cost fallback was available.",
-            }
+            } | calibration_audit_fields
 
     if evidence_count >= 3 and cost_ratio is not None:
         safe, reason = _cost_ratio_is_safe(bucket, item, area, cost_ratio, max_estimated_cost)
@@ -1851,7 +1973,7 @@ def _allowance_from_calibration(
             "review_estimated_cost": round(review_estimated_cost, 2) if review_estimated_cost is not None else None,
             "fallback_reason": "Historical cost ratios are review-only by default.",
             "historical_cost_fallback_rows_considered": calibration.get("historical_cost_fallback_rows_considered"),
-        }
+        } | calibration_audit_fields
 
     return _priced_allowance_row(
         item=item,
@@ -1868,7 +1990,7 @@ def _allowance_from_calibration(
         "quantity_source": "none",
         "unit_price_source": "none",
         "fallback_reason": "No valid current pricing, deterministic quantity, or historical fallback was available.",
-    }
+    } | calibration_audit_fields
 
 
 def build_material_plan(
@@ -2299,6 +2421,14 @@ def build_labor_plan(
     elif filtered_crew_sizes:
         filtered_crew_sizes = sorted(filtered_crew_sizes)
         crew_size = filtered_crew_sizes[len(filtered_crew_sizes) // 2]
+    plan, total_hours, total_cost = apply_roof_coating_labor_bundle_cap(
+        plan,
+        total_hours=total_hours,
+        total_cost=total_cost,
+        area=area,
+        scope=scope,
+        calibration=calibration,
+    )
     low = total_cost * 0.85
     high = total_cost * 1.2
     if skipped_rows:
