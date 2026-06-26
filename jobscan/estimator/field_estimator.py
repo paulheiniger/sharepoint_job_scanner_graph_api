@@ -171,7 +171,11 @@ def historical_template_calibration(data: EstimatorData, similar_jobs: pd.DataFr
             "median_material_cost_per_sqft": None,
             "worksheet_price_examples": [],
         }
-    similar_ids = set(similar_jobs.get("job_id", pd.Series(dtype=str)).dropna().astype(str))
+    similar_for_evidence = similar_jobs
+    if "included_as_evidence" in similar_for_evidence.columns:
+        included_mask = similar_for_evidence["included_as_evidence"].astype(str).str.lower().isin({"true", "1", "yes"})
+        similar_for_evidence = similar_for_evidence[included_mask].copy()
+    similar_ids = set(similar_for_evidence.get("job_id", pd.Series(dtype=str)).dropna().astype(str))
     if similar_ids and "job_id" in template_rows.columns:
         relevant = template_rows[template_rows["job_id"].astype(str).isin(similar_ids)].copy()
         if relevant.empty:
@@ -274,6 +278,47 @@ ROOF_COATING_FALLBACK_HOURS_PER_1000 = {
     "labor_top_coat_granules": 2.0,
 }
 
+ROOF_COATING_LABOR_BUCKET_ROLES = {
+    "labor_prep": "core_bundle",
+    "labor_seam_sealer": "core_detail_bundle",
+    "labor_base": "coating_application_bundle",
+    "labor_top_coat": "coating_application_bundle",
+    "labor_details": "core_detail_bundle",
+    "labor_caulk": "core_detail_bundle",
+    "labor_cleanup": "core_bundle",
+    "labor_loading": "core_bundle",
+    "labor_prime": "trigger_only",
+    "infrared_scan": "trigger_only",
+    "labor_top_coat_granules": "trigger_only",
+}
+
+ROOF_COATING_LABOR_BUCKET_HOURS_PER_1000_CAP = {
+    "labor_prep": 12.0,
+    "labor_seam_sealer": 14.0,
+    "labor_base": 18.0,
+    "labor_top_coat": 18.0,
+    "labor_details": 10.0,
+    "labor_caulk": 8.0,
+    "labor_cleanup": 6.0,
+    "labor_loading": 2.0,
+    "labor_prime": 10.0,
+    "infrared_scan": 2.0,
+    "labor_top_coat_granules": 4.0,
+}
+
+ROOF_COATING_LABOR_GROUPS = {
+    "coating_application_bundle": {
+        "tasks": {"labor_base", "labor_top_coat"},
+        "cap_hours_per_1000": 29.5,
+        "reason": "Base/top-coat labor treated as a bounded coating application bundle.",
+    },
+    "core_detail_bundle": {
+        "tasks": {"labor_seam_sealer", "labor_details", "labor_caulk"},
+        "cap_hours_per_1000": 19.5,
+        "reason": "Seam/detail/caulk labor treated as overlapping detail work and capped as a bundle.",
+    },
+}
+
 OPTIONAL_LABOR_BUCKET_TRIGGERS = {
     "infrared_scan": ("ir scan", "infrared", "moisture scan", "thermal scan"),
     "labor_top_coat_granules": ("granules", "granule", "broadcast"),
@@ -359,6 +404,125 @@ def is_roof_coating_scope(scope: dict[str, Any]) -> bool:
     return coating_required and roof_context
 
 
+INSULATION_SCOPE_SIGNALS = (
+    "insulation",
+    "spray foam",
+    "open-cell",
+    "open cell",
+    "closed-cell",
+    "closed cell",
+    "dc315",
+    "thermal barrier",
+    "crawlspace",
+    "crawl space",
+    "attic",
+)
+
+INSULATION_SOURCE_SIGNALS = INSULATION_SCOPE_SIGNALS + ("wall",)
+
+ROOFING_SCOPE_SIGNALS = (
+    "roof",
+    "roofing",
+    "coating",
+    "silicone",
+    "acrylic",
+    "metal roof",
+    "tpo",
+    "epdm",
+    "modified bitumen",
+)
+
+
+def _normalized_text(value: Any) -> str:
+    return first_nonblank(value).strip().lower().replace("_", " ").replace("-", " ")
+
+
+def scope_template_type(scope: dict[str, Any]) -> str:
+    text = _scope_text(scope)
+    project_type = _normalized_text(scope.get("project_type"))
+    if any(term in text or term in project_type for term in INSULATION_SCOPE_SIGNALS) or bool(scope.get("foam_required") or scope.get("foam_thickness_inches")):
+        return "insulation"
+    if is_roof_coating_scope(scope) or any(term in text or term in project_type for term in ROOFING_SCOPE_SIGNALS):
+        return "roofing"
+    return _normalized_text(scope.get("template_type"))
+
+
+def evidence_template_type(row: dict[str, Any]) -> str:
+    value = first_nonblank(row.get("template_type"), row.get("job_template_type"), row.get("template_name"))
+    text = _normalized_text(value)
+    if text in {"roof", "roofing", "roof coating"}:
+        return "roofing"
+    if text in {"insulation", "foam", "spray foam"}:
+        return "insulation"
+    if text in {"unknown", "none", "null"}:
+        return ""
+    return text
+
+
+def evidence_source_text(row: dict[str, Any]) -> str:
+    return " ".join(
+        first_nonblank(row.get(column)).lower()
+        for column in (
+            "source_file",
+            "folder_path",
+            "relative_path",
+            "job_name",
+            "customer",
+            "estimate_file",
+            "document_name",
+        )
+        if first_nonblank(row.get(column))
+    )
+
+
+def evidence_has_insulation_source_signal(row: dict[str, Any]) -> bool:
+    text = evidence_source_text(row)
+    return any(term in text for term in INSULATION_SOURCE_SIGNALS)
+
+
+def evidence_has_strong_roofing_signal(row: dict[str, Any]) -> bool:
+    text = " ".join([evidence_source_text(row), row_text_for_scope(row)])
+    return any(term in text for term in ROOFING_SCOPE_SIGNALS)
+
+
+def row_text_for_scope(row: dict[str, Any]) -> str:
+    return " ".join(
+        first_nonblank(row.get(column)).lower()
+        for column in (
+            "template_bucket",
+            "row_label",
+            "selected_item_name",
+            "item_name",
+            "line_item_name",
+            "description",
+            "category",
+            "notes",
+            "job_project_type",
+            "project_type",
+            "job_division",
+            "division",
+        )
+        if first_nonblank(row.get(column))
+    )
+
+
+def evidence_allowed_for_scope(row: dict[str, Any], scope: dict[str, Any], *, allow_unknown_with_roofing_signal: bool = True) -> tuple[bool, str]:
+    scope_type = scope_template_type(scope)
+    evidence_type = evidence_template_type(row)
+    if scope_type == "roofing":
+        if evidence_type == "insulation":
+            return False, "Template type mismatch: roofing scope cannot use insulation evidence."
+        if evidence_has_insulation_source_signal(row):
+            return False, "Source path/name mismatch: roofing scope cannot use insulation source evidence."
+        if evidence_type and evidence_type != "roofing":
+            return False, f"Template type mismatch: roofing scope cannot use {evidence_type} evidence."
+        if not evidence_type and not (allow_unknown_with_roofing_signal and evidence_has_strong_roofing_signal(row)):
+            return False, "Unknown template type without strong roofing signal."
+    if scope_type == "insulation" and evidence_type == "roofing":
+        return False, "Template type mismatch: insulation scope cannot use roofing evidence."
+    return True, ""
+
+
 def required_roof_coating_labor_tasks(scope: dict[str, Any], decision: dict[str, Any]) -> list[str]:
     if not is_roof_coating_scope(scope):
         return []
@@ -374,6 +538,203 @@ def required_roof_coating_labor_tasks(scope: dict[str, Any], decision: dict[str,
     if _text_has_any(notes, OPTIONAL_LABOR_BUCKET_TRIGGERS["labor_top_coat_granules"]):
         tasks.append("labor_top_coat_granules")
     return list(dict.fromkeys(tasks))
+
+
+def _roof_labor_task_role(task: str) -> str:
+    return ROOF_COATING_LABOR_BUCKET_ROLES.get(task, "excluded")
+
+
+def _labor_row_hours(row: dict[str, Any]) -> float | None:
+    return optional_positive_float(first_nonblank(row.get("median_total_hours"), row.get("total_hours"), row.get("labor_hours")))
+
+
+def _labor_row_cost(row: dict[str, Any]) -> float | None:
+    return optional_positive_float(first_nonblank(row.get("median_estimated_cost"), row.get("median_cost"), row.get("estimated_cost")))
+
+
+def _labor_hours_per_1000(row: dict[str, Any], area: float) -> float | None:
+    direct = optional_positive_float(first_nonblank(row.get("median_hours_per_1000_sqft"), row.get("hours_per_1000_sqft")))
+    if direct is not None:
+        return direct
+    hours = _labor_row_hours(row)
+    if hours is None or area <= 0:
+        return None
+    return hours / area * 1000
+
+
+def _scale_labor_row_hours(row: dict[str, Any], new_hours: float, reason: str) -> dict[str, Any]:
+    row = dict(row)
+    old_hours = _labor_row_hours(row) or 0.0
+    if old_hours <= 0 or new_hours >= old_hours:
+        return row
+    ratio = new_hours / old_hours
+    old_cost = _labor_row_cost(row)
+    crew_size = sane_crew_size(row.get("median_crew_size"), 4, max_size=8)
+    row["original_median_total_hours"] = round(old_hours, 2)
+    row["median_total_hours"] = round(new_hours, 2)
+    row["capped_hours"] = round(new_hours, 2)
+    row["labor_selection_capped"] = True
+    row["labor_selection_cap_reason"] = reason
+    row["median_days"] = round(new_hours / max(crew_size * 8, 1), 3)
+    if old_cost is not None:
+        row["original_median_estimated_cost"] = round(old_cost, 2)
+        row["median_estimated_cost"] = round(old_cost * ratio, 2)
+    notes = first_nonblank(row.get("notes"))
+    cap_note = f"Labor evidence capped: {reason}"
+    row["notes"] = f"{notes} {cap_note}".strip() if notes else cap_note
+    return row
+
+
+def _roof_labor_trigger_allowed(task: str, scope: dict[str, Any], decision: dict[str, Any]) -> tuple[bool, str]:
+    notes = first_nonblank(scope.get("notes")).lower()
+    work_packages = ensure_work_package_decisions(scope, decision)
+    if task == "labor_prime" and not _decision_applies(work_packages.get("primer"), include_review=False):
+        return False, "Primer labor excluded because primer package is not triggered."
+    if task == "infrared_scan" and not _text_has_any(notes, OPTIONAL_LABOR_BUCKET_TRIGGERS["infrared_scan"]):
+        return False, "Infrared scan excluded because notes did not request IR/thermal/moisture scan."
+    if task == "labor_top_coat_granules" and not _text_has_any(notes, OPTIONAL_LABOR_BUCKET_TRIGGERS["labor_top_coat_granules"]):
+        return False, "Granules labor excluded because notes did not request granules/broadcast."
+    return True, ""
+
+
+def _labor_selection_audit_row(
+    row: dict[str, Any],
+    *,
+    task: str,
+    selected: bool,
+    reason: str,
+    area: float,
+    role: str | None = None,
+) -> dict[str, Any]:
+    hours = _labor_row_hours(row)
+    hours_per_1000 = _labor_hours_per_1000(row, area)
+    return {
+        "task": task,
+        "selected": selected,
+        "labor_bucket_role": role or _roof_labor_task_role(task),
+        "reason": reason,
+        "evidence_count": safe_int(row.get("evidence_count"), 0),
+        "median_hours_per_1000_sqft": round(hours_per_1000, 2) if hours_per_1000 is not None else None,
+        "median_total_hours": round(hours, 2) if hours is not None else None,
+        "capped_hours": row.get("capped_hours"),
+        "calibration_method": row.get("calibration_method"),
+        "selection_level": row.get("selection_level"),
+    }
+
+
+def select_roof_coating_labor_rows(
+    rows: list[dict[str, Any]],
+    scope: dict[str, Any],
+    decision: dict[str, Any],
+    *,
+    area: float,
+    multiplier: float,
+    expected_tasks: list[str],
+    all_candidate_rows: list[dict[str, Any]] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Select and cap calibrated roof-coating labor buckets before cost rollup."""
+    if not is_roof_coating_scope(scope):
+        return rows, []
+    expected = set(expected_tasks)
+    effective_multiplier = max(multiplier, 0.1)
+    selected_rows: list[dict[str, Any]] = []
+    audit_rows: list[dict[str, Any]] = []
+    selected_tasks: set[str] = set()
+    considered_candidate_tasks: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        task = _task_name_from_row(row)
+        considered_candidate_tasks.add(task)
+        role = _roof_labor_task_role(task)
+        if task not in expected:
+            audit_rows.append(
+                _labor_selection_audit_row(
+                    row,
+                    task=task,
+                    selected=False,
+                    reason="Bucket is not part of the selected roof coating labor scope.",
+                    area=area,
+                    role="excluded",
+                )
+            )
+            continue
+        trigger_allowed, trigger_reason = _roof_labor_trigger_allowed(task, scope, decision)
+        if not trigger_allowed:
+            audit_rows.append(_labor_selection_audit_row(row, task=task, selected=False, reason=trigger_reason, area=area, role=role))
+            continue
+        hours = _labor_row_hours(row)
+        if hours is None:
+            audit_rows.append(
+                _labor_selection_audit_row(
+                    row,
+                    task=task,
+                    selected=False,
+                    reason="Bucket rejected because calibrated labor hours are missing.",
+                    area=area,
+                    role=role,
+                )
+            )
+            continue
+        capped_row = dict(row)
+        cap_per_1000 = ROOF_COATING_LABOR_BUCKET_HOURS_PER_1000_CAP.get(task)
+        if cap_per_1000 and area > 0:
+            cap_hours = (cap_per_1000 * area / 1000) / effective_multiplier
+            if hours > cap_hours:
+                capped_row = _scale_labor_row_hours(
+                    capped_row,
+                    cap_hours,
+                    f"{task} final adjusted hours capped at {cap_per_1000:g} hours per 1000 sqft.",
+                )
+        capped_row["labor_bucket_role"] = role
+        capped_row["labor_selection_status"] = "selected"
+        capped_row["labor_selection_reason"] = "Selected for roof coating labor bundle."
+        selected_rows.append(capped_row)
+        selected_tasks.add(task)
+
+    for group_name, group in ROOF_COATING_LABOR_GROUPS.items():
+        group_tasks = set(group["tasks"])
+        group_rows = [(index, row) for index, row in enumerate(selected_rows) if _task_name_from_row(row) in group_tasks]
+        if not group_rows or area <= 0:
+            continue
+        total_group_hours = sum(_labor_row_hours(row) or 0.0 for _, row in group_rows)
+        cap_hours = (float(group["cap_hours_per_1000"]) * area / 1000) / effective_multiplier
+        if total_group_hours <= cap_hours or cap_hours <= 0:
+            continue
+        scale = cap_hours / total_group_hours
+        for index, row in group_rows:
+            current_hours = _labor_row_hours(row) or 0.0
+            scaled = _scale_labor_row_hours(row, current_hours * scale, str(group["reason"]))
+            scaled["labor_bucket_role"] = group_name
+            scaled["labor_selection_status"] = "selected_capped"
+            scaled["labor_selection_reason"] = str(group["reason"])
+            selected_rows[index] = scaled
+
+    selected_by_task = {_task_name_from_row(row): row for row in selected_rows}
+    for row in selected_rows:
+        task = _task_name_from_row(row)
+        status = "selected_capped" if row.get("labor_selection_capped") else "selected"
+        reason = first_nonblank(row.get("labor_selection_reason"), "Selected for roof coating labor bundle.")
+        audit = _labor_selection_audit_row(row, task=task, selected=True, reason=reason, area=area, role=row.get("labor_bucket_role"))
+        audit["selection_status"] = status
+        audit_rows.append(audit)
+
+    for row in all_candidate_rows or []:
+        if not isinstance(row, dict):
+            continue
+        task = _task_name_from_row(row)
+        if task in selected_tasks or task in considered_candidate_tasks:
+            continue
+        role = _roof_labor_task_role(task)
+        trigger_allowed, trigger_reason = _roof_labor_trigger_allowed(task, scope, decision)
+        reason = trigger_reason
+        if not reason:
+            if task not in expected:
+                reason = "Bucket was available historically but is outside the selected roof coating bundle."
+            elif task not in selected_by_task:
+                reason = "Bucket was expected but no selected valid historical row was available."
+        audit_rows.append(_labor_selection_audit_row(row, task=task, selected=False, reason=reason, area=area, role=role))
+    return selected_rows, audit_rows
 
 
 def _fallback_hours_for_task(task: str, area: float, scope: dict[str, Any]) -> float:
@@ -504,7 +865,7 @@ def _normal_context(value: Any) -> str:
 def _scope_context(scope: dict[str, Any]) -> dict[str, str]:
     project_type = _normal_context(scope.get("project_type"))
     substrate = _normal_context(scope.get("substrate"))
-    template_type = _normal_context(scope.get("template_type") or ("roofing" if is_roof_coating_scope(scope) else ""))
+    template_type = _normal_context(scope_template_type(scope))
     warranty = first_nonblank(scope.get("warranty_target"), scope.get("warranty_target_years"))
     return {
         "template_type": template_type,
@@ -704,6 +1065,7 @@ def build_labor_calibration_diagnostics(
 ) -> dict[str, Any]:
     diagnostics: dict[str, Any] = {
         "source_priority": ["relationship_labor_rates", "job_package_summary", "estimate_template_rows", "rule_based_fallback"],
+        "scope_template_type": scope_template_type(scope),
         "tasks": {},
     }
     template_rows = [row for row in calibration.get("all_labor_rows") or [] if isinstance(row, dict)]
@@ -723,6 +1085,18 @@ def build_labor_calibration_diagnostics(
             "rejected_rows": [],
         }
         for row in _candidate_rows_for_task(template_rows, task):
+            allowed, rejected_reason = evidence_allowed_for_scope(row, scope)
+            if not allowed:
+                if len(task_diag["rejected_rows"]) < 10:
+                    task_diag["rejected_rows"].append(
+                        {
+                            "source": "estimate_template_rows",
+                            "reason": rejected_reason,
+                            "scope_template_type": scope_template_type(scope),
+                            "evidence_template_type": evidence_template_type(row),
+                        }
+                    )
+                continue
             valid, reason = _template_row_valid_for_labor(row)
             if valid:
                 task_diag["after_numeric_validation"] += 1
@@ -749,9 +1123,23 @@ def select_historical_labor_evidence(
         tmpl_candidates = _candidate_rows_for_task(template_rows, task)
         tmpl_valid = []
         for row in tmpl_candidates:
+            allowed, rejected_reason = evidence_allowed_for_scope(row, scope)
+            if not allowed:
+                if len(task_diag["rejected_rows"]) < 10:
+                    task_diag["rejected_rows"].append(
+                        {
+                            "source": "estimate_template_rows",
+                            "reason": rejected_reason,
+                            "scope_template_type": scope_template_type(scope),
+                            "evidence_template_type": evidence_template_type(row),
+                        }
+                    )
+                continue
             valid, reason = _template_row_valid_for_labor(row)
             if valid:
                 tmpl_valid.append(row)
+            elif len(task_diag["rejected_rows"]) < 10:
+                task_diag["rejected_rows"].append({"source": "estimate_template_rows", "reason": reason})
         tmpl_selected, tmpl_level = _select_rows_by_relaxation(tmpl_valid, scope)
         task_diag["after_project_template_filter"] = len(tmpl_selected)
         task_diag["after_area_filter"] = len([row for row in tmpl_selected if optional_positive_float(first_nonblank(row.get("historical_sqft"), row.get("area_sqft"), row.get("job_area_sqft")))])
@@ -772,6 +1160,18 @@ def select_historical_labor_evidence(
         package_candidates = _candidate_rows_for_task(package_rows, task)
         package_valid = []
         for row in package_candidates:
+            allowed, rejected_reason = evidence_allowed_for_scope(row, scope)
+            if not allowed:
+                if len(task_diag["rejected_rows"]) < 10:
+                    task_diag["rejected_rows"].append(
+                        {
+                            "source": "job_package_summary",
+                            "reason": rejected_reason,
+                            "scope_template_type": scope_template_type(scope),
+                            "evidence_template_type": evidence_template_type(row),
+                        }
+                    )
+                continue
             valid, reason = _relationship_row_valid_for_labor(row)
             if valid:
                 package_valid.append(row)
@@ -792,6 +1192,18 @@ def select_historical_labor_evidence(
         rel_candidates = _candidate_rows_for_task(relationship_rows, task)
         rel_valid = []
         for row in rel_candidates:
+            allowed, rejected_reason = evidence_allowed_for_scope(row, scope)
+            if not allowed:
+                if len(task_diag["rejected_rows"]) < 10:
+                    task_diag["rejected_rows"].append(
+                        {
+                            "source": "relationship_labor_rates",
+                            "reason": rejected_reason,
+                            "scope_template_type": scope_template_type(scope),
+                            "evidence_template_type": evidence_template_type(row),
+                        }
+                    )
+                continue
             valid, reason = _relationship_row_valid_for_labor(row)
             if valid:
                 rel_valid.append(row)
@@ -1158,6 +1570,10 @@ def _priced_allowance_row(
 
 def _add_allowance_cost_to_totals(row: dict[str, Any], totals: tuple[float, float]) -> tuple[float, float]:
     low_total, high_total = totals
+    if row.get("included_in_total") is False:
+        return low_total, high_total
+    if first_nonblank(row.get("selected_price_source"), row.get("price_source_type")) == "historical_cost_ratio_fallback":
+        return low_total, high_total
     estimated_cost = optional_positive_float(row.get("estimated_cost"))
     if estimated_cost is None:
         return low_total, high_total
@@ -1352,6 +1768,8 @@ def _allowance_from_calibration(
         review_flags.append(reason)
 
     current_price_compatible = current_price is not None and _units_compatible(fallback_unit, current_item, calibration.get("selected_current_price_column"))
+    if current_price is not None and quantity_ratio is None:
+        review_flags.append(f"Current pricing exists for {item.lower()}, but no valid physical quantity evidence was available.")
     if fallback_quantity is not None and current_price_compatible:
         if evidence_count < 3:
             review_flags.append(f"Low historical evidence for {item.lower()}; fallback allowance used.")
@@ -1383,33 +1801,6 @@ def _allowance_from_calibration(
                 "fallback_reason": "No valid compatible historical physical quantity ratio was available.",
             }
 
-    if evidence_count >= 3 and cost_ratio is not None:
-        safe, reason = _cost_ratio_is_safe(bucket, item, area, cost_ratio, max_estimated_cost)
-        if not safe:
-            review_flags.append(reason)
-        else:
-            estimated_cost = cost_ratio * area
-            review_flags.append(f"{item} estimated from historical cost ratio fallback; verify scope and current pricing.")
-            return _priced_allowance_row(
-                item=f"{item} - historical cost review allowance",
-                category=category,
-                quantity=None,
-                unit="",
-                unit_price=None,
-                estimated_cost=estimated_cost,
-                selected_price_source="historical_cost_ratio_fallback",
-                notes=f"Last-resort review allowance from historical {item.lower()} cost per sqft; no compatible physical quantity plus current pricing was available.",
-            ) | {
-                "evidence_count": evidence_count,
-                "calibration_method": "historical_cost_ratio_fallback",
-                "source_type": "cost_allowance_ratio",
-                "quantity_source": "none",
-                "unit_price_source": "none",
-                "needs_review": True,
-                "fallback_reason": "No valid physical quantity ratio/current pricing match was available.",
-                "historical_cost_fallback_rows_considered": calibration.get("historical_cost_fallback_rows_considered"),
-            }
-
     if fallback_quantity is not None and fallback_unit_price is not None:
         if evidence_count < 3:
             review_flags.append(f"Low historical evidence for {item.lower()}; fallback allowance used.")
@@ -1434,6 +1825,33 @@ def _allowance_from_calibration(
                 "estimated_quantity": fallback_quantity,
                 "fallback_reason": "No valid compatible current pricing or historical cost fallback was available.",
             }
+
+    if evidence_count >= 3 and cost_ratio is not None:
+        safe, reason = _cost_ratio_is_safe(bucket, item, area, cost_ratio, max_estimated_cost)
+        review_estimated_cost = cost_ratio * area if safe else None
+        review_flags.append(reason if not safe else f"{item} historical cost ratio is review-only; verify scope, quantity, and current pricing.")
+        return _priced_allowance_row(
+            item=f"{item} - historical cost review allowance",
+            category=category,
+            quantity=None,
+            unit="",
+            unit_price=None,
+            estimated_cost=None,
+            selected_price_source="historical_cost_ratio_fallback",
+            notes=f"Review-only historical {item.lower()} cost per sqft evidence; excluded from base estimate until quantity and current pricing are verified.",
+        ) | {
+            "evidence_count": evidence_count,
+            "calibration_method": "historical_cost_ratio_fallback",
+            "source_type": "cost_allowance_ratio",
+            "quantity_source": "none",
+            "unit_price_source": "none",
+            "needs_review": True,
+            "review_required": True,
+            "included_in_total": False,
+            "review_estimated_cost": round(review_estimated_cost, 2) if review_estimated_cost is not None else None,
+            "fallback_reason": "Historical cost ratios are review-only by default.",
+            "historical_cost_fallback_rows_considered": calibration.get("historical_cost_fallback_rows_considered"),
+        }
 
     return _priced_allowance_row(
         item=item,
@@ -1687,6 +2105,8 @@ def build_labor_plan(
         historical_by_task, diagnostics = select_historical_labor_evidence(calibration, scope, baseline_tasks)
         calibration["labor_calibration_diagnostics"] = diagnostics
     raw_rows = calibration.get("labor_by_bucket") or []
+    all_candidate_labor_rows = [row for row in raw_rows if isinstance(row, dict)]
+    raw_rows_by_task: dict[str, dict[str, Any]] = {}
     if baseline_tasks:
         raw_rows_by_task = {
             first_nonblank(row.get("template_bucket"), row.get("task")).strip(): row
@@ -1698,6 +2118,24 @@ def build_labor_plan(
     rows, excluded_buckets = filter_labor_calibration_rows(raw_rows, scope, decision)
     if excluded_buckets:
         calibration["excluded_labor_buckets"] = excluded_buckets
+    if baseline_tasks and is_roof_coating_scope(scope):
+        rows, labor_selection_rows = select_roof_coating_labor_rows(
+            [row for row in rows if isinstance(row, dict)],
+            scope,
+            decision,
+            area=area,
+            multiplier=multiplier,
+            expected_tasks=baseline_tasks,
+            all_candidate_rows=all_candidate_labor_rows,
+        )
+        diagnostics = calibration.get("labor_calibration_diagnostics")
+        if isinstance(diagnostics, dict):
+            diagnostics["selection_rows"] = labor_selection_rows
+            diagnostics["selection_summary"] = {
+                "selected_count": sum(1 for row in labor_selection_rows if row.get("selected")),
+                "rejected_count": sum(1 for row in labor_selection_rows if row.get("selected") is False),
+                "hours_per_1000_cap": 80,
+            }
     plan: list[dict[str, Any]] = []
     incomplete_calibration = False
     skipped_rows: list[str] = []
@@ -1744,6 +2182,7 @@ def build_labor_plan(
                 evidence_count = safe_int(row.get("evidence_count"), 0)
                 calibration_method = first_nonblank(row.get("calibration_method"), "historical_calibration")
                 selection_level = first_nonblank(row.get("selection_level"))
+                hours_per_1000 = _labor_hours_per_1000(row, area)
                 notes = first_nonblank(row.get("notes"))
                 if not notes:
                     notes = (
@@ -1766,6 +2205,11 @@ def build_labor_plan(
                             "needs_review": bool(row_incomplete),
                             "calibration_method": calibration_method,
                             "selection_level": selection_level,
+                            "labor_bucket_role": row.get("labor_bucket_role"),
+                            "labor_selection_status": row.get("labor_selection_status") or "selected",
+                            "labor_selection_reason": row.get("labor_selection_reason"),
+                            "median_hours_per_1000_sqft": round(hours_per_1000, 2) if hours_per_1000 is not None else None,
+                            "capped_hours": row.get("capped_hours"),
                             "notes": notes,
                         },
                         work_packages.get(labor_package),
@@ -1783,6 +2227,28 @@ def build_labor_plan(
         for task in baseline_tasks:
             if task in existing_tasks:
                 continue
+            if (
+                is_roof_coating_scope(scope)
+                and task == "labor_caulk"
+                and ({"labor_seam_sealer", "labor_details"} & existing_tasks)
+            ):
+                diagnostics = calibration.get("labor_calibration_diagnostics")
+                if isinstance(diagnostics, dict):
+                    diagnostics.setdefault("selection_rows", []).append(
+                        {
+                            "task": task,
+                            "selected": False,
+                            "labor_bucket_role": "core_detail_bundle",
+                            "reason": "Caulk/detail fallback skipped because seam/detail labor already covers overlapping detail work.",
+                            "evidence_count": safe_int((raw_rows_by_task.get(task) or {}).get("evidence_count"), 0),
+                            "median_hours_per_1000_sqft": None,
+                            "median_total_hours": None,
+                            "capped_hours": None,
+                            "calibration_method": "rule_based_fallback",
+                            "selection_level": "deduplicated_detail_bundle",
+                        }
+                    )
+                continue
             fallback_row = _fallback_labor_row(
                 task=task,
                 scope=scope,
@@ -1792,6 +2258,15 @@ def build_labor_plan(
                 multiplier=multiplier,
                 production_rate=production_rate,
             )
+            candidate_row = raw_rows_by_task.get(task) or {}
+            candidate_evidence_count = safe_int(candidate_row.get("evidence_count"), 0)
+            if candidate_evidence_count:
+                fallback_row["evidence_count"] = candidate_evidence_count
+                fallback_row["matched_comparable_job_count"] = candidate_evidence_count
+                fallback_row["notes"] = (
+                    f"{fallback_row.get('notes', '')} "
+                    "Historical labor calibration was incomplete for this task; fallback used candidate evidence count."
+                ).strip()
             plan.append(fallback_row)
             total_hours += safe_float(fallback_row.get("total_hours"), 0.0)
             total_cost += safe_float(fallback_row.get("estimated_cost"), 0.0)
@@ -1847,6 +2322,11 @@ def similar_examples(similar: pd.DataFrame) -> list[dict[str, Any]]:
         "folder_url",
         "similarity_score",
         "reason_matched",
+        "match_strength",
+        "strong_reason_count",
+        "weak_reason_count",
+        "included_as_evidence",
+        "exclusion_reason",
     ]
     return similar[[column for column in keep if column in similar.columns]].head(8).to_dict(orient="records")
 

@@ -42,6 +42,31 @@ TEXT_COLUMNS = ("selected_item_name", "item_name", "line_item_name", "row_label"
 FALSE_VALUES = {"false", "0", "no", "n", "invalid"}
 NON_PHYSICAL_SOURCE_TYPES = {"cost_allowance", "labor_budget", "derived_ratio", "unknown"}
 PHYSICAL_SOURCE_TYPES = {"physical_quantity", "physical", "material_quantity"}
+INSULATION_SOURCE_SIGNALS = (
+    "insulation",
+    "spray foam",
+    "open-cell",
+    "open cell",
+    "closed-cell",
+    "closed cell",
+    "dc315",
+    "thermal barrier",
+    "wall",
+    "crawlspace",
+    "crawl space",
+    "attic",
+)
+ROOFING_SOURCE_SIGNALS = (
+    "roof",
+    "roofing",
+    "coating",
+    "silicone",
+    "acrylic",
+    "metal roof",
+    "tpo",
+    "epdm",
+    "modified bitumen",
+)
 PHYSICAL_UNITS_BY_BUCKET = {
     "primer": {"gal", "gallon", "gallons", "pail", "pails", "container", "containers", "drum", "drums"},
     "seam_treatment": {"lf", "linear foot", "linear feet", "ft", "feet", "roll", "rolls", "tube", "tubes"},
@@ -92,6 +117,82 @@ def percentile_positive(values: list[float], percentile: float) -> float | None:
 
 def row_text(row: dict[str, Any] | pd.Series) -> str:
     return " ".join(str(row.get(column) or "") for column in TEXT_COLUMNS).lower()
+
+
+def normalize_context(value: Any) -> str:
+    return first_nonblank(value).strip().lower().replace("_", " ").replace("-", " ")
+
+
+def scope_template_type(scope: dict[str, Any]) -> str:
+    text = " ".join(str(value or "") for value in scope.values()).lower()
+    if any(term in text for term in ("insulation", "spray foam", "closed cell", "open cell", "closed-cell", "open-cell", "dc315", "thermal barrier")):
+        return "insulation"
+    if any(term in text for term in ROOFING_SOURCE_SIGNALS):
+        return "roofing"
+    return normalize_context(scope.get("template_type"))
+
+
+def evidence_template_type(row: dict[str, Any] | pd.Series) -> str:
+    value = first_nonblank(row.get("template_type"), row.get("job_template_type"), row.get("template_name"))
+    normalized = normalize_context(value)
+    if normalized in {"roof", "roofing", "roof coating"}:
+        return "roofing"
+    if normalized in {"insulation", "foam", "spray foam"}:
+        return "insulation"
+    if normalized in {"unknown", "none", "null"}:
+        return ""
+    return normalized
+
+
+def evidence_source_text(row: dict[str, Any] | pd.Series) -> str:
+    return " ".join(
+        str(row.get(column) or "").lower()
+        for column in (
+            "source_file",
+            "folder_path",
+            "relative_path",
+            "job_name",
+            "customer",
+            "estimate_file",
+            "document_name",
+            "division",
+            "job_division",
+            "job_project_type",
+            "project_type",
+        )
+    )
+
+
+def evidence_has_insulation_source_signal(row: dict[str, Any] | pd.Series) -> bool:
+    text = evidence_source_text(row)
+    return any(term in text for term in INSULATION_SOURCE_SIGNALS)
+
+
+def evidence_has_strong_roofing_signal(row: dict[str, Any] | pd.Series) -> bool:
+    text = f"{evidence_source_text(row)} {row_text(row)}"
+    return any(term in text for term in ROOFING_SOURCE_SIGNALS)
+
+
+def evidence_allowed_for_scope(
+    row: dict[str, Any] | pd.Series,
+    scope: dict[str, Any],
+    *,
+    allow_unknown_with_roofing_signal: bool,
+) -> tuple[bool, str]:
+    scope_type = scope_template_type(scope)
+    evidence_type = evidence_template_type(row)
+    if scope_type == "roofing":
+        if evidence_type == "insulation":
+            return False, "Template type mismatch: roofing scope cannot use insulation evidence."
+        if evidence_has_insulation_source_signal(row):
+            return False, "Source path/name mismatch: roofing scope cannot use insulation source evidence."
+        if evidence_type and evidence_type != "roofing":
+            return False, f"Template type mismatch: roofing scope cannot use {evidence_type} evidence."
+        if not evidence_type and not (allow_unknown_with_roofing_signal and evidence_has_strong_roofing_signal(row)):
+            return False, "Unknown template type without strong roofing signal."
+    if scope_type == "insulation" and evidence_type == "roofing":
+        return False, "Template type mismatch: insulation scope cannot use roofing evidence."
+    return True, ""
 
 
 def normalize_unit(value: Any) -> str:
@@ -195,6 +296,42 @@ def estimate_sqft_by_job(data: EstimatorData) -> dict[str, float]:
     return out
 
 
+def context_by_job(data: EstimatorData) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for frame in (data.jobs, data.estimates):
+        if frame.empty or "job_id" not in frame.columns:
+            continue
+        for _, row in frame.iterrows():
+            job_id = row.get("job_id")
+            if job_id is None:
+                continue
+            target = out.setdefault(str(job_id), {})
+            for column in (
+                "template_type",
+                "project_type",
+                "job_type",
+                "division",
+                "job_name",
+                "customer",
+                "estimate_file",
+                "substrate",
+                "coating_type",
+            ):
+                if column in row and first_nonblank(row.get(column)) and column not in target:
+                    target[column] = row.get(column)
+    return out
+
+
+def enriched_row(row: dict[str, Any] | pd.Series, job_context: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    row_dict = row.to_dict() if isinstance(row, pd.Series) else dict(row)
+    job_id = row_dict.get("job_id")
+    if job_id is not None:
+        for key, value in job_context.get(str(job_id), {}).items():
+            row_dict.setdefault(f"job_{key}", value)
+            row_dict.setdefault(key, value)
+    return row_dict
+
+
 def row_sqft(row: dict[str, Any] | pd.Series, sqft_map: dict[str, float]) -> float | None:
     direct = finite_float(row.get("historical_sqft")) or finite_float(row.get("estimated_sqft")) or finite_float(row.get("surface_area_sqft"))
     if direct and direct > 0:
@@ -265,6 +402,15 @@ def matching_rows(template_rows: pd.DataFrame, bucket: str) -> pd.DataFrame:
 def build_bucket_calibration(data: EstimatorData, scope: dict[str, Any], bucket: str) -> dict[str, Any]:
     rows = matching_rows(data.template_rows, bucket)
     sqft_map = estimate_sqft_by_job(data)
+    job_context = context_by_job(data)
+    scope_type = scope_template_type(scope)
+    has_explicit_roofing_rows = False
+    if scope_type == "roofing":
+        for _, row in rows.iterrows():
+            row_dict = enriched_row(row, job_context)
+            if evidence_template_type(row_dict) == "roofing":
+                has_explicit_roofing_rows = True
+                break
     quantity_ratios: list[float] = []
     cost_ratios: list[float] = []
     unit_prices: list[float] = []
@@ -273,20 +419,33 @@ def build_bucket_calibration(data: EstimatorData, scope: dict[str, Any], bucket:
     physical_candidate_rows = 0
     cost_fallback_rows = 0
     rejected_quantity_rows = 0
+    rejected_template_rows = 0
     rejection_reasons: list[str] = []
+    template_rejection_reasons: list[str] = []
     for _, row in rows.iterrows():
-        sqft = row_sqft(row, sqft_map)
-        quantity = finite_float(row.get("quantity")) or finite_float(row.get("estimated_units"))
-        cost = finite_float(row.get("estimated_cost"))
+        row_dict = enriched_row(row, job_context)
+        allowed, template_reason = evidence_allowed_for_scope(
+            row_dict,
+            scope,
+            allow_unknown_with_roofing_signal=not has_explicit_roofing_rows,
+        )
+        if not allowed:
+            rejected_template_rows += 1
+            if len(template_rejection_reasons) < 5:
+                template_rejection_reasons.append(template_reason)
+            continue
+        sqft = row_sqft(row_dict, sqft_map)
+        quantity = finite_float(row_dict.get("quantity")) or finite_float(row_dict.get("estimated_units"))
+        cost = finite_float(row_dict.get("estimated_cost"))
         quantity_used = False
         if quantity and sqft and sqft > 0:
             physical_candidate_rows += 1
-            is_valid, reason = row_has_valid_physical_quantity(row, bucket, quantity, sqft)
+            is_valid, reason = row_has_valid_physical_quantity(row_dict, bucket, quantity, sqft)
             if is_valid:
                 quantity_ratios.append(quantity / sqft)
                 usable_evidence += 1
                 quantity_used = True
-                unit = first_nonblank(row.get("unit"))
+                unit = first_nonblank(row_dict.get("unit"))
                 if unit:
                     units.append(unit)
             else:
@@ -298,7 +457,7 @@ def build_bucket_calibration(data: EstimatorData, scope: dict[str, Any], bucket:
             if not quantity_used:
                 usable_evidence += 1
                 cost_fallback_rows += 1
-        unit_price = finite_float(row.get("unit_price"))
+        unit_price = finite_float(row_dict.get("unit_price"))
         if unit_price:
             unit_prices.append(unit_price)
     current_price = select_current_price(data.pricing_catalog if not data.pricing_catalog.empty else data.pricing, bucket)
@@ -319,8 +478,11 @@ def build_bucket_calibration(data: EstimatorData, scope: dict[str, Any], bucket:
         "p75_cost_per_sqft": percentile_positive(cost_ratios, 0.75),
         "median_unit_price": median_positive(unit_prices),
         "matching_historical_rows": int(len(rows)),
+        "rejected_template_type_rows_count": rejected_template_rows,
         "rejected_quantity_ratio_count": rejected_quantity_rows,
         "quantity_ratio_rejection_reasons": sorted(set(rejection_reasons)),
+        "template_type_rejection_reasons": sorted(set(template_rejection_reasons)),
+        "scope_template_type": scope_type,
         "selected_current_price_item": current_price,
         "selected_current_unit_price": finite_float(current_price.get("matched_price")) if current_price else None,
         "selected_current_price_column": current_price.get("matched_price_column") if current_price else None,

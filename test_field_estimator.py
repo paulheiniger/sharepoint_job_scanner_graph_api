@@ -775,13 +775,14 @@ def test_primer_sqft_rows_use_cost_or_rule_not_physical_pail_quantity() -> None:
     recommendation = estimate_from_field_notes("Metal roof 9536 sqft rusted fasteners silicone coating Louisville KY", data=data)
     primer = {row["category"]: row for row in recommendation.material_plan}["primer"]
 
-    assert primer["selected_price_source"] == "historical_cost_ratio_fallback"
-    assert primer["calibration_method"] == "historical_cost_ratio_fallback"
-    assert primer["quantity_source"] == "none"
-    assert primer["unit_price_source"] == "none"
-    assert primer["quantity"] is None
+    assert primer["selected_price_source"] == "rule_based_allowance"
+    assert primer["calibration_method"] == "deterministic_fallback"
+    assert primer["quantity_source"] == "deterministic_rule"
+    assert primer["unit_price_source"] == "rule_based_allowance"
+    assert primer["quantity"] == 9536
     assert primer["estimated_cost"] is not None
     assert primer["estimated_cost"] < {row["category"]: row for row in recommendation.material_plan}["coating"]["estimated_cost"]
+    assert any("Current pricing exists" in flag and "no valid physical quantity evidence" in flag for flag in recommendation.review_flags)
 
 
 def test_sanity_rejected_historical_quantity_row_is_non_cost_bearing() -> None:

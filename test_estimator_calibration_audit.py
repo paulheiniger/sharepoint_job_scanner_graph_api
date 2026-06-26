@@ -87,6 +87,7 @@ def test_material_audit_flags_historical_cost_ratio_when_physical_quantity_and_c
                 "estimated_cost": 3500,
                 "selected_price_source": "historical_cost_ratio_fallback",
                 "calibration_method": "historical_cost_ratio_fallback",
+                "included_in_total": False,
                 "needs_review": True,
             }
         ],
@@ -111,6 +112,44 @@ def test_material_audit_flags_historical_cost_ratio_when_physical_quantity_and_c
     assert primer_audit[0]["issue"] == "historical_cost_ratio_used_despite_physical_quantity_and_current_pricing"
     assert primer_audit[0]["physical_quantity_evidence_count"] >= 1
     assert primer_audit[0]["current_pricing_match_count"] >= 1
+
+
+def test_historical_cost_ratio_review_row_defaults_excluded_from_total() -> None:
+    recommendation = SimpleNamespace(
+        parsed_fields={"estimated_sqft": 9536, "project_type": "roof coating", "substrate": "metal", "coating_type": "silicone"},
+        recommended_scope=["roof coating"],
+        material_plan=[
+            {
+                "item": "Seam treatment historical review",
+                "category": "seam_treatment",
+                "selected_price_source": "historical_cost_ratio_fallback",
+                "calibration_method": "historical_cost_ratio_fallback",
+                "review_estimated_cost": 2500,
+                "estimated_cost": None,
+                "included_in_total": False,
+                "needs_review": True,
+            }
+        ],
+        labor_plan=[],
+        travel_plan={},
+        historical_calibration={},
+        similar_examples=[],
+        estimate_low=0,
+        estimate_target=0,
+        estimate_high=0,
+        review_flags=[],
+        human_review_required=True,
+        draft_workbook_inputs={"header": {"C12_estimated_sqft": 9536}},
+        debug={},
+    )
+
+    audit = build_calibration_audit(recommendation, EstimatorData(), notes="test", case_id="cost_ratio_case")
+    row = audit["sheets"]["material_plan"][0]
+    audit_row = audit["sheets"]["material_audit"][0]
+
+    assert row["included_in_total"] is False
+    assert audit_row["status"] == "PASS"
+    assert audit["summary"]["cost_ratio_fallback_included_total"] == 0
 
 
 def test_labor_audit_flags_rule_based_fallback_when_historical_rows_exist() -> None:
@@ -164,6 +203,77 @@ def test_labor_audit_flags_rule_based_fallback_when_historical_rows_exist() -> N
     assert prep_audit[0]["status"] == "FAIL"
     assert prep_audit[0]["issue"] == "fallback_used_despite_valid_historical_evidence"
     assert prep_audit[0]["valid_historical_evidence_count"] >= 1
+
+
+def test_roofing_scope_rejects_insulation_template_evidence() -> None:
+    data = EstimatorData(
+        jobs=pd.DataFrame([{"job_id": "J1", "estimated_sqft": 9536, "project_type": "roof coating"}]),
+        template_rows=pd.DataFrame(
+            [
+                {
+                    "job_id": "J1",
+                    "template_type": "insulation",
+                    "source_file": "Estimate Insulation.xlsx",
+                    "template_bucket": "labor_prep",
+                    "line_item_kind": "labor",
+                    "days": 2,
+                    "crew_size": 4,
+                    "total_hours": 64,
+                    "estimated_cost": 4200,
+                }
+            ]
+        ),
+    )
+    recommendation = SimpleNamespace(
+        parsed_fields={"estimated_sqft": 9536, "surface_area_sqft": 9536, "project_type": "roof coating", "substrate": "metal", "coating_type": "silicone"},
+        recommended_scope=["roof coating"],
+        material_plan=[],
+        labor_plan=[{"task": "labor_prep", "crew_size": 4, "total_hours": 40, "estimated_cost": 2880, "calibration_method": "rule_based_fallback"}],
+        travel_plan={},
+        historical_calibration={},
+        similar_examples=[],
+        estimate_low=0,
+        estimate_target=0,
+        estimate_high=0,
+        review_flags=[],
+        human_review_required=True,
+        draft_workbook_inputs={"header": {"C12_estimated_sqft": 9536}},
+        debug={},
+    )
+
+    audit = build_calibration_audit(recommendation, data, notes="test", case_id="template_mismatch")
+    evidence = [row for row in audit["sheets"]["labor_evidence"] if row.get("task") == "labor_prep"][0]
+
+    assert evidence["template_type_match"] is False
+    assert evidence["included_as_evidence"] is False
+    assert "Template type mismatch" in evidence["rejected_reason"]
+
+
+def test_labor_audit_fails_when_simple_roof_hours_are_extreme() -> None:
+    recommendation = SimpleNamespace(
+        parsed_fields={"estimated_sqft": 9536, "surface_area_sqft": 9536, "project_type": "roof coating", "substrate": "metal", "coating_type": "silicone"},
+        recommended_scope=["roof coating"],
+        material_plan=[],
+        labor_plan=[
+            {"task": "labor_prep", "crew_size": 4, "total_hours": 900, "estimated_cost": 64800, "calibration_method": "historical_calibration"}
+        ],
+        travel_plan={},
+        historical_calibration={},
+        similar_examples=[],
+        estimate_low=0,
+        estimate_target=0,
+        estimate_high=0,
+        review_flags=[],
+        human_review_required=True,
+        draft_workbook_inputs={"header": {"C12_estimated_sqft": 9536}},
+        debug={},
+    )
+
+    audit = build_calibration_audit(recommendation, EstimatorData(), notes="test", case_id="labor_extreme")
+    total_row = [row for row in audit["sheets"]["labor_audit"] if row.get("task") == "TOTAL_LABOR"][0]
+
+    assert total_row["status"] == "FAIL"
+    assert total_row["labor_hours_per_1000_sqft"] > 80
 
 
 def test_calibration_audit_export_sanitizes_complex_values(tmp_path: Path) -> None:
@@ -244,3 +354,40 @@ def test_similar_jobs_audit_classifies_weak_strong_and_outliers() -> None:
     assert by_job["strong"]["match_strength"] == "strong"
     assert by_job["weak"]["match_strength"] == "weak"
     assert by_job["weak"]["outlier_flag"] is True
+
+
+def test_weak_similar_jobs_are_not_included_as_evidence() -> None:
+    recommendation = SimpleNamespace(
+        parsed_fields={"estimated_sqft": 10000, "project_type": "roof coating"},
+        recommended_scope=["roof coating"],
+        material_plan=[],
+        labor_plan=[],
+        travel_plan={},
+        historical_calibration={},
+        similar_examples=[
+            {
+                "job_id": "weak",
+                "job_name": "Nearby job",
+                "division": "Roofing",
+                "estimated_sqft": 10500,
+                "price_per_sqft": 8,
+                "reason_matched": "same division, similar size, location keyword",
+                "match_strength": "weak",
+                "included_as_evidence": False,
+            }
+        ],
+        estimate_low=0,
+        estimate_target=0,
+        estimate_high=0,
+        review_flags=[],
+        human_review_required=False,
+        draft_workbook_inputs={"header": {"C12_estimated_sqft": 10000}},
+        debug={},
+    )
+
+    audit = build_calibration_audit(recommendation, EstimatorData(), notes="test", case_id="weak_similar")
+    row = audit["sheets"]["similar_jobs_audit"][0]
+
+    assert row["match_strength"] == "weak"
+    assert row["included_as_evidence"] is False
+    assert "Weak-only" in row["exclusion_reason"]

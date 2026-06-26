@@ -55,6 +55,33 @@ PACKAGE_TERMS: dict[str, tuple[str, ...]] = {
     "foam": ("foam", "closed cell", "open cell", "spray foam", "spf"),
 }
 
+INSULATION_SOURCE_SIGNALS = (
+    "insulation",
+    "spray foam",
+    "open-cell",
+    "open cell",
+    "closed-cell",
+    "closed cell",
+    "dc315",
+    "thermal barrier",
+    "wall",
+    "crawlspace",
+    "crawl space",
+    "attic",
+)
+
+ROOFING_SOURCE_SIGNALS = (
+    "roof",
+    "roofing",
+    "coating",
+    "silicone",
+    "acrylic",
+    "metal roof",
+    "tpo",
+    "epdm",
+    "modified bitumen",
+)
+
 LABOR_TASK_TERMS: dict[str, tuple[str, ...]] = {
     "labor_prep": ("labor_prep", "prep", "pressure wash", "power wash", "clean"),
     "labor_prime": ("labor_prime", "prime", "primer"),
@@ -219,6 +246,66 @@ def estimate_sqft_from_recommendation(recommendation: dict[str, Any]) -> float |
     )
 
 
+def recommendation_scope_template_type(recommendation: dict[str, Any]) -> str:
+    parsed = recommendation.get("parsed_fields") or {}
+    text = " ".join(
+        lower_text(value)
+        for value in (
+            parsed.get("project_type"),
+            parsed.get("division"),
+            parsed.get("substrate"),
+            parsed.get("coating_type"),
+            " ".join(recommendation.get("recommended_scope") or []),
+        )
+    )
+    if any(term in text for term in ("insulation", "spray foam", "closed cell", "open cell", "dc315", "thermal barrier")):
+        return "insulation"
+    if any(term in text for term in ROOFING_SOURCE_SIGNALS) and ("roof" in text or "roofing" in text):
+        return "roofing"
+    return ""
+
+
+def audit_evidence_template_type(row: dict[str, Any]) -> str:
+    text = normalize_key(first_nonblank(row.get("template_type"), row.get("job_template_type"), row.get("template_name"))).replace("_", " ")
+    if text in {"roof", "roofing", "roof coating"}:
+        return "roofing"
+    if text in {"insulation", "foam", "spray foam"}:
+        return "insulation"
+    if text in {"unknown", "none", "null"}:
+        return ""
+    return text
+
+
+def audit_evidence_source_text(row: dict[str, Any]) -> str:
+    return " ".join(
+        lower_text(row.get(column))
+        for column in (
+            "source_file",
+            "folder_path",
+            "relative_path",
+            "job_name",
+            "customer",
+            "estimate_file",
+            "document_name",
+        )
+    )
+
+
+def audit_evidence_scope_match(row: dict[str, Any], scope_template_type: str) -> tuple[bool, str, str]:
+    evidence_type = audit_evidence_template_type(row)
+    source_text = audit_evidence_source_text(row)
+    if scope_template_type == "roofing":
+        if evidence_type == "insulation":
+            return False, evidence_type, "Template type mismatch: roofing scope cannot use insulation evidence."
+        if any(term in source_text for term in INSULATION_SOURCE_SIGNALS):
+            return False, evidence_type, "Source path/name mismatch: roofing scope cannot use insulation source evidence."
+        if evidence_type and evidence_type != "roofing":
+            return False, evidence_type, f"Template type mismatch: roofing scope cannot use {evidence_type} evidence."
+    if scope_template_type == "insulation" and evidence_type == "roofing":
+        return False, evidence_type, "Template type mismatch: insulation scope cannot use roofing evidence."
+    return True, evidence_type, ""
+
+
 def job_area_map(data: EstimatorData | None) -> dict[str, float]:
     mapping: dict[str, float] = {}
     for attr in ("jobs", "estimates"):
@@ -325,7 +412,11 @@ def material_plan_rows(recommendation: dict[str, Any]) -> list[dict[str, Any]]:
         source = first_nonblank(row.get("selected_price_source"), row.get("price_source_type"), row.get("source_type"), row.get("calibration_method"))
         estimated_cost = safe_float(row.get("estimated_cost"))
         sanity = first_nonblank(row.get("sanity_check_status"))
-        included = estimated_cost is not None and source != "rejected_historical_quantity_ratio" and not sanity.lower().startswith("blocked")
+        included = (
+            bool(row.get("included_in_total"))
+            if "included_in_total" in row
+            else estimated_cost is not None and source != "rejected_historical_quantity_ratio" and not sanity.lower().startswith("blocked")
+        )
         rows.append(
             {
                 "row_number": index,
@@ -374,6 +465,11 @@ def labor_plan_rows(recommendation: dict[str, Any]) -> list[dict[str, Any]]:
                 "evidence_count": row.get("evidence_count"),
                 "calibration_method": first_nonblank(row.get("calibration_method"), row.get("source_type")),
                 "selection_level": row.get("selection_level"),
+                "labor_bucket_role": row.get("labor_bucket_role"),
+                "labor_selection_status": row.get("labor_selection_status"),
+                "labor_selection_reason": row.get("labor_selection_reason"),
+                "median_hours_per_1000_sqft": row.get("median_hours_per_1000_sqft"),
+                "capped_hours": row.get("capped_hours"),
                 "review_required": bool(row.get("review_required") or row.get("needs_review")),
                 "applies_reason": row.get("applies_reason"),
                 "source_type": first_nonblank(row.get("source_type"), row.get("calibration_method")),
@@ -403,7 +499,7 @@ def current_pricing_match_count(data: EstimatorData | None, package: str) -> int
     return count
 
 
-def material_evidence_rows(data: EstimatorData | None, packages: set[str]) -> list[dict[str, Any]]:
+def material_evidence_rows(data: EstimatorData | None, packages: set[str], *, scope_template_type: str = "") -> list[dict[str, Any]]:
     areas_by_job = job_area_map(data)
     rows: list[dict[str, Any]] = []
     sources = (
@@ -427,12 +523,19 @@ def material_evidence_rows(data: EstimatorData | None, packages: set[str]) -> li
                 cost_per_sqft = cost / area if cost and area else safe_float(row.get("cost_per_sqft"))
                 physical_valid = physical_quantity_valid(row)
                 source_type = first_nonblank(row.get("source_type"))
+                template_match, evidence_type, template_rejected_reason = audit_evidence_scope_match(row, scope_template_type)
                 rejected_reason = ""
+                included_as_evidence = template_match
+                if template_rejected_reason:
+                    rejected_reason = template_rejected_reason
                 if not physical_valid and quantity:
-                    rejected_reason = "Quantity is not a trusted physical quantity for estimator ratios."
+                    rejected_reason = rejected_reason or "Quantity is not a trusted physical quantity for estimator ratios."
                 rows.append(
                     {
                         "package": package,
+                        "scope_template_type": scope_template_type,
+                        "evidence_template_type": evidence_type,
+                        "template_type_match": template_match,
                         "evidence_source_table": row.get("evidence_source_table") or source,
                         "job_id": row.get("job_id"),
                         "source_file": row.get("source_file") or row.get("estimate_file"),
@@ -449,7 +552,7 @@ def material_evidence_rows(data: EstimatorData | None, packages: set[str]) -> li
                         "cost_per_sqft": cost_per_sqft,
                         "source_type": source_type,
                         "physical_quantity_valid": physical_valid,
-                        "included_as_evidence": True,
+                        "included_as_evidence": included_as_evidence,
                         "rejected_reason": rejected_reason,
                         "match_reason": f"Matched {package} terms.",
                     }
@@ -497,6 +600,8 @@ def count_cost_ratio_evidence(rows: list[dict[str, Any]], package: str) -> int:
     for row in rows:
         if row.get("package") != package:
             continue
+        if row.get("included_as_evidence") is False:
+            continue
         source_type = normalize_key(row.get("source_type"))
         if source_type in {"cost_allowance", "cost_allowance_ratio", "derived_ratio"} or safe_float(row.get("cost_per_sqft")):
             count += 1
@@ -504,32 +609,65 @@ def count_cost_ratio_evidence(rows: list[dict[str, Any]], package: str) -> int:
 
 
 def count_physical_quantity_evidence(rows: list[dict[str, Any]], package: str) -> int:
-    return sum(1 for row in rows if row.get("package") == package and row.get("physical_quantity_valid") and safe_float(row.get("qty_per_sqft")) is not None)
+    return sum(
+        1
+        for row in rows
+        if row.get("package") == package
+        and row.get("included_as_evidence") is not False
+        and row.get("physical_quantity_valid")
+        and safe_float(row.get("qty_per_sqft")) is not None
+    )
 
 
 def build_material_audit(recommendation: dict[str, Any], data: EstimatorData | None, material_rows: list[dict[str, Any]], evidence_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     audit_rows: list[dict[str, Any]] = []
+    coating_costs = [
+        safe_float(row.get("estimated_cost"))
+        for row in material_rows
+        if row.get("package") == "coating" and safe_float(row.get("estimated_cost")) is not None
+    ]
+    coating_cost = max(coating_costs) if coating_costs else None
     for row in material_rows:
         package = row.get("package") or "unknown"
         selected_method = lower_text(row.get("selected_method"))
         current_count = current_pricing_match_count(data, package)
         physical_count = count_physical_quantity_evidence(evidence_rows, package)
         cost_count = count_cost_ratio_evidence(evidence_rows, package)
+        mismatched_used = [
+            evidence
+            for evidence in evidence_rows
+            if evidence.get("package") == package
+            and evidence.get("template_type_match") is False
+            and evidence.get("included_as_evidence") is True
+        ]
         status = "PASS"
         issue = ""
         recommendation_text = "Selection has no obvious calibration audit issue."
         expected_method = row.get("selected_method")
 
         if "historical_cost_ratio" in selected_method:
-            if physical_count > 0 and current_count > 0:
+            if row.get("included_in_total") is True:
+                status = "FAIL"
+                issue = "historical_cost_ratio_fallback_included_in_total"
+                expected_method = "review_only_historical_cost_ratio_fallback"
+                recommendation_text = "Historical cost-per-sqft evidence must be review-only unless cost-ratio pricing is explicitly allowed."
+            elif physical_count > 0 and current_count > 0:
                 status = "FAIL"
                 issue = "historical_cost_ratio_used_despite_physical_quantity_and_current_pricing"
                 expected_method = "current_pricing * historical_physical_quantity_ratio"
                 recommendation_text = "Use physical quantity ratios with current pricing; keep cost allowance ratios as review-only support."
             else:
-                status = "WARN"
+                status = "PASS"
                 issue = "historical_cost_ratio_fallback_used"
-                recommendation_text = "Historical cost ratio was used; verify that physical quantities and current pricing are genuinely unavailable."
+                recommendation_text = "Historical cost ratio was shown as review-only and excluded from the base total."
+            if current_count > 0 and physical_count == 0 and row.get("included_in_total") is True:
+                status = "FAIL"
+                issue = "current_pricing_exists_but_cost_ratio_priced_without_quantity"
+                recommendation_text = "Current pricing exists, but no valid physical quantity evidence was available; do not price a cost ratio into total."
+        if mismatched_used:
+            status = "FAIL"
+            issue = "nonmatching_template_type_evidence_included"
+            recommendation_text = "Evidence from a nonmatching template type must be rejected for this scope."
         if row.get("selected_method") == "rejected_historical_quantity_ratio" and safe_float(row.get("estimated_cost")) is not None:
             status = "FAIL"
             issue = "rejected_historical_quantity_ratio_still_priced"
@@ -547,6 +685,11 @@ def build_material_audit(recommendation: dict[str, Any], data: EstimatorData | N
                     status = "FAIL"
                     issue = "implausible_primer_sqft_per_unit"
                     recommendation_text = "Primer physical quantity appears implausible; remove from base estimate and review source evidence."
+        estimated_cost = safe_float(row.get("estimated_cost"))
+        if coating_cost and estimated_cost and package != "coating" and estimated_cost > coating_cost * 2 and "manual_override" not in selected_method:
+            status = "FAIL"
+            issue = "material_cost_exceeds_2x_coating_without_manual_override"
+            recommendation_text = "Secondary material cost is too large relative to coating; exclude or require manual override."
 
         audit_rows.append(
             {
@@ -560,6 +703,7 @@ def build_material_audit(recommendation: dict[str, Any], data: EstimatorData | N
                 "cost_ratio_evidence_count": cost_count,
                 "selected_method": row.get("selected_method"),
                 "expected_method": expected_method,
+                "included_in_total": row.get("included_in_total"),
                 "row_reference": row.get("row_number"),
                 "item": row.get("item"),
                 "estimated_cost": row.get("estimated_cost"),
@@ -602,7 +746,7 @@ def labor_numeric_valid(row: dict[str, Any], areas_by_job: dict[str, float]) -> 
     return True, ""
 
 
-def labor_evidence_rows(data: EstimatorData | None, tasks: set[str]) -> list[dict[str, Any]]:
+def labor_evidence_rows(data: EstimatorData | None, tasks: set[str], *, scope_template_type: str = "") -> list[dict[str, Any]]:
     areas_by_job = job_area_map(data)
     rows: list[dict[str, Any]] = []
     for source in ("relationship_labor_rates", "job_package_summary", "template_rows"):
@@ -615,9 +759,15 @@ def labor_evidence_rows(data: EstimatorData | None, tasks: set[str]) -> list[dic
                 hours = row_labor_hours(row)
                 cost = evidence_cost(row)
                 valid, reason = labor_numeric_valid(row, areas_by_job)
+                template_match, evidence_type, template_rejected_reason = audit_evidence_scope_match(row, scope_template_type)
+                included_as_evidence = bool(valid and template_match)
+                rejected_reason = template_rejected_reason or reason
                 rows.append(
                     {
                         "task": task,
+                        "scope_template_type": scope_template_type,
+                        "evidence_template_type": evidence_type,
+                        "template_type_match": template_match,
                         "evidence_source_table": row.get("evidence_source_table") or source,
                         "job_id": row.get("job_id"),
                         "source_file": row.get("source_file") or row.get("estimate_file"),
@@ -632,8 +782,8 @@ def labor_evidence_rows(data: EstimatorData | None, tasks: set[str]) -> list[dic
                         "hours_per_sqft": hours / area if hours and area else safe_float(row.get("hours_per_sqft")),
                         "cost_per_sqft": cost / area if cost and area else safe_float(row.get("cost_per_sqft")),
                         "source_type": row.get("source_type"),
-                        "included_as_evidence": valid,
-                        "rejected_reason": reason,
+                        "included_as_evidence": included_as_evidence,
+                        "rejected_reason": rejected_reason,
                         "match_reason": f"Matched {task} terms.",
                     }
                 )
@@ -664,12 +814,18 @@ def labor_tasks_to_audit(recommendation: dict[str, Any], labor_rows: list[dict[s
 
 def build_labor_audit(recommendation: dict[str, Any], labor_rows: list[dict[str, Any]], evidence_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows_by_task = {row.get("task"): row for row in labor_rows}
+    debug = recommendation.get("debug") or {}
+    labor_debug = debug.get("labor_calibration") if isinstance(debug, dict) else {}
+    selection_rows = records_from(labor_debug.get("selection_rows") if isinstance(labor_debug, dict) else [])
+    selection_by_task = {row.get("task"): row for row in selection_rows if row.get("task")}
     audit_rows: list[dict[str, Any]] = []
     for task in labor_tasks_to_audit(recommendation, labor_rows):
         selected = rows_by_task.get(task)
+        selection = selection_by_task.get(task) or {}
         matching_evidence = [row for row in evidence_rows if row.get("task") == task]
         valid_count = sum(1 for row in matching_evidence if row.get("included_as_evidence"))
         rejected_count = sum(1 for row in matching_evidence if row.get("rejected_reason"))
+        mismatched_included = [row for row in matching_evidence if row.get("template_type_match") is False and row.get("included_as_evidence") is True]
         selected_method = lower_text(selected.get("calibration_method") if selected else "")
         status = "PASS"
         issue = ""
@@ -686,6 +842,10 @@ def build_labor_audit(recommendation: dict[str, Any], labor_rows: list[dict[str,
             status = "WARN"
             issue = "rule_based_fallback_used"
             recommendation_text = "No valid historical evidence was selected; verify evidence availability."
+        elif mismatched_included:
+            status = "FAIL"
+            issue = "nonmatching_template_type_evidence_included"
+            recommendation_text = "Labor task used evidence from a nonmatching template type."
         elif valid_count == 0:
             status = "WARN"
             issue = "selected_without_matching_audit_evidence"
@@ -699,14 +859,95 @@ def build_labor_audit(recommendation: dict[str, Any], labor_rows: list[dict[str,
                 "recommendation": recommendation_text,
                 "selected_method": selected.get("calibration_method") if selected else "",
                 "selection_level": selected.get("selection_level") if selected else "",
+                "labor_selection_status": selected.get("labor_selection_status") if selected else selection.get("selection_status"),
+                "labor_bucket_role": selected.get("labor_bucket_role") if selected else selection.get("labor_bucket_role"),
+                "labor_selection_reason": selected.get("labor_selection_reason") if selected else selection.get("reason"),
                 "evidence_count": selected.get("evidence_count") if selected else 0,
                 "valid_historical_evidence_count": valid_count,
                 "rejected_evidence_count": rejected_count,
+                "median_hours_per_1000_sqft": selected.get("median_hours_per_1000_sqft") if selected else selection.get("median_hours_per_1000_sqft"),
+                "capped_hours": selected.get("capped_hours") if selected else selection.get("capped_hours"),
                 "estimated_hours": selected.get("total_hours") if selected else None,
                 "estimated_cost": selected.get("estimated_cost") if selected else None,
+                "total_labor_hours": None,
+                "labor_hours_per_1000_sqft": None,
                 "row_reference": selected.get("row_number") if selected else "",
             }
         )
+    audited_tasks = {row.get("task") for row in audit_rows}
+    for selection in selection_rows:
+        task = selection.get("task")
+        if not task or task in audited_tasks or selection.get("selected"):
+            continue
+        audit_rows.append(
+            {
+                "task": task,
+                "status": "INFO",
+                "issue": "labor_bucket_rejected_by_selection_layer",
+                "recommendation": selection.get("reason") or "Bucket was rejected by roof coating labor selection.",
+                "selected_method": selection.get("calibration_method"),
+                "selection_level": selection.get("selection_level"),
+                "labor_selection_status": "rejected",
+                "labor_bucket_role": selection.get("labor_bucket_role"),
+                "labor_selection_reason": selection.get("reason"),
+                "evidence_count": selection.get("evidence_count"),
+                "valid_historical_evidence_count": "",
+                "rejected_evidence_count": "",
+                "median_hours_per_1000_sqft": selection.get("median_hours_per_1000_sqft"),
+                "capped_hours": selection.get("capped_hours"),
+                "estimated_hours": selection.get("median_total_hours"),
+                "estimated_cost": None,
+                "total_labor_hours": None,
+                "labor_hours_per_1000_sqft": None,
+                "row_reference": "",
+            }
+        )
+        audited_tasks.add(task)
+    area = estimate_sqft_from_recommendation(recommendation)
+    total_hours = sum(safe_float(row.get("total_hours")) or 0 for row in labor_rows)
+    if area and total_hours:
+        hours_per_1000 = total_hours / area * 1000
+        parsed_text = " ".join(lower_text(value) for value in (recommendation.get("parsed_fields") or {}).values())
+        review_text = " ".join(lower_text(flag) for flag in recommendation.get("review_flags") or [])
+        complex_scope = any(term in f"{parsed_text} {review_text}" for term in ("poor", "tear-off", "tear off", "foam", "granules", "major repair"))
+        if not complex_scope and hours_per_1000 > 80:
+            audit_rows.append(
+                {
+                    "task": "TOTAL_LABOR",
+                    "status": "FAIL",
+                    "issue": "labor_hours_per_1000_sqft_exceeds_simple_roof_threshold",
+                    "recommendation": "Reject overbroad labor calibration for simple roof coating scopes.",
+                    "selected_method": "aggregate",
+                    "selection_level": "",
+                    "evidence_count": "",
+                    "valid_historical_evidence_count": "",
+                    "rejected_evidence_count": "",
+                    "estimated_hours": round(total_hours, 2),
+                    "estimated_cost": sum(safe_float(row.get("estimated_cost")) or 0 for row in labor_rows),
+                    "total_labor_hours": round(total_hours, 2),
+                    "labor_hours_per_1000_sqft": round(hours_per_1000, 2),
+                    "row_reference": "",
+                }
+            )
+        elif not complex_scope and hours_per_1000 > 50:
+            audit_rows.append(
+                {
+                    "task": "TOTAL_LABOR",
+                    "status": "WARN",
+                    "issue": "labor_hours_per_1000_sqft_above_simple_roof_warning_threshold",
+                    "recommendation": "Review labor calibration for possible overbroad evidence.",
+                    "selected_method": "aggregate",
+                    "selection_level": "",
+                    "evidence_count": "",
+                    "valid_historical_evidence_count": "",
+                    "rejected_evidence_count": "",
+                    "estimated_hours": round(total_hours, 2),
+                    "estimated_cost": sum(safe_float(row.get("estimated_cost")) or 0 for row in labor_rows),
+                    "total_labor_hours": round(total_hours, 2),
+                    "labor_hours_per_1000_sqft": round(hours_per_1000, 2),
+                    "row_reference": "",
+                }
+            )
     if not audit_rows:
         audit_rows.append(
             {
@@ -733,6 +974,13 @@ def similar_jobs_audit_rows(recommendation: dict[str, Any]) -> list[dict[str, An
         if any(term in text for term in ("all trades", "facade", "façade", "tenant improvement", "interior only")):
             outlier_reasons.append("scope_mismatch_keyword")
         match_strength = "strong" if strong_reasons else "weak" if weak_reasons else "unknown"
+        included_as_evidence = bool(row.get("included_as_evidence"))
+        exclusion_reason = first_nonblank(row.get("exclusion_reason"))
+        if match_strength != "strong" and not exclusion_reason:
+            exclusion_reason = "Weak-only similar job match; not used as estimator evidence."
+        if outlier_reasons:
+            included_as_evidence = False
+            exclusion_reason = "; ".join(outlier_reasons)
         rows.append(
             {
                 "rank": index,
@@ -748,6 +996,8 @@ def similar_jobs_audit_rows(recommendation: dict[str, Any]) -> list[dict[str, An
                 "match_strength": match_strength,
                 "strong_reason_count": len(strong_reasons),
                 "weak_reason_count": len(weak_reasons),
+                "included_as_evidence": included_as_evidence,
+                "exclusion_reason": exclusion_reason,
                 "outlier_flag": bool(outlier_reasons),
                 "outlier_reason": "; ".join(outlier_reasons),
                 "used_for_material_calibration": "",
@@ -838,6 +1088,24 @@ def build_summary_rows(
             "estimate_high": recommendation.get("estimate_high"),
             "material_rows": len(recommendation.get("material_plan") or []),
             "labor_rows": len(recommendation.get("labor_plan") or []),
+            "total_labor_hours": sum(safe_float(row.get("total_hours")) or 0 for row in recommendation.get("labor_plan") or [] if isinstance(row, dict)),
+            "labor_hours_per_1000_sqft": (
+                sum(safe_float(row.get("total_hours")) or 0 for row in recommendation.get("labor_plan") or [] if isinstance(row, dict))
+                / (safe_float(parsed.get("estimated_sqft")) or safe_float(parsed.get("surface_area_sqft")) or safe_float(header.get("C12_estimated_sqft")) or 1)
+                * 1000
+            ),
+            "material_cost_ratio_fallback_total": sum(
+                safe_float(row.get("review_estimated_cost")) or safe_float(row.get("estimated_cost")) or 0
+                for row in recommendation.get("material_plan") or []
+                if isinstance(row, dict) and "historical_cost_ratio" in lower_text(row.get("selected_price_source") or row.get("calibration_method"))
+            ),
+            "cost_ratio_fallback_included_total": sum(
+                safe_float(row.get("estimated_cost")) or 0
+                for row in recommendation.get("material_plan") or []
+                if isinstance(row, dict)
+                and "historical_cost_ratio" in lower_text(row.get("selected_price_source") or row.get("calibration_method"))
+                and row.get("included_in_total") is not False
+            ),
             "material_audit_failures": sum(1 for row in material_audit if row.get("status") == "FAIL"),
             "labor_audit_failures": sum(1 for row in labor_audit if row.get("status") == "FAIL"),
             "audit_warnings": len(warnings),
@@ -867,15 +1135,16 @@ def build_calibration_audit(
     case_id: str = "estimator_audit",
 ) -> dict[str, Any]:
     recommendation_dict = object_to_dict(recommendation)
+    scope_type = recommendation_scope_template_type(recommendation_dict)
     materials = material_plan_rows(recommendation_dict)
     material_packages = {row.get("package") for row in materials if row.get("package")}
-    material_evidence = material_evidence_rows(data, material_packages)
+    material_evidence = material_evidence_rows(data, material_packages, scope_template_type=scope_type)
     material_evidence.extend(material_calibration_rows(recommendation_dict, materials))
     material_audit = build_material_audit(recommendation_dict, data, materials, material_evidence)
 
     labor = labor_plan_rows(recommendation_dict)
     task_set = set(labor_tasks_to_audit(recommendation_dict, labor)) | {row.get("task") for row in labor if row.get("task")}
-    labor_evidence = labor_evidence_rows(data, task_set)
+    labor_evidence = labor_evidence_rows(data, task_set, scope_template_type=scope_type)
     labor_audit = build_labor_audit(recommendation_dict, labor, labor_evidence)
     similar_audit = similar_jobs_audit_rows(recommendation_dict)
     rejected = rejected_evidence_rows(recommendation_dict, material_audit, labor_audit, material_evidence, labor_evidence)

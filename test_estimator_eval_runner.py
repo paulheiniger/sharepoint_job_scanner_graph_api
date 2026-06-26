@@ -96,3 +96,45 @@ def test_print_report_includes_audit_command_for_failures_or_warnings(capsys) ->
     output = capsys.readouterr().out
     assert "python -m jobscan.estimator.calibration_audit --case-id roof_coating_basic_9536" in output
     assert '--database-url "$NEON_DATABASE_URL"' in output
+
+
+def test_eval_fails_when_historical_cost_ratio_is_priced(monkeypatch) -> None:
+    class FakeRecommendation:
+        parsed_fields = {"estimated_sqft": 10000, "project_type": "roof coating", "substrate": "metal", "coating_type": "silicone"}
+        recommended_scope = ["roof coating"]
+        material_plan = [
+            {"category": "coating", "item": "silicone", "estimated_cost": 10000},
+            {
+                "category": "primer",
+                "item": "Primer historical cost",
+                "selected_price_source": "historical_cost_ratio_fallback",
+                "estimated_cost": 4000,
+            },
+        ]
+        labor_plan = []
+        travel_plan = {"travel_labor_hours": 0}
+        review_flags = []
+        draft_workbook_inputs = {"header": {"C12_estimated_sqft": 10000}, "adders_review_rows": []}
+
+    monkeypatch.setattr(runner, "estimate_from_field_notes", lambda *args, **kwargs: FakeRecommendation())
+    report = runner.evaluate_case({"case_id": "fake", "notes": "fake", "expected": {"estimated_sqft": 10000}})
+
+    assert not report["passed"]
+    assert any("historical_cost_ratio_fallback" in failure for failure in report["failures"])
+
+
+def test_eval_fails_when_simple_roof_labor_hours_are_extreme(monkeypatch) -> None:
+    class FakeRecommendation:
+        parsed_fields = {"estimated_sqft": 10000, "project_type": "roof coating", "substrate": "metal", "coating_type": "silicone"}
+        recommended_scope = ["roof coating"]
+        material_plan = [{"category": "coating", "item": "silicone", "estimated_cost": 10000}]
+        labor_plan = [{"task": "labor_prep", "total_hours": 900, "estimated_cost": 65000}]
+        travel_plan = {"travel_labor_hours": 0}
+        review_flags = []
+        draft_workbook_inputs = {"header": {"C12_estimated_sqft": 10000}, "adders_review_rows": []}
+
+    monkeypatch.setattr(runner, "estimate_from_field_notes", lambda *args, **kwargs: FakeRecommendation())
+    report = runner.evaluate_case({"case_id": "fake", "notes": "fake", "expected": {"estimated_sqft": 10000}})
+
+    assert not report["passed"]
+    assert any("labor hours per 1000 sqft" in failure for failure in report["failures"])

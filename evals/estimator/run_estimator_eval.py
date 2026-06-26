@@ -124,6 +124,18 @@ def package_present(rows: list[dict[str, Any]], package: str) -> bool:
     return any(target in row_text(row) for row in rows)
 
 
+def row_method(row: dict[str, Any]) -> str:
+    return lower_text(row.get("selected_price_source") or row.get("calibration_method") or row.get("price_source_type") or row.get("source_type"))
+
+
+def row_included_in_total(row: dict[str, Any]) -> bool:
+    if row.get("included_in_total") is False:
+        return False
+    if row.get("estimated_cost") in (None, ""):
+        return False
+    return to_float(row.get("estimated_cost")) is not None
+
+
 def numeric_matches(actual: Any, expected: Any, tolerance: float = 1.0) -> bool:
     actual_number = to_float(actual)
     expected_number = to_float(expected)
@@ -162,6 +174,26 @@ def evaluate_case(case: dict[str, Any], estimator_data: Any = None) -> dict[str,
     for package in expected.get("must_not_include_labor_packages") or []:
         if package_present(labor_rows, package):
             failures.append(f"unexpected labor package present: {package}")
+
+    if text_field_contains(result, "project_type", ["roof"]) or any("roof" in item for item in result.get("recommended_scope") or []):
+        for row in material_rows:
+            if "historical_cost_ratio" in row_method(row) and row_included_in_total(row):
+                failures.append(
+                    "historical_cost_ratio_fallback material row was included in total: "
+                    f"{row.get('item') or row.get('category')}"
+                )
+        estimated_sqft = to_float(value_from_result(result, "estimated_sqft"))
+        total_labor_hours = sum(to_float(row.get("total_hours")) or to_float(row.get("labor_hours")) or 0 for row in labor_rows)
+        if estimated_sqft and total_labor_hours / estimated_sqft * 1000 > 80:
+            failures.append(
+                f"labor hours per 1000 sqft exceeded max 80: {round(total_labor_hours / estimated_sqft * 1000, 2)}"
+            )
+        for row in labor_rows + material_rows:
+            if row.get("template_type_match") is False and row.get("included_as_evidence") is True:
+                failures.append("nonmatching template evidence was included in calibration")
+        for row in result.get("similar_examples") or []:
+            if isinstance(row, dict) and lower_text(row.get("match_strength")) == "weak" and row.get("included_as_evidence") is True:
+                failures.append(f"weak-only similar job included as evidence: {row.get('job_id') or row.get('job_name')}")
 
     labor_task_expectation = expected.get("minimum_labor_tasks_from") or {}
     if labor_task_expectation:
