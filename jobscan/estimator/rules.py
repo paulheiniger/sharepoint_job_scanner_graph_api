@@ -53,10 +53,26 @@ def parse_sqft(text: str, *, wall: bool = False) -> float | None:
 
 
 def parse_foam_thickness(text: str) -> float | None:
-    match = re.search(r"(\d+(?:\.\d+)?)\s*(?:in|inch|inches|[\"”])\s*(?:foam|spf|spray foam)?", text, re.I)
+    match = re.search(
+        r"(\d+(?:\.\d+)?)\s*(?:in|inch|inches|[\"”])\s*"
+        r"(?:thick|thickness|foam|spf|spray foam|closed[- ]cell|open[- ]cell)?",
+        text,
+        re.I,
+    )
     if match:
         return to_float(match.group(1))
     return None
+
+
+def parse_foam_type(text: str) -> str:
+    lowered = text.lower()
+    if re.search(r"\bclosed[- ]cell\b", lowered):
+        return "closed_cell"
+    if re.search(r"\bopen[- ]cell\b", lowered):
+        return "open_cell"
+    if "spray foam" in lowered or "spf" in lowered or "polyurethane foam" in lowered:
+        return "spray_foam"
+    return ""
 
 
 def parse_warranty_target(text: str) -> int | None:
@@ -141,6 +157,7 @@ def extract_scope(notes: str, overrides: dict[str, Any] | None = None) -> dict[s
     surface_area = parse_sqft(notes_text)
     wall_area = parse_sqft(notes_text, wall=True)
     foam_thickness = parse_foam_thickness(notes_text)
+    foam_type = parse_foam_type(notes_text)
     warranty_target = parse_warranty_target(notes_text)
     location = detect_location(notes_text)
     insulation_missing = any(phrase in text for phrase in ("no insulation", "missing insulation", "uninsulated", "needs insulation"))
@@ -159,6 +176,7 @@ def extract_scope(notes: str, overrides: dict[str, Any] | None = None) -> dict[s
         "coating_required": bool(coating_type or "coating" in text or "coat" in text),
         "coating_type": coating_type,
         "foam_required": bool(foam_thickness or "foam" in text or "spf" in text),
+        "foam_type": foam_type,
         "foam_thickness_inches": foam_thickness,
         "insulation_present": insulation_present,
         "insulation_missing": insulation_missing,

@@ -148,6 +148,10 @@ def parse_field_notes(field_input: FieldNotesInput | str, overrides: dict[str, A
     review_flags = list(dimension_summary.warnings)
     if override_sqft and dimension_net_sqft and abs(override_sqft - dimension_net_sqft) / max(override_sqft, 1) > 0.10:
         review_flags.append("Sqft override differs from dimension math; override was used.")
+    if any(term in text for term in ("ir scan", "infrared", "moisture scan", "thermal scan")):
+        review_flags.append("infrared_scan review: verify infrared/moisture scan requirement.")
+    if any(term in text for term in ("granules", "granule", "broadcast")):
+        review_flags.append("labor_top_coat_granules review: verify granules/top coat broadcast scope.")
 
     confidence = max(0.25, min(0.9, 0.9 - len(missing) * 0.08))
     if review_flags:
@@ -159,6 +163,8 @@ def parse_field_notes(field_input: FieldNotesInput | str, overrides: dict[str, A
         substrate=substrate,
         estimated_sqft=sqft,
         coating_type=coating_type,
+        foam_type=first_nonblank(scope.get("foam_type")),
+        foam_thickness_inches=to_float(scope.get("foam_thickness_inches")),
         warranty_target_years=int(warranty_target or 0) or None,
         roof_condition=first_nonblank(scope.get("roof_condition")),
         access_complexity=first_nonblank(scope.get("access_complexity")),

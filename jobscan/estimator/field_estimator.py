@@ -60,6 +60,13 @@ def safe_int(value: Any, default: int = 0) -> int:
     return to_int_or_default(value, default)
 
 
+def sane_crew_size(value: Any, default: int = 4, *, max_size: int = 12) -> int:
+    size = to_int_or_default(value, default)
+    if size <= 0 or size > max_size:
+        return default
+    return size
+
+
 def to_int_or_default(value: Any, default: int) -> int:
     if not is_finite_number(value):
         return default
@@ -934,7 +941,7 @@ def build_labor_plan(
     area = safe_float(scope.get("surface_area_sqft"), 0.0)
     multiplier = to_float_or_default(decision.get("labor_modifiers", {}).get("combined_labor_multiplier"), 1.0)
     production_rate = to_float_or_default(decision.get("labor_modifiers", {}).get("adjusted_productivity_sqft_per_day"), 0.0)
-    crew_size = safe_int(decision.get("crew_assumptions", {}).get("recommended_crew_size"), 4)
+    crew_size = sane_crew_size(decision.get("crew_assumptions", {}).get("recommended_crew_size"), 4)
     if crew_size <= 0:
         crew_size = 4
     work_packages = ensure_work_package_decisions(scope, decision)
@@ -959,10 +966,12 @@ def build_labor_plan(
                 row_incomplete = any([hours_missing, days_missing, crew_missing, cost_missing, evidence_missing])
                 incomplete_calibration = incomplete_calibration or row_incomplete
                 days = 1.0 if days_missing else max(safe_float(row.get("median_days"), 1.0), 0.0)
-                row_crew_size = safe_int(row.get("median_crew_size"), crew_size)
+                raw_crew_size = safe_int(row.get("median_crew_size"), 0)
+                valid_historical_crew = bool(raw_crew_size and 0 < raw_crew_size <= 12)
+                row_crew_size = raw_crew_size if valid_historical_crew else crew_size
                 if row_crew_size <= 0:
                     row_crew_size = 4
-                elif not crew_missing:
+                elif valid_historical_crew:
                     filtered_crew_sizes.append(row_crew_size)
                 hours = None if hours_missing else max(safe_float(row.get("median_total_hours"), 0.0), 0.0)
                 cost_value = row.get("median_estimated_cost")

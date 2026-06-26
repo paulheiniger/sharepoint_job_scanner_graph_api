@@ -56,7 +56,7 @@ AREA_RE = re.compile(
 QUANTITY_RE = re.compile(
     r"\b(?P<qty>one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,3})\s+"
     r"(?P<object>(?:[a-z]+[\s-]+){0,4}?"
-    r"(?:skylights?|doors?|rtus?|units?|sections?|areas?|overhangs?|penthouses?))\b"
+    r"(?:skylights?|doors?|windows?|rtus?|units?|sections?|areas?|overhangs?|penthouses?))\b"
     r"[^.;:\n]{0,35}$",
     re.I,
 )

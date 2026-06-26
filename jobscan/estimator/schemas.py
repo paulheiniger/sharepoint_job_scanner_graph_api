@@ -60,6 +60,8 @@ class ParsedFieldNotes:
     substrate: str = ""
     estimated_sqft: float | None = None
     coating_type: str = ""
+    foam_type: str = ""
+    foam_thickness_inches: float | None = None
     warranty_target_years: int | None = None
     roof_condition: str = ""
     access_complexity: str = ""

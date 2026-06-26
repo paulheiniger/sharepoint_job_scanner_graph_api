@@ -339,6 +339,35 @@ def test_roof_coating_filters_labor_calibration_and_travel_hours() -> None:
     assert any("Rusted fasteners/seams require detail review" in flag for flag in recommendation.review_flags)
 
 
+def test_louisville_travel_labor_uses_drive_time_not_production_duration() -> None:
+    recommendation = estimate_from_field_notes(
+        "Roof coating estimate for a commercial metal roof in Louisville KY. Main roof is 120 ft by 80 ft. "
+        "Deduct two skylights, each 4 ft by 8 ft. Roof is fair overall but has rusted fasteners and some open seams. "
+        "Customer wants a 10-year silicone coating system. Access is easy. Few penetrations.",
+        data=field_data(),
+    )
+
+    assert recommendation.travel_plan["estimated_drive_time_minutes_one_way"] == 37
+    assert recommendation.travel_plan["travel_labor_hours"] <= 8
+
+
+def test_insulation_wall_note_parses_opening_deductions_foam_type_and_thickness() -> None:
+    recommendation = estimate_from_field_notes(
+        "Spray foam insulation estimate in Louisville KY. North wall is 120 ft by 18 ft. "
+        "South wall is 120 ft by 18 ft. East wall is 80 ft by 18 ft. West wall is 80 ft by 18 ft. "
+        "Deduct 8 overhead doors at 12 ft by 14 ft and 10 windows at 4 ft by 5 ft. "
+        "Customer wants closed-cell foam, about 2 inches thick. Access is easy.",
+        data=field_data(),
+    )
+
+    assert recommendation.parsed_fields["estimated_sqft"] == 5656
+    assert recommendation.parsed_fields["dimension_summary"]["gross_area_sqft"] == 7200
+    assert recommendation.parsed_fields["dimension_summary"]["deduction_area_sqft"] == 1544
+    assert recommendation.parsed_fields["dimension_summary"]["net_area_sqft"] == 5656
+    assert recommendation.parsed_fields["foam_type"] == "closed_cell"
+    assert recommendation.parsed_fields["foam_thickness_inches"] == 2
+
+
 def test_roof_coating_allowances_are_priced_and_reviewable() -> None:
     note = (
         "Roof coating estimate. Metal roof in Louisville KY. Main roof is 120 ft by 80 ft. "

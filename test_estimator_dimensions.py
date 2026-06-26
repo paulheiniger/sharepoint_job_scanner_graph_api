@@ -51,6 +51,19 @@ def test_wall_insulation_with_overhead_door_deductions() -> None:
     assert summary.net_area_sqft == 2976
 
 
+def test_deduct_multiple_opening_quantities() -> None:
+    summary = parse_dimensions(
+        "North wall is 120 ft by 18 ft. South wall is 120 ft by 18 ft. "
+        "East wall is 80 ft by 18 ft. West wall is 80 ft by 18 ft. "
+        "Deduct 8 overhead doors at 12 ft by 14 ft and 10 windows at 4 ft by 5 ft."
+    )
+
+    assert summary.gross_area_sqft == 7200
+    assert summary.deduction_area_sqft == 1544
+    assert summary.net_area_sqft == 5656
+    assert [area.quantity for area in summary.deducted_areas] == [8, 10]
+
+
 def test_direct_sqft_still_parses() -> None:
     parsed = parse_field_notes("Roof is about 12,000 sqft.")
 

@@ -166,7 +166,11 @@ def estimate_travel_impact(
     round_trip = one_way * 2
     one_way_minutes = one_way / assumptions.average_speed_mph_for_fallback * 60
     round_trip_hours = one_way_minutes * 2 / 60
-    crew = max(int(recommended_crew_size or 1), 1)
+    raw_crew = max(int(recommended_crew_size or 1), 1)
+    crew = min(raw_crew, 6)
+    crew_note = ""
+    if raw_crew != crew:
+        crew_note = f" Travel labor crew count capped at {crew} for drive-time allowance; verify if all {raw_crew} workers travel."
     lodging = one_way >= assumptions.lodging_review_one_way_miles or one_way_minutes >= assumptions.lodging_review_one_way_minutes
     return {
         "origin_address": assumptions.origin_address,
@@ -178,6 +182,6 @@ def estimate_travel_impact(
         "travel_labor_hours": round(round_trip_hours * crew, 1),
         "travel_vehicle_cost": round(round_trip * assumptions.cost_per_mile * max(int(estimated_work_days or 1), 1), 2),
         "lodging_required_possible": lodging,
-        "travel_notes": "Distance is bucketed from city/state or staged coordinates; no routing API used.",
+        "travel_notes": f"Distance is bucketed from city/state or staged coordinates; no routing API used.{crew_note}",
         "needs_travel_review": lodging,
     }
