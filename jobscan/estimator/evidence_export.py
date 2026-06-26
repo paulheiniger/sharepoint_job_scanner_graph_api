@@ -4,11 +4,18 @@ import json
 import math
 import re
 from dataclasses import asdict, is_dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 import pandas as pd
+
+try:
+    import numpy as np
+except ImportError:  # pragma: no cover - pandas normally brings numpy, but keep the exporter optional-safe.
+    np = None
 
 
 EVIDENCE_SHEETS = [
@@ -39,27 +46,73 @@ LABOR_TASKS = [
 ]
 
 
-def _jsonable(value: Any) -> Any:
-    if is_dataclass(value):
-        return _jsonable(asdict(value))
-    if isinstance(value, pd.DataFrame):
-        return _jsonable(value.to_dict(orient="records"))
-    if isinstance(value, pd.Series):
-        return _jsonable(value.to_dict())
-    if isinstance(value, dict):
-        return {str(key): _jsonable(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple, set)):
-        return [_jsonable(item) for item in value]
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
-        return None
+def _is_missing_scalar(value: Any) -> bool:
     try:
+        result = pd.isna(value)
+    except Exception:
+        return False
+    if isinstance(result, bool):
+        return result
+    return False
+
+
+def sanitize_for_export(value: Any, *, excel: bool = False) -> Any:
+    """Convert nested estimator output into JSON/XLSX-safe scalar values."""
+
+    if value is None:
+        return None
+    if is_dataclass(value):
+        return sanitize_for_export(asdict(value), excel=excel)
+    if isinstance(value, pd.DataFrame):
+        return sanitize_for_export(value.to_dict(orient="records"), excel=excel)
+    if isinstance(value, pd.Series):
+        return sanitize_for_export(value.to_dict(), excel=excel)
+    if isinstance(value, pd.Timestamp):
         if pd.isna(value):
             return None
-    except Exception:
-        pass
+        return value.isoformat()
+    if np is not None and isinstance(value, np.datetime64):
+        timestamp = pd.Timestamp(value)
+        if pd.isna(timestamp):
+            return None
+        return timestamp.isoformat()
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        if value.is_nan() or value.is_infinite():
+            return None
+        try:
+            return float(value)
+        except Exception:
+            return str(value)
+    if isinstance(value, (UUID, Path)):
+        return str(value)
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            return None
+        return value
+    if np is not None and isinstance(value, np.floating):
+        number = float(value)
+        if math.isnan(number) or math.isinf(number):
+            return None
+        return number
+    if np is not None and isinstance(value, np.integer):
+        return int(value)
+    if _is_missing_scalar(value):
+        return None
+    if isinstance(value, dict):
+        return {str(key): sanitize_for_export(item, excel=excel) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [sanitize_for_export(item, excel=excel) for item in value]
+    if isinstance(value, set):
+        return [sanitize_for_export(item, excel=excel) for item in sorted(value, key=str)]
     return value
+
+
+def _jsonable(value: Any) -> Any:
+    return sanitize_for_export(value, excel=False)
 
 
 def _dict_from_object(value: Any) -> dict[str, Any]:
@@ -457,11 +510,12 @@ def build_estimator_evidence_export(
             "estimate_rollup": _estimate_rollup_rows(recommendation_dict),
         },
     }
-    return _jsonable(export)
+    return sanitize_for_export(export, excel=False)
 
 
 def _sheet_dataframe(rows: list[dict[str, Any]]) -> pd.DataFrame:
-    frame = pd.DataFrame(rows)
+    excel_rows = [sanitize_for_export(row, excel=True) for row in rows]
+    frame = pd.DataFrame(excel_rows)
     if frame.empty:
         return pd.DataFrame([{"message": "No rows"}])
     for column in frame.columns:
@@ -485,10 +539,11 @@ def write_estimator_evidence_export(
     base = _safe_filename(base_filename or project_name or "estimator_evidence")
     json_path = output_path / f"{base}_{timestamp}.json"
     xlsx_path = output_path / f"{base}_{timestamp}.xlsx"
-    json_path.write_text(json.dumps(export, indent=2, default=str), encoding="utf-8")
+    json_export = sanitize_for_export(export, excel=False)
+    json_path.write_text(json.dumps(json_export, indent=2, default=str), encoding="utf-8")
     with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
         for sheet_name in EVIDENCE_SHEETS:
-            rows = export.get("sheets", {}).get(sheet_name, [])
+            rows = sanitize_for_export(export.get("sheets", {}).get(sheet_name, []), excel=True)
             frame = _sheet_dataframe(rows)
             frame.to_excel(writer, sheet_name=sheet_name[:31], index=False)
             worksheet = writer.sheets[sheet_name[:31]]

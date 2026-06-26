@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import json
+import math
+from datetime import UTC, datetime
+from decimal import Decimal
 from types import SimpleNamespace
+from uuid import uuid4
 
+import pandas as pd
 from openpyxl import load_workbook
 
-from jobscan.estimator.evidence_export import build_estimator_evidence_export, write_estimator_evidence_export
+from jobscan.estimator.evidence_export import build_estimator_evidence_export, sanitize_for_export, write_estimator_evidence_export
 from jobscan.estimator.field_estimator import estimate_from_field_notes
 from test_field_estimator import field_data
 
@@ -102,3 +107,58 @@ def test_rejected_material_evidence_is_exported() -> None:
     assert material_row["included_in_total"] is False
     assert any(row.get("package") == "primer" and row.get("severity") == "blocker" for row in rejected_rows)
 
+
+def test_export_sanitizes_timezone_datetimes_and_nested_values(tmp_path) -> None:
+    aware_datetime = datetime(2026, 6, 26, 12, 30, tzinfo=UTC)
+    timestamp = pd.Timestamp("2026-06-26T08:15:00", tz="America/New_York")
+    row_uuid = uuid4()
+    recommendation = SimpleNamespace(
+        parsed_fields={
+            "estimated_sqft": 10000,
+            "generated_at": aware_datetime,
+            "timestamp": timestamp,
+            "uuid": row_uuid,
+            "bad_number": math.nan,
+            "nested": {"date": aware_datetime, "items": [Decimal("12.50"), math.inf]},
+        },
+        recommended_scope=[],
+        material_plan=[
+            {
+                "item": "Coating",
+                "category": "coating",
+                "estimated_cost": Decimal("1234.56"),
+                "created_at": timestamp,
+                "nested": {"uuid": row_uuid, "when": aware_datetime},
+            }
+        ],
+        labor_plan=[],
+        travel_plan={},
+        historical_calibration={},
+        similar_examples=[],
+        estimate_low=0,
+        estimate_target=0,
+        estimate_high=0,
+        review_flags=[],
+        human_review_required=False,
+        draft_workbook_inputs={"header": {"C12_estimated_sqft": 10000, "created_at": aware_datetime}},
+        debug={},
+    )
+
+    paths = write_estimator_evidence_export(recommendation, output_dir=tmp_path, base_filename="timezone")
+
+    assert paths["json"].exists()
+    assert paths["xlsx"].exists()
+    parsed = json.loads(paths["json"].read_text(encoding="utf-8"))
+    assert parsed["sheets"]["parsed_scope"][0]["generated_at"].endswith("+00:00")
+    assert parsed["sheets"]["parsed_scope"][0]["bad_number"] is None
+    assert parsed["sheets"]["parsed_scope"][0]["nested"]["items"][1] is None
+    workbook = load_workbook(paths["xlsx"], read_only=True, data_only=True)
+    parsed_scope = workbook["parsed_scope"]
+    headers = [cell.value for cell in next(parsed_scope.iter_rows(min_row=1, max_row=1))]
+    generated_at_column = headers.index("generated_at") + 1
+    generated_at_value = parsed_scope.cell(row=2, column=generated_at_column).value
+    assert isinstance(generated_at_value, str)
+    sanitized = sanitize_for_export({"when": aware_datetime, "ts": timestamp, "uuid": row_uuid}, excel=True)
+    assert isinstance(sanitized["when"], str)
+    assert isinstance(sanitized["ts"], str)
+    assert isinstance(sanitized["uuid"], str)
