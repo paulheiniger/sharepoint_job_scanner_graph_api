@@ -7,6 +7,7 @@ from typing import Any
 
 import pandas as pd
 
+from . import ai_scope_interpreter
 from .calibration import calibrate_from_history
 from .data_loader import load_estimator_data
 from .decision_tree import evaluate_decision_tree
@@ -2485,6 +2486,40 @@ def resolve_estimated_sqft(parsed: Any, scope: dict[str, Any], overrides: dict[s
     return None
 
 
+def apply_scope_to_parsed(parsed: Any, scope: dict[str, Any]) -> None:
+    for attr, key in (
+        ("project_type", "project_type"),
+        ("division", "division"),
+        ("building_type", "building_type"),
+        ("substrate", "substrate"),
+        ("coating_type", "coating_type"),
+        ("roof_condition", "roof_condition"),
+        ("access_complexity", "access_complexity"),
+        ("penetrations_complexity", "penetrations_complexity"),
+        ("city", "city"),
+        ("state", "state"),
+    ):
+        value = first_nonblank(scope.get(key))
+        if value:
+            setattr(parsed, attr, value)
+    sqft = optional_positive_float(scope.get("estimated_sqft")) or optional_positive_float(scope.get("surface_area_sqft"))
+    if sqft is not None:
+        parsed.estimated_sqft = sqft
+    warranty = optional_positive_int(scope.get("warranty_target_years")) or optional_positive_int(scope.get("warranty_target"))
+    if warranty is not None:
+        parsed.warranty_target_years = warranty
+    parsed.missing_info = [
+        item
+        for item in parsed.missing_info
+        if not (
+            (item == "estimated_sqft" and sqft is not None)
+            or (item == "substrate" and first_nonblank(scope.get("substrate")))
+            or (item == "roof_condition" and first_nonblank(scope.get("roof_condition")))
+            or (item == "coating/warranty target" and (first_nonblank(scope.get("coating_type")) or warranty is not None))
+        )
+    ]
+
+
 def draft_workbook_inputs(field_input: FieldNotesInput, scope: dict[str, Any], material_plan: list[dict[str, Any]], labor_plan: list[dict[str, Any]], travel_plan: dict[str, Any], review_flags: list[str]) -> dict[str, Any]:
     city_state_zip = " ".join(
         part
@@ -2557,6 +2592,23 @@ def estimate_from_field_notes(
     scope["gross_area_sqft"] = scope.get("gross_area_sqft") or _dimension_summary_value(dimension_summary, "gross_area_sqft")
     scope["deduction_area_sqft"] = scope.get("deduction_area_sqft") or _dimension_summary_value(dimension_summary, "deduction_area_sqft")
     scope["net_area_sqft"] = scope.get("net_area_sqft") or _dimension_summary_value(dimension_summary, "net_area_sqft")
+    deterministic_parsed_scope = asdict(parsed)
+    deterministic_scope = dict(scope)
+    ai_enabled = ai_scope_interpreter.ai_scope_interpreter_enabled()
+    ai_parsed_scope: dict[str, Any] = {}
+    ai_merge_decisions: list[dict[str, Any]] = []
+    ai_review_flags: list[str] = []
+    if ai_enabled:
+        ai_parsed_scope = ai_scope_interpreter.interpret_field_notes_with_ai(raw_notes, deterministic_scope=deterministic_scope)
+        scope, ai_merge_decisions, ai_review_flags = ai_scope_interpreter.merge_ai_scope_with_deterministic(
+            raw_notes,
+            deterministic_scope,
+            ai_parsed_scope,
+        )
+        if resolved_sqft is not None:
+            scope["estimated_sqft"] = resolved_sqft
+            scope["surface_area_sqft"] = resolved_sqft
+        apply_scope_to_parsed(parsed, scope)
     similar = find_similar_jobs(data, scope, limit=8)
     legacy_calibration = calibrate_from_history(similar, data.line_items, scope)
     template_calibration = historical_template_calibration(data, similar)
@@ -2598,6 +2650,7 @@ def estimate_from_field_notes(
     review_flags = []
     review_flags.extend(f"Missing: {item}" for item in parsed.missing_info)
     review_flags.extend(parsed.review_flags)
+    review_flags.extend(ai_review_flags)
     review_flags.extend(decision.get("human_review_flags") or [])
     review_flags.extend(material_review_flags)
     review_flags.extend(labor_review_flags)
@@ -2619,6 +2672,16 @@ def estimate_from_field_notes(
     if resolved_sqft is not None:
         parsed_fields["estimated_sqft"] = resolved_sqft
         parsed_fields["surface_area_sqft"] = resolved_sqft
+    for extra_field in (
+        "condition_detail_flags",
+        "roof_condition_raw_phrase",
+        "roof_condition_reason",
+        "penetrations_complexity_reason",
+        "access_complexity_reason",
+        "ai_scope_packages",
+    ):
+        if extra_field in scope:
+            parsed_fields[extra_field] = scope.get(extra_field)
     return EstimateRecommendation(
         parsed_fields=parsed_fields,
         recommended_scope=decision.get("recommended_scope") or [],
@@ -2633,5 +2696,17 @@ def estimate_from_field_notes(
         review_flags=review_flags,
         human_review_required=bool(review_flags),
         draft_workbook_inputs=draft_workbook_inputs(field_input, scope, material_plan, labor_plan, travel_plan, review_flags),
-        debug={"labor_calibration": calibration.get("labor_calibration_diagnostics") or {}},
+        debug={
+            "labor_calibration": calibration.get("labor_calibration_diagnostics") or {},
+            "ai_scope_interpreter": {
+                "enabled": ai_enabled,
+                "deterministic_parsed_scope": deterministic_parsed_scope,
+                "deterministic_scope": deterministic_scope,
+                "ai_parsed_scope": ai_parsed_scope,
+                "final_merged_scope": scope,
+                "merge_decisions": ai_merge_decisions,
+                "ai_confidence_by_field": ai_parsed_scope.get("confidence_by_field") if isinstance(ai_parsed_scope, dict) else {},
+                "ai_review_flags": ai_review_flags,
+            },
+        },
     )

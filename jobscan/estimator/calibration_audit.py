@@ -25,6 +25,7 @@ DEFAULT_OUTPUT_DIR = Path("output/estimator_audit")
 AUDIT_SHEETS = [
     "summary",
     "parsed_scope",
+    "ai_scope_interpreter",
     "material_plan",
     "material_audit",
     "material_evidence",
@@ -1132,6 +1133,42 @@ def parsed_scope_rows(recommendation: dict[str, Any]) -> list[dict[str, Any]]:
     return [row]
 
 
+def ai_scope_rows(recommendation: dict[str, Any]) -> list[dict[str, Any]]:
+    debug = recommendation.get("debug") or {}
+    ai_debug = debug.get("ai_scope_interpreter") if isinstance(debug, dict) else {}
+    if not isinstance(ai_debug, dict):
+        return [{"section": "ai_scope_interpreter", "message": "No AI scope interpreter debug data."}]
+    rows: list[dict[str, Any]] = [{"section": "enabled", "field": "enabled", "value": ai_debug.get("enabled")}]
+    for section in (
+        "deterministic_parsed_scope",
+        "deterministic_scope",
+        "ai_parsed_scope",
+        "final_merged_scope",
+        "ai_confidence_by_field",
+    ):
+        value = ai_debug.get(section)
+        if isinstance(value, dict):
+            for field, field_value in value.items():
+                rows.append({"section": section, "field": field, "value": field_value})
+        else:
+            rows.append({"section": section, "field": "", "value": value})
+    for index, decision in enumerate(records_from(ai_debug.get("merge_decisions")), start=1):
+        rows.append(
+            {
+                "section": "merge_decisions",
+                "row_number": index,
+                "field": decision.get("field"),
+                "from": decision.get("from"),
+                "to": decision.get("to"),
+                "decision": decision.get("decision"),
+                "reason": decision.get("reason"),
+            }
+        )
+    for index, flag in enumerate(ai_debug.get("ai_review_flags") or [], start=1):
+        rows.append({"section": "ai_review_flags", "row_number": index, "field": "review_flag", "value": flag})
+    return rows
+
+
 def build_calibration_audit(
     recommendation: Any,
     data: EstimatorData | None = None,
@@ -1164,6 +1201,7 @@ def build_calibration_audit(
             labor_audit=labor_audit,
         ),
         "parsed_scope": parsed_scope_rows(recommendation_dict),
+        "ai_scope_interpreter": ai_scope_rows(recommendation_dict),
         "material_plan": materials,
         "material_audit": material_audit,
         "material_evidence": material_evidence,
