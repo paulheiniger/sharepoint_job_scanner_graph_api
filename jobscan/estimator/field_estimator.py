@@ -16,7 +16,7 @@ from .data_loader import load_estimator_data
 from .decision_tree import evaluate_decision_tree
 from .field_notes import parse_field_notes, parsed_to_scope
 from .line_items import summarize_similar_job_buckets
-from .material_calibration import build_material_calibration, normalize_unit, sane_quantity_ratio
+from .material_calibration import build_bucket_calibration, normalize_unit, sane_quantity_ratio
 from .materials import coating_gallons, find_current_price, historical_unit_cost
 from .rules import first_nonblank, to_float
 from .schemas import EstimateRecommendation, EstimatorAssumptions, EstimatorData, FieldNotesInput
@@ -1469,6 +1469,37 @@ def _scope_text(scope: dict[str, Any]) -> str:
     return " ".join(str(value or "") for value in (scope.get("notes"), scope.get("roof_condition"), scope.get("substrate"), scope.get("coating_type"))).lower()
 
 
+def _negated_phrase(text: str, pattern: str) -> bool:
+    return bool(re.search(pattern, text, re.I))
+
+
+def _positive_rust_evidence(text: str) -> bool:
+    if _negated_phrase(text, r"\b(?:no|without)\s+(?:visible\s+)?rust\b|\bno\s+rusted\s+fasteners?\b"):
+        return False
+    return bool(re.search(r"\b(?:rust|rusted|oxidized|chalking)\b", text))
+
+
+def _positive_seam_issue_evidence(text: str) -> bool:
+    if _negated_phrase(text, r"\b(?:no|without)\s+(?:open\s+)?seam\s+issues?\b|\b(?:no|without)\s+open\s+seams?\b"):
+        return False
+    positive_patterns = (
+        r"\bopen\s+seams?\b",
+        r"\bseams?\s+opening\b",
+        r"\bfailed\s+seams?\b",
+        r"\bseam\s+repair\b",
+        r"\bseam\s+treatment\b",
+        r"\bseam\s+leaks?\b",
+        r"\bleaking\s+seams?\b",
+    )
+    return any(re.search(pattern, text) for pattern in positive_patterns)
+
+
+def _positive_leak_evidence(text: str) -> bool:
+    if _negated_phrase(text, r"\b(?:no|without)\s+(?:interior\s+)?leaks?\b|\bno\s+leaking\b"):
+        return False
+    return bool(re.search(r"\b(?:leak|leaks|leaking)\b", text))
+
+
 def _decision_applies(decision: dict[str, Any] | None, *, include_review: bool = True) -> bool:
     if not decision:
         return False
@@ -1521,7 +1552,7 @@ def _build_work_package_decisions(scope: dict[str, Any], decision: dict[str, Any
         "chalking",
     )
     no_visible_rust = bool(re.search(r"\b(?:no|without)\s+(?:visible\s+)?rust\b|\bno\s+rusted\s+fasteners?\b", text))
-    rusted_metal = metal_context and not no_visible_rust and any(term in text for term in ("rust", "rusted", "oxidized"))
+    rusted_metal = metal_context and _positive_rust_evidence(text)
     explicit_primer = any(term in text for term in primer_terms)
     if coating_required and (explicit_primer or rusted_metal or foam_context):
         primer_applies: bool | str = True if ("primer" in text or "prime" in text or rusted_metal or "asphalt bleed" in text or "bleed" in text) else "review"
@@ -1541,16 +1572,33 @@ def _build_work_package_decisions(scope: dict[str, Any], decision: dict[str, Any
         primer_applies != True,
     )
 
-    seam_terms = ("seam", "seams", "lap", "laps", "opening up", "open seams", "seam treatment")
-    seam_applies = coating_required and (any(term in text for term in seam_terms) or metal_context)
+    seam_issue = _positive_seam_issue_evidence(text) or _positive_leak_evidence(text)
+    clean_maintenance = (
+        first_nonblank(scope.get("roof_condition")).lower() in {"excellent", "good"}
+        and not seam_issue
+        and not _positive_rust_evidence(text)
+        and not any(term in text for term in ("ponding", "repair", "failed fastener", "loose fastener"))
+    )
+    seam_applies: bool | str = bool(coating_required and (seam_issue or (metal_context and not clean_maintenance)))
+    if coating_required and metal_context and clean_maintenance:
+        seam_applies = "review"
+        seam_reason = "Standing seam/metal roof should receive light seam/detail inspection; no base seam treatment priced without repair trigger."
+    else:
+        seam_reason = (
+            "Seam treatment indicated by explicit seam repair/open seam/leak language."
+            if seam_issue
+            else "Seam treatment included for metal roof coating; estimator should verify seam condition."
+            if seam_applies is True and metal_context
+            else "No explicit seam repair trigger found."
+        )
     packages["seam_treatment"] = WorkPackageDecision(
         "seam_treatment",
         seam_applies,
-        0.82 if seam_applies else 0.5,
-        "Seam treatment indicated by roof coating seam language or metal roof scope." if seam_applies else "No seam treatment trigger found.",
+        0.82 if seam_applies is True else 0.58 if seam_applies == "review" else 0.5,
+        seam_reason,
         "detail_density",
-        "spot_area" if seam_applies else "none",
-        not seam_applies,
+        "spot_area" if seam_applies is True else "unknown" if seam_applies == "review" else "none",
+        seam_applies is not True,
     )
 
     explicit_fastener = any(term in text for term in ("exposed fastener", "rusted fastener", "fastener leak", "fastener leaks", "screw", "screws", "fasteners"))
@@ -2253,11 +2301,22 @@ def build_material_plan(
     low_total = 0.0
     high_total = 0.0
     work_packages = ensure_work_package_decisions(scope, decision)
+    material_calibration = calibration.get("material_calibration")
+    if not isinstance(material_calibration, dict):
+        material_calibration = {}
+        calibration["material_calibration"] = material_calibration
+
+    def package_calibration(bucket: str) -> dict[str, Any]:
+        if bucket not in material_calibration:
+            material_calibration[bucket] = build_bucket_calibration(data, scope, bucket)
+        return material_calibration
+
     if scope.get("coating_required") and area:
         coating_decision = work_packages.get("coating")
         wet_mils = warranty_wet_mils(scope.get("warranty_target"), coating_type)
         gallons = coating_gallons(area, wet_mils, assumptions.coating_waste_factor)
-        price = find_current_price(data.pricing, [coating_type] if coating_type else ["coating"], "price_per_gallon")
+        pricing_source = data.pricing_catalog if not data.pricing_catalog.empty else data.pricing
+        price = find_current_price(pricing_source, [coating_type] if coating_type else ["coating"], "price_per_gallon")
         price_source = "current_pricing"
         needs_review = False
         unit_price = to_float(price.get("matched_price")) if price else None
@@ -2302,10 +2361,6 @@ def build_material_plan(
         )
         coating_row = _sanity_check_material_row(coating_row, area, "coating")
         plan.append(coating_row)
-    material_assumptions = decision.get("material_assumptions", {})
-    is_metal_roof_coating = bool(scope.get("coating_required")) and first_nonblank(scope.get("substrate")).lower() == "metal"
-    material_calibration = calibration.get("material_calibration") or build_material_calibration(data, scope)
-    calibration["material_calibration"] = material_calibration
     coating_cost_cap = None
     for row in plan:
         if row.get("category") == "coating":
@@ -2332,7 +2387,7 @@ def build_material_plan(
                 item="Primer allowance",
                 category="primer",
                 area=area,
-                material_calibration=material_calibration,
+                material_calibration=package_calibration("primer"),
                 fallback_quantity=round(area, 1),
                 fallback_unit="sqft",
                 fallback_unit_price=fallback_unit_price,
@@ -2368,7 +2423,7 @@ def build_material_plan(
                 item="Seam treatment allowance",
                 category="seam_treatment",
                 area=area,
-                material_calibration=material_calibration,
+                material_calibration=package_calibration("seam_treatment"),
                 fallback_quantity=seam_lf,
                 fallback_unit="lf",
                 fallback_unit_price=3.0,
@@ -2381,6 +2436,8 @@ def build_material_plan(
         row = _sanity_check_material_row(row, area, "seam_treatment")
         plan.append(row)
         low_total, high_total = _add_allowance_cost_to_totals(row, (low_total, high_total))
+    elif seam_decision and seam_decision.get("review_required"):
+        review_flags.append(seam_decision.get("reason") or "Seam treatment should be verified.")
 
     fastener_decision = work_packages.get("fastener_treatment")
     if _decision_applies(fastener_decision, include_review=False):
@@ -2402,7 +2459,7 @@ def build_material_plan(
                 item="Fastener treatment allowance",
                 category="fastener_treatment",
                 area=area,
-                material_calibration=material_calibration,
+                material_calibration=package_calibration("fastener_treatment"),
                 fallback_quantity=fasteners,
                 fallback_unit="ea",
                 fallback_unit_price=1.5,
@@ -2438,7 +2495,7 @@ def build_material_plan(
                 item="Caulk/detail allowance",
                 category="caulk_detail",
                 area=area,
-                material_calibration=material_calibration,
+                material_calibration=package_calibration("caulk_detail"),
                 fallback_quantity=max(detail_units, 1),
                 fallback_unit="allowance",
                 fallback_unit_price=150.0,

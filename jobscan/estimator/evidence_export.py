@@ -227,6 +227,12 @@ def _normal_export_row_allowed(row: dict[str, Any], *, scope_type: str, debug_ev
         row_type = _row_template_type(row)
         if row_type == "insulation":
             return False
+        division = str(row.get("division") or row.get("job_division") or "").strip().lower()
+        if division and division not in {"roofing", "roof", "roofs"}:
+            return False
+        project_type = str(row.get("project_type") or row.get("job_project_type") or row.get("job_type") or "").strip().lower()
+        if project_type in {"floor system", "flooring"} or "floor system" in project_type or project_type.startswith("floor"):
+            return False
         source_text = _row_source_text(row)
         if any(term in source_text for term in ("insulation", "spray foam", "closed-cell", "closed cell", "open-cell", "open cell")):
             return False
@@ -286,6 +292,41 @@ def _limit_evidence_rows(rows: list[dict[str, Any]], *, evidence_limit: int, deb
         if counts[package] <= evidence_limit:
             limited.append(_compact_evidence_row(row, debug_evidence=debug_evidence))
     return limited
+
+
+def _dedupe_evidence_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[tuple[str, str, str, str]] = set()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        key = (
+            str(row.get("pricing_item_id") or ""),
+            str(row.get("product_name") or row.get("selected_item_name") or row.get("row_label") or ""),
+            str(row.get("evidence_source_table") or ""),
+            str(row.get("package") or row.get("category") or row.get("requested_package") or row.get("template_bucket") or ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+    return out
+
+
+def _cap_combined_evidence_rows(
+    material_rows: list[dict[str, Any]],
+    labor_rows: list[dict[str, Any]],
+    *,
+    evidence_limit: int,
+    debug_evidence: bool,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if debug_evidence or evidence_limit <= 0:
+        return material_rows, labor_rows
+    material_rows = _dedupe_evidence_rows(material_rows)
+    labor_rows = _dedupe_evidence_rows(labor_rows)
+    material_budget = max(1, evidence_limit // 2)
+    material_capped = material_rows[:material_budget]
+    labor_budget = max(0, evidence_limit - len(material_capped))
+    labor_capped = labor_rows[:labor_budget]
+    return material_capped, labor_capped
 
 
 def _frame_records(frame: pd.DataFrame | None, *, source_table: str, limit: int = 5000) -> list[dict[str, Any]]:
@@ -461,7 +502,11 @@ def _material_evidence_rows(
                     }
                 )
     if not fast:
-        for table_name in ("template_rows", "job_package_summary", "pricing_catalog", "pricing"):
+        pricing_catalog_frame = getattr(data, "pricing_catalog", pd.DataFrame()) if data is not None else pd.DataFrame()
+        table_names = ["template_rows", "job_package_summary", "pricing_catalog"]
+        if pricing_catalog_frame.empty:
+            table_names.append("pricing")
+        for table_name in table_names:
             frame = getattr(data, table_name, pd.DataFrame()) if data is not None else pd.DataFrame()
             for row in _frame_records(frame, source_table=table_name, limit=max(evidence_limit * max(len(packages), 1) * 4, evidence_limit)):
                 if not _normal_export_row_allowed(row, scope_type=scope_type, debug_evidence=debug_evidence):
@@ -479,7 +524,7 @@ def _material_evidence_rows(
                     )
     if not rows:
         rows.append({"evidence_source_table": "", "message": "No material evidence rows were available for export."})
-    return _limit_evidence_rows(rows, evidence_limit=evidence_limit, debug_evidence=debug_evidence)
+    return _dedupe_evidence_rows(_limit_evidence_rows(rows, evidence_limit=evidence_limit, debug_evidence=debug_evidence))
 
 
 def _labor_evidence_rows(
@@ -557,7 +602,7 @@ def _labor_evidence_rows(
                     )
     if not rows:
         rows.append({"evidence_source_table": "", "message": "No labor evidence rows were available for export."})
-    return _limit_evidence_rows(rows, evidence_limit=evidence_limit, debug_evidence=debug_evidence)
+    return _dedupe_evidence_rows(_limit_evidence_rows(rows, evidence_limit=evidence_limit, debug_evidence=debug_evidence))
 
 
 def _similar_job_rows(recommendation: dict[str, Any]) -> list[dict[str, Any]]:
@@ -747,6 +792,13 @@ def build_estimator_evidence_export(
         debug_evidence=debug_evidence,
         fast=fast,
     )
+    uncapped_evidence_count = len(material_evidence) + len(labor_evidence)
+    material_evidence, labor_evidence = _cap_combined_evidence_rows(
+        material_evidence,
+        labor_evidence,
+        evidence_limit=evidence_limit,
+        debug_evidence=debug_evidence,
+    )
     runtime_seconds_by_stage = dict((recommendation_dict.get("debug") or {}).get("runtime_seconds_by_stage") or {})
     runtime_seconds_by_stage["export_evidence"] = round((datetime.now(UTC) - export_started).total_seconds(), 4)
     material_total = sum(_safe_float(row.get("estimated_cost")) or 0 for row in material_plan if row.get("included_in_total"))
@@ -784,6 +836,11 @@ def build_estimator_evidence_export(
         "labor_cap_applied": labor_selection_summary.get("labor_cap_applied"),
         "labor_overlap_adjustment": labor_selection_summary.get("labor_overlap_adjustment"),
         "evidence_rows_exported": len(material_evidence) + len(labor_evidence),
+        "evidence_cap_warning": (
+            f"Evidence rows exceeded limit {evidence_limit} before capping."
+            if not debug_evidence and evidence_limit > 0 and uncapped_evidence_count > evidence_limit
+            else ""
+        ),
         "evidence_limit": evidence_limit,
         "fast_mode": fast,
         "debug_evidence": debug_evidence,

@@ -256,15 +256,23 @@ def _note_allows_poor_condition(notes: str) -> bool:
 
 def _condition_flags_from_notes(notes: str) -> list[str]:
     text = notes.lower()
+    no_rust = bool(re.search(r"\b(?:no|without)\s+(?:visible\s+)?rust\b|\bno\s+rusted\s+fasteners?\b", text))
+    no_open_seams = bool(re.search(r"\b(?:no|without)\s+(?:open\s+)?seam\s+issues?\b|\b(?:no|without)\s+open\s+seams?\b", text))
+    no_leaks = bool(re.search(r"\b(?:no|without)\s+(?:interior\s+)?leaks?\b|\bno\s+leaking\b", text))
     flags: list[str] = []
-    if "rusted fastener" in text or "rusted fasteners" in text:
-        flags.append("rusted_fasteners")
-    elif "rust" in text or "rusted" in text:
-        flags.append("rust")
-    if "open seam" in text or "open seams" in text or "seams opening" in text:
+    if not no_rust:
+        if "rusted fastener" in text or "rusted fasteners" in text:
+            flags.append("rusted_fasteners")
+        elif "rust" in text or "rusted" in text:
+            flags.append("rust")
+    if not no_open_seams and ("open seam" in text or "open seams" in text or "seams opening" in text):
         flags.append("open_seams")
+    if not no_leaks and re.search(r"\b(?:leak|leaks|leaking)\b", text):
+        flags.append("leaks")
     if "ponding" in text:
         flags.append("ponding")
+    if "minor dirt" in text:
+        flags.append("minor_dirt")
     return flags
 
 

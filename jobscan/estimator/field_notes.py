@@ -109,16 +109,22 @@ def parse_penetration_count(text: str) -> int | None:
 def parse_condition_detail_flags(text: str) -> list[str]:
     lowered = text.lower()
     no_rust = bool(re.search(r"\b(?:no|without)\s+(?:visible\s+)?rust\b|\bno\s+rusted\s+fasteners?\b", lowered))
+    no_open_seams = bool(re.search(r"\b(?:no|without)\s+(?:open\s+)?seam\s+issues?\b|\b(?:no|without)\s+open\s+seams?\b", lowered))
+    no_leaks = bool(re.search(r"\b(?:no|without)\s+(?:interior\s+)?leaks?\b|\bno\s+leaking\b", lowered))
     flags: list[str] = []
     if not no_rust:
         if "rusted fastener" in lowered or "rusted fasteners" in lowered:
             flags.append("rusted_fasteners")
         elif "rust" in lowered or "rusted" in lowered:
             flags.append("rust")
-    if "open seam" in lowered or "open seams" in lowered or "seams opening" in lowered:
+    if not no_open_seams and ("open seam" in lowered or "open seams" in lowered or "seams opening" in lowered):
         flags.append("open_seams")
+    if not no_leaks and re.search(r"\b(?:leak|leaks|leaking)\b", lowered):
+        flags.append("leaks")
     if "ponding" in lowered:
         flags.append("ponding")
+    if "minor dirt" in lowered:
+        flags.append("minor_dirt")
     return flags
 
 

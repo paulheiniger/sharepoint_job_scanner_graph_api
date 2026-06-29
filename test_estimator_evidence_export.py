@@ -12,7 +12,7 @@ from openpyxl import load_workbook
 
 from jobscan.estimator.evidence_export import build_estimator_evidence_export, sanitize_for_export, write_estimator_evidence_export
 from jobscan.estimator.field_estimator import estimate_from_field_notes
-from test_field_estimator import field_data
+from test_field_estimator import TEST_CASE_A_NOTE, field_data
 
 
 SAMPLE_NOTE = (
@@ -150,6 +150,59 @@ def test_normal_roofing_evidence_export_excludes_insulation_template_rows() -> N
     assert "Roof coating" in names
     assert "Insulation coating" not in names
     assert "Unknown" not in names
+
+
+def test_clean_maintenance_export_caps_evidence_filters_flooring_and_dedupes_pricing() -> None:
+    data = field_data()
+    duplicate_price = {
+        "pricing_item_id": "P1",
+        "product_name": "High Solids Silicone",
+        "category": "Coating",
+        "price_per_gallon": 38,
+        "unit_price": 190,
+        "status": "active",
+        "is_current": True,
+        "needs_review": False,
+    }
+    data.pricing_catalog = pd.concat([data.pricing_catalog, pd.DataFrame([duplicate_price])], ignore_index=True)
+    data.pricing = pd.concat([data.pricing, pd.DataFrame([duplicate_price])], ignore_index=True)
+    data.relationship_labor_rates = pd.DataFrame(
+        [
+            {
+                "division": "Flooring",
+                "project_type": "Floor System",
+                "labor_package": "labor_prep",
+                "package": "labor_prep",
+                "median_hours_per_1000_sqft": 10,
+                "job_count": 99,
+            },
+            {
+                "division": "Roofing",
+                "project_type": "roof coating",
+                "labor_package": "labor_prep",
+                "package": "labor_prep",
+                "median_hours_per_1000_sqft": 8,
+                "job_count": 10,
+            },
+        ]
+    )
+    recommendation = estimate_from_field_notes(TEST_CASE_A_NOTE, data=data)
+
+    export = build_estimator_evidence_export(recommendation, data=data, notes=TEST_CASE_A_NOTE, evidence_limit=50)
+
+    assert export["run_summary"]["evidence_rows_exported"] <= 50
+    assert export["run_summary"]["evidence_rows_exported"] == (
+        len(export["sheets"]["material_evidence"]) + len(export["sheets"]["labor_evidence"])
+    )
+    labor_text = json.dumps(export["sheets"]["labor_evidence"], default=str).lower()
+    assert "flooring" not in labor_text
+    assert "floor system" not in labor_text
+    pricing_rows = [
+        row
+        for row in export["sheets"]["material_evidence"]
+        if row.get("evidence_source_table") == "pricing_catalog" and row.get("pricing_item_id") == "P1"
+    ]
+    assert len(pricing_rows) == 1
 
 
 def test_evidence_export_flags_notes_hash_mismatch_and_stale_source_text() -> None:

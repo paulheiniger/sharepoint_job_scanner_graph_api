@@ -8,6 +8,15 @@ from jobscan.estimator.field_notes import parse_field_notes, parse_field_sqft
 from jobscan.estimator.schemas import EstimatorAssumptions, EstimatorData
 
 
+TEST_CASE_A_NOTE = (
+    "Customer wants to extend the life of a five-year-old standing seam metal roof. "
+    "Roof is 90 ft by 70 ft. No deductions. "
+    "Roof is in excellent condition with no visible rust and only minor dirt accumulation. "
+    "Only one plumbing vent and one HVAC curb. Easy access from parking lot. "
+    "Customer requests a 10-year white silicone maintenance coating."
+)
+
+
 def field_data(*, with_template_rows: bool = True, with_pricing: bool = True, with_fallback: bool = False) -> EstimatorData:
     jobs = pd.DataFrame(
         [
@@ -171,6 +180,24 @@ def test_parse_metal_roof_rust_warranty() -> None:
     assert parsed.estimated_sqft == 12000
     assert parsed.warranty_target_years == 15
     assert parsed.roof_condition == "poor/rusted"
+
+
+def test_clean_standing_seam_maintenance_coating_does_not_infer_rust_or_seam_treatment() -> None:
+    recommendation = estimate_from_field_notes(TEST_CASE_A_NOTE, data=field_data())
+
+    assert recommendation.parsed_fields["estimated_sqft"] == 6300
+    assert recommendation.parsed_fields["gross_area_sqft"] == 6300
+    assert recommendation.parsed_fields["deduction_area_sqft"] == 0
+    assert recommendation.parsed_fields["roof_condition"] == "excellent"
+    flags = set(recommendation.parsed_fields.get("condition_detail_flags") or [])
+    assert "rust" not in flags
+    assert "rusted_fasteners" not in flags
+    assert "open_seams" not in flags
+    assert not any("Rusted fasteners/seams" in flag for flag in recommendation.review_flags)
+    seam_rows = [row for row in recommendation.material_plan if row.get("category") == "seam_treatment"]
+    assert not any(row.get("included_in_total") is not False and row.get("estimated_cost") for row in seam_rows)
+    runtime = recommendation.debug.get("runtime_seconds_by_stage") or {}
+    assert runtime.get("select_materials", 999) < 10
 
 
 def test_missing_sqft_triggers_review() -> None:
