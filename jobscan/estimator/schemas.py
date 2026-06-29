@@ -18,6 +18,7 @@ class EstimatorData:
     tracking_daily: pd.DataFrame = field(default_factory=pd.DataFrame)
     relationship_material_qty_ratios: pd.DataFrame = field(default_factory=pd.DataFrame)
     relationship_labor_rates: pd.DataFrame = field(default_factory=pd.DataFrame)
+    relationship_package_cooccurrence: pd.DataFrame = field(default_factory=pd.DataFrame)
     job_package_summary: pd.DataFrame = field(default_factory=pd.DataFrame)
     pricing: pd.DataFrame = field(default_factory=pd.DataFrame)
     pricing_catalog: pd.DataFrame = field(default_factory=pd.DataFrame)

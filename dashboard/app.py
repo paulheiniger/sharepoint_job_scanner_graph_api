@@ -3978,66 +3978,25 @@ def estimator_prototype_page() -> None:
         height=120,
         placeholder="Metal roof, about 12,000 sqft, rusted fasteners, restaurant in Louisville, silicone coating, medium access.",
     )
-    st.caption("Edit notes here, then click Generate Estimate Recommendation from Notes. Command+Enter only updates the text box; it does not generate the estimate.")
+    st.caption("Edit notes here, then click Build Company Default Draft. Command+Enter only updates the text box; it does not build the draft.")
     resolved_estimate_type = resolve_estimate_type(estimate_type_selection, notes)
     if estimate_type_selection == ESTIMATE_TYPE_AUTO:
         st.caption(f"Auto-detected estimate type: {resolved_estimate_type}")
     else:
         st.caption(f"Selected estimate type: {resolved_estimate_type}")
 
-    with st.expander("Optional structured overrides", expanded=True):
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            project_type = st.selectbox(
-                "Project type",
-                ["", "roof coating", "coated foam roof", "spray foam insulation", "roof repair", "wall insulation"],
-                key="estimator_project_type",
-            )
-            division = st.selectbox("Division", ["", "ROOFING", "FLOORING", "WALLS"], key="estimator_division")
-            surface_area = st.number_input("Surface area sqft", min_value=0.0, value=0.0, step=500.0, key="estimator_surface_area")
-        with c2:
-            substrate = st.selectbox("Substrate", ["", "metal", "concrete", "epdm", "tpo", "wood"], key="estimator_substrate")
-            coating_type = st.selectbox("Coating type", ["", "silicone", "acrylic", "urethane"], key="estimator_coating_type")
-            foam_thickness = st.number_input("Foam thickness inches", min_value=0.0, value=0.0, step=0.5, key="estimator_foam_thickness")
-        with c3:
-            roof_condition = st.selectbox("Roof condition", ["", "good", "fair", "poor/rusted"], key="estimator_roof_condition")
-            access_complexity = st.selectbox("Access complexity", ["", "low", "medium", "high"], key="estimator_access")
-            location = st.text_input("Location", key="estimator_location", placeholder="Louisville, KY")
-        target_wet_mils = st.number_input("Target warranty/coating wet mils", min_value=0.0, value=0.0, step=1.0, key="estimator_wet_mils")
-        repair_roof_type_override = ""
-        repair_urgency_override = ""
-        if resolved_estimate_type == ESTIMATE_TYPE_REPAIR:
-            r1, r2 = st.columns(2)
-            with r1:
-                repair_roof_type_override = st.selectbox(
-                    "Repair roof type override",
-                    ["", "metal", "tpo", "epdm", "modified_bitumen", "built_up", "shingle", "foam", "coated_roof"],
-                    key="integrated_repair_roof_type_override",
-                )
-            with r2:
-                repair_urgency_override = st.selectbox(
-                    "Repair urgency override",
-                    ["", "standard", "emergency"],
-                    key="integrated_repair_urgency_override",
-                )
-    surface_area_override = optional_positive_number(surface_area)
-    foam_thickness_override = optional_positive_number(foam_thickness)
-    target_wet_mils_override = optional_positive_number(target_wet_mils)
+    project_type = ""
+    division = ""
+    substrate = ""
+    coating_type = ""
+    roof_condition = ""
+    access_complexity = ""
+    location = ""
+    repair_roof_type_override = ""
+    repair_urgency_override = ""
+    overrides: dict[str, Any] = {}
 
-    overrides = {
-        "project_type": project_type,
-        "division": division,
-        "surface_area_sqft": surface_area_override,
-        "substrate": substrate,
-        "coating_type": coating_type,
-        "foam_thickness_inches": foam_thickness_override,
-        "roof_condition": roof_condition,
-        "access_complexity": access_complexity,
-        "location": location,
-        "target_wet_mils": target_wet_mils_override,
-    }
-
-    st.subheader("Field Notes Estimate Recommendation")
+    st.subheader("Field Notes to Company Default Draft")
     field_estimator_fn, field_estimator_import_warning = optional_field_notes_estimator()
     if field_estimator_import_warning and resolved_estimate_type != ESTIMATE_TYPE_REPAIR:
         st.warning(field_estimator_import_warning)
@@ -4052,20 +4011,15 @@ def estimator_prototype_page() -> None:
             key="use_historical_calibration",
         )
     field_notes_data = data if use_historical_calibration else EstimatorData()
-    with st.expander("Field notes recommendation overrides", expanded=False):
-        f1, f2, f3 = st.columns(3)
+    with st.expander("Optional job header", expanded=False):
+        f1, f2 = st.columns(2)
         with f1:
             field_job_name = st.text_input("Job name", key="field_estimator_job_name")
             field_site_address = st.text_input("Address", key="field_estimator_site_address")
         with f2:
-            field_city = st.text_input("City", value=location.split(",")[0] if location else "", key="field_estimator_city")
+            field_city = st.text_input("City", value="", key="field_estimator_city")
             field_state = st.text_input("State", value="", key="field_estimator_state")
-        with f3:
-            field_warranty = st.number_input("Warranty target years", min_value=0, value=0, step=5, key="field_estimator_warranty")
-            field_sqft = st.number_input("Sqft override", min_value=0.0, value=surface_area or 0.0, step=500.0, key="field_estimator_sqft")
-    field_sqft_override = optional_positive_number(field_sqft) or surface_area_override
-    field_warranty_override = optional_positive_number(field_warranty)
-    if st.button("Generate Estimate Recommendation from Notes", key="generate_field_estimate_recommendation"):
+    if st.button("Build Company Default Draft", key="generate_field_estimate_recommendation"):
         try:
             if resolved_estimate_type == ESTIMATE_TYPE_REPAIR:
                 route, repair_result = route_estimator_request(
@@ -4093,12 +4047,6 @@ def estimator_prototype_page() -> None:
                         "site_address": field_site_address,
                         "city": field_city,
                         "state": field_state,
-                        "estimated_sqft": field_sqft_override,
-                        "substrate": substrate,
-                        "roof_condition": roof_condition,
-                        "coating_type": coating_type,
-                        "warranty_target_years": field_warranty_override,
-                        "access_complexity": access_complexity,
                     },
                     data=field_notes_data,
                 )
@@ -4119,7 +4067,7 @@ def estimator_prototype_page() -> None:
             if recommendation_notes != notes:
                 st.warning(
                     "The displayed repair estimate was generated from earlier notes. "
-                    "Click Generate Estimate Recommendation from Notes again to refresh it for the current text."
+                    "Click Build Company Default Draft again to refresh it for the current text."
                 )
             render_repair_estimate_result(repair_payload, notes=recommendation_notes, customer_job_name=field_job_name)
             return
@@ -4129,17 +4077,15 @@ def estimator_prototype_page() -> None:
         if recommendation_notes != notes:
             st.warning(
                 "The displayed estimate was generated from earlier notes. "
-                "Click Generate Estimate Recommendation from Notes again to refresh it for the current text."
+                "Click Build Company Default Draft again to refresh it for the current text."
             )
+        estimate_status = getattr(field_recommendation, "estimate_status", None) or field_recommendation.parsed_fields.get("estimate_status") or "READY_TO_ESTIMATE"
         metric_row(
             [
-                ("Low", fmt_dollar(field_recommendation.estimate_low)),
-                ("Target", fmt_dollar(field_recommendation.estimate_target)),
-                ("High", fmt_dollar(field_recommendation.estimate_high)),
+                ("Readiness", str(estimate_status).replace("_", " ").title()),
                 ("Review Required", "Yes" if field_recommendation.human_review_required else "No"),
             ]
         )
-        estimate_status = getattr(field_recommendation, "estimate_status", None) or field_recommendation.parsed_fields.get("estimate_status") or "READY_TO_ESTIMATE"
         if estimate_status != "READY_TO_ESTIMATE":
             st.warning(getattr(field_recommendation, "estimate_reason", "") or field_recommendation.parsed_fields.get("estimate_reason") or "More information is required before estimating.")
             questions = getattr(field_recommendation, "required_questions", None) or field_recommendation.parsed_fields.get("required_questions") or []
@@ -4187,8 +4133,8 @@ def estimator_prototype_page() -> None:
         if estimate_status != "READY_TO_ESTIMATE":
             st.info("Estimate generation stopped before material selection, labor calibration, similar jobs, pricing, workbook export, and evidence export.")
             return
-        original_workbench = build_estimating_workbench(field_recommendation, data)
-        workbench_key = str(original_workbench.get("estimate_id") or "current")
+        parsed_workbench = build_estimating_workbench(field_recommendation, data)
+        workbench_key = str(parsed_workbench.get("estimate_id") or "current")
         debug_mode = st.checkbox(
             "Debug Mode",
             value=False,
@@ -4197,7 +4143,7 @@ def estimator_prototype_page() -> None:
         )
 
         st.markdown("### 1. Parsed Scope")
-        base_scope = original_workbench.get("scope") or {}
+        base_scope = parsed_workbench.get("scope") or {}
         s1, s2, s3 = st.columns(3)
         with s1:
             edited_project_type = st.text_input("Project Type", value=str(base_scope.get("project_type") or ""), key=f"wb_project_type_{workbench_key}")
@@ -4214,8 +4160,7 @@ def estimator_prototype_page() -> None:
             edited_access = st.text_input("Access", value=str(base_scope.get("access_complexity") or ""), key=f"wb_access_{workbench_key}")
             edited_penetrations = st.text_input("Penetrations", value=str(base_scope.get("penetrations_complexity") or ""), key=f"wb_penetrations_{workbench_key}")
 
-        edited_workbench = dict(original_workbench)
-        edited_workbench["scope"] = {
+        edited_scope = {
             **base_scope,
             "project_type": edited_project_type,
             "roof_type_substrate": edited_substrate,
@@ -4228,6 +4173,12 @@ def estimator_prototype_page() -> None:
             "access_complexity": edited_access,
             "penetrations_complexity": edited_penetrations,
         }
+        scope_key = hashlib.sha1(json.dumps(edited_scope, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:8]
+        original_workbench = build_estimating_workbench(field_recommendation, data, scope_override=edited_scope)
+        edited_workbench = dict(original_workbench)
+        edited_workbench["scope"] = edited_scope
+        feedback_baseline = dict(original_workbench)
+        feedback_baseline["scope"] = base_scope
 
         st.markdown("### 2. Materials")
         materials_df = pd.DataFrame(original_workbench.get("materials") or [])
@@ -4236,10 +4187,12 @@ def estimator_prototype_page() -> None:
             use_container_width=True,
             hide_index=True,
             num_rows="fixed",
-            key=f"wb_materials_{workbench_key}",
+            key=f"wb_materials_{workbench_key}_{scope_key}",
             column_order=[
                 "include",
                 "package",
+                "suggested_by_notes_rules",
+                "historical_usage_rate",
                 "historical_qty_per_sqft",
                 "editable_qty_per_sqft",
                 "calculated_quantity",
@@ -4248,10 +4201,13 @@ def estimator_prototype_page() -> None:
                 "evidence_count",
                 "confidence",
                 "source",
+                "explanation",
             ],
             column_config={
                 "include": st.column_config.CheckboxColumn("Include"),
                 "package": "Package",
+                "suggested_by_notes_rules": "Suggested by Notes/Rules",
+                "historical_usage_rate": "Historical Usage Rate",
                 "historical_qty_per_sqft": "Historical Qty / Sq Ft",
                 "editable_qty_per_sqft": "Editable Qty / Sq Ft",
                 "calculated_quantity": "Calculated Quantity",
@@ -4260,8 +4216,9 @@ def estimator_prototype_page() -> None:
                 "evidence_count": "Evidence Count",
                 "confidence": "Confidence",
                 "source": "Source",
+                "explanation": "Explanation",
             },
-            disabled=["package", "historical_qty_per_sqft", "calculated_quantity", "estimated_cost", "evidence_count", "confidence", "source"],
+            disabled=["package", "suggested_by_notes_rules", "historical_usage_rate", "historical_qty_per_sqft", "calculated_quantity", "estimated_cost", "evidence_count", "confidence", "source", "explanation"],
         )
         edited_workbench["materials"] = edited_materials_df.to_dict(orient="records")
 
@@ -4272,32 +4229,38 @@ def estimator_prototype_page() -> None:
             use_container_width=True,
             hide_index=True,
             num_rows="fixed",
-            key=f"wb_labor_{workbench_key}",
+            key=f"wb_labor_{workbench_key}_{scope_key}",
             column_order=[
                 "include",
                 "labor_package",
+                "suggested_by_notes_rules",
                 "historical_hours_per_1000_sqft",
                 "editable_hours_per_1000_sqft",
                 "calculated_hours",
                 "crew_size",
+                "labor_rate",
                 "estimated_cost",
                 "evidence_count",
                 "confidence",
                 "source",
+                "explanation",
             ],
             column_config={
                 "include": st.column_config.CheckboxColumn("Include"),
                 "labor_package": "Labor Package",
+                "suggested_by_notes_rules": "Suggested by Notes/Rules",
                 "historical_hours_per_1000_sqft": "Historical Hours / 1000 Sq Ft",
                 "editable_hours_per_1000_sqft": "Editable Hours / 1000 Sq Ft",
                 "calculated_hours": "Calculated Hours",
                 "crew_size": "Crew Size",
+                "labor_rate": "Labor Rate",
                 "estimated_cost": "Estimated Cost",
                 "evidence_count": "Evidence Count",
                 "confidence": "Confidence",
                 "source": "Source",
+                "explanation": "Explanation",
             },
-            disabled=["labor_package", "historical_hours_per_1000_sqft", "calculated_hours", "estimated_cost", "evidence_count", "confidence", "source"],
+            disabled=["labor_package", "suggested_by_notes_rules", "historical_hours_per_1000_sqft", "calculated_hours", "estimated_cost", "evidence_count", "confidence", "source", "explanation"],
         )
         edited_workbench["labor"] = edited_labor_df.to_dict(orient="records")
 
@@ -4308,7 +4271,7 @@ def estimator_prototype_page() -> None:
             use_container_width=True,
             hide_index=True,
             num_rows="fixed",
-            key=f"wb_adders_{workbench_key}",
+            key=f"wb_adders_{workbench_key}_{scope_key}",
             column_order=["include", "adder", "editable_value", "estimated_cost", "confidence", "source", "notes"],
             column_config={
                 "include": st.column_config.CheckboxColumn("Include"),
@@ -4333,7 +4296,7 @@ def estimator_prototype_page() -> None:
             ]
         )
 
-        with st.sidebar.expander("Similar Jobs (sanity check)", expanded=False):
+        with st.sidebar.expander("Sanity Check Examples", expanded=False):
             similar_rows = original_workbench.get("similar_jobs") or []
             if similar_rows:
                 show_table(
@@ -4344,7 +4307,7 @@ def estimator_prototype_page() -> None:
             else:
                 st.caption("No similar jobs available for this draft.")
 
-        edit_history_preview = build_edit_history_rows(original_workbench, edited_workbench)
+        edit_history_preview = build_edit_history_rows(feedback_baseline, edited_workbench)
         reason_required_rows = [row for row in edit_history_preview if row.get("reason_required")]
         reason_map: dict[str, str] = {}
         if reason_required_rows:
@@ -4377,7 +4340,7 @@ def estimator_prototype_page() -> None:
                         template_path,
                         DEFAULT_ESTIMATE_OUTPUT_DIR,
                     )
-                    edit_rows = build_edit_history_rows(original_workbench, edited_workbench, reason_map=reason_map)
+                    edit_rows = build_edit_history_rows(feedback_baseline, edited_workbench, reason_map=reason_map)
                     feedback_path = append_edit_history(edit_rows)
                     st.success(f"Excel estimate draft created: {output_path}")
                     st.caption(f"Estimator edit history captured: {feedback_path}")

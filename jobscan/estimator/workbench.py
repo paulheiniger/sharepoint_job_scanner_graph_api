@@ -132,12 +132,65 @@ def _plan_included_package(recommendation: Any, package: str) -> bool:
     return False
 
 
+def _package_suggestion_status(recommendation: Any, package: str) -> str:
+    package_text = _normalized(package)
+    for row in _records(_rec_value(recommendation, "material_plan", [])):
+        text = _normalized(" ".join(str(row.get(key) or "") for key in ("category", "package", "item", "notes")))
+        if package_text in text or (package == "coating" and "coating" in text):
+            if row.get("included_in_total") is False or row.get("needs_review") is True or row.get("review_required") is True:
+                return "review"
+            return "yes"
+    if package == "coating" and first_nonblank((_rec_value(recommendation, "parsed_fields", {}) or {}).get("coating_type")):
+        return "yes"
+    return "no"
+
+
 def _plan_included_labor(recommendation: Any, package: str) -> bool:
     for row in _records(_rec_value(recommendation, "labor_plan", [])):
         task = str(row.get("task") or row.get("labor_package") or "")
         if task == package and row.get("included_in_total") is not False:
             return True
     return False
+
+
+def _labor_suggestion_status(recommendation: Any, package: str) -> str:
+    for row in _records(_rec_value(recommendation, "labor_plan", [])):
+        task = str(row.get("task") or row.get("labor_package") or "")
+        if task == package:
+            if row.get("included_in_total") is False or row.get("needs_review") is True or row.get("review_required") is True:
+                return "review"
+            return "yes"
+    return "no"
+
+
+def _suggestion_reason(package: str, scope: dict[str, Any], status: str) -> str:
+    condition = _normalized(scope.get("roof_condition"))
+    penetrations = _normalized(scope.get("penetrations_complexity"))
+    if package == "coating" and status == "yes":
+        return "Filled in because the notes describe a coating/restoration scope."
+    if package == "primer":
+        if status in {"yes", "review"}:
+            return "Filled in for estimator review because the notes indicate substrate or condition concerns."
+        return "Shown but unchecked because notes do not mention primer, adhesion, rust, bleed-through, or manufacturer primer requirements."
+    if package == "seam_treatment":
+        if status in {"yes", "review"}:
+            return "Filled in because the notes mention seam or detail work."
+        return "Shown but unchecked because notes do not mention open seams, failed seams, seam repair, or leaks."
+    if package == "fastener_treatment":
+        if status in {"yes", "review"}:
+            return "Filled in because the notes mention fasteners or exposed-fastener metal roof details."
+        return "Shown but unchecked because notes do not mention exposed fasteners or fastener repairs."
+    if package == "caulk_detail":
+        if status in {"yes", "review"} or "high" in penetrations:
+            return "Filled in because the notes indicate detail or penetration work."
+        return "Shown but unchecked because notes do not indicate heavy details or penetration repairs."
+    if package.startswith("labor_") and status in {"yes", "review"}:
+        return "Filled in because this labor package appears in the historical company default set for this scope."
+    if package.startswith("labor_prime"):
+        return "Shown but unchecked because primer is not currently included."
+    if condition in {"excellent", "good"} and package in {"labor_seam_sealer", "labor_details"}:
+        return "Shown but unchecked because the described condition is clean/light and does not call for heavy detail labor."
+    return "Shown but unchecked; available for estimator adjustment."
 
 
 def _relationship_score(row: pd.Series, scope: dict[str, Any], package: str) -> float:
@@ -204,6 +257,68 @@ def _confidence(evidence_count: Any) -> str:
     return "none"
 
 
+def _historical_usage_rate(data: Any, package: str, scope: dict[str, Any], evidence_count: int) -> float:
+    summary = _frame(data, "job_package_summary")
+    if summary.empty or "job_id" not in summary.columns or "package" not in summary.columns:
+        return 0.0
+    rows = summary.copy()
+    if "division" in rows.columns:
+        roofing = rows["division"].astype(str).str.lower().eq("roofing")
+        if roofing.any():
+            rows = rows[roofing].copy()
+    substrate = _normalized(scope.get("roof_type_substrate"))
+    if substrate and "substrate" in rows.columns:
+        scoped = rows[rows["substrate"].astype(str).str.lower().str.contains(substrate, na=False)]
+        if not scoped.empty:
+            rows = scoped
+    denominator = rows["job_id"].dropna().astype(str).nunique()
+    if denominator <= 0:
+        return 0.0
+    package_jobs = rows[rows["package"].astype(str).str.lower().eq(str(package).lower())]["job_id"].dropna().astype(str).nunique()
+    if package_jobs <= 0 and evidence_count > 0:
+        package_jobs = evidence_count
+    return round(min(package_jobs / denominator, 1.0), 4)
+
+
+def _material_explanation(
+    *,
+    package: str,
+    relationship: dict[str, Any],
+    evidence_count: int,
+    qty_per_sqft: float,
+    status: str,
+    scope: dict[str, Any],
+) -> str:
+    reason = _suggestion_reason(package, scope, status)
+    if evidence_count > 0 and qty_per_sqft > 0:
+        return (
+            f"Used in {evidence_count} comparable jobs. Median when used: {qty_per_sqft:g} per sqft. "
+            f"{reason}"
+        )
+    if evidence_count > 0:
+        return f"Used in {evidence_count} comparable jobs, but no reliable historical quantity was found; left at 0 for estimator review. {reason}"
+    return f"No reliable historical quantity found; left at 0 for estimator review. {reason}"
+
+
+def _labor_explanation(
+    *,
+    package: str,
+    evidence_count: int,
+    hours_per_1000: float,
+    status: str,
+    scope: dict[str, Any],
+) -> str:
+    reason = _suggestion_reason(package, scope, status)
+    if evidence_count > 0 and hours_per_1000 > 0:
+        return (
+            f"Used in {evidence_count} comparable jobs. Median when used: {hours_per_1000:g} hours per 1,000 sqft. "
+            f"{reason}"
+        )
+    if evidence_count > 0:
+        return f"Used in {evidence_count} comparable jobs, but no reliable labor rate was found; left at 0 for estimator review. {reason}"
+    return f"No reliable historical labor rate found; left at 0 for estimator review. {reason}"
+
+
 def material_workbench_rows(recommendation: Any, data: Any, scope: dict[str, Any]) -> list[dict[str, Any]]:
     area = _estimate_area(scope)
     ratios = _frame(data, "relationship_material_qty_ratios")
@@ -217,17 +332,22 @@ def material_workbench_rows(recommendation: Any, data: Any, scope: dict[str, Any
         qty_per_sqft = safe_number(relationship.get("median_qty_per_sqft"), 0.0)
         evidence_count = int(safe_number(relationship.get("evidence_count") or relationship.get("job_count"), 0))
         unit_price, price_source = _price_for_package(pricing, spec, scope)
-        include = _plan_included_package(recommendation, package)
+        status = _package_suggestion_status(recommendation, package)
+        include = status == "yes"
         if package == "coating" and scope.get("coating_type"):
+            status = "yes"
             include = True
-        calculated_quantity = qty_per_sqft * area if include and area else 0.0
+        editable_qty_per_sqft = qty_per_sqft if include else 0.0
+        calculated_quantity = editable_qty_per_sqft * area if include and area else 0.0
         rows.append(
             {
                 "include": bool(include),
                 "package": spec["label"],
                 "package_key": package,
+                "suggested_by_notes_rules": status,
+                "historical_usage_rate": _historical_usage_rate(data, package, scope, evidence_count),
                 "historical_qty_per_sqft": round(qty_per_sqft, 6),
-                "editable_qty_per_sqft": round(qty_per_sqft, 6),
+                "editable_qty_per_sqft": round(editable_qty_per_sqft, 6),
                 "calculated_quantity": round(calculated_quantity, 2),
                 "unit": relationship.get("unit") or spec.get("default_unit"),
                 "current_unit_price": round(unit_price, 4) if unit_price else 0.0,
@@ -236,6 +356,14 @@ def material_workbench_rows(recommendation: Any, data: Any, scope: dict[str, Any
                 "confidence": relationship.get("confidence") or _confidence(evidence_count),
                 "source": "relationship_material_qty_ratios" if relationship else "no_sufficient_evidence",
                 "pricing_source": price_source,
+                "explanation": _material_explanation(
+                    package=package,
+                    relationship=relationship,
+                    evidence_count=evidence_count,
+                    qty_per_sqft=qty_per_sqft,
+                    status=status,
+                    scope=scope,
+                ),
             }
         )
     return rows
@@ -250,22 +378,33 @@ def labor_workbench_rows(recommendation: Any, data: Any, scope: dict[str, Any], 
         relationship = best_relationship_row(rates, package, scope) or {}
         hours_per_1000 = safe_number(relationship.get("median_hours_per_1000_sqft"), 0.0)
         evidence_count = int(safe_number(relationship.get("evidence_count") or relationship.get("job_count"), 0))
-        include = _plan_included_labor(recommendation, package)
-        calculated_hours = hours_per_1000 * area / 1000 if include and area else 0.0
+        status = _labor_suggestion_status(recommendation, package)
+        include = status == "yes"
+        editable_hours_per_1000 = hours_per_1000 if include else 0.0
+        calculated_hours = editable_hours_per_1000 * area / 1000 if include and area else 0.0
         crew_size = int(safe_number(relationship.get("median_crew_size"), 4) or 4)
         rows.append(
             {
                 "include": bool(include),
                 "labor_package": spec["label"],
                 "package_key": package,
+                "suggested_by_notes_rules": status,
                 "historical_hours_per_1000_sqft": round(hours_per_1000, 4),
-                "editable_hours_per_1000_sqft": round(hours_per_1000, 4),
+                "editable_hours_per_1000_sqft": round(editable_hours_per_1000, 4),
                 "calculated_hours": round(calculated_hours, 2),
                 "crew_size": crew_size,
+                "labor_rate": hourly_rate,
                 "estimated_cost": round(calculated_hours * hourly_rate, 2),
                 "evidence_count": evidence_count,
                 "confidence": relationship.get("confidence") or _confidence(evidence_count),
                 "source": "relationship_labor_rates" if relationship else "no_sufficient_evidence",
+                "explanation": _labor_explanation(
+                    package=package,
+                    evidence_count=evidence_count,
+                    hours_per_1000=hours_per_1000,
+                    status=status,
+                    scope=scope,
+                ),
             }
         )
     return rows
@@ -292,8 +431,8 @@ def adder_workbench_rows(recommendation: Any) -> list[dict[str, Any]]:
     return rows
 
 
-def build_estimating_workbench(recommendation: Any, data: Any = None) -> dict[str, Any]:
-    scope = _scope_from_recommendation(recommendation)
+def build_estimating_workbench(recommendation: Any, data: Any = None, scope_override: dict[str, Any] | None = None) -> dict[str, Any]:
+    scope = {**_scope_from_recommendation(recommendation), **(scope_override or {})}
     estimate_id = first_nonblank((_rec_value(recommendation, "parsed_fields", {}) or {}).get("run_id"), f"estimate-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}")
     return {
         "estimate_id": estimate_id,
@@ -434,7 +573,7 @@ def build_edit_history_rows(
     estimate_id = first_nonblank(edited_workbench.get("estimate_id"), original_workbench.get("estimate_id"), "")
     rows: list[dict[str, Any]] = []
 
-    def add_row(section: str, field: str, default: Any, final: Any, threshold: float | None = None) -> None:
+    def add_row(section: str, field: str, default: Any, final: Any, threshold: float | None = None, *, require_when_changed: bool = False) -> None:
         default_number = optional_number(default)
         final_number = optional_number(final)
         difference = None
@@ -442,12 +581,15 @@ def build_edit_history_rows(
         reason_required = False
         if default_number is not None and final_number is not None:
             difference = final_number - default_number
+            if require_when_changed and default != final:
+                reason_required = True
             if abs(default_number) > 0:
                 percent_difference = difference / default_number
                 if threshold is not None and abs(percent_difference) > threshold:
                     reason_required = True
         elif default != final:
             difference = str(final)
+            reason_required = require_when_changed
         rows.append(
             {
                 "estimate_id": estimate_id,
@@ -455,10 +597,14 @@ def build_edit_history_rows(
                 "estimator": estimator,
                 "section": section,
                 "field": field,
+                "field_name": field,
+                "package_or_labor_task": section.split(".", 1)[1] if "." in section else "",
                 "historical_default": default,
+                "suggested_value": default,
                 "final_value": final,
                 "difference": difference,
                 "percent_difference": percent_difference,
+                "difference_pct": percent_difference,
                 "reason_required": reason_required,
                 "reason": reason_map.get(f"{section}.{field}", ""),
             }
@@ -470,19 +616,19 @@ def build_edit_history_rows(
     for row in edited_workbench.get("materials") or []:
         package = row.get("package_key")
         original = original_materials.get(package, {})
-        add_row(f"materials.{package}", "include", original.get("include"), row.get("include"))
+        add_row(f"materials.{package}", "include", original.get("include"), row.get("include"), require_when_changed=True)
         add_row(f"materials.{package}", "editable_qty_per_sqft", original.get("editable_qty_per_sqft"), row.get("editable_qty_per_sqft"), 0.5)
     original_labor = {row.get("package_key"): row for row in original_workbench.get("labor") or []}
     for row in edited_workbench.get("labor") or []:
         package = row.get("package_key")
         original = original_labor.get(package, {})
-        add_row(f"labor.{package}", "include", original.get("include"), row.get("include"))
+        add_row(f"labor.{package}", "include", original.get("include"), row.get("include"), require_when_changed=True)
         add_row(f"labor.{package}", "editable_hours_per_1000_sqft", original.get("editable_hours_per_1000_sqft"), row.get("editable_hours_per_1000_sqft"), 0.3)
     original_adders = {row.get("adder_key"): row for row in original_workbench.get("adders") or []}
     for row in edited_workbench.get("adders") or []:
         adder = row.get("adder_key")
         original = original_adders.get(adder, {})
-        add_row(f"adders.{adder}", "include", original.get("include"), row.get("include"))
+        add_row(f"adders.{adder}", "include", original.get("include"), row.get("include"), require_when_changed=True)
         add_row(f"adders.{adder}", "editable_value", original.get("editable_value"), row.get("editable_value"), 0.5)
     return rows
 
@@ -497,10 +643,14 @@ def append_edit_history(rows: list[dict[str, Any]], output_dir: Path | str = "ou
         "estimator",
         "section",
         "field",
+        "field_name",
+        "package_or_labor_task",
         "historical_default",
+        "suggested_value",
         "final_value",
         "difference",
         "percent_difference",
+        "difference_pct",
         "reason_required",
         "reason",
     ]

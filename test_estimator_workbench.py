@@ -99,6 +99,14 @@ def sample_data() -> EstimatorData:
                 }
             ]
         ),
+        job_package_summary=pd.DataFrame(
+            [
+                {"job_id": "J1", "division": "Roofing", "template_type": "roofing", "substrate": "metal", "package": "coating"},
+                {"job_id": "J2", "division": "Roofing", "template_type": "roofing", "substrate": "metal", "package": "coating"},
+                {"job_id": "J2", "division": "Roofing", "template_type": "roofing", "substrate": "metal", "package": "primer"},
+                {"job_id": "J3", "division": "Roofing", "template_type": "roofing", "substrate": "metal", "package": "seam_treatment"},
+            ]
+        ),
     )
 
 
@@ -110,12 +118,21 @@ def test_workbench_populates_common_editable_rows_from_relationship_tables() -> 
 
     assert {"coating", "primer", "seam_treatment", "fastener_treatment", "caulk_detail"}.issubset(material_packages)
     assert material_packages["coating"]["include"] is True
+    assert material_packages["coating"]["suggested_by_notes_rules"] == "yes"
+    assert material_packages["coating"]["historical_usage_rate"] > 0
     assert material_packages["coating"]["historical_qty_per_sqft"] == 0.02
     assert material_packages["coating"]["calculated_quantity"] == 200
     assert material_packages["coating"]["estimated_cost"] == 7600
     assert material_packages["primer"]["include"] is False
+    assert material_packages["primer"]["editable_qty_per_sqft"] == 0
+    assert material_packages["primer"]["calculated_quantity"] == 0
+    assert "Used in 2 comparable jobs" in material_packages["primer"]["explanation"]
+    assert "Shown but unchecked" in material_packages["primer"]["explanation"]
     assert labor_packages["labor_base"]["include"] is True
+    assert labor_packages["labor_base"]["suggested_by_notes_rules"] == "yes"
     assert labor_packages["labor_base"]["historical_hours_per_1000_sqft"] == 4.5
+    assert "Used in 9 comparable jobs" in labor_packages["labor_base"]["explanation"]
+    assert not any("AI estimated" in str(row) or "AI chose" in str(row) or "Automatically determined" in str(row) for row in workbench["materials"] + workbench["labor"])
 
 
 def test_edited_workbench_values_populate_workbook_inputs() -> None:
@@ -148,9 +165,13 @@ def test_edit_history_flags_large_material_and_labor_changes() -> None:
     for row in edited["labor"]:
         if row["package_key"] == "labor_base":
             row["editable_hours_per_1000_sqft"] = 7.0
+        if row["package_key"] == "labor_prime":
+            row["include"] = True
 
     rows = build_edit_history_rows(original, edited)
     required = [row for row in rows if row["reason_required"]]
 
     assert any(row["section"] == "materials.coating" for row in required)
     assert any(row["section"] == "labor.labor_base" for row in required)
+    assert any(row["section"] == "labor.labor_prime" and row["field_name"] == "include" for row in required)
+    assert all("suggested_value" in row and "difference_pct" in row for row in rows)

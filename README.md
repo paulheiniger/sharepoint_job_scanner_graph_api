@@ -815,7 +815,7 @@ The Streamlit dashboard includes an **Estimating Assistant** page. This is an ea
 - `output/pricing/pricing_catalog_current_cleaned.csv`
 - `output/pricing/pricing_catalog_current.csv`
 
-The page accepts rough project notes and optional structured overrides, then opens an AI-assisted estimating workbench. The workbench is intended to create a high-quality first draft that an estimator can adjust quickly; it is not intended to produce a finished quote automatically.
+The page accepts rough project notes, then opens an estimating workbench populated with Spray-Tec historical company defaults. The workbench is intended to create a high-quality first draft that an estimator can adjust quickly; it is not intended to produce a finished quote automatically.
 
 The main workbench sections are:
 

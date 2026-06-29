@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 
 import pandas as pd
 
@@ -81,6 +82,16 @@ def test_dashboard_imports_safely() -> None:
     assert hasattr(app, "estimator_prototype_page")
     assert hasattr(app, "classify_estimate_type_from_notes")
     assert hasattr(app, "route_estimator_request")
+
+
+def test_estimator_page_no_longer_shows_structural_override_block() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    source = inspect.getsource(app.estimator_prototype_page)
+
+    assert "Optional structured overrides" not in source
+    assert "Surface area sqft" not in source
+    assert "Sqft override" not in source
 
 
 def test_auto_detect_classifies_pipe_boot_leak_as_repair() -> None:
