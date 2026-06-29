@@ -927,6 +927,65 @@ The profiler writes reviewable training artifacts:
 
 Confidence is based on supporting job counts: `high` for 10 or more jobs, `medium` for 4-9 jobs, and `low` below 4 jobs. The output includes supporting job IDs for debug/review; treat these files as training evidence, not automatic production rules.
 
+### Repair estimator data pipeline
+
+VSimple repair exports are handled separately from full roof coating/restoration estimates. The sample workbook lives at `data/data.xlsx` and is treated as an immutable source input.
+
+Normalize the VSimple export into repair-estimator tables:
+
+```bash
+python -m jobscan.repair_estimator.vsimple_loader \
+  --input data/data.xlsx \
+  --output-dir output/repair_estimator
+```
+
+Optional database bootstrap and load:
+
+```bash
+psql "$NEON_DATABASE_URL" -f db/repair_estimator_schema.sql
+
+python -m jobscan.repair_estimator.vsimple_loader \
+  --input data/data.xlsx \
+  --output-dir output/repair_estimator \
+  --db-url "$NEON_DATABASE_URL"
+```
+
+The loader writes:
+
+- `repair_jobs.csv`: repair ID, customer/job name, status, repair type, roof type, address, URL, and source row metadata.
+- `repair_material_usage.csv`: material package/name, quantity, unit, unit cost, total cost, source column, and raw `materials_used` text.
+- `repair_labor_usage.csv`: aggregate labor plus technician-level hours/costs when present.
+- `repair_scope_text.csv`: scope/work/special-notes text plus extracted work phrase patterns.
+- `repair_outcomes.csv`: invoice/bill/gross-profit and cost outcome fields.
+
+Profile normalized repair history:
+
+```bash
+python repair_profiler.py \
+  --input-dir output/repair_estimator \
+  --output-dir output/repair_estimator/profile \
+  --min-job-count 3
+```
+
+Or parse and profile the workbook in one step:
+
+```bash
+python repair_profiler.py \
+  --input data/data.xlsx \
+  --output-dir output/repair_estimator/profile \
+  --db-url "$NEON_DATABASE_URL" \
+  --min-job-count 3
+```
+
+The repair profiler outputs:
+
+- `repair_profile_summary.csv`: repair type/roof type groups with median labor hours, invoice amount, gross profit, common phrase patterns, and confidence.
+- `repair_material_package_profile.csv`: common material packages by repair type and roof type.
+- `repair_work_phrase_profile.csv`: phrase patterns such as leak, drain, seam, fabric reinforcement, fastener, flashing, and coating tied to labor and invoice medians.
+- `repair_estimator_rule_suggestions.json`: candidate defaults for small repair field-notes estimating.
+
+These repair artifacts are intended to calibrate small repair estimates from field notes. They should not be mixed directly into the full roof coating/restoration estimator without explicit repair-scope routing.
+
 ### Field-notes estimator
 
 The first field-notes-to-estimate engine is available inside the Streamlit **Estimator Prototype** page. It accepts rough notes such as:
