@@ -203,6 +203,12 @@ def test_clean_standing_seam_maintenance_coating_does_not_infer_rust_or_seam_tre
 def test_missing_sqft_triggers_review() -> None:
     recommendation = estimate_from_field_notes("Metal roof, rusted fasteners, silicone coating, Louisville KY", data=field_data())
 
+    assert recommendation.estimate_status == "NEED_MORE_INFORMATION"
+    assert recommendation.estimate_low is None
+    assert recommendation.estimate_target is None
+    assert recommendation.estimate_high is None
+    assert recommendation.material_plan == []
+    assert recommendation.labor_plan == []
     assert any("estimated_sqft" in flag for flag in recommendation.review_flags)
     assert recommendation.human_review_required is True
 
@@ -610,13 +616,16 @@ def test_priced_review_allowances_affect_estimate_range() -> None:
     assert with_allowances.estimate_high > base.estimate_high
 
 
-def test_allowances_remain_unpriced_when_sqft_missing() -> None:
+def test_allowances_are_not_generated_when_sqft_missing() -> None:
     recommendation = estimate_from_field_notes("Metal roof rusted fasteners silicone coating Louisville KY", data=field_data())
-    allowance_rows = [row for row in recommendation.material_plan if row.get("category") == "allowance"]
 
-    assert allowance_rows
-    assert all(row.get("estimated_cost") is None for row in allowance_rows)
-    assert any("allowance could not be priced because estimated_sqft is missing" in flag for flag in recommendation.review_flags)
+    assert recommendation.estimate_status == "NEED_MORE_INFORMATION"
+    assert recommendation.material_plan == []
+    assert recommendation.labor_plan == []
+    assert recommendation.estimate_low is None
+    assert recommendation.estimate_target is None
+    assert recommendation.estimate_high is None
+    assert any("Roof area is unknown" in flag for flag in recommendation.review_flags)
 
 
 def test_primer_allowance_absent_without_primer_trigger() -> None:

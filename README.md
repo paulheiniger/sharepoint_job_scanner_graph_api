@@ -805,7 +805,7 @@ Current pricing rule for future estimator work: new estimates should use current
 
 ## Estimator prototype
 
-The Streamlit dashboard includes an **Estimator Prototype** page. This is an early planning aid, not a production estimating system. It uses deterministic rules plus database history when available, with local staging files created by the scanner as a development fallback:
+The Streamlit dashboard includes an **Estimating Assistant** page. This is an early planning aid, not a production estimating system. It uses deterministic rules plus database history when available, with local staging files created by the scanner as a development fallback:
 
 - `output/job_index.json`
 - `output/estimate_summary.json`
@@ -815,7 +815,16 @@ The Streamlit dashboard includes an **Estimator Prototype** page. This is an ear
 - `output/pricing/pricing_catalog_current_cleaned.csv`
 - `output/pricing/pricing_catalog_current.csv`
 
-The page accepts rough project notes and optional structured overrides, then suggests extracted scope fields, decision-tree recommendations, condition modifiers, similar historical jobs, rough material quantities, labor/crew assumptions, travel impact from `1132 Equity Street, Shelbyville, KY`, and a broad estimate range. It works without a live Neon/Postgres connection as long as the local staging files are present.
+The page accepts rough project notes and optional structured overrides, then opens an AI-assisted estimating workbench. The workbench is intended to create a high-quality first draft that an estimator can adjust quickly; it is not intended to produce a finished quote automatically.
+
+The main workbench sections are:
+
+- Parsed Scope: editable project type, substrate, gross/deduction/net square footage, warranty, coating type, roof condition, access, and penetrations.
+- Materials: common roof coating packages are always visible with include checkboxes, historical quantity-per-square-foot defaults, editable quantity ratios, current pricing, evidence counts, confidence, and source.
+- Labor: historical labor packages are always visible with include checkboxes, historical hours-per-1,000-square-foot defaults, editable hours, crew size, estimated cost, evidence counts, confidence, and source.
+- Adders / Miscellaneous: travel, lift, generator, dumpster, hotel, inspection, infrared, mobilization, and miscellaneous adders are editable review items.
+
+Historical defaults come from precomputed relationship tables such as `relationship_material_qty_ratios` and `relationship_labor_rates` when available. If evidence is insufficient, defaults stay at zero instead of fabricating values. Similar jobs are shown as sanity checks, not as the primary estimating engine. Workbook export uses the estimator-edited workbench values and writes edit history to `output/estimator_feedback/estimator_edit_history.csv`.
 
 The decision-tree layer turns project conditions into scope and assumption changes before similar jobs are used for calibration. For example, rusted metal roofs can add fastener/seam treatment and primer review, warranty targets adjust wet-mil assumptions, poor condition raises prep review, and high access or many penetrations increase labor modifiers. Similar historical jobs remain supporting evidence, not the sole estimating logic.
 
@@ -988,7 +997,7 @@ These repair artifacts are intended to calibrate small repair estimates from fie
 
 ### Repair Estimator MVP
 
-The Streamlit dashboard includes repair estimating inside the **Estimator Prototype** page. Choose **Estimate Type → Roof Repair**, or leave **Auto-detect** on and enter repair notes. Repair mode reads the normalized VSimple repair tables from Postgres:
+The Streamlit dashboard includes repair estimating inside the **Estimating Assistant** page. Choose **Estimate Type → Roof Repair**, or leave **Auto-detect** on and enter repair notes. Repair mode reads the normalized VSimple repair tables from Postgres:
 
 - `repair_jobs`
 - `repair_material_usage`
@@ -1025,7 +1034,7 @@ Guardrails:
 
 ### Field-notes estimator
 
-The first field-notes-to-estimate engine is available inside the Streamlit **Estimator Prototype** page. It accepts rough notes such as:
+The first field-notes-to-estimate engine is available inside the Streamlit **Estimating Assistant** page. It accepts rough notes such as:
 
 ```text
 Metal roof, about 12,000 sqft, rusted fasteners, wants 15-year warranty, lots of rooftop units, medium access, Louisville KY.

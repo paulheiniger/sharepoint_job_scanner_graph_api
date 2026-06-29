@@ -108,6 +108,78 @@ def new_estimator_run_id(notes: str | None) -> str:
     return f"field-{notes_hash(notes)[:12]}-{uuid4().hex[:8]}"
 
 
+READY_TO_ESTIMATE = "READY_TO_ESTIMATE"
+NEED_MORE_INFORMATION = "NEED_MORE_INFORMATION"
+RECOMMEND_SITE_VISIT = "RECOMMEND_SITE_VISIT"
+RECOMMEND_RESTORATION_OPTION = "RECOMMEND_RESTORATION_OPTION"
+
+
+ROOF_RESTORATION_SCOPE_KEYWORDS = (
+    "coating",
+    "coat ",
+    "coated",
+    "silicone",
+    "acrylic",
+    "urethane",
+    "restoration",
+    "restore",
+    "full roof",
+    "warranty",
+    "recover",
+    "maintenance coating",
+)
+
+
+def _notes_contain_any(notes: str, keywords: tuple[str, ...]) -> bool:
+    normalized = f" {normalized_source_text(notes)} "
+    return any(keyword in normalized for keyword in keywords)
+
+
+def _is_roof_restoration_or_coating_scope(scope: dict[str, Any], notes: str) -> bool:
+    project_type = normalized_source_text(scope.get("project_type"))
+    division = normalized_source_text(scope.get("division"))
+    coating_type = normalized_source_text(scope.get("coating_type"))
+    if "roof" in project_type and any(token in project_type for token in ("coating", "restoration", "restore")):
+        return True
+    if division == "roofing" and (coating_type or scope.get("warranty_target_years")):
+        return True
+    if coating_type or scope.get("warranty_target_years"):
+        return True
+    return _notes_contain_any(notes, ROOF_RESTORATION_SCOPE_KEYWORDS)
+
+
+def evaluate_estimate_readiness(scope: dict[str, Any], notes: str) -> dict[str, Any]:
+    """Return a deterministic estimate-readiness gate before calibration/pricing."""
+    resolved_sqft = optional_positive_float(scope.get("estimated_sqft")) or optional_positive_float(scope.get("surface_area_sqft"))
+    is_roof_restoration = _is_roof_restoration_or_coating_scope(scope, notes)
+    if is_roof_restoration and resolved_sqft is None:
+        comparison_requested = _notes_contain_any(notes, ("repair", "repairs", "restoration", "restore", "make more sense"))
+        actions = ["Request roof measurements", "Schedule inspection"]
+        if comparison_requested:
+            actions.append("Offer both repair and restoration options after measurements are available")
+        return {
+            "estimate_status": NEED_MORE_INFORMATION,
+            "estimate_reason": "Roof area is unknown. A coating estimate cannot be generated without roof size.",
+            "missing_fields": ["estimated_sqft"],
+            "required_questions": [
+                "Approximate roof square footage?",
+                "Roof dimensions?",
+                "Is this repair only or full restoration?",
+                "Address for travel?",
+            ],
+            "recommended_next_actions": actions,
+            "confidence": "high",
+        }
+    return {
+        "estimate_status": READY_TO_ESTIMATE,
+        "estimate_reason": "Required estimate inputs are present.",
+        "missing_fields": [],
+        "required_questions": [],
+        "recommended_next_actions": [],
+        "confidence": "medium",
+    }
+
+
 def normalized_source_text(value: Any) -> str:
     return " ".join(str(value or "").lower().split())
 
@@ -2852,6 +2924,55 @@ def draft_workbook_inputs(field_input: FieldNotesInput, scope: dict[str, Any], m
     }
 
 
+def parsed_fields_for_result(
+    parsed: Any,
+    scope: dict[str, Any],
+    *,
+    resolved_sqft: float | None,
+    dimension_summary: dict[str, Any],
+    run_id: str,
+    input_notes_hash: str,
+) -> dict[str, Any]:
+    parsed_fields = asdict(parsed)
+    if resolved_sqft is not None:
+        parsed_fields["estimated_sqft"] = resolved_sqft
+        parsed_fields["surface_area_sqft"] = resolved_sqft
+    for area_field in ("gross_area_sqft", "deduction_area_sqft", "net_area_sqft"):
+        value = scope.get(area_field) or _dimension_summary_value(dimension_summary, area_field)
+        if value is not None:
+            parsed_fields[area_field] = value
+    for extra_field in (
+        "condition_detail_flags",
+        "penetration_count",
+        "roof_condition_raw_phrase",
+        "roof_condition_reason",
+        "penetrations_complexity_reason",
+        "access_complexity_reason",
+        "ai_scope_packages",
+    ):
+        if extra_field in scope:
+            parsed_fields[extra_field] = scope.get(extra_field)
+    parsed_fields["run_id"] = run_id
+    parsed_fields["input_notes_hash"] = input_notes_hash
+    return parsed_fields
+
+
+def run_integrity_for_result(parsed_fields: dict[str, Any], raw_notes: str, run_id: str, input_notes_hash: str) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    stale_fields = stale_source_text_fields(parsed_fields, raw_notes)
+    return (
+        {
+            "run_id": run_id,
+            "input_notes_hash": input_notes_hash,
+            "parsed_scope_notes_hash": parsed_fields.get("input_notes_hash"),
+            "stale_source_text_detected": bool(stale_fields),
+            "stale_fields_detected": stale_fields,
+            "prior_cache_used": False,
+            "warnings": ["Possible stale parse/cache contamination."] if stale_fields else [],
+        },
+        stale_fields,
+    )
+
+
 def estimate_from_field_notes(
     raw_notes: str,
     optional_overrides: dict[str, Any] | None = None,
@@ -2882,12 +3003,11 @@ def estimate_from_field_notes(
         insulation_present=optional_overrides.get("insulation_present"),
         condensation_risk=optional_overrides.get("condensation_risk"),
     )
-    if data is None:
-        data = load_estimator_data(database_url=database_url, prefer_database=bool(database_url))
     stage_start = time.perf_counter()
     parsed = parse_field_notes(field_input)
     scope = parsed_to_scope(parsed, field_input)
     resolved_sqft = resolve_estimated_sqft(parsed, scope, optional_overrides)
+    deterministic_resolved_sqft = resolved_sqft
     if resolved_sqft is not None:
         parsed.estimated_sqft = resolved_sqft
         parsed.missing_info = [item for item in parsed.missing_info if item != "estimated_sqft"]
@@ -2911,11 +3031,89 @@ def estimate_from_field_notes(
             deterministic_scope,
             ai_parsed_scope,
         )
-        if resolved_sqft is not None:
-            scope["estimated_sqft"] = resolved_sqft
-            scope["surface_area_sqft"] = resolved_sqft
+        if deterministic_resolved_sqft is not None:
+            scope["estimated_sqft"] = deterministic_resolved_sqft
+            scope["surface_area_sqft"] = deterministic_resolved_sqft
+        else:
+            scope.pop("estimated_sqft", None)
+            scope.pop("surface_area_sqft", None)
         apply_scope_to_parsed(parsed, scope)
     runtime_seconds_by_stage["parse_scope"] = round(time.perf_counter() - stage_start, 4)
+
+    resolved_sqft = deterministic_resolved_sqft
+    readiness = evaluate_estimate_readiness(scope, raw_notes)
+    if readiness["estimate_status"] != READY_TO_ESTIMATE:
+        for field_name in readiness.get("missing_fields") or []:
+            if field_name not in parsed.missing_info:
+                parsed.missing_info.append(field_name)
+        parsed_fields = parsed_fields_for_result(
+            parsed,
+            scope,
+            resolved_sqft=resolved_sqft,
+            dimension_summary=dimension_summary,
+            run_id=run_id,
+            input_notes_hash=input_notes_hash,
+        )
+        parsed_fields.update(
+            {
+                "estimate_status": readiness["estimate_status"],
+                "estimate_reason": readiness["estimate_reason"],
+                "required_questions": readiness.get("required_questions") or [],
+                "recommended_next_actions": readiness.get("recommended_next_actions") or [],
+                "readiness_confidence": readiness.get("confidence"),
+            }
+        )
+        review_flags = []
+        review_flags.extend(f"Missing: {item}" for item in parsed.missing_info)
+        review_flags.extend(parsed.review_flags)
+        review_flags.extend(ai_review_flags)
+        review_flags.append(readiness["estimate_reason"])
+        stale_run_integrity, stale_fields = run_integrity_for_result(parsed_fields, raw_notes, run_id, input_notes_hash)
+        if stale_fields:
+            review_flags.append("Possible stale parse/cache contamination.")
+        debug = {
+            "labor_calibration": {},
+            "ai_scope_interpreter": {
+                "enabled": ai_enabled,
+                "deterministic_parsed_scope": deterministic_parsed_scope,
+                "deterministic_scope": deterministic_scope,
+                "ai_parsed_scope": ai_parsed_scope,
+                "final_merged_scope": scope,
+                "merge_decisions": ai_merge_decisions,
+                "ai_confidence_by_field": ai_parsed_scope.get("confidence_by_field") if isinstance(ai_parsed_scope, dict) else {},
+                "ai_review_flags": ai_review_flags,
+            },
+            "estimate_readiness": readiness,
+            "run_integrity": stale_run_integrity,
+            "runtime_seconds_by_stage": runtime_seconds_by_stage,
+        }
+        return EstimateRecommendation(
+            parsed_fields=parsed_fields,
+            recommended_scope=[
+                "Recommendation only: collect missing roof size before producing a coating estimate.",
+                *list(readiness.get("recommended_next_actions") or []),
+            ],
+            material_plan=[],
+            labor_plan=[],
+            travel_plan={},
+            historical_calibration={},
+            similar_examples=[],
+            estimate_low=None,
+            estimate_target=None,
+            estimate_high=None,
+            review_flags=review_flags,
+            human_review_required=True,
+            draft_workbook_inputs=draft_workbook_inputs(field_input, scope, [], [], {}, review_flags),
+            estimate_status=readiness["estimate_status"],
+            estimate_reason=readiness["estimate_reason"],
+            required_questions=list(readiness.get("required_questions") or []),
+            recommended_next_actions=list(readiness.get("recommended_next_actions") or []),
+            confidence=str(readiness.get("confidence") or "low"),
+            debug=debug,
+        )
+
+    if data is None:
+        data = load_estimator_data(database_url=database_url, prefer_database=bool(database_url))
     stage_start = time.perf_counter()
     similar = find_similar_jobs(data, scope, limit=8)
     runtime_seconds_by_stage["similar_jobs"] = round(time.perf_counter() - stage_start, 4)
@@ -2998,39 +3196,26 @@ def estimate_from_field_notes(
         review_flags.append("pricing_catalog unavailable or empty; current material pricing is limited.")
     if data.template_rows.empty and not data.classified_line_items.empty:
         review_flags.append("Using estimate_line_item_classifications fallback evidence.")
-    parsed_fields = asdict(parsed)
-    if resolved_sqft is not None:
-        parsed_fields["estimated_sqft"] = resolved_sqft
-        parsed_fields["surface_area_sqft"] = resolved_sqft
-    for area_field in ("gross_area_sqft", "deduction_area_sqft", "net_area_sqft"):
-        value = scope.get(area_field) or _dimension_summary_value(dimension_summary, area_field)
-        if value is not None:
-            parsed_fields[area_field] = value
-    for extra_field in (
-        "condition_detail_flags",
-        "penetration_count",
-        "roof_condition_raw_phrase",
-        "roof_condition_reason",
-        "penetrations_complexity_reason",
-        "access_complexity_reason",
-        "ai_scope_packages",
-    ):
-        if extra_field in scope:
-            parsed_fields[extra_field] = scope.get(extra_field)
-    parsed_fields["run_id"] = run_id
-    parsed_fields["input_notes_hash"] = input_notes_hash
-    stale_fields = stale_source_text_fields(parsed_fields, raw_notes)
+    parsed_fields = parsed_fields_for_result(
+        parsed,
+        scope,
+        resolved_sqft=resolved_sqft,
+        dimension_summary=dimension_summary,
+        run_id=run_id,
+        input_notes_hash=input_notes_hash,
+    )
+    parsed_fields.update(
+        {
+            "estimate_status": READY_TO_ESTIMATE,
+            "estimate_reason": "Required estimate inputs are present.",
+            "required_questions": [],
+            "recommended_next_actions": [],
+            "readiness_confidence": "medium",
+        }
+    )
+    run_integrity, stale_fields = run_integrity_for_result(parsed_fields, raw_notes, run_id, input_notes_hash)
     if stale_fields:
         review_flags.append("Possible stale parse/cache contamination.")
-    run_integrity = {
-        "run_id": run_id,
-        "input_notes_hash": input_notes_hash,
-        "parsed_scope_notes_hash": parsed_fields.get("input_notes_hash"),
-        "stale_source_text_detected": bool(stale_fields),
-        "stale_fields_detected": stale_fields,
-        "prior_cache_used": False,
-        "warnings": ["Possible stale parse/cache contamination."] if stale_fields else [],
-    }
     return EstimateRecommendation(
         parsed_fields=parsed_fields,
         recommended_scope=decision.get("recommended_scope") or [],
@@ -3045,6 +3230,11 @@ def estimate_from_field_notes(
         review_flags=review_flags,
         human_review_required=bool(review_flags),
         draft_workbook_inputs=draft_workbook_inputs(field_input, scope, material_plan, labor_plan, travel_plan, review_flags),
+        estimate_status=READY_TO_ESTIMATE,
+        estimate_reason="Required estimate inputs are present.",
+        required_questions=[],
+        recommended_next_actions=[],
+        confidence="medium",
         debug={
             "labor_calibration": calibration.get("labor_calibration_diagnostics") or {},
             "ai_scope_interpreter": {

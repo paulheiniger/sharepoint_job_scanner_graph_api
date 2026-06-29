@@ -16,6 +16,7 @@ class EstimatorData:
     template_rows: pd.DataFrame = field(default_factory=pd.DataFrame)
     tracking_summary: pd.DataFrame = field(default_factory=pd.DataFrame)
     tracking_daily: pd.DataFrame = field(default_factory=pd.DataFrame)
+    relationship_material_qty_ratios: pd.DataFrame = field(default_factory=pd.DataFrame)
     relationship_labor_rates: pd.DataFrame = field(default_factory=pd.DataFrame)
     job_package_summary: pd.DataFrame = field(default_factory=pd.DataFrame)
     pricing: pd.DataFrame = field(default_factory=pd.DataFrame)
@@ -89,12 +90,17 @@ class EstimateRecommendation:
     travel_plan: dict
     historical_calibration: dict
     similar_examples: list[dict]
-    estimate_low: float
-    estimate_target: float
-    estimate_high: float
+    estimate_low: float | None
+    estimate_target: float | None
+    estimate_high: float | None
     review_flags: list[str]
     human_review_required: bool
     draft_workbook_inputs: dict
+    estimate_status: str = "READY_TO_ESTIMATE"
+    estimate_reason: str = ""
+    required_questions: list[str] = field(default_factory=list)
+    recommended_next_actions: list[str] = field(default_factory=list)
+    confidence: str = "medium"
     debug: dict = field(default_factory=dict)
 
 

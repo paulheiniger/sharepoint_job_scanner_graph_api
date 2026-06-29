@@ -102,6 +102,7 @@ def normalize_estimator_data(data: EstimatorData) -> EstimatorData:
     data.estimates = normalize_estimator_dataframe(data.estimates)
     data.tracking_summary = normalize_estimator_dataframe(data.tracking_summary)
     data.tracking_daily = normalize_estimator_dataframe(data.tracking_daily)
+    data.relationship_material_qty_ratios = normalize_estimator_dataframe(data.relationship_material_qty_ratios)
     data.relationship_labor_rates = normalize_estimator_dataframe(data.relationship_labor_rates)
     data.job_package_summary = normalize_estimator_dataframe(data.job_package_summary)
     if data.pricing.empty and not data.pricing_catalog.empty:
@@ -266,6 +267,10 @@ def load_estimator_data_from_database(database_url: str) -> EstimatorData:
         if relation_exists(connection, "relationship_labor_rates"):
             data.relationship_labor_rates = _read_sql_dataframe(connection, "SELECT * FROM relationship_labor_rates")
             data.source_files_used.append("database: relationship_labor_rates")
+
+        if relation_exists(connection, "relationship_material_qty_ratios"):
+            data.relationship_material_qty_ratios = _read_sql_dataframe(connection, "SELECT * FROM relationship_material_qty_ratios")
+            data.source_files_used.append("database: relationship_material_qty_ratios")
 
         if relation_exists(connection, "job_package_summary"):
             data.job_package_summary = _read_sql_dataframe(connection, "SELECT * FROM job_package_summary")

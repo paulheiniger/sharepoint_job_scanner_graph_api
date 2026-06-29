@@ -48,8 +48,16 @@ except ImportError:
     from jobscan.estimator import build_estimate, load_estimator_data
 
     estimate_from_field_notes = None
-from jobscan.estimator.schemas import EstimatorAssumptions
+from jobscan.estimator.schemas import EstimatorAssumptions, EstimatorData
 from jobscan.estimator.evidence_export import write_estimator_evidence_export
+from jobscan.estimator.workbench import (
+    append_edit_history,
+    build_edit_history_rows,
+    build_estimating_workbench,
+    recalculate_workbench_tables,
+    summarize_workbench_totals,
+    workbench_to_draft_workbook_inputs,
+)
 from jobscan.estimator.workbook_template import DEFAULT_TEMPLATE_PATH, fill_estimate_workbook
 from jobscan.estimator.workbook_writer import DEFAULT_ESTIMATE_OUTPUT_DIR, generate_estimate_workbook, resolve_default_template_path
 
@@ -3929,8 +3937,8 @@ def render_repair_estimate_result(result_payload: dict[str, Any], *, notes: str,
 
 
 def estimator_prototype_page() -> None:
-    st.title("Estimator Prototype")
-    st.caption("Prototype only. Uses database history when available, local staging files as fallback, deterministic rules, and historical estimate patterns. Estimator review is required before quoting.")
+    st.title("Estimating Assistant")
+    st.caption("Estimator review is required before quoting. Incomplete notes return questions and next actions instead of fabricated estimate ranges.")
 
     estimate_type_selection = st.selectbox(
         "Estimate Type",
@@ -4038,12 +4046,12 @@ def estimator_prototype_page() -> None:
         use_historical_calibration = False
     else:
         use_historical_calibration = st.checkbox(
-            "Use historical labor/template calibration",
-            value=True,
-            help="Uses database-backed pricing and historical labor/material calibration. Turn off only to isolate rough-note parsing and dimension math.",
+            "Debug: run full historical calibration inside parser",
+            value=False,
+            help="Default workbench mode uses precomputed relationship tables for editable defaults. Enable this only when debugging the older automatic calibration path.",
             key="use_historical_calibration",
         )
-    field_notes_data = data if use_historical_calibration else None
+    field_notes_data = data if use_historical_calibration else EstimatorData()
     with st.expander("Field notes recommendation overrides", expanded=False):
         f1, f2, f3 = st.columns(3)
         with f1:
@@ -4131,8 +4139,20 @@ def estimator_prototype_page() -> None:
                 ("Review Required", "Yes" if field_recommendation.human_review_required else "No"),
             ]
         )
-        st.markdown("**Parsed Fields**")
-        st.dataframe(pd.DataFrame([field_recommendation.parsed_fields]), use_container_width=True, hide_index=True)
+        estimate_status = getattr(field_recommendation, "estimate_status", None) or field_recommendation.parsed_fields.get("estimate_status") or "READY_TO_ESTIMATE"
+        if estimate_status != "READY_TO_ESTIMATE":
+            st.warning(getattr(field_recommendation, "estimate_reason", "") or field_recommendation.parsed_fields.get("estimate_reason") or "More information is required before estimating.")
+            questions = getattr(field_recommendation, "required_questions", None) or field_recommendation.parsed_fields.get("required_questions") or []
+            actions = getattr(field_recommendation, "recommended_next_actions", None) or field_recommendation.parsed_fields.get("recommended_next_actions") or []
+            q_col, a_col = st.columns(2)
+            with q_col:
+                st.markdown("**Required Questions**")
+                show_table(dataframe_from_records([{"question": item} for item in questions]), ["question"], height=180)
+            with a_col:
+                st.markdown("**Recommended Next Actions**")
+                show_table(dataframe_from_records([{"action": item} for item in actions]), ["action"], height=180)
+        with st.expander("Parser details", expanded=False):
+            st.dataframe(pd.DataFrame([field_recommendation.parsed_fields]), use_container_width=True, hide_index=True)
         dimension_summary = field_recommendation.parsed_fields.get("dimension_summary") or {}
         if isinstance(dimension_summary, dict) and (
             dimension_summary.get("net_area_sqft") or dimension_summary.get("included_areas") or dimension_summary.get("deducted_areas")
@@ -4164,35 +4184,203 @@ def estimator_prototype_page() -> None:
                 st.warning("\n".join(dimension_summary.get("warnings") or []))
         if field_recommendation.review_flags:
             st.warning("\n".join(field_recommendation.review_flags))
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown("**Recommended Scope**")
-            show_table(dataframe_from_records([{"recommendation": item} for item in field_recommendation.recommended_scope]), ["recommendation"], height=180)
-        with c2:
-            st.markdown("**Travel Plan**")
-            st.dataframe(pd.DataFrame([field_recommendation.travel_plan]), use_container_width=True, hide_index=True)
-        st.markdown("**Material Plan**")
-        show_table(dataframe_from_records(field_recommendation.material_plan), ["item", "category", "quantity", "unit", "selected_price_source", "unit_price", "estimated_cost", "needs_review", "notes"], height=220)
-        st.markdown("**Labor Plan**")
-        show_table(dataframe_from_records(field_recommendation.labor_plan), ["task", "base_days", "adjusted_days", "crew_size", "total_hours", "estimated_cost", "evidence_count", "notes"], height=260)
-        with st.expander("Historical calibration and similar examples", expanded=False):
-            st.dataframe(pd.DataFrame([field_recommendation.historical_calibration]), use_container_width=True, hide_index=True)
-            show_table(dataframe_from_records(field_recommendation.similar_examples), ["job_id", "customer", "job_name", "estimated_sqft", "estimated_value", "price_per_sqft", "estimate_file", "similarity_score", "reason_matched"], height=260)
+        if estimate_status != "READY_TO_ESTIMATE":
+            st.info("Estimate generation stopped before material selection, labor calibration, similar jobs, pricing, workbook export, and evidence export.")
+            return
+        original_workbench = build_estimating_workbench(field_recommendation, data)
+        workbench_key = str(original_workbench.get("estimate_id") or "current")
+        debug_mode = st.checkbox(
+            "Debug Mode",
+            value=False,
+            help="Shows legacy calibration, similar-job evidence, and evidence export tools. Normal workbench mode stays focused on editable defaults.",
+            key=f"estimator_debug_mode_{workbench_key}",
+        )
+
+        st.markdown("### 1. Parsed Scope")
+        base_scope = original_workbench.get("scope") or {}
+        s1, s2, s3 = st.columns(3)
+        with s1:
+            edited_project_type = st.text_input("Project Type", value=str(base_scope.get("project_type") or ""), key=f"wb_project_type_{workbench_key}")
+            edited_substrate = st.text_input("Roof Type / Substrate", value=str(base_scope.get("roof_type_substrate") or ""), key=f"wb_substrate_{workbench_key}")
+            edited_gross = st.number_input("Gross Sq Ft", min_value=0.0, value=float(base_scope.get("gross_sqft") or 0), step=100.0, key=f"wb_gross_{workbench_key}")
+        with s2:
+            edited_deduction = st.number_input("Deduction Sq Ft", min_value=0.0, value=float(base_scope.get("deduction_sqft") or 0), step=25.0, key=f"wb_deduction_{workbench_key}")
+            default_net = float(base_scope.get("net_sqft") or max(edited_gross - edited_deduction, 0))
+            edited_net = st.number_input("Net Sq Ft", min_value=0.0, value=default_net, step=100.0, key=f"wb_net_{workbench_key}")
+            edited_warranty = st.number_input("Warranty", min_value=0.0, value=float(base_scope.get("warranty_years") or 0), step=5.0, key=f"wb_warranty_{workbench_key}")
+        with s3:
+            edited_coating = st.text_input("Coating Type", value=str(base_scope.get("coating_type") or ""), key=f"wb_coating_{workbench_key}")
+            edited_condition = st.text_input("Roof Condition", value=str(base_scope.get("roof_condition") or ""), key=f"wb_condition_{workbench_key}")
+            edited_access = st.text_input("Access", value=str(base_scope.get("access_complexity") or ""), key=f"wb_access_{workbench_key}")
+            edited_penetrations = st.text_input("Penetrations", value=str(base_scope.get("penetrations_complexity") or ""), key=f"wb_penetrations_{workbench_key}")
+
+        edited_workbench = dict(original_workbench)
+        edited_workbench["scope"] = {
+            **base_scope,
+            "project_type": edited_project_type,
+            "roof_type_substrate": edited_substrate,
+            "gross_sqft": edited_gross,
+            "deduction_sqft": edited_deduction,
+            "net_sqft": edited_net,
+            "warranty_years": edited_warranty,
+            "coating_type": edited_coating,
+            "roof_condition": edited_condition,
+            "access_complexity": edited_access,
+            "penetrations_complexity": edited_penetrations,
+        }
+
+        st.markdown("### 2. Materials")
+        materials_df = pd.DataFrame(original_workbench.get("materials") or [])
+        edited_materials_df = st.data_editor(
+            materials_df,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="fixed",
+            key=f"wb_materials_{workbench_key}",
+            column_order=[
+                "include",
+                "package",
+                "historical_qty_per_sqft",
+                "editable_qty_per_sqft",
+                "calculated_quantity",
+                "current_unit_price",
+                "estimated_cost",
+                "evidence_count",
+                "confidence",
+                "source",
+            ],
+            column_config={
+                "include": st.column_config.CheckboxColumn("Include"),
+                "package": "Package",
+                "historical_qty_per_sqft": "Historical Qty / Sq Ft",
+                "editable_qty_per_sqft": "Editable Qty / Sq Ft",
+                "calculated_quantity": "Calculated Quantity",
+                "current_unit_price": "Current Unit Price",
+                "estimated_cost": "Estimated Cost",
+                "evidence_count": "Evidence Count",
+                "confidence": "Confidence",
+                "source": "Source",
+            },
+            disabled=["package", "historical_qty_per_sqft", "calculated_quantity", "estimated_cost", "evidence_count", "confidence", "source"],
+        )
+        edited_workbench["materials"] = edited_materials_df.to_dict(orient="records")
+
+        st.markdown("### 3. Labor")
+        labor_df = pd.DataFrame(original_workbench.get("labor") or [])
+        edited_labor_df = st.data_editor(
+            labor_df,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="fixed",
+            key=f"wb_labor_{workbench_key}",
+            column_order=[
+                "include",
+                "labor_package",
+                "historical_hours_per_1000_sqft",
+                "editable_hours_per_1000_sqft",
+                "calculated_hours",
+                "crew_size",
+                "estimated_cost",
+                "evidence_count",
+                "confidence",
+                "source",
+            ],
+            column_config={
+                "include": st.column_config.CheckboxColumn("Include"),
+                "labor_package": "Labor Package",
+                "historical_hours_per_1000_sqft": "Historical Hours / 1000 Sq Ft",
+                "editable_hours_per_1000_sqft": "Editable Hours / 1000 Sq Ft",
+                "calculated_hours": "Calculated Hours",
+                "crew_size": "Crew Size",
+                "estimated_cost": "Estimated Cost",
+                "evidence_count": "Evidence Count",
+                "confidence": "Confidence",
+                "source": "Source",
+            },
+            disabled=["labor_package", "historical_hours_per_1000_sqft", "calculated_hours", "estimated_cost", "evidence_count", "confidence", "source"],
+        )
+        edited_workbench["labor"] = edited_labor_df.to_dict(orient="records")
+
+        st.markdown("### 4. Adders / Miscellaneous")
+        adders_df = pd.DataFrame(original_workbench.get("adders") or [])
+        edited_adders_df = st.data_editor(
+            adders_df,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="fixed",
+            key=f"wb_adders_{workbench_key}",
+            column_order=["include", "adder", "editable_value", "estimated_cost", "confidence", "source", "notes"],
+            column_config={
+                "include": st.column_config.CheckboxColumn("Include"),
+                "adder": "Adder",
+                "editable_value": "Editable Value",
+                "estimated_cost": "Estimated Cost",
+                "confidence": "Confidence",
+                "source": "Source",
+                "notes": "Notes",
+            },
+            disabled=["adder", "estimated_cost", "confidence", "source"],
+        )
+        edited_workbench["adders"] = edited_adders_df.to_dict(orient="records")
+        edited_workbench = recalculate_workbench_tables(edited_workbench)
+        totals = summarize_workbench_totals(edited_workbench)
+        metric_row(
+            [
+                ("Materials", fmt_dollar(totals.get("material_total"))),
+                ("Labor", fmt_dollar(totals.get("labor_total"))),
+                ("Adders", fmt_dollar(totals.get("adder_total"))),
+                ("Draft Total", fmt_dollar(totals.get("draft_total"))),
+            ]
+        )
+
+        with st.sidebar.expander("Similar Jobs (sanity check)", expanded=False):
+            similar_rows = original_workbench.get("similar_jobs") or []
+            if similar_rows:
+                show_table(
+                    dataframe_from_records(similar_rows),
+                    ["job_id", "customer", "job_name", "estimated_sqft", "estimated_value", "price_per_sqft", "similarity_score", "reason_matched"],
+                    height=360,
+                )
+            else:
+                st.caption("No similar jobs available for this draft.")
+
+        edit_history_preview = build_edit_history_rows(original_workbench, edited_workbench)
+        reason_required_rows = [row for row in edit_history_preview if row.get("reason_required")]
+        reason_map: dict[str, str] = {}
+        if reason_required_rows:
+            with st.expander("Large Edits - Optional Reasons", expanded=False):
+                st.caption("Reasons are optional. They are requested when material quantities change more than 50% or labor hours change more than 30%.")
+                for row in reason_required_rows[:20]:
+                    reason_key = f"{row.get('section')}.{row.get('field')}"
+                    reason_map[reason_key] = st.text_input(
+                        f"{row.get('section')} {row.get('field')} changed from {row.get('historical_default')} to {row.get('final_value')}",
+                        key=f"wb_reason_{workbench_key}_{reason_key}",
+                    )
+
+        with st.expander("Suggested Rules (placeholder)", expanded=False):
+            st.caption("Suggested rules are collected for future approval dashboards. They are not applied automatically.")
+            show_table(dataframe_from_records(original_workbench.get("suggested_rules") or []), ["rule", "status", "applied_automatically"], height=160)
+
         with st.expander("Draft workbook input preview", expanded=False):
-            st.json(field_recommendation.draft_workbook_inputs)
+            st.json(workbench_to_draft_workbook_inputs(edited_workbench))
+
         st.markdown("**Excel Estimate Draft**")
-        if st.button("Generate Excel Estimate Draft", key="generate_field_notes_excel_workbook"):
+        if st.button("Generate Excel Estimate Draft", key=f"generate_field_notes_excel_workbook_{workbench_key}"):
             template_path = resolve_default_template_path()
             if not template_path.exists():
                 st.warning("Estimate template workbook not found. Add it to templates/Estimate - Full Turnkey.xlsx.")
             else:
                 try:
+                    edited_workbook_inputs = workbench_to_draft_workbook_inputs(edited_workbench)
                     output_path = generate_estimate_workbook(
-                        field_recommendation.draft_workbook_inputs,
+                        edited_workbook_inputs,
                         template_path,
                         DEFAULT_ESTIMATE_OUTPUT_DIR,
                     )
+                    edit_rows = build_edit_history_rows(original_workbench, edited_workbench, reason_map=reason_map)
+                    feedback_path = append_edit_history(edit_rows)
                     st.success(f"Excel estimate draft created: {output_path}")
+                    st.caption(f"Estimator edit history captured: {feedback_path}")
                     st.download_button(
                         "Download Excel Estimate Draft",
                         data=output_path.read_bytes(),
@@ -4203,41 +4391,47 @@ def estimator_prototype_page() -> None:
                 except Exception as exc:
                     logger.exception("Field notes Excel draft generation failed")
                     st.error(f"Could not generate Excel estimate draft: {safe_exception_text(exc)}")
-        st.markdown("**Estimator Evidence Export**")
-        if st.button("Export Estimator Evidence Package", key="export_field_notes_estimator_evidence"):
-            try:
-                export_paths = write_estimator_evidence_export(
-                    field_recommendation,
-                    data=data,
-                    notes=recommendation_notes,
-                    output_dir=Path("output/estimator_evidence"),
-                )
-                st.session_state["field_estimator_evidence_export_paths"] = {
-                    key: str(path) for key, path in export_paths.items()
-                }
-                st.success("Estimator evidence package exported.")
-            except Exception as exc:
-                logger.exception("Field notes estimator evidence export failed")
-                st.error(f"Could not export estimator evidence package: {safe_exception_text(exc)}")
-        evidence_paths = st.session_state.get("field_estimator_evidence_export_paths") or {}
-        evidence_xlsx = Path(evidence_paths.get("xlsx", "")) if evidence_paths.get("xlsx") else None
-        evidence_json = Path(evidence_paths.get("json", "")) if evidence_paths.get("json") else None
-        if evidence_xlsx and evidence_xlsx.exists():
-            st.download_button(
-                "Download Estimator Evidence Workbook",
-                data=evidence_xlsx.read_bytes(),
-                file_name=evidence_xlsx.name,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="download_field_notes_estimator_evidence_xlsx",
-            )
-        if evidence_json and evidence_json.exists():
-            st.download_button(
-                "Download Estimator Evidence JSON",
-                data=evidence_json.read_bytes(),
-                file_name=evidence_json.name,
-                mime="application/json",
-                key="download_field_notes_estimator_evidence_json",
-            )
+        if debug_mode:
+            with st.expander("Debug Evidence and Legacy Calibration", expanded=False):
+                st.dataframe(pd.DataFrame([field_recommendation.historical_calibration]), use_container_width=True, hide_index=True)
+                show_table(dataframe_from_records(field_recommendation.similar_examples), ["job_id", "customer", "job_name", "estimated_sqft", "estimated_value", "price_per_sqft", "estimate_file", "similarity_score", "reason_matched"], height=260)
+                st.markdown("**Estimator Evidence Export**")
+                if st.button("Export Estimator Evidence Package", key="export_field_notes_estimator_evidence"):
+                    try:
+                        export_paths = write_estimator_evidence_export(
+                            field_recommendation,
+                            data=data,
+                            notes=recommendation_notes,
+                            output_dir=Path("output/estimator_evidence"),
+                            fast=True,
+                            debug_evidence=True,
+                        )
+                        st.session_state["field_estimator_evidence_export_paths"] = {
+                            key: str(path) for key, path in export_paths.items()
+                        }
+                        st.success("Estimator evidence package exported.")
+                    except Exception as exc:
+                        logger.exception("Field notes estimator evidence export failed")
+                        st.error(f"Could not export estimator evidence package: {safe_exception_text(exc)}")
+                evidence_paths = st.session_state.get("field_estimator_evidence_export_paths") or {}
+                evidence_xlsx = Path(evidence_paths.get("xlsx", "")) if evidence_paths.get("xlsx") else None
+                evidence_json = Path(evidence_paths.get("json", "")) if evidence_paths.get("json") else None
+                if evidence_xlsx and evidence_xlsx.exists():
+                    st.download_button(
+                        "Download Estimator Evidence Workbook",
+                        data=evidence_xlsx.read_bytes(),
+                        file_name=evidence_xlsx.name,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="download_field_notes_estimator_evidence_xlsx",
+                    )
+                if evidence_json and evidence_json.exists():
+                    st.download_button(
+                        "Download Estimator Evidence JSON",
+                        data=evidence_json.read_bytes(),
+                        file_name=evidence_json.name,
+                        mime="application/json",
+                        key="download_field_notes_estimator_evidence_json",
+                    )
 
     run_legacy_estimator = st.checkbox(
         "Run legacy historical estimator summary",
@@ -4462,7 +4656,7 @@ def estimator_prototype_page() -> None:
     with st.expander("Workbook header fields", expanded=False):
         h1, h2, h3 = st.columns(3)
         with h1:
-            workbook_job_name = st.text_input("Workbook job name", value=scope.get("project_type") or "Estimator Prototype Draft", key="estimator_workbook_job_name")
+            workbook_job_name = st.text_input("Workbook job name", value=scope.get("project_type") or "Estimating Assistant Draft", key="estimator_workbook_job_name")
             workbook_job_type = st.text_input("Workbook job type", value=scope.get("project_type") or "", key="estimator_workbook_job_type")
         with h2:
             workbook_site_address = st.text_input("Workbook site address", value="", key="estimator_workbook_site_address")
@@ -4558,7 +4752,7 @@ def repair_estimator_page() -> None:
         height=140,
         placeholder="Leak around pipe boot on TPO roof, one penetration, easy access, seal and reinforce with fabric.",
     )
-    st.caption("Use this for small repair calls. For coating/restoration scopes, use the Estimator Prototype instead.")
+    st.caption("Use this for small repair calls. For coating/restoration scopes, use the Estimating Assistant instead.")
     with st.expander("Optional context", expanded=True):
         r1, r2, r3 = st.columns(3)
         with r1:
@@ -4816,7 +5010,7 @@ def main() -> None:
                 "Ask Spray-Tec",
                 "Job Board",
                 "Schedule Calendar",
-                "Estimator Prototype",
+                "Estimating Assistant",
                 "BidScope AI",
                 "Admin / Health",
                 "Pipeline / Money",
@@ -4838,7 +5032,7 @@ def main() -> None:
             ],
         )
 
-    if database_startup_error and page not in {"Estimator Prototype", "Admin / Health"}:
+    if database_startup_error and page not in {"Estimating Assistant", "Admin / Health"}:
         show_database_error(database_startup_error)
         st.stop()
 
@@ -4850,7 +5044,7 @@ def main() -> None:
         job_board_page()
     elif page == "Schedule Calendar":
         schedule_calendar_page()
-    elif page == "Estimator Prototype":
+    elif page == "Estimating Assistant":
         estimator_prototype_page()
     elif page == "BidScope AI":
         render_foamscope_page()
