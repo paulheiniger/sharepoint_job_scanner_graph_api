@@ -1,0 +1,66 @@
+[
+  {
+    "case_id": "pipe_boot_leak",
+    "notes": "Small active leak around one pipe boot on a TPO roof. Easy access from roof hatch. Seal and reinforce with fabric if needed.",
+    "expected": {
+      "issue_type": "pipe_boot_leak",
+      "roof_type": "tpo",
+      "leak_present": true,
+      "package_any": ["caulk_sealant", "fabric_reinforcement"]
+    }
+  },
+  {
+    "case_id": "open_seam_repair",
+    "notes": "Open seam on metal roof, about 12 linear feet, water entering after rain. Need clean, fabric, and sealant repair.",
+    "expected": {
+      "issue_type": "open_seam",
+      "roof_type": "metal",
+      "leak_present": true,
+      "package_any": ["caulk_sealant", "fabric_reinforcement"]
+    }
+  },
+  {
+    "case_id": "seal_exposed_fasteners",
+    "notes": "Seal exposed fasteners on standing seam metal roof. About 30 screws at edge condition. Standard access.",
+    "expected": {
+      "issue_type": "exposed_fasteners",
+      "roof_type": "metal",
+      "package_any": ["fasteners", "caulk_sealant"]
+    }
+  },
+  {
+    "case_id": "skylight_curb_leak",
+    "notes": "Leak at skylight curb on coated roof. Inspect curb flashing, seal, and reinforce the corner.",
+    "expected": {
+      "issue_type": "skylight_curb_leak",
+      "roof_type": "coated_roof",
+      "leak_present": true,
+      "package_any": ["caulk_sealant", "fabric_reinforcement", "flashing_edge_metal"]
+    }
+  },
+  {
+    "case_id": "small_coating_touch_up",
+    "notes": "Small silicone coating touch-up needed around two patched spots. No active leak. Easy access.",
+    "expected": {
+      "issue_type": "small_coating_touch_up",
+      "package_any": ["coating", "caulk_sealant"]
+    }
+  },
+  {
+    "case_id": "emergency_leak_call",
+    "notes": "Emergency active roof leak over office area. Unknown roof type. Need same-day leak investigation and temporary patch.",
+    "expected": {
+      "repair_type": "emergency_leak_call",
+      "leak_present": true,
+      "urgency": "emergency"
+    }
+  },
+  {
+    "case_id": "unknown_ambiguous_repair",
+    "notes": "Customer says there is a roof problem and wants someone to look at it.",
+    "expected": {
+      "confidence": "low",
+      "review_flag_contains": "Missing repair info"
+    }
+  }
+]

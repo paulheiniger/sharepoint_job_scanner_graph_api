@@ -93,6 +93,59 @@ ESTIMATOR_SAMPLE_NOTES = {
     "Wall insulation": "Wall insulation, wall area 10,000 sqft, metal building, 2 inch spray foam, Cincinnati OH.",
 }
 
+ESTIMATE_TYPE_AUTO = "Auto-detect"
+ESTIMATE_TYPE_RESTORATION = "Roof Restoration / Coating"
+ESTIMATE_TYPE_REPAIR = "Roof Repair"
+ESTIMATE_TYPE_INSULATION = "Insulation"
+ESTIMATE_TYPE_OPTIONS = [
+    ESTIMATE_TYPE_AUTO,
+    ESTIMATE_TYPE_RESTORATION,
+    ESTIMATE_TYPE_REPAIR,
+    ESTIMATE_TYPE_INSULATION,
+]
+
+REPAIR_MODE_KEYWORDS = [
+    "leak",
+    "patch",
+    "pipe boot",
+    "seam repair",
+    "fastener repair",
+    "service call",
+    "emergency",
+    "small repair",
+    "curb leak",
+    "flashing",
+    "punch list",
+    "skylight curb",
+    "drain leak",
+]
+RESTORATION_MODE_KEYWORDS = [
+    "full roof",
+    "coating system",
+    "warranty",
+    "silicone restoration",
+    "roof measures",
+    "square footage",
+    "sqft",
+    "sq ft",
+    "silicone coating",
+    "acrylic coating",
+    "roof coating",
+]
+INSULATION_MODE_KEYWORDS = [
+    "foam",
+    "spray foam",
+    "r-value",
+    "thermal barrier",
+    "dc315",
+    "walls",
+    "attic",
+    "crawlspace",
+    "closed-cell",
+    "open-cell",
+    "insulation",
+]
+
 
 def get_database_url() -> str:
     try:
@@ -3664,6 +3717,68 @@ def optional_field_notes_estimator():
     return estimate_from_field_notes, None
 
 
+def keyword_score(text_value: str, keywords: list[str]) -> int:
+    return sum(1 for keyword in keywords if keyword in text_value)
+
+
+def classify_estimate_type_from_notes(notes: str | None) -> str:
+    text_value = " ".join(str(notes or "").lower().split())
+    if not text_value:
+        return ESTIMATE_TYPE_RESTORATION
+    repair_score = keyword_score(text_value, REPAIR_MODE_KEYWORDS)
+    restoration_score = keyword_score(text_value, RESTORATION_MODE_KEYWORDS)
+    insulation_score = keyword_score(text_value, INSULATION_MODE_KEYWORDS)
+    if re.search(r"\b\d+(?:,\d{3})?\s*(?:sqft|sq ft|sf|square feet)\b", text_value):
+        restoration_score += 2
+    if any(term in text_value for term in ("10-year", "10 year", "15-year", "15 year", "20-year", "20 year")):
+        restoration_score += 2
+    if any(term in text_value for term in ("pipe boot", "curb leak", "service call", "emergency", "small repair", "patch")):
+        repair_score += 3
+    if any(term in text_value for term in ("walls", "attic", "crawlspace", "r-value", "dc315", "thermal barrier")):
+        insulation_score += 3
+    if insulation_score >= max(repair_score, restoration_score) and insulation_score > 0:
+        return ESTIMATE_TYPE_INSULATION
+    if repair_score > restoration_score and repair_score > 0:
+        return ESTIMATE_TYPE_REPAIR
+    return ESTIMATE_TYPE_RESTORATION
+
+
+def resolve_estimate_type(selection: str, notes: str | None) -> str:
+    if selection == ESTIMATE_TYPE_AUTO:
+        return classify_estimate_type_from_notes(notes)
+    return selection if selection in ESTIMATE_TYPE_OPTIONS else ESTIMATE_TYPE_RESTORATION
+
+
+def route_estimator_request(
+    notes: str,
+    estimate_type_selection: str,
+    *,
+    overrides: dict[str, Any] | None = None,
+    repair_data: Any = None,
+    field_estimator_fn: Any = None,
+    field_notes_data: Any = None,
+) -> tuple[str, Any]:
+    resolved_type = resolve_estimate_type(estimate_type_selection, notes)
+    if resolved_type == ESTIMATE_TYPE_REPAIR:
+        from jobscan.repair_estimator.estimator import estimate_repair_from_notes
+
+        if repair_data is None:
+            repair_data = load_repair_history_cached()
+        return resolved_type, estimate_repair_from_notes(notes, repair_data, overrides=overrides)
+    if field_estimator_fn is None:
+        field_estimator_fn, _ = optional_field_notes_estimator()
+    if field_estimator_fn is None:
+        raise RuntimeError("Field notes estimator is not available in this deployment yet.")
+    return resolved_type, field_estimator_fn(notes, overrides or {}, data=field_notes_data)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_repair_history_cached():
+    from jobscan.repair_estimator.estimator import load_repair_history_from_database
+
+    return load_repair_history_from_database(get_engine())
+
+
 def dataframe_from_records(records: list[dict[str, Any]]) -> pd.DataFrame:
     return pd.DataFrame(records) if records else pd.DataFrame()
 
@@ -3691,9 +3806,139 @@ def estimate_export_payload(result: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def render_repair_estimate_result(result_payload: dict[str, Any], *, notes: str, customer_job_name: str = "") -> None:
+    metric_row(
+        [
+            ("Labor Target", f"{result_payload.get('estimated_labor_hours_target') or 0:,.1f} hrs"),
+            ("Material Target", fmt_dollar(result_payload.get("estimated_material_cost_target"))),
+            ("Invoice Target", fmt_dollar(result_payload.get("estimated_invoice_target"))),
+            ("Confidence", str(result_payload.get("confidence") or "-").title()),
+        ]
+    )
+    st.markdown("**Parsed Repair Scope**")
+    repair_scope = result_payload.get("parsed_scope") or {}
+    repair_fields = [
+        "repair_type",
+        "roof_type",
+        "issue_type",
+        "leak_present",
+        "emergency_or_standard",
+        "affected_area",
+        "affected_area_sqft",
+        "affected_linear_feet",
+        "penetration_count",
+        "access_complexity",
+        "materials_mentioned",
+        "actions_requested",
+        "missing_info",
+    ]
+    st.dataframe(pd.DataFrame([{field: repair_scope.get(field) for field in repair_fields}]), use_container_width=True, hide_index=True)
+    if result_payload.get("review_flags"):
+        st.warning("\n".join(result_payload.get("review_flags") or []))
+
+    st.markdown("**Estimate Range**")
+    range_df = pd.DataFrame(
+        [
+            {
+                "bucket": "Labor hours",
+                "low": result_payload.get("estimated_labor_hours_low"),
+                "target": result_payload.get("estimated_labor_hours_target"),
+                "high": result_payload.get("estimated_labor_hours_high"),
+            },
+            {
+                "bucket": "Material cost",
+                "low": result_payload.get("estimated_material_cost_low"),
+                "target": result_payload.get("estimated_material_cost_target"),
+                "high": result_payload.get("estimated_material_cost_high"),
+            },
+            {
+                "bucket": "Invoice / price",
+                "low": result_payload.get("estimated_invoice_low"),
+                "target": result_payload.get("estimated_invoice_target"),
+                "high": result_payload.get("estimated_invoice_high"),
+            },
+        ]
+    )
+    st.dataframe(range_df, use_container_width=True, hide_index=True)
+
+    st.markdown("**Materials / Repair Packages**")
+    show_table(
+        dataframe_from_records(result_payload.get("selected_repair_packages") or []),
+        ["material_package", "selection_reason", "evidence_count", "median_total_cost", "common_material_names"],
+        height=240,
+    )
+
+    st.markdown("**Labor / Historical Calibration**")
+    st.dataframe(pd.DataFrame([result_payload.get("evidence_summary") or {}]), use_container_width=True, hide_index=True)
+    show_table(
+        dataframe_from_records(result_payload.get("matched_repair_profiles") or []),
+        ["type_of_repair", "roof_type", "evidence_count", "median_labor_hours", "median_invoice_amount"],
+        height=220,
+    )
+
+    st.markdown("**Similar Historical Repairs**")
+    show_table(
+        dataframe_from_records(result_payload.get("similar_repairs") or []),
+        [
+            "repair_id",
+            "job_name",
+            "customer",
+            "status",
+            "type_of_repair",
+            "roof_type",
+            "historical_labor_hours",
+            "invoice_amount",
+            "gross_profit",
+            "url",
+            "similarity_score",
+            "reason_matched",
+        ],
+        height=360,
+    )
+
+    st.markdown("**Repair Audit Export**")
+    if st.button("Export Repair Audit Package", key="export_integrated_repair_estimator_audit"):
+        try:
+            from jobscan.repair_estimator.estimator import RepairEstimateResult, write_repair_audit_package
+
+            audit_result = RepairEstimateResult(**result_payload)
+            stem = re.sub(
+                r"[^a-zA-Z0-9]+",
+                "_",
+                (customer_job_name or repair_scope.get("issue_type") or "repair_estimate"),
+            ).strip("_").lower()
+            paths = write_repair_audit_package(audit_result, Path("output/repair_estimator/audit"), stem=stem or "repair_estimate")
+            st.session_state["integrated_repair_estimate_audit_paths"] = {name: str(path) for name, path in paths.items()}
+            st.success("Repair audit package exported.")
+        except Exception as exc:
+            logger.exception("Repair audit export failed")
+            st.error(f"Could not export repair audit package: {safe_exception_text(exc)}")
+    audit_paths = st.session_state.get("integrated_repair_estimate_audit_paths") or {}
+    audit_json = Path(audit_paths.get("json", "")) if audit_paths.get("json") else None
+    audit_xlsx = Path(audit_paths.get("xlsx", "")) if audit_paths.get("xlsx") else None
+    if audit_json and audit_json.exists():
+        st.download_button("Download Repair Audit JSON", audit_json.read_bytes(), audit_json.name, "application/json", key="download_integrated_repair_audit_json")
+    if audit_xlsx and audit_xlsx.exists():
+        st.download_button(
+            "Download Repair Audit Workbook",
+            audit_xlsx.read_bytes(),
+            audit_xlsx.name,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_integrated_repair_audit_xlsx",
+        )
+
+
 def estimator_prototype_page() -> None:
     st.title("Estimator Prototype")
     st.caption("Prototype only. Uses database history when available, local staging files as fallback, deterministic rules, and historical estimate patterns. Estimator review is required before quoting.")
+
+    estimate_type_selection = st.selectbox(
+        "Estimate Type",
+        ESTIMATE_TYPE_OPTIONS,
+        index=0,
+        help="Auto-detect uses deterministic keywords to route notes to repair, restoration/coating, or insulation estimating.",
+        key="estimator_estimate_type",
+    )
 
     data = load_estimator_data_cached()
     with st.expander("Source staging files", expanded=False):
@@ -3726,6 +3971,11 @@ def estimator_prototype_page() -> None:
         placeholder="Metal roof, about 12,000 sqft, rusted fasteners, restaurant in Louisville, silicone coating, medium access.",
     )
     st.caption("Edit notes here, then click Generate Estimate Recommendation from Notes. Command+Enter only updates the text box; it does not generate the estimate.")
+    resolved_estimate_type = resolve_estimate_type(estimate_type_selection, notes)
+    if estimate_type_selection == ESTIMATE_TYPE_AUTO:
+        st.caption(f"Auto-detected estimate type: {resolved_estimate_type}")
+    else:
+        st.caption(f"Selected estimate type: {resolved_estimate_type}")
 
     with st.expander("Optional structured overrides", expanded=True):
         c1, c2, c3 = st.columns(3)
@@ -3746,6 +3996,22 @@ def estimator_prototype_page() -> None:
             access_complexity = st.selectbox("Access complexity", ["", "low", "medium", "high"], key="estimator_access")
             location = st.text_input("Location", key="estimator_location", placeholder="Louisville, KY")
         target_wet_mils = st.number_input("Target warranty/coating wet mils", min_value=0.0, value=0.0, step=1.0, key="estimator_wet_mils")
+        repair_roof_type_override = ""
+        repair_urgency_override = ""
+        if resolved_estimate_type == ESTIMATE_TYPE_REPAIR:
+            r1, r2 = st.columns(2)
+            with r1:
+                repair_roof_type_override = st.selectbox(
+                    "Repair roof type override",
+                    ["", "metal", "tpo", "epdm", "modified_bitumen", "built_up", "shingle", "foam", "coated_roof"],
+                    key="integrated_repair_roof_type_override",
+                )
+            with r2:
+                repair_urgency_override = st.selectbox(
+                    "Repair urgency override",
+                    ["", "standard", "emergency"],
+                    key="integrated_repair_urgency_override",
+                )
     surface_area_override = optional_positive_number(surface_area)
     foam_thickness_override = optional_positive_number(foam_thickness)
     target_wet_mils_override = optional_positive_number(target_wet_mils)
@@ -3765,14 +4031,18 @@ def estimator_prototype_page() -> None:
 
     st.subheader("Field Notes Estimate Recommendation")
     field_estimator_fn, field_estimator_import_warning = optional_field_notes_estimator()
-    if field_estimator_import_warning:
+    if field_estimator_import_warning and resolved_estimate_type != ESTIMATE_TYPE_REPAIR:
         st.warning(field_estimator_import_warning)
-    use_historical_calibration = st.checkbox(
-        "Use historical labor/template calibration",
-        value=True,
-        help="Uses database-backed pricing and historical labor/material calibration. Turn off only to isolate rough-note parsing and dimension math.",
-        key="use_historical_calibration",
-    )
+    if resolved_estimate_type == ESTIMATE_TYPE_REPAIR:
+        st.info("Repair mode uses VSimple repair history tables and does not run the sqft-based roof coating estimator.")
+        use_historical_calibration = False
+    else:
+        use_historical_calibration = st.checkbox(
+            "Use historical labor/template calibration",
+            value=True,
+            help="Uses database-backed pricing and historical labor/material calibration. Turn off only to isolate rough-note parsing and dimension math.",
+            key="use_historical_calibration",
+        )
     field_notes_data = data if use_historical_calibration else None
     with st.expander("Field notes recommendation overrides", expanded=False):
         f1, f2, f3 = st.columns(3)
@@ -3788,10 +4058,26 @@ def estimator_prototype_page() -> None:
     field_sqft_override = optional_positive_number(field_sqft) or surface_area_override
     field_warranty_override = optional_positive_number(field_warranty)
     if st.button("Generate Estimate Recommendation from Notes", key="generate_field_estimate_recommendation"):
-        if field_estimator_fn is None:
-            st.warning("Field notes estimator is not available in this deployment yet.")
-        else:
-            try:
+        try:
+            if resolved_estimate_type == ESTIMATE_TYPE_REPAIR:
+                route, repair_result = route_estimator_request(
+                    notes,
+                    resolved_estimate_type,
+                    overrides={
+                        "roof_type": repair_roof_type_override,
+                        "urgency": repair_urgency_override,
+                        "customer_job_name": field_job_name,
+                        "photos_link": "",
+                    },
+                )
+                st.session_state["field_estimate_route"] = route
+                st.session_state["integrated_repair_estimate_result"] = repair_result.to_dict()
+                st.session_state["field_estimate_recommendation"] = None
+                st.session_state["field_estimate_recommendation_notes"] = notes
+                st.session_state.pop("integrated_repair_estimate_audit_paths", None)
+            elif field_estimator_fn is None:
+                st.warning("Field notes estimator is not available in this deployment yet.")
+            else:
                 st.session_state["field_estimate_recommendation"] = field_estimator_fn(
                     notes,
                     {
@@ -3808,13 +4094,27 @@ def estimator_prototype_page() -> None:
                     },
                     data=field_notes_data,
                 )
+                st.session_state["field_estimate_route"] = resolved_estimate_type
+                st.session_state.pop("integrated_repair_estimate_result", None)
                 st.session_state["field_estimate_recommendation_notes"] = notes
                 st.session_state.pop("field_estimator_evidence_export_paths", None)
-            except Exception as err:
-                logger.exception("Field notes estimator failed")
-                st.error("Field notes estimator failed for this input.")
-                st.warning(f"{type(err).__name__}: {err}")
-                st.session_state["field_estimate_recommendation"] = None
+        except Exception as err:
+            logger.exception("Estimator mode failed")
+            st.error("Estimator failed for this input.")
+            st.warning(f"{type(err).__name__}: {safe_exception_text(err)}")
+            st.session_state["field_estimate_recommendation"] = None
+            st.session_state.pop("integrated_repair_estimate_result", None)
+    if st.session_state.get("field_estimate_route") == ESTIMATE_TYPE_REPAIR:
+        repair_payload = st.session_state.get("integrated_repair_estimate_result")
+        recommendation_notes = st.session_state.get("field_estimate_recommendation_notes") or notes
+        if repair_payload:
+            if recommendation_notes != notes:
+                st.warning(
+                    "The displayed repair estimate was generated from earlier notes. "
+                    "Click Generate Estimate Recommendation from Notes again to refresh it for the current text."
+                )
+            render_repair_estimate_result(repair_payload, notes=recommendation_notes, customer_job_name=field_job_name)
+            return
     field_recommendation = st.session_state.get("field_estimate_recommendation")
     if field_recommendation:
         recommendation_notes = st.session_state.get("field_estimate_recommendation_notes") or notes
@@ -4206,6 +4506,202 @@ def estimator_prototype_page() -> None:
             )
         except Exception as exc:
             st.error(f"Could not generate workbook draft: {safe_exception_text(exc)}")
+
+
+def repair_estimator_page() -> None:
+    st.title("Repair Estimator")
+    st.caption(
+        "MVP for small repair calls. Uses VSimple repair history from repair_* tables, "
+        "separate from the full roof coating/restoration estimator. Estimator review is required."
+    )
+    try:
+        from jobscan.repair_estimator.estimator import estimate_repair_from_notes, write_repair_audit_package
+    except Exception as exc:
+        st.error("Repair estimator module is unavailable.")
+        st.warning(safe_exception_text(exc))
+        return
+
+    try:
+        repair_data = load_repair_history_cached()
+    except Exception as exc:
+        logger.exception("Repair estimator data load failed")
+        st.error("Could not load repair estimator history from the database.")
+        st.warning(safe_exception_text(exc))
+        return
+
+    with st.expander("Repair history data loaded", expanded=False):
+        st.write(
+            {
+                "repair_jobs": len(repair_data.repair_jobs),
+                "repair_material_usage": len(repair_data.repair_material_usage),
+                "repair_labor_usage": len(repair_data.repair_labor_usage),
+                "repair_scope_text": len(repair_data.repair_scope_text),
+                "repair_outcomes": len(repair_data.repair_outcomes),
+            }
+        )
+
+    sample_notes = {
+        "Pipe boot leak": "Small active leak around one pipe boot on TPO roof. Easy access from roof hatch. Seal and reinforce with fabric if needed.",
+        "Open seam": "Open seam on metal roof, about 12 linear feet, water entering after rain. Need clean, fabric, and sealant repair.",
+        "Fasteners": "Seal exposed fasteners on standing seam metal roof. About 30 screws at edge condition. Standard access.",
+        "Skylight curb": "Leak at skylight curb on coated roof. Inspect curb flashing, seal, and reinforce the corner.",
+        "Emergency leak": "Emergency active roof leak over office area. Unknown roof type. Need same-day leak investigation and temporary patch.",
+    }
+    sample_cols = st.columns(len(sample_notes))
+    for column, (label, sample) in zip(sample_cols, sample_notes.items()):
+        if column.button(label, key=f"repair_sample_{label}"):
+            st.session_state["repair_estimator_notes"] = sample
+
+    notes = st.text_area(
+        "Repair field notes",
+        key="repair_estimator_notes",
+        height=140,
+        placeholder="Leak around pipe boot on TPO roof, one penetration, easy access, seal and reinforce with fabric.",
+    )
+    st.caption("Use this for small repair calls. For coating/restoration scopes, use the Estimator Prototype instead.")
+    with st.expander("Optional context", expanded=True):
+        r1, r2, r3 = st.columns(3)
+        with r1:
+            customer_job_name = st.text_input("Customer/job name", key="repair_customer_job_name")
+            known_roof_type = st.selectbox(
+                "Roof type override",
+                ["", "metal", "tpo", "epdm", "modified_bitumen", "built_up", "shingle", "foam", "coated_roof"],
+                key="repair_roof_type_override",
+            )
+        with r2:
+            urgency = st.selectbox("Urgency", ["", "standard", "emergency"], key="repair_urgency_override")
+            photos_link = st.text_input("Photos/link", key="repair_photos_link")
+        with r3:
+            known_status = st.text_input("Known status/notes", key="repair_status_notes")
+
+    if st.button("Generate Repair Estimate", key="generate_repair_estimate"):
+        if not notes.strip():
+            st.warning("Enter repair notes first.")
+        else:
+            try:
+                result = estimate_repair_from_notes(
+                    notes,
+                    repair_data,
+                    overrides={
+                        "roof_type": known_roof_type,
+                        "urgency": urgency,
+                        "customer_job_name": customer_job_name,
+                        "photos_link": photos_link,
+                        "status_notes": known_status,
+                    },
+                )
+                st.session_state["repair_estimate_result"] = result.to_dict()
+                st.session_state["repair_estimate_notes"] = notes
+                st.session_state.pop("repair_estimate_audit_paths", None)
+            except Exception as exc:
+                logger.exception("Repair estimator failed")
+                st.error("Repair estimator failed for this input.")
+                st.warning(safe_exception_text(exc))
+
+    result_payload = st.session_state.get("repair_estimate_result")
+    if not result_payload:
+        return
+    if st.session_state.get("repair_estimate_notes") != notes:
+        st.warning("The displayed repair estimate was generated from earlier notes. Click Generate Repair Estimate to refresh it.")
+
+    metric_row(
+        [
+            ("Labor Target", f"{result_payload.get('estimated_labor_hours_target') or 0:,.1f} hrs"),
+            ("Material Target", fmt_dollar(result_payload.get("estimated_material_cost_target"))),
+            ("Invoice Target", fmt_dollar(result_payload.get("estimated_invoice_target"))),
+            ("Confidence", str(result_payload.get("confidence") or "-").title()),
+        ]
+    )
+    st.subheader("Parsed Repair Scope")
+    st.dataframe(pd.DataFrame([result_payload.get("parsed_scope") or {}]), use_container_width=True, hide_index=True)
+    if result_payload.get("review_flags"):
+        st.warning("\n".join(result_payload.get("review_flags") or []))
+
+    st.subheader("Estimate Range")
+    range_df = pd.DataFrame(
+        [
+            {
+                "bucket": "Labor hours",
+                "low": result_payload.get("estimated_labor_hours_low"),
+                "target": result_payload.get("estimated_labor_hours_target"),
+                "high": result_payload.get("estimated_labor_hours_high"),
+            },
+            {
+                "bucket": "Material cost",
+                "low": result_payload.get("estimated_material_cost_low"),
+                "target": result_payload.get("estimated_material_cost_target"),
+                "high": result_payload.get("estimated_material_cost_high"),
+            },
+            {
+                "bucket": "Invoice / price",
+                "low": result_payload.get("estimated_invoice_low"),
+                "target": result_payload.get("estimated_invoice_target"),
+                "high": result_payload.get("estimated_invoice_high"),
+            },
+        ]
+    )
+    st.dataframe(range_df, use_container_width=True, hide_index=True)
+
+    st.subheader("Likely Repair Packages")
+    show_table(
+        dataframe_from_records(result_payload.get("selected_repair_packages") or []),
+        ["material_package", "selection_reason", "evidence_count", "median_total_cost", "common_material_names"],
+        height=240,
+    )
+
+    st.subheader("Similar Historical Repairs")
+    show_table(
+        dataframe_from_records(result_payload.get("similar_repairs") or []),
+        [
+            "repair_id",
+            "job_name",
+            "customer",
+            "status",
+            "type_of_repair",
+            "roof_type",
+            "historical_labor_hours",
+            "invoice_amount",
+            "gross_profit",
+            "url",
+            "similarity_score",
+            "reason_matched",
+        ],
+        height=360,
+    )
+
+    with st.expander("Evidence summary and matched profiles", expanded=False):
+        st.dataframe(pd.DataFrame([result_payload.get("evidence_summary") or {}]), use_container_width=True, hide_index=True)
+        show_table(
+            dataframe_from_records(result_payload.get("matched_repair_profiles") or []),
+            ["type_of_repair", "roof_type", "evidence_count", "median_labor_hours", "median_invoice_amount"],
+            height=260,
+        )
+
+    st.subheader("Repair Estimate Audit Export")
+    if st.button("Export Repair Audit Package", key="export_repair_estimator_audit"):
+        try:
+            from jobscan.repair_estimator.estimator import RepairEstimateResult
+
+            audit_result = RepairEstimateResult(**result_payload)
+            stem = re.sub(r"[^a-zA-Z0-9]+", "_", (customer_job_name or result_payload.get("parsed_scope", {}).get("issue_type") or "repair_estimate")).strip("_").lower()
+            paths = write_repair_audit_package(audit_result, Path("output/repair_estimator/audit"), stem=stem or "repair_estimate")
+            st.session_state["repair_estimate_audit_paths"] = {name: str(path) for name, path in paths.items()}
+            st.success("Repair audit package exported.")
+        except Exception as exc:
+            logger.exception("Repair audit export failed")
+            st.error(f"Could not export repair audit package: {safe_exception_text(exc)}")
+    audit_paths = st.session_state.get("repair_estimate_audit_paths") or {}
+    audit_json = Path(audit_paths.get("json", "")) if audit_paths.get("json") else None
+    audit_xlsx = Path(audit_paths.get("xlsx", "")) if audit_paths.get("xlsx") else None
+    if audit_json and audit_json.exists():
+        st.download_button("Download Repair Audit JSON", audit_json.read_bytes(), audit_json.name, "application/json")
+    if audit_xlsx and audit_xlsx.exists():
+        st.download_button(
+            "Download Repair Audit Workbook",
+            audit_xlsx.read_bytes(),
+            audit_xlsx.name,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
 
 
 def raw_tables_page() -> None:

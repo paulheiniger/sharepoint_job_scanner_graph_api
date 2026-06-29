@@ -986,6 +986,43 @@ The repair profiler outputs:
 
 These repair artifacts are intended to calibrate small repair estimates from field notes. They should not be mixed directly into the full roof coating/restoration estimator without explicit repair-scope routing.
 
+### Repair Estimator MVP
+
+The Streamlit dashboard includes repair estimating inside the **Estimator Prototype** page. Choose **Estimate Type → Roof Repair**, or leave **Auto-detect** on and enter repair notes. Repair mode reads the normalized VSimple repair tables from Postgres:
+
+- `repair_jobs`
+- `repair_material_usage`
+- `repair_labor_usage`
+- `repair_scope_text`
+- `repair_outcomes`
+
+The repair estimator engine is deliberately separate from the full roof coating/restoration estimator. It parses repair notes, retrieves similar historical repairs using messy text evidence, estimates labor/material/invoice ranges from repair history, and exports a reviewable JSON/XLSX audit package. Roof Restoration / Coating and Insulation modes continue to use the existing field-notes estimator flow.
+
+CLI usage:
+
+```bash
+python -m jobscan.repair_estimator.estimate \
+  --notes "Small active leak around one pipe boot on TPO roof. Easy access. Seal and reinforce with fabric if needed." \
+  --db-url "$NEON_DATABASE_URL" \
+  --out-dir output/repair_estimator/audit
+```
+
+Evaluation harness:
+
+```bash
+python evals/repair_estimator/run_repair_eval.py \
+  --db-url "$NEON_DATABASE_URL" \
+  --write-audit \
+  --audit-output-dir output/repair_estimator/eval_audit
+```
+
+Guardrails:
+
+- Fewer than five similar historical repairs marks the result low confidence.
+- Vague repair notes produce missing-info review flags.
+- Material quantities are not invented; the MVP uses historical material cost/package evidence and flags estimator review.
+- Emergency leak calls get an urgency review flag and a range adjustment.
+
 ### Field-notes estimator
 
 The first field-notes-to-estimate engine is available inside the Streamlit **Estimator Prototype** page. It accepts rough notes such as:

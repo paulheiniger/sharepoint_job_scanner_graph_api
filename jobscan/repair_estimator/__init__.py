@@ -4,6 +4,8 @@ __all__ = [
     "RepairTables",
     "load_vsimple_repair_export",
     "profile_repairs",
+    "estimate_repair_from_notes",
+    "parse_repair_notes",
     "write_repair_tables",
 ]
 
@@ -17,4 +19,12 @@ def __getattr__(name: str):
         from . import profiler
 
         return getattr(profiler, name)
+    if name == "estimate_repair_from_notes":
+        from . import estimator
+
+        return getattr(estimator, name)
+    if name == "parse_repair_notes":
+        from . import scope_parser
+
+        return getattr(scope_parser, name)
     raise AttributeError(name)
