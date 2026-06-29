@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import re
 from dataclasses import asdict, is_dataclass
@@ -20,6 +21,7 @@ except ImportError:  # pragma: no cover - pandas normally brings numpy, but keep
 
 EVIDENCE_SHEETS = [
     "README",
+    "run_integrity",
     "parsed_scope",
     "material_plan",
     "material_evidence",
@@ -113,6 +115,38 @@ def sanitize_for_export(value: Any, *, excel: bool = False) -> Any:
 
 def _jsonable(value: Any) -> Any:
     return sanitize_for_export(value, excel=False)
+
+
+def _notes_hash(notes: str | None) -> str:
+    return hashlib.sha256((notes or "").encode("utf-8")).hexdigest()
+
+
+def _normalized_text(value: Any) -> str:
+    return " ".join(str(value or "").lower().split())
+
+
+def _collect_source_text_fields(value: Any, path: str = "") -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            if str(key) == "source_text" and item:
+                rows.append({"field": child_path, "source_text": str(item)})
+            rows.extend(_collect_source_text_fields(item, child_path))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            rows.extend(_collect_source_text_fields(item, f"{path}[{index}]"))
+    return rows
+
+
+def _stale_source_text_rows(parsed_fields: dict[str, Any], notes: str | None) -> list[dict[str, str]]:
+    normalized_notes = _normalized_text(notes)
+    stale: list[dict[str, str]] = []
+    for row in _collect_source_text_fields(parsed_fields):
+        source = _normalized_text(row.get("source_text"))
+        if source and source not in normalized_notes:
+            stale.append(row)
+    return stale
 
 
 def _dict_from_object(value: Any) -> dict[str, Any]:
@@ -502,6 +536,34 @@ def _estimate_rollup_rows(recommendation: dict[str, Any]) -> list[dict[str, Any]
     ]
 
 
+def _run_integrity_rows(recommendation: dict[str, Any], notes: str | None) -> list[dict[str, Any]]:
+    parsed_fields = recommendation.get("parsed_fields") or {}
+    debug = recommendation.get("debug") or {}
+    existing = debug.get("run_integrity") if isinstance(debug, dict) else {}
+    existing = existing if isinstance(existing, dict) else {}
+    input_hash = _notes_hash(notes)
+    parsed_hash = parsed_fields.get("input_notes_hash") or existing.get("parsed_scope_notes_hash")
+    stale_rows = _stale_source_text_rows(parsed_fields, notes)
+    hash_mismatch = bool(parsed_hash and parsed_hash != input_hash)
+    warnings = list(existing.get("warnings") or [])
+    if stale_rows and "Possible stale parse/cache contamination." not in warnings:
+        warnings.append("Possible stale parse/cache contamination.")
+    if hash_mismatch:
+        warnings.append("Recommendation notes hash does not match export notes hash; exported recommendation may belong to previous notes.")
+    return [
+        {
+            "run_id": existing.get("run_id") or parsed_fields.get("run_id"),
+            "input_notes_hash": input_hash,
+            "parsed_scope_notes_hash": parsed_hash,
+            "stale_source_text_detected": bool(stale_rows or existing.get("stale_source_text_detected")),
+            "stale_fields_detected": json.dumps(stale_rows or existing.get("stale_fields_detected") or [], default=str, sort_keys=True),
+            "prior_cache_used": bool(existing.get("prior_cache_used")),
+            "hash_mismatch": hash_mismatch,
+            "warnings": "; ".join(str(item) for item in warnings),
+        }
+    ]
+
+
 def build_estimator_evidence_export(
     recommendation: Any,
     data: Any = None,
@@ -514,14 +576,26 @@ def build_estimator_evidence_export(
     generated_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     source_files = getattr(data, "source_files_used", []) if data is not None else []
     data_warnings = getattr(data, "warnings", []) if data is not None else []
+    run_integrity = _run_integrity_rows(recommendation_dict, notes)
     parsed_scope = [{**parsed_fields, **{f"header_{key}": value for key, value in header.items()}, "review_flags": "; ".join(recommendation_dict.get("review_flags") or [])}]
     material_plan = _material_plan_rows(recommendation_dict)
     labor_plan = _labor_plan_rows(recommendation_dict)
+    estimated_sqft = parsed_fields.get("estimated_sqft") or parsed_fields.get("surface_area_sqft") or header.get("C12_estimated_sqft")
+    estimated_sqft_number = _safe_float(estimated_sqft)
+    total_labor_hours = sum(_safe_float(row.get("total_hours")) or 0 for row in labor_plan)
+    total_labor_cost = sum(_safe_float(row.get("estimated_cost")) or 0 for row in labor_plan if row.get("included_in_total"))
+    crew_days_total = sum(_safe_float(row.get("adjusted_days")) or _safe_float(row.get("crew_days")) or 0 for row in labor_plan)
+    labor_debug = recommendation_dict.get("debug", {}).get("labor_calibration", {}) if isinstance(recommendation_dict.get("debug"), dict) else {}
+    labor_selection_summary = labor_debug.get("selection_summary", {}) if isinstance(labor_debug, dict) else {}
     run_summary = {
         "generated_at": generated_at,
+        "run_id": run_integrity[0].get("run_id"),
+        "input_notes_hash": run_integrity[0].get("input_notes_hash"),
+        "parsed_scope_notes_hash": run_integrity[0].get("parsed_scope_notes_hash"),
+        "stale_source_text_detected": run_integrity[0].get("stale_source_text_detected"),
         "notes": notes or "",
         "project_name": header.get("C2_job_name") or parsed_fields.get("project_type") or "Estimator recommendation",
-        "estimated_sqft": parsed_fields.get("estimated_sqft") or parsed_fields.get("surface_area_sqft") or header.get("C12_estimated_sqft"),
+        "estimated_sqft": estimated_sqft,
         "estimate_low": recommendation_dict.get("estimate_low"),
         "estimate_target": recommendation_dict.get("estimate_target"),
         "estimate_high": recommendation_dict.get("estimate_high"),
@@ -530,6 +604,13 @@ def build_estimator_evidence_export(
         "labor_rows": len(labor_plan),
         "similar_jobs": len(_records(recommendation_dict.get("similar_examples"))),
         "review_flags": len(recommendation_dict.get("review_flags") or []),
+        "total_labor_hours": round(total_labor_hours, 2),
+        "labor_hours_per_1000_sqft": round(total_labor_hours / estimated_sqft_number * 1000, 2) if estimated_sqft_number else None,
+        "labor_cost_per_sqft": round(total_labor_cost / estimated_sqft_number, 2) if estimated_sqft_number else None,
+        "crew_days_total": round(crew_days_total, 2),
+        "labor_bundle_summary": labor_selection_summary.get("labor_bundle_summary"),
+        "labor_cap_applied": labor_selection_summary.get("labor_cap_applied"),
+        "labor_overlap_adjustment": labor_selection_summary.get("labor_overlap_adjustment"),
         "source_files_used": "; ".join(str(item) for item in source_files),
         "data_warnings": "; ".join(str(item) for item in data_warnings),
         "output_dir": str(output_dir) if output_dir else "",
@@ -538,6 +619,7 @@ def build_estimator_evidence_export(
         {"field": "Purpose", "value": "Estimator evidence export for reviewing how the field-notes estimator selected scope, materials, labor, history, and rollup values."},
         {"field": "Generated At", "value": generated_at},
         {"field": "Notes", "value": notes or ""},
+        {"field": "Workbook Sheet", "value": "run_integrity: run id, input notes hash, stale source-text/cache contamination checks."},
         {"field": "Workbook Sheet", "value": "parsed_scope: parsed fields, dimension math, workbook header, review flags."},
         {"field": "Workbook Sheet", "value": "material_plan/material_evidence: material rows and pricing/calibration evidence."},
         {"field": "Workbook Sheet", "value": "labor_plan/labor_evidence/labor_diagnostics: selected labor rows, candidate evidence, and rejected/relaxed calibration diagnostics."},
@@ -547,6 +629,7 @@ def build_estimator_evidence_export(
         "run_summary": run_summary,
         "sheets": {
             "README": readme_rows,
+            "run_integrity": run_integrity,
             "parsed_scope": parsed_scope,
             "material_plan": material_plan,
             "material_evidence": _material_evidence_rows(recommendation_dict, data),

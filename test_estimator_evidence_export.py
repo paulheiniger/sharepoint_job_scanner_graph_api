@@ -31,6 +31,7 @@ def test_build_estimator_evidence_export_contains_expected_sheets() -> None:
     assert export["run_summary"]["estimated_sqft"] == 9536
     for sheet in [
         "README",
+        "run_integrity",
         "parsed_scope",
         "material_plan",
         "material_evidence",
@@ -46,6 +47,25 @@ def test_build_estimator_evidence_export_contains_expected_sheets() -> None:
         assert export["sheets"][sheet]
     assert any(row.get("task") == "labor_prep" for row in export["sheets"]["labor_diagnostics"])
     assert any(row.get("included_in_total") is True for row in export["sheets"]["material_plan"])
+    assert export["run_summary"]["run_id"]
+    assert export["run_summary"]["input_notes_hash"] == export["run_summary"]["parsed_scope_notes_hash"]
+    assert export["sheets"]["run_integrity"][0]["stale_source_text_detected"] is False
+
+
+def test_evidence_export_flags_notes_hash_mismatch_and_stale_source_text() -> None:
+    data = field_data()
+    recommendation = estimate_from_field_notes("Roof is 160 ft by 150 ft. Silicone coating Louisville KY.", data=data)
+
+    export = build_estimator_evidence_export(
+        recommendation,
+        data=data,
+        notes="Roof is 90 ft by 70 ft. Silicone coating Louisville KY.",
+    )
+    integrity = export["sheets"]["run_integrity"][0]
+
+    assert integrity["hash_mismatch"] is True
+    assert integrity["stale_source_text_detected"] is True
+    assert "160 ft by 150 ft" in integrity["stale_fields_detected"]
 
 
 def test_write_estimator_evidence_export_creates_parseable_json_and_xlsx(tmp_path) -> None:
@@ -61,6 +81,7 @@ def test_write_estimator_evidence_export_creates_parseable_json_and_xlsx(tmp_pat
     workbook = load_workbook(paths["xlsx"], read_only=True)
     assert {
         "README",
+        "run_integrity",
         "parsed_scope",
         "material_plan",
         "labor_plan",

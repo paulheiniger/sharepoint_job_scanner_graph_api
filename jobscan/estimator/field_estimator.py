@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import math
 import re
+import hashlib
 from dataclasses import asdict, dataclass
 from typing import Any
+from uuid import uuid4
 
 import pandas as pd
 
@@ -95,6 +97,42 @@ def optional_positive_float(value: Any) -> float | None:
 def optional_positive_int(value: Any) -> int | None:
     number = optional_positive_float(value)
     return int(number) if number is not None else None
+
+
+def notes_hash(notes: str | None) -> str:
+    return hashlib.sha256((notes or "").encode("utf-8")).hexdigest()
+
+
+def new_estimator_run_id(notes: str | None) -> str:
+    return f"field-{notes_hash(notes)[:12]}-{uuid4().hex[:8]}"
+
+
+def normalized_source_text(value: Any) -> str:
+    return " ".join(str(value or "").lower().split())
+
+
+def collect_source_text_fields(value: Any, path: str = "") -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            if str(key) == "source_text" and first_nonblank(item):
+                rows.append({"field": child_path, "source_text": first_nonblank(item)})
+            rows.extend(collect_source_text_fields(item, child_path))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            rows.extend(collect_source_text_fields(item, f"{path}[{index}]"))
+    return rows
+
+
+def stale_source_text_fields(parsed_fields: dict[str, Any], notes: str) -> list[dict[str, str]]:
+    normalized_notes = normalized_source_text(notes)
+    stale: list[dict[str, str]] = []
+    for row in collect_source_text_fields(parsed_fields):
+        source = normalized_source_text(row.get("source_text"))
+        if source and source not in normalized_notes:
+            stale.append(row)
+    return stale
 
 
 def warranty_wet_mils(warranty_target: Any, coating_type: str) -> float:
@@ -768,9 +806,26 @@ def _roof_coating_heavy_labor_trigger(scope: dict[str, Any]) -> bool:
     )
 
 
+def _clean_roof_coating_labor_scope(scope: dict[str, Any]) -> bool:
+    text = _scope_text(scope)
+    condition = first_nonblank(scope.get("roof_condition")).lower()
+    access = first_nonblank(scope.get("access_complexity")).lower()
+    penetrations = first_nonblank(scope.get("penetrations_complexity")).lower()
+    flags = {str(flag).lower() for flag in scope.get("condition_detail_flags") or []}
+    no_visible_rust = bool(re.search(r"\b(?:no|without)\s+(?:visible\s+)?rust\b|\bno\s+rusted\s+fasteners?\b", text))
+    clean_condition = condition in {"excellent", "good"} or ("excellent condition" in text and no_visible_rust)
+    low_access = access in {"", "low", "easy"}
+    low_detail = penetrations in {"", "low"} or "few penetrations" in text
+    no_rust_flags = not any("rust" in flag for flag in flags) and no_visible_rust
+    maintenance = any(term in text for term in ("maintenance coating", "minor dirt", "extend the life", "five-year-old", "5-year-old"))
+    return bool(is_roof_coating_scope(scope) and clean_condition and low_access and low_detail and no_rust_flags and maintenance)
+
+
 def roof_coating_labor_bundle_cap_per_1000(scope: dict[str, Any]) -> float:
     if not is_roof_coating_scope(scope):
         return 0.0
+    if _clean_roof_coating_labor_scope(scope):
+        return 40.0
     return 80.0 if _roof_coating_heavy_labor_trigger(scope) else 60.0
 
 
@@ -793,9 +848,20 @@ def apply_roof_coating_labor_bundle_cap(
         diagnostics["selection_summary"]["labor_bundle_before_cap_hours"] = round(total_hours, 2)
         diagnostics["selection_summary"]["labor_bundle_cap_hours"] = round(cap_hours, 2)
         diagnostics["selection_summary"]["labor_bundle_cap_hours_per_1000_sqft"] = cap_per_1000
+        diagnostics["selection_summary"]["labor_bundle_summary"] = {
+            "surface_prep_bundle": ["labor_prep"],
+            "coating_application_bundle": ["labor_base", "labor_top_coat"],
+            "detail_treatment_bundle": ["labor_seam_sealer", "labor_details", "labor_caulk"],
+            "mobilization_cleanup_bundle": ["labor_cleanup", "labor_loading"],
+            "optional_primer_bundle": ["labor_prime"],
+        }
+        diagnostics["selection_summary"]["labor_cap_applied"] = total_hours > cap_hours
+        diagnostics["selection_summary"]["labor_overlap_adjustment"] = "detail and coating bundles are capped before total bundle cap"
+        diagnostics["selection_summary"]["clean_maintenance_labor_scope"] = _clean_roof_coating_labor_scope(scope)
     if total_hours <= cap_hours:
         if isinstance(diagnostics, dict):
             diagnostics["selection_summary"]["labor_bundle_after_cap_hours"] = round(total_hours, 2)
+            diagnostics["selection_summary"]["final_labor_hours_per_1000_sqft"] = round(total_hours / area * 1000, 2)
         return plan, total_hours, total_cost
     # Leave a little headroom so rounded per-row hours cannot sum back above the cap.
     target_cap_hours = max(0.0, cap_hours * 0.999)
@@ -827,6 +893,7 @@ def apply_roof_coating_labor_bundle_cap(
         diagnostics["selection_summary"]["labor_bundle_after_cap_hours"] = round(capped_total_hours, 2)
         diagnostics["selection_summary"]["labor_bundle_cap_scale"] = round(scale, 4)
         diagnostics["selection_summary"]["labor_bundle_target_cap_hours_after_rounding_headroom"] = round(target_cap_hours, 2)
+        diagnostics["selection_summary"]["final_labor_hours_per_1000_sqft"] = round(capped_total_hours / area * 1000, 2)
         diagnostics.setdefault("selection_rows", []).append(
             {
                 "task": "TOTAL_LABOR_BUNDLE",
@@ -843,6 +910,36 @@ def apply_roof_coating_labor_bundle_cap(
             }
         )
     return capped_plan, capped_total_hours, capped_total_cost
+
+
+def labor_sanity_review_flags(
+    scope: dict[str, Any],
+    material_plan: list[dict[str, Any]],
+    labor_plan: list[dict[str, Any]],
+) -> list[str]:
+    flags: list[str] = []
+    area = optional_positive_float(scope.get("estimated_sqft")) or optional_positive_float(scope.get("surface_area_sqft"))
+    net_area = _dimension_summary_value(scope.get("dimension_summary") or {}, "net_area_sqft")
+    net_area_number = optional_positive_float(net_area)
+    if area and net_area_number and abs(area - net_area_number) > max(1.0, net_area_number * 0.01):
+        flags.append("Labor area does not equal parsed net area; verify stale scope or override.")
+    total_hours = sum(safe_float(row.get("total_hours"), 0.0) for row in labor_plan)
+    hours_per_1000 = total_hours / area * 1000 if area else None
+    if _clean_roof_coating_labor_scope(scope) and hours_per_1000 and hours_per_1000 > 40:
+        flags.append("Excellent/easy/low-penetration coating labor exceeds clean maintenance cap; verify labor calibration.")
+    low_penetration = first_nonblank(scope.get("penetrations_complexity")).lower() in {"", "low"}
+    detail_tasks = {"labor_seam_sealer", "labor_details", "labor_caulk"}
+    coating_tasks = {"labor_base", "labor_top_coat"}
+    detail_hours = sum(safe_float(row.get("total_hours"), 0.0) for row in labor_plan if first_nonblank(row.get("task")) in detail_tasks)
+    coating_hours = sum(safe_float(row.get("total_hours"), 0.0) for row in labor_plan if first_nonblank(row.get("task")) in coating_tasks)
+    if low_penetration and coating_hours and detail_hours > coating_hours:
+        flags.append("Detail labor exceeds coating application labor on a low-penetration roof; verify detail bundle.")
+    has_primer_labor = any(first_nonblank(row.get("task")) == "labor_prime" for row in labor_plan)
+    primer_material_rows = [row for row in material_plan if first_nonblank(row.get("category")) == "primer"]
+    primer_material_active = any(row.get("included_in_total") is not False and not bool(row.get("review_required") or row.get("needs_review")) for row in primer_material_rows)
+    if has_primer_labor and not primer_material_active:
+        flags.append("Primer labor is included while primer material is excluded or review-only.")
+    return flags
 
 
 def _fallback_hours_for_task(task: str, area: float, scope: dict[str, Any]) -> float:
@@ -1420,7 +1517,8 @@ def _build_work_package_decisions(scope: dict[str, Any], decision: dict[str, Any
         "severe weathering",
         "chalking",
     )
-    rusted_metal = metal_context and any(term in text for term in ("rust", "rusted", "oxidized"))
+    no_visible_rust = bool(re.search(r"\b(?:no|without)\s+(?:visible\s+)?rust\b|\bno\s+rusted\s+fasteners?\b", text))
+    rusted_metal = metal_context and not no_visible_rust and any(term in text for term in ("rust", "rusted", "oxidized"))
     explicit_primer = any(term in text for term in primer_terms)
     if coating_required and (explicit_primer or rusted_metal or foam_context):
         primer_applies: bool | str = True if ("primer" in text or "prime" in text or rusted_metal or "asphalt bleed" in text or "bleed" in text) else "review"
@@ -2560,6 +2658,8 @@ def estimate_from_field_notes(
 ) -> EstimateRecommendation:
     assumptions = assumptions or EstimatorAssumptions()
     optional_overrides = optional_overrides or {}
+    run_id = new_estimator_run_id(raw_notes)
+    input_notes_hash = notes_hash(raw_notes)
     field_input = FieldNotesInput(
         raw_notes=raw_notes,
         job_name=optional_overrides.get("job_name"),
@@ -2637,6 +2737,11 @@ def estimate_from_field_notes(
         crew_size = 4
         duration_days = 1
         labor_review_flags = ["Historical labor calibration failed; manual labor pricing required."]
+    labor_sanity_flags = labor_sanity_review_flags(scope, material_plan, labor_plan)
+    diagnostics = calibration.get("labor_calibration_diagnostics")
+    if isinstance(diagnostics, dict):
+        diagnostics.setdefault("selection_summary", {})
+        diagnostics["selection_summary"]["labor_sanity_checks"] = labor_sanity_flags
     travel_plan = build_travel_plan(scope, recommended_crew_size=crew_size, estimated_work_days=duration_days, assumptions=assumptions)
     equipment_low = sum(to_float(row.get("estimated_cost")) or 0 for row in material_plan if row.get("category") == "equipment") * 0.85
     equipment_high = equipment_low * 1.25
@@ -2654,6 +2759,7 @@ def estimate_from_field_notes(
     review_flags.extend(decision.get("human_review_flags") or [])
     review_flags.extend(material_review_flags)
     review_flags.extend(labor_review_flags)
+    review_flags.extend(labor_sanity_flags)
     if any("Historical labor calibration was incomplete" in str(row.get("notes") or "") for row in labor_plan):
         review_flags.append("Historical labor calibration was incomplete for one or more tasks.")
     if any("Historical labor calibration unavailable" in str(row.get("notes") or "") for row in labor_plan):
@@ -2674,6 +2780,7 @@ def estimate_from_field_notes(
         parsed_fields["surface_area_sqft"] = resolved_sqft
     for extra_field in (
         "condition_detail_flags",
+        "penetration_count",
         "roof_condition_raw_phrase",
         "roof_condition_reason",
         "penetrations_complexity_reason",
@@ -2682,6 +2789,20 @@ def estimate_from_field_notes(
     ):
         if extra_field in scope:
             parsed_fields[extra_field] = scope.get(extra_field)
+    parsed_fields["run_id"] = run_id
+    parsed_fields["input_notes_hash"] = input_notes_hash
+    stale_fields = stale_source_text_fields(parsed_fields, raw_notes)
+    if stale_fields:
+        review_flags.append("Possible stale parse/cache contamination.")
+    run_integrity = {
+        "run_id": run_id,
+        "input_notes_hash": input_notes_hash,
+        "parsed_scope_notes_hash": parsed_fields.get("input_notes_hash"),
+        "stale_source_text_detected": bool(stale_fields),
+        "stale_fields_detected": stale_fields,
+        "prior_cache_used": False,
+        "warnings": ["Possible stale parse/cache contamination."] if stale_fields else [],
+    }
     return EstimateRecommendation(
         parsed_fields=parsed_fields,
         recommended_scope=decision.get("recommended_scope") or [],
@@ -2708,5 +2829,6 @@ def estimate_from_field_notes(
                 "ai_confidence_by_field": ai_parsed_scope.get("confidence_by_field") if isinstance(ai_parsed_scope, dict) else {},
                 "ai_review_flags": ai_review_flags,
             },
+            "run_integrity": run_integrity,
         },
     )

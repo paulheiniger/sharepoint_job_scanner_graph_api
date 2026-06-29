@@ -20,6 +20,21 @@ STATE_BY_CITY = {
     "columbus": "OH",
 }
 
+NUMBER_WORDS = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+}
+
 
 def optional_positive_float(value: Any) -> float | None:
     number = to_float(value)
@@ -64,6 +79,47 @@ def parse_field_warranty_target(text: str) -> int | None:
         return None
     value = int(match.group(1))
     return value if 5 <= value <= 30 else None
+
+
+def parse_count_word(value: str) -> int | None:
+    text = value.strip().lower()
+    if text in NUMBER_WORDS:
+        return NUMBER_WORDS[text]
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
+def parse_penetration_count(text: str) -> int | None:
+    total = 0
+    matches = re.finditer(
+        r"\b(?P<count>one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,3})\s+"
+        r"(?P<object>(?:plumbing\s+)?vents?|hvac\s+curbs?|curbs?|rtus?|rooftop\s+units?|drains?|skylights?|penetrations?)\b",
+        text,
+        re.I,
+    )
+    for match in matches:
+        count = parse_count_word(match.group("count"))
+        if count is not None:
+            total += count
+    return total or None
+
+
+def parse_condition_detail_flags(text: str) -> list[str]:
+    lowered = text.lower()
+    no_rust = bool(re.search(r"\b(?:no|without)\s+(?:visible\s+)?rust\b|\bno\s+rusted\s+fasteners?\b", lowered))
+    flags: list[str] = []
+    if not no_rust:
+        if "rusted fastener" in lowered or "rusted fasteners" in lowered:
+            flags.append("rusted_fasteners")
+        elif "rust" in lowered or "rusted" in lowered:
+            flags.append("rust")
+    if "open seam" in lowered or "open seams" in lowered or "seams opening" in lowered:
+        flags.append("open_seams")
+    if "ponding" in lowered:
+        flags.append("ponding")
+    return flags
 
 
 def parse_field_notes(field_input: FieldNotesInput | str, overrides: dict[str, Any] | None = None) -> ParsedFieldNotes:
@@ -129,16 +185,33 @@ def parse_field_notes(field_input: FieldNotesInput | str, overrides: dict[str, A
     elif "foam" in text and not substrate:
         substrate = "foam"
     warranty_target = to_float(scope.get("warranty_target")) or parse_field_warranty_target(notes)
+    condition_detail_flags = parse_condition_detail_flags(notes)
+    no_visible_rust = bool(re.search(r"\b(?:no|without)\s+(?:visible\s+)?rust\b|\bno\s+rusted\s+fasteners?\b", text))
+    if "excellent condition" in text or "excellent" in text:
+        roof_condition = "excellent"
+    elif "good condition" in text or ("good" in text and "condition" in text):
+        roof_condition = "good"
+    elif ("fair overall" in text or "fair condition" in text or "fair" in text) and condition_detail_flags:
+        roof_condition = "fair_with_rusted_fasteners" if any("rust" in flag for flag in condition_detail_flags) else "fair"
+    elif no_visible_rust and any(term in text for term in ("minor dirt", "maintenance", "five-year-old", "5-year-old")):
+        roof_condition = "good"
+    else:
+        roof_condition = first_nonblank(scope.get("roof_condition"))
+    penetration_count = parse_penetration_count(notes)
     penetrations_complexity = first_nonblank(scope.get("penetrations_complexity"))
-    if not penetrations_complexity and any(token in text for token in ("rtu", "rtus", "rooftop unit", "hvac", "drain", "skylight")):
-        penetrations_complexity = "high"
+    if re.search(r"\bfew\s+penetrations?\b", text):
+        penetrations_complexity = "low"
+    elif penetration_count is not None:
+        penetrations_complexity = "low" if penetration_count <= 2 else "medium" if penetration_count <= 8 else "high"
+    elif not penetrations_complexity and any(token in text for token in ("rtu", "rtus", "rooftop unit", "hvac", "drain", "skylight")):
+        penetrations_complexity = "medium"
 
     missing = []
     if not sqft:
         missing.append("estimated_sqft")
     if not substrate:
         missing.append("substrate")
-    if not first_nonblank(scope.get("roof_condition")):
+    if not first_nonblank(roof_condition):
         missing.append("roof_condition")
     if not coating_type and not warranty_target:
         missing.append("coating/warranty target")
@@ -166,9 +239,11 @@ def parse_field_notes(field_input: FieldNotesInput | str, overrides: dict[str, A
         foam_type=first_nonblank(scope.get("foam_type")),
         foam_thickness_inches=to_float(scope.get("foam_thickness_inches")),
         warranty_target_years=int(warranty_target or 0) or None,
-        roof_condition=first_nonblank(scope.get("roof_condition")),
+        roof_condition=roof_condition,
         access_complexity=first_nonblank(scope.get("access_complexity")),
         penetrations_complexity=penetrations_complexity,
+        penetration_count=penetration_count,
+        condition_detail_flags=condition_detail_flags,
         insulation_present=scope.get("insulation_present"),
         condensation_risk=bool(scope.get("condensation_risk")),
         city=city,
@@ -192,6 +267,8 @@ def parsed_to_scope(parsed: ParsedFieldNotes, field_input: FieldNotesInput) -> d
             "deduction_area_sqft": dimension_summary.get("deduction_area_sqft"),
             "net_area_sqft": dimension_summary.get("net_area_sqft"),
             "dimension_warnings": dimension_summary.get("warnings") or [],
+            "condition_detail_flags": parsed.condition_detail_flags,
+            "penetration_count": parsed.penetration_count,
             "warranty_target": parsed.warranty_target_years,
             "coating_required": bool(parsed.coating_type or parsed.warranty_target_years),
             "location": ", ".join(part for part in (parsed.city, parsed.state) if part),

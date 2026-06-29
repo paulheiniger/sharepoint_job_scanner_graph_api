@@ -354,6 +354,44 @@ def test_simple_roof_coating_labor_bundle_is_capped() -> None:
     assert summary["labor_bundle_after_cap_hours"] <= summary["labor_bundle_cap_hours"]
 
 
+def test_clean_maintenance_roof_coating_does_not_reuse_prior_scope_or_overstack_labor() -> None:
+    note = (
+        "Customer wants to extend the life of a five-year-old standing seam metal roof. "
+        "Roof is 90 ft by 70 ft. "
+        "No deductions. "
+        "Roof is in excellent condition with no visible rust and only minor dirt accumulation. "
+        "Only one plumbing vent and one HVAC curb. "
+        "Easy access. "
+        "Customer requests a 10-year silicone maintenance coating."
+    )
+
+    recommendation = estimate_from_field_notes(note, data=field_data())
+    parsed = recommendation.parsed_fields
+    labor_hours = sum(float(row.get("total_hours") or 0) for row in recommendation.labor_plan)
+    hours_per_1000 = labor_hours / parsed["estimated_sqft"] * 1000
+    labor_tasks = {row.get("task") for row in recommendation.labor_plan}
+    review_text = " ".join(recommendation.review_flags).lower()
+
+    assert parsed["estimated_sqft"] == 6300
+    assert parsed["dimension_summary"]["gross_area_sqft"] == 6300
+    assert parsed["dimension_summary"]["deduction_area_sqft"] == 0
+    assert parsed["dimension_summary"]["net_area_sqft"] == 6300
+    assert parsed["dimension_summary"]["no_deductions"] is True
+    assert parsed["roof_condition"] in {"excellent", "good"}
+    assert parsed["access_complexity"] == "low"
+    assert parsed["penetrations_complexity"] == "low"
+    assert parsed["penetration_count"] == 2
+    assert parsed["warranty_target_years"] == 10
+    assert not any("rust" in flag for flag in parsed.get("condition_detail_flags") or [])
+    assert "labor_prime" not in labor_tasks
+    assert hours_per_1000 < 40
+    assert "tear-off" not in review_text and "tear off" not in review_text
+    assert "high-access" not in review_text and "50+" not in review_text
+    assert recommendation.debug["run_integrity"]["stale_source_text_detected"] is False
+    assert recommendation.debug["labor_calibration"]["selection_summary"]["labor_bundle_summary"]
+    assert "final_labor_hours_per_1000_sqft" in recommendation.debug["labor_calibration"]["selection_summary"]
+
+
 def test_roof_coating_labor_baseline_fills_missing_tasks_when_history_only_has_prime() -> None:
     data = field_data()
     data.template_rows = pd.DataFrame(

@@ -137,7 +137,8 @@ def extract_scope(notes: str, overrides: dict[str, Any] | None = None) -> dict[s
         project_type = "wall insulation"
 
     condition = ""
-    if any(word in text for word in ("rust", "rusted", "corroded", "poor", "leak", "leaking")):
+    no_visible_rust = bool(re.search(r"\b(?:no|without)\s+(?:visible\s+)?rust\b|\bno\s+rusted\s+fasteners?\b", text))
+    if any(word in text for word in ("rust", "rusted", "corroded", "poor", "leak", "leaking")) and not no_visible_rust:
         condition = "poor/rusted"
     elif any(word in text for word in ("fair", "aged", "weathered")):
         condition = "fair"
@@ -163,7 +164,7 @@ def extract_scope(notes: str, overrides: dict[str, Any] | None = None) -> dict[s
     insulation_missing = any(phrase in text for phrase in ("no insulation", "missing insulation", "uninsulated", "needs insulation"))
     insulation_present = any(phrase in text for phrase in ("existing insulation", "insulated", "insulation present")) and not insulation_missing
     condensation_risk = any(word in text for word in ("condensation", "sweating", "sweat", "moisture drive"))
-    rust_level = "high" if any(phrase in text for phrase in ("heavy rust", "severe rust", "corroded")) else "medium" if "rust" in text or "rusted" in text else ""
+    rust_level = "" if no_visible_rust else "high" if any(phrase in text for phrase in ("heavy rust", "severe rust", "corroded")) else "medium" if "rust" in text or "rusted" in text else ""
 
     scope = {
         "notes": notes_text,

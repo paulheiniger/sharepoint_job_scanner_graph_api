@@ -87,6 +87,7 @@ class DimensionSummary:
     stated_sqft: float | None = None
     stated_sqft_low: float | None = None
     stated_sqft_high: float | None = None
+    no_deductions: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         out = asdict(self)
@@ -207,6 +208,8 @@ def _parse_direct_areas(text: str, summary: DimensionSummary) -> list[DimensionA
 def parse_dimensions(raw_notes: str) -> DimensionSummary:
     text = raw_notes or ""
     summary = DimensionSummary()
+    if re.search(r"\bno\s+(?:deductions?|deducts?|openings?|areas?\s+to\s+deduct)\b", text, re.I):
+        summary.no_deductions = True
     direct_deductions = _parse_direct_areas(text, summary)
     matches = list(DIMENSION_RE.finditer(text))
     spans_by_sentence: dict[tuple[int, int], int] = {}

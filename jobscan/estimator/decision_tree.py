@@ -42,6 +42,7 @@ def condition_flags(scope: dict[str, Any], travel_distance_bucket: str = "unknow
         "access_complexity": first_nonblank(scope.get("access_complexity")),
         "penetrations_complexity": first_nonblank(scope.get("penetrations_complexity")),
         "rust_level": first_nonblank(scope.get("rust_level")),
+        "condition_detail_flags": scope.get("condition_detail_flags") or [],
         "tearoff_likely": bool(scope.get("tearoff_likely")),
         "coating_type": first_nonblank(scope.get("coating_type")),
         "foam_thickness_inches": scope.get("foam_thickness_inches"),
@@ -62,7 +63,9 @@ def evaluate_decision_tree(
     recommended_scope: list[str] = []
     review_flags: list[str] = []
 
-    if flags["substrate"].lower() == "metal" and (flags["rust_level"] or "rust" in flags["roof_condition"].lower()):
+    has_rust_detail = any("rust" in str(flag).lower() for flag in flags.get("condition_detail_flags") or [])
+    has_open_seams = any("open_seam" in str(flag).lower() for flag in flags.get("condition_detail_flags") or [])
+    if flags["substrate"].lower() == "metal" and (flags["rust_level"] or "rust" in flags["roof_condition"].lower() or has_rust_detail):
         recommended_scope.extend(["Treat fasteners", "Treat seams", "Evaluate rust primer"])
     if flags["insulation_missing"] or flags["condensation_risk"]:
         recommended_scope.append("Review foam thickness / condensation control")
@@ -89,7 +92,7 @@ def evaluate_decision_tree(
         recommended_scope.append("Include repair/restoration allowance")
         review_flags.append("Tear-off or substrate repair review required")
         flags["tearoff_likely"] = True if scope.get("tearoff_likely") else flags["tearoff_likely"]
-    elif flags["roof_condition"] == "poor/rusted":
+    elif flags["roof_condition"] == "poor/rusted" or has_rust_detail or has_open_seams:
         review_flags.append("Rusted fasteners/seams require detail review.")
     if flags["penetrations_complexity"] == "high":
         recommended_scope.append("Increase detail labor for penetrations")

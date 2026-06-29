@@ -15,6 +15,22 @@ def test_basic_include_dimension_math() -> None:
     assert summary.net_area_sqft == 9600
 
 
+def test_90_by_70_roof_no_deductions() -> None:
+    summary = parse_dimensions("Roof is 90 ft by 70 ft. No deductions.")
+
+    assert summary.gross_area_sqft == 6300
+    assert summary.deduction_area_sqft == 0
+    assert summary.net_area_sqft == 6300
+    assert summary.no_deductions is True
+
+
+def test_160_by_150_roof_dimension_math() -> None:
+    summary = parse_dimensions("Roof is 160 ft by 150 ft.")
+
+    assert summary.gross_area_sqft == 24000
+    assert summary.net_area_sqft == 24000
+
+
 def test_include_plus_quantity_deduction() -> None:
     summary = parse_dimensions("Main roof is 120 ft by 80 ft. Deduct two skylight areas, each 4 ft by 8 ft.")
 

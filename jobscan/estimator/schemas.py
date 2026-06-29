@@ -68,6 +68,8 @@ class ParsedFieldNotes:
     roof_condition: str = ""
     access_complexity: str = ""
     penetrations_complexity: str = ""
+    penetration_count: int | None = None
+    condition_detail_flags: list[str] = field(default_factory=list)
     insulation_present: bool | None = None
     condensation_risk: bool = False
     city: str = ""

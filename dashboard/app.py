@@ -3808,6 +3808,8 @@ def estimator_prototype_page() -> None:
                     },
                     data=field_notes_data,
                 )
+                st.session_state["field_estimate_recommendation_notes"] = notes
+                st.session_state.pop("field_estimator_evidence_export_paths", None)
             except Exception as err:
                 logger.exception("Field notes estimator failed")
                 st.error("Field notes estimator failed for this input.")
@@ -3815,6 +3817,12 @@ def estimator_prototype_page() -> None:
                 st.session_state["field_estimate_recommendation"] = None
     field_recommendation = st.session_state.get("field_estimate_recommendation")
     if field_recommendation:
+        recommendation_notes = st.session_state.get("field_estimate_recommendation_notes") or notes
+        if recommendation_notes != notes:
+            st.warning(
+                "The displayed estimate was generated from earlier notes. "
+                "Click Generate Estimate Recommendation from Notes again to refresh it for the current text."
+            )
         metric_row(
             [
                 ("Low", fmt_dollar(field_recommendation.estimate_low)),
@@ -3901,7 +3909,7 @@ def estimator_prototype_page() -> None:
                 export_paths = write_estimator_evidence_export(
                     field_recommendation,
                     data=data,
-                    notes=notes,
+                    notes=recommendation_notes,
                     output_dir=Path("output/estimator_evidence"),
                 )
                 st.session_state["field_estimator_evidence_export_paths"] = {
