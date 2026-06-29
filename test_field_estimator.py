@@ -758,6 +758,35 @@ def test_roofing_material_rows_prefer_estimated_units_when_quantity_is_scope_are
     assert rows_by_category["seam_treatment"]["quantity"] < 12000
 
 
+def test_fastener_allowance_uses_historical_count_ratio_when_current_price_missing() -> None:
+    data = field_data()
+    fastener_rows = [
+        {
+            "job_id": "J1",
+            "template_type": "roofing",
+            "template_bucket": "fastener_treatment",
+            "selected_item_name": f"Fastener treatment {index}",
+            "line_item_kind": "material",
+            "quantity": 12000,
+            "estimated_units": 1164,
+            "unit": "",
+            "unit_price": 1.75,
+            "estimated_cost": 2037,
+        }
+        for index in range(12)
+    ]
+    data.template_rows = pd.concat([data.template_rows, pd.DataFrame(fastener_rows)], ignore_index=True)
+
+    recommendation = estimate_from_field_notes("Metal roof 12000 sqft rusted fasteners silicone coating Louisville KY", data=data)
+    fastener = {row["category"]: row for row in recommendation.material_plan}["fastener_treatment"]
+
+    assert fastener["selected_price_source"] == "rule_based_unit_price + historical_quantity_ratio"
+    assert fastener["calibration_method"] == "historical_quantity_ratio"
+    assert fastener["quantity_source"] == "historical_physical_quantity_ratio"
+    assert fastener["quantity"] > 1000
+    assert fastener["review_required"] is True
+
+
 def test_secondary_material_allowances_fallback_without_historical_evidence() -> None:
     recommendation = estimate_from_field_notes(
         "Metal roof 12000 sqft rusted fasteners silicone coating Louisville KY",

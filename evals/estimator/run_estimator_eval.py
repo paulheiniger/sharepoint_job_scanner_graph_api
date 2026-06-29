@@ -389,7 +389,8 @@ def audit_command(case_id: str, audit_output_dir: Path) -> str:
         "python -m jobscan.estimator.calibration_audit "
         f"--case-id {case_id} "
         '--database-url "$NEON_DATABASE_URL" '
-        f"--out-dir {audit_output_dir}"
+        f"--out-dir {audit_output_dir} "
+        "--evidence-limit 50"
     )
 
 
@@ -421,6 +422,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--database-url", default=os.getenv("NEON_DATABASE_URL"))
     parser.add_argument("--write-audit", action="store_true", help="Write estimator calibration audit packages for selected cases.")
     parser.add_argument("--audit-output-dir", type=Path, default=Path("output/estimator_audit"))
+    parser.add_argument("--fast", action="store_true", help="Write compact audit evidence when --write-audit is used.")
+    parser.add_argument("--evidence-limit", type=int, default=50, help="Maximum evidence rows per audit evidence sheet.")
+    parser.add_argument("--debug-evidence", action="store_true", help="Write full audit diagnostics when --write-audit is used.")
     return parser.parse_args(argv)
 
 
@@ -446,6 +450,9 @@ def main(argv: list[str] | None = None) -> int:
                     database_url=args.database_url,
                     out_dir=args.audit_output_dir,
                     cases_path=args.cases,
+                    evidence_limit=args.evidence_limit,
+                    fast=args.fast,
+                    debug_evidence=args.debug_evidence,
                 )
                 print(f"Audit JSON for {result['case_id']}: {paths['json']}")
                 print(f"Audit XLSX for {result['case_id']}: {paths['xlsx']}")

@@ -125,3 +125,40 @@ def test_material_calibration_does_not_treat_sqft_units_as_physical_quantity() -
     assert calibration["primer"]["median_cost_per_sqft"] == 0.25
     assert calibration["seam_treatment"]["median_quantity_per_sqft"] is None
     assert calibration["seam_treatment"]["median_cost_per_sqft"] == 0.3
+
+
+def test_seam_treatment_requires_linear_footage_units_for_quantity_ratio() -> None:
+    data = EstimatorData(
+        jobs=pd.DataFrame([{"job_id": "J1", "estimated_sqft": 10000}]),
+        template_rows=pd.DataFrame(
+            [
+                {
+                    "job_id": "J1",
+                    "template_type": "roofing",
+                    "selected_item_name": "Seam sealant tubes",
+                    "line_item_kind": "material",
+                    "quantity": 12,
+                    "unit": "tube",
+                    "source_type": "physical_quantity",
+                    "estimated_cost": 240,
+                },
+                {
+                    "job_id": "J1",
+                    "template_type": "roofing",
+                    "selected_item_name": "Seam tape rolls",
+                    "line_item_kind": "material",
+                    "quantity": 4,
+                    "unit": "roll",
+                    "source_type": "physical_quantity",
+                    "estimated_cost": 600,
+                },
+            ]
+        ),
+        pricing=pd.DataFrame(),
+    )
+
+    calibration = build_material_calibration(data, {"surface_area_sqft": 10000, "project_type": "roof coating", "substrate": "metal"})
+
+    assert calibration["seam_treatment"]["median_quantity_per_sqft"] is None
+    assert calibration["seam_treatment"]["rejected_quantity_ratio_count"] == 2
+    assert all("not a valid physical unit" in reason for reason in calibration["seam_treatment"]["quantity_ratio_rejection_reasons"])

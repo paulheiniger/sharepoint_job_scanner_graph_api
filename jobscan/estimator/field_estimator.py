@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import re
 import hashlib
+import time
 from dataclasses import asdict, dataclass
 from typing import Any
 from uuid import uuid4
@@ -934,11 +935,13 @@ def labor_sanity_review_flags(
     coating_hours = sum(safe_float(row.get("total_hours"), 0.0) for row in labor_plan if first_nonblank(row.get("task")) in coating_tasks)
     if low_penetration and coating_hours and detail_hours > coating_hours:
         flags.append("Detail labor exceeds coating application labor on a low-penetration roof; verify detail bundle.")
-    has_primer_labor = any(first_nonblank(row.get("task")) == "labor_prime" for row in labor_plan)
-    primer_material_rows = [row for row in material_plan if first_nonblank(row.get("category")) == "primer"]
-    primer_material_active = any(row.get("included_in_total") is not False and not bool(row.get("review_required") or row.get("needs_review")) for row in primer_material_rows)
+    has_primer_labor = any(
+        first_nonblank(row.get("task")) == "labor_prime" and row.get("included_in_total") is not False
+        for row in labor_plan
+    )
+    primer_material_active = _primer_material_included_in_base_total(material_plan)
     if has_primer_labor and not primer_material_active:
-        flags.append("Primer labor is included while primer material is excluded or review-only.")
+        flags.append("Primer labor is included while primer material is excluded from the base estimate.")
     return flags
 
 
@@ -1790,6 +1793,100 @@ def _add_allowance_cost_to_totals(row: dict[str, Any], totals: tuple[float, floa
     return low_total + low, high_total + high
 
 
+def _material_row_included_in_base_total(row: dict[str, Any]) -> bool:
+    if row.get("included_in_total") is False or row.get("excluded_from_base_total"):
+        return False
+    source = first_nonblank(row.get("selected_price_source"), row.get("price_source_type"))
+    if source in {"historical_cost_ratio_fallback", "rejected_historical_quantity_ratio", "review_allowance"}:
+        return False
+    sanity = first_nonblank(row.get("sanity_check_status")).lower()
+    if sanity.startswith("blocked"):
+        return False
+    return optional_positive_float(row.get("estimated_cost")) is not None
+
+
+def _primer_material_included_in_base_total(material_plan: list[dict[str, Any]]) -> bool:
+    return any(
+        first_nonblank(row.get("category")) == "primer" and _material_row_included_in_base_total(row)
+        for row in material_plan
+        if isinstance(row, dict)
+    )
+
+
+def _exclude_primer_labor_if_material_excluded(
+    material_plan: list[dict[str, Any]],
+    labor_plan: list[dict[str, Any]],
+    *,
+    calibration: dict[str, Any],
+) -> tuple[list[dict[str, Any]], float, float, int, list[str]]:
+    """Remove primer labor from base totals when primer material is not base-priced."""
+
+    has_primer_labor = any(first_nonblank(row.get("task")) == "labor_prime" for row in labor_plan if isinstance(row, dict))
+    if not has_primer_labor or _primer_material_included_in_base_total(material_plan):
+        total_cost = sum(safe_float(row.get("estimated_cost"), 0.0) for row in labor_plan if isinstance(row, dict) and row.get("included_in_total") is not False)
+        total_hours = sum(safe_float(row.get("total_hours"), 0.0) for row in labor_plan if isinstance(row, dict) and row.get("included_in_total") is not False)
+        return labor_plan, round(total_cost * 0.85, 2), round(total_cost * 1.2, 2), safe_int(round(total_hours), 0), []
+
+    adjusted: list[dict[str, Any]] = []
+    excluded_rows: list[dict[str, Any]] = []
+    for row in labor_plan:
+        if not isinstance(row, dict) or first_nonblank(row.get("task")) != "labor_prime":
+            adjusted.append(row)
+            continue
+        row = dict(row)
+        row["original_total_hours_before_primer_exclusion"] = row.get("total_hours")
+        row["original_estimated_cost_before_primer_exclusion"] = row.get("estimated_cost")
+        row["excluded_from_base_total"] = True
+        row["included_in_total"] = False
+        row["review_required"] = True
+        row["needs_review"] = True
+        row["total_hours"] = 0
+        row["labor_hours"] = 0
+        row["estimated_cost"] = 0
+        row["adjusted_days"] = 0
+        row["crew_days"] = 0
+        row["labor_selection_status"] = "review_only_excluded"
+        row["labor_selection_reason"] = "Primer labor excluded from base because primer material is excluded or unpriced."
+        row["notes"] = (
+            f"{first_nonblank(row.get('notes'))} "
+            "Primer labor excluded from base estimate pending estimator review."
+        ).strip()
+        excluded_rows.append(row)
+        adjusted.append(row)
+
+    total_cost = sum(
+        safe_float(row.get("estimated_cost"), 0.0)
+        for row in adjusted
+        if isinstance(row, dict) and row.get("included_in_total") is not False
+    )
+    total_hours = sum(
+        safe_float(row.get("total_hours"), 0.0)
+        for row in adjusted
+        if isinstance(row, dict) and row.get("included_in_total") is not False
+    )
+    diagnostics = calibration.get("labor_calibration_diagnostics")
+    if isinstance(diagnostics, dict):
+        diagnostics.setdefault("selection_summary", {})
+        diagnostics["selection_summary"]["primer_labor_excluded_from_base"] = True
+        diagnostics["selection_summary"]["primer_labor_exclusion_reason"] = "Primer material was not included in the base material total."
+        diagnostics.setdefault("selection_rows", []).append(
+            {
+                "task": "labor_prime",
+                "selected": False,
+                "labor_bucket_role": "optional_primer_bundle",
+                "reason": "Primer labor excluded from base because primer material is excluded or unpriced.",
+                "selection_status": "review_only_excluded",
+            }
+        )
+    return (
+        adjusted,
+        round(total_cost * 0.85, 2),
+        round(total_cost * 1.2, 2),
+        safe_int(round(total_hours), 0),
+        ["Primer may be required; material and labor excluded from base estimate pending estimator review."],
+    )
+
+
 def _row_with_package_context(
     row: dict[str, Any],
     package_decision: dict[str, Any] | None,
@@ -1933,7 +2030,11 @@ def _allowance_from_calibration(
     current_item_name = first_nonblank(current_item.get("product_name") if isinstance(current_item, dict) else "", item)
     unit = normalize_unit(first_nonblank(calibration.get("unit"), fallback_unit))
     message_item = bucket.replace("_", " ") if bucket else item.lower()
-    if quantity_ratio is None and safe_int(calibration.get("rejected_quantity_ratio_count"), 0) > 0:
+    if (
+        bucket != "seam_treatment"
+        and quantity_ratio is None
+        and safe_int(calibration.get("rejected_quantity_ratio_count"), 0) > 0
+    ):
         review_flags.append(f"Rejected {message_item} historical quantity ratio because implied usage was unrealistic.")
 
     calibration_audit_fields = {
@@ -1991,6 +2092,44 @@ def _allowance_from_calibration(
     current_price_compatible = current_price is not None and _units_compatible(fallback_unit, current_item, calibration.get("selected_current_price_column"))
     if current_price is not None and quantity_ratio is None:
         review_flags.append(f"Current pricing exists for {item.lower()}, but no valid physical quantity evidence was available.")
+
+    if (
+        bucket == "fastener_treatment"
+        and valid_quantity_ratio_count >= 10
+        and quantity_ratio is not None
+        and fallback_quantity is not None
+        and fallback_unit_price is not None
+    ):
+        quantity = _round_to_nearest(quantity_ratio * area, 25)
+        estimated_cost = float(quantity) * fallback_unit_price
+        if max_estimated_cost is not None and estimated_cost > max_estimated_cost:
+            review_flags.append(f"Rejected {item.lower()} historical quantity ratio because estimated cost exceeded coating cost safety cap.")
+        else:
+            review_flags.append(f"{item} quantity estimated from historical fastener count ratio; estimator should verify count.")
+            return _priced_allowance_row(
+                item=item,
+                category=category,
+                quantity=quantity,
+                unit=fallback_unit,
+                unit_price=fallback_unit_price,
+                selected_price_source="rule_based_unit_price + historical_quantity_ratio",
+                notes="Estimated from historical fastener count per sqft and rule-based unit pricing; estimator should verify count and detail requirements.",
+            ) | {
+                "evidence_count": evidence_count,
+                "calibration_method": "historical_quantity_ratio",
+                "source_type": "physical_quantity_ratio",
+                "quantity_source": "historical_physical_quantity_ratio",
+                "unit_price_source": "rule_based_allowance",
+                "median_quantity_per_sqft": quantity_ratio,
+                "p25_quantity_per_sqft": calibration.get("p25_quantity_per_sqft"),
+                "p75_quantity_per_sqft": calibration.get("p75_quantity_per_sqft"),
+                "estimated_quantity": quantity,
+                "estimated_cost_current_pricing": estimated_cost,
+                "fallback_reason": "No compatible current fastener pricing was available; historical quantity ratio used with rule-based unit price.",
+                "historical_physical_quantity_rows_considered": calibration.get("historical_physical_quantity_rows_considered"),
+                "historical_cost_fallback_rows_considered": calibration.get("historical_cost_fallback_rows_considered"),
+            } | calibration_audit_fields
+
     if fallback_quantity is not None and current_price_compatible:
         if evidence_count < 3:
             review_flags.append(f"Low historical evidence for {item.lower()}; fallback allowance used.")
@@ -2019,7 +2158,11 @@ def _allowance_from_calibration(
                 "current_price_unit": fallback_unit,
                 "estimated_quantity": fallback_quantity,
                 "estimated_cost_current_pricing": estimated_cost,
-                "fallback_reason": "No valid compatible historical physical quantity ratio was available.",
+                "fallback_reason": (
+                    "No valid LF seam treatment quantity evidence was available; deterministic LF allowance used."
+                    if bucket == "seam_treatment"
+                    else "No valid compatible historical physical quantity ratio was available."
+                ),
             } | calibration_audit_fields
 
     if fallback_quantity is not None and fallback_unit_price is not None:
@@ -2044,7 +2187,11 @@ def _allowance_from_calibration(
                 "quantity_source": "deterministic_rule",
                 "unit_price_source": "rule_based_allowance",
                 "estimated_quantity": fallback_quantity,
-                "fallback_reason": "No valid compatible current pricing or historical cost fallback was available.",
+                "fallback_reason": (
+                    "No valid LF seam treatment quantity evidence was available; deterministic LF allowance used."
+                    if bucket == "seam_treatment"
+                    else "No valid compatible current pricing or historical cost fallback was available."
+                ),
             } | calibration_audit_fields
 
     if evidence_count >= 3 and cost_ratio is not None:
@@ -2658,6 +2805,7 @@ def estimate_from_field_notes(
 ) -> EstimateRecommendation:
     assumptions = assumptions or EstimatorAssumptions()
     optional_overrides = optional_overrides or {}
+    runtime_seconds_by_stage: dict[str, float] = {}
     run_id = new_estimator_run_id(raw_notes)
     input_notes_hash = notes_hash(raw_notes)
     field_input = FieldNotesInput(
@@ -2679,6 +2827,7 @@ def estimate_from_field_notes(
     )
     if data is None:
         data = load_estimator_data(database_url=database_url, prefer_database=bool(database_url))
+    stage_start = time.perf_counter()
     parsed = parse_field_notes(field_input)
     scope = parsed_to_scope(parsed, field_input)
     resolved_sqft = resolve_estimated_sqft(parsed, scope, optional_overrides)
@@ -2709,16 +2858,33 @@ def estimate_from_field_notes(
             scope["estimated_sqft"] = resolved_sqft
             scope["surface_area_sqft"] = resolved_sqft
         apply_scope_to_parsed(parsed, scope)
+    runtime_seconds_by_stage["parse_scope"] = round(time.perf_counter() - stage_start, 4)
+    stage_start = time.perf_counter()
     similar = find_similar_jobs(data, scope, limit=8)
+    runtime_seconds_by_stage["similar_jobs"] = round(time.perf_counter() - stage_start, 4)
+    stage_start = time.perf_counter()
     legacy_calibration = calibrate_from_history(similar, data.line_items, scope)
     template_calibration = historical_template_calibration(data, similar)
     calibration = {**legacy_calibration, **template_calibration}
+    runtime_seconds_by_stage["historical_calibration"] = round(time.perf_counter() - stage_start, 4)
     decision = evaluate_decision_tree(scope, calibration)
     calibration["work_package_decisions"] = ensure_work_package_decisions(scope, decision)
+    stage_start = time.perf_counter()
     material_plan, material_low, material_high, material_review_flags = build_material_plan(scope, data, calibration, decision, assumptions)
+    runtime_seconds_by_stage["select_materials"] = round(time.perf_counter() - stage_start, 4)
     labor_review_flags: list[str] = []
+    stage_start = time.perf_counter()
     try:
         labor_plan, labor_low, labor_high, crew_size, duration_days, _labor_hours = build_labor_plan(scope, calibration, decision, assumptions)
+        labor_plan, labor_low, labor_high, _labor_hours, primer_labor_flags = _exclude_primer_labor_if_material_excluded(
+            material_plan,
+            labor_plan,
+            calibration=calibration,
+        )
+        if primer_labor_flags:
+            labor_review_flags.extend(primer_labor_flags)
+        duration_total = sum(safe_float(row.get("adjusted_days"), 0.0) for row in labor_plan if isinstance(row, dict))
+        duration_days = max(1, safe_int(round(duration_total), 1))
     except Exception as err:
         labor_plan = [
             {
@@ -2738,6 +2904,7 @@ def estimate_from_field_notes(
         duration_days = 1
         labor_review_flags = ["Historical labor calibration failed; manual labor pricing required."]
     labor_sanity_flags = labor_sanity_review_flags(scope, material_plan, labor_plan)
+    runtime_seconds_by_stage["select_labor"] = round(time.perf_counter() - stage_start, 4)
     diagnostics = calibration.get("labor_calibration_diagnostics")
     if isinstance(diagnostics, dict):
         diagnostics.setdefault("selection_summary", {})
@@ -2778,6 +2945,10 @@ def estimate_from_field_notes(
     if resolved_sqft is not None:
         parsed_fields["estimated_sqft"] = resolved_sqft
         parsed_fields["surface_area_sqft"] = resolved_sqft
+    for area_field in ("gross_area_sqft", "deduction_area_sqft", "net_area_sqft"):
+        value = scope.get(area_field) or _dimension_summary_value(dimension_summary, area_field)
+        if value is not None:
+            parsed_fields[area_field] = value
     for extra_field in (
         "condition_detail_flags",
         "penetration_count",
@@ -2830,5 +3001,6 @@ def estimate_from_field_notes(
                 "ai_review_flags": ai_review_flags,
             },
             "run_integrity": run_integrity,
+            "runtime_seconds_by_stage": runtime_seconds_by_stage,
         },
     )

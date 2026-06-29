@@ -38,18 +38,118 @@ def test_build_estimator_evidence_export_contains_expected_sheets() -> None:
         "labor_plan",
         "labor_evidence",
         "labor_diagnostics",
-        "similar_jobs",
-        "relationship_rows",
-        "rejected_evidence",
         "estimate_rollup",
     ]:
         assert sheet in export["sheets"]
         assert export["sheets"][sheet]
+    assert "relationship_rows" not in export["sheets"]
+    assert "rejected_evidence" not in export["sheets"]
     assert any(row.get("task") == "labor_prep" for row in export["sheets"]["labor_diagnostics"])
     assert any(row.get("included_in_total") is True for row in export["sheets"]["material_plan"])
     assert export["run_summary"]["run_id"]
     assert export["run_summary"]["input_notes_hash"] == export["run_summary"]["parsed_scope_notes_hash"]
     assert export["sheets"]["run_integrity"][0]["stale_source_text_detected"] is False
+    assert "runtime_seconds_by_stage" in export["run_summary"]
+
+
+def test_debug_evidence_export_restores_detailed_sheets() -> None:
+    data = field_data()
+    recommendation = estimate_from_field_notes(SAMPLE_NOTE, {"estimated_sqft": 0}, data=data)
+
+    export = build_estimator_evidence_export(recommendation, data=data, notes=SAMPLE_NOTE, debug_evidence=True)
+
+    assert "relationship_rows" in export["sheets"]
+    assert "rejected_evidence" in export["sheets"]
+    assert "similar_jobs" in export["sheets"]
+
+
+def test_evidence_export_caps_rows_and_strips_line_item_id_lists() -> None:
+    recommendation = SimpleNamespace(
+        parsed_fields={"estimated_sqft": 10000, "project_type": "roof coating", "substrate": "metal", "coating_type": "silicone"},
+        recommended_scope=[],
+        material_plan=[{"item": "Coating", "category": "coating", "estimated_cost": 1000, "selected_price_source": "current_pricing"}],
+        labor_plan=[],
+        travel_plan={},
+        historical_calibration={},
+        similar_examples=[],
+        estimate_low=0,
+        estimate_target=0,
+        estimate_high=0,
+        review_flags=[],
+        human_review_required=False,
+        draft_workbook_inputs={"header": {"C12_estimated_sqft": 10000}},
+        debug={},
+    )
+    data = SimpleNamespace(
+        source_files_used=[],
+        warnings=[],
+        template_rows=pd.DataFrame(
+            [
+                {
+                    "template_bucket": "coating",
+                    "template_type": "roofing",
+                    "selected_item_name": f"Coating {index}",
+                    "evidence_line_item_ids": ["a", "b", "c"],
+                    "quantity_evidence_diagnostics": [{"row": index}],
+                }
+                for index in range(6)
+            ]
+        ),
+        job_package_summary=pd.DataFrame(),
+        pricing_catalog=pd.DataFrame(),
+        pricing=pd.DataFrame(),
+        relationship_labor_rates=pd.DataFrame(),
+    )
+
+    export = build_estimator_evidence_export(recommendation, data=data, notes="Roof coating", evidence_limit=2)
+    rows = [row for row in export["sheets"]["material_evidence"] if row.get("evidence_source_table") == "template_rows"]
+
+    assert len(rows) <= 2
+    assert all("evidence_line_item_ids" not in row for row in rows)
+    assert all("quantity_evidence_diagnostics" not in row for row in rows)
+    assert all(row.get("evidence_line_item_count") == 3 for row in rows)
+    assert export["run_summary"]["evidence_rows_exported"] <= 2 + len(export["sheets"]["labor_evidence"]) + 1
+
+
+def test_normal_roofing_evidence_export_excludes_insulation_template_rows() -> None:
+    recommendation = SimpleNamespace(
+        parsed_fields={"estimated_sqft": 10000, "project_type": "roof coating", "substrate": "metal", "coating_type": "silicone"},
+        recommended_scope=[],
+        material_plan=[{"item": "Coating", "category": "coating", "estimated_cost": 1000, "selected_price_source": "current_pricing"}],
+        labor_plan=[],
+        travel_plan={},
+        historical_calibration={},
+        similar_examples=[],
+        estimate_low=0,
+        estimate_target=0,
+        estimate_high=0,
+        review_flags=[],
+        human_review_required=False,
+        draft_workbook_inputs={"header": {"C12_estimated_sqft": 10000}},
+        debug={},
+    )
+    data = SimpleNamespace(
+        source_files_used=[],
+        warnings=[],
+        template_rows=pd.DataFrame(
+            [
+                {"template_bucket": "coating", "template_type": "roofing", "selected_item_name": "Roof coating"},
+                {"template_bucket": "coating", "template_type": "insulation", "selected_item_name": "Insulation coating"},
+                {"template_bucket": "unknown", "template_type": "roofing", "selected_item_name": "Unknown"},
+            ]
+        ),
+        job_package_summary=pd.DataFrame(),
+        pricing_catalog=pd.DataFrame(),
+        pricing=pd.DataFrame(),
+        relationship_labor_rates=pd.DataFrame(),
+    )
+
+    export = build_estimator_evidence_export(recommendation, data=data, notes="Roof coating")
+    names = [row.get("selected_item_name") for row in export["sheets"]["material_evidence"]]
+
+    assert "Roof coating" in names
+    assert "Insulation coating" not in names
+    assert "Unknown" not in names
 
 
 def test_evidence_export_flags_notes_hash_mismatch_and_stale_source_text() -> None:
@@ -121,7 +221,7 @@ def test_rejected_material_evidence_is_exported() -> None:
         debug={},
     )
 
-    export = build_estimator_evidence_export(recommendation)
+    export = build_estimator_evidence_export(recommendation, debug_evidence=True)
     material_row = export["sheets"]["material_plan"][0]
     rejected_rows = export["sheets"]["rejected_evidence"]
 

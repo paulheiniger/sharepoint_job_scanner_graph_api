@@ -34,6 +34,18 @@ EVIDENCE_SHEETS = [
     "estimate_rollup",
 ]
 
+DEFAULT_EVIDENCE_LIMIT = 50
+
+VERBOSE_EVIDENCE_COLUMNS = {
+    "quantity_evidence_diagnostics",
+    "rejected_rows",
+    "raw",
+    "raw_json",
+    "cell_values",
+    "formula_cells",
+    "evidence_line_item_ids",
+}
+
 LABOR_TASKS = [
     "labor_prep",
     "labor_prime",
@@ -179,6 +191,103 @@ def _records(value: Any) -> list[dict[str, Any]]:
     return [{"value": _jsonable(value)}]
 
 
+def _scope_type_for_export(recommendation: dict[str, Any]) -> str:
+    parsed = recommendation.get("parsed_fields") or {}
+    text = " ".join(str(value or "") for value in parsed.values()).lower()
+    if any(term in text for term in ("spray foam", "closed-cell", "closed cell", "open-cell", "open cell", "insulation")):
+        return "insulation"
+    if any(term in text for term in ("roof", "roofing", "coating", "silicone", "acrylic", "metal")):
+        return "roofing"
+    return ""
+
+
+def _row_template_type(row: dict[str, Any]) -> str:
+    value = str(row.get("template_type") or row.get("job_template_type") or row.get("template_name") or "").strip().lower()
+    if value in {"roof", "roofing", "roof coating"}:
+        return "roofing"
+    if value in {"insulation", "foam", "spray foam"}:
+        return "insulation"
+    return "" if value in {"unknown", "none", "null"} else value
+
+
+def _row_source_text(row: dict[str, Any]) -> str:
+    return " ".join(
+        str(row.get(column) or "").lower()
+        for column in ("source_file", "folder_path", "relative_path", "job_name", "customer", "estimate_file", "document_name", "division")
+    )
+
+
+def _normal_export_row_allowed(row: dict[str, Any], *, scope_type: str, debug_evidence: bool) -> bool:
+    if debug_evidence:
+        return True
+    template_bucket = str(row.get("template_bucket") or row.get("package") or row.get("matched_package") or "").strip().lower()
+    if template_bucket == "unknown":
+        return False
+    if scope_type == "roofing":
+        row_type = _row_template_type(row)
+        if row_type == "insulation":
+            return False
+        source_text = _row_source_text(row)
+        if any(term in source_text for term in ("insulation", "spray foam", "closed-cell", "closed cell", "open-cell", "open cell")):
+            return False
+    return True
+
+
+def _evidence_package_key(row: dict[str, Any]) -> str:
+    return str(
+        row.get("requested_package")
+        or row.get("package")
+        or row.get("category")
+        or row.get("matched_package")
+        or row.get("task")
+        or row.get("evidence_source_table")
+        or "unknown"
+    )
+
+
+def _count_serialized_items(value: Any) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, (list, tuple, set)):
+        return len(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return 0
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            return 1
+        if isinstance(parsed, (list, tuple, set)):
+            return len(parsed)
+        return 1
+    return 1
+
+
+def _compact_evidence_row(row: dict[str, Any], *, debug_evidence: bool) -> dict[str, Any]:
+    if debug_evidence:
+        return row
+    compact = dict(row)
+    if "evidence_line_item_ids" in compact:
+        compact["evidence_line_item_count"] = _count_serialized_items(compact.get("evidence_line_item_ids"))
+    for column in VERBOSE_EVIDENCE_COLUMNS:
+        compact.pop(column, None)
+    return compact
+
+
+def _limit_evidence_rows(rows: list[dict[str, Any]], *, evidence_limit: int, debug_evidence: bool) -> list[dict[str, Any]]:
+    if evidence_limit <= 0 or debug_evidence:
+        return [_compact_evidence_row(row, debug_evidence=debug_evidence) for row in rows]
+    counts: dict[str, int] = {}
+    limited: list[dict[str, Any]] = []
+    for row in rows:
+        package = _evidence_package_key(row)
+        counts[package] = counts.get(package, 0) + 1
+        if counts[package] <= evidence_limit:
+            limited.append(_compact_evidence_row(row, debug_evidence=debug_evidence))
+    return limited
+
+
 def _frame_records(frame: pd.DataFrame | None, *, source_table: str, limit: int = 5000) -> list[dict[str, Any]]:
     if frame is None or frame.empty:
         return []
@@ -272,7 +381,12 @@ def _material_plan_rows(recommendation: dict[str, Any]) -> list[dict[str, Any]]:
         cost = _safe_float(row.get("estimated_cost"))
         source = str(row.get("selected_price_source") or row.get("price_source_type") or "")
         sanity = str(row.get("sanity_check_status") or "")
-        included = cost is not None and source != "rejected_historical_quantity_ratio" and not sanity.lower().startswith("blocked")
+        included = (
+            row.get("included_in_total") is not False
+            and cost is not None
+            and source not in {"rejected_historical_quantity_ratio", "historical_cost_ratio_fallback", "review_allowance"}
+            and not sanity.lower().startswith("blocked")
+        )
         rows.append(
             {
                 **row,
@@ -303,10 +417,18 @@ def _labor_plan_rows(recommendation: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def _material_evidence_rows(recommendation: dict[str, Any], data: Any) -> list[dict[str, Any]]:
+def _material_evidence_rows(
+    recommendation: dict[str, Any],
+    data: Any,
+    *,
+    evidence_limit: int = DEFAULT_EVIDENCE_LIMIT,
+    debug_evidence: bool = False,
+    fast: bool = False,
+) -> list[dict[str, Any]]:
     material_rows = _material_plan_rows(recommendation)
     packages = {str(row.get("category") or row.get("package") or row.get("item") or "").lower() for row in material_rows}
     rows: list[dict[str, Any]] = []
+    scope_type = _scope_type_for_export(recommendation)
     calibration = recommendation.get("historical_calibration") or {}
     material_calibration = calibration.get("material_calibration") if isinstance(calibration, dict) else None
     if isinstance(material_calibration, dict):
@@ -338,29 +460,42 @@ def _material_evidence_rows(recommendation: dict[str, Any], data: Any) -> list[d
                         "included_as_evidence": True,
                     }
                 )
-    for table_name in ("template_rows", "job_package_summary", "pricing_catalog", "pricing"):
-        frame = getattr(data, table_name, pd.DataFrame()) if data is not None else pd.DataFrame()
-        for row in _frame_records(frame, source_table=table_name):
-            if not packages or any(_row_matches_package(row, package) for package in packages):
-                rows.append(
-                    {
-                        **row,
-                        "included_as_evidence": True,
-                        "filter_stage": "package_keyword_match",
-                        "match_reason": "Matched material package/category text.",
-                    }
-                )
+    if not fast:
+        for table_name in ("template_rows", "job_package_summary", "pricing_catalog", "pricing"):
+            frame = getattr(data, table_name, pd.DataFrame()) if data is not None else pd.DataFrame()
+            for row in _frame_records(frame, source_table=table_name, limit=max(evidence_limit * max(len(packages), 1) * 4, evidence_limit)):
+                if not _normal_export_row_allowed(row, scope_type=scope_type, debug_evidence=debug_evidence):
+                    continue
+                if table_name == "job_package_summary" and _safe_float(row.get("area_sqft")) is None:
+                    continue
+                if not packages or any(_row_matches_package(row, package) for package in packages):
+                    rows.append(
+                        {
+                            **row,
+                            "included_as_evidence": True,
+                            "filter_stage": "package_keyword_match",
+                            "match_reason": "Matched material package/category text.",
+                        }
+                    )
     if not rows:
         rows.append({"evidence_source_table": "", "message": "No material evidence rows were available for export."})
-    return rows
+    return _limit_evidence_rows(rows, evidence_limit=evidence_limit, debug_evidence=debug_evidence)
 
 
-def _labor_evidence_rows(recommendation: dict[str, Any], data: Any) -> list[dict[str, Any]]:
+def _labor_evidence_rows(
+    recommendation: dict[str, Any],
+    data: Any,
+    *,
+    evidence_limit: int = DEFAULT_EVIDENCE_LIMIT,
+    debug_evidence: bool = False,
+    fast: bool = False,
+) -> list[dict[str, Any]]:
     labor_rows = _labor_plan_rows(recommendation)
     tasks = {str(row.get("task") or row.get("labor_package") or "") for row in labor_rows}
     diagnostics = recommendation.get("debug", {}).get("labor_calibration", {}) if isinstance(recommendation.get("debug"), dict) else {}
     task_details = diagnostics.get("tasks", {}) if isinstance(diagnostics, dict) else {}
     plan_by_task = {str(row.get("task") or ""): row for row in labor_rows}
+    scope_type = _scope_type_for_export(recommendation)
     rows: list[dict[str, Any]] = []
     for task, plan_row in plan_by_task.items():
         rows.append(
@@ -383,40 +518,46 @@ def _labor_evidence_rows(recommendation: dict[str, Any], data: Any) -> list[dict
                 "included_as_evidence": True,
             }
         )
-    for task, detail in task_details.items():
-        detail = detail if isinstance(detail, dict) else {}
-        for rejected in detail.get("rejected_rows") or []:
-            rows.append(
-                {
-                    "requested_package": task,
-                    "evidence_source_table": rejected.get("source"),
-                    "included_as_evidence": False,
-                    "rejected_reason": rejected.get("reason"),
-                    "filter_stage": "numeric_validation",
-                    "match_reason": "",
-                    "evidence_weight": 0,
-                }
-            )
-    for table_name in ("relationship_labor_rates", "job_package_summary", "template_rows"):
-        frame = getattr(data, table_name, pd.DataFrame()) if data is not None else pd.DataFrame()
-        for row in _frame_records(frame, source_table=table_name):
-            matched = [task for task in tasks if task and _row_matches_package(row, task)]
-            if matched:
+    if debug_evidence and not fast:
+        for task, detail in task_details.items():
+            detail = detail if isinstance(detail, dict) else {}
+            for rejected in detail.get("rejected_rows") or []:
                 rows.append(
                     {
-                        "requested_package": matched[0],
-                        "matched_package": row.get("template_bucket") or row.get("package") or row.get("labor_package"),
-                        "included_as_evidence": True,
-                        "rejected_reason": "",
-                        "filter_stage": "task_keyword_match",
-                        "match_reason": "Matched requested labor task.",
-                        "evidence_weight": 1,
-                        **row,
+                        "requested_package": task,
+                        "evidence_source_table": rejected.get("source"),
+                        "included_as_evidence": False,
+                        "rejected_reason": rejected.get("reason"),
+                        "filter_stage": "numeric_validation",
+                        "match_reason": "",
+                        "evidence_weight": 0,
                     }
                 )
+    if not fast:
+        for table_name in ("relationship_labor_rates", "job_package_summary", "template_rows"):
+            frame = getattr(data, table_name, pd.DataFrame()) if data is not None else pd.DataFrame()
+            for row in _frame_records(frame, source_table=table_name, limit=max(evidence_limit * max(len(tasks), 1) * 4, evidence_limit)):
+                if not _normal_export_row_allowed(row, scope_type=scope_type, debug_evidence=debug_evidence):
+                    continue
+                if table_name == "job_package_summary" and _safe_float(row.get("area_sqft")) is None:
+                    continue
+                matched = [task for task in tasks if task and _row_matches_package(row, task)]
+                if matched:
+                    rows.append(
+                        {
+                            "requested_package": matched[0],
+                            "matched_package": row.get("template_bucket") or row.get("package") or row.get("labor_package"),
+                            "included_as_evidence": True,
+                            "rejected_reason": "",
+                            "filter_stage": "task_keyword_match",
+                            "match_reason": "Matched requested labor task.",
+                            "evidence_weight": 1,
+                            **row,
+                        }
+                    )
     if not rows:
         rows.append({"evidence_source_table": "", "message": "No labor evidence rows were available for export."})
-    return rows
+    return _limit_evidence_rows(rows, evidence_limit=evidence_limit, debug_evidence=debug_evidence)
 
 
 def _similar_job_rows(recommendation: dict[str, Any]) -> list[dict[str, Any]]:
@@ -569,7 +710,12 @@ def build_estimator_evidence_export(
     data: Any = None,
     notes: str | None = None,
     output_dir: Path | str | None = None,
+    *,
+    evidence_limit: int = DEFAULT_EVIDENCE_LIMIT,
+    fast: bool = False,
+    debug_evidence: bool = False,
 ) -> dict[str, Any]:
+    export_started = datetime.now(UTC)
     recommendation_dict = _dict_from_object(recommendation)
     parsed_fields = recommendation_dict.get("parsed_fields") or {}
     header = (recommendation_dict.get("draft_workbook_inputs") or {}).get("header") or {}
@@ -587,6 +733,26 @@ def build_estimator_evidence_export(
     crew_days_total = sum(_safe_float(row.get("adjusted_days")) or _safe_float(row.get("crew_days")) or 0 for row in labor_plan)
     labor_debug = recommendation_dict.get("debug", {}).get("labor_calibration", {}) if isinstance(recommendation_dict.get("debug"), dict) else {}
     labor_selection_summary = labor_debug.get("selection_summary", {}) if isinstance(labor_debug, dict) else {}
+    material_evidence = _material_evidence_rows(
+        recommendation_dict,
+        data,
+        evidence_limit=evidence_limit,
+        debug_evidence=debug_evidence,
+        fast=fast,
+    )
+    labor_evidence = _labor_evidence_rows(
+        recommendation_dict,
+        data,
+        evidence_limit=evidence_limit,
+        debug_evidence=debug_evidence,
+        fast=fast,
+    )
+    runtime_seconds_by_stage = dict((recommendation_dict.get("debug") or {}).get("runtime_seconds_by_stage") or {})
+    runtime_seconds_by_stage["export_evidence"] = round((datetime.now(UTC) - export_started).total_seconds(), 4)
+    material_total = sum(_safe_float(row.get("estimated_cost")) or 0 for row in material_plan if row.get("included_in_total"))
+    labor_total = sum(_safe_float(row.get("estimated_cost")) or 0 for row in labor_plan if row.get("included_in_total"))
+    gross_area = parsed_fields.get("gross_area_sqft") or header.get("gross_area_sqft")
+    deduction_area = parsed_fields.get("deduction_area_sqft") or header.get("deduction_area_sqft")
     run_summary = {
         "generated_at": generated_at,
         "run_id": run_integrity[0].get("run_id"),
@@ -596,6 +762,12 @@ def build_estimator_evidence_export(
         "notes": notes or "",
         "project_name": header.get("C2_job_name") or parsed_fields.get("project_type") or "Estimator recommendation",
         "estimated_sqft": estimated_sqft,
+        "gross_area_sqft": gross_area,
+        "deduction_area_sqft": deduction_area,
+        "roof_condition": parsed_fields.get("roof_condition"),
+        "condition_detail_flags": parsed_fields.get("condition_detail_flags"),
+        "material_total": round(material_total, 2),
+        "labor_total": round(labor_total, 2),
         "estimate_low": recommendation_dict.get("estimate_low"),
         "estimate_target": recommendation_dict.get("estimate_target"),
         "estimate_high": recommendation_dict.get("estimate_high"),
@@ -611,6 +783,11 @@ def build_estimator_evidence_export(
         "labor_bundle_summary": labor_selection_summary.get("labor_bundle_summary"),
         "labor_cap_applied": labor_selection_summary.get("labor_cap_applied"),
         "labor_overlap_adjustment": labor_selection_summary.get("labor_overlap_adjustment"),
+        "evidence_rows_exported": len(material_evidence) + len(labor_evidence),
+        "evidence_limit": evidence_limit,
+        "fast_mode": fast,
+        "debug_evidence": debug_evidence,
+        "runtime_seconds_by_stage": runtime_seconds_by_stage,
         "source_files_used": "; ".join(str(item) for item in source_files),
         "data_warnings": "; ".join(str(item) for item in data_warnings),
         "output_dir": str(output_dir) if output_dir else "",
@@ -625,22 +802,29 @@ def build_estimator_evidence_export(
         {"field": "Workbook Sheet", "value": "labor_plan/labor_evidence/labor_diagnostics: selected labor rows, candidate evidence, and rejected/relaxed calibration diagnostics."},
         {"field": "Workbook Sheet", "value": "similar_jobs/relationship_rows/rejected_evidence/estimate_rollup: supporting history, profiler outputs, rejected rows, and subtotal checks."},
     ]
+    labor_diagnostics = (
+        _flatten_diagnostics(recommendation_dict.get("debug") or {}, labor_plan)
+        if not fast or debug_evidence
+        else [{"message": "Verbose diagnostics skipped in fast evidence mode."}]
+    )
+    sheets = {
+        "README": readme_rows,
+        "run_integrity": run_integrity,
+        "parsed_scope": parsed_scope,
+        "material_plan": material_plan,
+        "material_evidence": material_evidence,
+        "labor_plan": labor_plan,
+        "labor_evidence": labor_evidence,
+        "labor_diagnostics": labor_diagnostics,
+        "estimate_rollup": _estimate_rollup_rows(recommendation_dict),
+    }
+    if debug_evidence:
+        sheets["similar_jobs"] = _similar_job_rows(recommendation_dict)
+        sheets["relationship_rows"] = _relationship_rows(data)
+        sheets["rejected_evidence"] = _rejected_evidence_rows(recommendation_dict)
     export = {
         "run_summary": run_summary,
-        "sheets": {
-            "README": readme_rows,
-            "run_integrity": run_integrity,
-            "parsed_scope": parsed_scope,
-            "material_plan": material_plan,
-            "material_evidence": _material_evidence_rows(recommendation_dict, data),
-            "labor_plan": labor_plan,
-            "labor_evidence": _labor_evidence_rows(recommendation_dict, data),
-            "labor_diagnostics": _flatten_diagnostics(recommendation_dict.get("debug") or {}, labor_plan),
-            "similar_jobs": _similar_job_rows(recommendation_dict),
-            "relationship_rows": _relationship_rows(data),
-            "rejected_evidence": _rejected_evidence_rows(recommendation_dict),
-            "estimate_rollup": _estimate_rollup_rows(recommendation_dict),
-        },
+        "sheets": sheets,
     }
     return sanitize_for_export(export, excel=False)
 
@@ -662,10 +846,22 @@ def write_estimator_evidence_export(
     notes: str | None = None,
     output_dir: Path | str = "output/estimator_evidence",
     base_filename: str | None = None,
+    *,
+    evidence_limit: int = DEFAULT_EVIDENCE_LIMIT,
+    fast: bool = False,
+    debug_evidence: bool = False,
 ) -> dict[str, Path]:
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    export = build_estimator_evidence_export(recommendation, data=data, notes=notes, output_dir=output_path)
+    export = build_estimator_evidence_export(
+        recommendation,
+        data=data,
+        notes=notes,
+        output_dir=output_path,
+        evidence_limit=evidence_limit,
+        fast=fast,
+        debug_evidence=debug_evidence,
+    )
     project_name = export.get("run_summary", {}).get("project_name")
     timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     base = _safe_filename(base_filename or project_name or "estimator_evidence")
@@ -674,7 +870,11 @@ def write_estimator_evidence_export(
     json_export = sanitize_for_export(export, excel=False)
     json_path.write_text(json.dumps(json_export, indent=2, default=str), encoding="utf-8")
     with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
-        for sheet_name in EVIDENCE_SHEETS:
+        sheet_names = [sheet for sheet in EVIDENCE_SHEETS if sheet in export.get("sheets", {})]
+        for extra_sheet in export.get("sheets", {}):
+            if extra_sheet not in sheet_names:
+                sheet_names.append(extra_sheet)
+        for sheet_name in sheet_names:
             rows = sanitize_for_export(export.get("sheets", {}).get(sheet_name, []), excel=True)
             frame = _sheet_dataframe(rows)
             frame.to_excel(writer, sheet_name=sheet_name[:31], index=False)

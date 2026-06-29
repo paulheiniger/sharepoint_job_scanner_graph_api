@@ -1175,6 +1175,9 @@ def build_calibration_audit(
     *,
     notes: str = "",
     case_id: str = "estimator_audit",
+    evidence_limit: int = 5000,
+    fast: bool = False,
+    debug_evidence: bool = False,
 ) -> dict[str, Any]:
     recommendation_dict = object_to_dict(recommendation)
     scope_type = recommendation_scope_template_type(recommendation_dict)
@@ -1212,6 +1215,12 @@ def build_calibration_audit(
         "rejected_evidence": rejected,
         "relationship_rows_sample": relationship_rows_sample(data),
     }
+    if not debug_evidence and evidence_limit > 0:
+        for sheet_name in ("material_evidence", "labor_evidence", "relationship_rows_sample"):
+            sheets[sheet_name] = sheets.get(sheet_name, [])[:evidence_limit]
+    if fast and not debug_evidence:
+        sheets["relationship_rows_sample"] = [{"message": "Relationship row sample skipped in fast audit mode."}]
+        sheets["rejected_evidence"] = [{"message": "Rejected evidence detail skipped in fast audit mode."}]
     return sanitize_for_export(
         {
             "case_id": case_id,
@@ -1287,12 +1296,23 @@ def run_audit_for_case(
     out_dir: Path | str = DEFAULT_OUTPUT_DIR,
     cases_path: Path = DEFAULT_CASES_PATH,
     data: EstimatorData | None = None,
+    evidence_limit: int = 5000,
+    fast: bool = False,
+    debug_evidence: bool = False,
 ) -> dict[str, Path]:
     case = find_case(case_id, cases_path)
     if data is None:
         data = load_estimator_data(REPO_ROOT, database_url=database_url, prefer_database=bool(database_url))
     recommendation = estimate_from_field_notes(case["notes"], {}, data=data)
-    audit = build_calibration_audit(recommendation, data, notes=case["notes"], case_id=case_id)
+    audit = build_calibration_audit(
+        recommendation,
+        data,
+        notes=case["notes"],
+        case_id=case_id,
+        evidence_limit=evidence_limit,
+        fast=fast,
+        debug_evidence=debug_evidence,
+    )
     return write_calibration_audit(audit, out_dir, case_id=case_id)
 
 
@@ -1302,10 +1322,21 @@ def run_audit_for_notes(
     case_id: str = "ad_hoc",
     database_url: str | None = None,
     out_dir: Path | str = DEFAULT_OUTPUT_DIR,
+    evidence_limit: int = 5000,
+    fast: bool = False,
+    debug_evidence: bool = False,
 ) -> dict[str, Path]:
     data = load_estimator_data(REPO_ROOT, database_url=database_url, prefer_database=bool(database_url))
     recommendation = estimate_from_field_notes(notes, {}, data=data)
-    audit = build_calibration_audit(recommendation, data, notes=notes, case_id=case_id)
+    audit = build_calibration_audit(
+        recommendation,
+        data,
+        notes=notes,
+        case_id=case_id,
+        evidence_limit=evidence_limit,
+        fast=fast,
+        debug_evidence=debug_evidence,
+    )
     return write_calibration_audit(audit, out_dir, case_id=case_id)
 
 
@@ -1316,6 +1347,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--database-url", default=os.getenv("NEON_DATABASE_URL") or os.getenv("DATABASE_URL"))
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--cases", type=Path, default=DEFAULT_CASES_PATH)
+    parser.add_argument("--fast", action="store_true", help="Skip verbose audit diagnostics and large evidence samples.")
+    parser.add_argument("--evidence-limit", type=int, default=50, help="Maximum evidence rows to keep per detailed audit sheet.")
+    parser.add_argument("--debug-evidence", action="store_true", help="Include full diagnostic evidence even when --fast is set.")
     return parser.parse_args(argv)
 
 
@@ -1329,6 +1363,9 @@ def main(argv: list[str] | None = None) -> int:
             database_url=args.database_url,
             out_dir=args.out_dir,
             cases_path=args.cases,
+            evidence_limit=args.evidence_limit,
+            fast=args.fast,
+            debug_evidence=args.debug_evidence,
         )
     else:
         paths = run_audit_for_notes(
@@ -1336,6 +1373,9 @@ def main(argv: list[str] | None = None) -> int:
             case_id="ad_hoc",
             database_url=args.database_url,
             out_dir=args.out_dir,
+            evidence_limit=args.evidence_limit,
+            fast=args.fast,
+            debug_evidence=args.debug_evidence,
         )
     print(f"Estimator audit JSON: {paths['json']}")
     print(f"Estimator audit XLSX: {paths['xlsx']}")

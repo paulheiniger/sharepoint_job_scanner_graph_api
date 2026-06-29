@@ -71,7 +71,9 @@ ROOFING_SOURCE_SIGNALS = (
 )
 PHYSICAL_UNITS_BY_BUCKET = {
     "primer": {"gal", "gallon", "gallons", "pail", "pails", "container", "containers", "drum", "drums"},
-    "seam_treatment": {"lf", "linear foot", "linear feet", "ft", "feet", "roll", "rolls", "tube", "tubes"},
+    # Seam treatment ratios must be linear footage. Roll/tube counts are useful
+    # pricing clues, but they are not interchangeable with LF production ratios.
+    "seam_treatment": {"lf", "linear foot", "linear feet", "ft", "feet"},
     "fastener_treatment": {"ea", "each", "count", "counts", "unit", "units", "piece", "pieces", "pc", "pcs"},
     "caulk_detail": {"case", "cases", "tube", "tubes", "ea", "each", "unit", "units", "lf", "linear foot", "linear feet"},
     "coating": {"gal", "gallon", "gallons", "pail", "pails", "drum", "drums"},
