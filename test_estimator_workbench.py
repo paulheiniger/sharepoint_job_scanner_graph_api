@@ -54,8 +54,8 @@ def sample_data() -> EstimatorData:
                     "warranty_years": 10,
                     "package": "coating",
                     "unit": "gal",
-                    "median_qty_per_sqft": 0.02,
-                    "evidence_count": 12,
+                    "median_qty_per_sqft": None,
+                    "evidence_count": 6,
                     "confidence": "high",
                 },
                 {
@@ -63,7 +63,7 @@ def sample_data() -> EstimatorData:
                     "template_type": "roofing",
                     "package": "primer",
                     "unit": "pail",
-                    "median_qty_per_sqft": 0.001,
+                    "median_qty_per_sqft": None,
                     "evidence_count": 2,
                     "confidence": "low",
                 },
@@ -101,10 +101,77 @@ def sample_data() -> EstimatorData:
         ),
         job_package_summary=pd.DataFrame(
             [
-                {"job_id": "J1", "division": "Roofing", "template_type": "roofing", "substrate": "metal", "package": "coating"},
-                {"job_id": "J2", "division": "Roofing", "template_type": "roofing", "substrate": "metal", "package": "coating"},
-                {"job_id": "J2", "division": "Roofing", "template_type": "roofing", "substrate": "metal", "package": "primer"},
-                {"job_id": "J3", "division": "Roofing", "template_type": "roofing", "substrate": "metal", "package": "seam_treatment"},
+                {
+                    "job_id": "J1",
+                    "division": "Roofing",
+                    "template_type": "roofing",
+                    "substrate": "metal",
+                    "package": "coating",
+                    "area_sqft": 10000,
+                    "total_quantity": 180,
+                    "unit": "gal",
+                    "qty_per_sqft": 0.018,
+                    "has_physical_quantity": True,
+                },
+                {
+                    "job_id": "J2",
+                    "division": "Roofing",
+                    "template_type": "roofing",
+                    "substrate": "metal",
+                    "package": "coating",
+                    "area_sqft": 10000,
+                    "total_quantity": 220,
+                    "unit": "gal",
+                    "qty_per_sqft": 0.022,
+                    "has_physical_quantity": True,
+                },
+                {
+                    "job_id": "J2",
+                    "division": "Roofing",
+                    "template_type": "roofing",
+                    "substrate": "metal",
+                    "package": "primer",
+                    "area_sqft": 10000,
+                    "total_quantity": 10,
+                    "unit": "pail",
+                    "qty_per_sqft": 0.001,
+                    "has_physical_quantity": True,
+                },
+                {
+                    "job_id": "J3",
+                    "division": "Roofing",
+                    "template_type": "roofing",
+                    "substrate": "metal",
+                    "package": "seam_treatment",
+                    "area_sqft": 9000,
+                    "total_quantity": None,
+                    "unit": "",
+                    "qty_per_sqft": None,
+                    "has_physical_quantity": False,
+                },
+                {
+                    "job_id": "F1",
+                    "division": "Flooring",
+                    "template_type": "flooring",
+                    "substrate": "concrete",
+                    "package": "coating",
+                    "area_sqft": 10000,
+                    "total_quantity": 999,
+                    "unit": "gal",
+                    "qty_per_sqft": 0.0999,
+                    "has_physical_quantity": True,
+                },
+                {
+                    "job_id": "L1",
+                    "division": "Roofing",
+                    "template_type": "roofing",
+                    "substrate": "metal",
+                    "package": "labor_base",
+                    "area_sqft": 10000,
+                    "total_hours": 45,
+                    "hours_per_sqft": 0.0045,
+                    "crew_size": 4,
+                },
             ]
         ),
     )
@@ -123,15 +190,20 @@ def test_workbench_populates_common_editable_rows_from_relationship_tables() -> 
     assert material_packages["coating"]["historical_qty_per_sqft"] == 0.02
     assert material_packages["coating"]["calculated_quantity"] == 200
     assert material_packages["coating"]["estimated_cost"] == 7600
+    assert material_packages["coating"]["source"] == "job_package_summary_full_corpus"
+    assert material_packages["coating"]["historical_jobs_found"] == 3
+    assert material_packages["coating"]["rows_accepted"] == 2
+    assert "division_not_roofing" in material_packages["coating"]["rejection_reasons"]
     assert material_packages["primer"]["include"] is False
     assert material_packages["primer"]["editable_qty_per_sqft"] == 0
     assert material_packages["primer"]["calculated_quantity"] == 0
-    assert "Used in 2 comparable jobs" in material_packages["primer"]["explanation"]
+    assert "Used in 1 historical Roofing jobs" in material_packages["primer"]["explanation"]
     assert "Shown but unchecked" in material_packages["primer"]["explanation"]
     assert labor_packages["labor_base"]["include"] is True
     assert labor_packages["labor_base"]["suggested_by_notes_rules"] == "yes"
     assert labor_packages["labor_base"]["historical_hours_per_1000_sqft"] == 4.5
-    assert "Used in 9 comparable jobs" in labor_packages["labor_base"]["explanation"]
+    assert labor_packages["labor_base"]["source"] == "job_package_summary_full_corpus"
+    assert "Used in 1 historical Roofing jobs" in labor_packages["labor_base"]["explanation"]
     assert not any("AI estimated" in str(row) or "AI chose" in str(row) or "Automatically determined" in str(row) for row in workbench["materials"] + workbench["labor"])
 
 

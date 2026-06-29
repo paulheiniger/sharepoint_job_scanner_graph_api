@@ -45,6 +45,22 @@ ADDER_ROWS: list[dict[str, Any]] = [
     {"adder": "misc", "label": "Misc."},
 ]
 
+PACKAGE_ALIASES: dict[str, set[str]] = {
+    "coating": {"coating", "silicone", "roof coating", "acrylic coating"},
+    "primer": {"primer", "prime"},
+    "seam_treatment": {"seam_treatment", "seam treatment", "labor_seam_sealer", "seam sealer", "seams_misc", "misc_seams", "fabric"},
+    "fastener_treatment": {"fastener_treatment", "fastener treatment", "fasteners", "screws", "plates"},
+    "caulk_detail": {"caulk_detail", "caulk detail", "caulk_sealant", "caulk", "sealant", "details", "penetrations"},
+    "labor_prep": {"labor_prep", "prep", "powerwash", "power wash", "set_up"},
+    "labor_prime": {"labor_prime", "prime", "labor_prime"},
+    "labor_base": {"labor_base", "base coat", "base"},
+    "labor_top_coat": {"labor_top_coat", "top coat", "finish coat"},
+    "labor_seam_sealer": {"labor_seam_sealer", "seam sealer", "seam treatment", "labor_seam"},
+    "labor_details": {"labor_details", "details", "labor_caulk", "caulk"},
+    "labor_cleanup": {"labor_cleanup", "clean_up", "cleanup", "touch_cleanup", "touch up"},
+    "labor_loading": {"labor_loading", "loading"},
+}
+
 
 def safe_number(value: Any, default: float = 0.0) -> float:
     number = to_float(value)
@@ -83,6 +99,105 @@ def _frame(data: Any, attr: str) -> pd.DataFrame:
 
 def _normalized(value: Any) -> str:
     return " ".join(str(value or "").lower().replace("_", " ").replace("-", " ").split())
+
+
+def _package_aliases(package: str) -> set[str]:
+    aliases = set(PACKAGE_ALIASES.get(package, set()))
+    aliases.add(package)
+    return {_normalized(alias) for alias in aliases if _normalized(alias)}
+
+
+def _package_match_series(frame: pd.DataFrame, package: str) -> pd.Series:
+    if frame.empty:
+        return pd.Series(dtype=bool)
+    aliases = _package_aliases(package)
+    candidates = []
+    for column in ("package", "labor_package", "template_bucket", "line_item_kind", "item_name", "selected_item_name", "row_label"):
+        if column in frame.columns:
+            candidates.append(frame[column].map(_normalized).isin(aliases))
+    if not candidates:
+        return pd.Series([False] * len(frame), index=frame.index)
+    mask = candidates[0]
+    for candidate in candidates[1:]:
+        mask = mask | candidate
+    return mask
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    number = optional_number(value)
+    if number is not None:
+        return number != 0
+    return _normalized(value) in {"true", "yes", "y", "included", "physical quantity"}
+
+
+def _numeric_series(frame: pd.DataFrame, column: str) -> pd.Series:
+    if column not in frame.columns:
+        return pd.Series([math.nan] * len(frame), index=frame.index, dtype=float)
+    return pd.to_numeric(frame[column], errors="coerce")
+
+
+def _text_series(frame: pd.DataFrame, column: str) -> pd.Series:
+    if column not in frame.columns:
+        return pd.Series([""] * len(frame), index=frame.index, dtype=object)
+    return frame[column].fillna("").astype(str)
+
+
+def _positive_percentile(values: pd.Series, q: float) -> float:
+    numeric = pd.to_numeric(values, errors="coerce")
+    numeric = numeric[numeric.notna() & (numeric > 0)]
+    if numeric.empty:
+        return 0.0
+    return float(numeric.quantile(q))
+
+
+def _job_count(frame: pd.DataFrame) -> int:
+    if frame.empty:
+        return 0
+    if "job_id" in frame.columns:
+        return int(frame["job_id"].dropna().astype(str).nunique())
+    return int(len(frame))
+
+
+def _add_reason(reasons: dict[str, int], reason: str, count: int) -> None:
+    if count > 0:
+        reasons[reason] = reasons.get(reason, 0) + int(count)
+
+
+def _format_reasons(reasons: dict[str, int]) -> str:
+    if not reasons:
+        return ""
+    return "; ".join(f"{reason}: {count}" for reason, count in sorted(reasons.items()))
+
+
+def _scope_filter_diagnostics(package_rows: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int]]:
+    rows = package_rows.copy()
+    reasons: dict[str, int] = {}
+    if "division" in rows.columns:
+        non_roofing = ~rows["division"].map(_normalized).eq("roofing")
+        _add_reason(reasons, "division_not_roofing", int(non_roofing.sum()))
+        rows = rows[~non_roofing].copy()
+    else:
+        _add_reason(reasons, "missing_division_column", len(rows))
+    if "template_type" in rows.columns:
+        non_roofing_template = ~rows["template_type"].map(_normalized).eq("roofing")
+        _add_reason(reasons, "template_not_roofing", int(non_roofing_template.sum()))
+        rows = rows[~non_roofing_template].copy()
+    else:
+        _add_reason(reasons, "missing_template_type_column", len(rows))
+    return rows, reasons
+
+
+def _evidence_count_from_rows(rows: pd.DataFrame) -> int:
+    if rows.empty:
+        return 0
+    for column in ("evidence_count", "job_count", "supporting_job_count", "n_jobs", "count"):
+        if column in rows.columns:
+            total = pd.to_numeric(rows[column], errors="coerce").fillna(0).sum()
+            if total > 0:
+                return int(total)
+    return _job_count(rows)
 
 
 def _estimate_area(scope: dict[str, Any]) -> float:
@@ -228,6 +343,276 @@ def best_relationship_row(frame: pd.DataFrame, package: str, scope: dict[str, An
     return rows.iloc[0].drop(labels=["_workbench_score"], errors="ignore").to_dict()
 
 
+def _material_distribution_from_relationships(data: Any, package: str, default_unit: str, reasons: dict[str, int]) -> dict[str, Any]:
+    ratios = _frame(data, "relationship_material_qty_ratios")
+    if ratios.empty:
+        return {}
+    package_rows = ratios[_package_match_series(ratios, package)].copy()
+    if package_rows.empty:
+        return {}
+    eligible, scoped_reasons = _scope_filter_diagnostics(package_rows)
+    for reason, count in scoped_reasons.items():
+        _add_reason(reasons, f"relationship_{reason}", count)
+    median_values = _numeric_series(eligible, "median_qty_per_sqft")
+    accepted = eligible[median_values.notna() & (median_values > 0)].copy()
+    _add_reason(reasons, "relationship_missing_qty_per_sqft", len(eligible) - len(accepted))
+    if accepted.empty:
+        return {
+            "source": "relationship_material_qty_ratios_full_corpus",
+            "historical_jobs_found": _evidence_count_from_rows(package_rows),
+            "rows_accepted": 0,
+            "rows_rejected": len(package_rows),
+            "rejection_reasons": _format_reasons(reasons),
+        }
+    evidence_count = _evidence_count_from_rows(accepted)
+    unit = first_nonblank(next((value for value in accepted.get("unit", pd.Series(dtype=object)).dropna().astype(str) if value.strip()), ""), default_unit)
+    return {
+        "median": _positive_percentile(accepted["median_qty_per_sqft"], 0.5),
+        "p25": _positive_percentile(accepted.get("p25_qty_per_sqft", accepted["median_qty_per_sqft"]), 0.5) or _positive_percentile(accepted["median_qty_per_sqft"], 0.25),
+        "p75": _positive_percentile(accepted.get("p75_qty_per_sqft", accepted["median_qty_per_sqft"]), 0.5) or _positive_percentile(accepted["median_qty_per_sqft"], 0.75),
+        "evidence_count": evidence_count,
+        "historical_jobs_found": _evidence_count_from_rows(package_rows),
+        "rows_accepted": len(accepted),
+        "rows_rejected": len(package_rows) - len(accepted),
+        "rejection_reasons": _format_reasons(reasons),
+        "unit": unit,
+        "confidence": _confidence(evidence_count),
+        "source": "relationship_material_qty_ratios_full_corpus",
+    }
+
+
+def material_sizing_distribution(data: Any, package: str, default_unit: str) -> dict[str, Any]:
+    summary = _frame(data, "job_package_summary")
+    reasons: dict[str, int] = {}
+    if summary.empty:
+        fallback = _material_distribution_from_relationships(data, package, default_unit, reasons)
+        if fallback:
+            return fallback
+        return {
+            "median": 0.0,
+            "p25": 0.0,
+            "p75": 0.0,
+            "evidence_count": 0,
+            "historical_jobs_found": 0,
+            "rows_accepted": 0,
+            "rows_rejected": 0,
+            "rejection_reasons": "job_package_summary_empty",
+            "unit": default_unit,
+            "confidence": "none",
+            "source": "no_sufficient_evidence",
+        }
+    package_rows = summary[_package_match_series(summary, package)].copy()
+    if package_rows.empty:
+        fallback = _material_distribution_from_relationships(data, package, default_unit, reasons)
+        if fallback:
+            fallback.setdefault("median", 0.0)
+            fallback.setdefault("p25", 0.0)
+            fallback.setdefault("p75", 0.0)
+            fallback.setdefault("evidence_count", 0)
+            fallback.setdefault("unit", default_unit)
+            fallback.setdefault("confidence", _confidence(fallback.get("evidence_count", 0)))
+            return fallback
+        return {
+            "median": 0.0,
+            "p25": 0.0,
+            "p75": 0.0,
+            "evidence_count": 0,
+            "historical_jobs_found": 0,
+            "rows_accepted": 0,
+            "rows_rejected": 0,
+            "rejection_reasons": "no_package_rows_found",
+            "unit": default_unit,
+            "confidence": "none",
+            "source": "no_sufficient_evidence",
+        }
+
+    eligible, scoped_reasons = _scope_filter_diagnostics(package_rows)
+    reasons.update(scoped_reasons)
+    area = _numeric_series(eligible, "area_sqft")
+    total_quantity = _numeric_series(eligible, "total_quantity")
+    qty_per_sqft = _numeric_series(eligible, "qty_per_sqft")
+    computed_qty_per_sqft = total_quantity / area
+    eligible["_workbench_qty_per_sqft"] = qty_per_sqft.where(qty_per_sqft.notna() & (qty_per_sqft > 0), computed_qty_per_sqft)
+    if "has_physical_quantity" in eligible.columns:
+        physical_mask = eligible["has_physical_quantity"].map(_truthy)
+    elif "physical_quantity_valid" in eligible.columns:
+        physical_mask = eligible["physical_quantity_valid"].map(_truthy)
+    else:
+        physical_mask = (eligible["_workbench_qty_per_sqft"] > 0) | (total_quantity > 0)
+    bad_units = _text_series(eligible, "unit").map(_normalized).isin({"mixed", "allowance", "usd", "$", "dollar", "dollars"})
+    missing_sqft = area.isna() | (area <= 0)
+    missing_quantity = ~physical_mask | ((total_quantity.isna() | (total_quantity <= 0)) & (eligible["_workbench_qty_per_sqft"].isna() | (eligible["_workbench_qty_per_sqft"] <= 0)))
+    missing_qty_per_sqft = eligible["_workbench_qty_per_sqft"].isna() | (eligible["_workbench_qty_per_sqft"] <= 0)
+    _add_reason(reasons, "mixed_or_allowance_unit", int(bad_units.sum()))
+    _add_reason(reasons, "missing_sqft", int(missing_sqft.sum()))
+    _add_reason(reasons, "missing_physical_quantity", int(missing_quantity.sum()))
+    _add_reason(reasons, "missing_qty_per_sqft", int(missing_qty_per_sqft.sum()))
+    accepted = eligible[physical_mask & ~bad_units & ~missing_qty_per_sqft].copy()
+    if accepted.empty:
+        fallback = _material_distribution_from_relationships(data, package, default_unit, reasons)
+        if fallback and safe_number(fallback.get("median"), 0) > 0:
+            return fallback
+        historical_jobs = _job_count(package_rows)
+        return {
+            "median": 0.0,
+            "p25": 0.0,
+            "p75": 0.0,
+            "evidence_count": 0,
+            "historical_jobs_found": historical_jobs,
+            "rows_accepted": 0,
+            "rows_rejected": len(package_rows),
+            "rejection_reasons": _format_reasons(reasons),
+            "unit": default_unit,
+            "confidence": "none",
+            "source": "no_sufficient_evidence",
+        }
+    evidence_count = _job_count(accepted)
+    unit = first_nonblank(next((value for value in accepted.get("unit", pd.Series(dtype=object)).dropna().astype(str) if value.strip() and _normalized(value) != "mixed"), ""), default_unit)
+    return {
+        "median": _positive_percentile(accepted["_workbench_qty_per_sqft"], 0.5),
+        "p25": _positive_percentile(accepted["_workbench_qty_per_sqft"], 0.25),
+        "p75": _positive_percentile(accepted["_workbench_qty_per_sqft"], 0.75),
+        "evidence_count": evidence_count,
+        "historical_jobs_found": _job_count(package_rows),
+        "rows_accepted": len(accepted),
+        "rows_rejected": len(package_rows) - len(accepted),
+        "rejection_reasons": _format_reasons(reasons),
+        "unit": unit,
+        "confidence": _confidence(evidence_count),
+        "source": "job_package_summary_full_corpus",
+    }
+
+
+def _labor_distribution_from_relationships(data: Any, package: str, reasons: dict[str, int]) -> dict[str, Any]:
+    rates = _frame(data, "relationship_labor_rates")
+    if rates.empty:
+        return {}
+    package_rows = rates[_package_match_series(rates, package)].copy()
+    if package_rows.empty:
+        return {}
+    eligible, scoped_reasons = _scope_filter_diagnostics(package_rows)
+    for reason, count in scoped_reasons.items():
+        _add_reason(reasons, f"relationship_{reason}", count)
+    median_values = _numeric_series(eligible, "median_hours_per_1000_sqft")
+    accepted = eligible[median_values.notna() & (median_values > 0)].copy()
+    _add_reason(reasons, "relationship_missing_hours_per_1000_sqft", len(eligible) - len(accepted))
+    if accepted.empty:
+        return {
+            "source": "relationship_labor_rates_full_corpus",
+            "historical_jobs_found": _evidence_count_from_rows(package_rows),
+            "rows_accepted": 0,
+            "rows_rejected": len(package_rows),
+            "rejection_reasons": _format_reasons(reasons),
+        }
+    evidence_count = _evidence_count_from_rows(accepted)
+    return {
+        "median": _positive_percentile(accepted["median_hours_per_1000_sqft"], 0.5),
+        "p25": _positive_percentile(accepted.get("p25_hours_per_1000_sqft", accepted["median_hours_per_1000_sqft"]), 0.5) or _positive_percentile(accepted["median_hours_per_1000_sqft"], 0.25),
+        "p75": _positive_percentile(accepted.get("p75_hours_per_1000_sqft", accepted["median_hours_per_1000_sqft"]), 0.5) or _positive_percentile(accepted["median_hours_per_1000_sqft"], 0.75),
+        "evidence_count": evidence_count,
+        "historical_jobs_found": _evidence_count_from_rows(package_rows),
+        "rows_accepted": len(accepted),
+        "rows_rejected": len(package_rows) - len(accepted),
+        "rejection_reasons": _format_reasons(reasons),
+        "median_crew_size": safe_number(accepted.get("median_crew_size", pd.Series([4])).median(), 4),
+        "confidence": _confidence(evidence_count),
+        "source": "relationship_labor_rates_full_corpus",
+    }
+
+
+def labor_sizing_distribution(data: Any, package: str) -> dict[str, Any]:
+    summary = _frame(data, "job_package_summary")
+    reasons: dict[str, int] = {}
+    if summary.empty:
+        fallback = _labor_distribution_from_relationships(data, package, reasons)
+        if fallback:
+            return fallback
+        return {
+            "median": 0.0,
+            "p25": 0.0,
+            "p75": 0.0,
+            "evidence_count": 0,
+            "historical_jobs_found": 0,
+            "rows_accepted": 0,
+            "rows_rejected": 0,
+            "rejection_reasons": "job_package_summary_empty",
+            "median_crew_size": 4,
+            "confidence": "none",
+            "source": "no_sufficient_evidence",
+        }
+    package_rows = summary[_package_match_series(summary, package)].copy()
+    if package_rows.empty:
+        fallback = _labor_distribution_from_relationships(data, package, reasons)
+        if fallback:
+            fallback.setdefault("median", 0.0)
+            fallback.setdefault("p25", 0.0)
+            fallback.setdefault("p75", 0.0)
+            fallback.setdefault("evidence_count", 0)
+            fallback.setdefault("median_crew_size", 4)
+            fallback.setdefault("confidence", _confidence(fallback.get("evidence_count", 0)))
+            return fallback
+        return {
+            "median": 0.0,
+            "p25": 0.0,
+            "p75": 0.0,
+            "evidence_count": 0,
+            "historical_jobs_found": 0,
+            "rows_accepted": 0,
+            "rows_rejected": 0,
+            "rejection_reasons": "no_package_rows_found",
+            "median_crew_size": 4,
+            "confidence": "none",
+            "source": "no_sufficient_evidence",
+        }
+    eligible, scoped_reasons = _scope_filter_diagnostics(package_rows)
+    reasons.update(scoped_reasons)
+    area = _numeric_series(eligible, "area_sqft")
+    total_hours = _numeric_series(eligible, "total_hours")
+    hours_per_sqft = _numeric_series(eligible, "hours_per_sqft")
+    computed_hours_per_sqft = total_hours / area
+    eligible["_workbench_hours_per_1000"] = hours_per_sqft.where(hours_per_sqft.notna() & (hours_per_sqft > 0), computed_hours_per_sqft) * 1000
+    missing_sqft = area.isna() | (area <= 0)
+    missing_hours = (total_hours.isna() | (total_hours <= 0)) & (hours_per_sqft.isna() | (hours_per_sqft <= 0))
+    missing_hours_rate = eligible["_workbench_hours_per_1000"].isna() | (eligible["_workbench_hours_per_1000"] <= 0)
+    _add_reason(reasons, "missing_sqft", int(missing_sqft.sum()))
+    _add_reason(reasons, "missing_hours", int(missing_hours.sum()))
+    _add_reason(reasons, "missing_hours_per_1000_sqft", int(missing_hours_rate.sum()))
+    accepted = eligible[~missing_hours_rate].copy()
+    if accepted.empty:
+        fallback = _labor_distribution_from_relationships(data, package, reasons)
+        if fallback and safe_number(fallback.get("median"), 0) > 0:
+            return fallback
+        return {
+            "median": 0.0,
+            "p25": 0.0,
+            "p75": 0.0,
+            "evidence_count": 0,
+            "historical_jobs_found": _job_count(package_rows),
+            "rows_accepted": 0,
+            "rows_rejected": len(package_rows),
+            "rejection_reasons": _format_reasons(reasons),
+            "median_crew_size": 4,
+            "confidence": "none",
+            "source": "no_sufficient_evidence",
+        }
+    evidence_count = _job_count(accepted)
+    crew = _numeric_series(accepted, "crew_size")
+    crew = crew[crew.notna() & (crew > 0)]
+    return {
+        "median": _positive_percentile(accepted["_workbench_hours_per_1000"], 0.5),
+        "p25": _positive_percentile(accepted["_workbench_hours_per_1000"], 0.25),
+        "p75": _positive_percentile(accepted["_workbench_hours_per_1000"], 0.75),
+        "evidence_count": evidence_count,
+        "historical_jobs_found": _job_count(package_rows),
+        "rows_accepted": len(accepted),
+        "rows_rejected": len(package_rows) - len(accepted),
+        "rejection_reasons": _format_reasons(reasons),
+        "median_crew_size": float(crew.median()) if not crew.empty else 4,
+        "confidence": _confidence(evidence_count),
+        "source": "job_package_summary_full_corpus",
+    }
+
+
 def _price_for_package(pricing: pd.DataFrame, package_spec: dict[str, Any], scope: dict[str, Any]) -> tuple[float, str]:
     if pricing.empty:
         return 0.0, ""
@@ -274,7 +659,7 @@ def _historical_usage_rate(data: Any, package: str, scope: dict[str, Any], evide
     denominator = rows["job_id"].dropna().astype(str).nunique()
     if denominator <= 0:
         return 0.0
-    package_jobs = rows[rows["package"].astype(str).str.lower().eq(str(package).lower())]["job_id"].dropna().astype(str).nunique()
+    package_jobs = rows[_package_match_series(rows, package)]["job_id"].dropna().astype(str).nunique()
     if package_jobs <= 0 and evidence_count > 0:
         package_jobs = evidence_count
     return round(min(package_jobs / denominator, 1.0), 4)
@@ -283,54 +668,78 @@ def _historical_usage_rate(data: Any, package: str, scope: dict[str, Any], evide
 def _material_explanation(
     *,
     package: str,
-    relationship: dict[str, Any],
+    sizing: dict[str, Any],
     evidence_count: int,
     qty_per_sqft: float,
     status: str,
     scope: dict[str, Any],
 ) -> str:
     reason = _suggestion_reason(package, scope, status)
+    historical_jobs = int(safe_number(sizing.get("historical_jobs_found"), 0))
+    accepted = int(safe_number(sizing.get("rows_accepted"), 0))
+    rejected = int(safe_number(sizing.get("rows_rejected"), 0))
+    diagnostics = f" Sizing pool accepted {accepted} rows and rejected {rejected}."
+    rejection_reasons = str(sizing.get("rejection_reasons") or "")
+    if rejection_reasons:
+        diagnostics += f" Rejections: {rejection_reasons}."
     if evidence_count > 0 and qty_per_sqft > 0:
         return (
-            f"Used in {evidence_count} comparable jobs. Median when used: {qty_per_sqft:g} per sqft. "
-            f"{reason}"
+            f"Used in {evidence_count} historical Roofing jobs. Median when used: {qty_per_sqft:g} per sqft."
+            f"{diagnostics} {reason}"
+        )
+    if historical_jobs > 0:
+        return (
+            f"Found {historical_jobs} historical Roofing/package jobs, but accepted 0 for physical quantity sizing; "
+            f"left at 0 for estimator review.{diagnostics} {reason}"
         )
     if evidence_count > 0:
-        return f"Used in {evidence_count} comparable jobs, but no reliable historical quantity was found; left at 0 for estimator review. {reason}"
-    return f"No reliable historical quantity found; left at 0 for estimator review. {reason}"
+        return f"Used in {evidence_count} historical Roofing jobs, but no reliable historical quantity was found; left at 0 for estimator review.{diagnostics} {reason}"
+    return f"No historical Roofing quantity evidence found; left at 0 for estimator review.{diagnostics} {reason}"
 
 
 def _labor_explanation(
     *,
     package: str,
+    sizing: dict[str, Any],
     evidence_count: int,
     hours_per_1000: float,
     status: str,
     scope: dict[str, Any],
 ) -> str:
     reason = _suggestion_reason(package, scope, status)
+    historical_jobs = int(safe_number(sizing.get("historical_jobs_found"), 0))
+    accepted = int(safe_number(sizing.get("rows_accepted"), 0))
+    rejected = int(safe_number(sizing.get("rows_rejected"), 0))
+    diagnostics = f" Sizing pool accepted {accepted} rows and rejected {rejected}."
+    rejection_reasons = str(sizing.get("rejection_reasons") or "")
+    if rejection_reasons:
+        diagnostics += f" Rejections: {rejection_reasons}."
     if evidence_count > 0 and hours_per_1000 > 0:
         return (
-            f"Used in {evidence_count} comparable jobs. Median when used: {hours_per_1000:g} hours per 1,000 sqft. "
-            f"{reason}"
+            f"Used in {evidence_count} historical Roofing jobs. Median when used: {hours_per_1000:g} hours per 1,000 sqft."
+            f"{diagnostics} {reason}"
+        )
+    if historical_jobs > 0:
+        return (
+            f"Found {historical_jobs} historical Roofing/package jobs, but accepted 0 for labor sizing; "
+            f"left at 0 for estimator review.{diagnostics} {reason}"
         )
     if evidence_count > 0:
-        return f"Used in {evidence_count} comparable jobs, but no reliable labor rate was found; left at 0 for estimator review. {reason}"
-    return f"No reliable historical labor rate found; left at 0 for estimator review. {reason}"
+        return f"Used in {evidence_count} historical Roofing jobs, but no reliable labor rate was found; left at 0 for estimator review.{diagnostics} {reason}"
+    return f"No historical Roofing labor evidence found; left at 0 for estimator review.{diagnostics} {reason}"
 
 
 def material_workbench_rows(recommendation: Any, data: Any, scope: dict[str, Any]) -> list[dict[str, Any]]:
     area = _estimate_area(scope)
-    ratios = _frame(data, "relationship_material_qty_ratios")
     pricing = _frame(data, "pricing_catalog")
     if pricing.empty:
         pricing = _frame(data, "pricing")
     rows: list[dict[str, Any]] = []
     for spec in MATERIAL_PACKAGES:
         package = spec["package"]
-        relationship = best_relationship_row(ratios, package, scope) or {}
-        qty_per_sqft = safe_number(relationship.get("median_qty_per_sqft"), 0.0)
-        evidence_count = int(safe_number(relationship.get("evidence_count") or relationship.get("job_count"), 0))
+        sizing = material_sizing_distribution(data, package, str(spec.get("default_unit") or "unit"))
+        qty_per_sqft = safe_number(sizing.get("median"), 0.0)
+        evidence_count = int(safe_number(sizing.get("evidence_count"), 0))
         unit_price, price_source = _price_for_package(pricing, spec, scope)
         status = _package_suggestion_status(recommendation, package)
         include = status == "yes"
@@ -347,18 +756,24 @@ def material_workbench_rows(recommendation: Any, data: Any, scope: dict[str, Any
                 "suggested_by_notes_rules": status,
                 "historical_usage_rate": _historical_usage_rate(data, package, scope, evidence_count),
                 "historical_qty_per_sqft": round(qty_per_sqft, 6),
+                "p25_qty_per_sqft": round(safe_number(sizing.get("p25"), 0.0), 6),
+                "p75_qty_per_sqft": round(safe_number(sizing.get("p75"), 0.0), 6),
                 "editable_qty_per_sqft": round(editable_qty_per_sqft, 6),
                 "calculated_quantity": round(calculated_quantity, 2),
-                "unit": relationship.get("unit") or spec.get("default_unit"),
+                "unit": sizing.get("unit") or spec.get("default_unit"),
                 "current_unit_price": round(unit_price, 4) if unit_price else 0.0,
                 "estimated_cost": round(calculated_quantity * unit_price, 2) if unit_price else 0.0,
                 "evidence_count": evidence_count,
-                "confidence": relationship.get("confidence") or _confidence(evidence_count),
-                "source": "relationship_material_qty_ratios" if relationship else "no_sufficient_evidence",
+                "historical_jobs_found": int(safe_number(sizing.get("historical_jobs_found"), 0)),
+                "rows_accepted": int(safe_number(sizing.get("rows_accepted"), 0)),
+                "rows_rejected": int(safe_number(sizing.get("rows_rejected"), 0)),
+                "rejection_reasons": sizing.get("rejection_reasons") or "",
+                "confidence": sizing.get("confidence") or _confidence(evidence_count),
+                "source": sizing.get("source") or "no_sufficient_evidence",
                 "pricing_source": price_source,
                 "explanation": _material_explanation(
                     package=package,
-                    relationship=relationship,
+                    sizing=sizing,
                     evidence_count=evidence_count,
                     qty_per_sqft=qty_per_sqft,
                     status=status,
@@ -371,18 +786,17 @@ def material_workbench_rows(recommendation: Any, data: Any, scope: dict[str, Any
 
 def labor_workbench_rows(recommendation: Any, data: Any, scope: dict[str, Any], hourly_rate: float = DEFAULT_HOURLY_RATE) -> list[dict[str, Any]]:
     area = _estimate_area(scope)
-    rates = _frame(data, "relationship_labor_rates")
     rows: list[dict[str, Any]] = []
     for spec in LABOR_PACKAGES:
         package = spec["package"]
-        relationship = best_relationship_row(rates, package, scope) or {}
-        hours_per_1000 = safe_number(relationship.get("median_hours_per_1000_sqft"), 0.0)
-        evidence_count = int(safe_number(relationship.get("evidence_count") or relationship.get("job_count"), 0))
+        sizing = labor_sizing_distribution(data, package)
+        hours_per_1000 = safe_number(sizing.get("median"), 0.0)
+        evidence_count = int(safe_number(sizing.get("evidence_count"), 0))
         status = _labor_suggestion_status(recommendation, package)
         include = status == "yes"
         editable_hours_per_1000 = hours_per_1000 if include else 0.0
         calculated_hours = editable_hours_per_1000 * area / 1000 if include and area else 0.0
-        crew_size = int(safe_number(relationship.get("median_crew_size"), 4) or 4)
+        crew_size = int(safe_number(sizing.get("median_crew_size"), 4) or 4)
         rows.append(
             {
                 "include": bool(include),
@@ -390,16 +804,23 @@ def labor_workbench_rows(recommendation: Any, data: Any, scope: dict[str, Any], 
                 "package_key": package,
                 "suggested_by_notes_rules": status,
                 "historical_hours_per_1000_sqft": round(hours_per_1000, 4),
+                "p25_hours_per_1000_sqft": round(safe_number(sizing.get("p25"), 0.0), 4),
+                "p75_hours_per_1000_sqft": round(safe_number(sizing.get("p75"), 0.0), 4),
                 "editable_hours_per_1000_sqft": round(editable_hours_per_1000, 4),
                 "calculated_hours": round(calculated_hours, 2),
                 "crew_size": crew_size,
                 "labor_rate": hourly_rate,
                 "estimated_cost": round(calculated_hours * hourly_rate, 2),
                 "evidence_count": evidence_count,
-                "confidence": relationship.get("confidence") or _confidence(evidence_count),
-                "source": "relationship_labor_rates" if relationship else "no_sufficient_evidence",
+                "historical_jobs_found": int(safe_number(sizing.get("historical_jobs_found"), 0)),
+                "rows_accepted": int(safe_number(sizing.get("rows_accepted"), 0)),
+                "rows_rejected": int(safe_number(sizing.get("rows_rejected"), 0)),
+                "rejection_reasons": sizing.get("rejection_reasons") or "",
+                "confidence": sizing.get("confidence") or _confidence(evidence_count),
+                "source": sizing.get("source") or "no_sufficient_evidence",
                 "explanation": _labor_explanation(
                     package=package,
+                    sizing=sizing,
                     evidence_count=evidence_count,
                     hours_per_1000=hours_per_1000,
                     status=status,

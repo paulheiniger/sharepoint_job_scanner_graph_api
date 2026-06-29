@@ -79,6 +79,23 @@ SPECIFIC_MATERIAL_BUCKETS = {
     "delivery_fee",
     "freight",
 }
+
+ESTIMATED_UNITS_PHYSICAL_UNIT_BY_PACKAGE = {
+    "coating": "gal",
+    "primer": "gal",
+    "thinner": "gal",
+    "caulk_sealant": "unit",
+    "caulk_detail": "unit",
+    "seam_treatment": "unit",
+    "fasteners": "ea",
+    "fastener_treatment": "ea",
+    "plates": "ea",
+    "fabric": "roll",
+    "foam": "unit",
+    "membrane": "unit",
+    "thermal_barrier_coating": "gal",
+}
+
 JOB_CONTEXT_COLUMNS = [
     "source_year",
     "division",
@@ -1134,7 +1151,7 @@ def normalize_raw_line_items(raw: pd.DataFrame) -> pd.DataFrame:
     }
     rename = {key: value for key, value in rename.items() if key and key != value}
     normalized = normalized.rename(columns=rename)
-    for column in ["quantity", "unit_cost", "total_cost", "labor_hours", "labor_days", "crew_size"]:
+    for column in ["quantity", "estimated_units", "unit_cost", "total_cost", "labor_hours", "labor_days", "crew_size"]:
         if column in normalized.columns:
             normalized[column] = pd.to_numeric(normalized[column], errors="coerce")
         else:
@@ -1149,6 +1166,18 @@ def normalize_raw_line_items(raw: pd.DataFrame) -> pd.DataFrame:
     normalized["template_bucket"] = normalized["template_bucket"].apply(normalized_template_bucket)
     normalized["package"] = normalized.apply(classify_package, axis=1)
     normalized["line_type"] = normalized.apply(lambda row: "labor" if is_labor_row(row) else "material", axis=1)
+    template_material_units = (
+        normalized.get("source_type_table", pd.Series("", index=normalized.index)).astype(str).eq("estimate_template_rows")
+        & normalized["line_type"].eq("material")
+        & pd.to_numeric(normalized["estimated_units"], errors="coerce").gt(0)
+        & normalized["package"].isin(ESTIMATED_UNITS_PHYSICAL_UNIT_BY_PACKAGE)
+    )
+    normalized["scope_quantity"] = normalized["quantity"]
+    normalized.loc[template_material_units, "quantity"] = normalized.loc[template_material_units, "estimated_units"]
+    missing_unit = normalized["unit"].astype(str).str.strip().eq("") | normalized["unit"].isna()
+    for package, inferred_unit in ESTIMATED_UNITS_PHYSICAL_UNIT_BY_PACKAGE.items():
+        mask = template_material_units & normalized["package"].eq(package) & missing_unit
+        normalized.loc[mask, "unit"] = inferred_unit
     normalized["normalized_item_name"] = normalized.get("item_name", "").fillna("").astype(str).str.strip().str.lower().str.replace(r"\s+", " ", regex=True)
     normalized["source_type"] = normalized.apply(source_type_for_row, axis=1)
     normalized["physical_quantity_valid"] = normalized["source_type"].eq("physical_quantity")
@@ -1187,6 +1216,8 @@ def normalize_raw_line_items(raw: pd.DataFrame) -> pd.DataFrame:
         "section",
         "description",
         "quantity",
+        "estimated_units",
+        "scope_quantity",
         "unit",
         "unit_cost",
         "total_cost",

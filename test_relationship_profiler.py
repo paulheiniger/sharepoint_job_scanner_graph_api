@@ -12,6 +12,7 @@ from relationship_profiler import (
     build_missing_job_context,
     build_rule_suggestions,
     material_qty_ratios_from_summary,
+    normalize_raw_line_items,
     profile_relationships,
     profile_relationships_from_database,
     sanitize_frame_for_sql,
@@ -113,6 +114,37 @@ def test_build_material_qty_ratios_groups_without_warranty_years() -> None:
     assert "warranty_years" in ratios.columns
     assert ratios.loc[0, "package"] == "seam_treatment"
     assert pd.isna(ratios.loc[0, "warranty_years"])
+
+
+def test_template_rows_use_estimated_units_as_material_quantity() -> None:
+    raw = pd.DataFrame(
+        [
+            {
+                "line_item_id": "T1",
+                "source_type_table": "estimate_template_rows",
+                "job_id": "J1",
+                "template_type": "roofing",
+                "template_bucket": "coating",
+                "line_item_kind": "material",
+                "selected_item_name": "Gaco Silicone",
+                "quantity": 10000,
+                "estimated_units": 125,
+                "unit": None,
+                "unit_cost": 42,
+                "extended_cost": 5250,
+            }
+        ]
+    )
+
+    normalized = normalize_raw_line_items(raw)
+    row = normalized.iloc[0]
+
+    assert row["package"] == "coating"
+    assert row["quantity"] == 125
+    assert row["scope_quantity"] == 10000
+    assert row["unit"] == "gal"
+    assert row["source_type"] == "physical_quantity"
+    assert bool(row["physical_quantity_valid"]) is True
 
 
 def test_job_package_summary_preserves_context_and_hours_per_sqft() -> None:
