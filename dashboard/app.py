@@ -52,8 +52,12 @@ from jobscan.estimator.schemas import EstimatorAssumptions, EstimatorData
 from jobscan.estimator.evidence_export import write_estimator_evidence_export
 from jobscan.estimator.workbench import (
     append_edit_history,
+    apply_historical_filter_update,
     build_edit_history_rows,
     build_estimating_workbench,
+    historical_filter_hash,
+    historical_filters_from_scope,
+    manual_material_workbench_row,
     recalculate_workbench_tables,
     summarize_workbench_totals,
     workbench_to_draft_workbook_inputs,
@@ -4174,77 +4178,195 @@ def estimator_prototype_page() -> None:
             "penetrations_complexity": edited_penetrations,
         }
         scope_key = hashlib.sha1(json.dumps(edited_scope, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:8]
-        original_workbench = build_estimating_workbench(field_recommendation, data, scope_override=edited_scope)
+
+        default_filters = historical_filters_from_scope(edited_scope)
+        st.markdown("### Historical Defaults Filter")
+        with st.expander("Adjust comparison pool", expanded=True):
+            st.caption("These filters only recalculate Spray-Tec historical defaults. They do not change the parsed scope or hide estimator-editable rows.")
+            f1, f2, f3 = st.columns(3)
+            with f1:
+                filter_division = st.text_input("Division", value=str(default_filters.get("division") or "Roofing"), key=f"wb_filter_division_{workbench_key}")
+                filter_template_type = st.text_input("Template Type", value=str(default_filters.get("template_type") or "roofing"), key=f"wb_filter_template_{workbench_key}")
+                filter_project_type = st.text_input("Project Type", value=str(default_filters.get("project_type") or ""), key=f"wb_filter_project_{workbench_key}")
+                filter_substrate = st.text_input("Substrate", value=str(default_filters.get("substrate") or ""), key=f"wb_filter_substrate_{workbench_key}")
+            with f2:
+                filter_coating_type = st.text_input("Coating Type", value=str(default_filters.get("coating_type") or ""), key=f"wb_filter_coating_{workbench_key}")
+                filter_warranty = st.number_input(
+                    "Warranty Years",
+                    min_value=0,
+                    value=int(default_filters.get("warranty_years") or 0),
+                    step=1,
+                    key=f"wb_filter_warranty_{workbench_key}",
+                )
+                filter_condition = st.text_input("Roof Condition", value=str(default_filters.get("roof_condition") or ""), key=f"wb_filter_condition_{workbench_key}")
+                filter_access = st.text_input("Access Complexity", value=str(default_filters.get("access_complexity") or ""), key=f"wb_filter_access_{workbench_key}")
+            with f3:
+                filter_penetrations = st.text_input("Penetration Complexity", value=str(default_filters.get("penetrations_complexity") or ""), key=f"wb_filter_penetrations_{workbench_key}")
+                filter_area_bucket = st.selectbox(
+                    "Area Bucket / Size Range",
+                    ["", "under_5k", "5k_15k", "15k_50k", "50k_plus"],
+                    index=["", "under_5k", "5k_15k", "15k_50k", "50k_plus"].index(str(default_filters.get("area_bucket") or "")),
+                    key=f"wb_filter_area_bucket_{workbench_key}",
+                )
+                filter_source_year = st.number_input("Source Year", min_value=0, value=0, step=1, key=f"wb_filter_source_year_{workbench_key}")
+                filter_pipeline_status = st.text_input("Pipeline Status", value="", key=f"wb_filter_pipeline_status_{workbench_key}")
+            f4, f5, f6 = st.columns(3)
+            with f4:
+                filter_completed_only = st.checkbox("Completed Only", value=False, key=f"wb_filter_completed_only_{workbench_key}")
+            with f5:
+                filter_include_repairs = st.checkbox("Include Repairs", value=True, key=f"wb_filter_include_repairs_{workbench_key}")
+            with f6:
+                filter_min_evidence = st.number_input("Minimum Evidence Count", min_value=0, value=3, step=1, key=f"wb_filter_min_evidence_{workbench_key}")
+
+        historical_filters = {
+            "division": filter_division,
+            "template_type": filter_template_type,
+            "project_type": filter_project_type,
+            "substrate": filter_substrate,
+            "coating_type": filter_coating_type,
+            "warranty_years": filter_warranty or None,
+            "roof_condition": filter_condition,
+            "access_complexity": filter_access,
+            "penetrations_complexity": filter_penetrations,
+            "area_bucket": filter_area_bucket,
+            "source_year": filter_source_year or None,
+            "pipeline_status": filter_pipeline_status,
+            "completed_only": filter_completed_only,
+            "include_repairs": filter_include_repairs,
+            "min_evidence_count": filter_min_evidence,
+        }
+        historical_filters_key = historical_filter_hash(historical_filters)
+        reset_filtered_defaults = st.button(
+            "Reset all unedited rows to filtered historical defaults",
+            key=f"wb_reset_filtered_defaults_{workbench_key}_{historical_filters_key}",
+        )
+        filtered_default_workbench = build_estimating_workbench(
+            field_recommendation,
+            data,
+            scope_override=edited_scope,
+            historical_filters=historical_filters,
+        )
+        previous_workbench_key = f"wb_last_edited_{workbench_key}"
+        previous_workbench = None if reset_filtered_defaults else st.session_state.get(previous_workbench_key)
+        original_workbench = apply_historical_filter_update(previous_workbench, filtered_default_workbench)
         edited_workbench = dict(original_workbench)
         edited_workbench["scope"] = edited_scope
-        feedback_baseline = dict(original_workbench)
+        feedback_baseline = dict(filtered_default_workbench)
         feedback_baseline["scope"] = base_scope
 
         st.markdown("### 2. Materials")
+        add_material_key = f"wb_add_material_line_{workbench_key}_{scope_key}_{historical_filters_key}"
+        if st.button("Add Material Line", key=add_material_key):
+            original_workbench.setdefault("materials", []).append(manual_material_workbench_row(edited_scope))
         materials_df = pd.DataFrame(original_workbench.get("materials") or [])
         edited_materials_df = st.data_editor(
             materials_df,
             use_container_width=True,
             hide_index=True,
             num_rows="fixed",
-            key=f"wb_materials_{workbench_key}_{scope_key}",
+            key=f"wb_materials_{workbench_key}_{scope_key}_{historical_filters_key}",
             column_order=[
                 "include",
                 "package",
+                "item_name",
+                "item_source",
                 "suggested_by_notes_rules",
                 "historical_usage_rate",
+                "historical_qty_per_basis_sqft",
+                "editable_basis_sqft",
                 "historical_qty_per_sqft",
                 "p25_qty_per_sqft",
                 "p75_qty_per_sqft",
                 "editable_qty_per_sqft",
                 "calculated_quantity",
                 "current_unit_price",
+                "historical_cost_default",
+                "historical_cost_per_sqft",
                 "estimated_cost",
                 "evidence_count",
+                "historical_cost_evidence_count",
                 "historical_jobs_found",
                 "rows_accepted",
                 "rows_rejected",
+                "range_width",
+                "relative_range_width",
+                "variability_warning",
                 "confidence",
                 "source",
+                "filters_applied",
+                "filters_relaxed",
+                "price_source",
+                "needs_review",
+                "manual_override",
+                "reset_to_historical_default",
                 "rejection_reasons",
                 "explanation",
             ],
             column_config={
                 "include": st.column_config.CheckboxColumn("Include"),
                 "package": "Package",
+                "item_name": "Item Name",
+                "item_source": "Item Source",
                 "suggested_by_notes_rules": "Suggested by Notes/Rules",
                 "historical_usage_rate": "Historical Usage Rate",
+                "historical_qty_per_basis_sqft": "Historical Qty / Basis Sq Ft",
+                "editable_basis_sqft": "Editable Basis Sq Ft",
                 "historical_qty_per_sqft": "Historical Qty / Sq Ft",
                 "p25_qty_per_sqft": "P25 Qty / Sq Ft",
                 "p75_qty_per_sqft": "P75 Qty / Sq Ft",
                 "editable_qty_per_sqft": "Editable Qty / Sq Ft",
                 "calculated_quantity": "Calculated Quantity",
                 "current_unit_price": "Current Unit Price",
+                "historical_cost_default": "Historical Cost Default",
+                "historical_cost_per_sqft": "Historical Cost / Sq Ft",
                 "estimated_cost": "Estimated Cost",
                 "evidence_count": "Evidence Count",
+                "historical_cost_evidence_count": "Cost Evidence Count",
                 "historical_jobs_found": "Historical Jobs Found",
                 "rows_accepted": "Rows Accepted",
                 "rows_rejected": "Rows Rejected",
+                "range_width": "Range Width",
+                "relative_range_width": "Relative Range Width",
+                "variability_warning": "Variability",
                 "confidence": "Confidence",
                 "source": "Source",
+                "filters_applied": "Filters Applied",
+                "filters_relaxed": "Filters Relaxed",
+                "price_source": "Price Source",
+                "needs_review": "Needs Review",
+                "manual_override": "Manual Override",
+                "reset_to_historical_default": st.column_config.CheckboxColumn("Reset"),
                 "rejection_reasons": "Rejected Row Reasons",
                 "explanation": "Explanation",
             },
             disabled=[
                 "package",
+                "item_source",
                 "suggested_by_notes_rules",
                 "historical_usage_rate",
+                "historical_qty_per_basis_sqft",
                 "historical_qty_per_sqft",
                 "p25_qty_per_sqft",
                 "p75_qty_per_sqft",
                 "calculated_quantity",
                 "estimated_cost",
                 "evidence_count",
+                "historical_cost_default",
+                "historical_cost_per_sqft",
+                "historical_cost_evidence_count",
                 "historical_jobs_found",
                 "rows_accepted",
                 "rows_rejected",
+                "range_width",
+                "relative_range_width",
+                "variability_warning",
                 "confidence",
                 "source",
+                "filters_applied",
+                "filters_relaxed",
+                "price_source",
+                "needs_review",
+                "manual_override",
                 "rejection_reasons",
                 "explanation",
             ],
@@ -4258,7 +4380,7 @@ def estimator_prototype_page() -> None:
             use_container_width=True,
             hide_index=True,
             num_rows="fixed",
-            key=f"wb_labor_{workbench_key}_{scope_key}",
+            key=f"wb_labor_{workbench_key}_{scope_key}_{historical_filters_key}",
             column_order=[
                 "include",
                 "labor_package",
@@ -4275,8 +4397,15 @@ def estimator_prototype_page() -> None:
                 "historical_jobs_found",
                 "rows_accepted",
                 "rows_rejected",
+                "range_width",
+                "relative_range_width",
+                "variability_warning",
                 "confidence",
                 "source",
+                "filters_applied",
+                "filters_relaxed",
+                "manual_override",
+                "reset_to_historical_default",
                 "rejection_reasons",
                 "explanation",
             ],
@@ -4296,8 +4425,15 @@ def estimator_prototype_page() -> None:
                 "historical_jobs_found": "Historical Jobs Found",
                 "rows_accepted": "Rows Accepted",
                 "rows_rejected": "Rows Rejected",
+                "range_width": "Range Width",
+                "relative_range_width": "Relative Range Width",
+                "variability_warning": "Variability",
                 "confidence": "Confidence",
                 "source": "Source",
+                "filters_applied": "Filters Applied",
+                "filters_relaxed": "Filters Relaxed",
+                "manual_override": "Manual Override",
+                "reset_to_historical_default": st.column_config.CheckboxColumn("Reset"),
                 "rejection_reasons": "Rejected Row Reasons",
                 "explanation": "Explanation",
             },
@@ -4313,8 +4449,14 @@ def estimator_prototype_page() -> None:
                 "historical_jobs_found",
                 "rows_accepted",
                 "rows_rejected",
+                "range_width",
+                "relative_range_width",
+                "variability_warning",
                 "confidence",
                 "source",
+                "filters_applied",
+                "filters_relaxed",
+                "manual_override",
                 "rejection_reasons",
                 "explanation",
             ],
@@ -4328,28 +4470,88 @@ def estimator_prototype_page() -> None:
             use_container_width=True,
             hide_index=True,
             num_rows="fixed",
-            key=f"wb_adders_{workbench_key}_{scope_key}",
-            column_order=["include", "adder", "editable_value", "estimated_cost", "confidence", "source", "notes"],
+            key=f"wb_adders_{workbench_key}_{scope_key}_{historical_filters_key}",
+            column_order=[
+                "include",
+                "adder",
+                "historical_usage_rate",
+                "median_cost_when_used",
+                "median_cost_per_sqft",
+                "historical_default_value",
+                "editable_value",
+                "estimated_cost",
+                "evidence_count",
+                "range_width",
+                "relative_range_width",
+                "variability_warning",
+                "confidence",
+                "source",
+                "filters_applied",
+                "filters_relaxed",
+                "needs_review",
+                "manual_override",
+                "reset_to_historical_default",
+                "notes",
+            ],
             column_config={
                 "include": st.column_config.CheckboxColumn("Include"),
                 "adder": "Adder",
+                "historical_usage_rate": "Historical Usage Rate",
+                "median_cost_when_used": "Median Cost When Used",
+                "median_cost_per_sqft": "Median Cost / Sq Ft",
+                "historical_default_value": "Historical Default",
                 "editable_value": "Editable Value",
                 "estimated_cost": "Estimated Cost",
+                "evidence_count": "Evidence Count",
+                "range_width": "Range Width",
+                "relative_range_width": "Relative Range Width",
+                "variability_warning": "Variability",
                 "confidence": "Confidence",
                 "source": "Source",
+                "filters_applied": "Filters Applied",
+                "filters_relaxed": "Filters Relaxed",
+                "needs_review": "Needs Review",
+                "manual_override": "Manual Override",
+                "reset_to_historical_default": st.column_config.CheckboxColumn("Reset"),
                 "notes": "Notes",
             },
-            disabled=["adder", "estimated_cost", "confidence", "source"],
+            disabled=[
+                "adder",
+                "historical_usage_rate",
+                "median_cost_when_used",
+                "median_cost_per_sqft",
+                "historical_default_value",
+                "estimated_cost",
+                "evidence_count",
+                "range_width",
+                "relative_range_width",
+                "variability_warning",
+                "confidence",
+                "source",
+                "filters_applied",
+                "filters_relaxed",
+                "manual_override",
+                "needs_review",
+            ],
         )
         edited_workbench["adders"] = edited_adders_df.to_dict(orient="records")
         edited_workbench = recalculate_workbench_tables(edited_workbench)
+        st.session_state[previous_workbench_key] = edited_workbench
         totals = summarize_workbench_totals(edited_workbench)
+        selected_labor_hours = sum(
+            float(row.get("calculated_hours") or 0)
+            for row in edited_workbench.get("labor", [])
+            if row.get("include")
+        )
+        selected_area = float(edited_scope.get("net_sqft") or 0)
+        labor_hours_per_1000 = selected_labor_hours / selected_area * 1000 if selected_area else 0.0
         metric_row(
             [
                 ("Materials", fmt_dollar(totals.get("material_total"))),
                 ("Labor", fmt_dollar(totals.get("labor_total"))),
                 ("Adders", fmt_dollar(totals.get("adder_total"))),
                 ("Draft Total", fmt_dollar(totals.get("draft_total"))),
+                ("Labor Hrs / 1k Sq Ft", f"{labor_hours_per_1000:,.1f}"),
             ]
         )
 
