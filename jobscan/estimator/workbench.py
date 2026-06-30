@@ -35,34 +35,47 @@ FILTER_RELAXATION_ORDER = [
 PROTECTED_FILTER_FIELDS = ["division", "template_type"]
 
 MATERIAL_PACKAGES: list[dict[str, Any]] = [
-    {"package": "coating", "label": "Silicone", "keywords": ["silicone", "coating"], "default_unit": "gal"},
-    {"package": "primer", "label": "Primer", "keywords": ["primer"], "default_unit": "unit"},
-    {"package": "seam_treatment", "label": "Seam Treatment", "keywords": ["seam", "sealant", "fabric"], "default_unit": "lf"},
-    {"package": "fastener_treatment", "label": "Fastener Treatment", "keywords": ["fastener", "screw"], "default_unit": "ea"},
-    {"package": "caulk_detail", "label": "Caulk / Detail", "keywords": ["caulk", "sealant", "detail"], "default_unit": "unit"},
+    {"package": "coating", "label": "Silicone", "keywords": ["silicone", "coating"], "default_unit": "gal", "workbook_row": "26-28"},
+    {"package": "primer", "label": "Primer", "keywords": ["primer"], "default_unit": "unit", "workbook_row": "39"},
+    {"package": "seam_treatment", "label": "Seam Treatment", "keywords": ["seam", "sealant", "fabric"], "default_unit": "lf", "workbook_row": "47"},
+    {"package": "fastener_treatment", "label": "Fastener Treatment", "keywords": ["fastener", "screw"], "default_unit": "ea", "workbook_row": "63"},
+    {"package": "caulk_detail", "label": "Caulk / Detail", "keywords": ["caulk", "sealant", "detail"], "default_unit": "unit", "workbook_row": "43/45"},
+    {"package": "fabric", "label": "Fabric", "keywords": ["fabric"], "default_unit": "roll", "workbook_row": "79"},
+    {"package": "board_stock", "label": "Board Stock", "keywords": ["board", "cover board", "iso"], "default_unit": "board", "workbook_row": "58-60"},
+    {"package": "plates", "label": "Plates", "keywords": ["plate", "plates"], "default_unit": "ea", "workbook_row": "65"},
+    {"package": "edge_metal", "label": "Edge Metal", "keywords": ["edge metal", "coping", "metal"], "default_unit": "lf", "workbook_row": "82"},
+    {"package": "gutter_downspouts", "label": "Gutter / Downspouts", "keywords": ["gutter", "downspout"], "default_unit": "lf", "workbook_row": "84/86"},
+    {"package": "granules", "label": "Granules", "keywords": ["granules", "broadcast"], "default_unit": "bag", "workbook_row": "36"},
 ]
 
 LABOR_PACKAGES: list[dict[str, Any]] = [
-    {"package": "labor_prep", "label": "Prep"},
-    {"package": "labor_prime", "label": "Prime"},
-    {"package": "labor_base", "label": "Base Coat"},
-    {"package": "labor_top_coat", "label": "Top Coat"},
-    {"package": "labor_seam_sealer", "label": "Seam Treatment"},
-    {"package": "labor_details", "label": "Details"},
-    {"package": "labor_cleanup", "label": "Cleanup"},
-    {"package": "labor_loading", "label": "Loading"},
+    {"package": "labor_prep", "label": "Prep", "workbook_row": "116"},
+    {"package": "labor_prime", "label": "Prime", "workbook_row": "118"},
+    {"package": "labor_base", "label": "Base Coat", "workbook_row": "122"},
+    {"package": "labor_top_coat", "label": "Top Coat", "workbook_row": "124"},
+    {"package": "labor_seam_sealer", "label": "Seam Treatment", "workbook_row": "120"},
+    {"package": "labor_details", "label": "Details", "workbook_row": "128"},
+    {"package": "labor_caulk", "label": "Caulk", "workbook_row": "126"},
+    {"package": "labor_cleanup", "label": "Cleanup", "workbook_row": "132"},
+    {"package": "labor_loading", "label": "Loading", "workbook_row": "136"},
+    {"package": "labor_traveling", "label": "Travel", "workbook_row": "138"},
+    {"package": "labor_meals_lodging", "label": "Meals / Hotel", "workbook_row": "144"},
+    {"package": "labor_infrared_scan", "label": "Infrared", "workbook_row": "141"},
 ]
 
 ADDER_ROWS: list[dict[str, Any]] = [
-    {"adder": "travel", "label": "Travel"},
-    {"adder": "lift", "label": "Lift"},
-    {"adder": "generator", "label": "Generator"},
-    {"adder": "dumpster", "label": "Dumpster"},
-    {"adder": "hotel", "label": "Hotel"},
-    {"adder": "inspection", "label": "Inspection"},
-    {"adder": "infrared", "label": "Infrared"},
-    {"adder": "mobilization", "label": "Mobilization"},
-    {"adder": "misc", "label": "Misc."},
+    {"adder": "travel", "label": "Travel", "workbook_row": "106/108"},
+    {"adder": "lift", "label": "Lift", "workbook_row": "73/74"},
+    {"adder": "generator", "label": "Generator", "workbook_row": "99"},
+    {"adder": "dumpster", "label": "Dumpster", "workbook_row": "69"},
+    {"adder": "hotel", "label": "Hotel", "workbook_row": "144"},
+    {"adder": "inspection", "label": "Inspection", "workbook_row": "106"},
+    {"adder": "infrared", "label": "Infrared", "workbook_row": "141"},
+    {"adder": "mobilization", "label": "Mobilization", "workbook_row": "136/138"},
+    {"adder": "freight", "label": "Freight", "workbook_row": "103"},
+    {"adder": "truck_expense", "label": "Truck Expense", "workbook_row": "108"},
+    {"adder": "sales_trips", "label": "Sales Trips", "workbook_row": "106"},
+    {"adder": "misc", "label": "Misc.", "workbook_row": "101"},
 ]
 
 PACKAGE_ALIASES: dict[str, set[str]] = {
@@ -71,14 +84,24 @@ PACKAGE_ALIASES: dict[str, set[str]] = {
     "seam_treatment": {"seam_treatment", "seam treatment", "labor_seam_sealer", "seam sealer", "seams_misc", "misc_seams", "fabric"},
     "fastener_treatment": {"fastener_treatment", "fastener treatment", "fasteners", "screws", "plates"},
     "caulk_detail": {"caulk_detail", "caulk detail", "caulk_sealant", "caulk", "sealant", "details", "penetrations"},
+    "fabric": {"fabric", "scrim"},
+    "board_stock": {"board_stock", "board stock", "cover board", "iso", "insulation board", "board"},
+    "plates": {"plates", "plate"},
+    "edge_metal": {"edge_metal", "edge metal", "coping", "flashing"},
+    "gutter_downspouts": {"gutter_downspouts", "gutter", "gutters", "downspout", "downspouts"},
+    "granules": {"granules", "broadcast"},
     "labor_prep": {"labor_prep", "prep", "powerwash", "power wash", "set_up"},
     "labor_prime": {"labor_prime", "prime", "labor_prime"},
     "labor_base": {"labor_base", "base coat", "base"},
     "labor_top_coat": {"labor_top_coat", "top coat", "finish coat"},
     "labor_seam_sealer": {"labor_seam_sealer", "seam sealer", "seam treatment", "labor_seam"},
-    "labor_details": {"labor_details", "details", "labor_caulk", "caulk"},
+    "labor_details": {"labor_details", "details"},
+    "labor_caulk": {"labor_caulk", "caulk", "caulk_sealant"},
     "labor_cleanup": {"labor_cleanup", "clean_up", "cleanup", "touch_cleanup", "touch up"},
     "labor_loading": {"labor_loading", "loading"},
+    "labor_traveling": {"labor_traveling", "traveling", "travel labor"},
+    "labor_meals_lodging": {"labor_meals_lodging", "meals_lodging", "meals lodging", "hotel", "lodging"},
+    "labor_infrared_scan": {"labor_infrared_scan", "infrared_scan", "infrared", "ir scan", "thermal scan"},
     "travel": {"travel", "sales_inspection_trips", "sales inspection travel", "truck_expense", "truck expense", "labor_traveling", "traveling"},
     "lift": {"lift", "lifts", "rental"},
     "generator": {"generator"},
@@ -87,6 +110,9 @@ PACKAGE_ALIASES: dict[str, set[str]] = {
     "inspection": {"inspection", "sales_inspection_trips", "sales inspection travel"},
     "infrared": {"infrared", "infrared_scan", "ir scan", "thermal scan"},
     "mobilization": {"mobilization", "loading", "labor_loading"},
+    "freight": {"freight"},
+    "truck_expense": {"truck_expense", "truck expense"},
+    "sales_trips": {"sales_trips", "sales trips", "sales_inspection_trips", "sales inspection travel"},
     "misc": {"misc", "miscellaneous", "estimate_adder", "estimate_adder_no_markup", "misc_materials", "misc_equipment", "misc_insurance"},
 }
 
@@ -1453,7 +1479,11 @@ def material_workbench_rows(
                 "include": bool(include),
                 "package": spec["label"],
                 "package_key": package,
+                "template_bucket": package,
+                "workbook_row": str(spec.get("workbook_row") or ""),
                 "item_name": item_name,
+                "current_item": item_name,
+                "historical_item": item_name if item_source.startswith("historical") else first_nonblank(selected_item.get("historical_item"), ""),
                 "item_source": item_source,
                 "item_options": " | ".join(option.get("item_name") for option in [*pricing_options, *historical_options] if option.get("item_name")),
                 "item_options_json": _item_options_payload(pricing_options, historical_options, selected_item),
@@ -1461,6 +1491,7 @@ def material_workbench_rows(
                 "historical_usage_rate": _historical_usage_rate(data, package, scope, evidence_count),
                 "historical_qty_per_basis_sqft": round(qty_per_sqft, 6),
                 "historical_qty_per_sqft": round(qty_per_sqft, 6),
+                "historical_median": round(qty_per_sqft, 6),
                 "item_level_qty_per_sqft": round(item_qty_per_sqft, 6),
                 "item_level_evidence_count": item_evidence_count,
                 "editable_basis_sqft": round(editable_basis_sqft, 2),
@@ -1468,9 +1499,11 @@ def material_workbench_rows(
                 "p25_qty_per_sqft": round(safe_number(sizing.get("p25"), 0.0), 6),
                 "p75_qty_per_sqft": round(safe_number(sizing.get("p75"), 0.0), 6),
                 "editable_qty_per_sqft": round(editable_qty_per_sqft, 6),
+                "editable_default": round(editable_qty_per_sqft, 6),
                 "calculated_quantity": round(calculated_quantity, 2),
                 "unit": selected_item.get("unit") or sizing.get("unit") or spec.get("default_unit"),
                 "current_unit_price": round(unit_price, 4) if unit_price else 0.0,
+                "current_price": round(unit_price, 4) if unit_price else 0.0,
                 "historical_cost_per_sqft": round(historical_cost_per_sqft, 4),
                 "historical_cost_default": round(historical_cost_per_sqft, 4),
                 "estimated_cost": round(estimated_cost, 2),
@@ -1524,11 +1557,15 @@ def labor_workbench_rows(
                 "include": bool(include),
                 "labor_package": spec["label"],
                 "package_key": package,
+                "template_bucket": package,
+                "workbook_row": str(spec.get("workbook_row") or ""),
                 "suggested_by_notes_rules": status,
                 "historical_hours_per_1000_sqft": round(hours_per_1000, 4),
+                "historical_median": round(hours_per_1000, 4),
                 "p25_hours_per_1000_sqft": round(safe_number(sizing.get("p25"), 0.0), 4),
                 "p75_hours_per_1000_sqft": round(safe_number(sizing.get("p75"), 0.0), 4),
                 "editable_hours_per_1000_sqft": round(editable_hours_per_1000, 4),
+                "editable_default": round(editable_hours_per_1000, 4),
                 "calculated_hours": round(calculated_hours, 2),
                 "crew_size": crew_size,
                 "labor_rate": hourly_rate,
@@ -1591,11 +1628,15 @@ def adder_workbench_rows(
                 "include": include,
                 "adder": spec["label"],
                 "adder_key": spec["adder"],
+                "template_bucket": spec["adder"],
+                "workbook_row": str(spec.get("workbook_row") or ""),
                 "historical_usage_rate": safe_number(sizing.get("historical_usage_rate"), 0.0),
                 "median_cost_when_used": round(safe_number(sizing.get("median_cost_when_used"), 0.0), 2),
                 "median_cost_per_sqft": round(safe_number(sizing.get("median_cost_per_sqft"), 0.0), 4),
+                "historical_median": round(safe_number(sizing.get("median_cost_when_used"), 0.0), 2),
                 "historical_default_value": round(historical_default, 2),
                 "editable_value": round(editable_value, 2),
+                "editable_default": round(editable_value, 2),
                 "estimated_cost": round(estimated_cost, 2),
                 "evidence_count": int(safe_number(sizing.get("evidence_count"), 0)),
                 "range_width": round(safe_number(sizing.get("range_width"), 0.0), 2),
@@ -1665,6 +1706,7 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
             row["unit"] = matched_item.get("unit") or row.get("unit")
             row["current_unit_price"] = round(safe_number(matched_item.get("unit_price"), 0.0), 4)
             row["item_source"] = matched_item.get("item_source") or row.get("item_source") or "manual"
+        row["current_item"] = first_nonblank(row.get("item_name"), row.get("current_item"), row.get("package"))
         include = bool(row.get("include"))
         qty_per_sqft = safe_number(row.get("editable_qty_per_sqft"), 0.0)
         historical_qty = safe_number(row.get("historical_qty_per_sqft"), 0.0)
@@ -1675,8 +1717,14 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
         default_basis_sqft = safe_number(row.get("default_basis_sqft"), 0.0)
         row["manual_override"] = abs(qty_per_sqft - historical_qty) > 1e-9 or abs(basis_sqft - default_basis_sqft) > 1e-9
         unit_price = safe_number(row.get("current_unit_price"), 0.0)
+        if unit_price <= 0:
+            unit_price = safe_number(row.get("current_price"), 0.0)
+            row["current_unit_price"] = round(unit_price, 4) if unit_price else 0.0
+        row["current_price"] = round(unit_price, 4) if unit_price else 0.0
         historical_cost_per_sqft = safe_number(row.get("historical_cost_per_sqft"), 0.0)
         quantity = qty_per_sqft * basis_sqft if include and basis_sqft else 0.0
+        row["historical_median"] = round(historical_qty, 6)
+        row["editable_default"] = round(qty_per_sqft, 6)
         row["calculated_quantity"] = round(quantity, 2)
         if include and unit_price > 0:
             row["estimated_cost"] = round(quantity * unit_price, 2)
@@ -1697,13 +1745,19 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
         historical_hours = safe_number(row.get("historical_hours_per_1000_sqft"), 0.0)
         row["manual_override"] = abs(hours_per_1000 - historical_hours) > 1e-9
         hours = hours_per_1000 * area / 1000 if include and area else 0.0
+        row["historical_median"] = round(historical_hours, 4)
+        row["editable_default"] = round(hours_per_1000, 4)
         row["calculated_hours"] = round(hours, 2)
         row["estimated_cost"] = round(hours * hourly_rate, 2)
     for row in updated.get("adders") or []:
         if row.get("reset_to_historical_default"):
             row["editable_value"] = row.get("historical_default_value", row.get("median_cost_when_used", 0.0))
             row["reset_to_historical_default"] = False
-        row["manual_override"] = abs(safe_number(row.get("editable_value"), 0.0) - safe_number(row.get("historical_default_value"), 0.0)) > 1e-9
+        historical_default = safe_number(row.get("historical_default_value"), 0.0)
+        editable_value = safe_number(row.get("editable_value"), 0.0)
+        row["historical_median"] = round(safe_number(row.get("median_cost_when_used"), historical_default), 2)
+        row["editable_default"] = round(editable_value, 2)
+        row["manual_override"] = abs(editable_value - historical_default) > 1e-9
         row["estimated_cost"] = round(safe_number(row.get("editable_value"), 0.0), 2) if row.get("include") else 0.0
     return updated
 
@@ -1786,7 +1840,11 @@ def manual_material_workbench_row(scope: dict[str, Any] | None = None, *, item_n
         "include": False,
         "package": "Manual",
         "package_key": "manual",
+        "template_bucket": "manual",
+        "workbook_row": "",
         "item_name": item_name,
+        "current_item": item_name,
+        "historical_item": "",
         "item_source": "manual",
         "item_options": item_name,
         "item_options_json": _item_options_payload([], [], {"item_name": item_name, "unit": "unit", "unit_price": 0, "item_source": "manual"}),
@@ -1794,6 +1852,7 @@ def manual_material_workbench_row(scope: dict[str, Any] | None = None, *, item_n
         "historical_usage_rate": 0.0,
         "historical_qty_per_basis_sqft": 0.0,
         "historical_qty_per_sqft": 0.0,
+        "historical_median": 0.0,
         "item_level_qty_per_sqft": 0.0,
         "item_level_evidence_count": 0,
         "editable_basis_sqft": 0.0,
@@ -1801,9 +1860,11 @@ def manual_material_workbench_row(scope: dict[str, Any] | None = None, *, item_n
         "p25_qty_per_sqft": 0.0,
         "p75_qty_per_sqft": 0.0,
         "editable_qty_per_sqft": 0.0,
+        "editable_default": 0.0,
         "calculated_quantity": 0.0,
         "unit": "unit",
         "current_unit_price": 0.0,
+        "current_price": 0.0,
         "historical_cost_per_sqft": 0.0,
         "historical_cost_default": 0.0,
         "estimated_cost": 0.0,

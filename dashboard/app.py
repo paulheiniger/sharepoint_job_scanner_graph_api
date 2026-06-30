@@ -3982,7 +3982,7 @@ def estimator_prototype_page() -> None:
         height=120,
         placeholder="Metal roof, about 12,000 sqft, rusted fasteners, restaurant in Louisville, silicone coating, medium access.",
     )
-    st.caption("Edit notes here, then click Build Company Default Draft. Command+Enter only updates the text box; it does not build the draft.")
+    st.caption("Paste notes here, then build a filled estimate template. Command+Enter only updates the text box; it does not build the draft.")
     resolved_estimate_type = resolve_estimate_type(estimate_type_selection, notes)
     if estimate_type_selection == ESTIMATE_TYPE_AUTO:
         st.caption(f"Auto-detected estimate type: {resolved_estimate_type}")
@@ -4000,7 +4000,7 @@ def estimator_prototype_page() -> None:
     repair_urgency_override = ""
     overrides: dict[str, Any] = {}
 
-    st.subheader("Field Notes to Company Default Draft")
+    st.subheader("Stage 1 - Scope Understanding")
     field_estimator_fn, field_estimator_import_warning = optional_field_notes_estimator()
     if field_estimator_import_warning and resolved_estimate_type != ESTIMATE_TYPE_REPAIR:
         st.warning(field_estimator_import_warning)
@@ -4023,7 +4023,7 @@ def estimator_prototype_page() -> None:
         with f2:
             field_city = st.text_input("City", value="", key="field_estimator_city")
             field_state = st.text_input("State", value="", key="field_estimator_state")
-    if st.button("Build Company Default Draft", key="generate_field_estimate_recommendation"):
+    if st.button("Build Filled Estimate Template", key="generate_field_estimate_recommendation"):
         try:
             if resolved_estimate_type == ESTIMATE_TYPE_REPAIR:
                 route, repair_result = route_estimator_request(
@@ -4071,7 +4071,7 @@ def estimator_prototype_page() -> None:
             if recommendation_notes != notes:
                 st.warning(
                     "The displayed repair estimate was generated from earlier notes. "
-                    "Click Build Company Default Draft again to refresh it for the current text."
+                    "Click Build Filled Estimate Template again to refresh it for the current text."
                 )
             render_repair_estimate_result(repair_payload, notes=recommendation_notes, customer_job_name=field_job_name)
             return
@@ -4081,7 +4081,7 @@ def estimator_prototype_page() -> None:
         if recommendation_notes != notes:
             st.warning(
                 "The displayed estimate was generated from earlier notes. "
-                "Click Build Company Default Draft again to refresh it for the current text."
+                "Click Build Filled Estimate Template again to refresh it for the current text."
             )
         estimate_status = getattr(field_recommendation, "estimate_status", None) or field_recommendation.parsed_fields.get("estimate_status") or "READY_TO_ESTIMATE"
         metric_row(
@@ -4146,7 +4146,8 @@ def estimator_prototype_page() -> None:
             key=f"estimator_debug_mode_{workbench_key}",
         )
 
-        st.markdown("### 1. Parsed Scope")
+        st.markdown("### Stage 1 - Parsed Scope")
+        st.caption("AI and deterministic parsing turn the notes into editable project facts. These fields drive the historical comparison pool and workbook draft.")
         base_scope = parsed_workbench.get("scope") or {}
         s1, s2, s3 = st.columns(3)
         with s1:
@@ -4180,9 +4181,10 @@ def estimator_prototype_page() -> None:
         scope_key = hashlib.sha1(json.dumps(edited_scope, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:8]
 
         default_filters = historical_filters_from_scope(edited_scope)
-        st.markdown("### Historical Defaults Filter")
-        with st.expander("Adjust comparison pool", expanded=True):
-            st.caption("These filters only recalculate Spray-Tec historical defaults. They do not change the parsed scope or hide estimator-editable rows.")
+        st.markdown("### Stage 2 - Historical Defaults")
+        st.caption("Spray-Tec history fills in the template defaults. The parser chooses an initial comparison pool; the estimator can tighten or broaden it.")
+        with st.expander("Recommended historical filters / comparison pool", expanded=False):
+            st.caption("These filters only recalculate historical defaults. They do not change the parsed scope or hide estimator-editable rows.")
             f1, f2, f3 = st.columns(3)
             with f1:
                 filter_division = st.text_input("Division", value=str(default_filters.get("division") or "Roofing"), key=f"wb_filter_division_{workbench_key}")
@@ -4254,7 +4256,54 @@ def estimator_prototype_page() -> None:
         feedback_baseline = dict(filtered_default_workbench)
         feedback_baseline["scope"] = base_scope
 
-        st.markdown("### 2. Materials")
+        recommended_scope_rows: list[dict[str, Any]] = []
+        for row in original_workbench.get("materials") or []:
+            status = str(row.get("suggested_by_notes_rules") or "").lower()
+            if status in {"yes", "review", "light", "heavy"}:
+                recommended_scope_rows.append(
+                    {
+                        "section": "Material",
+                        "package": row.get("package"),
+                        "suggestion": status,
+                        "reason": row.get("explanation"),
+                    }
+                )
+        for row in original_workbench.get("labor") or []:
+            status = str(row.get("suggested_by_notes_rules") or "").lower()
+            if status in {"yes", "review", "light", "heavy"}:
+                recommended_scope_rows.append(
+                    {
+                        "section": "Labor",
+                        "package": row.get("labor_package"),
+                        "suggestion": status,
+                        "reason": row.get("explanation"),
+                    }
+                )
+        for row in original_workbench.get("adders") or []:
+            adder_notes = str(row.get("notes") or "")
+            if row.get("include") or (adder_notes and "Shown unchecked." not in adder_notes):
+                recommended_scope_rows.append(
+                    {
+                        "section": "Adder",
+                        "package": row.get("adder"),
+                        "suggestion": "yes" if row.get("include") else "review",
+                        "reason": adder_notes,
+                    }
+                )
+        with st.expander("Recommended scope packages from notes/rules", expanded=False):
+            st.caption("These only set the initial Include checkbox. Historical quantities, hours, and prices come from company data.")
+            if recommended_scope_rows:
+                show_table(
+                    dataframe_from_records(recommended_scope_rows),
+                    ["section", "package", "suggestion", "reason"],
+                    height=220,
+                )
+            else:
+                st.caption("No scope packages were strongly suggested by the notes.")
+
+        st.markdown("### Stage 3 - Estimator Workbench")
+        st.caption("Review and edit estimate rows. Unchecked rows still keep historical defaults so they can be turned on quickly.")
+        st.markdown("#### Materials")
         add_material_key = f"wb_add_material_line_{workbench_key}_{scope_key}_{historical_filters_key}"
         if st.button("Add Material Line", key=add_material_key):
             original_workbench.setdefault("materials", []).append(manual_material_workbench_row(edited_scope))
@@ -4267,10 +4316,16 @@ def estimator_prototype_page() -> None:
             key=f"wb_materials_{workbench_key}_{scope_key}_{historical_filters_key}",
             column_order=[
                 "include",
+                "template_bucket",
+                "workbook_row",
                 "package",
+                "current_item",
+                "historical_item",
                 "item_name",
                 "item_source",
                 "suggested_by_notes_rules",
+                "historical_median",
+                "editable_default",
                 "historical_usage_rate",
                 "historical_qty_per_basis_sqft",
                 "editable_basis_sqft",
@@ -4279,6 +4334,7 @@ def estimator_prototype_page() -> None:
                 "p75_qty_per_sqft",
                 "editable_qty_per_sqft",
                 "calculated_quantity",
+                "current_price",
                 "current_unit_price",
                 "historical_cost_default",
                 "historical_cost_per_sqft",
@@ -4304,10 +4360,16 @@ def estimator_prototype_page() -> None:
             ],
             column_config={
                 "include": st.column_config.CheckboxColumn("Include"),
+                "template_bucket": "Template Bucket",
+                "workbook_row": "Workbook Row",
                 "package": "Package",
+                "current_item": "Current Item",
+                "historical_item": "Historical Item",
                 "item_name": "Item Name",
                 "item_source": "Item Source",
                 "suggested_by_notes_rules": "Suggested by Notes/Rules",
+                "historical_median": "Historical Median",
+                "editable_default": "Editable Default",
                 "historical_usage_rate": "Historical Usage Rate",
                 "historical_qty_per_basis_sqft": "Historical Qty / Basis Sq Ft",
                 "editable_basis_sqft": "Editable Basis Sq Ft",
@@ -4316,6 +4378,7 @@ def estimator_prototype_page() -> None:
                 "p75_qty_per_sqft": "P75 Qty / Sq Ft",
                 "editable_qty_per_sqft": "Editable Qty / Sq Ft",
                 "calculated_quantity": "Calculated Quantity",
+                "current_price": "Current Price",
                 "current_unit_price": "Current Unit Price",
                 "historical_cost_default": "Historical Cost Default",
                 "historical_cost_per_sqft": "Historical Cost / Sq Ft",
@@ -4340,15 +4403,22 @@ def estimator_prototype_page() -> None:
                 "explanation": "Explanation",
             },
             disabled=[
+                "template_bucket",
+                "workbook_row",
                 "package",
+                "current_item",
+                "historical_item",
                 "item_source",
                 "suggested_by_notes_rules",
+                "historical_median",
+                "editable_default",
                 "historical_usage_rate",
                 "historical_qty_per_basis_sqft",
                 "historical_qty_per_sqft",
                 "p25_qty_per_sqft",
                 "p75_qty_per_sqft",
                 "calculated_quantity",
+                "current_price",
                 "estimated_cost",
                 "evidence_count",
                 "historical_cost_default",
@@ -4373,7 +4443,7 @@ def estimator_prototype_page() -> None:
         )
         edited_workbench["materials"] = edited_materials_df.to_dict(orient="records")
 
-        st.markdown("### 3. Labor")
+        st.markdown("#### Labor")
         labor_df = pd.DataFrame(original_workbench.get("labor") or [])
         edited_labor_df = st.data_editor(
             labor_df,
@@ -4383,8 +4453,12 @@ def estimator_prototype_page() -> None:
             key=f"wb_labor_{workbench_key}_{scope_key}_{historical_filters_key}",
             column_order=[
                 "include",
+                "template_bucket",
+                "workbook_row",
                 "labor_package",
                 "suggested_by_notes_rules",
+                "historical_median",
+                "editable_default",
                 "historical_hours_per_1000_sqft",
                 "p25_hours_per_1000_sqft",
                 "p75_hours_per_1000_sqft",
@@ -4411,8 +4485,12 @@ def estimator_prototype_page() -> None:
             ],
             column_config={
                 "include": st.column_config.CheckboxColumn("Include"),
+                "template_bucket": "Template Bucket",
+                "workbook_row": "Workbook Row",
                 "labor_package": "Labor Package",
                 "suggested_by_notes_rules": "Suggested by Notes/Rules",
+                "historical_median": "Historical Median",
+                "editable_default": "Editable Default",
                 "historical_hours_per_1000_sqft": "Historical Hours / 1000 Sq Ft",
                 "p25_hours_per_1000_sqft": "P25 Hours / 1000 Sq Ft",
                 "p75_hours_per_1000_sqft": "P75 Hours / 1000 Sq Ft",
@@ -4438,8 +4516,12 @@ def estimator_prototype_page() -> None:
                 "explanation": "Explanation",
             },
             disabled=[
+                "template_bucket",
+                "workbook_row",
                 "labor_package",
                 "suggested_by_notes_rules",
+                "historical_median",
+                "editable_default",
                 "historical_hours_per_1000_sqft",
                 "p25_hours_per_1000_sqft",
                 "p75_hours_per_1000_sqft",
@@ -4463,7 +4545,7 @@ def estimator_prototype_page() -> None:
         )
         edited_workbench["labor"] = edited_labor_df.to_dict(orient="records")
 
-        st.markdown("### 4. Adders / Miscellaneous")
+        st.markdown("#### Adders / Miscellaneous")
         adders_df = pd.DataFrame(original_workbench.get("adders") or [])
         edited_adders_df = st.data_editor(
             adders_df,
@@ -4473,7 +4555,11 @@ def estimator_prototype_page() -> None:
             key=f"wb_adders_{workbench_key}_{scope_key}_{historical_filters_key}",
             column_order=[
                 "include",
+                "template_bucket",
+                "workbook_row",
                 "adder",
+                "historical_median",
+                "editable_default",
                 "historical_usage_rate",
                 "median_cost_when_used",
                 "median_cost_per_sqft",
@@ -4495,7 +4581,11 @@ def estimator_prototype_page() -> None:
             ],
             column_config={
                 "include": st.column_config.CheckboxColumn("Include"),
+                "template_bucket": "Template Bucket",
+                "workbook_row": "Workbook Row",
                 "adder": "Adder",
+                "historical_median": "Historical Median",
+                "editable_default": "Editable Default",
                 "historical_usage_rate": "Historical Usage Rate",
                 "median_cost_when_used": "Median Cost When Used",
                 "median_cost_per_sqft": "Median Cost / Sq Ft",
@@ -4516,7 +4606,11 @@ def estimator_prototype_page() -> None:
                 "notes": "Notes",
             },
             disabled=[
+                "template_bucket",
+                "workbook_row",
                 "adder",
+                "historical_median",
+                "editable_default",
                 "historical_usage_rate",
                 "median_cost_when_used",
                 "median_cost_per_sqft",
