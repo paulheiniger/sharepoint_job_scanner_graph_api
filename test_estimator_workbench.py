@@ -7,6 +7,7 @@ from jobscan.estimator.workbench import (
     apply_historical_filter_update,
     build_edit_history_rows,
     build_estimating_workbench,
+    historical_filters_from_scope,
     recalculate_workbench_tables,
     workbench_to_draft_workbook_inputs,
 )
@@ -509,6 +510,84 @@ def test_material_row_preserves_actual_item_name_from_current_pricing() -> None:
     assert coating["item_source"] == "current_pricing_plus_historical_usage"
     assert "GAF High Solids Silicone" in coating["explanation"]
     assert coating["unit"] == "gal"
+
+
+def test_roof_coating_item_selection_rejects_sealant_tube_for_main_coating() -> None:
+    data = EstimatorData(
+        pricing_catalog=pd.DataFrame(
+            [
+                {
+                    "pricing_item_id": "BAD",
+                    "product_name": "Silicone Sealant Flashing Grade - 11 oz tube",
+                    "category": "Sealant",
+                    "unit_price": 8,
+                    "unit_of_measure": "tube",
+                    "is_current": True,
+                },
+                {
+                    "pricing_item_id": "GOOD",
+                    "product_name": "GAF High Solids Silicone 55 Gal - Standard Colors",
+                    "category": "Coating",
+                    "price_per_gallon": 38,
+                    "unit_price": 2090,
+                    "unit_of_measure": "gal",
+                    "is_current": True,
+                },
+            ]
+        )
+    )
+
+    workbench = build_estimating_workbench(sample_recommendation(), data)
+    coating = next(row for row in workbench["materials"] if row["package_key"] == "coating")
+
+    assert "Sealant" not in coating["item_name"]
+    assert "tube" not in coating["item_name"].lower()
+    assert "High Solids Silicone" in coating["item_name"]
+
+
+def test_detail_buckets_can_select_sealant_products() -> None:
+    data = EstimatorData(
+        pricing_catalog=pd.DataFrame(
+            [
+                {
+                    "pricing_item_id": "S1",
+                    "product_name": "Silicone Sealant Flashing Grade - 11 oz tube",
+                    "category": "Sealant",
+                    "unit_price": 8,
+                    "unit_of_measure": "tube",
+                    "is_current": True,
+                },
+            ]
+        )
+    )
+
+    workbench = build_estimating_workbench(sample_recommendation(), data)
+    seam = next(row for row in workbench["materials"] if row["package_key"] == "seam_treatment")
+    caulk = next(row for row in workbench["materials"] if row["package_key"] == "caulk_detail")
+
+    assert "Sealant" in seam["item_name"]
+    assert "Sealant" in caulk["item_name"]
+
+
+def test_historical_filters_populate_from_parsed_scope_values() -> None:
+    workbench = build_estimating_workbench(sample_recommendation(), sample_data())
+    filters = workbench["historical_filters"]
+
+    assert filters["division"] == "Roofing"
+    assert filters["template_type"] == "roofing"
+    assert filters["project_type"] == "roof coating"
+    assert filters["substrate"] == "metal"
+    assert filters["coating_type"] == "silicone"
+    assert filters["warranty_years"] == 10
+    assert filters["roof_condition"] == "fair"
+    assert filters["access_complexity"] == "low"
+    assert filters["penetrations_complexity"] == "low"
+    assert filters["area_bucket"] == "5k_15k"
+    assert filters["source_year"] is None
+
+    empty_source = historical_filters_from_scope({"net_sqft": 10000})
+    assert empty_source["source_year"] is None
+    assert empty_source["warranty_years"] is None
 
 
 def test_primer_basis_sqft_can_be_lower_than_net_without_changing_scope() -> None:

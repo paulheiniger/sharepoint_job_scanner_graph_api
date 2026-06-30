@@ -491,16 +491,17 @@ def historical_filter_hash(filters: dict[str, Any] | None) -> str:
 
 def historical_filters_from_scope(scope: dict[str, Any] | None) -> dict[str, Any]:
     scope = scope or {}
+    warranty_years = optional_number(first_nonblank(scope.get("warranty_years"), scope.get("warranty_target_years")))
     return {
         "division": "Roofing",
         "template_type": "roofing",
         "project_type": first_nonblank(scope.get("project_type"), "roof coating"),
         "substrate": first_nonblank(scope.get("roof_type_substrate"), scope.get("substrate"), ""),
-        "coating_type": "",
-        "warranty_years": None,
-        "roof_condition": "",
-        "access_complexity": "",
-        "penetrations_complexity": "",
+        "coating_type": first_nonblank(scope.get("coating_type"), ""),
+        "warranty_years": warranty_years if warranty_years and warranty_years > 0 else None,
+        "roof_condition": first_nonblank(scope.get("roof_condition"), ""),
+        "access_complexity": first_nonblank(scope.get("access_complexity"), ""),
+        "penetrations_complexity": first_nonblank(scope.get("penetrations_complexity"), scope.get("penetration_complexity"), ""),
         "area_bucket": _area_bucket_for_sqft(_estimate_area(scope)),
         "source_year": None,
         "pipeline_status": "",
@@ -1156,6 +1157,73 @@ def _pricing_options_for_package(pricing: pd.DataFrame, package_spec: dict[str, 
     return options
 
 
+def _contains_any_text(text: str, terms: list[str]) -> bool:
+    normalized = _normalized(text)
+    return any(term and term in normalized for term in terms)
+
+
+def _package_item_fit_score(package: str, option: dict[str, Any], scope: dict[str, Any]) -> float:
+    """Score whether an item belongs in a template bucket.
+
+    This keeps broad keywords like "silicone" from letting flashing-grade sealants win the
+    main coating row while still allowing those products on seam/detail buckets.
+    """
+    name = _normalized(option.get("item_name"))
+    unit = _normalized(option.get("unit"))
+    combined = f"{name} {unit}"
+    score = 0.0
+    coating_type = _normalized(scope.get("coating_type"))
+    if coating_type and coating_type in combined:
+        score += 25
+
+    if package == "coating":
+        if _contains_any_text(combined, ["roof coating", "coating", "high solids", "gaco", "gaf"]):
+            score += 160
+        if _contains_any_text(combined, ["55 gal", "5 gal", "gallon", "gal", "pail", "drum", "bucket"]):
+            score += 120
+        if _contains_any_text(combined, ["sealant", "caulk", "flashing grade", "sausage", "tube", "detail", "fabric", "fastener", "seam"]):
+            score -= 5000
+        if _contains_any_text(combined, ["11 oz", "10 oz", "20 oz", "tube", "sausage"]):
+            score -= 3000
+    elif package == "primer":
+        if "primer" in combined or "prime" in combined:
+            score += 250
+        if _contains_any_text(combined, ["sealant", "caulk", "tube", "sausage", "fabric", "granule"]):
+            score -= 500
+    elif package == "seam_treatment":
+        if _contains_any_text(combined, ["seam", "sealant", "flashing grade", "fabric", "caulk"]):
+            score += 180
+        if _contains_any_text(combined, ["roof coating", "primer", "granule"]):
+            score -= 250
+    elif package == "caulk_detail":
+        if _contains_any_text(combined, ["caulk", "sealant", "flashing grade", "detail", "tube", "sausage"]):
+            score += 220
+        if _contains_any_text(combined, ["roof coating", "primer", "granule"]):
+            score -= 250
+    elif package == "fastener_treatment":
+        if _contains_any_text(combined, ["fastener", "screw", "plate"]):
+            score += 220
+        if _contains_any_text(combined, ["roof coating", "primer", "granule"]):
+            score -= 250
+    elif package == "fabric":
+        if "fabric" in combined:
+            score += 250
+        if _contains_any_text(combined, ["roof coating", "primer", "granule"]):
+            score -= 250
+    elif package == "granules":
+        if _contains_any_text(combined, ["granule", "broadcast"]):
+            score += 250
+        if _contains_any_text(combined, ["roof coating", "primer", "sealant", "caulk"]):
+            score -= 250
+    elif package in {"board_stock", "plates", "edge_metal", "gutter_downspouts"}:
+        for term in _package_aliases(package):
+            if term and term in combined:
+                score += 120
+        if _contains_any_text(combined, ["roof coating", "primer", "sealant", "caulk", "granule"]):
+            score -= 200
+    return score
+
+
 def _historical_item_options(
     data: Any,
     package: str,
@@ -1220,7 +1288,7 @@ def _select_material_item(
         scored = []
         for option in pricing_options:
             name = _normalized(option.get("item_name"))
-            score = 0
+            score = _package_item_fit_score(package, option, scope)
             if name in historical_by_name:
                 score += 1000 + safe_number(historical_by_name[name].get("evidence_count"), 0)
             if note_terms and any(term and term in name for term in note_terms.split()):

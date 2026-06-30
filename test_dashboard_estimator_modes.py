@@ -94,6 +94,54 @@ def test_estimator_page_no_longer_shows_structural_override_block() -> None:
     assert "Sqft override" not in source
 
 
+def test_estimator_workbench_uses_compact_columns_by_default() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    assert app.MATERIAL_WORKBENCH_COMPACT_COLUMNS == [
+        "include",
+        "workbook_row",
+        "package",
+        "item_name",
+        "suggested_by_notes_rules",
+        "editable_basis_sqft",
+        "editable_qty_per_sqft",
+        "calculated_quantity",
+        "unit",
+        "current_unit_price",
+        "estimated_cost",
+        "evidence_count",
+        "confidence",
+        "explanation",
+    ]
+    assert app.LABOR_WORKBENCH_COMPACT_COLUMNS == [
+        "include",
+        "workbook_row",
+        "labor_package",
+        "suggested_by_notes_rules",
+        "editable_hours_per_1000_sqft",
+        "calculated_hours",
+        "crew_size",
+        "labor_rate",
+        "estimated_cost",
+        "evidence_count",
+        "confidence",
+        "explanation",
+    ]
+    assert app.ADDER_WORKBENCH_COMPACT_COLUMNS == [
+        "include",
+        "workbook_row",
+        "adder",
+        "editable_value",
+        "evidence_count",
+        "confidence",
+        "notes",
+    ]
+    source = inspect.getsource(app.estimator_prototype_page)
+    assert "Show detailed row diagnostics" in source
+    assert "rows_accepted" in source
+    assert "filters_relaxed" in source
+
+
 def test_auto_detect_classifies_pipe_boot_leak_as_repair() -> None:
     app = importlib.import_module("dashboard.app")
 

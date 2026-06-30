@@ -62,6 +62,7 @@ from jobscan.estimator.workbench import (
     summarize_workbench_totals,
     workbench_to_draft_workbook_inputs,
 )
+from jobscan.estimator.workbench_export import DEFAULT_WORKBENCH_EXPORT_DIR, export_workbench_review_package
 from jobscan.estimator.workbook_template import DEFAULT_TEMPLATE_PATH, fill_estimate_workbook
 from jobscan.estimator.workbook_writer import DEFAULT_ESTIMATE_OUTPUT_DIR, generate_estimate_workbook, resolve_default_template_path
 
@@ -74,6 +75,48 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 DEFAULT_DATABASE_URL = "postgresql+psycopg2://spraytec:spraytec_dev_password@127.0.0.1:5433/spraytec_ops"
+
+MATERIAL_WORKBENCH_COMPACT_COLUMNS = [
+    "include",
+    "workbook_row",
+    "package",
+    "item_name",
+    "suggested_by_notes_rules",
+    "editable_basis_sqft",
+    "editable_qty_per_sqft",
+    "calculated_quantity",
+    "unit",
+    "current_unit_price",
+    "estimated_cost",
+    "evidence_count",
+    "confidence",
+    "explanation",
+]
+
+LABOR_WORKBENCH_COMPACT_COLUMNS = [
+    "include",
+    "workbook_row",
+    "labor_package",
+    "suggested_by_notes_rules",
+    "editable_hours_per_1000_sqft",
+    "calculated_hours",
+    "crew_size",
+    "labor_rate",
+    "estimated_cost",
+    "evidence_count",
+    "confidence",
+    "explanation",
+]
+
+ADDER_WORKBENCH_COMPACT_COLUMNS = [
+    "include",
+    "workbook_row",
+    "adder",
+    "editable_value",
+    "evidence_count",
+    "confidence",
+    "notes",
+]
 
 PRICING_EXPORT_COLUMNS = [
     "pricing_item_id",
@@ -4193,11 +4236,9 @@ def estimator_prototype_page() -> None:
                 filter_substrate = st.text_input("Substrate", value=str(default_filters.get("substrate") or ""), key=f"wb_filter_substrate_{workbench_key}")
             with f2:
                 filter_coating_type = st.text_input("Coating Type", value=str(default_filters.get("coating_type") or ""), key=f"wb_filter_coating_{workbench_key}")
-                filter_warranty = st.number_input(
+                filter_warranty = st.text_input(
                     "Warranty Years",
-                    min_value=0,
-                    value=int(default_filters.get("warranty_years") or 0),
-                    step=1,
+                    value=str(int(default_filters["warranty_years"])) if default_filters.get("warranty_years") else "",
                     key=f"wb_filter_warranty_{workbench_key}",
                 )
                 filter_condition = st.text_input("Roof Condition", value=str(default_filters.get("roof_condition") or ""), key=f"wb_filter_condition_{workbench_key}")
@@ -4210,7 +4251,7 @@ def estimator_prototype_page() -> None:
                     index=["", "under_5k", "5k_15k", "15k_50k", "50k_plus"].index(str(default_filters.get("area_bucket") or "")),
                     key=f"wb_filter_area_bucket_{workbench_key}",
                 )
-                filter_source_year = st.number_input("Source Year", min_value=0, value=0, step=1, key=f"wb_filter_source_year_{workbench_key}")
+                filter_source_year = st.text_input("Source Year", value=str(default_filters.get("source_year") or ""), key=f"wb_filter_source_year_{workbench_key}")
                 filter_pipeline_status = st.text_input("Pipeline Status", value="", key=f"wb_filter_pipeline_status_{workbench_key}")
             f4, f5, f6 = st.columns(3)
             with f4:
@@ -4226,12 +4267,12 @@ def estimator_prototype_page() -> None:
             "project_type": filter_project_type,
             "substrate": filter_substrate,
             "coating_type": filter_coating_type,
-            "warranty_years": filter_warranty or None,
+            "warranty_years": optional_positive_number(filter_warranty),
             "roof_condition": filter_condition,
             "access_complexity": filter_access,
             "penetrations_complexity": filter_penetrations,
             "area_bucket": filter_area_bucket,
-            "source_year": filter_source_year or None,
+            "source_year": optional_positive_number(filter_source_year),
             "pipeline_status": filter_pipeline_status,
             "completed_only": filter_completed_only,
             "include_repairs": filter_include_repairs,
@@ -4303,61 +4344,69 @@ def estimator_prototype_page() -> None:
 
         st.markdown("### Stage 3 - Estimator Workbench")
         st.caption("Review and edit estimate rows. Unchecked rows still keep historical defaults so they can be turned on quickly.")
+        show_row_details = st.checkbox(
+            "Show detailed row diagnostics",
+            value=debug_mode,
+            key=f"wb_show_row_details_{workbench_key}_{historical_filters_key}",
+            help="Shows accepted/rejected evidence, percentile ranges, relaxed filters, and source diagnostics.",
+        )
         st.markdown("#### Materials")
         add_material_key = f"wb_add_material_line_{workbench_key}_{scope_key}_{historical_filters_key}"
         if st.button("Add Material Line", key=add_material_key):
             original_workbench.setdefault("materials", []).append(manual_material_workbench_row(edited_scope))
         materials_df = pd.DataFrame(original_workbench.get("materials") or [])
+        material_column_order = [
+            "include",
+            "template_bucket",
+            "workbook_row",
+            "package",
+            "current_item",
+            "historical_item",
+            "item_name",
+            "item_source",
+            "suggested_by_notes_rules",
+            "historical_median",
+            "editable_default",
+            "historical_usage_rate",
+            "historical_qty_per_basis_sqft",
+            "editable_basis_sqft",
+            "historical_qty_per_sqft",
+            "p25_qty_per_sqft",
+            "p75_qty_per_sqft",
+            "editable_qty_per_sqft",
+            "calculated_quantity",
+            "unit",
+            "current_price",
+            "current_unit_price",
+            "historical_cost_default",
+            "historical_cost_per_sqft",
+            "estimated_cost",
+            "evidence_count",
+            "historical_cost_evidence_count",
+            "historical_jobs_found",
+            "rows_accepted",
+            "rows_rejected",
+            "range_width",
+            "relative_range_width",
+            "variability_warning",
+            "confidence",
+            "source",
+            "filters_applied",
+            "filters_relaxed",
+            "price_source",
+            "needs_review",
+            "manual_override",
+            "reset_to_historical_default",
+            "rejection_reasons",
+            "explanation",
+        ] if show_row_details else MATERIAL_WORKBENCH_COMPACT_COLUMNS
         edited_materials_df = st.data_editor(
             materials_df,
             use_container_width=True,
             hide_index=True,
             num_rows="fixed",
             key=f"wb_materials_{workbench_key}_{scope_key}_{historical_filters_key}",
-            column_order=[
-                "include",
-                "template_bucket",
-                "workbook_row",
-                "package",
-                "current_item",
-                "historical_item",
-                "item_name",
-                "item_source",
-                "suggested_by_notes_rules",
-                "historical_median",
-                "editable_default",
-                "historical_usage_rate",
-                "historical_qty_per_basis_sqft",
-                "editable_basis_sqft",
-                "historical_qty_per_sqft",
-                "p25_qty_per_sqft",
-                "p75_qty_per_sqft",
-                "editable_qty_per_sqft",
-                "calculated_quantity",
-                "current_price",
-                "current_unit_price",
-                "historical_cost_default",
-                "historical_cost_per_sqft",
-                "estimated_cost",
-                "evidence_count",
-                "historical_cost_evidence_count",
-                "historical_jobs_found",
-                "rows_accepted",
-                "rows_rejected",
-                "range_width",
-                "relative_range_width",
-                "variability_warning",
-                "confidence",
-                "source",
-                "filters_applied",
-                "filters_relaxed",
-                "price_source",
-                "needs_review",
-                "manual_override",
-                "reset_to_historical_default",
-                "rejection_reasons",
-                "explanation",
-            ],
+            column_order=material_column_order,
             column_config={
                 "include": st.column_config.CheckboxColumn("Include"),
                 "template_bucket": "Template Bucket",
@@ -4378,6 +4427,7 @@ def estimator_prototype_page() -> None:
                 "p75_qty_per_sqft": "P75 Qty / Sq Ft",
                 "editable_qty_per_sqft": "Editable Qty / Sq Ft",
                 "calculated_quantity": "Calculated Quantity",
+                "unit": "Unit",
                 "current_price": "Current Price",
                 "current_unit_price": "Current Unit Price",
                 "historical_cost_default": "Historical Cost Default",
@@ -4445,44 +4495,45 @@ def estimator_prototype_page() -> None:
 
         st.markdown("#### Labor")
         labor_df = pd.DataFrame(original_workbench.get("labor") or [])
+        labor_column_order = [
+            "include",
+            "template_bucket",
+            "workbook_row",
+            "labor_package",
+            "suggested_by_notes_rules",
+            "historical_median",
+            "editable_default",
+            "historical_hours_per_1000_sqft",
+            "p25_hours_per_1000_sqft",
+            "p75_hours_per_1000_sqft",
+            "editable_hours_per_1000_sqft",
+            "calculated_hours",
+            "crew_size",
+            "labor_rate",
+            "estimated_cost",
+            "evidence_count",
+            "historical_jobs_found",
+            "rows_accepted",
+            "rows_rejected",
+            "range_width",
+            "relative_range_width",
+            "variability_warning",
+            "confidence",
+            "source",
+            "filters_applied",
+            "filters_relaxed",
+            "manual_override",
+            "reset_to_historical_default",
+            "rejection_reasons",
+            "explanation",
+        ] if show_row_details else LABOR_WORKBENCH_COMPACT_COLUMNS
         edited_labor_df = st.data_editor(
             labor_df,
             use_container_width=True,
             hide_index=True,
             num_rows="fixed",
             key=f"wb_labor_{workbench_key}_{scope_key}_{historical_filters_key}",
-            column_order=[
-                "include",
-                "template_bucket",
-                "workbook_row",
-                "labor_package",
-                "suggested_by_notes_rules",
-                "historical_median",
-                "editable_default",
-                "historical_hours_per_1000_sqft",
-                "p25_hours_per_1000_sqft",
-                "p75_hours_per_1000_sqft",
-                "editable_hours_per_1000_sqft",
-                "calculated_hours",
-                "crew_size",
-                "labor_rate",
-                "estimated_cost",
-                "evidence_count",
-                "historical_jobs_found",
-                "rows_accepted",
-                "rows_rejected",
-                "range_width",
-                "relative_range_width",
-                "variability_warning",
-                "confidence",
-                "source",
-                "filters_applied",
-                "filters_relaxed",
-                "manual_override",
-                "reset_to_historical_default",
-                "rejection_reasons",
-                "explanation",
-            ],
+            column_order=labor_column_order,
             column_config={
                 "include": st.column_config.CheckboxColumn("Include"),
                 "template_bucket": "Template Bucket",
@@ -4547,38 +4598,39 @@ def estimator_prototype_page() -> None:
 
         st.markdown("#### Adders / Miscellaneous")
         adders_df = pd.DataFrame(original_workbench.get("adders") or [])
+        adders_column_order = [
+            "include",
+            "template_bucket",
+            "workbook_row",
+            "adder",
+            "historical_median",
+            "editable_default",
+            "historical_usage_rate",
+            "median_cost_when_used",
+            "median_cost_per_sqft",
+            "historical_default_value",
+            "editable_value",
+            "estimated_cost",
+            "evidence_count",
+            "range_width",
+            "relative_range_width",
+            "variability_warning",
+            "confidence",
+            "source",
+            "filters_applied",
+            "filters_relaxed",
+            "needs_review",
+            "manual_override",
+            "reset_to_historical_default",
+            "notes",
+        ] if show_row_details else ADDER_WORKBENCH_COMPACT_COLUMNS
         edited_adders_df = st.data_editor(
             adders_df,
             use_container_width=True,
             hide_index=True,
             num_rows="fixed",
             key=f"wb_adders_{workbench_key}_{scope_key}_{historical_filters_key}",
-            column_order=[
-                "include",
-                "template_bucket",
-                "workbook_row",
-                "adder",
-                "historical_median",
-                "editable_default",
-                "historical_usage_rate",
-                "median_cost_when_used",
-                "median_cost_per_sqft",
-                "historical_default_value",
-                "editable_value",
-                "estimated_cost",
-                "evidence_count",
-                "range_width",
-                "relative_range_width",
-                "variability_warning",
-                "confidence",
-                "source",
-                "filters_applied",
-                "filters_relaxed",
-                "needs_review",
-                "manual_override",
-                "reset_to_historical_default",
-                "notes",
-            ],
+            column_order=adders_column_order,
             column_config={
                 "include": st.column_config.CheckboxColumn("Include"),
                 "template_bucket": "Template Bucket",
@@ -4681,10 +4733,15 @@ def estimator_prototype_page() -> None:
             st.json(workbench_to_draft_workbook_inputs(edited_workbench))
 
         st.markdown("**Excel Estimate Draft**")
+        workbook_path_key = f"field_notes_excel_workbook_path_{workbench_key}"
+        workbook_error_key = f"field_notes_excel_workbook_error_{workbench_key}"
         if st.button("Generate Excel Estimate Draft", key=f"generate_field_notes_excel_workbook_{workbench_key}"):
             template_path = resolve_default_template_path()
             if not template_path.exists():
-                st.warning("Estimate template workbook not found. Add it to templates/Estimate - Full Turnkey.xlsx.")
+                message = "Estimate template workbook not found. Add it to templates/Estimate - Full Turnkey.xlsx."
+                st.session_state.pop(workbook_path_key, None)
+                st.session_state[workbook_error_key] = message
+                st.warning(message)
             else:
                 try:
                     edited_workbook_inputs = workbench_to_draft_workbook_inputs(edited_workbench)
@@ -4695,6 +4752,8 @@ def estimator_prototype_page() -> None:
                     )
                     edit_rows = build_edit_history_rows(feedback_baseline, edited_workbench, reason_map=reason_map)
                     feedback_path = append_edit_history(edit_rows)
+                    st.session_state[workbook_path_key] = str(output_path)
+                    st.session_state.pop(workbook_error_key, None)
                     st.success(f"Excel estimate draft created: {output_path}")
                     st.caption(f"Estimator edit history captured: {feedback_path}")
                     st.download_button(
@@ -4706,7 +4765,42 @@ def estimator_prototype_page() -> None:
                     )
                 except Exception as exc:
                     logger.exception("Field notes Excel draft generation failed")
-                    st.error(f"Could not generate Excel estimate draft: {safe_exception_text(exc)}")
+                    message = f"Could not generate Excel estimate draft: {safe_exception_text(exc)}"
+                    st.session_state.pop(workbook_path_key, None)
+                    st.session_state[workbook_error_key] = message
+                    st.error(message)
+
+        st.markdown("**Review Package**")
+        if st.button("Export Review Package", key=f"export_workbench_review_package_{workbench_key}_{scope_key}_{historical_filters_key}"):
+            try:
+                package_path = export_workbench_review_package(
+                    workbench=edited_workbench,
+                    input_notes=recommendation_notes,
+                    output_dir=DEFAULT_WORKBENCH_EXPORT_DIR,
+                    workbook_path=st.session_state.get(workbook_path_key),
+                    workbook_export_error=st.session_state.get(workbook_error_key),
+                    runtime=getattr(field_recommendation, "runtime_seconds_by_stage", None)
+                    or field_recommendation.parsed_fields.get("runtime_seconds_by_stage")
+                    or {},
+                    run_id=str(edited_workbench.get("estimate_id") or workbench_key),
+                )
+                st.session_state[f"workbench_review_package_path_{workbench_key}"] = str(package_path)
+                st.success(f"Estimator review package created: {package_path}")
+            except Exception as exc:
+                logger.exception("Estimator workbench review package export failed")
+                st.error(f"Could not export review package: {safe_exception_text(exc)}")
+        package_path_value = st.session_state.get(f"workbench_review_package_path_{workbench_key}")
+        if package_path_value:
+            package_path = Path(package_path_value)
+            if package_path.exists():
+                st.caption(f"Local review package path: {package_path}")
+                st.download_button(
+                    "Download Review Package",
+                    data=package_path.read_bytes(),
+                    file_name=package_path.name,
+                    mime="application/zip",
+                    key=f"download_workbench_review_package_{workbench_key}",
+                )
         if debug_mode:
             with st.expander("Debug Evidence and Legacy Calibration", expanded=False):
                 st.dataframe(pd.DataFrame([field_recommendation.historical_calibration]), use_container_width=True, hide_index=True)
