@@ -261,10 +261,28 @@ def _write_insulation_material(ws: Any, row: dict[str, Any], indexes: dict[str, 
         target_row = 57
     if target_row is None:
         return False
-    if quantity is not None:
-        _write_cell(ws, f"C{target_row}", quantity)
-    if unit_price is not None:
-        _write_cell(ws, f"E{target_row}", round(unit_price, 4))
+    if category == "foam" or "foam" in text:
+        selector_code = _number(row.get("selector_code"))
+        area_sqft = _number(row.get("area_sqft") or row.get("basis_sqft"))
+        thickness = _number(row.get("thickness_inches"))
+        yield_factor = _number(row.get("yield_factor") or row.get("yield_or_coverage"))
+        if selector_code is not None:
+            _write_cell(ws, f"A{target_row}", int(selector_code))
+        if area_sqft is not None:
+            _write_cell(ws, f"C{target_row}", round(area_sqft, 2))
+        elif quantity is not None:
+            _write_cell(ws, f"C{target_row}", quantity)
+        if thickness is not None:
+            _write_cell(ws, f"D{target_row}", round(thickness, 4))
+        if unit_price is not None:
+            _write_cell(ws, f"E{target_row}", round(unit_price, 4))
+        if yield_factor is not None:
+            _write_cell(ws, f"F{target_row}", round(yield_factor, 4))
+    else:
+        if quantity is not None:
+            _write_cell(ws, f"C{target_row}", quantity)
+        if unit_price is not None:
+            _write_cell(ws, f"E{target_row}", round(unit_price, 4))
     estimated_cost = _number(row.get("estimated_cost"))
     if estimated_cost is not None:
         _add_comment(ws, f"A{target_row}", f"{first_nonblank(row.get('item'), row.get('category'))}\nEstimator estimated cost: ${estimated_cost:,.2f}\n{first_nonblank(row.get('notes'))}")

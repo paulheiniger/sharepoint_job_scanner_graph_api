@@ -12,6 +12,7 @@ from typing import Any
 
 import pandas as pd
 
+from .decision_history import build_decision_recommendations, recommendation_lookup
 from .materials import find_current_price
 from .rules import first_nonblank, to_float
 
@@ -236,6 +237,17 @@ def safe_number(value: Any, default: float = 0.0) -> float:
     return float(number)
 
 
+def _mode_text(values: list[Any]) -> str:
+    counts: dict[str, int] = {}
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            counts[text] = counts.get(text, 0) + 1
+    if not counts:
+        return ""
+    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
+
+
 def optional_number(value: Any) -> float | None:
     number = to_float(value)
     if number is None or not math.isfinite(number):
@@ -299,6 +311,64 @@ def _material_specs_for_scope(scope: dict[str, Any] | None) -> list[dict[str, An
 
 def _labor_specs_for_scope(scope: dict[str, Any] | None) -> list[dict[str, Any]]:
     return INSULATION_LABOR_PACKAGES if _is_insulation_scope(scope) else LABOR_PACKAGES
+
+
+def _decision_recommendation_lookup(data: Any, filters: dict[str, Any] | None) -> dict[tuple[str, str], dict[str, Any]]:
+    try:
+        recommendations = build_decision_recommendations(data, filters=filters, min_count=DEFAULT_MIN_EVIDENCE_COUNT)
+    except Exception:
+        return {}
+    return recommendation_lookup(recommendations)
+
+
+def _material_decision_id(package: str, scope: dict[str, Any]) -> str:
+    if _is_insulation_scope(scope):
+        if package == "foam":
+            return "insulation_foam_system"
+        if package == "thermal_barrier_coating":
+            return "insulation_thermal_barrier"
+        return f"insulation_{package}"
+    if package == "coating":
+        return "roofing_coating_system"
+    return f"roofing_{package}"
+
+
+def _labor_decision_id(package: str, scope: dict[str, Any]) -> str:
+    return f"{'insulation' if _is_insulation_scope(scope) else 'roofing'}_{package}"
+
+
+def _decision_value(decisions: dict[tuple[str, str], dict[str, Any]], decision_id: str, field_name: str, default: Any = None) -> Any:
+    row = decisions.get((decision_id, field_name)) or {}
+    value = row.get("recommended_value")
+    if value in (None, ""):
+        return default
+    return value
+
+
+def _decision_meta(decisions: dict[tuple[str, str], dict[str, Any]], decision_id: str, fields: list[str]) -> dict[str, Any]:
+    rows = [decisions[(decision_id, field)] for field in fields if (decision_id, field) in decisions]
+    if not rows:
+        return {
+            "decision_id": decision_id,
+            "decision_evidence_count": 0,
+            "decision_source_jobs_count": 0,
+            "decision_confidence": "none",
+            "decision_review_warning": "",
+            "decision_recommendation_json": "{}",
+        }
+    evidence = max(int(safe_number(row.get("evidence_count"), 0)) for row in rows)
+    jobs = max(int(safe_number(row.get("source_jobs_count"), 0)) for row in rows)
+    confidence_order = {"high": 3, "medium": 2, "low": 1, "none": 0, "": 0}
+    confidence = max((str(row.get("confidence") or "") for row in rows), key=lambda item: confidence_order.get(item, 0))
+    warning = "; ".join(str(row.get("review_warning") or "") for row in rows if row.get("review_warning"))
+    return {
+        "decision_id": decision_id,
+        "decision_evidence_count": evidence,
+        "decision_source_jobs_count": jobs,
+        "decision_confidence": confidence or "none",
+        "decision_review_warning": warning,
+        "decision_recommendation_json": json.dumps(rows, default=str, sort_keys=True),
+    }
 
 
 def _package_aliases(package: str) -> set[str]:
@@ -648,6 +718,82 @@ def _bucket_history_diagnostics(data: Any, package: str, filters: dict[str, Any]
     }
 
 
+def _insulation_foam_template_model_distribution(data: Any, package: str, filters: dict[str, Any] | None) -> dict[str, Any]:
+    if package != "foam":
+        return {}
+    rows = _bucket_history_rows(data, package, filters)
+    if rows.empty:
+        return {}
+    if "template_type" in rows.columns:
+        scoped = rows[rows["template_type"].map(_normalized).eq("insulation")].copy()
+        if not scoped.empty:
+            rows = scoped
+    row_number = _numeric_series(rows, "row_number")
+    if row_number.notna().any():
+        foam_rows = rows[row_number.isin([19, 20, 21])].copy()
+        if not foam_rows.empty:
+            rows = foam_rows
+    area = _numeric_series(rows, "area_sqft")
+    if area.isna().all():
+        area = _numeric_series(rows, "quantity")
+    thickness = _numeric_series(rows, "thickness_inches")
+    estimated_units = _numeric_series(rows, "estimated_units")
+    if estimated_units.isna().all():
+        legacy_sets_or_units = _numeric_series(rows, "estimated_sets")
+        legacy_median = legacy_sets_or_units[legacy_sets_or_units.notna()].median()
+        if pd.notna(legacy_median) and legacy_median > 100:
+            estimated_units = legacy_sets_or_units
+        else:
+            estimated_units = legacy_sets_or_units * 1000
+    cost = _numeric_series(rows, "estimated_cost")
+    yield_values = _numeric_series(rows, "yield_factor")
+    if yield_values.isna().all():
+        yield_values = _numeric_series(rows, "yield_or_coverage")
+    unit_price = _numeric_series(rows, "unit_price")
+    valid = rows[(area > 0) & (thickness > 0) & (estimated_units > 0)].copy()
+    if valid.empty:
+        return {}
+    valid_area = area.loc[valid.index]
+    valid_thickness = thickness.loc[valid.index]
+    valid_units = estimated_units.loc[valid.index]
+    units_rate = valid_units / (valid_area * valid_thickness)
+    sets_rate = (valid_units / 1000) / (valid_area * valid_thickness)
+    cost_rate = cost.loc[valid.index] / (valid_area * valid_thickness)
+    cost_rate = cost_rate[cost_rate.notna() & (cost_rate > 0)]
+    yield_rate = yield_values.loc[valid.index]
+    yield_rate = yield_rate[yield_rate.notna() & (yield_rate > 0)]
+    unit_price_rate = unit_price.loc[valid.index]
+    unit_price_rate = unit_price_rate[unit_price_rate.notna() & (unit_price_rate > 0)]
+    product_name = first_nonblank(
+        _mode_text(valid.get("resolved_item_name", pd.Series(dtype=object)).dropna().astype(str).tolist())
+        if "resolved_item_name" in valid.columns
+        else "",
+        _mode_text(valid.get("selected_item_name", pd.Series(dtype=object)).dropna().astype(str).tolist())
+        if "selected_item_name" in valid.columns
+        else "",
+    )
+    evidence_count = _job_count(valid)
+    return {
+        "foam_quantity_model": "foam_sets_from_area_thickness_yield",
+        "median_units_per_sqft_per_inch": _positive_percentile(units_rate, 0.5),
+        "median_sets_per_sqft_per_inch": _positive_percentile(sets_rate, 0.5),
+        "p25_sets_per_sqft_per_inch": _positive_percentile(sets_rate, 0.25),
+        "p75_sets_per_sqft_per_inch": _positive_percentile(sets_rate, 0.75),
+        "median_cost_per_sqft_per_inch": _positive_percentile(cost_rate, 0.5),
+        "median_foam_thickness_inches": _positive_percentile(valid_thickness, 0.5),
+        "median_foam_yield": _positive_percentile(yield_rate, 0.5),
+        "median_foam_unit_price": _positive_percentile(unit_price_rate, 0.5),
+        "default_foam_product": product_name,
+        "default_foam_density_lb": first_nonblank(
+            _positive_percentile(_numeric_series(valid, "foam_density_lb"), 0.5),
+            "",
+        ),
+        "foam_template_model_evidence_count": evidence_count,
+        "foam_template_model_source": "estimate_template_rows_formula_model",
+        "unit": "estimated_units",
+    }
+
+
 def _evidence_count_from_rows(rows: pd.DataFrame) -> int:
     if rows.empty:
         return 0
@@ -796,6 +942,9 @@ def _scope_from_recommendation(recommendation: Any) -> dict[str, Any]:
         "opening_area_missing",
         "net_insulation_area_sqft",
         "openings",
+        "foam_type",
+        "foam_thickness_inches",
+        "thickness_inches",
         "requested_timing",
         "building_installation_timing",
         "customer_name",
@@ -1042,13 +1191,24 @@ def material_sizing_distribution(
     summary = _frame(data, "job_package_summary")
     reasons: dict[str, int] = {}
     history_diag = _bucket_history_diagnostics(data, package, filters)
+    template_model = _insulation_foam_template_model_distribution(data, package, filters)
+
+    def attach_template_model(distribution: dict[str, Any]) -> dict[str, Any]:
+        if template_model:
+            distribution.update(template_model)
+            if safe_number(distribution.get("evidence_count"), 0) <= 0:
+                distribution["evidence_count"] = int(safe_number(template_model.get("foam_template_model_evidence_count"), 0))
+                distribution["confidence"] = _confidence(distribution["evidence_count"])
+            distribution["unit"] = "estimated_units"
+        return distribution
+
     if summary.empty:
         fallback = _material_distribution_from_relationships(data, package, default_unit, reasons, filters)
         if fallback:
             fallback.update(history_diag)
-            return fallback
+            return attach_template_model(fallback)
         return _with_distribution_metadata(
-            {
+            attach_template_model({
             "median": 0.0,
             "p25": 0.0,
             "p75": 0.0,
@@ -1061,7 +1221,7 @@ def material_sizing_distribution(
             "confidence": "none",
             "source": "no_sufficient_evidence",
             **history_diag,
-            },
+            }),
         )
     package_rows = summary[_package_match_series(summary, package)].copy()
     if package_rows.empty:
@@ -1074,8 +1234,8 @@ def material_sizing_distribution(
             fallback.setdefault("unit", default_unit)
             fallback.setdefault("confidence", _confidence(fallback.get("evidence_count", 0)))
             fallback.update(history_diag)
-            return fallback
-        return {
+            return attach_template_model(fallback)
+        return attach_template_model({
             "median": 0.0,
             "p25": 0.0,
             "p75": 0.0,
@@ -1088,7 +1248,7 @@ def material_sizing_distribution(
             "confidence": "none",
             "source": "no_sufficient_evidence",
             **history_diag,
-        }
+        })
 
     eligible, scoped_reasons = _scope_filter_diagnostics(package_rows, filters)
     reasons.update(scoped_reasons)
@@ -1149,10 +1309,10 @@ def material_sizing_distribution(
                     "rejected_filter_mismatch": rejected_filter_mismatch,
                 }
             )
-            return fallback
+            return attach_template_model(fallback)
         historical_jobs = _job_count(package_rows)
         return _with_distribution_metadata(
-            {
+            attach_template_model({
                 "median": 0.0,
                 "p25": 0.0,
                 "p75": 0.0,
@@ -1172,13 +1332,13 @@ def material_sizing_distribution(
                 "rejected_missing_quantity": rejected_missing_quantity,
                 "rejected_missing_cost": rejected_missing_cost,
                 "rejected_filter_mismatch": rejected_filter_mismatch,
-            },
+            }),
             filter_summary,
         )
     evidence_count = _job_count(accepted)
     unit = first_nonblank(next((value for value in accepted.get("unit", pd.Series(dtype=object)).dropna().astype(str) if value.strip() and _normalized(value) != "mixed"), ""), default_unit)
     return _with_distribution_metadata(
-        {
+        attach_template_model({
             "median": _positive_percentile(accepted["_workbench_qty_per_sqft"], 0.5),
             "p25": _positive_percentile(accepted["_workbench_qty_per_sqft"], 0.25),
             "p75": _positive_percentile(accepted["_workbench_qty_per_sqft"], 0.75),
@@ -1198,7 +1358,7 @@ def material_sizing_distribution(
             "rejected_missing_quantity": rejected_missing_quantity,
             "rejected_missing_cost": rejected_missing_cost,
             "rejected_filter_mismatch": rejected_filter_mismatch,
-        },
+        }),
         filter_summary,
     )
 
@@ -1277,6 +1437,10 @@ def labor_sizing_distribution(data: Any, package: str, filters: dict[str, Any] |
             "rows_rejected": 0,
             "rejection_reasons": "job_package_summary_empty",
             "median_crew_size": 4,
+            "median_days": 0.0,
+            "median_daily_rate": 0.0,
+            "median_hourly_rate": 0.0,
+            "formula_mode": "",
             "confidence": "none",
             "source": "no_sufficient_evidence",
             **history_diag,
@@ -1290,6 +1454,10 @@ def labor_sizing_distribution(data: Any, package: str, filters: dict[str, Any] |
             fallback.setdefault("p75", 0.0)
             fallback.setdefault("evidence_count", 0)
             fallback.setdefault("median_crew_size", 4)
+            fallback.setdefault("median_days", 0.0)
+            fallback.setdefault("median_daily_rate", 0.0)
+            fallback.setdefault("median_hourly_rate", 0.0)
+            fallback.setdefault("formula_mode", "")
             fallback.setdefault("confidence", _confidence(fallback.get("evidence_count", 0)))
             fallback.update(history_diag)
             return fallback
@@ -1303,6 +1471,10 @@ def labor_sizing_distribution(data: Any, package: str, filters: dict[str, Any] |
             "rows_rejected": 0,
             "rejection_reasons": "no_package_rows_found",
             "median_crew_size": 4,
+            "median_days": 0.0,
+            "median_daily_rate": 0.0,
+            "median_hourly_rate": 0.0,
+            "formula_mode": "",
             "confidence": "none",
             "source": "no_sufficient_evidence",
             **history_diag,
@@ -1358,6 +1530,10 @@ def labor_sizing_distribution(data: Any, package: str, filters: dict[str, Any] |
                 "rows_rejected": len(package_rows),
                 "rejection_reasons": _format_reasons(reasons),
                 "median_crew_size": 4,
+                "median_days": 0.0,
+                "median_daily_rate": 0.0,
+                "median_hourly_rate": 0.0,
+                "formula_mode": "",
                 "confidence": "none",
                 "source": "no_sufficient_evidence",
                 **history_diag,
@@ -1372,6 +1548,17 @@ def labor_sizing_distribution(data: Any, package: str, filters: dict[str, Any] |
     evidence_count = _job_count(accepted)
     crew = _numeric_series(accepted, "crew_size")
     crew = crew[crew.notna() & (crew > 0)]
+    days = _numeric_series(accepted, "days")
+    days = days[days.notna() & (days > 0)]
+    daily_rate = _numeric_series(accepted, "daily_rate")
+    daily_rate = daily_rate[daily_rate.notna() & (daily_rate > 0)]
+    hourly_rate = _numeric_series(accepted, "hourly_rate")
+    if hourly_rate.isna().all():
+        hourly_rate = _numeric_series(accepted, "blended_rate")
+    if hourly_rate.isna().all() and "total_cost" in accepted.columns:
+        hourly_rate = _numeric_series(accepted, "total_cost") / total_hours
+    hourly_rate = hourly_rate[hourly_rate.notna() & (hourly_rate > 0)]
+    formula_mode = _mode_text(accepted.get("formula_mode", pd.Series(dtype=object)).dropna().astype(str).tolist()) if "formula_mode" in accepted.columns else ""
     return _with_distribution_metadata(
         {
             "median": _positive_percentile(accepted["_workbench_hours_per_1000"], 0.5),
@@ -1383,6 +1570,10 @@ def labor_sizing_distribution(data: Any, package: str, filters: dict[str, Any] |
             "rows_rejected": len(package_rows) - len(accepted),
             "rejection_reasons": _format_reasons(reasons),
             "median_crew_size": float(crew.median()) if not crew.empty else 4,
+            "median_days": float(days.median()) if not days.empty else 0.0,
+            "median_daily_rate": float(daily_rate.median()) if not daily_rate.empty else 0.0,
+            "median_hourly_rate": float(hourly_rate.median()) if not hourly_rate.empty else 0.0,
+            "formula_mode": formula_mode,
             "confidence": _confidence(evidence_count),
             "source": "job_package_summary_full_corpus",
             **history_diag,
@@ -2247,9 +2438,22 @@ def material_workbench_rows(
     pricing = _frame(data, "pricing_catalog")
     if pricing.empty:
         pricing = _frame(data, "pricing")
+    decisions = _decision_recommendation_lookup(data, historical_filters)
     rows: list[dict[str, Any]] = []
     for spec in _material_specs_for_scope(scope):
         package = spec["package"]
+        decision_id = _material_decision_id(package, scope)
+        decision_fields = [
+            "resolved_item_name",
+            "thickness_inches",
+            "yield_or_coverage",
+            "foam_density_lb",
+            "gal_per_100_sqft",
+            "gal_per_sqft",
+            "wet_mils_estimate",
+            "waste_factor_pct",
+        ]
+        decision_meta = _decision_meta(decisions, decision_id, decision_fields)
         default_unit = str(spec.get("default_unit") or "unit")
         sizing = material_sizing_distribution(data, package, str(spec.get("default_unit") or "unit"), historical_filters)
         pricing_options = _pricing_options_for_package(pricing, spec, scope)
@@ -2260,11 +2464,45 @@ def material_workbench_rows(
         min_evidence = int(safe_number(sizing.get("minimum_evidence_count"), DEFAULT_MIN_EVIDENCE_COUNT))
         qty_per_sqft = item_qty_per_sqft if item_qty_per_sqft > 0 and item_evidence_count >= min_evidence else safe_number(sizing.get("median"), 0.0)
         historical_cost_per_sqft = safe_number(sizing.get("median_cost_per_sqft"), 0.0)
+        foam_quantity_model = first_nonblank(sizing.get("foam_quantity_model"))
+        foam_units_per_sqft_per_inch = safe_number(sizing.get("median_units_per_sqft_per_inch"), 0.0)
+        foam_sets_per_sqft_per_inch = safe_number(sizing.get("median_sets_per_sqft_per_inch"), 0.0)
+        foam_cost_per_sqft_per_inch = safe_number(sizing.get("median_cost_per_sqft_per_inch"), 0.0)
+        foam_thickness_inches = safe_number(
+            first_nonblank(
+                scope.get("foam_thickness_inches"),
+                scope.get("thickness_inches"),
+                _decision_value(decisions, decision_id, "thickness_inches"),
+                sizing.get("median_foam_thickness_inches"),
+            ),
+            0.0,
+        )
+        foam_yield_factor = safe_number(
+            first_nonblank(
+                scope.get("foam_yield_factor"),
+                _decision_value(decisions, decision_id, "yield_or_coverage"),
+                sizing.get("median_foam_yield"),
+            ),
+            0.0,
+        )
+        decision_gal_per_100 = safe_number(_decision_value(decisions, decision_id, "gal_per_100_sqft"), 0.0)
+        if decision_gal_per_100 > 0 and package in {"coating", "thermal_barrier_coating"}:
+            qty_per_sqft = decision_gal_per_100 / 100
+        if package == "foam" and _is_insulation_scope(scope) and foam_units_per_sqft_per_inch <= 0 and foam_yield_factor > 0:
+            foam_units_per_sqft_per_inch = 1000 / foam_yield_factor
+            foam_sets_per_sqft_per_inch = foam_units_per_sqft_per_inch / 1000
+        if package == "foam" and _is_insulation_scope(scope) and foam_units_per_sqft_per_inch > 0 and foam_thickness_inches > 0:
+            qty_per_sqft = foam_units_per_sqft_per_inch * foam_thickness_inches
+            historical_cost_per_sqft = historical_cost_per_sqft or (foam_cost_per_sqft_per_inch * foam_thickness_inches)
         if historical_cost_per_sqft <= 0:
             historical_cost_per_sqft = safe_number(selected_item.get("item_median_cost_per_sqft"), 0.0)
         historical_cost_evidence_count = int(safe_number(sizing.get("historical_cost_evidence_count"), 0))
         evidence_count = int(safe_number(sizing.get("evidence_count"), 0))
+        if package == "foam" and _is_insulation_scope(scope):
+            evidence_count = max(evidence_count, int(safe_number(sizing.get("foam_template_model_evidence_count"), 0)))
         unit_price = safe_number(selected_item.get("unit_price"), 0.0)
+        if package == "foam" and _is_insulation_scope(scope) and unit_price <= 0:
+            unit_price = safe_number(sizing.get("median_foam_unit_price"), 0.0)
         price_source = str(selected_item.get("item_name") or "")
         status = _package_suggestion_status(recommendation, package, scope)
         include = status == "yes"
@@ -2285,6 +2523,8 @@ def material_workbench_rows(
         else:
             editable_basis_sqft = 0.0
         calculated_quantity = editable_qty_per_sqft * editable_basis_sqft if include and editable_basis_sqft else 0.0
+        foam_estimated_units = calculated_quantity if package == "foam" and _is_insulation_scope(scope) else 0.0
+        foam_estimated_sets = foam_estimated_units / 1000 if foam_estimated_units else 0.0
         if include and unit_price > 0:
             estimated_cost = calculated_quantity * unit_price
             selected_price_source = "current_pricing"
@@ -2296,7 +2536,22 @@ def material_workbench_rows(
             selected_price_source = "current_pricing_missing" if historical_cost_per_sqft <= 0 and unit_price <= 0 else "not_included"
         needs_review = bool(unit_price <= 0 and historical_cost_per_sqft > 0)
         item_source = str(selected_item.get("item_source") or "manual")
-        item_name = str(selected_item.get("item_name") or spec["label"])
+        item_name = str(
+            first_nonblank(
+                selected_item.get("item_name"),
+                sizing.get("default_foam_product") if package == "foam" and _is_insulation_scope(scope) else "",
+                _decision_value(decisions, decision_id, "resolved_item_name"),
+                spec["label"],
+            )
+        )
+        decision_output = {
+            "selected_option": _decision_value(decisions, decision_id, "resolved_item_name", item_name),
+            "thickness_inches": foam_thickness_inches if package == "foam" else None,
+            "yield_or_coverage": foam_yield_factor if package == "foam" else None,
+            "gal_per_100_sqft": decision_gal_per_100 if package in {"coating", "thermal_barrier_coating"} else None,
+            "wet_mils_estimate": _decision_value(decisions, decision_id, "wet_mils_estimate"),
+            "waste_factor_pct": _decision_value(decisions, decision_id, "waste_factor_pct"),
+        }
         explanation = _material_explanation(
             package=package,
             sizing=sizing,
@@ -2332,6 +2587,23 @@ def material_workbench_rows(
                 "package_key": package,
                 "template_bucket": package,
                 "workbook_row": str(spec.get("workbook_row") or ""),
+                **decision_meta,
+                "recommended_decision_value": first_nonblank(
+                    decision_output.get("selected_option"),
+                    decision_output.get("thickness_inches"),
+                    decision_output.get("gal_per_100_sqft"),
+                    "",
+                ),
+                "editable_decision_value": first_nonblank(
+                    decision_output.get("selected_option"),
+                    decision_output.get("thickness_inches"),
+                    decision_output.get("gal_per_100_sqft"),
+                    "",
+                ),
+                "decision_values": decision_output,
+                "workbook_rows_controlled": str(spec.get("workbook_row") or ""),
+                "row_traceability": f"Estimate rows {spec.get('workbook_row') or ''}",
+                "calculated_output": round(estimated_cost, 2),
                 "item_name": item_name,
                 "current_item": item_name,
                 "historical_item": item_name if item_source.startswith("historical") else first_nonblank(selected_item.get("historical_item"), ""),
@@ -2346,6 +2618,26 @@ def material_workbench_rows(
                 "historical_qty_per_basis_sqft": round(qty_per_sqft, 6),
                 "historical_qty_per_sqft": round(qty_per_sqft, 6),
                 "historical_median": round(qty_per_sqft, 6),
+                "quantity_model": foam_quantity_model if package == "foam" and foam_quantity_model else "qty_per_sqft",
+                "decision_model": "workbook_formula_inputs" if package == "foam" and _is_insulation_scope(scope) else "historical_rate_default",
+                "decision_fields": (
+                    "foam_product,foam_density_lb,editable_basis_sqft,thickness_inches,yield_factor,current_unit_price"
+                    if package == "foam" and _is_insulation_scope(scope)
+                    else "item_name,editable_basis_sqft,editable_qty_per_sqft,current_unit_price"
+                ),
+                "calculated_output_fields": (
+                    "estimated_units,estimated_sets,estimated_cost"
+                    if package == "foam" and _is_insulation_scope(scope)
+                    else "calculated_quantity,estimated_cost"
+                ),
+                "foam_product": item_name if package == "foam" and _is_insulation_scope(scope) else "",
+                "foam_density_lb": safe_number(sizing.get("default_foam_density_lb"), 0.0),
+                "median_sets_per_sqft_per_inch": round(foam_sets_per_sqft_per_inch, 8),
+                "median_units_per_sqft_per_inch": round(foam_units_per_sqft_per_inch, 6),
+                "foam_thickness_inches": round(foam_thickness_inches, 4) if foam_thickness_inches else 0.0,
+                "thickness_inches": round(foam_thickness_inches, 4) if package == "foam" and _is_insulation_scope(scope) else 0.0,
+                "yield_factor": round(foam_yield_factor, 4) if package == "foam" and _is_insulation_scope(scope) else 0.0,
+                "median_foam_yield": round(safe_number(sizing.get("median_foam_yield"), 0.0), 4),
                 "item_level_qty_per_sqft": round(item_qty_per_sqft, 6),
                 "item_level_evidence_count": item_evidence_count,
                 "editable_basis_sqft": round(editable_basis_sqft, 2),
@@ -2355,7 +2647,9 @@ def material_workbench_rows(
                 "editable_qty_per_sqft": round(editable_qty_per_sqft, 6),
                 "editable_default": round(editable_qty_per_sqft, 6),
                 "calculated_quantity": round(calculated_quantity, 2),
-                "unit": selected_item.get("unit") or sizing.get("unit") or spec.get("default_unit"),
+                "estimated_units": round(foam_estimated_units, 2) if package == "foam" and _is_insulation_scope(scope) else round(calculated_quantity, 2),
+                "estimated_sets": round(foam_estimated_sets, 4) if package == "foam" and _is_insulation_scope(scope) else 0.0,
+                "unit": sizing.get("unit") if package == "foam" and foam_quantity_model else selected_item.get("unit") or sizing.get("unit") or spec.get("default_unit"),
                 "current_unit_price": round(unit_price, 4) if unit_price else 0.0,
                 "current_price": round(unit_price, 4) if unit_price else 0.0,
                 "historical_cost_per_sqft": round(historical_cost_per_sqft, 4),
@@ -2406,9 +2700,13 @@ def labor_workbench_rows(
     historical_filters: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     area = _estimate_area(scope)
+    decisions = _decision_recommendation_lookup(data, historical_filters)
     rows: list[dict[str, Any]] = []
     for spec in _labor_specs_for_scope(scope):
         package = spec["package"]
+        decision_id = _labor_decision_id(package, scope)
+        decision_fields = ["days", "crew_size", "crew_selector_code", "daily_rate", "hourly_rate", "formula_mode"]
+        decision_meta = _decision_meta(decisions, decision_id, decision_fields)
         sizing = labor_sizing_distribution(data, package, historical_filters)
         hours_per_1000 = safe_number(sizing.get("median"), 0.0)
         evidence_count = int(safe_number(sizing.get("evidence_count"), 0))
@@ -2416,7 +2714,16 @@ def labor_workbench_rows(
         include = status == "yes"
         editable_hours_per_1000 = hours_per_1000
         calculated_hours = editable_hours_per_1000 * area / 1000 if include and area else 0.0
-        crew_size = int(safe_number(sizing.get("median_crew_size"), 4) or 4)
+        crew_size = int(safe_number(_decision_value(decisions, decision_id, "crew_size", sizing.get("median_crew_size")), 4) or 4)
+        hours_per_day = 10.0
+        default_days = safe_number(_decision_value(decisions, decision_id, "days", sizing.get("median_days")), 0.0)
+        if default_days <= 0 and calculated_hours > 0 and crew_size > 0:
+            default_days = calculated_hours / (crew_size * hours_per_day)
+        hourly_rate = safe_number(_decision_value(decisions, decision_id, "hourly_rate", sizing.get("median_hourly_rate")), 0.0) or hourly_rate
+        daily_rate = safe_number(_decision_value(decisions, decision_id, "daily_rate", sizing.get("median_daily_rate")), 0.0)
+        if daily_rate <= 0 and crew_size > 0:
+            daily_rate = hourly_rate * crew_size * hours_per_day
+        formula_mode = str(_decision_value(decisions, decision_id, "formula_mode", sizing.get("formula_mode")) or ("mixed_formula" if package.startswith("labor_") else "hours_based"))
         explanation = _labor_explanation(
             package=package,
             sizing=sizing,
@@ -2432,9 +2739,42 @@ def labor_workbench_rows(
                 "package_key": package,
                 "template_bucket": package,
                 "workbook_row": str(spec.get("workbook_row") or ""),
+                **decision_meta,
+                "recommended_decision_value": {
+                    "days": round(default_days, 4),
+                    "crew_size": crew_size,
+                    "daily_rate": round(daily_rate, 4),
+                    "hourly_rate": round(hourly_rate, 4),
+                    "formula_mode": formula_mode,
+                },
+                "editable_decision_value": {
+                    "days": round(default_days, 4),
+                    "crew_size": crew_size,
+                    "daily_rate": round(daily_rate, 4),
+                    "hourly_rate": round(hourly_rate, 4),
+                    "formula_mode": formula_mode,
+                },
+                "decision_values": {
+                    "days": round(default_days, 4),
+                    "crew_size": crew_size,
+                    "total_hours": round(calculated_hours, 2),
+                    "daily_rate": round(daily_rate, 4),
+                    "hourly_rate": round(hourly_rate, 4),
+                    "formula_mode": formula_mode,
+                },
+                "workbook_rows_controlled": str(spec.get("workbook_row") or ""),
+                "row_traceability": f"Estimate row {spec.get('workbook_row') or ''}",
+                "calculated_output": round(calculated_hours * hourly_rate, 2),
                 "suggested_by_notes_rules": status,
                 "historical_hours_per_1000_sqft": round(hours_per_1000, 4),
                 "historical_median": round(hours_per_1000, 4),
+                "days": round(default_days, 4),
+                "editable_days": round(default_days, 4),
+                "crew_people_selection": crew_size,
+                "daily_rate": round(daily_rate, 4),
+                "total_hours": round(calculated_hours, 2),
+                "hourly_rate": round(hourly_rate, 4),
+                "formula_mode": formula_mode,
                 "p25_hours_per_1000_sqft": round(safe_number(sizing.get("p25"), 0.0), 4),
                 "p75_hours_per_1000_sqft": round(safe_number(sizing.get("p75"), 0.0), 4),
                 "editable_hours_per_1000_sqft": round(editable_hours_per_1000, 4),
@@ -2799,6 +3139,13 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any]) -> dict[str, A
                 "item": first_nonblank(row.get("item_name"), row.get("package")),
                 "category": row.get("package_key"),
                 "quantity": safe_number(row.get("calculated_quantity"), 0.0),
+                "basis_sqft": safe_number(row.get("editable_basis_sqft"), 0.0),
+                "area_sqft": safe_number(row.get("editable_basis_sqft"), 0.0),
+                "thickness_inches": safe_number(row.get("thickness_inches"), 0.0),
+                "yield_factor": safe_number(row.get("yield_factor"), 0.0),
+                "estimated_units": safe_number(row.get("estimated_units"), 0.0),
+                "estimated_sets": safe_number(row.get("estimated_sets"), 0.0),
+                "selector_code": row.get("selector_code"),
                 "unit": row.get("unit"),
                 "unit_price": safe_number(row.get("current_unit_price"), 0.0),
                 "estimated_cost": safe_number(row.get("estimated_cost"), 0.0),

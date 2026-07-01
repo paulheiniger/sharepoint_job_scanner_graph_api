@@ -122,6 +122,12 @@ def sample_insulation_data() -> EstimatorData:
                     "total_hours": hrs_per_1000 * 2.5,
                     "hours_per_sqft": hrs_per_1000 / 1000,
                     "crew_size": 3,
+                    "crew_selector_code": 3,
+                    "days": (hrs_per_1000 * 2.5) / 30,
+                    "daily_rate": 1350,
+                    "hourly_rate": 45,
+                    "calculated_cost": hrs_per_1000 * 2.5 * 45,
+                    "formula_mode": "mixed_formula",
                 }
             )
     for idx, cost in enumerate([450, 475, 500, 525, 550], start=1):
@@ -599,6 +605,11 @@ def test_workbench_populates_common_editable_rows_from_relationship_tables() -> 
     assert labor_packages["labor_base"]["include"] is True
     assert labor_packages["labor_base"]["suggested_by_notes_rules"] == "yes"
     assert labor_packages["labor_base"]["historical_hours_per_1000_sqft"] == 4.5
+    assert labor_packages["labor_base"]["formula_mode"] == "mixed_formula"
+    assert labor_packages["labor_base"]["crew_people_selection"] == labor_packages["labor_base"]["crew_size"]
+    assert labor_packages["labor_base"]["total_hours"] == labor_packages["labor_base"]["calculated_hours"]
+    assert labor_packages["labor_base"]["hourly_rate"] == labor_packages["labor_base"]["labor_rate"]
+    assert labor_packages["labor_base"]["daily_rate"] > 0
     assert labor_packages["labor_base"]["source"] == "job_package_summary_full_corpus"
     assert "Used in 3 historical Roofing jobs" in labor_packages["labor_base"]["explanation"]
     assert labor_packages["labor_prep"]["include"] is True
@@ -651,6 +662,11 @@ def test_insulation_workbench_uses_insulation_filters_and_rows_only() -> None:
     assert labor["labor_traveling"]["suggested_by_notes_rules"] == "review"
     assert labor["labor_foam"]["editable_hours_per_1000_sqft"] > 0
     assert labor["labor_foam"]["calculated_hours"] > 0
+    assert labor["labor_foam"]["formula_mode"] == "mixed_formula"
+    assert labor["labor_foam"]["crew_people_selection"] == 3
+    assert labor["labor_foam"]["daily_rate"] == 1350
+    assert labor["labor_foam"]["hourly_rate"] == 45
+    assert labor["labor_foam"]["days"] > 0
 
     totals = recalculate_workbench_tables(workbench)
     assert sum(row["estimated_cost"] for row in totals["labor"] if row["include"]) > 0

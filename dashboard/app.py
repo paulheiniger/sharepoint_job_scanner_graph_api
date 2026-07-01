@@ -50,6 +50,7 @@ except ImportError:
     estimate_from_field_notes = None
 from jobscan.estimator.schemas import EstimatorAssumptions, EstimatorData
 from jobscan.estimator.evidence_export import write_estimator_evidence_export
+from jobscan.estimator import session_capture as estimator_sessions
 from jobscan.estimator.workbench import (
     append_edit_history,
     apply_historical_filter_update,
@@ -338,6 +339,24 @@ def safe_exception_text(exc: Exception) -> str:
         flags=re.IGNORECASE,
     )
     return text_value
+
+
+def capture_estimator_session_event(action: Any, *args: Any, **kwargs: Any) -> Any:
+    """Best-effort Estimating Assistant session capture.
+
+    Estimating should never fail because training-trail persistence is down, but
+    production support still gets a useful log trail when the DB write fails.
+    """
+
+    try:
+        return action(get_engine(), *args, **kwargs)
+    except Exception:
+        logger.exception("Estimator session capture failed")
+        return None
+
+
+def current_estimator_session_id() -> str:
+    return str(st.session_state.get("estimator_session_id") or "")
 
 
 DAILY_DISPATCH_TABLE_SQL = """
@@ -4068,6 +4087,22 @@ def estimator_prototype_page() -> None:
             field_state = st.text_input("State", value="", key="field_estimator_state")
     if st.button("Build Filled Estimate Template", key="generate_field_estimate_recommendation"):
         try:
+            session_id = capture_estimator_session_event(
+                estimator_sessions.create_estimator_session,
+                raw_input_notes=notes,
+                division="Repair" if resolved_estimate_type == ESTIMATE_TYPE_REPAIR else "",
+                template_type="repair" if resolved_estimate_type == ESTIMATE_TYPE_REPAIR else "",
+                job_name=field_job_name,
+                site_address=field_site_address,
+                input_source_type="manual",
+                photos_present=False,
+                source_file_ids=data.source_files_used,
+                estimate_status="PARSING",
+            )
+            if session_id:
+                st.session_state["estimator_session_id"] = session_id
+            else:
+                st.session_state.pop("estimator_session_id", None)
             if resolved_estimate_type == ESTIMATE_TYPE_REPAIR:
                 route, repair_result = route_estimator_request(
                     notes,
@@ -4084,10 +4119,29 @@ def estimator_prototype_page() -> None:
                 st.session_state["field_estimate_recommendation"] = None
                 st.session_state["field_estimate_recommendation_notes"] = notes
                 st.session_state.pop("integrated_repair_estimate_audit_paths", None)
+                if session_id:
+                    repair_payload = repair_result.to_dict()
+                    capture_estimator_session_event(
+                        estimator_sessions.update_estimator_session,
+                        session_id,
+                        division="Repair",
+                        template_type="repair",
+                        estimate_status="READY_TO_ESTIMATE",
+                    )
+                    capture_estimator_session_event(
+                        estimator_sessions.save_scope_interpretation,
+                        session_id,
+                        parsed_scope=repair_payload.get("parsed_scope") or repair_payload.get("scope") or repair_payload,
+                        deterministic_scope=repair_payload.get("parsed_scope") or {},
+                        assumptions=repair_payload.get("assumptions") or {},
+                        missing_questions=repair_payload.get("missing_info") or repair_payload.get("missing_questions") or [],
+                        confidence_by_field=repair_payload.get("confidence_by_field") or {},
+                        review_flags=repair_payload.get("review_flags") or [],
+                    )
             elif field_estimator_fn is None:
                 st.warning("Field notes estimator is not available in this deployment yet.")
             else:
-                st.session_state["field_estimate_recommendation"] = field_estimator_fn(
+                recommendation = field_estimator_fn(
                     notes,
                     {
                         "job_name": field_job_name,
@@ -4097,10 +4151,50 @@ def estimator_prototype_page() -> None:
                     },
                     data=field_notes_data,
                 )
+                st.session_state["field_estimate_recommendation"] = recommendation
                 st.session_state["field_estimate_route"] = resolved_estimate_type
                 st.session_state.pop("integrated_repair_estimate_result", None)
                 st.session_state["field_estimate_recommendation_notes"] = notes
                 st.session_state.pop("field_estimator_evidence_export_paths", None)
+                if session_id:
+                    parsed_scope = recommendation.parsed_fields or {}
+                    ai_debug = (getattr(recommendation, "debug", {}) or {}).get("ai_scope_interpreter") or {}
+                    ai_model = (
+                        parsed_scope.get("ai_model")
+                        or ai_debug.get("ai_model")
+                        or os.getenv("OPENAI_MODEL")
+                        or ""
+                    )
+                    capture_estimator_session_event(
+                        estimator_sessions.update_estimator_session,
+                        session_id,
+                        division=parsed_scope.get("division") or ("Insulation" if parsed_scope.get("template_type") == "insulation" else "Roofing"),
+                        template_type=parsed_scope.get("template_type") or ("insulation" if parsed_scope.get("division") == "Insulation" else "roofing"),
+                        customer=parsed_scope.get("customer_name") or parsed_scope.get("customer"),
+                        job_name=field_job_name or parsed_scope.get("job_name"),
+                        site_address=field_site_address or parsed_scope.get("site_address") or parsed_scope.get("address"),
+                        ai_model=ai_model,
+                        estimate_status=getattr(recommendation, "estimate_status", None) or parsed_scope.get("estimate_status"),
+                    )
+                    capture_estimator_session_event(
+                        estimator_sessions.save_scope_interpretation,
+                        session_id,
+                        parsed_scope=parsed_scope,
+                        deterministic_scope=ai_debug.get("deterministic_scope")
+                        or ai_debug.get("deterministic_parsed_scope")
+                        or parsed_scope,
+                        assumptions=parsed_scope.get("assumptions") or ai_debug.get("assumptions") or {},
+                        missing_questions=(
+                            getattr(recommendation, "required_questions", None)
+                            or parsed_scope.get("missing_questions")
+                            or parsed_scope.get("required_questions")
+                            or []
+                        ),
+                        confidence_by_field=parsed_scope.get("confidence_by_field")
+                        or (ai_debug.get("ai_parsed_scope") or {}).get("confidence_by_field")
+                        or {},
+                        review_flags=getattr(recommendation, "review_flags", None) or parsed_scope.get("review_flags") or [],
+                    )
         except Exception as err:
             logger.exception("Estimator mode failed")
             st.error("Estimator failed for this input.")
@@ -4369,6 +4463,24 @@ def estimator_prototype_page() -> None:
                         "reason": adder_notes,
                     }
                 )
+        session_id = current_estimator_session_id()
+        if session_id:
+            proposal_saved_key = f"estimator_session_proposal_saved_{session_id}_{historical_filters_key}"
+            if not st.session_state.get(proposal_saved_key):
+                proposal_id = capture_estimator_session_event(
+                    estimator_sessions.save_decision_proposal,
+                    session_id,
+                    proposed_decisions=estimator_sessions.proposed_decisions_from_workbench(filtered_default_workbench),
+                    template_type=str(filtered_default_workbench.get("scope", {}).get("template_type") or historical_filters.get("template_type") or ""),
+                    proposal_source="historical_defaults",
+                    evidence_summary={
+                        "historical_filters": historical_filters,
+                        "recommended_scope_rows": recommended_scope_rows,
+                        "totals": summarize_workbench_totals(filtered_default_workbench),
+                    },
+                )
+                if proposal_id:
+                    st.session_state[proposal_saved_key] = True
         with st.expander("Recommended scope packages from notes/rules", expanded=False):
             st.caption("These only set the initial Include checkbox. Historical quantities, hours, and prices come from company data.")
             if recommended_scope_rows:
@@ -4802,6 +4914,34 @@ def estimator_prototype_page() -> None:
                     )
                     edit_rows = build_edit_history_rows(feedback_baseline, edited_workbench, reason_map=reason_map)
                     feedback_path = append_edit_history(edit_rows)
+                    session_id = current_estimator_session_id()
+                    if session_id:
+                        capture_estimator_session_event(
+                            estimator_sessions.save_decision_edits,
+                            session_id,
+                            edit_rows,
+                            edited_by="estimator",
+                        )
+                        workbook_cell_writes = estimator_sessions.workbook_cell_writes_from_inputs(edited_workbook_inputs)
+                        final_id = capture_estimator_session_event(
+                            estimator_sessions.save_final_decisions,
+                            session_id,
+                            final_decisions=estimator_sessions.final_decisions_from_workbench(edited_workbench),
+                            calculated_outputs={
+                                "totals": totals,
+                                "draft_workbook_inputs": edited_workbook_inputs,
+                            },
+                            workbook_cell_writes=workbook_cell_writes,
+                            workbook_export_path=str(output_path),
+                        )
+                        if final_id:
+                            capture_estimator_session_event(
+                                estimator_sessions.save_session_artifact,
+                                session_id,
+                                artifact_type="workbook",
+                                artifact_path=str(output_path),
+                                artifact_json={"final_decision_id": final_id},
+                            )
                     st.session_state[workbook_path_key] = str(output_path)
                     st.session_state.pop(workbook_error_key, None)
                     st.success(f"Excel estimate draft created: {output_path}")
@@ -4857,6 +4997,35 @@ def estimator_prototype_page() -> None:
                     or {},
                     run_id=str(edited_workbench.get("estimate_id") or workbench_key),
                 )
+                session_id = current_estimator_session_id()
+                if session_id:
+                    edit_rows = build_edit_history_rows(feedback_baseline, edited_workbench, reason_map=reason_map)
+                    capture_estimator_session_event(
+                        estimator_sessions.save_decision_edits,
+                        session_id,
+                        edit_rows,
+                        edited_by="estimator",
+                    )
+                    edited_workbook_inputs_for_capture = workbench_to_draft_workbook_inputs(edited_workbench)
+                    final_id = capture_estimator_session_event(
+                        estimator_sessions.save_final_decisions,
+                        session_id,
+                        final_decisions=estimator_sessions.final_decisions_from_workbench(edited_workbench),
+                        calculated_outputs={
+                            "totals": totals,
+                            "draft_workbook_inputs": edited_workbook_inputs_for_capture,
+                            "review_package_path": str(package_path),
+                        },
+                        workbook_cell_writes=estimator_sessions.workbook_cell_writes_from_inputs(edited_workbook_inputs_for_capture),
+                        workbook_export_path=workbook_path_for_package,
+                    )
+                    capture_estimator_session_event(
+                        estimator_sessions.save_session_artifact,
+                        session_id,
+                        artifact_type="review_package",
+                        artifact_path=str(package_path),
+                        artifact_json={"final_decision_id": final_id, "workbook_export_error": workbook_error_for_package},
+                    )
                 st.session_state[f"workbench_review_package_path_{workbench_key}"] = str(package_path)
                 st.success(f"Estimator review package created: {package_path}")
                 if workbook_path_for_package:
@@ -4878,6 +5047,56 @@ def estimator_prototype_page() -> None:
                     mime="application/zip",
                     key=f"download_workbench_review_package_{workbench_key}",
                 )
+        st.markdown("**Session Review Package**")
+        session_id = current_estimator_session_id()
+        if session_id:
+            st.caption(f"Session ID: {session_id}")
+            if st.button("Export Session Review Package", key=f"export_estimator_session_review_package_{session_id}"):
+                try:
+                    edit_rows = build_edit_history_rows(feedback_baseline, edited_workbench, reason_map=reason_map)
+                    capture_estimator_session_event(
+                        estimator_sessions.save_decision_edits,
+                        session_id,
+                        edit_rows,
+                        edited_by="estimator",
+                    )
+                    edited_workbook_inputs_for_session = workbench_to_draft_workbook_inputs(edited_workbench)
+                    workbook_path_for_session = st.session_state.get(workbook_path_key)
+                    capture_estimator_session_event(
+                        estimator_sessions.save_final_decisions,
+                        session_id,
+                        final_decisions=estimator_sessions.final_decisions_from_workbench(edited_workbench),
+                        calculated_outputs={
+                            "totals": totals,
+                            "draft_workbook_inputs": edited_workbook_inputs_for_session,
+                        },
+                        workbook_cell_writes=estimator_sessions.workbook_cell_writes_from_inputs(edited_workbook_inputs_for_session),
+                        workbook_export_path=workbook_path_for_session,
+                    )
+                    session_package_path = estimator_sessions.export_estimator_session_package(
+                        get_engine(),
+                        session_id,
+                        DEFAULT_WORKBENCH_EXPORT_DIR / f"estimator_session_{session_id}.zip",
+                    )
+                    st.session_state[f"estimator_session_review_package_path_{session_id}"] = str(session_package_path)
+                    st.success(f"Estimator session review package created: {session_package_path}")
+                except Exception as exc:
+                    logger.exception("Estimator session review package export failed")
+                    st.error(f"Could not export session review package: {safe_exception_text(exc)}")
+            session_package_value = st.session_state.get(f"estimator_session_review_package_path_{session_id}")
+            if session_package_value:
+                session_package_path = Path(session_package_value)
+                if session_package_path.exists():
+                    st.caption(f"Local session package path: {session_package_path}")
+                    st.download_button(
+                        "Download Session Review Package",
+                        data=session_package_path.read_bytes(),
+                        file_name=session_package_path.name,
+                        mime="application/zip",
+                        key=f"download_estimator_session_review_package_{session_id}",
+                    )
+        else:
+            st.caption("Build a filled estimate template to start a persisted estimating session.")
         if debug_mode:
             with st.expander("Debug Evidence and Legacy Calibration", expanded=False):
                 st.dataframe(pd.DataFrame([field_recommendation.historical_calibration]), use_container_width=True, hide_index=True)

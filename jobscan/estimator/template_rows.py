@@ -669,10 +669,35 @@ def parse_document_content_row(row: dict[str, Any] | pd.Series, template_type: s
         "unit_price": None,
         "estimated_units": None,
         "estimated_cost": None,
+        "selector_code": None,
+        "resolved_item_name": selected_item_name,
+        "area_sqft": None,
+        "thickness_inches": None,
+        "yield_or_coverage": None,
+        "yield_factor": None,
+        "estimated_sets": None,
+        "foam_brand": None,
+        "foam_density_lb": None,
+        "units_per_sqft_per_inch": None,
+        "sets_per_sqft_per_inch": None,
+        "cost_per_sqft_per_inch": None,
+        "gal_per_100_sqft": None,
+        "gal_per_sqft": None,
+        "estimated_gallons": None,
+        "linear_ft": None,
+        "ft_per_unit": None,
+        "margin_pct": None,
+        "waste_margin_cell": None,
+        "quantity_cell_role": None,
+        "formula_model": None,
         "days": None,
         "crew_size": None,
         "total_hours": None,
         "daily_rate": None,
+        "crew_selector_code": None,
+        "hourly_rate": None,
+        "calculated_cost": None,
+        "formula_mode": None,
         "trips": None,
         "round_trip_miles": None,
         "cost_per_mile": None,
@@ -690,6 +715,50 @@ def parse_document_content_row(row: dict[str, Any] | pd.Series, template_type: s
         out["unit_price"] = numeric_at(cell_values, row_number, "E")
         out["estimated_units"] = numeric_at(cell_values, row_number, "G")
         out["estimated_cost"] = numeric_at(cell_values, row_number, "H")
+        if template_type == TEMPLATE_TYPE_INSULATION:
+            out["selector_code"] = numeric_at(cell_values, row_number, "A")
+            out["resolved_item_name"] = selected_item_name
+            if row_number in {19, 20, 21}:
+                out["area_sqft"] = numeric_at(cell_values, row_number, "C")
+                out["thickness_inches"] = numeric_at(cell_values, row_number, "D")
+                out["yield_or_coverage"] = numeric_at(cell_values, row_number, "F")
+                out["yield_factor"] = out["yield_or_coverage"]
+                out["estimated_units"] = numeric_at(cell_values, row_number, "G")
+                if out["estimated_units"] is not None:
+                    out["estimated_sets"] = out["estimated_units"] / 1000
+                density_match = re.search(r"(\d+(?:\.\d+)?)\s*lb", str(out["resolved_item_name"] or ""), flags=re.IGNORECASE)
+                if density_match:
+                    out["foam_density_lb"] = float(density_match.group(1))
+                brand = re.split(r"\s+\d+(?:\.\d+)?\s*lb", str(out["resolved_item_name"] or ""), flags=re.IGNORECASE)[0].strip(" .-")
+                out["foam_brand"] = brand.split()[0] if brand else out["resolved_item_name"]
+                if out["area_sqft"] and out["thickness_inches"] and out["estimated_units"]:
+                    out["units_per_sqft_per_inch"] = out["estimated_units"] / (out["area_sqft"] * out["thickness_inches"])
+                    out["sets_per_sqft_per_inch"] = out["estimated_sets"] / (out["area_sqft"] * out["thickness_inches"]) if out["estimated_sets"] is not None else None
+                    if out["estimated_cost"]:
+                        out["cost_per_sqft_per_inch"] = out["estimated_cost"] / (out["area_sqft"] * out["thickness_inches"])
+                out["formula_model"] = "foam_sets_from_area_thickness_yield"
+                out["quantity_cell_role"] = "area_sqft"
+            elif row_number in {30, 31, 32}:
+                out["area_sqft"] = numeric_at(cell_values, row_number, "C")
+                out["gal_per_100_sqft"] = numeric_at(cell_values, row_number, "D")
+                if out["gal_per_100_sqft"] is not None:
+                    out["gal_per_sqft"] = out["gal_per_100_sqft"] / 100
+                out["estimated_gallons"] = numeric_at(cell_values, row_number, "G")
+                out["formula_model"] = "coating_gallons_from_area_rate_waste"
+                out["waste_margin_cell"] = "A34"
+                out["quantity_cell_role"] = "area_sqft"
+            elif row_number in {41, 43}:
+                out["linear_ft"] = numeric_at(cell_values, row_number, "C")
+                out["ft_per_unit"] = numeric_at(cell_values, row_number, "D")
+                out["formula_model"] = "sealant_units_from_linear_feet_coverage"
+                out["quantity_cell_role"] = "linear_ft"
+            elif row_number in {47, 48}:
+                out["margin_pct"] = numeric_at(cell_values, row_number, "F")
+                out["formula_model"] = "equipment_cost_with_margin"
+                out["quantity_cell_role"] = "period"
+            elif row_number == 37:
+                out["formula_model"] = "thinner_units_from_coating_gallons"
+                out["quantity_cell_role"] = "estimated_units"
     if bucket in {"sales_inspection_trips", "truck_expense"}:
         out["trips"] = numeric_at(cell_values, row_number, "B")
         out["round_trip_miles"] = numeric_at(cell_values, row_number, "C")
@@ -698,26 +767,40 @@ def parse_document_content_row(row: dict[str, Any] | pd.Series, template_type: s
     if template_type == TEMPLATE_TYPE_ROOFING and 116 <= row_number <= 134:
         out["days"] = numeric_at(cell_values, row_number, "B")
         out["crew_size"] = numeric_at(cell_values, row_number, "C")
+        out["crew_selector_code"] = out["crew_size"]
         out["total_hours"] = numeric_at(cell_values, row_number, "D")
+        out["hourly_rate"] = numeric_at(cell_values, row_number, "G")
         out["estimated_cost"] = numeric_at(cell_values, row_number, "H")
+        out["calculated_cost"] = out["estimated_cost"]
         out["daily_rate"] = numeric_at(cell_values, row_number, "J")
+        out["formula_mode"] = "mixed_formula"
     if template_type == TEMPLATE_TYPE_INSULATION and row_number in {78, 80, 82, 84, 86, 88, 90, 92}:
         out["days"] = numeric_at(cell_values, row_number, "B")
         out["crew_size"] = numeric_at(cell_values, row_number, "C")
+        out["crew_selector_code"] = out["crew_size"]
         out["total_hours"] = numeric_at(cell_values, row_number, "D")
+        out["hourly_rate"] = numeric_at(cell_values, row_number, "G")
         out["estimated_cost"] = numeric_at(cell_values, row_number, "H")
+        out["calculated_cost"] = out["estimated_cost"]
         out["daily_rate"] = numeric_at(cell_values, row_number, "J")
+        out["formula_mode"] = "mixed_formula"
     if (template_type == TEMPLATE_TYPE_ROOFING and row_number in {137, 139}) or (template_type == TEMPLATE_TYPE_INSULATION and row_number in {95, 97}):
         out["days"] = numeric_at(cell_values, row_number, "C")
         out["total_hours"] = numeric_at(cell_values, row_number, "C")
         out["crew_size"] = numeric_at(cell_values, row_number, "E")
         out["unit_price"] = numeric_at(cell_values, row_number, "G")
+        out["hourly_rate"] = out["unit_price"]
         out["estimated_cost"] = numeric_at(cell_values, row_number, "H")
+        out["calculated_cost"] = out["estimated_cost"]
+        out["formula_mode"] = "hours_based"
     if template_type == TEMPLATE_TYPE_INSULATION and row_number == 100:
         out["days"] = numeric_at(cell_values, row_number, "C")
         out["crew_size"] = numeric_at(cell_values, row_number, "E")
         out["unit_price"] = numeric_at(cell_values, row_number, "G")
+        out["daily_rate"] = out["unit_price"]
         out["estimated_cost"] = numeric_at(cell_values, row_number, "H")
+        out["calculated_cost"] = out["estimated_cost"]
+        out["formula_mode"] = "days_based"
     if row_number == 154:
         out["warranty_years"] = numeric_at(cell_values, row_number, "C")
         out["quantity"] = numeric_at(cell_values, row_number, "E")
