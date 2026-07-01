@@ -472,7 +472,7 @@ def test_workbench_populates_common_editable_rows_from_relationship_tables() -> 
     assert labor_packages["labor_base"]["historical_hours_per_1000_sqft"] == 4.5
     assert labor_packages["labor_base"]["source"] == "job_package_summary_full_corpus"
     assert "Used in 3 historical Roofing jobs" in labor_packages["labor_base"]["explanation"]
-    assert labor_packages["labor_prep"]["include"] is False
+    assert labor_packages["labor_prep"]["include"] is True
     assert labor_packages["labor_prep"]["historical_hours_per_1000_sqft"] == 3
     assert labor_packages["labor_prep"]["editable_hours_per_1000_sqft"] == 3
     assert not any("AI estimated" in str(row) or "AI chose" in str(row) or "Automatically determined" in str(row) for row in workbench["materials"] + workbench["labor"])
@@ -547,6 +547,32 @@ def test_roof_coating_item_selection_rejects_sealant_tube_for_main_coating() -> 
     assert any("Sealant" in str(item.get("item_name")) for item in coating["top_rejected_item_reasons"])
 
 
+def test_roof_coating_item_selection_does_not_fall_back_to_sealant_when_only_bad_candidate_exists() -> None:
+    data = EstimatorData(
+        pricing_catalog=pd.DataFrame(
+            [
+                {
+                    "pricing_item_id": "BAD",
+                    "product_name": "Silicone Sealant Flashing Grade - 11 oz tube",
+                    "category": "Sealant",
+                    "unit_price": 8,
+                    "unit_of_measure": "tube",
+                    "is_current": True,
+                },
+            ]
+        )
+    )
+
+    workbench = build_estimating_workbench(sample_recommendation(), data)
+    coating = next(row for row in workbench["materials"] if row["package_key"] == "coating")
+
+    assert coating["item_name"] == "Manual roof coating item"
+    assert coating["item_source"] == "manual"
+    assert "Sealant" not in coating["item_name"]
+    assert "sealant/tube candidates were rejected" in coating["selected_item_reason"]
+    assert any("Sealant" in str(item.get("item_name")) for item in coating["top_rejected_item_reasons"])
+
+
 def test_detail_buckets_can_select_sealant_products() -> None:
     data = EstimatorData(
         pricing_catalog=pd.DataFrame(
@@ -590,6 +616,59 @@ def test_historical_filters_populate_from_parsed_scope_values() -> None:
     empty_source = historical_filters_from_scope({"net_sqft": 10000})
     assert empty_source["source_year"] is None
     assert empty_source["warranty_years"] is None
+
+
+def test_test3_scope_populates_historical_filters_and_partial_primer_basis() -> None:
+    recommendation = sample_recommendation()
+    recommendation.parsed_fields.update(
+        {
+            "notes": (
+                "Commercial metal roof. Roof measures 140 ft by 90 ft. Overall roof is in good condition. "
+                "Only the south edge has oxidation and rusted fasteners. Approximately twenty percent of the roof "
+                "requires primer before coating. Few penetrations. Easy access. Customer requests a 10-year silicone restoration."
+            ),
+            "project_type": "roof coating",
+            "substrate": "metal",
+            "estimated_sqft": 12600,
+            "gross_area_sqft": 12600,
+            "deduction_area_sqft": 0,
+            "net_area_sqft": 12600,
+            "warranty_target_years": 10,
+            "coating_type": "silicone",
+            "roof_condition": "good",
+            "access_complexity": "low",
+            "penetrations_complexity": "low",
+        }
+    )
+
+    workbench = build_estimating_workbench(recommendation, sample_data())
+    filters = workbench["historical_filters"]
+    primer = next(row for row in workbench["materials"] if row["package_key"] == "primer")
+    labor = {row["package_key"]: row for row in workbench["labor"]}
+    totals = recalculate_workbench_tables(workbench)
+
+    assert filters["coating_type"] == "silicone"
+    assert filters["warranty_years"] == 10
+    assert filters["roof_condition"] == "good"
+    assert filters["access_complexity"] == "low"
+    assert filters["penetrations_complexity"] == "low"
+    assert filters["source_year"] is None
+    assert primer["suggested_by_notes_rules"] == "review"
+    assert primer["include"] is False
+    assert primer["editable_basis_sqft"] == 2520
+    assert primer["estimated_cost"] == 0
+    assert labor["labor_prep"]["include"] is True
+    assert labor["labor_base"]["include"] is True
+    assert labor["labor_top_coat"]["include"] is True
+    assert labor["labor_cleanup"]["include"] is True
+    assert labor["labor_loading"]["include"] is True
+    assert labor["labor_seam_sealer"]["include"] is False
+    primer["include"] = True
+    recalculated = recalculate_workbench_tables({"scope": workbench["scope"], "materials": [primer], "labor": [], "adders": []})
+    assert recalculated["materials"][0]["calculated_quantity"] == 2.52
+    assert recalculated["materials"][0]["estimated_cost"] == 693
+    assert totals["scope"]["net_sqft"] == 12600
+    assert sum(row["estimated_cost"] for row in totals["labor"] if row["include"]) > 0
 
 
 def test_primer_basis_sqft_can_be_lower_than_net_without_changing_scope() -> None:
@@ -770,15 +849,15 @@ def test_unchecked_rows_keep_defaults_but_do_not_contribute_until_included() -> 
     assert material_packages["primer"]["include"] is False
     assert material_packages["primer"]["editable_qty_per_sqft"] == 0.001
     assert material_packages["primer"]["estimated_cost"] == 0
-    assert labor_packages["labor_prep"]["include"] is False
-    assert labor_packages["labor_prep"]["editable_hours_per_1000_sqft"] == 3
-    assert labor_packages["labor_prep"]["estimated_cost"] == 0
+    assert labor_packages["labor_prime"]["include"] is False
+    assert labor_packages["labor_prime"]["estimated_cost"] == 0
 
     totals = recalculate_workbench_tables(workbench)
     total_cost = sum(row["estimated_cost"] for row in totals["materials"] if row["include"])
     total_labor = sum(row["estimated_cost"] for row in totals["labor"] if row["include"])
     assert total_cost == material_packages["coating"]["estimated_cost"]
-    assert total_labor == labor_packages["labor_base"]["estimated_cost"]
+    assert total_labor > 0
+    assert total_labor >= labor_packages["labor_base"]["estimated_cost"]
 
 
 def test_missing_current_price_uses_historical_cost_default_when_included() -> None:

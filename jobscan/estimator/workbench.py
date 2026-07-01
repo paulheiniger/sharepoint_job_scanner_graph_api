@@ -116,6 +116,68 @@ PACKAGE_ALIASES: dict[str, set[str]] = {
     "misc": {"misc", "miscellaneous", "estimate_adder", "estimate_adder_no_markup", "misc_materials", "misc_equipment", "misc_insurance"},
 }
 
+NUMBER_WORDS: dict[str, float] = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+    "thirteen": 13,
+    "fourteen": 14,
+    "fifteen": 15,
+    "sixteen": 16,
+    "seventeen": 17,
+    "eighteen": 18,
+    "nineteen": 19,
+    "twenty": 20,
+    "thirty": 30,
+    "forty": 40,
+    "fifty": 50,
+    "sixty": 60,
+    "seventy": 70,
+    "eighty": 80,
+    "ninety": 90,
+    "hundred": 100,
+}
+
+BASELINE_COATING_LABOR = {"labor_prep", "labor_base", "labor_top_coat", "labor_cleanup", "labor_loading"}
+
+COATING_REQUIRED_POSITIVE_SIGNALS = [
+    "roof coating",
+    "coating",
+    "high solids",
+    "gaf high solids",
+    "gaco",
+    "ge enduris",
+    "enduris",
+    "unisil",
+]
+
+COATING_UNIT_SIGNALS = ["55 gal", "5 gal", "gallon", "gal", "pail", "bucket", "drum"]
+
+COATING_FORBIDDEN_SIGNALS = [
+    "sealant",
+    "caulk",
+    "flashing grade",
+    "sausage",
+    "tube",
+    "cartridge",
+    " oz",
+    "oz ",
+    "fabric",
+    "fastener",
+    "screw",
+    "washer",
+    "plate",
+]
+
 
 def safe_number(value: Any, default: float = 0.0) -> float:
     number = to_float(value)
@@ -135,6 +197,11 @@ def _rec_value(recommendation: Any, key: str, default: Any = None) -> Any:
     if isinstance(recommendation, dict):
         return recommendation.get(key, default)
     return getattr(recommendation, key, default)
+
+
+def _parsed_fields(recommendation: Any) -> dict[str, Any]:
+    value = _rec_value(recommendation, "parsed_fields", {}) or {}
+    return value if isinstance(value, dict) else {}
 
 
 def _records(value: Any) -> list[dict[str, Any]]:
@@ -530,7 +597,9 @@ def _scope_from_recommendation(recommendation: Any) -> dict[str, Any]:
         "coating_type": first_nonblank(parsed.get("coating_type"), ""),
         "roof_condition": first_nonblank(parsed.get("roof_condition"), ""),
         "access_complexity": first_nonblank(parsed.get("access_complexity"), ""),
-        "penetrations_complexity": first_nonblank(parsed.get("penetrations_complexity"), ""),
+        "penetrations_complexity": first_nonblank(parsed.get("penetrations_complexity"), parsed.get("penetration_complexity"), ""),
+        "penetration_count": parsed.get("penetration_count"),
+        "notes": first_nonblank(parsed.get("notes"), parsed.get("raw_notes"), parsed.get("field_notes"), parsed.get("input_notes"), ""),
     }
 
 
@@ -545,7 +614,7 @@ def _plan_included_package(recommendation: Any, package: str) -> bool:
     return False
 
 
-def _package_suggestion_status(recommendation: Any, package: str) -> str:
+def _package_suggestion_status(recommendation: Any, package: str, scope: dict[str, Any] | None = None) -> str:
     package_text = _normalized(package)
     for row in _records(_rec_value(recommendation, "material_plan", [])):
         text = _normalized(" ".join(str(row.get(key) or "") for key in ("category", "package", "item", "notes")))
@@ -553,8 +622,18 @@ def _package_suggestion_status(recommendation: Any, package: str) -> str:
             if row.get("included_in_total") is False or row.get("needs_review") is True or row.get("review_required") is True:
                 return "review"
             return "yes"
+    notes = _scope_note_text(recommendation, scope)
+    note_text = _normalized(notes)
     if package == "coating" and first_nonblank((_rec_value(recommendation, "parsed_fields", {}) or {}).get("coating_type")):
         return "yes"
+    if package == "primer" and _has_positive_note_signal(note_text, ["primer", "prime", "priming", "rust", "oxidation", "adhesion"]):
+        return "review"
+    if package == "seam_treatment" and _has_positive_note_signal(note_text, ["open seam", "open seams", "seam repair", "failed seam", "separate", "separating"]):
+        return "review"
+    if package == "fastener_treatment" and _has_positive_note_signal(note_text, ["fastener", "fasteners", "screw", "screws", "exposed fastener"]):
+        return "review"
+    if package == "caulk_detail" and _has_positive_note_signal(note_text, ["curb", "penetration", "pipe boot", "pitch pocket", "detail", "caulk", "sealant"]):
+        return "review"
     return "no"
 
 
@@ -566,7 +645,19 @@ def _plan_included_labor(recommendation: Any, package: str) -> bool:
     return False
 
 
-def _labor_suggestion_status(recommendation: Any, package: str) -> str:
+def _labor_suggestion_status(recommendation: Any, package: str, scope: dict[str, Any] | None = None) -> str:
+    notes = _scope_note_text(recommendation, scope)
+    note_text = _normalized(notes)
+    if scope is not None and package in BASELINE_COATING_LABOR and _is_coating_scope(scope, notes):
+        return "yes"
+    if package == "labor_prime":
+        return "review" if _has_positive_note_signal(note_text, ["primer", "prime", "priming", "rust", "oxidation", "adhesion"]) else "no"
+    if package == "labor_seam_sealer":
+        return "review" if _has_positive_note_signal(note_text, ["open seam", "open seams", "seam repair", "failed seam", "separate", "separating"]) else "no"
+    if package == "labor_details":
+        return "review" if _has_positive_note_signal(note_text, ["curb", "penetration", "pipe boot", "pitch pocket", "detail"]) else "no"
+    if package == "labor_caulk":
+        return "review" if _has_positive_note_signal(note_text, ["caulk", "sealant", "detail"]) else "no"
     for row in _records(_rec_value(recommendation, "labor_plan", [])):
         task = str(row.get("task") or row.get("labor_package") or "")
         if task == package:
@@ -1162,6 +1253,127 @@ def _contains_any_text(text: str, terms: list[str]) -> bool:
     return any(term and term in normalized for term in terms)
 
 
+def _number_token_value(value: str | None) -> float | None:
+    if not value:
+        return None
+    text = _normalized(value).replace(",", "")
+    number = optional_number(text)
+    if number is not None:
+        return number
+    if text in NUMBER_WORDS:
+        return NUMBER_WORDS[text]
+    parts = [part for part in re.split(r"[\s-]+", text) if part]
+    if not parts:
+        return None
+    total = 0.0
+    for part in parts:
+        if part not in NUMBER_WORDS:
+            return None
+        total += NUMBER_WORDS[part]
+    return total or None
+
+
+def _scope_note_text(recommendation: Any | None, scope: dict[str, Any] | None = None) -> str:
+    scope = scope or {}
+    parsed = _parsed_fields(recommendation) if recommendation is not None else {}
+    return str(
+        first_nonblank(
+            scope.get("notes"),
+            scope.get("raw_notes"),
+            parsed.get("notes"),
+            parsed.get("raw_notes"),
+            parsed.get("field_notes"),
+            parsed.get("input_notes"),
+            "",
+        )
+        or ""
+    )
+
+
+def _is_coating_scope(scope: dict[str, Any], notes: str = "") -> bool:
+    project_type = _normalized(scope.get("project_type"))
+    coating_type = _normalized(scope.get("coating_type"))
+    text = _normalized(notes)
+    return bool(
+        coating_type
+        or "coating" in project_type
+        or "restoration" in project_type
+        or "coating" in text
+        or "restoration" in text
+        or "restore" in text
+    )
+
+
+def _partial_primer_basis_sqft(notes: str, area: float) -> float:
+    if not notes or area <= 0:
+        return 0.0
+    text = _normalized(notes)
+    if not re.search(r"\b(primer|prime|priming)\b", text):
+        return 0.0
+
+    number_word_pattern = (
+        r"(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|"
+        r"fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|"
+        r"eighty|ninety)(?:[-\s](?:one|two|three|four|five|six|seven|eight|nine))?"
+    )
+    numeric_or_word = rf"(?:\d+(?:\.\d+)?|{number_word_pattern})"
+    for match in re.finditer(rf"(?:approximately|about|around|roughly)?\s*(?P<value>{numeric_or_word})\s*(?:%|percent)\b", text):
+        window = text[max(0, match.start() - 120) : min(len(text), match.end() + 120)]
+        if not re.search(r"\b(primer|prime|priming)\b", window):
+            continue
+        percent = _number_token_value(match.group("value"))
+        if percent is not None and 0 < percent <= 100:
+            return round(area * percent / 100, 2)
+
+    percent_patterns = [
+        rf"(?:approximately|about|around|roughly)?\s*(?P<value>{numeric_or_word})\s*(?:%|percent)\b.{0,100}\b(?:primer|prime|priming)\b",
+        rf"\b(?:primer|prime|priming)\b.{0,100}(?:approximately|about|around|roughly)?\s*(?P<value>{numeric_or_word})\s*(?:%|percent)\b",
+    ]
+    for pattern in percent_patterns:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        percent = _number_token_value(match.group("value"))
+        if percent is not None and 0 < percent <= 100:
+            return round(area * percent / 100, 2)
+
+    sqft_patterns = [
+        r"\b(?:primer|prime|priming)\b.{0,60}(?P<value>\d[\d,]*(?:\.\d+)?)\s*(?:sq\s*ft|sqft|square feet)\b",
+        r"(?P<value>\d[\d,]*(?:\.\d+)?)\s*(?:sq\s*ft|sqft|square feet)\b.{0,60}\b(?:primer|prime|priming)\b",
+    ]
+    for pattern in sqft_patterns:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        sqft = _number_token_value(match.group("value"))
+        if sqft is not None and sqft > 0:
+            return round(min(sqft, area), 2)
+    return 0.0
+
+
+def _has_positive_note_signal(notes: str, terms: list[str]) -> bool:
+    text = _normalized(notes)
+    return any(term in text for term in terms)
+
+
+def _is_forbidden_coating_option(option: dict[str, Any]) -> bool:
+    text = _normalized(" ".join(str(option.get(key) or "") for key in ("item_name", "unit", "price_basis", "category")))
+    return _contains_any_text(f" {text} ", COATING_FORBIDDEN_SIGNALS)
+
+
+def _is_valid_coating_option(option: dict[str, Any]) -> bool:
+    text = _normalized(" ".join(str(option.get(key) or "") for key in ("item_name", "unit", "price_basis", "category")))
+    if _is_forbidden_coating_option(option):
+        return False
+    return _contains_any_text(text, COATING_REQUIRED_POSITIVE_SIGNALS) and _contains_any_text(text, COATING_UNIT_SIGNALS)
+
+
+def _is_selectable_package_item(package: str, option: dict[str, Any], scope: dict[str, Any]) -> bool:
+    if package != "coating":
+        return True
+    return _is_valid_coating_option(option)
+
+
 def _package_item_fit_details(package: str, option: dict[str, Any], scope: dict[str, Any]) -> tuple[float, list[str]]:
     """Score whether an item belongs in a template bucket.
 
@@ -1179,13 +1391,13 @@ def _package_item_fit_details(package: str, option: dict[str, Any], scope: dict[
         reasons.append(f"matches coating type {coating_type}")
 
     if package == "coating":
-        if _contains_any_text(combined, ["roof coating", "coating", "high solids", "gaco", "gaf", "ge enduris", "enduris", "unisil"]):
+        if _contains_any_text(combined, COATING_REQUIRED_POSITIVE_SIGNALS):
             score += 160
             reasons.append("roof coating product signal")
-        if _contains_any_text(combined, ["55 gal", "5 gal", "gallon", "gal", "pail", "drum", "bucket"]):
+        if _contains_any_text(combined, COATING_UNIT_SIGNALS):
             score += 120
             reasons.append("coating unit/package signal")
-        if _contains_any_text(combined, ["sealant", "caulk", "flashing grade", "sausage", "tube", "cartridge", "detail", "fabric", "fastener", "screw", "washer", "plate", "seam"]):
+        if _contains_any_text(combined, COATING_FORBIDDEN_SIGNALS + ["detail", "seam"]):
             score -= 5000
             reasons.append("rejected as coating: sealant/detail/fastener signal")
         if _contains_any_text(combined, ["11 oz", "10 oz", "20 oz", "oz", "tube", "sausage", "cartridge"]):
@@ -1326,32 +1538,98 @@ def _select_material_item(
                 reasons.append("matches parsed scope wording")
             scored.append((score, option, reasons))
         scored.sort(key=lambda item: (item[0], -safe_number(item[1].get("unit_price"), 0)), reverse=True)
-        selected = dict(scored[0][1])
+        selectable = [item for item in scored if _is_selectable_package_item(package, item[1], scope)]
+        if package == "coating" and not selectable:
+            bad_reasons = [
+                {
+                    "item_name": option.get("item_name"),
+                    "score": round(float(score), 2),
+                    "reason": "; ".join(reasons),
+                }
+                for score, option, reasons in scored[:6]
+            ]
+            if historical_options:
+                historical_scored = []
+                for option in historical_options:
+                    score, reasons = _package_item_fit_details(package, option, scope)
+                    historical_scored.append((score, option, reasons))
+                historical_scored.sort(key=lambda item: (item[0], safe_number(item[1].get("evidence_count"), 0)), reverse=True)
+                historical_selectable = [item for item in historical_scored if _is_selectable_package_item(package, item[1], scope)]
+                if historical_selectable:
+                    selected = dict(historical_selectable[0][1])
+                    selected["unit_price"] = 0.0
+                    selected["item_source"] = "historical_most_common_item" if safe_number(selected.get("median_qty_per_sqft"), 0) > 0 else "historical_cost_default"
+                    selected["item_median_qty_per_sqft"] = selected.get("median_qty_per_sqft", 0.0)
+                    selected["item_median_cost_per_sqft"] = selected.get("median_cost_per_sqft", 0.0)
+                    selected["item_evidence_count"] = selected.get("evidence_count", 0)
+                    selected["selected_item_reason"] = "Selected from historical roof coating usage because no suitable current pricing item matched."
+                    selected["selected_item_score"] = round(float(historical_selectable[0][0]), 2)
+                    selected["top_rejected_item_reasons"] = bad_reasons
+                    return selected
+            return {
+                "item_name": "Manual roof coating item",
+                "unit": default_unit,
+                "unit_price": 0.0,
+                "item_source": "manual",
+                "item_median_qty_per_sqft": 0.0,
+                "item_median_cost_per_sqft": 0.0,
+                "item_evidence_count": 0,
+                "selected_item_reason": "No suitable roof coating pricing item matched; sealant/tube candidates were rejected for the main coating row.",
+                "selected_item_score": 0.0,
+                "top_rejected_item_reasons": bad_reasons,
+            }
+        selected_tuple = selectable[0] if selectable else scored[0]
+        selected = dict(selected_tuple[1])
         selected["item_source"] = "current_pricing_plus_historical_usage" if _normalized(selected.get("item_name")) in historical_by_name else "current_pricing"
-        selected["selected_item_reason"] = "; ".join(scored[0][2])
-        selected["selected_item_score"] = round(float(scored[0][0]), 2)
+        selected["selected_item_reason"] = "; ".join(selected_tuple[2])
+        selected["selected_item_score"] = round(float(selected_tuple[0]), 2)
         selected["top_rejected_item_reasons"] = [
             {
                 "item_name": option.get("item_name"),
                 "score": round(float(score), 2),
                 "reason": "; ".join(reasons),
             }
-            for score, option, reasons in scored[1:6]
+            for score, option, reasons in scored
+            if option is not selected_tuple[1]
         ]
+        selected["top_rejected_item_reasons"] = selected["top_rejected_item_reasons"][:5]
         historical = historical_by_name.get(_normalized(selected.get("item_name")), {})
         selected["item_median_qty_per_sqft"] = historical.get("median_qty_per_sqft", 0.0)
         selected["item_median_cost_per_sqft"] = historical.get("median_cost_per_sqft", 0.0)
         selected["item_evidence_count"] = historical.get("evidence_count", 0)
         return selected
     if historical_options:
-        selected = dict(historical_options[0])
+        historical_scored = []
+        for option in historical_options:
+            score, reasons = _package_item_fit_details(package, option, scope)
+            historical_scored.append((score, option, reasons))
+        historical_scored.sort(key=lambda item: (item[0], safe_number(item[1].get("evidence_count"), 0)), reverse=True)
+        selectable = [item for item in historical_scored if _is_selectable_package_item(package, item[1], scope)]
+        if package == "coating" and not selectable:
+            return {
+                "item_name": "Manual roof coating item",
+                "unit": default_unit,
+                "unit_price": 0.0,
+                "item_source": "manual",
+                "item_median_qty_per_sqft": 0.0,
+                "item_median_cost_per_sqft": 0.0,
+                "item_evidence_count": 0,
+                "selected_item_reason": "No suitable historical roof coating item matched; manual item review required.",
+                "selected_item_score": 0.0,
+                "top_rejected_item_reasons": [
+                    {"item_name": option.get("item_name"), "score": round(float(score), 2), "reason": "; ".join(reasons)}
+                    for score, option, reasons in historical_scored[:5]
+                ],
+            }
+        selected_tuple = selectable[0] if selectable else historical_scored[0]
+        selected = dict(selected_tuple[1])
         selected["unit_price"] = 0.0
         selected["item_source"] = "historical_most_common_item" if safe_number(selected.get("median_qty_per_sqft"), 0) > 0 else "historical_cost_default"
         selected["item_median_qty_per_sqft"] = selected.get("median_qty_per_sqft", 0.0)
         selected["item_median_cost_per_sqft"] = selected.get("median_cost_per_sqft", 0.0)
         selected["item_evidence_count"] = selected.get("evidence_count", 0)
         selected["selected_item_reason"] = "Selected from historical package usage because no current pricing item matched."
-        selected["selected_item_score"] = 0.0
+        selected["selected_item_score"] = round(float(selected_tuple[0]), 2)
         selected["top_rejected_item_reasons"] = []
         return selected
     return {
@@ -1576,6 +1854,7 @@ def material_workbench_rows(
     historical_filters: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     area = _estimate_area(scope)
+    notes = _scope_note_text(recommendation, scope)
     pricing = _frame(data, "pricing_catalog")
     if pricing.empty:
         pricing = _frame(data, "pricing")
@@ -1598,16 +1877,19 @@ def material_workbench_rows(
         evidence_count = int(safe_number(sizing.get("evidence_count"), 0))
         unit_price = safe_number(selected_item.get("unit_price"), 0.0)
         price_source = str(selected_item.get("item_name") or "")
-        status = _package_suggestion_status(recommendation, package)
+        status = _package_suggestion_status(recommendation, package, scope)
         include = status == "yes"
         if package == "coating" and scope.get("coating_type"):
             status = "yes"
             include = True
         editable_qty_per_sqft = qty_per_sqft
+        partial_basis_sqft = _partial_primer_basis_sqft(notes, area) if package == "primer" else 0.0
         if include:
-            editable_basis_sqft = area
+            editable_basis_sqft = partial_basis_sqft if partial_basis_sqft > 0 else area
         elif package == "coating":
             editable_basis_sqft = area
+        elif partial_basis_sqft > 0:
+            editable_basis_sqft = partial_basis_sqft
         else:
             editable_basis_sqft = 0.0
         calculated_quantity = editable_qty_per_sqft * editable_basis_sqft if include and editable_basis_sqft else 0.0
@@ -1728,7 +2010,7 @@ def labor_workbench_rows(
         sizing = labor_sizing_distribution(data, package, historical_filters)
         hours_per_1000 = safe_number(sizing.get("median"), 0.0)
         evidence_count = int(safe_number(sizing.get("evidence_count"), 0))
-        status = _labor_suggestion_status(recommendation, package)
+        status = _labor_suggestion_status(recommendation, package, scope)
         include = status == "yes"
         editable_hours_per_1000 = hours_per_1000
         calculated_hours = editable_hours_per_1000 * area / 1000 if include and area else 0.0

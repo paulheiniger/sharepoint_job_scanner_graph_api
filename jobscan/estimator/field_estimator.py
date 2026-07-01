@@ -2942,6 +2942,7 @@ def parsed_fields_for_result(
         if value is not None:
             parsed_fields[area_field] = value
     for extra_field in (
+        "notes",
         "condition_detail_flags",
         "penetration_count",
         "roof_condition_raw_phrase",
@@ -3182,17 +3183,20 @@ def estimate_from_field_notes(
     review_flags.extend(material_review_flags)
     review_flags.extend(labor_review_flags)
     review_flags.extend(labor_sanity_flags)
-    if any("Historical labor calibration was incomplete" in str(row.get("notes") or "") for row in labor_plan):
+    labor_evidence_available = not data.relationship_labor_rates.empty or not data.job_package_summary.empty
+    if any("Historical labor calibration was incomplete" in str(row.get("notes") or "") for row in labor_plan) and not labor_evidence_available:
         review_flags.append("Historical labor calibration was incomplete for one or more tasks.")
-    if any("Historical labor calibration unavailable" in str(row.get("notes") or "") for row in labor_plan):
+    if any("Historical labor calibration unavailable" in str(row.get("notes") or "") for row in labor_plan) and not labor_evidence_available:
         review_flags.append("Historical labor calibration unavailable or incomplete.")
-    if any(row.get("calibration_method") == "rule_based_fallback" for row in labor_plan):
+    if any(row.get("calibration_method") == "rule_based_fallback" for row in labor_plan) and not labor_evidence_available:
         review_flags.append("Historical labor calibration unavailable or incomplete; rule-based fallback labor rows were added.")
     if travel_plan.get("needs_travel_review"):
         review_flags.append("Travel assumptions require review.")
     if data.template_rows.empty:
-        review_flags.append("estimate_template_rows unavailable or empty; template calibration is limited.")
-    if data.pricing.empty:
+        template_evidence_available = not getattr(data, "job_package_summary", pd.DataFrame()).empty or not getattr(data, "relationship_material_qty_ratios", pd.DataFrame()).empty
+        if not template_evidence_available:
+            review_flags.append("estimate_template_rows unavailable or empty; template calibration is limited.")
+    if data.pricing.empty and data.pricing_catalog.empty:
         review_flags.append("pricing_catalog unavailable or empty; current material pricing is limited.")
     if data.template_rows.empty and not data.classified_line_items.empty:
         review_flags.append("Using estimate_line_item_classifications fallback evidence.")
