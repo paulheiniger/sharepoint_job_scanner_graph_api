@@ -1883,7 +1883,10 @@ def material_workbench_rows(
             status = "yes"
             include = True
         editable_qty_per_sqft = qty_per_sqft
-        partial_basis_sqft = _partial_primer_basis_sqft(notes, area) if package == "primer" else 0.0
+        scope_partial = scope.get("partial_scope") if isinstance(scope.get("partial_scope"), dict) else {}
+        partial_basis_sqft = 0.0
+        if package == "primer":
+            partial_basis_sqft = safe_number(scope_partial.get("primer_basis_sqft"), 0.0) or _partial_primer_basis_sqft(notes, area)
         if include:
             editable_basis_sqft = partial_basis_sqft if partial_basis_sqft > 0 else area
         elif package == "coating":

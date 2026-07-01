@@ -39,8 +39,151 @@ def test_ai_scope_interpreter_invalid_json_falls_back() -> None:
         provider=lambda _notes, _scope: "{not valid json",
     )
 
-    assert result["project_type"] == ""
+    assert result["project_type"] == "roof coating"
+    assert result["estimated_sqft"] == 9536
     assert any("AI scope interpreter unavailable or invalid" in flag for flag in result["review_flags"])
+
+
+def test_deterministic_ai_fallback_handles_clean_notes() -> None:
+    result = ai_scope_interpreter.interpret_field_notes_with_ai(ROOF_COATING_NOTE, deterministic_scope={})
+
+    assert result["estimate_mode"] == "restoration"
+    assert result["project_type"] == "roof coating"
+    assert result["substrate"] == "metal"
+    assert result["coating_type"] == "silicone"
+    assert result["warranty_years"] == 10
+    assert result["gross_sqft"] == 9600
+    assert result["deduction_sqft"] == 64
+    assert result["net_sqft"] == 9536
+    assert result["defects"]["rusted_fasteners"] is True
+    assert result["defects"]["open_seams"] is True
+    assert result["scope_triggers"]["coating"] is True
+    assert result["scope_triggers"]["seam_treatment"] is True
+    assert result["evidence_by_field"]["dimensions"]
+
+
+def test_deterministic_ai_fallback_handles_rambling_correction_notes() -> None:
+    notes = (
+        "Hey this is for that metal roof, I first thought it was 100 by 80. "
+        "Actually scratch that, it's 120 by 80, not 100 by 80. "
+        "Use a ten year silicone restoration, access is easy, only a few penetrations."
+    )
+
+    result = ai_scope_interpreter.interpret_field_notes_with_ai(notes, deterministic_scope={})
+
+    assert result["net_sqft"] == 9600
+    assert result["gross_sqft"] == 9600
+    assert result["coating_type"] == "silicone"
+    assert result["warranty_years"] == 10
+    assert result["access_complexity"] == "low"
+    assert result["penetration_complexity"] == "low"
+
+
+def test_deterministic_ai_fallback_handles_negation() -> None:
+    notes = (
+        "Standing seam metal roof is 90 ft by 70 ft. No visible rust, no open seams, not leaking. "
+        "Customer wants a 10-year silicone maintenance coating. Easy access."
+    )
+
+    result = ai_scope_interpreter.interpret_field_notes_with_ai(notes, deterministic_scope={})
+
+    assert result["net_sqft"] == 6300
+    assert result["defects"]["rust"] is False
+    assert result["defects"]["rusted_fasteners"] is False
+    assert result["defects"]["open_seams"] is False
+    assert result["defects"]["leaks"] is False
+    assert "rust" not in result["condition_flags"]
+
+
+def test_deterministic_ai_fallback_partial_primer_percentage() -> None:
+    notes = (
+        "Commercial metal roof. Roof measures 140 ft by 90 ft. Overall roof is in good condition. "
+        "Only the south edge has oxidation and rusted fasteners. Prime only south edge, about 20% before coating. "
+        "Few penetrations. Easy access. Customer requests a 10-year silicone restoration."
+    )
+
+    result = ai_scope_interpreter.interpret_field_notes_with_ai(notes, deterministic_scope={})
+
+    assert result["net_sqft"] == 12600
+    assert result["scope_triggers"]["primer"] is True
+    assert result["scope_triggers"]["partial_primer"] is True
+    assert result["partial_scope"]["primer_basis_sqft"] == 2520
+
+
+def test_ai_scope_validation_accepts_new_schema_and_rejects_bad_package() -> None:
+    cleaned, warnings = ai_scope_interpreter.validate_ai_scope(
+        {
+            "estimate_mode": "restoration",
+            "roof_type": "standing seam metal",
+            "warranty_years": 10,
+            "net_sqft": 6300,
+            "condition": "good",
+            "penetration_complexity": "low",
+            "defects": {"rust": False, "curb_flashing_issues": True},
+            "scope_triggers": {"coating": True, "primer": "yes"},
+            "partial_scope": {"primer_basis_sqft": 1260},
+            "scope_packages": {"coating": True, "primer": "banana"},
+            "evidence_by_field": {"condition": ["good condition"]},
+        }
+    )
+
+    assert cleaned["roof_type"] == "standing seam metal"
+    assert cleaned["estimated_sqft"] == 6300
+    assert cleaned["warranty_target_years"] == 10
+    assert cleaned["roof_condition"] == "good"
+    assert cleaned["penetrations_complexity"] == "low"
+    assert cleaned["defects"]["curb/flashing_issues"] is True
+    assert cleaned["scope_triggers"]["primer"] is True
+    assert cleaned["partial_scope"]["primer_basis_sqft"] == 1260
+    assert "primer" not in cleaned["scope_packages"]
+    assert warnings
+
+
+def test_ai_cannot_invent_square_footage_without_note_evidence() -> None:
+    ai_scope, _warnings = ai_scope_interpreter.validate_ai_scope(
+        {
+            "project_type": "roof coating",
+            "estimated_sqft": 12000,
+            "coating_type": "silicone",
+            "warranty_target_years": 10,
+        }
+    )
+
+    final_scope, decisions, review_flags = ai_scope_interpreter.merge_ai_scope_with_deterministic(
+        "Commercial metal roof. Customer wants a silicone coating, but dimensions are unknown.",
+        {"notes": "Commercial metal roof. Customer wants a silicone coating, but dimensions are unknown."},
+        ai_scope,
+    )
+
+    assert final_scope.get("estimated_sqft") is None
+    assert any(row["field"] == "estimated_sqft" and row["decision"] == "rejected" for row in decisions)
+    assert any("without note evidence" in flag for flag in review_flags)
+
+
+def test_estimator_ai_fallback_without_api_key_still_uses_deterministic_parser(monkeypatch) -> None:
+    monkeypatch.setenv("ENABLE_AI_SCOPE_INTERPRETER", "true")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    recommendation = estimate_from_field_notes(
+        "Commercial metal roof. Roof is 90 ft by 70 ft. Customer wants a 10-year silicone coating system.",
+        data=field_data(),
+    )
+
+    assert recommendation.estimate_status == "READY_TO_ESTIMATE"
+    assert recommendation.parsed_fields["estimated_sqft"] == 6300
+    ai_debug = recommendation.debug["ai_scope_interpreter"]
+    assert ai_debug["enabled"] is True
+    assert ai_debug["ai_parsed_scope"]["net_sqft"] == 6300
+
+
+def test_ai_interpreter_is_preferred_when_openai_key_exists(monkeypatch) -> None:
+    monkeypatch.delenv("ENABLE_AI_SCOPE_INTERPRETER", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    assert ai_scope_interpreter.ai_scope_interpreter_enabled() is True
+
+    monkeypatch.setenv("DISABLE_AI_SCOPE_INTERPRETER", "true")
+    assert ai_scope_interpreter.ai_scope_interpreter_enabled() is False
 
 
 def test_estimator_merges_ai_scope_with_deterministic_guardrails(monkeypatch) -> None:
@@ -100,4 +243,3 @@ def test_estimator_merges_ai_scope_with_deterministic_guardrails(monkeypatch) ->
     assert ai_debug["ai_parsed_scope"]["estimated_sqft"] == 9998
     assert ai_debug["final_merged_scope"]["estimated_sqft"] == 9536
     assert any(row["field"] == "estimated_sqft" and row["decision"] == "rejected" for row in ai_debug["merge_decisions"])
-

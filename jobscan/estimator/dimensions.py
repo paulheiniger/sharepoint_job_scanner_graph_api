@@ -208,6 +208,13 @@ def _parse_direct_areas(text: str, summary: DimensionSummary) -> list[DimensionA
 def parse_dimensions(raw_notes: str) -> DimensionSummary:
     text = raw_notes or ""
     summary = DimensionSummary()
+    correction_markers = [
+        match.end()
+        for match in re.finditer(r"\b(?:scratch\s+that|correction|corrected|actually)\b", text, re.I)
+        if DIMENSION_RE.search(text[match.end() : match.end() + 160])
+    ]
+    if correction_markers:
+        text = text[max(correction_markers) :]
     if re.search(r"\bno\s+(?:deductions?|deducts?|openings?|areas?\s+to\s+deduct)\b", text, re.I):
         summary.no_deductions = True
     direct_deductions = _parse_direct_areas(text, summary)
@@ -225,6 +232,8 @@ def parse_dimensions(raw_notes: str) -> DimensionSummary:
         left, right = _sentence_bounds(text, match.start(), match.end())
         sentence = text[left:right].strip()
         prefix = text[left : match.start()]
+        if re.search(r"\b(?:not|instead\s+of|rather\s+than)\s*$", prefix, re.I):
+            continue
         context = text[left:right]
         operation = _operation_for_context(context)
         sibling_count = spans_by_sentence.get((left, right), 1)

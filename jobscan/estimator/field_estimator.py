@@ -2943,6 +2943,22 @@ def parsed_fields_for_result(
             parsed_fields[area_field] = value
     for extra_field in (
         "notes",
+        "estimate_mode",
+        "roof_type",
+        "gross_sqft",
+        "deduction_sqft",
+        "net_sqft",
+        "dimension_evidence",
+        "condition",
+        "condition_flags",
+        "penetration_complexity",
+        "defects",
+        "scope_triggers",
+        "partial_scope",
+        "confidence_by_field",
+        "evidence_by_field",
+        "contradictions",
+        "missing_questions",
         "condition_detail_flags",
         "penetration_count",
         "roof_condition_raw_phrase",
@@ -3036,12 +3052,18 @@ def estimate_from_field_notes(
             scope["estimated_sqft"] = deterministic_resolved_sqft
             scope["surface_area_sqft"] = deterministic_resolved_sqft
         else:
-            scope.pop("estimated_sqft", None)
-            scope.pop("surface_area_sqft", None)
+            ai_resolved_sqft = optional_positive_float(scope.get("estimated_sqft")) or optional_positive_float(scope.get("surface_area_sqft"))
+            if ai_resolved_sqft is not None and ai_scope_interpreter._notes_have_area_or_dimensions(raw_notes):
+                scope["estimated_sqft"] = ai_resolved_sqft
+                scope["surface_area_sqft"] = ai_resolved_sqft
+                resolved_sqft = ai_resolved_sqft
+            else:
+                scope.pop("estimated_sqft", None)
+                scope.pop("surface_area_sqft", None)
         apply_scope_to_parsed(parsed, scope)
     runtime_seconds_by_stage["parse_scope"] = round(time.perf_counter() - stage_start, 4)
 
-    resolved_sqft = deterministic_resolved_sqft
+    resolved_sqft = deterministic_resolved_sqft or optional_positive_float(scope.get("estimated_sqft")) or optional_positive_float(scope.get("surface_area_sqft"))
     readiness = evaluate_estimate_readiness(scope, raw_notes)
     if readiness["estimate_status"] != READY_TO_ESTIMATE:
         for field_name in readiness.get("missing_fields") or []:

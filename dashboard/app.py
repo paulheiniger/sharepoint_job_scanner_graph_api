@@ -4043,7 +4043,7 @@ def estimator_prototype_page() -> None:
     repair_urgency_override = ""
     overrides: dict[str, Any] = {}
 
-    st.subheader("Stage 1 - Scope Understanding")
+    st.subheader("Scope Interpreter")
     field_estimator_fn, field_estimator_import_warning = optional_field_notes_estimator()
     if field_estimator_import_warning and resolved_estimate_type != ESTIMATE_TYPE_REPAIR:
         st.warning(field_estimator_import_warning)
@@ -4144,8 +4144,46 @@ def estimator_prototype_page() -> None:
             with a_col:
                 st.markdown("**Recommended Next Actions**")
                 show_table(dataframe_from_records([{"action": item} for item in actions]), ["action"], height=180)
-        with st.expander("Parser details", expanded=False):
-            st.dataframe(pd.DataFrame([field_recommendation.parsed_fields]), use_container_width=True, hide_index=True)
+        parsed_fields = field_recommendation.parsed_fields
+        st.markdown("**Parsed Scope Summary**")
+        summary_cols = [
+            "project_type",
+            "estimate_mode",
+            "substrate",
+            "coating_type",
+            "warranty_target_years",
+            "estimated_sqft",
+            "roof_condition",
+            "access_complexity",
+            "penetrations_complexity",
+        ]
+        summary_row = {column: parsed_fields.get(column) for column in summary_cols if column in parsed_fields}
+        if summary_row:
+            show_table(dataframe_from_records([summary_row]), list(summary_row.keys()), height=90)
+        with st.expander("Show AI evidence and uncertainty", expanded=False):
+            ai_debug = (getattr(field_recommendation, "debug", {}) or {}).get("ai_scope_interpreter") or {}
+            evidence = parsed_fields.get("evidence_by_field") or (ai_debug.get("ai_parsed_scope") or {}).get("evidence_by_field") or {}
+            confidence = parsed_fields.get("confidence_by_field") or (ai_debug.get("ai_parsed_scope") or {}).get("confidence_by_field") or {}
+            contradictions = parsed_fields.get("contradictions") or (ai_debug.get("ai_parsed_scope") or {}).get("contradictions") or []
+            missing_questions = parsed_fields.get("missing_questions") or parsed_fields.get("required_questions") or []
+            c1, c2 = st.columns(2)
+            with c1:
+                st.caption("Field Evidence")
+                evidence_rows = [
+                    {"field": field, "evidence": "; ".join(str(item) for item in (items if isinstance(items, list) else [items]))}
+                    for field, items in (evidence or {}).items()
+                ]
+                show_table(dataframe_from_records(evidence_rows), ["field", "evidence"], height=220)
+            with c2:
+                st.caption("Confidence / Uncertainty")
+                confidence_rows = [{"field": field, "confidence": value} for field, value in (confidence or {}).items()]
+                show_table(dataframe_from_records(confidence_rows), ["field", "confidence"], height=160)
+                if contradictions:
+                    st.warning("\n".join(str(item) for item in contradictions))
+                if missing_questions:
+                    st.info("Missing questions: " + "; ".join(str(item) for item in missing_questions))
+            with st.expander("Raw parser details", expanded=False):
+                st.dataframe(pd.DataFrame([parsed_fields]), use_container_width=True, hide_index=True)
         dimension_summary = field_recommendation.parsed_fields.get("dimension_summary") or {}
         if isinstance(dimension_summary, dict) and (
             dimension_summary.get("net_area_sqft") or dimension_summary.get("included_areas") or dimension_summary.get("deducted_areas")
@@ -4189,7 +4227,7 @@ def estimator_prototype_page() -> None:
             key=f"estimator_debug_mode_{workbench_key}",
         )
 
-        st.markdown("### Stage 1 - Parsed Scope")
+        st.markdown("### Scope Interpreter - Parsed Scope")
         st.caption("AI and deterministic parsing turn the notes into editable project facts. These fields drive the historical comparison pool and workbook draft.")
         base_scope = parsed_workbench.get("scope") or {}
         s1, s2, s3 = st.columns(3)
