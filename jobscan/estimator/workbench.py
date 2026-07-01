@@ -581,6 +581,73 @@ def _with_distribution_metadata(distribution: dict[str, Any], filter_summary: di
     return enriched
 
 
+def _positive_any(frame: pd.DataFrame, columns: tuple[str, ...]) -> pd.Series:
+    if frame.empty:
+        return pd.Series(dtype=bool)
+    mask = pd.Series([False] * len(frame), index=frame.index)
+    for column in columns:
+        if column in frame.columns:
+            values = pd.to_numeric(frame[column], errors="coerce")
+            mask = mask | (values.notna() & (values > 0))
+    return mask
+
+
+def _distinct_file_count(frame: pd.DataFrame) -> int:
+    if frame.empty:
+        return 0
+    for column in ("source_file", "file_name", "estimate_file", "workbook_path", "document_name", "source_document_id"):
+        if column in frame.columns:
+            values = frame[column].dropna().astype(str).map(str.strip)
+            count = values[values.ne("")].nunique()
+            if count:
+                return int(count)
+    if "job_id" in frame.columns:
+        return int(frame["job_id"].dropna().astype(str).nunique())
+    return int(len(frame))
+
+
+def _bucket_history_rows(data: Any, package: str, filters: dict[str, Any] | None) -> pd.DataFrame:
+    filters = filters or {}
+    for attr in ("template_rows", "job_package_summary"):
+        source = _frame(data, attr)
+        if source.empty:
+            continue
+        rows = source[_package_match_series(source, package)].copy()
+        if rows.empty:
+            continue
+        division_filter = _normalized(_clean_filter_value(filters.get("division")) or "")
+        template_filter = _normalized(_clean_filter_value(filters.get("template_type")) or "")
+        if division_filter and "division" in rows.columns:
+            scoped = rows[rows["division"].map(_normalized).eq(division_filter)].copy()
+            if not scoped.empty:
+                rows = scoped
+        if template_filter and "template_type" in rows.columns:
+            scoped = rows[rows["template_type"].map(_normalized).eq(template_filter)].copy()
+            if not scoped.empty:
+                rows = scoped
+        return rows
+    return pd.DataFrame()
+
+
+def _bucket_history_diagnostics(data: Any, package: str, filters: dict[str, Any] | None) -> dict[str, Any]:
+    rows = _bucket_history_rows(data, package, filters)
+    if rows.empty:
+        return {
+            "total_insulation_rows_for_bucket": 0,
+            "distinct_insulation_files_for_bucket": 0,
+            "rows_with_quantity": 0,
+            "rows_with_cost": 0,
+            "rows_with_area": 0,
+        }
+    return {
+        "total_insulation_rows_for_bucket": int(len(rows)),
+        "distinct_insulation_files_for_bucket": _distinct_file_count(rows),
+        "rows_with_quantity": int(_positive_any(rows, ("qty_per_sqft", "total_quantity", "quantity", "estimated_units", "calculated_quantity")).sum()),
+        "rows_with_cost": int(_positive_any(rows, ("cost_per_sqft", "total_cost", "estimated_cost", "line_total", "extended_cost")).sum()),
+        "rows_with_area": int(_positive_any(rows, ("area_sqft", "estimated_sqft", "surface_area_sqft", "basis_sqft")).sum()),
+    }
+
+
 def _evidence_count_from_rows(rows: pd.DataFrame) -> int:
     if rows.empty:
         return 0
@@ -641,14 +708,14 @@ def historical_filters_from_scope(scope: dict[str, Any] | None) -> dict[str, Any
         return {
             "division": "Insulation",
             "template_type": "insulation",
-            "project_type": first_nonblank(scope.get("project_type"), "spray foam insulation"),
-            "substrate": first_nonblank(scope.get("building_type"), scope.get("roof_type_substrate"), scope.get("substrate"), ""),
+            "project_type": "",
+            "substrate": "",
             "coating_type": first_nonblank(scope.get("coating_type"), ""),
             "warranty_years": None,
             "roof_condition": first_nonblank(scope.get("roof_condition"), ""),
             "access_complexity": first_nonblank(scope.get("access_complexity"), ""),
             "penetrations_complexity": first_nonblank(scope.get("penetrations_complexity"), scope.get("penetration_complexity"), ""),
-            "area_bucket": _area_bucket_for_sqft(_estimate_area(scope)),
+            "area_bucket": "",
             "source_year": None,
             "pipeline_status": "",
             "completed_only": False,
@@ -974,9 +1041,11 @@ def material_sizing_distribution(
 ) -> dict[str, Any]:
     summary = _frame(data, "job_package_summary")
     reasons: dict[str, int] = {}
+    history_diag = _bucket_history_diagnostics(data, package, filters)
     if summary.empty:
         fallback = _material_distribution_from_relationships(data, package, default_unit, reasons, filters)
         if fallback:
+            fallback.update(history_diag)
             return fallback
         return _with_distribution_metadata(
             {
@@ -991,6 +1060,7 @@ def material_sizing_distribution(
             "unit": default_unit,
             "confidence": "none",
             "source": "no_sufficient_evidence",
+            **history_diag,
             },
         )
     package_rows = summary[_package_match_series(summary, package)].copy()
@@ -1003,6 +1073,7 @@ def material_sizing_distribution(
             fallback.setdefault("evidence_count", 0)
             fallback.setdefault("unit", default_unit)
             fallback.setdefault("confidence", _confidence(fallback.get("evidence_count", 0)))
+            fallback.update(history_diag)
             return fallback
         return {
             "median": 0.0,
@@ -1016,6 +1087,7 @@ def material_sizing_distribution(
             "unit": default_unit,
             "confidence": "none",
             "source": "no_sufficient_evidence",
+            **history_diag,
         }
 
     eligible, scoped_reasons = _scope_filter_diagnostics(package_rows, filters)
@@ -1060,9 +1132,23 @@ def material_sizing_distribution(
     _add_reason(reasons, "missing_qty_per_sqft", int(missing_qty_per_sqft.sum()))
     accepted = eligible[physical_mask & ~bad_units & ~missing_qty_per_sqft].copy()
     cost_rows = eligible[cost_per_sqft.notna() & (cost_per_sqft > 0)].copy()
+    rejected_missing_area = int(missing_sqft.sum())
+    rejected_missing_quantity = int(missing_quantity.sum())
+    rejected_missing_cost = int(len(eligible) - len(cost_rows))
+    rejected_filter_mismatch = int(sum(scoped_reasons.values())) if scoped_reasons else 0
     if accepted.empty:
         fallback = _material_distribution_from_relationships(data, package, default_unit, reasons, filters)
         if fallback and (safe_number(fallback.get("median"), 0) > 0 or safe_number(fallback.get("median_cost_per_sqft"), 0) > 0):
+            fallback.update(
+                {
+                    **history_diag,
+                    "accepted_qty_per_sqft_rows": 0,
+                    "rejected_missing_area": rejected_missing_area,
+                    "rejected_missing_quantity": rejected_missing_quantity,
+                    "rejected_missing_cost": rejected_missing_cost,
+                    "rejected_filter_mismatch": rejected_filter_mismatch,
+                }
+            )
             return fallback
         historical_jobs = _job_count(package_rows)
         return _with_distribution_metadata(
@@ -1080,6 +1166,12 @@ def material_sizing_distribution(
                 "unit": default_unit,
                 "confidence": "none",
                 "source": "no_sufficient_evidence",
+                **history_diag,
+                "accepted_qty_per_sqft_rows": 0,
+                "rejected_missing_area": rejected_missing_area,
+                "rejected_missing_quantity": rejected_missing_quantity,
+                "rejected_missing_cost": rejected_missing_cost,
+                "rejected_filter_mismatch": rejected_filter_mismatch,
             },
             filter_summary,
         )
@@ -1100,6 +1192,12 @@ def material_sizing_distribution(
             "unit": unit,
             "confidence": _confidence(evidence_count),
             "source": "job_package_summary_filtered",
+            **history_diag,
+            "accepted_qty_per_sqft_rows": len(accepted),
+            "rejected_missing_area": rejected_missing_area,
+            "rejected_missing_quantity": rejected_missing_quantity,
+            "rejected_missing_cost": rejected_missing_cost,
+            "rejected_filter_mismatch": rejected_filter_mismatch,
         },
         filter_summary,
     )
@@ -1163,9 +1261,11 @@ def _labor_distribution_from_relationships(
 def labor_sizing_distribution(data: Any, package: str, filters: dict[str, Any] | None = None) -> dict[str, Any]:
     summary = _frame(data, "job_package_summary")
     reasons: dict[str, int] = {}
+    history_diag = _bucket_history_diagnostics(data, package, filters)
     if summary.empty:
         fallback = _labor_distribution_from_relationships(data, package, reasons, filters)
         if fallback:
+            fallback.update(history_diag)
             return fallback
         return {
             "median": 0.0,
@@ -1179,6 +1279,7 @@ def labor_sizing_distribution(data: Any, package: str, filters: dict[str, Any] |
             "median_crew_size": 4,
             "confidence": "none",
             "source": "no_sufficient_evidence",
+            **history_diag,
         }
     package_rows = summary[_package_match_series(summary, package)].copy()
     if package_rows.empty:
@@ -1190,6 +1291,7 @@ def labor_sizing_distribution(data: Any, package: str, filters: dict[str, Any] |
             fallback.setdefault("evidence_count", 0)
             fallback.setdefault("median_crew_size", 4)
             fallback.setdefault("confidence", _confidence(fallback.get("evidence_count", 0)))
+            fallback.update(history_diag)
             return fallback
         return {
             "median": 0.0,
@@ -1203,6 +1305,7 @@ def labor_sizing_distribution(data: Any, package: str, filters: dict[str, Any] |
             "median_crew_size": 4,
             "confidence": "none",
             "source": "no_sufficient_evidence",
+            **history_diag,
         }
     eligible, scoped_reasons = _scope_filter_diagnostics(package_rows, filters)
     reasons.update(scoped_reasons)
@@ -1229,9 +1332,20 @@ def labor_sizing_distribution(data: Any, package: str, filters: dict[str, Any] |
     _add_reason(reasons, "missing_hours", int(missing_hours.sum()))
     _add_reason(reasons, "missing_hours_per_1000_sqft", int(missing_hours_rate.sum()))
     accepted = eligible[~missing_hours_rate].copy()
+    rejected_filter_mismatch = int(sum(scoped_reasons.values())) if scoped_reasons else 0
     if accepted.empty:
         fallback = _labor_distribution_from_relationships(data, package, reasons, filters)
         if fallback and safe_number(fallback.get("median"), 0) > 0:
+            fallback.update(
+                {
+                    **history_diag,
+                    "accepted_qty_per_sqft_rows": 0,
+                    "rejected_missing_area": int(missing_sqft.sum()),
+                    "rejected_missing_quantity": int(missing_hours.sum()),
+                    "rejected_missing_cost": 0,
+                    "rejected_filter_mismatch": rejected_filter_mismatch,
+                }
+            )
             return fallback
         return _with_distribution_metadata(
             {
@@ -1246,6 +1360,12 @@ def labor_sizing_distribution(data: Any, package: str, filters: dict[str, Any] |
                 "median_crew_size": 4,
                 "confidence": "none",
                 "source": "no_sufficient_evidence",
+                **history_diag,
+                "accepted_qty_per_sqft_rows": 0,
+                "rejected_missing_area": int(missing_sqft.sum()),
+                "rejected_missing_quantity": int(missing_hours.sum()),
+                "rejected_missing_cost": 0,
+                "rejected_filter_mismatch": rejected_filter_mismatch,
             },
             filter_summary,
         )
@@ -1265,6 +1385,12 @@ def labor_sizing_distribution(data: Any, package: str, filters: dict[str, Any] |
             "median_crew_size": float(crew.median()) if not crew.empty else 4,
             "confidence": _confidence(evidence_count),
             "source": "job_package_summary_full_corpus",
+            **history_diag,
+            "accepted_qty_per_sqft_rows": len(accepted),
+            "rejected_missing_area": int(missing_sqft.sum()),
+            "rejected_missing_quantity": int(missing_hours.sum()),
+            "rejected_missing_cost": 0,
+            "rejected_filter_mismatch": rejected_filter_mismatch,
         },
         filter_summary,
     )
@@ -1551,9 +1677,18 @@ def _is_valid_coating_option(option: dict[str, Any]) -> bool:
 
 
 def _is_selectable_package_item(package: str, option: dict[str, Any], scope: dict[str, Any]) -> bool:
-    if package != "coating":
-        return True
-    return _is_valid_coating_option(option)
+    text = _normalized(" ".join(str(option.get(key) or "") for key in ("item_name", "unit", "price_basis", "category")))
+    if package == "coating":
+        return _is_valid_coating_option(option)
+    if package == "thermal_barrier_coating":
+        return _contains_any_text(text, ["dc315", "dc 315", "thermal barrier", "ignition barrier"]) and not _contains_any_text(
+            text, ["primer", "foam primer", "roof coating", "silicone", "sealant", "caulk"]
+        )
+    if package == "drum_disposal":
+        return _contains_any_text(text, ["drum disposal", "disposal", "waste", "environmental"]) and not _contains_any_text(
+            text, ["silicone", "roof coating", "coating", "primer", "foam"]
+        )
+    return True
 
 
 def _package_item_fit_details(package: str, option: dict[str, Any], scope: dict[str, Any]) -> tuple[float, list[str]]:
@@ -1638,6 +1773,36 @@ def _package_item_fit_details(package: str, option: dict[str, Any], scope: dict[
         if _contains_any_text(combined, ["roof coating", "primer", "sealant", "caulk", "granule"]):
             score -= 200
             reasons.append(f"less suitable for {package}")
+    elif package == "foam":
+        if _contains_any_text(combined, ["spray foam", "closed cell", "closed-cell", "open cell", "open-cell", "spf", "foam insulation", "2.0 lb", "2 lb"]):
+            score += 240
+            reasons.append("spray foam insulation product signal")
+        elif _contains_any_text(combined, ["foam"]):
+            score += 80
+            reasons.append("foam product signal")
+        if _is_insulation_scope(scope) and _contains_any_text(combined, ["roofing foam", "roof foam", "roofing"]):
+            score -= 180
+            reasons.append("less suitable for wall/ceiling insulation than insulation foam")
+        if _contains_any_text(combined, ["roof coating", "silicone", "primer", "sealant", "caulk", "tube"]):
+            score -= 300
+            reasons.append("less suitable for foam insulation")
+    elif package == "thermal_barrier_coating":
+        if _contains_any_text(combined, ["dc315", "dc 315", "thermal barrier", "ignition barrier"]):
+            score += 260
+            reasons.append("thermal/ignition barrier product signal")
+        if _contains_any_text(combined, ["primer", "foam primer", "a4121"]):
+            score -= 1000
+            reasons.append("rejected as thermal barrier: primer product")
+        if _contains_any_text(combined, ["roof coating", "silicone", "sealant", "caulk", "foam"]):
+            score -= 350
+            reasons.append("less suitable for thermal barrier")
+    elif package == "drum_disposal":
+        if _contains_any_text(combined, ["drum disposal", "disposal", "waste", "environmental"]):
+            score += 250
+            reasons.append("drum disposal service signal")
+        if _contains_any_text(combined, ["silicone", "roof coating", "coating", "primer", "foam"]):
+            score -= 1000
+            reasons.append("rejected as drum disposal: material product")
     if not reasons:
         reasons.append("weak item/package match")
     return score, reasons
@@ -1721,7 +1886,8 @@ def _select_material_item(
             scored.append((score, option, reasons))
         scored.sort(key=lambda item: (item[0], -safe_number(item[1].get("unit_price"), 0)), reverse=True)
         selectable = [item for item in scored if _is_selectable_package_item(package, item[1], scope)]
-        if package == "coating" and not selectable:
+        strict_item_packages = {"coating", "thermal_barrier_coating", "drum_disposal"}
+        if package in strict_item_packages and not selectable:
             bad_reasons = [
                 {
                     "item_name": option.get("item_name"),
@@ -1744,19 +1910,23 @@ def _select_material_item(
                     selected["item_median_qty_per_sqft"] = selected.get("median_qty_per_sqft", 0.0)
                     selected["item_median_cost_per_sqft"] = selected.get("median_cost_per_sqft", 0.0)
                     selected["item_evidence_count"] = selected.get("evidence_count", 0)
-                    selected["selected_item_reason"] = "Selected from historical roof coating usage because no suitable current pricing item matched."
+                    selected["selected_item_reason"] = f"Selected from historical {package.replace('_', ' ')} usage because no suitable current pricing item matched."
                     selected["selected_item_score"] = round(float(historical_selectable[0][0]), 2)
                     selected["top_rejected_item_reasons"] = bad_reasons
                     return selected
             return {
-                "item_name": "Manual roof coating item",
+                "item_name": "Manual roof coating item" if package == "coating" else fallback_label,
                 "unit": default_unit,
                 "unit_price": 0.0,
                 "item_source": "manual",
                 "item_median_qty_per_sqft": 0.0,
                 "item_median_cost_per_sqft": 0.0,
                 "item_evidence_count": 0,
-                "selected_item_reason": "No suitable roof coating pricing item matched; sealant/tube candidates were rejected for the main coating row.",
+                "selected_item_reason": (
+                    "No suitable roof coating pricing item matched; sealant/tube candidates were rejected for the main coating row."
+                    if package == "coating"
+                    else f"No suitable {package.replace('_', ' ')} pricing item matched; conflicting product candidates were rejected."
+                ),
                 "selected_item_score": 0.0,
                 "top_rejected_item_reasons": bad_reasons,
             }
@@ -1787,16 +1957,20 @@ def _select_material_item(
             historical_scored.append((score, option, reasons))
         historical_scored.sort(key=lambda item: (item[0], safe_number(item[1].get("evidence_count"), 0)), reverse=True)
         selectable = [item for item in historical_scored if _is_selectable_package_item(package, item[1], scope)]
-        if package == "coating" and not selectable:
+        if package in {"coating", "thermal_barrier_coating", "drum_disposal"} and not selectable:
             return {
-                "item_name": "Manual roof coating item",
+                "item_name": "Manual roof coating item" if package == "coating" else fallback_label,
                 "unit": default_unit,
                 "unit_price": 0.0,
                 "item_source": "manual",
                 "item_median_qty_per_sqft": 0.0,
                 "item_median_cost_per_sqft": 0.0,
                 "item_evidence_count": 0,
-                "selected_item_reason": "No suitable historical roof coating item matched; manual item review required.",
+                "selected_item_reason": (
+                    "No suitable historical roof coating item matched; manual item review required."
+                    if package == "coating"
+                    else f"No suitable historical {package.replace('_', ' ')} item matched; manual item review required."
+                ),
                 "selected_item_score": 0.0,
                 "top_rejected_item_reasons": [
                     {"item_name": option.get("item_name"), "score": round(float(score), 2), "reason": "; ".join(reasons)}
@@ -1911,6 +2085,10 @@ def _material_explanation(
     reason = _suggestion_reason(package, scope, status)
     history_label = _history_label(scope)
     historical_jobs = int(safe_number(sizing.get("historical_jobs_found"), 0))
+    total_bucket_rows = int(safe_number(sizing.get("total_insulation_rows_for_bucket"), 0))
+    distinct_files = int(safe_number(sizing.get("distinct_insulation_files_for_bucket"), 0))
+    clean_rows = int(safe_number(sizing.get("accepted_qty_per_sqft_rows"), 0))
+    cost_evidence = int(safe_number(sizing.get("historical_cost_evidence_count"), 0))
     accepted = int(safe_number(sizing.get("rows_accepted"), 0))
     rejected = int(safe_number(sizing.get("rows_rejected"), 0))
     diagnostics = f" Sizing pool accepted {accepted} rows and rejected {rejected}."
@@ -1918,10 +2096,20 @@ def _material_explanation(
     if rejection_reasons:
         diagnostics += f" Rejections: {rejection_reasons}."
     if evidence_count > 0 and qty_per_sqft > 0:
-        text = (
-            f"Used in {evidence_count} historical {history_label} jobs. Median when used: {qty_per_sqft:g} per sqft."
-            f"{diagnostics} {reason}"
-        )
+        if _is_insulation_scope(scope) and (total_bucket_rows > clean_rows or distinct_files > evidence_count):
+            history_total = distinct_files or total_bucket_rows
+            unit_label = "estimate files" if distinct_files else "rows"
+            text = (
+                f"{package.replace('_', ' ').title()} appears in {history_total:,} historical {history_label.lower()} {unit_label}. "
+                f"{clean_rows or accepted:,} rows had clean quantity-per-sqft evidence, so quantity default is based on those. "
+                f"Historical cost fallback uses {cost_evidence:,} jobs. Median when used: {qty_per_sqft:g} per sqft."
+                f"{diagnostics} {reason}"
+            )
+        else:
+            text = (
+                f"Used in {evidence_count} historical {history_label} jobs. Median when used: {qty_per_sqft:g} per sqft."
+                f"{diagnostics} {reason}"
+            )
         if status != "yes":
             text += " Shown unchecked. Historical default is prefilled so estimator can include it if needed."
         if unit_price <= 0 and historical_cost_per_sqft > 0:
@@ -1993,8 +2181,21 @@ def _short_material_note(
 ) -> str:
     notes: list[str] = []
     history_label = _history_label(scope).lower()
+    total_bucket_rows = int(safe_number(sizing.get("total_insulation_rows_for_bucket"), 0))
+    distinct_files = int(safe_number(sizing.get("distinct_insulation_files_for_bucket"), 0))
+    clean_rows = int(safe_number(sizing.get("accepted_qty_per_sqft_rows"), 0))
+    cost_evidence = int(safe_number(sizing.get("historical_cost_evidence_count"), 0))
     if evidence_count > 0 and qty_per_sqft > 0:
-        notes.append(f"Historical default from {evidence_count} {history_label} jobs. Median when used: {qty_per_sqft:.4g}/sqft.")
+        if _is_insulation_scope(scope) and (total_bucket_rows > clean_rows or distinct_files > evidence_count):
+            history_total = distinct_files or total_bucket_rows
+            unit_label = "files" if distinct_files else "rows"
+            notes.append(
+                f"Found {history_total:,} historical {history_label} {unit_label}; "
+                f"{clean_rows or evidence_count:,} clean qty/sqft rows set the quantity default. "
+                f"Cost fallback uses {cost_evidence:,} jobs. Median: {qty_per_sqft:.4g}/sqft."
+            )
+        else:
+            notes.append(f"Historical default from {evidence_count} {history_label} jobs. Median when used: {qty_per_sqft:.4g}/sqft.")
     elif historical_cost_per_sqft > 0:
         notes.append("No normalized quantity found; using historical cost default if included.")
     else:
@@ -2164,6 +2365,16 @@ def material_workbench_rows(
                 "historical_jobs_found": int(safe_number(sizing.get("historical_jobs_found"), 0)),
                 "rows_accepted": int(safe_number(sizing.get("rows_accepted"), 0)),
                 "rows_rejected": int(safe_number(sizing.get("rows_rejected"), 0)),
+                "total_insulation_rows_for_bucket": int(safe_number(sizing.get("total_insulation_rows_for_bucket"), 0)),
+                "distinct_insulation_files_for_bucket": int(safe_number(sizing.get("distinct_insulation_files_for_bucket"), 0)),
+                "rows_with_quantity": int(safe_number(sizing.get("rows_with_quantity"), 0)),
+                "rows_with_cost": int(safe_number(sizing.get("rows_with_cost"), 0)),
+                "rows_with_area": int(safe_number(sizing.get("rows_with_area"), 0)),
+                "accepted_qty_per_sqft_rows": int(safe_number(sizing.get("accepted_qty_per_sqft_rows"), 0)),
+                "rejected_missing_area": int(safe_number(sizing.get("rejected_missing_area"), 0)),
+                "rejected_missing_quantity": int(safe_number(sizing.get("rejected_missing_quantity"), 0)),
+                "rejected_missing_cost": int(safe_number(sizing.get("rejected_missing_cost"), 0)),
+                "rejected_filter_mismatch": int(safe_number(sizing.get("rejected_filter_mismatch"), 0)),
                 "rejection_reasons": sizing.get("rejection_reasons") or "",
                 "range_width": round(safe_number(sizing.get("range_width"), 0.0), 6),
                 "relative_range_width": round(safe_number(sizing.get("relative_range_width"), 0.0), 4),
@@ -2235,6 +2446,16 @@ def labor_workbench_rows(
                 "historical_jobs_found": int(safe_number(sizing.get("historical_jobs_found"), 0)),
                 "rows_accepted": int(safe_number(sizing.get("rows_accepted"), 0)),
                 "rows_rejected": int(safe_number(sizing.get("rows_rejected"), 0)),
+                "total_insulation_rows_for_bucket": int(safe_number(sizing.get("total_insulation_rows_for_bucket"), 0)),
+                "distinct_insulation_files_for_bucket": int(safe_number(sizing.get("distinct_insulation_files_for_bucket"), 0)),
+                "rows_with_quantity": int(safe_number(sizing.get("rows_with_quantity"), 0)),
+                "rows_with_cost": int(safe_number(sizing.get("rows_with_cost"), 0)),
+                "rows_with_area": int(safe_number(sizing.get("rows_with_area"), 0)),
+                "accepted_qty_per_sqft_rows": int(safe_number(sizing.get("accepted_qty_per_sqft_rows"), 0)),
+                "rejected_missing_area": int(safe_number(sizing.get("rejected_missing_area"), 0)),
+                "rejected_missing_quantity": int(safe_number(sizing.get("rejected_missing_quantity"), 0)),
+                "rejected_missing_cost": int(safe_number(sizing.get("rejected_missing_cost"), 0)),
+                "rejected_filter_mismatch": int(safe_number(sizing.get("rejected_filter_mismatch"), 0)),
                 "rejection_reasons": sizing.get("rejection_reasons") or "",
                 "range_width": round(safe_number(sizing.get("range_width"), 0.0), 4),
                 "relative_range_width": round(safe_number(sizing.get("relative_range_width"), 0.0), 4),

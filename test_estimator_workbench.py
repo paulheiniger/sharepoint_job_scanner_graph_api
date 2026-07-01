@@ -151,7 +151,24 @@ def sample_insulation_data() -> EstimatorData:
                 "cost_per_sqft": 22.2,
             }
         )
-    return EstimatorData(job_package_summary=pd.DataFrame(rows))
+    template_rows = []
+    for idx in range(1, 13):
+        template_rows.append(
+            {
+                "job_id": f"TF{idx}",
+                "source_file": f"insulation_estimate_{idx}.xlsx",
+                "division": "Insulation",
+                "template_type": "insulation",
+                "template_bucket": "foam",
+                "line_item_kind": "material",
+                "selected_item_name": "Closed-cell spray foam" if idx % 2 else "Spray foam insulation",
+                "quantity": 2400 if idx <= 8 else None,
+                "estimated_units": 210 if idx <= 5 else None,
+                "estimated_cost": 6200 if idx <= 10 else None,
+                "area_sqft": 2400 if idx <= 5 else None,
+            }
+        )
+    return EstimatorData(job_package_summary=pd.DataFrame(rows), template_rows=pd.DataFrame(template_rows))
 
 
 def sample_data() -> EstimatorData:
@@ -594,7 +611,9 @@ def test_insulation_workbench_uses_insulation_filters_and_rows_only() -> None:
 
     assert workbench["historical_filters"]["division"] == "Insulation"
     assert workbench["historical_filters"]["template_type"] == "insulation"
-    assert workbench["historical_filters"]["project_type"] == "spray foam insulation"
+    assert workbench["historical_filters"]["project_type"] == ""
+    assert workbench["historical_filters"]["substrate"] == ""
+    assert workbench["historical_filters"]["area_bucket"] == ""
     assert workbench["scope"]["net_insulation_area_sqft"] == 2388
 
     material_keys = {row["package_key"] for row in workbench["materials"]}
@@ -619,6 +638,11 @@ def test_insulation_workbench_uses_insulation_filters_and_rows_only() -> None:
     assert foam["editable_qty_per_sqft"] > 0
     assert foam["calculated_quantity"] > 0
     assert foam["estimated_cost"] > 0
+    assert foam["total_insulation_rows_for_bucket"] > foam["accepted_qty_per_sqft_rows"]
+    assert foam["distinct_insulation_files_for_bucket"] > foam["evidence_count"]
+    assert "appears in" in foam["explanation"]
+    assert "clean quantity-per-sqft evidence" in foam["explanation"]
+    assert "clean qty/sqft rows" in foam["notes"]
     assert labor["labor_foam"]["include"] is True
     assert labor["labor_set_up"]["include"] is True
     assert labor["labor_clean_up"]["include"] is True
@@ -630,6 +654,105 @@ def test_insulation_workbench_uses_insulation_filters_and_rows_only() -> None:
     totals = recalculate_workbench_tables(workbench)
     assert sum(row["estimated_cost"] for row in totals["labor"] if row["include"]) > 0
     assert sum(row["estimated_cost"] for row in totals["materials"] if row["include"]) > 0
+
+
+def test_insulation_product_selection_rejects_cross_bucket_products() -> None:
+    data = sample_insulation_data()
+    data.pricing_catalog = pd.DataFrame(
+        [
+            {
+                "pricing_item_id": "P1",
+                "product_name": "A4121 Black Foam Primer",
+                "category": "Primer",
+                "unit_price": 180,
+                "unit_of_measure": "pail",
+                "is_current": True,
+            },
+            {
+                "pricing_item_id": "P2",
+                "product_name": "DC 315 Thermal Barrier Coating",
+                "category": "Thermal Barrier",
+                "unit_price": 52,
+                "unit_of_measure": "gal",
+                "is_current": True,
+            },
+            {
+                "pricing_item_id": "P3",
+                "product_name": "White Silicone Roof Coating 55 Gal Drum",
+                "category": "Coating",
+                "unit_price": 40,
+                "unit_of_measure": "gal",
+                "is_current": True,
+            },
+            {
+                "pricing_item_id": "P4",
+                "product_name": "Drum Disposal Fee",
+                "category": "Disposal",
+                "unit_price": 95,
+                "unit_of_measure": "each",
+                "is_current": True,
+            },
+            {
+                "pricing_item_id": "P5",
+                "product_name": "Roofing Foam Repair Kit",
+                "category": "Foam",
+                "unit_price": 12,
+                "unit_of_measure": "unit",
+                "is_current": True,
+            },
+            {
+                "pricing_item_id": "P6",
+                "product_name": "Closed Cell Spray Foam Insulation",
+                "category": "Foam",
+                "unit_price": 2.85,
+                "unit_of_measure": "sqft",
+                "is_current": True,
+            },
+        ]
+    )
+
+    workbench = build_estimating_workbench(sample_insulation_recommendation(), data)
+    materials = {row["package_key"]: row for row in workbench["materials"]}
+
+    assert materials["thermal_barrier_coating"]["item_name"] == "DC 315 Thermal Barrier Coating"
+    assert "Primer" not in materials["thermal_barrier_coating"]["item_name"]
+    assert materials["drum_disposal"]["item_name"] == "Drum Disposal Fee"
+    assert "Silicone" not in materials["drum_disposal"]["item_name"]
+    assert materials["foam"]["item_name"] == "Closed Cell Spray Foam Insulation"
+    assert "Roofing Foam" not in materials["foam"]["item_name"]
+
+
+def test_insulation_low_clean_quantity_uses_cost_fallback() -> None:
+    data = EstimatorData(
+        job_package_summary=pd.DataFrame(
+            [
+                {
+                    "job_id": f"CF{idx}",
+                    "division": "Insulation",
+                    "template_type": "insulation",
+                    "package": "foam",
+                    "area_sqft": 2400,
+                    "total_quantity": None,
+                    "qty_per_sqft": None,
+                    "unit": "",
+                    "total_cost": 6000 + idx * 100,
+                    "cost_per_sqft": 2.5 + idx * 0.01,
+                    "has_physical_quantity": False,
+                }
+                for idx in range(1, 7)
+            ]
+        )
+    )
+
+    workbench = build_estimating_workbench(sample_insulation_recommendation(), data)
+    foam = next(row for row in workbench["materials"] if row["package_key"] == "foam")
+
+    assert foam["include"] is True
+    assert foam["historical_qty_per_sqft"] == 0
+    assert foam["historical_cost_per_sqft"] > 0
+    assert foam["historical_cost_evidence_count"] >= 5
+    assert foam["estimated_cost"] > 0
+    assert foam["price_source"] == "historical_cost_default"
 
 
 def test_historical_filter_calculation_updates_material_and_labor_defaults() -> None:
