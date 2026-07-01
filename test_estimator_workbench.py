@@ -543,6 +543,8 @@ def test_roof_coating_item_selection_rejects_sealant_tube_for_main_coating() -> 
     assert "Sealant" not in coating["item_name"]
     assert "tube" not in coating["item_name"].lower()
     assert "High Solids Silicone" in coating["item_name"]
+    assert "roof coating product signal" in coating["selected_item_reason"]
+    assert any("Sealant" in str(item.get("item_name")) for item in coating["top_rejected_item_reasons"])
 
 
 def test_detail_buckets_can_select_sealant_products() -> None:

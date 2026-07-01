@@ -1162,7 +1162,7 @@ def _contains_any_text(text: str, terms: list[str]) -> bool:
     return any(term and term in normalized for term in terms)
 
 
-def _package_item_fit_score(package: str, option: dict[str, Any], scope: dict[str, Any]) -> float:
+def _package_item_fit_details(package: str, option: dict[str, Any], scope: dict[str, Any]) -> tuple[float, list[str]]:
     """Score whether an item belongs in a template bucket.
 
     This keeps broad keywords like "silicone" from letting flashing-grade sealants win the
@@ -1172,56 +1172,85 @@ def _package_item_fit_score(package: str, option: dict[str, Any], scope: dict[st
     unit = _normalized(option.get("unit"))
     combined = f"{name} {unit}"
     score = 0.0
+    reasons: list[str] = []
     coating_type = _normalized(scope.get("coating_type"))
     if coating_type and coating_type in combined:
         score += 25
+        reasons.append(f"matches coating type {coating_type}")
 
     if package == "coating":
-        if _contains_any_text(combined, ["roof coating", "coating", "high solids", "gaco", "gaf"]):
+        if _contains_any_text(combined, ["roof coating", "coating", "high solids", "gaco", "gaf", "ge enduris", "enduris", "unisil"]):
             score += 160
+            reasons.append("roof coating product signal")
         if _contains_any_text(combined, ["55 gal", "5 gal", "gallon", "gal", "pail", "drum", "bucket"]):
             score += 120
-        if _contains_any_text(combined, ["sealant", "caulk", "flashing grade", "sausage", "tube", "detail", "fabric", "fastener", "seam"]):
+            reasons.append("coating unit/package signal")
+        if _contains_any_text(combined, ["sealant", "caulk", "flashing grade", "sausage", "tube", "cartridge", "detail", "fabric", "fastener", "screw", "washer", "plate", "seam"]):
             score -= 5000
-        if _contains_any_text(combined, ["11 oz", "10 oz", "20 oz", "tube", "sausage"]):
+            reasons.append("rejected as coating: sealant/detail/fastener signal")
+        if _contains_any_text(combined, ["11 oz", "10 oz", "20 oz", "oz", "tube", "sausage", "cartridge"]):
             score -= 3000
+            reasons.append("rejected as coating: small cartridge/tube unit")
     elif package == "primer":
-        if "primer" in combined or "prime" in combined:
+        if _contains_any_text(combined, ["primer", "prime", "rust inhibitive", "epoxy primer", "acrylic primer"]):
             score += 250
+            reasons.append("primer product signal")
         if _contains_any_text(combined, ["sealant", "caulk", "tube", "sausage", "fabric", "granule"]):
             score -= 500
+            reasons.append("rejected as primer: conflicting sealant/fabric/granule signal")
     elif package == "seam_treatment":
         if _contains_any_text(combined, ["seam", "sealant", "flashing grade", "fabric", "caulk"]):
             score += 180
+            reasons.append("seam/detail product signal")
         if _contains_any_text(combined, ["roof coating", "primer", "granule"]):
             score -= 250
+            reasons.append("less suitable for seam treatment")
     elif package == "caulk_detail":
         if _contains_any_text(combined, ["caulk", "sealant", "flashing grade", "detail", "tube", "sausage"]):
             score += 220
+            reasons.append("caulk/detail product signal")
         if _contains_any_text(combined, ["roof coating", "primer", "granule"]):
             score -= 250
+            reasons.append("less suitable for caulk/detail")
     elif package == "fastener_treatment":
-        if _contains_any_text(combined, ["fastener", "screw", "plate"]):
+        if _contains_any_text(combined, ["fastener", "screw", "washer", "plate"]):
             score += 220
+            reasons.append("fastener-specific product signal")
+        if _contains_any_text(combined, ["sealant", "caulk"]):
+            score -= 50
+            reasons.append("sealant fallback only; no fastener-specific signal")
         if _contains_any_text(combined, ["roof coating", "primer", "granule"]):
             score -= 250
+            reasons.append("less suitable for fastener treatment")
     elif package == "fabric":
-        if "fabric" in combined:
+        if _contains_any_text(combined, ["fabric", "roll", "seam fabric"]):
             score += 250
+            reasons.append("fabric product signal")
         if _contains_any_text(combined, ["roof coating", "primer", "granule"]):
             score -= 250
+            reasons.append("less suitable for fabric")
     elif package == "granules":
-        if _contains_any_text(combined, ["granule", "broadcast"]):
+        if _contains_any_text(combined, ["granule", "granules", "ceramic granules", "broadcast", "bag"]):
             score += 250
+            reasons.append("granules product signal")
         if _contains_any_text(combined, ["roof coating", "primer", "sealant", "caulk"]):
             score -= 250
+            reasons.append("less suitable for granules")
     elif package in {"board_stock", "plates", "edge_metal", "gutter_downspouts"}:
         for term in _package_aliases(package):
             if term and term in combined:
                 score += 120
+                reasons.append(f"matches {package} signal")
         if _contains_any_text(combined, ["roof coating", "primer", "sealant", "caulk", "granule"]):
             score -= 200
-    return score
+            reasons.append(f"less suitable for {package}")
+    if not reasons:
+        reasons.append("weak item/package match")
+    return score, reasons
+
+
+def _package_item_fit_score(package: str, option: dict[str, Any], scope: dict[str, Any]) -> float:
+    return _package_item_fit_details(package, option, scope)[0]
 
 
 def _historical_item_options(
@@ -1288,15 +1317,27 @@ def _select_material_item(
         scored = []
         for option in pricing_options:
             name = _normalized(option.get("item_name"))
-            score = _package_item_fit_score(package, option, scope)
+            score, reasons = _package_item_fit_details(package, option, scope)
             if name in historical_by_name:
                 score += 1000 + safe_number(historical_by_name[name].get("evidence_count"), 0)
+                reasons.append("used historically for this package")
             if note_terms and any(term and term in name for term in note_terms.split()):
                 score += 10
-            scored.append((score, option))
+                reasons.append("matches parsed scope wording")
+            scored.append((score, option, reasons))
         scored.sort(key=lambda item: (item[0], -safe_number(item[1].get("unit_price"), 0)), reverse=True)
         selected = dict(scored[0][1])
         selected["item_source"] = "current_pricing_plus_historical_usage" if _normalized(selected.get("item_name")) in historical_by_name else "current_pricing"
+        selected["selected_item_reason"] = "; ".join(scored[0][2])
+        selected["selected_item_score"] = round(float(scored[0][0]), 2)
+        selected["top_rejected_item_reasons"] = [
+            {
+                "item_name": option.get("item_name"),
+                "score": round(float(score), 2),
+                "reason": "; ".join(reasons),
+            }
+            for score, option, reasons in scored[1:6]
+        ]
         historical = historical_by_name.get(_normalized(selected.get("item_name")), {})
         selected["item_median_qty_per_sqft"] = historical.get("median_qty_per_sqft", 0.0)
         selected["item_median_cost_per_sqft"] = historical.get("median_cost_per_sqft", 0.0)
@@ -1309,6 +1350,9 @@ def _select_material_item(
         selected["item_median_qty_per_sqft"] = selected.get("median_qty_per_sqft", 0.0)
         selected["item_median_cost_per_sqft"] = selected.get("median_cost_per_sqft", 0.0)
         selected["item_evidence_count"] = selected.get("evidence_count", 0)
+        selected["selected_item_reason"] = "Selected from historical package usage because no current pricing item matched."
+        selected["selected_item_score"] = 0.0
+        selected["top_rejected_item_reasons"] = []
         return selected
     return {
         "item_name": fallback_label,
@@ -1318,6 +1362,9 @@ def _select_material_item(
         "item_median_qty_per_sqft": 0.0,
         "item_median_cost_per_sqft": 0.0,
         "item_evidence_count": 0,
+        "selected_item_reason": "No current pricing or historical item matched; manual item review required.",
+        "selected_item_score": 0.0,
+        "top_rejected_item_reasons": [],
     }
 
 
@@ -1470,6 +1517,58 @@ def _labor_explanation(
     return f"No historical Roofing labor evidence found; left at 0 for estimator review.{diagnostics} {reason}"
 
 
+def _short_material_note(
+    *,
+    package: str,
+    evidence_count: int,
+    qty_per_sqft: float,
+    status: str,
+    unit_price: float,
+    historical_cost_per_sqft: float,
+    sizing: dict[str, Any],
+    scope: dict[str, Any],
+) -> str:
+    notes: list[str] = []
+    if evidence_count > 0 and qty_per_sqft > 0:
+        notes.append(f"Historical default from {evidence_count} roofing jobs. Median when used: {qty_per_sqft:.4g}/sqft.")
+    elif historical_cost_per_sqft > 0:
+        notes.append("No normalized quantity found; using historical cost default if included.")
+    else:
+        notes.append("No reliable historical quantity or cost found.")
+    notes.append(_suggestion_reason(package, scope, status))
+    if status != "yes":
+        notes.append("Shown unchecked. Historical default is prefilled if needed.")
+    if unit_price > 0:
+        notes.append("Current price found in pricing catalog.")
+    elif historical_cost_per_sqft > 0:
+        notes.append("No current price found; using historical cost default.")
+    if sizing.get("variability_warning"):
+        notes.append("Wide historical range; estimator should review.")
+    return " ".join(part for part in notes if part)
+
+
+def _short_labor_note(
+    *,
+    package: str,
+    evidence_count: int,
+    hours_per_1000: float,
+    status: str,
+    sizing: dict[str, Any],
+    scope: dict[str, Any],
+) -> str:
+    notes: list[str] = []
+    if evidence_count > 0 and hours_per_1000 > 0:
+        notes.append(f"Historical default from {evidence_count} roofing jobs. Median when used: {hours_per_1000:.4g} hrs/1,000 sqft.")
+    else:
+        notes.append("No reliable historical labor default found.")
+    notes.append(_suggestion_reason(package, scope, status))
+    if status != "yes":
+        notes.append("Shown unchecked. Historical default is prefilled if needed.")
+    if sizing.get("variability_warning"):
+        notes.append("Wide historical range; estimator should review.")
+    return " ".join(part for part in notes if part)
+
+
 def material_workbench_rows(
     recommendation: Any,
     data: Any,
@@ -1542,6 +1641,16 @@ def material_workbench_rows(
             explanation += f" Default item selected from historical usage/cost evidence: {item_name}."
         else:
             explanation += " Item can be entered manually if the estimator wants a different product."
+        short_note = _short_material_note(
+            package=package,
+            evidence_count=evidence_count,
+            qty_per_sqft=qty_per_sqft,
+            status=status,
+            scope=scope,
+            unit_price=unit_price,
+            historical_cost_per_sqft=historical_cost_per_sqft,
+            sizing=sizing,
+        )
         rows.append(
             {
                 "include": bool(include),
@@ -1552,6 +1661,9 @@ def material_workbench_rows(
                 "item_name": item_name,
                 "current_item": item_name,
                 "historical_item": item_name if item_source.startswith("historical") else first_nonblank(selected_item.get("historical_item"), ""),
+                "selected_item_reason": selected_item.get("selected_item_reason") or "",
+                "selected_item_score": selected_item.get("selected_item_score") or 0.0,
+                "top_rejected_item_reasons": selected_item.get("top_rejected_item_reasons") or [],
                 "item_source": item_source,
                 "item_options": " | ".join(option.get("item_name") for option in [*pricing_options, *historical_options] if option.get("item_name")),
                 "item_options_json": _item_options_payload(pricing_options, historical_options, selected_item),
@@ -1595,6 +1707,7 @@ def material_workbench_rows(
                 "pricing_source": price_source or selected_price_source,
                 "price_source": selected_price_source,
                 "needs_review": needs_review,
+                "notes": short_note,
                 "explanation": explanation,
             }
         )
@@ -1620,6 +1733,14 @@ def labor_workbench_rows(
         editable_hours_per_1000 = hours_per_1000
         calculated_hours = editable_hours_per_1000 * area / 1000 if include and area else 0.0
         crew_size = int(safe_number(sizing.get("median_crew_size"), 4) or 4)
+        explanation = _labor_explanation(
+            package=package,
+            sizing=sizing,
+            evidence_count=evidence_count,
+            hours_per_1000=hours_per_1000,
+            status=status,
+            scope=scope,
+        )
         rows.append(
             {
                 "include": bool(include),
@@ -1654,7 +1775,7 @@ def labor_workbench_rows(
                 "reset_to_historical_default": False,
                 "confidence": sizing.get("confidence") or _confidence(evidence_count),
                 "source": sizing.get("source") or "no_sufficient_evidence",
-                "explanation": _labor_explanation(
+                "notes": _short_labor_note(
                     package=package,
                     sizing=sizing,
                     evidence_count=evidence_count,
@@ -1662,6 +1783,7 @@ def labor_workbench_rows(
                     status=status,
                     scope=scope,
                 ),
+                "explanation": explanation,
             }
         )
     return rows
@@ -1956,6 +2078,7 @@ def manual_material_workbench_row(scope: dict[str, Any] | None = None, *, item_n
         "pricing_source": "manual",
         "price_source": "manual",
         "needs_review": True,
+        "notes": "Manual material line. Enter item, basis, quantity rate, unit, and unit price.",
         "explanation": "Manual material line. Enter item, basis, quantity rate, unit, and unit price.",
     }
 

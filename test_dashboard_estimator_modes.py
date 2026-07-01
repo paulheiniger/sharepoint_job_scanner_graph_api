@@ -111,7 +111,7 @@ def test_estimator_workbench_uses_compact_columns_by_default() -> None:
         "estimated_cost",
         "evidence_count",
         "confidence",
-        "explanation",
+        "notes",
     ]
     assert app.LABOR_WORKBENCH_COMPACT_COLUMNS == [
         "include",
@@ -125,7 +125,7 @@ def test_estimator_workbench_uses_compact_columns_by_default() -> None:
         "estimated_cost",
         "evidence_count",
         "confidence",
-        "explanation",
+        "notes",
     ]
     assert app.ADDER_WORKBENCH_COMPACT_COLUMNS == [
         "include",

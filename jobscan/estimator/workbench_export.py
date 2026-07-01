@@ -125,7 +125,7 @@ def build_workbench_review_payloads(
                 "estimated_cost",
                 "evidence_count",
                 "confidence",
-                "explanation",
+                "notes",
             ],
         ),
         "labor_final": _compact_rows(
@@ -142,7 +142,7 @@ def build_workbench_review_payloads(
                 "estimated_cost",
                 "evidence_count",
                 "confidence",
-                "explanation",
+                "notes",
             ],
         ),
         "adders_final": _compact_rows(
@@ -178,12 +178,15 @@ def build_workbench_review_payloads(
     workbook_sheets = {
         "Parsed Scope": summary["parsed_scope"],
         "Historical Filters": summary["historical_filters"],
-        "Materials": summary["materials_final"],
-        "Labor": summary["labor_final"],
-        "Adders": summary["adders_final"],
+        "Materials Compact": summary["materials_final"],
+        "Labor Compact": summary["labor_final"],
+        "Adders Compact": summary["adders_final"],
         "Totals": summary["totals"],
         "Review Flags": [{"review_flag": flag} for flag in summary["review_flags"]] or [{"review_flag": ""}],
         "Similar Jobs": recalculated.get("similar_jobs") or [],
+        "Debug Materials": materials,
+        "Debug Labor": labor,
+        "Debug Adders": adders,
     }
 
     return _json_payload(summary), _json_payload(debug), workbook_sheets

@@ -8,7 +8,9 @@ from uuid import uuid4
 
 from openpyxl import Workbook, load_workbook
 
+from jobscan.estimator.workbench import workbench_to_draft_workbook_inputs
 from jobscan.estimator.workbench_export import EXCEL_CELL_LIMIT, export_workbench_review_package
+from jobscan.estimator.workbook_writer import generate_estimate_workbook, resolve_default_template_path
 
 
 def sample_workbench() -> dict:
@@ -39,6 +41,7 @@ def sample_workbench() -> dict:
                 "rows_accepted": 12,
                 "rows_rejected": 2,
                 "rejection_reasons": {"missing_qty": 2},
+                "notes": "Historical default from 12 roofing jobs.",
                 "explanation": "Used in historical jobs.",
             }
         ],
@@ -56,6 +59,7 @@ def sample_workbench() -> dict:
                 "estimated_cost": 2880,
                 "evidence_count": 9,
                 "confidence": "medium",
+                "notes": "Historical default from 9 roofing jobs.",
                 "explanation": "Historical median.",
             }
         ],
@@ -105,6 +109,81 @@ def test_export_package_creates_zip_with_expected_files_and_workbook(tmp_path) -
         assert summary["input_notes"] == "Roof coating notes"
         assert summary["parsed_scope"]["project_type"] == "roof coating"
 
+        archive.extract("workbench_summary.xlsx", path=tmp_path)
+    summary_workbook = load_workbook(tmp_path / "workbench_summary.xlsx", read_only=True, data_only=True)
+    assert {"Materials Compact", "Labor Compact", "Adders Compact", "Debug Materials", "Debug Labor", "Debug Adders"}.issubset(
+        set(summary_workbook.sheetnames)
+    )
+
+
+def test_workbench_output_generates_estimate_workbook_and_review_package_includes_it(tmp_path) -> None:
+    workbench = sample_workbench()
+    workbench["materials"].extend(
+        [
+            {
+                "include": True,
+                "workbook_row": "39",
+                "package": "Primer",
+                "package_key": "primer",
+                "item_name": "Epoxy Primer 5 Gal",
+                "editable_basis_sqft": 10000,
+                "editable_qty_per_sqft": 0.001,
+                "historical_qty_per_sqft": 0.001,
+                "calculated_quantity": 10,
+                "unit": "pail",
+                "current_unit_price": 275,
+                "estimated_cost": 2750,
+                "evidence_count": 5,
+                "confidence": "medium",
+                "notes": "Primer included by estimator.",
+            },
+            {
+                "include": False,
+                "workbook_row": "43",
+                "package": "Caulk / Detail",
+                "package_key": "caulk_detail",
+                "item_name": "Unchecked sealant",
+                "editable_basis_sqft": 10000,
+                "editable_qty_per_sqft": 1,
+                "historical_qty_per_sqft": 1,
+                "calculated_quantity": 10000,
+                "unit": "tube",
+                "current_unit_price": 999,
+                "estimated_cost": 999000,
+                "evidence_count": 5,
+                "confidence": "medium",
+                "notes": "Should not export because unchecked.",
+            },
+        ]
+    )
+    draft_inputs = workbench_to_draft_workbook_inputs(workbench)
+
+    assert {row["category"] for row in draft_inputs["material_rows"]} == {"coating", "primer"}
+    assert {row["task"] for row in draft_inputs["labor_rows"]} == {"labor_base"}
+
+    workbook_path = generate_estimate_workbook(draft_inputs, resolve_default_template_path(), tmp_path, "workbench.xlsx")
+    workbook = load_workbook(workbook_path, data_only=False)
+    ws = workbook["Estimate"]
+
+    assert ws["A26"].value == "GAF High Solids Silicone 55 Gal"
+    assert ws["C26"].value == 10000
+    assert ws["E26"].value == 38
+    assert ws["C39"].value == 10
+    assert ws["E39"].value == 275
+    assert ws["B122"].value == 1.25
+    assert ws["C122"].value == 4
+    assert ws["A43"].value != "Unchecked sealant"
+
+    zip_path = export_workbench_review_package(
+        workbench=workbench,
+        input_notes="Roof coating notes",
+        output_dir=tmp_path,
+        workbook_path=workbook_path,
+    )
+    with zipfile.ZipFile(zip_path) as archive:
+        assert "exported_workbook.xlsx" in archive.namelist()
+        assert "workbook_export_error.txt" not in archive.namelist()
+
 
 def test_export_excel_handles_timezone_datetimes_and_long_text(tmp_path) -> None:
     workbench = sample_workbench()
@@ -122,7 +201,7 @@ def test_export_excel_handles_timezone_datetimes_and_long_text(tmp_path) -> None
     with zipfile.ZipFile(zip_path) as archive:
         archive.extract("workbench_summary.xlsx", path=tmp_path)
     workbook = load_workbook(tmp_path / "workbench_summary.xlsx", read_only=True, data_only=True)
-    materials = workbook["Materials"]
+    materials = workbook["Debug Materials"]
     headers = [cell.value for cell in next(materials.iter_rows(min_row=1, max_row=1))]
     explanation_index = headers.index("explanation")
     row = next(materials.iter_rows(min_row=2, max_row=2))
@@ -146,4 +225,3 @@ def test_missing_workbook_export_does_not_crash_package_export(tmp_path) -> None
         assert "workbook_export_error.txt" in names
         assert "exported_workbook.xlsx" not in names
         assert b"Workbook generation failed" in archive.read("workbook_export_error.txt")
-

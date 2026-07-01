@@ -90,7 +90,7 @@ MATERIAL_WORKBENCH_COMPACT_COLUMNS = [
     "estimated_cost",
     "evidence_count",
     "confidence",
-    "explanation",
+    "notes",
 ]
 
 LABOR_WORKBENCH_COMPACT_COLUMNS = [
@@ -105,7 +105,7 @@ LABOR_WORKBENCH_COMPACT_COLUMNS = [
     "estimated_cost",
     "evidence_count",
     "confidence",
-    "explanation",
+    "notes",
 ]
 
 ADDER_WORKBENCH_COMPACT_COLUMNS = [
@@ -4363,6 +4363,8 @@ def estimator_prototype_page() -> None:
             "current_item",
             "historical_item",
             "item_name",
+            "selected_item_reason",
+            "top_rejected_item_reasons",
             "item_source",
             "suggested_by_notes_rules",
             "historical_median",
@@ -4398,6 +4400,7 @@ def estimator_prototype_page() -> None:
             "manual_override",
             "reset_to_historical_default",
             "rejection_reasons",
+            "notes",
             "explanation",
         ] if show_row_details else MATERIAL_WORKBENCH_COMPACT_COLUMNS
         edited_materials_df = st.data_editor(
@@ -4410,30 +4413,32 @@ def estimator_prototype_page() -> None:
             column_config={
                 "include": st.column_config.CheckboxColumn("Include"),
                 "template_bucket": "Template Bucket",
-                "workbook_row": "Workbook Row",
-                "package": "Package",
+                "workbook_row": "Row",
+                "package": "Template Line",
                 "current_item": "Current Item",
                 "historical_item": "Historical Item",
                 "item_name": "Item Name",
+                "selected_item_reason": "Selected Item Reason",
+                "top_rejected_item_reasons": "Rejected Item Reasons",
                 "item_source": "Item Source",
-                "suggested_by_notes_rules": "Suggested by Notes/Rules",
+                "suggested_by_notes_rules": "Suggested",
                 "historical_median": "Historical Median",
                 "editable_default": "Editable Default",
                 "historical_usage_rate": "Historical Usage Rate",
                 "historical_qty_per_basis_sqft": "Historical Qty / Basis Sq Ft",
-                "editable_basis_sqft": "Editable Basis Sq Ft",
+                "editable_basis_sqft": "Basis Sq Ft",
                 "historical_qty_per_sqft": "Historical Qty / Sq Ft",
                 "p25_qty_per_sqft": "P25 Qty / Sq Ft",
                 "p75_qty_per_sqft": "P75 Qty / Sq Ft",
-                "editable_qty_per_sqft": "Editable Qty / Sq Ft",
-                "calculated_quantity": "Calculated Quantity",
+                "editable_qty_per_sqft": "Qty / Sq Ft",
+                "calculated_quantity": "Quantity",
                 "unit": "Unit",
                 "current_price": "Current Price",
-                "current_unit_price": "Current Unit Price",
+                "current_unit_price": "Unit Price",
                 "historical_cost_default": "Historical Cost Default",
                 "historical_cost_per_sqft": "Historical Cost / Sq Ft",
-                "estimated_cost": "Estimated Cost",
-                "evidence_count": "Evidence Count",
+                "estimated_cost": "Cost",
+                "evidence_count": "Evidence",
                 "historical_cost_evidence_count": "Cost Evidence Count",
                 "historical_jobs_found": "Historical Jobs Found",
                 "rows_accepted": "Rows Accepted",
@@ -4450,6 +4455,7 @@ def estimator_prototype_page() -> None:
                 "manual_override": "Manual Override",
                 "reset_to_historical_default": st.column_config.CheckboxColumn("Reset"),
                 "rejection_reasons": "Rejected Row Reasons",
+                "notes": "Notes",
                 "explanation": "Explanation",
             },
             disabled=[
@@ -4458,6 +4464,8 @@ def estimator_prototype_page() -> None:
                 "package",
                 "current_item",
                 "historical_item",
+                "selected_item_reason",
+                "top_rejected_item_reasons",
                 "item_source",
                 "suggested_by_notes_rules",
                 "historical_median",
@@ -4488,6 +4496,7 @@ def estimator_prototype_page() -> None:
                 "needs_review",
                 "manual_override",
                 "rejection_reasons",
+                "notes",
                 "explanation",
             ],
         )
@@ -4525,6 +4534,7 @@ def estimator_prototype_page() -> None:
             "manual_override",
             "reset_to_historical_default",
             "rejection_reasons",
+            "notes",
             "explanation",
         ] if show_row_details else LABOR_WORKBENCH_COMPACT_COLUMNS
         edited_labor_df = st.data_editor(
@@ -4537,20 +4547,20 @@ def estimator_prototype_page() -> None:
             column_config={
                 "include": st.column_config.CheckboxColumn("Include"),
                 "template_bucket": "Template Bucket",
-                "workbook_row": "Workbook Row",
-                "labor_package": "Labor Package",
-                "suggested_by_notes_rules": "Suggested by Notes/Rules",
+                "workbook_row": "Row",
+                "labor_package": "Labor Task",
+                "suggested_by_notes_rules": "Suggested",
                 "historical_median": "Historical Median",
                 "editable_default": "Editable Default",
                 "historical_hours_per_1000_sqft": "Historical Hours / 1000 Sq Ft",
                 "p25_hours_per_1000_sqft": "P25 Hours / 1000 Sq Ft",
                 "p75_hours_per_1000_sqft": "P75 Hours / 1000 Sq Ft",
-                "editable_hours_per_1000_sqft": "Editable Hours / 1000 Sq Ft",
-                "calculated_hours": "Calculated Hours",
+                "editable_hours_per_1000_sqft": "Hrs / 1000 Sq Ft",
+                "calculated_hours": "Hours",
                 "crew_size": "Crew Size",
-                "labor_rate": "Labor Rate",
-                "estimated_cost": "Estimated Cost",
-                "evidence_count": "Evidence Count",
+                "labor_rate": "Rate",
+                "estimated_cost": "Cost",
+                "evidence_count": "Evidence",
                 "historical_jobs_found": "Historical Jobs Found",
                 "rows_accepted": "Rows Accepted",
                 "rows_rejected": "Rows Rejected",
@@ -4564,6 +4574,7 @@ def estimator_prototype_page() -> None:
                 "manual_override": "Manual Override",
                 "reset_to_historical_default": st.column_config.CheckboxColumn("Reset"),
                 "rejection_reasons": "Rejected Row Reasons",
+                "notes": "Notes",
                 "explanation": "Explanation",
             },
             disabled=[
@@ -4591,6 +4602,7 @@ def estimator_prototype_page() -> None:
                 "filters_relaxed",
                 "manual_override",
                 "rejection_reasons",
+                "notes",
                 "explanation",
             ],
         )
@@ -4634,7 +4646,7 @@ def estimator_prototype_page() -> None:
             column_config={
                 "include": st.column_config.CheckboxColumn("Include"),
                 "template_bucket": "Template Bucket",
-                "workbook_row": "Workbook Row",
+                "workbook_row": "Row",
                 "adder": "Adder",
                 "historical_median": "Historical Median",
                 "editable_default": "Editable Default",
@@ -4642,9 +4654,9 @@ def estimator_prototype_page() -> None:
                 "median_cost_when_used": "Median Cost When Used",
                 "median_cost_per_sqft": "Median Cost / Sq Ft",
                 "historical_default_value": "Historical Default",
-                "editable_value": "Editable Value",
-                "estimated_cost": "Estimated Cost",
-                "evidence_count": "Evidence Count",
+                "editable_value": "Amount",
+                "estimated_cost": "Cost",
+                "evidence_count": "Evidence",
                 "range_width": "Range Width",
                 "relative_range_width": "Relative Range Width",
                 "variability_warning": "Variability",
@@ -4773,12 +4785,35 @@ def estimator_prototype_page() -> None:
         st.markdown("**Review Package**")
         if st.button("Export Review Package", key=f"export_workbench_review_package_{workbench_key}_{scope_key}_{historical_filters_key}"):
             try:
+                workbook_path_for_package = None
+                workbook_error_for_package = None
+                template_path = resolve_default_template_path()
+                if not template_path.exists():
+                    workbook_error_for_package = "Estimate template workbook not found. Add it to templates/Estimate - Full Turnkey.xlsx."
+                    st.session_state.pop(workbook_path_key, None)
+                    st.session_state[workbook_error_key] = workbook_error_for_package
+                else:
+                    try:
+                        edited_workbook_inputs = workbench_to_draft_workbook_inputs(edited_workbench)
+                        generated_workbook_path = generate_estimate_workbook(
+                            edited_workbook_inputs,
+                            template_path,
+                            DEFAULT_ESTIMATE_OUTPUT_DIR,
+                        )
+                        workbook_path_for_package = str(generated_workbook_path)
+                        st.session_state[workbook_path_key] = workbook_path_for_package
+                        st.session_state.pop(workbook_error_key, None)
+                    except Exception as workbook_exc:
+                        logger.exception("Field notes Excel draft generation failed during review package export")
+                        workbook_error_for_package = f"Could not generate Excel estimate draft: {safe_exception_text(workbook_exc)}"
+                        st.session_state.pop(workbook_path_key, None)
+                        st.session_state[workbook_error_key] = workbook_error_for_package
                 package_path = export_workbench_review_package(
                     workbench=edited_workbench,
                     input_notes=recommendation_notes,
                     output_dir=DEFAULT_WORKBENCH_EXPORT_DIR,
-                    workbook_path=st.session_state.get(workbook_path_key),
-                    workbook_export_error=st.session_state.get(workbook_error_key),
+                    workbook_path=workbook_path_for_package,
+                    workbook_export_error=workbook_error_for_package,
                     runtime=getattr(field_recommendation, "runtime_seconds_by_stage", None)
                     or field_recommendation.parsed_fields.get("runtime_seconds_by_stage")
                     or {},
@@ -4786,6 +4821,10 @@ def estimator_prototype_page() -> None:
                 )
                 st.session_state[f"workbench_review_package_path_{workbench_key}"] = str(package_path)
                 st.success(f"Estimator review package created: {package_path}")
+                if workbook_path_for_package:
+                    st.caption(f"Included generated workbook: {workbook_path_for_package}")
+                elif workbook_error_for_package:
+                    st.warning(f"Review package includes workbook_export_error.txt: {workbook_error_for_package}")
             except Exception as exc:
                 logger.exception("Estimator workbench review package export failed")
                 st.error(f"Could not export review package: {safe_exception_text(exc)}")
