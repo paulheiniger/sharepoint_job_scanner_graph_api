@@ -245,18 +245,24 @@ def parse_insulation_quote_scope(notes: str) -> dict[str, Any]:
     ):
         count = _count_from_match(match.group("count")) or 1
         width_ft = _feet_from_inches(match.group("width"))
+        assumed_height_ft = 7.0 if width_ft and abs(width_ft - 3.0) < 0.01 else None
+        area = round(count * width_ft * assumed_height_ft, 2) if width_ft and assumed_height_ft else None
+        if area:
+            opening_area_known += area
         openings.append(
             {
                 "opening_type": "walk_in_door",
                 "quantity": count,
                 "width_ft": round(width_ft, 3) if width_ft is not None else None,
-                "height_ft": None,
-                "known_area_sqft": None,
-                "missing_dimensions": ["height_ft"],
+                "height_ft": assumed_height_ft,
+                "known_area_sqft": area,
+                "missing_dimensions": [] if assumed_height_ft else ["height_ft"],
+                "assumptions": ["Walk-in door height assumed 7 ft from estimator default."] if assumed_height_ft else [],
                 "source_text": match.group(0),
             }
         )
-        result["opening_area_missing"] = True
+        if not assumed_height_ft:
+            result["opening_area_missing"] = True
 
     for match in re.finditer(
         r"\b(?P<count>one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2})\s+"
@@ -294,6 +300,14 @@ def parse_insulation_quote_scope(notes: str) -> dict[str, Any]:
 
     if result["opening_area_missing"]:
         result["review_flags"].append("Opening deductions are incomplete because one or more door dimensions are missing.")
+    assumption_notes = [
+        assumption
+        for opening in openings
+        for assumption in (opening.get("assumptions") or [])
+    ]
+    if assumption_notes:
+        result["assumptions"] = list(dict.fromkeys(assumption_notes))
+        result["review_flags"].extend(result["assumptions"])
     if openings:
         result["evidence_by_field"]["openings"] = [opening.get("source_text") for opening in openings]
         result["confidence_by_field"]["openings"] = "medium" if result["opening_area_missing"] else "high"

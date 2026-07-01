@@ -18,6 +18,9 @@ from .rules import first_nonblank, to_float
 DEFAULT_HOURLY_RATE = 72.0
 DEFAULT_MIN_EVIDENCE_COUNT = 3
 HIGH_VARIABILITY_THRESHOLD = 1.0
+ADDER_MIN_RELIABLE_EVIDENCE = 5
+MAX_ADDER_DEFAULT_COST = 25000.0
+MAX_ADDER_DEFAULT_COST_PER_SQFT = 5.0
 
 FILTER_RELAXATION_ORDER = [
     "penetrations_complexity",
@@ -755,23 +758,23 @@ def _plan_included_package(recommendation: Any, package: str) -> bool:
 
 def _package_suggestion_status(recommendation: Any, package: str, scope: dict[str, Any] | None = None) -> str:
     package_text = _normalized(package)
-    for row in _records(_rec_value(recommendation, "material_plan", [])):
-        text = _normalized(" ".join(str(row.get(key) or "") for key in ("category", "package", "item", "notes")))
-        if package_text in text or (package == "coating" and "coating" in text):
-            if row.get("included_in_total") is False or row.get("needs_review") is True or row.get("review_required") is True:
-                return "review"
-            return "yes"
     notes = _scope_note_text(recommendation, scope)
     note_text = _normalized(notes)
     if scope is not None and _is_insulation_scope(scope):
         if package == "foam":
-            return "review" if (scope.get("opening_area_missing") or scope.get("missing_questions")) else "yes"
+            return "yes"
         if package == "thermal_barrier_coating":
             return "review"
         if package in {"membrane", "primer", "caulk_sealant"}:
             return "review" if _has_positive_note_signal(note_text, ["thermal barrier", "dc315", "ignition barrier", "seal", "caulk", "membrane", "primer"]) else "no"
         if package in {"lift", "delivery_fee", "generator", "space_heater", "freight", "abaa_audit", "drum_disposal", "misc_materials", "thinner"}:
             return "no"
+    for row in _records(_rec_value(recommendation, "material_plan", [])):
+        text = _normalized(" ".join(str(row.get(key) or "") for key in ("category", "package", "item", "notes")))
+        if package_text in text or (package == "coating" and "coating" in text):
+            if row.get("included_in_total") is False or row.get("needs_review") is True or row.get("review_required") is True:
+                return "review"
+            return "yes"
     if package == "coating" and first_nonblank((_rec_value(recommendation, "parsed_fields", {}) or {}).get("coating_type")):
         return "yes"
     if package == "primer" and _has_positive_note_signal(note_text, ["primer", "prime", "priming", "rust", "oxidation", "adhesion"]):
@@ -797,7 +800,9 @@ def _labor_suggestion_status(recommendation: Any, package: str, scope: dict[str,
     notes = _scope_note_text(recommendation, scope)
     note_text = _normalized(notes)
     if scope is not None and _is_insulation_scope(scope):
-        if package in {"labor_foam", "labor_set_up", "labor_clean_up", "labor_loading", "labor_traveling"}:
+        if package in {"labor_foam", "labor_set_up", "labor_clean_up", "labor_loading"}:
+            return "yes"
+        if package == "labor_traveling":
             return "review"
         if package == "labor_dc_315":
             return "review"
@@ -1305,12 +1310,13 @@ def adder_sizing_distribution(data: Any, adder: str, area: float = 0.0, filters:
     median_cost = _positive_percentile(cost_rows.get("total_cost", pd.Series(dtype=float)), 0.5)
     median_psf = _positive_percentile(psf_rows.get("cost_per_sqft", pd.Series(dtype=float)), 0.5)
     editable_default = median_cost if median_cost > 0 else median_psf * area if area and median_psf > 0 else 0.0
-    all_roofing = summary.copy()
-    if "division" in all_roofing.columns:
-        roofing = all_roofing["division"].map(_normalized).eq("roofing")
-        if roofing.any():
-            all_roofing = all_roofing[roofing].copy()
-    denominator = _job_count(all_roofing)
+    denominator_rows = summary.copy()
+    target_division = _normalized((filters or {}).get("division")) or "roofing"
+    if "division" in denominator_rows.columns:
+        division_rows = denominator_rows["division"].map(_normalized).eq(target_division)
+        if division_rows.any():
+            denominator_rows = denominator_rows[division_rows].copy()
+    denominator = _job_count(denominator_rows)
     evidence_count = _job_count(cost_rows)
     usage_rate = round(min(_job_count(eligible) / denominator, 1.0), 4) if denominator else 0.0
     return _with_distribution_metadata(
@@ -1332,6 +1338,19 @@ def adder_sizing_distribution(data: Any, adder: str, area: float = 0.0, filters:
         },
         filter_summary,
     )
+
+
+def _is_reliable_adder_default(sizing: dict[str, Any]) -> bool:
+    evidence_count = int(safe_number(sizing.get("evidence_count"), 0))
+    median_cost = safe_number(sizing.get("median_cost_when_used"), 0.0)
+    median_psf = safe_number(sizing.get("median_cost_per_sqft"), 0.0)
+    if evidence_count < ADDER_MIN_RELIABLE_EVIDENCE:
+        return False
+    if median_cost > MAX_ADDER_DEFAULT_COST:
+        return False
+    if median_psf > MAX_ADDER_DEFAULT_COST_PER_SQFT:
+        return False
+    return True
 
 
 def _price_for_package(pricing: pd.DataFrame, package_spec: dict[str, Any], scope: dict[str, Any]) -> tuple[float, str]:
@@ -2253,10 +2272,13 @@ def adder_workbench_rows(
     travel = _rec_value(recommendation, "travel_plan", {}) or {}
     travel_cost = safe_number(travel.get("travel_vehicle_cost"), 0.0) + safe_number(travel.get("travel_labor_cost"), 0.0)
     rows = []
+    history_label = _history_label(scope)
     for spec in ADDER_ROWS:
         is_travel = spec["adder"] == "travel"
         sizing = adder_sizing_distribution(data, spec["adder"], area, historical_filters)
-        historical_default = safe_number(sizing.get("editable_default"), 0.0)
+        reliable_default = _is_reliable_adder_default(sizing)
+        raw_historical_default = safe_number(sizing.get("editable_default"), 0.0)
+        historical_default = raw_historical_default if reliable_default else 0.0
         editable_value = travel_cost if is_travel and travel_cost > 0 else historical_default
         include = bool(is_travel and travel_cost > 0)
         estimated_cost = editable_value if include else 0.0
@@ -2264,8 +2286,10 @@ def adder_workbench_rows(
         if not notes and historical_default > 0:
             notes = (
                 f"Shown unchecked. Historical default is prefilled so estimator can include it if needed. "
-                f"Median when used: ${historical_default:,.2f} from {int(safe_number(sizing.get('evidence_count'), 0))} historical Roofing jobs."
+                f"Median when used: ${historical_default:,.2f} from {int(safe_number(sizing.get('evidence_count'), 0))} historical {history_label} jobs."
             )
+        elif not notes and raw_historical_default > 0 and not reliable_default:
+            notes = "Insufficient reliable history; estimator review required."
         rows.append(
             {
                 "include": include,
@@ -2291,9 +2315,9 @@ def adder_workbench_rows(
                 "filter_hash": sizing.get("filter_hash") or historical_filter_hash(historical_filters),
                 "manual_override": False,
                 "reset_to_historical_default": False,
-                "confidence": "review" if is_travel and travel_cost > 0 else sizing.get("confidence") or "none",
+                "confidence": "review" if is_travel and travel_cost > 0 else (sizing.get("confidence") if reliable_default else ("low" if int(safe_number(sizing.get("evidence_count"), 0)) else "none")),
                 "source": "travel_plan" if is_travel and travel_cost > 0 else sizing.get("source") or "manual",
-                "needs_review": bool(editable_value > 0),
+                "needs_review": bool(editable_value > 0 or not reliable_default),
                 "notes": notes,
             }
         )

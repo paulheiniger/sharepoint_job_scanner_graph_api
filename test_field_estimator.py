@@ -1146,16 +1146,25 @@ def test_insulation_email_routes_and_parses_building_dimensions() -> None:
     assert parsed["ceiling_area_sqft"] == 1200
     assert parsed["gross_wall_area_sqft"] == 1260
     assert parsed["gross_insulation_area_sqft"] == 2460
-    assert parsed["opening_area_known_sqft"] == 30
+    assert parsed["opening_area_known_sqft"] == 72
     assert parsed["opening_area_missing"] is True
-    assert parsed["net_insulation_area_sqft"] == 2430
-    assert parsed["estimated_sqft"] == 2430
+    assert parsed["net_insulation_area_sqft"] == 2388
+    assert parsed["estimated_sqft"] == 2388
+    walk_in = next(opening for opening in parsed["openings"] if opening["opening_type"] == "walk_in_door")
+    windows = next(opening for opening in parsed["openings"] if opening["opening_type"] == "window")
+    rollup = next(opening for opening in parsed["openings"] if opening["opening_type"] == "rollup_door")
+    assert walk_in["known_area_sqft"] == 42
+    assert walk_in["height_ft"] == 7
+    assert windows["known_area_sqft"] == 30
+    assert "width_ft" in rollup["missing_dimensions"]
+    assert any("Walk-in door height assumed 7 ft" in item for item in parsed["assumptions"])
     assert parsed["requested_timing"] == "September or October"
     assert parsed["building_installation_timing"] == "beginning to mid-August"
     assert parsed["customer_name"] == "James F. Collins"
     assert parsed["phone"] == "513-319-2779"
     assert parsed["address"] == "314 E Aberdeen Drive, Trenton, OH"
     assert any("Rollup door width" in question for question in recommendation.required_questions)
+    assert not any("Walk-in door height" in question for question in recommendation.required_questions)
     assert any("foam type" in question.lower() for question in recommendation.required_questions)
     assert any("thickness or R-value" in question for question in recommendation.required_questions)
     assert recommendation.estimate_status == "READY_TO_ESTIMATE"

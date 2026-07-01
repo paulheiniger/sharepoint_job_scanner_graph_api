@@ -52,13 +52,13 @@ def sample_insulation_recommendation() -> EstimateRecommendation:
             "project_type": "spray foam insulation",
             "building_type": "metal building",
             "substrate": "metal",
-            "estimated_sqft": 2430,
+            "estimated_sqft": 2388,
             "gross_insulation_area_sqft": 2460,
             "gross_wall_area_sqft": 1260,
             "ceiling_area_sqft": 1200,
-            "opening_area_known_sqft": 30,
+            "opening_area_known_sqft": 72,
             "opening_area_missing": True,
-            "net_insulation_area_sqft": 2430,
+            "net_insulation_area_sqft": 2388,
             "missing_questions": ["What foam type: open-cell or closed-cell?", "Rollup door width?"],
             "notes": "Foam sprayed in a 30x40 metal building with 9' walls. Insulate outside walls and ceiling.",
         },
@@ -76,8 +76,82 @@ def sample_insulation_recommendation() -> EstimateRecommendation:
         estimate_high=None,
         review_flags=[],
         human_review_required=True,
-        draft_workbook_inputs={"header": {"C12_estimated_sqft": 2430}},
+        draft_workbook_inputs={"header": {"C12_estimated_sqft": 2388}},
     )
+
+
+def sample_insulation_data() -> EstimatorData:
+    rows = []
+    for idx, qty_rate in enumerate([0.08, 0.085, 0.09, 0.095, 0.1], start=1):
+        rows.append(
+            {
+                "job_id": f"IF{idx}",
+                "division": "Insulation",
+                "template_type": "insulation",
+                "project_type": "spray foam insulation",
+                "substrate": "metal building",
+                "package": "foam",
+                "item_name": "Closed-cell spray foam",
+                "area_sqft": 2500,
+                "total_quantity": qty_rate * 2500,
+                "unit": "set",
+                "qty_per_sqft": qty_rate,
+                "total_cost": 2500 * 2.6,
+                "cost_per_sqft": 2.6,
+                "has_physical_quantity": True,
+            }
+        )
+    for package, hours in {
+        "labor_set_up": [1.8, 2.0, 2.2, 2.0, 2.1],
+        "labor_foam": [10.0, 11.0, 12.0, 11.5, 12.5],
+        "labor_clean_up": [1.2, 1.5, 1.4, 1.6, 1.3],
+        "labor_loading": [0.8, 1.0, 1.1, 1.0, 0.9],
+        "labor_traveling": [2.5, 3.0, 3.1, 2.8, 3.2],
+    }.items():
+        for idx, hrs_per_1000 in enumerate(hours, start=1):
+            rows.append(
+                {
+                    "job_id": f"IL{package}{idx}",
+                    "division": "Insulation",
+                    "template_type": "insulation",
+                    "project_type": "spray foam insulation",
+                    "substrate": "metal building",
+                    "package": package,
+                    "area_sqft": 2500,
+                    "total_hours": hrs_per_1000 * 2.5,
+                    "hours_per_sqft": hrs_per_1000 / 1000,
+                    "crew_size": 3,
+                }
+            )
+    for idx, cost in enumerate([450, 475, 500, 525, 550], start=1):
+        rows.append(
+            {
+                "job_id": f"IT{idx}",
+                "division": "Insulation",
+                "template_type": "insulation",
+                "project_type": "spray foam insulation",
+                "substrate": "metal building",
+                "package": "travel",
+                "area_sqft": 2500,
+                "total_cost": cost,
+                "cost_per_sqft": cost / 2500,
+            }
+        )
+    for idx in range(1, 3):
+        rows.append(
+            {
+                "job_id": f"IH{idx}",
+                "division": "Insulation",
+                "template_type": "insulation",
+                "project_type": "spray foam insulation",
+                "substrate": "metal building",
+                "package": "hotel",
+                "area_sqft": 2500,
+                "total_cost": 55500,
+                "cost_per_sqft": 22.2,
+            }
+        )
+    return EstimatorData(job_package_summary=pd.DataFrame(rows))
 
 
 def sample_data() -> EstimatorData:
@@ -516,12 +590,12 @@ def test_workbench_populates_common_editable_rows_from_relationship_tables() -> 
 
 
 def test_insulation_workbench_uses_insulation_filters_and_rows_only() -> None:
-    workbench = build_estimating_workbench(sample_insulation_recommendation(), EstimatorData())
+    workbench = build_estimating_workbench(sample_insulation_recommendation(), sample_insulation_data())
 
     assert workbench["historical_filters"]["division"] == "Insulation"
     assert workbench["historical_filters"]["template_type"] == "insulation"
     assert workbench["historical_filters"]["project_type"] == "spray foam insulation"
-    assert workbench["scope"]["net_insulation_area_sqft"] == 2430
+    assert workbench["scope"]["net_insulation_area_sqft"] == 2388
 
     material_keys = {row["package_key"] for row in workbench["materials"]}
     labor_keys = {row["package_key"] for row in workbench["labor"]}
@@ -535,7 +609,27 @@ def test_insulation_workbench_uses_insulation_filters_and_rows_only() -> None:
 
     draft = workbench_to_draft_workbook_inputs(workbench)
     assert draft["template_type"] == "insulation"
-    assert draft["header"]["C12_estimated_sqft"] == 2430
+    assert draft["header"]["C12_estimated_sqft"] == 2388
+
+    materials = {row["package_key"]: row for row in workbench["materials"]}
+    labor = {row["package_key"]: row for row in workbench["labor"]}
+    foam = materials["foam"]
+    assert foam["include"] is True
+    assert foam["editable_basis_sqft"] == 2388
+    assert foam["editable_qty_per_sqft"] > 0
+    assert foam["calculated_quantity"] > 0
+    assert foam["estimated_cost"] > 0
+    assert labor["labor_foam"]["include"] is True
+    assert labor["labor_set_up"]["include"] is True
+    assert labor["labor_clean_up"]["include"] is True
+    assert labor["labor_loading"]["include"] is True
+    assert labor["labor_traveling"]["suggested_by_notes_rules"] == "review"
+    assert labor["labor_foam"]["editable_hours_per_1000_sqft"] > 0
+    assert labor["labor_foam"]["calculated_hours"] > 0
+
+    totals = recalculate_workbench_tables(workbench)
+    assert sum(row["estimated_cost"] for row in totals["labor"] if row["include"]) > 0
+    assert sum(row["estimated_cost"] for row in totals["materials"] if row["include"]) > 0
 
 
 def test_historical_filter_calculation_updates_material_and_labor_defaults() -> None:
@@ -940,20 +1034,33 @@ def test_missing_current_price_uses_historical_cost_default_when_included() -> N
         assert recalculated_row["estimated_cost"] == expected_psf * 10000
 
 
-def test_adders_populate_historical_defaults_without_contributing_until_included() -> None:
+def test_low_evidence_adders_are_not_prefilled() -> None:
     workbench = build_estimating_workbench(sample_recommendation(), sample_data())
     adders = {row["adder_key"]: row for row in workbench["adders"]}
 
     assert adders["lift"]["include"] is False
-    assert adders["lift"]["editable_value"] == 1500
+    assert adders["lift"]["editable_value"] == 0
     assert adders["lift"]["estimated_cost"] == 0
     assert adders["lift"]["evidence_count"] == 1
+    assert "Insufficient reliable history" in adders["lift"]["notes"]
     assert adders["generator"]["include"] is False
-    assert adders["generator"]["editable_value"] == 900
+    assert adders["generator"]["editable_value"] == 0
 
     adders["lift"]["include"] = True
     recalculated = recalculate_workbench_tables({"scope": workbench["scope"], "materials": [], "labor": [], "adders": [adders["lift"]]})
-    assert recalculated["adders"][0]["estimated_cost"] == 1500
+    assert recalculated["adders"][0]["estimated_cost"] == 0
+
+
+def test_insulation_adders_use_insulation_wording_and_suppress_hotel_outlier() -> None:
+    workbench = build_estimating_workbench(sample_insulation_recommendation(), sample_insulation_data())
+    adders = {row["adder_key"]: row for row in workbench["adders"]}
+
+    assert "historical Insulation jobs" in adders["travel"]["notes"]
+    assert "historical Roofing jobs" not in str(workbench["adders"])
+    assert adders["hotel"]["median_cost_when_used"] == 55500
+    assert adders["hotel"]["editable_value"] == 0
+    assert adders["hotel"]["confidence"] == "low"
+    assert "Insufficient reliable history" in adders["hotel"]["notes"]
 
 
 def test_edit_history_flags_large_material_and_labor_changes() -> None:

@@ -2983,6 +2983,7 @@ def parsed_fields_for_result(
         "opening_area_missing",
         "net_insulation_area_sqft",
         "openings",
+        "assumptions",
         "requested_timing",
         "building_installation_timing",
         "customer_name",

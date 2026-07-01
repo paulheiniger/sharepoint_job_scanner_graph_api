@@ -124,7 +124,7 @@ def test_insulation_review_package_exports_without_workbook(tmp_path) -> None:
             "template_type": "insulation",
             "project_type": "spray foam insulation",
             "gross_insulation_area_sqft": 2460,
-            "net_insulation_area_sqft": 2430,
+            "net_insulation_area_sqft": 2388,
             "opening_area_missing": True,
         },
         "historical_filters": {"division": "Insulation", "template_type": "insulation"},
