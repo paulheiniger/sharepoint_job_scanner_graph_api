@@ -552,6 +552,28 @@ def _normalized_text(value: Any) -> str:
 def scope_template_type(scope: dict[str, Any]) -> str:
     text = _scope_text(scope)
     project_type = _normalized_text(scope.get("project_type"))
+    explicit_template = _normalized_text(scope.get("template_type"))
+    explicit_division = _normalized_text(scope.get("division"))
+    if explicit_template == "insulation" or explicit_division == "insulation":
+        return "insulation"
+    strong_insulation_signal = any(
+        term in text or term in project_type
+        for term in (
+            "spray foam",
+            "foam sprayed",
+            "sprayed foam",
+            "wall insulation",
+            "outside walls",
+            "walls and ceiling",
+            "dc315",
+            "thermal barrier",
+            "crawlspace",
+            "crawl space",
+            "attic insulation",
+        )
+    )
+    if is_roof_coating_scope(scope) and not strong_insulation_signal and not bool(scope.get("foam_required") or scope.get("foam_thickness_inches")):
+        return "roofing"
     if any(term in text or term in project_type for term in INSULATION_SCOPE_SIGNALS) or bool(scope.get("foam_required") or scope.get("foam_thickness_inches")):
         return "insulation"
     if is_roof_coating_scope(scope) or any(term in text or term in project_type for term in ROOFING_SCOPE_SIGNALS):
@@ -2943,7 +2965,29 @@ def parsed_fields_for_result(
             parsed_fields[area_field] = value
     for extra_field in (
         "notes",
+        "division",
+        "template_type",
         "estimate_mode",
+        "building_type",
+        "building_footprint_length_ft",
+        "building_footprint_width_ft",
+        "footprint_area_sqft",
+        "building_perimeter_ft",
+        "wall_height_ft",
+        "ceiling_included",
+        "outside_walls_included",
+        "ceiling_area_sqft",
+        "gross_wall_area_sqft",
+        "gross_insulation_area_sqft",
+        "opening_area_known_sqft",
+        "opening_area_missing",
+        "net_insulation_area_sqft",
+        "openings",
+        "requested_timing",
+        "building_installation_timing",
+        "customer_name",
+        "phone",
+        "address",
         "roof_type",
         "gross_sqft",
         "deduction_sqft",
@@ -3132,6 +3176,96 @@ def estimate_from_field_notes(
             required_questions=list(readiness.get("required_questions") or []),
             recommended_next_actions=list(readiness.get("recommended_next_actions") or []),
             confidence=str(readiness.get("confidence") or "low"),
+            debug=debug,
+        )
+
+    if scope_template_type(scope) == "insulation":
+        parsed_fields = parsed_fields_for_result(
+            parsed,
+            scope,
+            resolved_sqft=resolved_sqft,
+            dimension_summary=dimension_summary,
+            run_id=run_id,
+            input_notes_hash=input_notes_hash,
+        )
+        parsed_fields.update(
+            {
+                "estimate_status": READY_TO_ESTIMATE,
+                "estimate_reason": "Insulation scope parsed. Review missing foam/opening details before quoting.",
+                "required_questions": scope.get("missing_questions") or parsed.missing_info or [],
+                "recommended_next_actions": [
+                    "Confirm foam type and thickness/R-value.",
+                    "Confirm missing opening dimensions before final deduction.",
+                    "Use the insulation workbench rows rather than roofing/coating rows.",
+                ],
+                "readiness_confidence": "medium",
+            }
+        )
+        review_flags = []
+        review_flags.extend(parsed.review_flags)
+        review_flags.extend(scope.get("review_flags") or [])
+        review_flags.extend(ai_review_flags)
+        review_flags.append("Insulation workbench support is available as editable defaults; verify foam type, thickness, and thermal barrier requirements before quoting.")
+        stale_run_integrity, stale_fields = run_integrity_for_result(parsed_fields, raw_notes, run_id, input_notes_hash)
+        if stale_fields:
+            review_flags.append("Possible stale parse/cache contamination.")
+        debug = {
+            "labor_calibration": {},
+            "ai_scope_interpreter": {
+                "enabled": ai_enabled,
+                "deterministic_parsed_scope": deterministic_parsed_scope,
+                "deterministic_scope": deterministic_scope,
+                "ai_parsed_scope": ai_parsed_scope,
+                "final_merged_scope": scope,
+                "merge_decisions": ai_merge_decisions,
+                "ai_confidence_by_field": ai_parsed_scope.get("confidence_by_field") if isinstance(ai_parsed_scope, dict) else {},
+                "ai_review_flags": ai_review_flags,
+            },
+            "estimate_readiness": readiness,
+            "run_integrity": stale_run_integrity,
+            "runtime_seconds_by_stage": runtime_seconds_by_stage,
+            "insulation_placeholder": {
+                "reason": "Skipped legacy roofing material/labor calibration for insulation scope.",
+                "missing_questions": parsed_fields.get("required_questions") or [],
+            },
+        }
+        material_plan = [
+            {"category": "foam", "package": "foam", "included_in_total": False, "needs_review": True, "notes": "Foam applies; confirm foam type and thickness/R-value."},
+            {
+                "category": "thermal_barrier",
+                "package": "thermal_barrier",
+                "included_in_total": False,
+                "needs_review": True,
+                "notes": "Verify thermal/ignition barrier requirement.",
+            },
+        ]
+        labor_plan = [
+            {"task": "labor_foam", "included_in_total": False, "needs_review": True, "notes": "Foam labor applies after foam scope is confirmed."},
+            {"task": "labor_set_up", "included_in_total": False, "needs_review": True, "notes": "Setup labor available for estimator review."},
+            {"task": "labor_clean_up", "included_in_total": False, "needs_review": True, "notes": "Cleanup labor available for estimator review."},
+        ]
+        return EstimateRecommendation(
+            parsed_fields=parsed_fields,
+            recommended_scope=[
+                "Insulation scope: outside walls and ceiling.",
+                "Confirm foam type, thickness/R-value, and missing opening dimensions.",
+            ],
+            material_plan=material_plan,
+            labor_plan=labor_plan,
+            travel_plan={},
+            historical_calibration={},
+            similar_examples=[],
+            estimate_low=None,
+            estimate_target=None,
+            estimate_high=None,
+            review_flags=list(dict.fromkeys(str(flag) for flag in review_flags if flag)),
+            human_review_required=True,
+            draft_workbook_inputs=draft_workbook_inputs(field_input, scope, material_plan, labor_plan, {}, review_flags),
+            estimate_status=READY_TO_ESTIMATE,
+            estimate_reason="Insulation scope parsed. Review missing foam/opening details before quoting.",
+            required_questions=list(parsed_fields.get("required_questions") or []),
+            recommended_next_actions=list(parsed_fields.get("recommended_next_actions") or []),
+            confidence="medium",
             debug=debug,
         )
 

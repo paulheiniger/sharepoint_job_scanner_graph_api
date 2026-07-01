@@ -116,6 +116,69 @@ def test_export_package_creates_zip_with_expected_files_and_workbook(tmp_path) -
     )
 
 
+def test_insulation_review_package_exports_without_workbook(tmp_path) -> None:
+    workbench = {
+        "estimate_id": "insulation-review",
+        "scope": {
+            "division": "Insulation",
+            "template_type": "insulation",
+            "project_type": "spray foam insulation",
+            "gross_insulation_area_sqft": 2460,
+            "net_insulation_area_sqft": 2430,
+            "opening_area_missing": True,
+        },
+        "historical_filters": {"division": "Insulation", "template_type": "insulation"},
+        "materials": [
+            {
+                "include": False,
+                "workbook_row": "19-21",
+                "package": "Foam",
+                "package_key": "foam",
+                "item_name": "Foam",
+                "editable_qty_per_sqft": 0,
+                "calculated_quantity": 0,
+                "estimated_cost": 0,
+                "evidence_count": 0,
+                "confidence": "none",
+                "notes": "Confirm foam type and thickness.",
+            }
+        ],
+        "labor": [
+            {
+                "include": False,
+                "workbook_row": "86",
+                "labor_package": "Foam",
+                "package_key": "labor_foam",
+                "editable_hours_per_1000_sqft": 0,
+                "calculated_hours": 0,
+                "estimated_cost": 0,
+                "evidence_count": 0,
+                "confidence": "none",
+                "notes": "Confirm insulation scope.",
+            }
+        ],
+        "adders": [],
+        "similar_jobs": [],
+        "review_flags": ["Missing rollup door width."],
+    }
+
+    zip_path = export_workbench_review_package(
+        workbench=workbench,
+        input_notes="Foam sprayed in a 30x40 metal building.",
+        output_dir=tmp_path,
+        workbook_export_error="Insulation workbook export was not attempted in this test.",
+    )
+
+    with zipfile.ZipFile(zip_path) as archive:
+        names = set(archive.namelist())
+        assert "workbench_summary.json" in names
+        assert "workbench_summary.xlsx" in names
+        assert "workbook_export_error.txt" in names
+        assert "exported_workbook.xlsx" not in names
+        summary = json.loads(archive.read("workbench_summary.json"))
+        assert summary["historical_filters"]["template_type"] == "insulation"
+
+
 def test_workbench_output_generates_estimate_workbook_and_review_package_includes_it(tmp_path) -> None:
     workbench = sample_workbench()
     workbench["materials"].extend(

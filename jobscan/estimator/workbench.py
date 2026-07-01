@@ -48,6 +48,23 @@ MATERIAL_PACKAGES: list[dict[str, Any]] = [
     {"package": "granules", "label": "Granules", "keywords": ["granules", "broadcast"], "default_unit": "bag", "workbook_row": "36"},
 ]
 
+INSULATION_MATERIAL_PACKAGES: list[dict[str, Any]] = [
+    {"package": "foam", "label": "Foam", "keywords": ["foam", "spray foam", "open cell", "closed cell"], "default_unit": "sqft", "workbook_row": "19-21"},
+    {"package": "membrane", "label": "Membrane", "keywords": ["membrane"], "default_unit": "unit", "workbook_row": "24"},
+    {"package": "primer", "label": "Primer", "keywords": ["primer"], "default_unit": "unit", "workbook_row": "26"},
+    {"package": "thermal_barrier_coating", "label": "Thermal Barrier / DC315", "keywords": ["dc315", "thermal barrier", "ignition barrier", "coating"], "default_unit": "gal", "workbook_row": "30-32"},
+    {"package": "thinner", "label": "Thinner", "keywords": ["thinner"], "default_unit": "unit", "workbook_row": "37"},
+    {"package": "caulk_sealant", "label": "Caulk / Sealant", "keywords": ["caulk", "sealant"], "default_unit": "unit", "workbook_row": "41/43"},
+    {"package": "lift", "label": "Lift", "keywords": ["lift"], "default_unit": "unit", "workbook_row": "47-48"},
+    {"package": "delivery_fee", "label": "Delivery Fee", "keywords": ["delivery"], "default_unit": "each", "workbook_row": "50"},
+    {"package": "generator", "label": "Generator", "keywords": ["generator"], "default_unit": "unit", "workbook_row": "53"},
+    {"package": "space_heater", "label": "Space Heater", "keywords": ["space heater", "heater"], "default_unit": "unit", "workbook_row": "55"},
+    {"package": "misc_materials", "label": "Materials / Misc.", "keywords": ["misc", "materials"], "default_unit": "unit", "workbook_row": "57"},
+    {"package": "freight", "label": "Freight", "keywords": ["freight"], "default_unit": "unit", "workbook_row": "59"},
+    {"package": "abaa_audit", "label": "ABAA Audit", "keywords": ["abaa", "audit"], "default_unit": "unit", "workbook_row": "61"},
+    {"package": "drum_disposal", "label": "Drum Disposal", "keywords": ["drum", "disposal"], "default_unit": "unit", "workbook_row": "65"},
+]
+
 LABOR_PACKAGES: list[dict[str, Any]] = [
     {"package": "labor_prep", "label": "Prep", "workbook_row": "116"},
     {"package": "labor_prime", "label": "Prime", "workbook_row": "118"},
@@ -61,6 +78,20 @@ LABOR_PACKAGES: list[dict[str, Any]] = [
     {"package": "labor_traveling", "label": "Travel", "workbook_row": "138"},
     {"package": "labor_meals_lodging", "label": "Meals / Hotel", "workbook_row": "144"},
     {"package": "labor_infrared_scan", "label": "Infrared", "workbook_row": "141"},
+]
+
+INSULATION_LABOR_PACKAGES: list[dict[str, Any]] = [
+    {"package": "labor_set_up", "label": "Set Up", "workbook_row": "78"},
+    {"package": "labor_mask", "label": "Mask", "workbook_row": "80"},
+    {"package": "labor_prime", "label": "Prime", "workbook_row": "82"},
+    {"package": "labor_membrane", "label": "Membrane", "workbook_row": "84"},
+    {"package": "labor_foam", "label": "Foam", "workbook_row": "86"},
+    {"package": "labor_dc_315", "label": "DC 315", "workbook_row": "88"},
+    {"package": "labor_misc", "label": "Misc.", "workbook_row": "90"},
+    {"package": "labor_clean_up", "label": "Clean Up", "workbook_row": "92"},
+    {"package": "labor_loading", "label": "Loading", "workbook_row": "95"},
+    {"package": "labor_traveling", "label": "Traveling", "workbook_row": "97"},
+    {"package": "meals_lodging", "label": "Meals / Lodging", "workbook_row": "100"},
 ]
 
 ADDER_ROWS: list[dict[str, Any]] = [
@@ -90,6 +121,16 @@ PACKAGE_ALIASES: dict[str, set[str]] = {
     "edge_metal": {"edge_metal", "edge metal", "coping", "flashing"},
     "gutter_downspouts": {"gutter_downspouts", "gutter", "gutters", "downspout", "downspouts"},
     "granules": {"granules", "broadcast"},
+    "foam": {"foam", "spray foam", "open cell", "open-cell", "closed cell", "closed-cell", "spf"},
+    "membrane": {"membrane"},
+    "thermal_barrier_coating": {"thermal_barrier_coating", "thermal barrier", "ignition barrier", "dc315", "dc 315"},
+    "thinner": {"thinner"},
+    "caulk_sealant": {"caulk_sealant", "caulk", "sealant"},
+    "delivery_fee": {"delivery_fee", "delivery fee", "delivery"},
+    "space_heater": {"space_heater", "space heater", "heater"},
+    "misc_materials": {"misc_materials", "misc material", "misc materials", "misc"},
+    "abaa_audit": {"abaa_audit", "abaa audit", "abaa fee", "abaa"},
+    "drum_disposal": {"drum_disposal", "drum disposal", "disposal"},
     "labor_prep": {"labor_prep", "prep", "powerwash", "power wash", "set_up"},
     "labor_prime": {"labor_prime", "prime", "labor_prime"},
     "labor_base": {"labor_base", "base coat", "base"},
@@ -102,6 +143,12 @@ PACKAGE_ALIASES: dict[str, set[str]] = {
     "labor_traveling": {"labor_traveling", "traveling", "travel labor"},
     "labor_meals_lodging": {"labor_meals_lodging", "meals_lodging", "meals lodging", "hotel", "lodging"},
     "labor_infrared_scan": {"labor_infrared_scan", "infrared_scan", "infrared", "ir scan", "thermal scan"},
+    "labor_set_up": {"labor_set_up", "set_up", "setup", "set up"},
+    "labor_mask": {"labor_mask", "mask", "masking"},
+    "labor_membrane": {"labor_membrane", "membrane"},
+    "labor_foam": {"labor_foam", "foam", "spray foam"},
+    "labor_dc_315": {"labor_dc_315", "dc315", "dc 315", "thermal barrier"},
+    "labor_misc": {"labor_misc", "misc"},
     "travel": {"travel", "sales_inspection_trips", "sales inspection travel", "truck_expense", "truck expense", "labor_traveling", "traveling"},
     "lift": {"lift", "lifts", "rental"},
     "generator": {"generator"},
@@ -221,6 +268,34 @@ def _frame(data: Any, attr: str) -> pd.DataFrame:
 
 def _normalized(value: Any) -> str:
     return " ".join(str(value or "").lower().replace("_", " ").replace("-", " ").split())
+
+
+def _is_insulation_scope(scope: dict[str, Any] | None) -> bool:
+    scope = scope or {}
+    text = " ".join(
+        _normalized(scope.get(key))
+        for key in (
+            "division",
+            "template_type",
+            "project_type",
+            "estimate_mode",
+            "building_type",
+            "notes",
+        )
+    )
+    return any(term in text for term in ("insulation", "spray foam", "foam sprayed", "dc315", "thermal barrier"))
+
+
+def _history_label(scope: dict[str, Any] | None) -> str:
+    return "Insulation" if _is_insulation_scope(scope) else "Roofing"
+
+
+def _material_specs_for_scope(scope: dict[str, Any] | None) -> list[dict[str, Any]]:
+    return INSULATION_MATERIAL_PACKAGES if _is_insulation_scope(scope) else MATERIAL_PACKAGES
+
+
+def _labor_specs_for_scope(scope: dict[str, Any] | None) -> list[dict[str, Any]]:
+    return INSULATION_LABOR_PACKAGES if _is_insulation_scope(scope) else LABOR_PACKAGES
 
 
 def _package_aliases(package: str) -> set[str]:
@@ -559,6 +634,24 @@ def historical_filter_hash(filters: dict[str, Any] | None) -> str:
 def historical_filters_from_scope(scope: dict[str, Any] | None) -> dict[str, Any]:
     scope = scope or {}
     warranty_years = optional_number(first_nonblank(scope.get("warranty_years"), scope.get("warranty_target_years")))
+    if _is_insulation_scope(scope):
+        return {
+            "division": "Insulation",
+            "template_type": "insulation",
+            "project_type": first_nonblank(scope.get("project_type"), "spray foam insulation"),
+            "substrate": first_nonblank(scope.get("building_type"), scope.get("roof_type_substrate"), scope.get("substrate"), ""),
+            "coating_type": first_nonblank(scope.get("coating_type"), ""),
+            "warranty_years": None,
+            "roof_condition": first_nonblank(scope.get("roof_condition"), ""),
+            "access_complexity": first_nonblank(scope.get("access_complexity"), ""),
+            "penetrations_complexity": first_nonblank(scope.get("penetrations_complexity"), scope.get("penetration_complexity"), ""),
+            "area_bucket": _area_bucket_for_sqft(_estimate_area(scope)),
+            "source_year": None,
+            "pipeline_status": "",
+            "completed_only": False,
+            "include_repairs": True,
+            "min_evidence_count": DEFAULT_MIN_EVIDENCE_COUNT,
+        }
     return {
         "division": "Roofing",
         "template_type": "roofing",
@@ -581,15 +674,32 @@ def historical_filters_from_scope(scope: dict[str, Any] | None) -> dict[str, Any
 def _scope_from_recommendation(recommendation: Any) -> dict[str, Any]:
     parsed = dict(_rec_value(recommendation, "parsed_fields", {}) or {})
     dimension_summary = parsed.get("dimension_summary") or {}
-    return {
+    scope = {
+        "division": first_nonblank(parsed.get("division"), ""),
+        "template_type": first_nonblank(parsed.get("template_type"), ""),
         "project_type": first_nonblank(parsed.get("project_type"), "roof coating"),
-        "roof_type_substrate": first_nonblank(parsed.get("substrate"), parsed.get("roof_type"), ""),
-        "gross_sqft": safe_number(parsed.get("gross_area_sqft") or dimension_summary.get("gross_area_sqft"), 0.0),
-        "deduction_sqft": safe_number(parsed.get("deduction_area_sqft") or dimension_summary.get("deduction_area_sqft"), 0.0),
+        "roof_type_substrate": first_nonblank(parsed.get("substrate"), parsed.get("building_type"), parsed.get("roof_type"), ""),
+        "building_type": first_nonblank(parsed.get("building_type"), ""),
+        "gross_sqft": safe_number(
+            parsed.get("gross_insulation_area_sqft")
+            or parsed.get("gross_area_sqft")
+            or dimension_summary.get("gross_insulation_area_sqft")
+            or dimension_summary.get("gross_area_sqft"),
+            0.0,
+        ),
+        "deduction_sqft": safe_number(
+            parsed.get("opening_area_known_sqft")
+            or parsed.get("deduction_area_sqft")
+            or dimension_summary.get("opening_area_known_sqft")
+            or dimension_summary.get("deduction_area_sqft"),
+            0.0,
+        ),
         "net_sqft": safe_number(
-            parsed.get("estimated_sqft")
+            parsed.get("net_insulation_area_sqft")
+            or parsed.get("estimated_sqft")
             or parsed.get("surface_area_sqft")
             or parsed.get("net_area_sqft")
+            or dimension_summary.get("net_insulation_area_sqft")
             or dimension_summary.get("net_area_sqft"),
             0.0,
         ),
@@ -601,6 +711,35 @@ def _scope_from_recommendation(recommendation: Any) -> dict[str, Any]:
         "penetration_count": parsed.get("penetration_count"),
         "notes": first_nonblank(parsed.get("notes"), parsed.get("raw_notes"), parsed.get("field_notes"), parsed.get("input_notes"), ""),
     }
+    for field in (
+        "building_footprint_length_ft",
+        "building_footprint_width_ft",
+        "footprint_area_sqft",
+        "building_perimeter_ft",
+        "wall_height_ft",
+        "ceiling_included",
+        "outside_walls_included",
+        "ceiling_area_sqft",
+        "gross_wall_area_sqft",
+        "gross_insulation_area_sqft",
+        "opening_area_known_sqft",
+        "opening_area_missing",
+        "net_insulation_area_sqft",
+        "openings",
+        "requested_timing",
+        "building_installation_timing",
+        "customer_name",
+        "phone",
+        "address",
+        "missing_questions",
+    ):
+        if field in parsed:
+            scope[field] = parsed.get(field)
+    if _is_insulation_scope(scope):
+        scope["division"] = "Insulation"
+        scope["template_type"] = "insulation"
+        scope["project_type"] = first_nonblank(scope.get("project_type"), "spray foam insulation")
+    return scope
 
 
 def _plan_included_package(recommendation: Any, package: str) -> bool:
@@ -624,6 +763,15 @@ def _package_suggestion_status(recommendation: Any, package: str, scope: dict[st
             return "yes"
     notes = _scope_note_text(recommendation, scope)
     note_text = _normalized(notes)
+    if scope is not None and _is_insulation_scope(scope):
+        if package == "foam":
+            return "review" if (scope.get("opening_area_missing") or scope.get("missing_questions")) else "yes"
+        if package == "thermal_barrier_coating":
+            return "review"
+        if package in {"membrane", "primer", "caulk_sealant"}:
+            return "review" if _has_positive_note_signal(note_text, ["thermal barrier", "dc315", "ignition barrier", "seal", "caulk", "membrane", "primer"]) else "no"
+        if package in {"lift", "delivery_fee", "generator", "space_heater", "freight", "abaa_audit", "drum_disposal", "misc_materials", "thinner"}:
+            return "no"
     if package == "coating" and first_nonblank((_rec_value(recommendation, "parsed_fields", {}) or {}).get("coating_type")):
         return "yes"
     if package == "primer" and _has_positive_note_signal(note_text, ["primer", "prime", "priming", "rust", "oxidation", "adhesion"]):
@@ -648,6 +796,13 @@ def _plan_included_labor(recommendation: Any, package: str) -> bool:
 def _labor_suggestion_status(recommendation: Any, package: str, scope: dict[str, Any] | None = None) -> str:
     notes = _scope_note_text(recommendation, scope)
     note_text = _normalized(notes)
+    if scope is not None and _is_insulation_scope(scope):
+        if package in {"labor_foam", "labor_set_up", "labor_clean_up", "labor_loading", "labor_traveling"}:
+            return "review"
+        if package == "labor_dc_315":
+            return "review"
+        if package in {"labor_mask", "labor_prime", "labor_membrane", "labor_misc", "meals_lodging"}:
+            return "no"
     if scope is not None and package in BASELINE_COATING_LABOR and _is_coating_scope(scope, notes):
         return "yes"
     if package == "labor_prime":
@@ -670,6 +825,14 @@ def _labor_suggestion_status(recommendation: Any, package: str, scope: dict[str,
 def _suggestion_reason(package: str, scope: dict[str, Any], status: str) -> str:
     condition = _normalized(scope.get("roof_condition"))
     penetrations = _normalized(scope.get("penetrations_complexity"))
+    if _is_insulation_scope(scope):
+        if package == "foam":
+            return "Shown for estimator review because the notes request spray foam insulation."
+        if package == "thermal_barrier_coating":
+            return "Shown for estimator review because thermal/ignition barrier requirements must be confirmed."
+        if package.startswith("labor_"):
+            return "Shown because this is a common insulation labor template row."
+        return "Shown but unchecked; available for insulation estimator adjustment."
     if package == "coating" and status == "yes":
         return "Filled in because the notes describe a coating/restoration scope."
     if package == "primer":
@@ -1697,10 +1860,11 @@ def _historical_usage_rate(data: Any, package: str, scope: dict[str, Any], evide
         return 0.0
     rows = summary.copy()
     if "division" in rows.columns:
-        roofing = rows["division"].astype(str).str.lower().eq("roofing")
-        if roofing.any():
-            rows = rows[roofing].copy()
-    substrate = _normalized(scope.get("roof_type_substrate"))
+        target_division = _normalized(scope.get("division")) or ("insulation" if _is_insulation_scope(scope) else "roofing")
+        division_rows = rows["division"].map(_normalized).eq(target_division)
+        if division_rows.any():
+            rows = rows[division_rows].copy()
+    substrate = _normalized(first_nonblank(scope.get("roof_type_substrate"), scope.get("building_type"), scope.get("substrate")))
     if substrate and "substrate" in rows.columns:
         scoped = rows[rows["substrate"].astype(str).str.lower().str.contains(substrate, na=False)]
         if not scoped.empty:
@@ -1726,6 +1890,7 @@ def _material_explanation(
     historical_cost_per_sqft: float = 0.0,
 ) -> str:
     reason = _suggestion_reason(package, scope, status)
+    history_label = _history_label(scope)
     historical_jobs = int(safe_number(sizing.get("historical_jobs_found"), 0))
     accepted = int(safe_number(sizing.get("rows_accepted"), 0))
     rejected = int(safe_number(sizing.get("rows_rejected"), 0))
@@ -1735,7 +1900,7 @@ def _material_explanation(
         diagnostics += f" Rejections: {rejection_reasons}."
     if evidence_count > 0 and qty_per_sqft > 0:
         text = (
-            f"Used in {evidence_count} historical Roofing jobs. Median when used: {qty_per_sqft:g} per sqft."
+            f"Used in {evidence_count} historical {history_label} jobs. Median when used: {qty_per_sqft:g} per sqft."
             f"{diagnostics} {reason}"
         )
         if status != "yes":
@@ -1747,14 +1912,14 @@ def _material_explanation(
         return text
     if historical_jobs > 0:
         text = (
-            f"Found {historical_jobs} historical Roofing/package jobs, but accepted 0 for physical quantity sizing; "
+            f"Found {historical_jobs} historical {history_label}/package jobs, but accepted 0 for physical quantity sizing; "
             f"left quantity at 0 for estimator review.{diagnostics} {reason}"
         )
         if historical_cost_per_sqft > 0:
             text += " Historical usage exists, but physical quantity could not be normalized; using historical cost/sqft when included."
         return text
     if evidence_count > 0:
-        return f"Used in {evidence_count} historical Roofing jobs, but no reliable historical quantity was found; left quantity at 0 for estimator review.{diagnostics} {reason}"
+        return f"Used in {evidence_count} historical {history_label} jobs, but no reliable historical quantity was found; left quantity at 0 for estimator review.{diagnostics} {reason}"
     if historical_cost_per_sqft > 0:
         return f"No historical quantity evidence found; using historical cost/sqft when included.{diagnostics} {reason}"
     return f"No historical quantity or cost evidence found.{diagnostics} {reason}"
@@ -1770,6 +1935,7 @@ def _labor_explanation(
     scope: dict[str, Any],
 ) -> str:
     reason = _suggestion_reason(package, scope, status)
+    history_label = _history_label(scope)
     historical_jobs = int(safe_number(sizing.get("historical_jobs_found"), 0))
     accepted = int(safe_number(sizing.get("rows_accepted"), 0))
     rejected = int(safe_number(sizing.get("rows_rejected"), 0))
@@ -1779,7 +1945,7 @@ def _labor_explanation(
         diagnostics += f" Rejections: {rejection_reasons}."
     if evidence_count > 0 and hours_per_1000 > 0:
         text = (
-            f"Used in {evidence_count} historical Roofing jobs. Median when used: {hours_per_1000:g} hours per 1,000 sqft."
+            f"Used in {evidence_count} historical {history_label} jobs. Median when used: {hours_per_1000:g} hours per 1,000 sqft."
             f"{diagnostics} {reason}"
         )
         if status != "yes":
@@ -1787,12 +1953,12 @@ def _labor_explanation(
         return text
     if historical_jobs > 0:
         return (
-            f"Found {historical_jobs} historical Roofing/package jobs, but accepted 0 for labor sizing; "
+            f"Found {historical_jobs} historical {history_label}/package jobs, but accepted 0 for labor sizing; "
             f"left at 0 for estimator review.{diagnostics} {reason}"
         )
     if evidence_count > 0:
-        return f"Used in {evidence_count} historical Roofing jobs, but no reliable labor rate was found; left at 0 for estimator review.{diagnostics} {reason}"
-    return f"No historical Roofing labor evidence found; left at 0 for estimator review.{diagnostics} {reason}"
+        return f"Used in {evidence_count} historical {history_label} jobs, but no reliable labor rate was found; left at 0 for estimator review.{diagnostics} {reason}"
+    return f"No historical {history_label} labor evidence found; left at 0 for estimator review.{diagnostics} {reason}"
 
 
 def _short_material_note(
@@ -1807,8 +1973,9 @@ def _short_material_note(
     scope: dict[str, Any],
 ) -> str:
     notes: list[str] = []
+    history_label = _history_label(scope).lower()
     if evidence_count > 0 and qty_per_sqft > 0:
-        notes.append(f"Historical default from {evidence_count} roofing jobs. Median when used: {qty_per_sqft:.4g}/sqft.")
+        notes.append(f"Historical default from {evidence_count} {history_label} jobs. Median when used: {qty_per_sqft:.4g}/sqft.")
     elif historical_cost_per_sqft > 0:
         notes.append("No normalized quantity found; using historical cost default if included.")
     else:
@@ -1835,8 +2002,9 @@ def _short_labor_note(
     scope: dict[str, Any],
 ) -> str:
     notes: list[str] = []
+    history_label = _history_label(scope).lower()
     if evidence_count > 0 and hours_per_1000 > 0:
-        notes.append(f"Historical default from {evidence_count} roofing jobs. Median when used: {hours_per_1000:.4g} hrs/1,000 sqft.")
+        notes.append(f"Historical default from {evidence_count} {history_label} jobs. Median when used: {hours_per_1000:.4g} hrs/1,000 sqft.")
     else:
         notes.append("No reliable historical labor default found.")
     notes.append(_suggestion_reason(package, scope, status))
@@ -1859,7 +2027,7 @@ def material_workbench_rows(
     if pricing.empty:
         pricing = _frame(data, "pricing")
     rows: list[dict[str, Any]] = []
-    for spec in MATERIAL_PACKAGES:
+    for spec in _material_specs_for_scope(scope):
         package = spec["package"]
         default_unit = str(spec.get("default_unit") or "unit")
         sizing = material_sizing_distribution(data, package, str(spec.get("default_unit") or "unit"), historical_filters)
@@ -2008,7 +2176,7 @@ def labor_workbench_rows(
 ) -> list[dict[str, Any]]:
     area = _estimate_area(scope)
     rows: list[dict[str, Any]] = []
-    for spec in LABOR_PACKAGES:
+    for spec in _labor_specs_for_scope(scope):
         package = spec["package"]
         sizing = labor_sizing_distribution(data, package, historical_filters)
         hours_per_1000 = safe_number(sizing.get("median"), 0.0)
@@ -2141,6 +2309,11 @@ def build_estimating_workbench(
     scope = {**_scope_from_recommendation(recommendation), **(scope_override or {})}
     filters = {**historical_filters_from_scope(scope), **(historical_filters or {})}
     estimate_id = first_nonblank((_rec_value(recommendation, "parsed_fields", {}) or {}).get("run_id"), f"estimate-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}")
+    review_flags = list(_rec_value(recommendation, "review_flags", []) or [])
+    if _is_insulation_scope(scope):
+        placeholder_warning = "Insulation workbench: verify foam type, thickness/R-value, opening deductions, and thermal barrier requirements before quoting."
+        if placeholder_warning not in review_flags:
+            review_flags.append(placeholder_warning)
     return {
         "estimate_id": estimate_id,
         "scope": scope,
@@ -2150,7 +2323,7 @@ def build_estimating_workbench(
         "labor": labor_workbench_rows(recommendation, data, scope, historical_filters=filters),
         "adders": adder_workbench_rows(recommendation, data, scope, filters),
         "similar_jobs": _records(_rec_value(recommendation, "similar_examples", [])),
-        "review_flags": list(_rec_value(recommendation, "review_flags", []) or []),
+        "review_flags": review_flags,
         "suggested_rules": [
             {
                 "rule": "Suggested rules are collected for future approval dashboards.",
@@ -2421,11 +2594,11 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any]) -> dict[str, A
         else:
             adders_review_rows.append(payload)
     return {
-        "template_type": "roofing",
+        "template_type": "insulation" if _is_insulation_scope(scope) else "roofing",
         "header": {
             "C2_job_name": first_nonblank(scope.get("job_name"), "Estimating Assistant Draft"),
             "C3_job_type": scope.get("project_type"),
-            "C4_site_address": scope.get("site_address"),
+            "C4_site_address": first_nonblank(scope.get("site_address"), scope.get("address")),
             "C5_city_state_zip": scope.get("city_state_zip"),
             "C12_estimated_sqft": _estimate_area(scope),
             "gross_area_sqft": safe_number(scope.get("gross_sqft"), 0.0),

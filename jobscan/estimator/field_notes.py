@@ -18,6 +18,7 @@ STATE_BY_CITY = {
     "indianapolis": "IN",
     "nashville": "TN",
     "columbus": "OH",
+    "trenton": "OH",
 }
 
 NUMBER_WORDS = {
@@ -34,6 +35,31 @@ NUMBER_WORDS = {
     "eleven": 11,
     "twelve": 12,
 }
+
+INSULATION_ROUTE_KEYWORDS = (
+    "foam sprayed",
+    "spray foam",
+    "sprayed foam",
+    "foam insulation",
+    "insulated",
+    "insulation",
+    "r-value",
+    "dc315",
+    "thermal barrier",
+    "ignition barrier",
+    "attic",
+    "crawlspace",
+)
+
+ROOFING_ROUTE_KEYWORDS = (
+    "roof coating",
+    "silicone coating",
+    "roof restoration",
+    "roof repair",
+    "roof leak",
+    "membrane roof",
+    "standing seam roof",
+)
 
 
 def optional_positive_float(value: Any) -> float | None:
@@ -89,6 +115,230 @@ def parse_count_word(value: str) -> int | None:
         return int(text)
     except ValueError:
         return None
+
+
+def _route_score(text: str, keywords: tuple[str, ...]) -> int:
+    return sum(1 for keyword in keywords if keyword in text)
+
+
+def is_insulation_quote(text: str) -> bool:
+    normalized = clean_text(text).lower()
+    insulation_score = _route_score(normalized, INSULATION_ROUTE_KEYWORDS)
+    if any(phrase in normalized for phrase in ("outside walls", "walls and ceiling", "metal building")):
+        insulation_score += 2
+    roofing_score = _route_score(normalized, ROOFING_ROUTE_KEYWORDS)
+    if roofing_score > 0:
+        return insulation_score > roofing_score
+    return insulation_score > 0
+
+
+def _count_from_match(value: str | None) -> int | None:
+    if not value:
+        return None
+    return parse_count_word(value)
+
+
+def _feet_from_inches(value: Any) -> float | None:
+    number = to_float(value)
+    if number is None:
+        return None
+    return number / 12.0
+
+
+def _clean_phone(match_value: str | None) -> str:
+    return re.sub(r"\s+", " ", match_value or "").strip()
+
+
+def parse_insulation_quote_scope(notes: str) -> dict[str, Any]:
+    """Parse common spray-foam building quote details from field notes/email text."""
+    text = clean_text(notes)
+    lowered = text.lower()
+    if not is_insulation_quote(text):
+        return {}
+
+    result: dict[str, Any] = {
+        "division": "Insulation",
+        "template_type": "insulation",
+        "project_type": "spray foam insulation",
+        "estimate_mode": "insulation",
+        "building_type": "metal building" if "metal building" in lowered else "",
+        "outside_walls_included": bool(re.search(r"\b(?:outside|exterior)?\s*walls?\b", lowered)),
+        "ceiling_included": "ceiling" in lowered,
+        "openings": [],
+        "opening_area_known_sqft": 0.0,
+        "opening_area_missing": False,
+        "missing_questions": [],
+        "review_flags": [],
+        "evidence_by_field": {},
+        "confidence_by_field": {},
+    }
+
+    footprint_match = re.search(
+        r"\b(?P<length>\d+(?:\.\d+)?)\s*(?:x|by)\s*(?P<width>\d+(?:\.\d+)?)\s*(?:ft|feet|foot)?\s*(?:metal\s+)?building\b",
+        lowered,
+        re.I,
+    )
+    if not footprint_match:
+        footprint_match = re.search(r"\b(?P<length>\d+(?:\.\d+)?)\s*(?:x|by)\s*(?P<width>\d+(?:\.\d+)?)\b", lowered, re.I)
+    if footprint_match:
+        length = to_float(footprint_match.group("length"))
+        width = to_float(footprint_match.group("width"))
+        if length and width:
+            result["building_footprint_length_ft"] = length
+            result["building_footprint_width_ft"] = width
+            result["footprint_area_sqft"] = round(length * width, 2)
+            result["ceiling_area_sqft"] = round(length * width, 2) if result["ceiling_included"] else 0.0
+            result["building_perimeter_ft"] = round(2 * (length + width), 2)
+            result["evidence_by_field"]["building_footprint"] = footprint_match.group(0)
+            result["confidence_by_field"]["building_footprint"] = "high"
+
+    wall_height_match = re.search(r"\b(?P<height>\d+(?:\.\d+)?)\s*(?:'|ft|feet|foot)\s+walls?\b", lowered, re.I)
+    if wall_height_match:
+        wall_height = to_float(wall_height_match.group("height"))
+        if wall_height:
+            result["wall_height_ft"] = wall_height
+            result["evidence_by_field"]["wall_height_ft"] = wall_height_match.group(0)
+            result["confidence_by_field"]["wall_height_ft"] = "high"
+
+    perimeter = to_float(result.get("building_perimeter_ft"))
+    wall_height = to_float(result.get("wall_height_ft"))
+    if perimeter and wall_height and result["outside_walls_included"]:
+        result["gross_wall_area_sqft"] = round(perimeter * wall_height, 2)
+    elif perimeter and wall_height:
+        result["gross_wall_area_sqft"] = round(perimeter * wall_height, 2)
+
+    ceiling_area = to_float(result.get("ceiling_area_sqft")) or 0.0
+    wall_area = to_float(result.get("gross_wall_area_sqft")) or 0.0
+    gross_area = wall_area + ceiling_area
+    if gross_area:
+        result["gross_insulation_area_sqft"] = round(gross_area, 2)
+
+    opening_area_known = 0.0
+    openings: list[dict[str, Any]] = []
+
+    for match in re.finditer(
+        r"\b(?P<count>one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2})\s+"
+        r"(?P<height>\d+(?:\.\d+)?)\s*(?:ft|feet|foot|')\s*(?:roll\s*up|rollup)\s+doors?\b",
+        lowered,
+        re.I,
+    ):
+        count = _count_from_match(match.group("count")) or 1
+        height = to_float(match.group("height"))
+        openings.append(
+            {
+                "opening_type": "rollup_door",
+                "quantity": count,
+                "height_ft": height,
+                "width_ft": None,
+                "known_area_sqft": None,
+                "missing_dimensions": ["width_ft"],
+                "source_text": match.group(0),
+            }
+        )
+        result["opening_area_missing"] = True
+
+    for match in re.finditer(
+        r"\b(?P<count>one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2})\s+"
+        r"(?P<width>\d+(?:\.\d+)?)\s*(?:\"|in|inch|inches)\s*walk[- ]?in\s+doors?\b",
+        lowered,
+        re.I,
+    ):
+        count = _count_from_match(match.group("count")) or 1
+        width_ft = _feet_from_inches(match.group("width"))
+        openings.append(
+            {
+                "opening_type": "walk_in_door",
+                "quantity": count,
+                "width_ft": round(width_ft, 3) if width_ft is not None else None,
+                "height_ft": None,
+                "known_area_sqft": None,
+                "missing_dimensions": ["height_ft"],
+                "source_text": match.group(0),
+            }
+        )
+        result["opening_area_missing"] = True
+
+    for match in re.finditer(
+        r"\b(?P<count>one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2})\s+"
+        r"(?P<width>\d+(?:\.\d+)?)\s*(?:\"|in|inch|inches)\s*(?:x|by)\s*"
+        r"(?P<height>\d+(?:\.\d+)?)\s*(?:\"|in|inch|inches)\s+windows?\b",
+        lowered,
+        re.I,
+    ):
+        count = _count_from_match(match.group("count")) or 1
+        width_ft = _feet_from_inches(match.group("width")) or 0.0
+        height_ft = _feet_from_inches(match.group("height")) or 0.0
+        area = round(count * width_ft * height_ft, 2)
+        opening_area_known += area
+        openings.append(
+            {
+                "opening_type": "window",
+                "quantity": count,
+                "width_ft": round(width_ft, 3),
+                "height_ft": round(height_ft, 3),
+                "known_area_sqft": area,
+                "missing_dimensions": [],
+                "source_text": match.group(0),
+            }
+        )
+
+    result["openings"] = openings
+    result["opening_area_known_sqft"] = round(opening_area_known, 2)
+    if gross_area:
+        result["net_insulation_area_sqft"] = round(max(gross_area - opening_area_known, 0.0), 2)
+        result["estimated_sqft"] = result["net_insulation_area_sqft"]
+        result["surface_area_sqft"] = result["net_insulation_area_sqft"]
+        result["gross_area_sqft"] = round(gross_area, 2)
+        result["deduction_area_sqft"] = round(opening_area_known, 2)
+        result["net_area_sqft"] = result["net_insulation_area_sqft"]
+
+    if result["opening_area_missing"]:
+        result["review_flags"].append("Opening deductions are incomplete because one or more door dimensions are missing.")
+    if openings:
+        result["evidence_by_field"]["openings"] = [opening.get("source_text") for opening in openings]
+        result["confidence_by_field"]["openings"] = "medium" if result["opening_area_missing"] else "high"
+
+    if re.search(r"\bseptember\s+or\s+october\b", lowered, re.I):
+        result["requested_timing"] = "September or October"
+    elif re.search(r"\bseptember\b", lowered, re.I):
+        result["requested_timing"] = "September"
+    elif re.search(r"\boctober\b", lowered, re.I):
+        result["requested_timing"] = "October"
+    timing_match = re.search(r"\b(?:beginning|early)\s+to\s+mid[- ]?august\b|\bbeginning\s+to\s+mid\s+august\b", lowered, re.I)
+    if timing_match:
+        result["building_installation_timing"] = "beginning to mid-August"
+
+    phone_match = re.search(r"\b(?:\+?1[-.\s]*)?\(?\d{3}\)?[-.\s]*\d{3}[-.\s]*\d{4}\b", text)
+    if phone_match:
+        result["phone"] = _clean_phone(phone_match.group(0))
+    address_match = re.search(
+        r"\b\d{1,6}\s+[A-Z][A-Za-z0-9 .'-]+?\s+(?:Drive|Dr|Street|St|Road|Rd|Avenue|Ave|Lane|Ln|Court|Ct|Boulevard|Blvd)\b(?:,\s*[A-Z][A-Za-z .'-]+,\s*[A-Z]{2})?",
+        text,
+    )
+    if address_match:
+        result["address"] = address_match.group(0).strip()
+        city_state = re.search(r",\s*([A-Z][A-Za-z .'-]+),\s*([A-Z]{2})\b", result["address"])
+        if city_state:
+            result["city"] = city_state.group(1).strip()
+            result["state"] = city_state.group(2).strip().upper()
+    name_match = re.search(r"\bJames\s+F\.?\s+Collins\b", text)
+    if name_match:
+        result["customer_name"] = name_match.group(0).replace("  ", " ")
+
+    missing_questions = []
+    if not first_nonblank(result.get("foam_type")):
+        missing_questions.append("What foam type: open-cell or closed-cell?")
+    if not to_float(result.get("foam_thickness_inches")):
+        missing_questions.append("Desired foam thickness or R-value?")
+    if any(opening.get("opening_type") == "rollup_door" and "width_ft" in opening.get("missing_dimensions", []) for opening in openings):
+        missing_questions.append("Rollup door width?")
+    if any(opening.get("opening_type") == "walk_in_door" and "height_ft" in opening.get("missing_dimensions", []) for opening in openings):
+        missing_questions.append("Walk-in door height, if not assuming standard size?")
+    if result.get("ceiling_included"):
+        missing_questions.append("Is ceiling underside of roof deck or flat ceiling?")
+    missing_questions.append("Is thermal barrier / ignition barrier required?")
+    result["missing_questions"] = missing_questions
+    return result
 
 
 def parse_penetration_count(text: str) -> int | None:
@@ -149,13 +399,28 @@ def parse_field_notes(field_input: FieldNotesInput | str, overrides: dict[str, A
     text = notes.lower()
     dimension_summary = parse_dimensions(notes)
     dimension_dict = dimension_summary.to_dict()
+    insulation_scope = parse_insulation_quote_scope(notes)
+    if insulation_scope:
+        dimension_dict["insulation_scope"] = insulation_scope
+        for area_key in ("gross_area_sqft", "deduction_area_sqft", "net_area_sqft"):
+            if insulation_scope.get(area_key) is not None:
+                dimension_dict[area_key] = insulation_scope.get(area_key)
+        dimension_dict["gross_insulation_area_sqft"] = insulation_scope.get("gross_insulation_area_sqft")
+        dimension_dict["gross_wall_area_sqft"] = insulation_scope.get("gross_wall_area_sqft")
+        dimension_dict["ceiling_area_sqft"] = insulation_scope.get("ceiling_area_sqft")
+        dimension_dict["opening_area_known_sqft"] = insulation_scope.get("opening_area_known_sqft")
+        dimension_dict["opening_area_missing"] = insulation_scope.get("opening_area_missing")
+        dimension_dict["openings"] = insulation_scope.get("openings") or []
     override_sqft = optional_positive_float(field_input.estimated_sqft) or optional_positive_float(overrides.get("surface_area_sqft"))
     stated_sqft = to_float(dimension_dict.get("stated_sqft")) or parse_field_sqft(notes)
     dimension_net_sqft = None
     if dimension_summary.included_areas or dimension_summary.deducted_areas:
         dimension_net_sqft = to_float(dimension_dict.get("net_area_sqft"))
+    insulation_sqft = optional_positive_float(insulation_scope.get("net_insulation_area_sqft")) if insulation_scope else None
     if override_sqft:
         sqft = override_sqft
+    elif insulation_sqft:
+        sqft = insulation_sqft
     elif dimension_net_sqft:
         sqft = dimension_net_sqft
     elif stated_sqft:
@@ -176,6 +441,8 @@ def parse_field_notes(field_input: FieldNotesInput | str, overrides: dict[str, A
         coating_type = first_nonblank(scope.get("coating_type"))
 
     project_type = first_nonblank(scope.get("project_type"))
+    if insulation_scope:
+        project_type = "spray foam insulation"
     if any(phrase in text for phrase in ("button up", "button-up", "temporary repair")):
         project_type = "button-up repair"
     elif any(phrase in text for phrase in ("full tear off", "full tear-off", "tear off", "tearoff")):
@@ -184,6 +451,8 @@ def parse_field_notes(field_input: FieldNotesInput | str, overrides: dict[str, A
         project_type = "flooring"
 
     substrate = first_nonblank(scope.get("substrate"))
+    if insulation_scope and insulation_scope.get("building_type") == "metal building":
+        substrate = "metal"
     if "shingle" in text:
         substrate = "shingles"
     elif "cmu" in text:
@@ -213,18 +482,25 @@ def parse_field_notes(field_input: FieldNotesInput | str, overrides: dict[str, A
         penetrations_complexity = "medium"
 
     missing = []
-    if not sqft:
-        missing.append("estimated_sqft")
-    if not substrate:
-        missing.append("substrate")
-    if not first_nonblank(roof_condition):
-        missing.append("roof_condition")
-    if not coating_type and not warranty_target:
-        missing.append("coating/warranty target")
-    if not first_nonblank(field_input.site_address, city):
-        missing.append("address/city for travel")
+    if insulation_scope:
+        if not sqft:
+            missing.append("insulation area or dimensions")
+        missing.extend(str(item) for item in insulation_scope.get("missing_questions") or [])
+    else:
+        if not sqft:
+            missing.append("estimated_sqft")
+        if not substrate:
+            missing.append("substrate")
+        if not first_nonblank(roof_condition):
+            missing.append("roof_condition")
+        if not coating_type and not warranty_target:
+            missing.append("coating/warranty target")
+        if not first_nonblank(field_input.site_address, city):
+            missing.append("address/city for travel")
 
     review_flags = list(dimension_summary.warnings)
+    if insulation_scope:
+        review_flags.extend(str(item) for item in insulation_scope.get("review_flags") or [])
     if override_sqft and dimension_net_sqft and abs(override_sqft - dimension_net_sqft) / max(override_sqft, 1) > 0.10:
         review_flags.append("Sqft override differs from dimension math; override was used.")
     if any(term in text for term in ("ir scan", "infrared", "moisture scan", "thermal scan")):
@@ -237,8 +513,8 @@ def parse_field_notes(field_input: FieldNotesInput | str, overrides: dict[str, A
         confidence = min(confidence, 0.75)
     return ParsedFieldNotes(
         project_type=project_type,
-        division=first_nonblank(scope.get("division")),
-        building_type=first_nonblank(scope.get("building_type")),
+        division=first_nonblank(insulation_scope.get("division") if insulation_scope else "", scope.get("division")),
+        building_type=first_nonblank(insulation_scope.get("building_type") if insulation_scope else "", scope.get("building_type")),
         substrate=substrate,
         estimated_sqft=sqft,
         coating_type=coating_type,
@@ -264,23 +540,35 @@ def parse_field_notes(field_input: FieldNotesInput | str, overrides: dict[str, A
 def parsed_to_scope(parsed: ParsedFieldNotes, field_input: FieldNotesInput) -> dict[str, Any]:
     scope = asdict(parsed)
     dimension_summary = parsed.dimension_summary or {}
+    insulation_scope = dimension_summary.get("insulation_scope") if isinstance(dimension_summary.get("insulation_scope"), dict) else {}
+    if insulation_scope:
+        scope.update(insulation_scope)
     scope.update(
         {
             "notes": field_input.raw_notes,
             "estimated_sqft": parsed.estimated_sqft,
             "surface_area_sqft": parsed.estimated_sqft,
-            "gross_area_sqft": dimension_summary.get("gross_area_sqft"),
-            "deduction_area_sqft": dimension_summary.get("deduction_area_sqft"),
-            "net_area_sqft": dimension_summary.get("net_area_sqft"),
+            "gross_area_sqft": insulation_scope.get("gross_area_sqft") or dimension_summary.get("gross_area_sqft"),
+            "deduction_area_sqft": insulation_scope.get("deduction_area_sqft") or dimension_summary.get("deduction_area_sqft"),
+            "net_area_sqft": insulation_scope.get("net_area_sqft") or dimension_summary.get("net_area_sqft"),
             "dimension_warnings": dimension_summary.get("warnings") or [],
             "condition_detail_flags": parsed.condition_detail_flags,
             "penetration_count": parsed.penetration_count,
             "warranty_target": parsed.warranty_target_years,
-            "coating_required": bool(parsed.coating_type or parsed.warranty_target_years),
+            "coating_required": False if insulation_scope else bool(parsed.coating_type or parsed.warranty_target_years),
             "location": ", ".join(part for part in (parsed.city, parsed.state) if part),
-            "site_address": field_input.site_address,
-            "destination_address": first_nonblank(field_input.site_address, ", ".join(part for part in (parsed.city, parsed.state) if part)),
+            "site_address": first_nonblank(field_input.site_address, insulation_scope.get("address")),
+            "destination_address": first_nonblank(field_input.site_address, insulation_scope.get("address"), ", ".join(part for part in (parsed.city, parsed.state) if part)),
             "human_review_required": bool(parsed.missing_info),
         }
     )
+    if insulation_scope:
+        scope["template_type"] = "insulation"
+        scope["division"] = "Insulation"
+        scope["project_type"] = "spray foam insulation"
+        scope["gross_sqft"] = insulation_scope.get("gross_insulation_area_sqft")
+        scope["deduction_sqft"] = insulation_scope.get("opening_area_known_sqft")
+        scope["net_sqft"] = insulation_scope.get("net_insulation_area_sqft")
+        scope["missing_questions"] = insulation_scope.get("missing_questions") or []
+        scope["review_flags"] = [*scope.get("review_flags", []), *list(insulation_scope.get("review_flags") or [])]
     return scope

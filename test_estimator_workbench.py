@@ -43,6 +43,43 @@ def sample_recommendation() -> EstimateRecommendation:
     )
 
 
+def sample_insulation_recommendation() -> EstimateRecommendation:
+    return EstimateRecommendation(
+        parsed_fields={
+            "run_id": "test-insulation-workbench",
+            "division": "Insulation",
+            "template_type": "insulation",
+            "project_type": "spray foam insulation",
+            "building_type": "metal building",
+            "substrate": "metal",
+            "estimated_sqft": 2430,
+            "gross_insulation_area_sqft": 2460,
+            "gross_wall_area_sqft": 1260,
+            "ceiling_area_sqft": 1200,
+            "opening_area_known_sqft": 30,
+            "opening_area_missing": True,
+            "net_insulation_area_sqft": 2430,
+            "missing_questions": ["What foam type: open-cell or closed-cell?", "Rollup door width?"],
+            "notes": "Foam sprayed in a 30x40 metal building with 9' walls. Insulate outside walls and ceiling.",
+        },
+        recommended_scope=[],
+        material_plan=[
+            {"category": "foam", "package": "foam", "included_in_total": False, "needs_review": True},
+            {"category": "thermal_barrier_coating", "package": "thermal_barrier_coating", "included_in_total": False, "needs_review": True},
+        ],
+        labor_plan=[{"task": "labor_foam", "included_in_total": False, "needs_review": True}],
+        travel_plan={},
+        historical_calibration={},
+        similar_examples=[],
+        estimate_low=None,
+        estimate_target=None,
+        estimate_high=None,
+        review_flags=[],
+        human_review_required=True,
+        draft_workbook_inputs={"header": {"C12_estimated_sqft": 2430}},
+    )
+
+
 def sample_data() -> EstimatorData:
     return EstimatorData(
         relationship_material_qty_ratios=pd.DataFrame(
@@ -476,6 +513,29 @@ def test_workbench_populates_common_editable_rows_from_relationship_tables() -> 
     assert labor_packages["labor_prep"]["historical_hours_per_1000_sqft"] == 3
     assert labor_packages["labor_prep"]["editable_hours_per_1000_sqft"] == 3
     assert not any("AI estimated" in str(row) or "AI chose" in str(row) or "Automatically determined" in str(row) for row in workbench["materials"] + workbench["labor"])
+
+
+def test_insulation_workbench_uses_insulation_filters_and_rows_only() -> None:
+    workbench = build_estimating_workbench(sample_insulation_recommendation(), EstimatorData())
+
+    assert workbench["historical_filters"]["division"] == "Insulation"
+    assert workbench["historical_filters"]["template_type"] == "insulation"
+    assert workbench["historical_filters"]["project_type"] == "spray foam insulation"
+    assert workbench["scope"]["net_insulation_area_sqft"] == 2430
+
+    material_keys = {row["package_key"] for row in workbench["materials"]}
+    labor_keys = {row["package_key"] for row in workbench["labor"]}
+
+    assert {"foam", "thermal_barrier_coating", "membrane", "caulk_sealant"}.issubset(material_keys)
+    assert {"labor_foam", "labor_set_up", "labor_clean_up", "labor_dc_315", "labor_mask"}.issubset(labor_keys)
+    assert "coating" not in material_keys
+    assert "seam_treatment" not in material_keys
+    assert "fastener_treatment" not in material_keys
+    assert "labor_base" not in labor_keys
+
+    draft = workbench_to_draft_workbook_inputs(workbench)
+    assert draft["template_type"] == "insulation"
+    assert draft["header"]["C12_estimated_sqft"] == 2430
 
 
 def test_historical_filter_calculation_updates_material_and_labor_defaults() -> None:

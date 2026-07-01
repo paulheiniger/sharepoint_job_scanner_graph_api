@@ -160,6 +160,17 @@ def test_auto_detect_classifies_silicone_sqft_as_restoration() -> None:
     assert mode == app.ESTIMATE_TYPE_RESTORATION
 
 
+def test_auto_detect_classifies_spray_foam_building_email_as_insulation() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    mode = app.classify_estimate_type_from_notes(
+        "I need a quote for foam sprayed in a 30x40 metal building with 9' walls. "
+        "Insulate outside walls and ceiling with spray foam."
+    )
+
+    assert mode == app.ESTIMATE_TYPE_INSULATION
+
+
 def test_mode_selector_routes_to_repair_estimator() -> None:
     app = importlib.import_module("dashboard.app")
 

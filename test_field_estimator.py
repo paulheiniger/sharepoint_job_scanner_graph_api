@@ -16,6 +16,14 @@ TEST_CASE_A_NOTE = (
     "Customer requests a 10-year white silicone maintenance coating."
 )
 
+INSULATION_EMAIL = (
+    "James F. Collins 314 E Aberdeen Drive, Trenton, OH 513-319-2779. "
+    "I am wanting to get a quote for getting foam sprayed in a 30x40 metal building with 9' walls. "
+    "What I want to have insulated is the outside walls and ceiling of the building. "
+    "The building will have two 9ft rollup doors, two 36\" walk-in doors and five 24\"x36\" windows. "
+    "The building is being installed beginning to mid-August and I would like the work in September or October."
+)
+
 
 def field_data(*, with_template_rows: bool = True, with_pricing: bool = True, with_fallback: bool = False) -> EstimatorData:
     jobs = pd.DataFrame(
@@ -1120,6 +1128,39 @@ def test_field_estimator_returns_recommendation_when_labor_plan_raises(monkeypat
     assert recommendation.labor_plan[0]["task"] == "labor_allowance"
     assert recommendation.labor_plan[0]["needs_review"] is True
     assert any("Historical labor calibration failed" in flag for flag in recommendation.review_flags)
+
+
+def test_insulation_email_routes_and_parses_building_dimensions() -> None:
+    recommendation = estimate_from_field_notes(INSULATION_EMAIL, data=EstimatorData())
+    parsed = recommendation.parsed_fields
+
+    assert parsed["division"] == "Insulation"
+    assert parsed["template_type"] == "insulation"
+    assert parsed["project_type"] == "spray foam insulation"
+    assert parsed["building_type"] == "metal building"
+    assert parsed["building_footprint_length_ft"] == 30
+    assert parsed["building_footprint_width_ft"] == 40
+    assert parsed["wall_height_ft"] == 9
+    assert parsed["ceiling_included"] is True
+    assert parsed["outside_walls_included"] is True
+    assert parsed["ceiling_area_sqft"] == 1200
+    assert parsed["gross_wall_area_sqft"] == 1260
+    assert parsed["gross_insulation_area_sqft"] == 2460
+    assert parsed["opening_area_known_sqft"] == 30
+    assert parsed["opening_area_missing"] is True
+    assert parsed["net_insulation_area_sqft"] == 2430
+    assert parsed["estimated_sqft"] == 2430
+    assert parsed["requested_timing"] == "September or October"
+    assert parsed["building_installation_timing"] == "beginning to mid-August"
+    assert parsed["customer_name"] == "James F. Collins"
+    assert parsed["phone"] == "513-319-2779"
+    assert parsed["address"] == "314 E Aberdeen Drive, Trenton, OH"
+    assert any("Rollup door width" in question for question in recommendation.required_questions)
+    assert any("foam type" in question.lower() for question in recommendation.required_questions)
+    assert any("thickness or R-value" in question for question in recommendation.required_questions)
+    assert recommendation.estimate_status == "READY_TO_ESTIMATE"
+    assert recommendation.estimate_low is None
+    assert not recommendation.material_plan or all(row.get("category") != "coating" for row in recommendation.material_plan)
 
 
 def test_line_item_classification_fallback_remains_available() -> None:
