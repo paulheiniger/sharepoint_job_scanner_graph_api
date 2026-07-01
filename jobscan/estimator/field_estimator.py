@@ -151,6 +151,20 @@ def _is_roof_restoration_or_coating_scope(scope: dict[str, Any], notes: str) -> 
 def evaluate_estimate_readiness(scope: dict[str, Any], notes: str) -> dict[str, Any]:
     """Return a deterministic estimate-readiness gate before calibration/pricing."""
     resolved_sqft = optional_positive_float(scope.get("estimated_sqft")) or optional_positive_float(scope.get("surface_area_sqft"))
+    if scope_template_type(scope) == "insulation" and resolved_sqft is None:
+        return {
+            "estimate_status": NEED_MORE_INFORMATION,
+            "estimate_reason": "Insulation area is unknown. An insulation estimate cannot be generated without building dimensions or square footage.",
+            "missing_fields": ["estimated_sqft"],
+            "required_questions": [
+                "Building length and width?",
+                "Wall height?",
+                "Which surfaces should be insulated?",
+                "Foam type and desired thickness or R-value?",
+            ],
+            "recommended_next_actions": ["Request insulation dimensions", "Confirm wall/ceiling scope", "Confirm opening deductions"],
+            "confidence": "high",
+        }
     is_roof_restoration = _is_roof_restoration_or_coating_scope(scope, notes)
     if is_roof_restoration and resolved_sqft is None:
         comparison_requested = _notes_contain_any(notes, ("repair", "repairs", "restoration", "restore", "make more sense"))

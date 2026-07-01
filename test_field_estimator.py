@@ -1172,6 +1172,25 @@ def test_insulation_email_routes_and_parses_building_dimensions() -> None:
     assert not recommendation.material_plan or all(row.get("category") != "coating" for row in recommendation.material_plan)
 
 
+def test_insulation_explicit_opening_dimensions_compute_net_area() -> None:
+    notes = (
+        "Need foam sprayed in a 30x40 metal building with 9' walls. "
+        "Insulate the outside walls and ceiling. "
+        "The building has two 9ftX10ft rollup doors, two 7ftX36\" walk-in doors, and five 24\"x36\" windows."
+    )
+
+    recommendation = estimate_from_field_notes(notes, data=EstimatorData())
+    parsed = recommendation.parsed_fields
+
+    assert parsed["ceiling_area_sqft"] == 1200
+    assert parsed["gross_wall_area_sqft"] == 1260
+    assert parsed["gross_insulation_area_sqft"] == 2460
+    assert parsed["opening_area_known_sqft"] == 252
+    assert parsed["opening_area_missing"] is False
+    assert parsed["net_insulation_area_sqft"] == 2208
+    assert parsed["estimated_sqft"] == 2208
+
+
 def test_line_item_classification_fallback_remains_available() -> None:
     recommendation = estimate_from_field_notes(
         "Metal roof 12000 sqft silicone coating Louisville KY",

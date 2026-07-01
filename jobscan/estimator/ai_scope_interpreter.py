@@ -14,6 +14,25 @@ AI_SCOPE_FIELDS = (
     "estimate_mode",
     "division",
     "building_type",
+    "building_length_ft",
+    "building_width_ft",
+    "building_footprint_length_ft",
+    "building_footprint_width_ft",
+    "wall_height_ft",
+    "ceiling_included",
+    "outside_walls_included",
+    "openings",
+    "ceiling_area_sqft",
+    "gross_wall_area_sqft",
+    "gross_insulation_area_sqft",
+    "opening_area_known_sqft",
+    "opening_area_missing",
+    "net_insulation_area_sqft",
+    "customer_name",
+    "phone",
+    "address",
+    "requested_timing",
+    "building_installation_timing",
     "roof_type",
     "substrate",
     "gross_sqft",
@@ -70,6 +89,25 @@ def _empty_scope() -> dict[str, Any]:
         "estimate_mode": "unknown",
         "division": "",
         "building_type": "",
+        "building_length_ft": None,
+        "building_width_ft": None,
+        "building_footprint_length_ft": None,
+        "building_footprint_width_ft": None,
+        "wall_height_ft": None,
+        "ceiling_included": None,
+        "outside_walls_included": None,
+        "openings": [],
+        "ceiling_area_sqft": None,
+        "gross_wall_area_sqft": None,
+        "gross_insulation_area_sqft": None,
+        "opening_area_known_sqft": None,
+        "opening_area_missing": False,
+        "net_insulation_area_sqft": None,
+        "customer_name": "",
+        "phone": "",
+        "address": "",
+        "requested_timing": "",
+        "building_installation_timing": "",
         "roof_type": "",
         "substrate": "",
         "gross_sqft": None,
@@ -165,6 +203,198 @@ def _as_bool(value: Any) -> bool:
     return text in {"true", "yes", "y", "1", "include", "included", "applies"}
 
 
+def _is_insulation_scope(scope: dict[str, Any]) -> bool:
+    text = " ".join(
+        str(scope.get(key) or "")
+        for key in (
+            "estimate_mode",
+            "division",
+            "template_type",
+            "project_type",
+            "building_type",
+            "notes",
+        )
+    ).lower()
+    return any(term in text for term in ("insulation", "spray foam", "foam sprayed", "thermal barrier", "dc315"))
+
+
+def _opening_dimension(value: Any) -> float | None:
+    number = _as_number(value)
+    if number is None:
+        return None
+    return round(float(number), 4)
+
+
+def _normalize_opening(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    opening_type = first_nonblank(raw.get("opening_type"), raw.get("type")).strip().lower().replace("-", "_").replace(" ", "_")
+    if opening_type in {"rollup", "roll_up", "rollup_door", "roll_up_door", "overhead_door"}:
+        opening_type = "rollup_door"
+    elif opening_type in {"walk_in", "walkin", "walk_in_door", "walkin_door", "man_door", "personnel_door"}:
+        opening_type = "walk_in_door"
+    elif opening_type in {"window", "windows"}:
+        opening_type = "window"
+    elif not opening_type:
+        opening_type = "opening"
+    quantity = _as_int(raw.get("quantity")) or 1
+    width = _opening_dimension(raw.get("width_ft"))
+    height = _opening_dimension(raw.get("height_ft"))
+    assumption_used = _as_list(raw.get("assumption_used") or raw.get("assumptions"))
+    missing_dimensions = _as_list(raw.get("missing_dimensions"))
+
+    if opening_type == "walk_in_door" and width is not None and height is None and abs(width - 3.0) <= 0.05:
+        height = 7.0
+        assumption = "Walk-in door height assumed 7 ft from estimator default."
+        if assumption not in assumption_used:
+            assumption_used.append(assumption)
+
+    missing_dimensions = [item for item in missing_dimensions if item in {"width_ft", "height_ft"}]
+    if width is None and "width_ft" not in missing_dimensions:
+        missing_dimensions.append("width_ft")
+    if height is None and "height_ft" not in missing_dimensions:
+        missing_dimensions.append("height_ft")
+
+    known_area = round(quantity * width * height, 2) if width is not None and height is not None else None
+    return {
+        "opening_type": opening_type,
+        "quantity": quantity,
+        "width_ft": width,
+        "height_ft": height,
+        "known_area_sqft": known_area,
+        "source_text": first_nonblank(raw.get("source_text")),
+        "assumption_used": assumption_used,
+        "assumptions": assumption_used,
+        "missing_dimensions": missing_dimensions,
+    }
+
+
+def _round_area(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return round(float(value), 2)
+
+
+def apply_insulation_geometry_validation(scope: dict[str, Any], *, notes: str = "") -> dict[str, Any]:
+    """Compute insulation areas deterministically from structured geometry/openings."""
+    out = dict(scope or {})
+    if not _is_insulation_scope(out) and not any(
+        out.get(field) is not None
+        for field in (
+            "building_length_ft",
+            "building_width_ft",
+            "building_footprint_length_ft",
+            "building_footprint_width_ft",
+            "wall_height_ft",
+            "openings",
+        )
+    ):
+        return out
+
+    length = _as_number(out.get("building_length_ft")) or _as_number(out.get("building_footprint_length_ft"))
+    width = _as_number(out.get("building_width_ft")) or _as_number(out.get("building_footprint_width_ft"))
+    wall_height = _as_number(out.get("wall_height_ft"))
+    if length is not None:
+        out["building_length_ft"] = out["building_footprint_length_ft"] = float(length)
+    if width is not None:
+        out["building_width_ft"] = out["building_footprint_width_ft"] = float(width)
+    if wall_height is not None:
+        out["wall_height_ft"] = float(wall_height)
+
+    raw_ceiling = out.get("ceiling_included")
+    raw_walls = out.get("outside_walls_included")
+    text = notes.lower()
+    ceiling_included = _as_bool(raw_ceiling) or ("ceiling" in text and raw_ceiling is not False)
+    walls_included = _as_bool(raw_walls) or (bool(re.search(r"\b(?:outside|exterior)?\s*walls?\b", text)) and raw_walls is not False)
+    out["ceiling_included"] = ceiling_included
+    out["outside_walls_included"] = walls_included
+
+    old_totals = {
+        "ceiling_area_sqft": _as_number(out.get("ceiling_area_sqft")),
+        "gross_wall_area_sqft": _as_number(out.get("gross_wall_area_sqft")),
+        "gross_insulation_area_sqft": _as_number(out.get("gross_insulation_area_sqft")),
+        "opening_area_known_sqft": _as_number(out.get("opening_area_known_sqft")),
+        "net_insulation_area_sqft": _as_number(out.get("net_insulation_area_sqft")),
+    }
+
+    ceiling_area = _round_area(length * width) if length and width and ceiling_included else 0.0 if ceiling_included else None
+    wall_area = _round_area(2 * (length + width) * wall_height) if length and width and wall_height and walls_included else None
+    gross_area = _round_area((ceiling_area or 0.0) + (wall_area or 0.0)) if ceiling_area is not None or wall_area is not None else None
+
+    normalized_openings: list[dict[str, Any]] = []
+    for raw_opening in out.get("openings") or []:
+        opening = _normalize_opening(raw_opening)
+        if opening:
+            normalized_openings.append(opening)
+    known_opening_area = round(
+        sum(float(opening.get("known_area_sqft") or 0.0) for opening in normalized_openings),
+        2,
+    )
+    opening_area_missing = any(opening.get("missing_dimensions") for opening in normalized_openings)
+    net_area = _round_area(max(gross_area - known_opening_area, 0.0)) if gross_area is not None else None
+
+    if ceiling_area is not None:
+        out["ceiling_area_sqft"] = ceiling_area
+    if wall_area is not None:
+        out["gross_wall_area_sqft"] = wall_area
+    if gross_area is not None:
+        out["gross_insulation_area_sqft"] = gross_area
+        out["gross_area_sqft"] = gross_area
+        out["gross_sqft"] = gross_area
+    out["openings"] = normalized_openings
+    out["opening_area_known_sqft"] = known_opening_area
+    out["opening_area_missing"] = opening_area_missing
+    out["deduction_area_sqft"] = known_opening_area
+    out["deduction_sqft"] = known_opening_area
+    if net_area is not None:
+        out["net_insulation_area_sqft"] = net_area
+        out["net_area_sqft"] = net_area
+        out["net_sqft"] = net_area
+        out["estimated_sqft"] = net_area
+        out["surface_area_sqft"] = net_area
+
+    review_flags = list(out.get("review_flags") or [])
+    for field, old_value in old_totals.items():
+        new_value = _as_number(out.get(field))
+        if old_value is not None and new_value is not None and abs(old_value - new_value) > 1.0:
+            review_flags.append(
+                f"AI {field} conflicted with deterministic insulation math; deterministic value {new_value:g} was used."
+            )
+
+    missing_questions = list(out.get("missing_questions") or [])
+    for opening in normalized_openings:
+        missing = set(opening.get("missing_dimensions") or [])
+        if opening.get("opening_type") == "rollup_door":
+            if "width_ft" in missing and not any("Rollup door width" in question for question in missing_questions):
+                missing_questions.append("Rollup door width?")
+            if "height_ft" in missing and not any("Rollup door height" in question for question in missing_questions):
+                missing_questions.append("Rollup door height?")
+    if length is None or width is None:
+        missing_questions.append("Building length and width?")
+    if walls_included and wall_height is None:
+        missing_questions.append("Wall height?")
+    if not first_nonblank(out.get("foam_type")) and not any("foam type" in question.lower() for question in missing_questions):
+        missing_questions.append("What foam type: open-cell or closed-cell?")
+    if not _as_number(out.get("foam_thickness_inches")) and not any("thickness" in question.lower() or "r-value" in question.lower() for question in missing_questions):
+        missing_questions.append("Desired foam thickness or R-value?")
+    if ceiling_included and not any("ceiling underside" in question.lower() for question in missing_questions):
+        missing_questions.append("Is ceiling underside of roof deck or flat ceiling?")
+    if not any("thermal" in question.lower() or "ignition" in question.lower() for question in missing_questions):
+        missing_questions.append("Is thermal barrier / ignition barrier required?")
+
+    out["missing_questions"] = list(dict.fromkeys(str(question) for question in missing_questions if question))
+    out["review_flags"] = list(dict.fromkeys(str(flag) for flag in review_flags if flag))
+    assumptions = [
+        assumption
+        for opening in normalized_openings
+        for assumption in (opening.get("assumption_used") or [])
+    ]
+    if assumptions:
+        existing = list(out.get("assumptions") or [])
+        out["assumptions"] = list(dict.fromkeys([*existing, *assumptions]))
+    return out
+
+
 def _normalize_complexity(value: Any, *, field: str) -> str:
     text = first_nonblank(value).strip().lower().replace("_", " ").replace("-", " ")
     aliases = {
@@ -209,12 +439,39 @@ def validate_ai_scope(payload: Any) -> tuple[dict[str, Any], list[str]]:
         if field not in payload:
             continue
         value = payload.get(field)
-        if field in {"gross_area_sqft", "deduction_area_sqft", "estimated_sqft", "gross_sqft", "deduction_sqft", "net_sqft"}:
+        if field in {
+            "gross_area_sqft",
+            "deduction_area_sqft",
+            "estimated_sqft",
+            "gross_sqft",
+            "deduction_sqft",
+            "net_sqft",
+            "building_length_ft",
+            "building_width_ft",
+            "building_footprint_length_ft",
+            "building_footprint_width_ft",
+            "wall_height_ft",
+            "ceiling_area_sqft",
+            "gross_wall_area_sqft",
+            "gross_insulation_area_sqft",
+            "opening_area_known_sqft",
+            "net_insulation_area_sqft",
+        }:
             cleaned[field] = _as_number(value)
         elif field in {"warranty_target_years", "warranty_years", "penetration_count"}:
             cleaned[field] = _as_int(value)
         elif field in {"condition_detail_flags", "condition_flags", "missing_info", "missing_questions", "review_flags", "dimension_evidence", "contradictions"}:
             cleaned[field] = _as_list(value)
+        elif field in {"ceiling_included", "outside_walls_included", "opening_area_missing"}:
+            cleaned[field] = _as_bool(value)
+        elif field == "openings":
+            openings: list[dict[str, Any]] = []
+            if isinstance(value, list):
+                for item in value:
+                    opening = _normalize_opening(item)
+                    if opening:
+                        openings.append(opening)
+            cleaned[field] = openings
         elif field in {"confidence_by_field"}:
             confidence: dict[str, float] = {}
             if isinstance(value, dict):
@@ -280,6 +537,7 @@ def validate_ai_scope(payload: Any) -> tuple[dict[str, Any], list[str]]:
     cleaned["penetrations_complexity"] = cleaned["penetrations_complexity"] or cleaned["penetration_complexity"]
     cleaned["penetration_complexity"] = cleaned["penetration_complexity"] or cleaned["penetrations_complexity"]
     cleaned["review_flags"].extend(warnings)
+    cleaned = apply_insulation_geometry_validation(cleaned)
     return cleaned, warnings
 
 
@@ -303,6 +561,12 @@ def _prompt(notes: str, deterministic_scope: dict[str, Any] | None = None) -> li
                 + ". scope_packages values must be true, false, review, light, or heavy. "
                 "scope_triggers and defects values are booleans. "
                 "partial_scope fields are numbers or null. "
+                "For insulation notes also return building_length_ft, building_width_ft, wall_height_ft, "
+                "ceiling_included, outside_walls_included, and openings. Each opening must include "
+                "opening_type, quantity, width_ft, height_ft, source_text, assumption_used, and missing_dimensions. "
+                "Handle examples like 30x40 metal building with 9' walls, two 9ftX10ft rollup doors, "
+                "two 7ftX36\" walk-in doors, five 24\"x36\" windows, two 36 inch walk-in doors, and roll-up doors 9x10 each. "
+                "Do not invent roll-up door dimensions. A 36 inch walk-in door may assume 3 ft x 7 ft using the company default. "
                 "Use the deterministic scope only as context; explicit note phrases win. "
                 "Never invent square footage; if notes lack sqft/dimensions, leave area fields null.\n\n"
                 f"Deterministic scope:\n{deterministic_json}\n\nField notes:\n{notes}"
@@ -647,6 +911,7 @@ def interpret_field_notes_with_ai(
         raw = provider(notes, deterministic_scope) if provider is not None else _call_openai_scope_interpreter(notes, deterministic_scope)
         payload = json.loads(raw) if isinstance(raw, str) else raw
         cleaned, warnings = validate_ai_scope(payload)
+        cleaned = apply_insulation_geometry_validation(cleaned, notes=notes)
         cleaned["review_flags"].extend(warnings)
         return cleaned
     except Exception as exc:
@@ -671,6 +936,7 @@ def _notes_have_area_or_dimensions(notes: str) -> bool:
         or summary.get("stated_sqft")
         or summary.get("included_areas")
         or re.search(r"\d[\d,]*(?:\.\d+)?\s*(?:sq\s*ft|sqft|sf|square feet)\b", notes, re.I)
+        or re.search(r"\b\d+(?:\.\d+)?\s*(?:x|by)\s*\d+(?:\.\d+)?\b", notes, re.I)
     )
 
 
@@ -718,6 +984,7 @@ def merge_ai_scope_with_deterministic(
     ai_scope: dict[str, Any] | None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
     ai_scope = ai_scope or _empty_scope()
+    ai_scope = apply_insulation_geometry_validation(ai_scope, notes=notes)
     final_scope = dict(deterministic_scope)
     merge_decisions: list[dict[str, Any]] = []
     ai_review_flags = list(ai_scope.get("review_flags") or [])
@@ -857,6 +1124,37 @@ def merge_ai_scope_with_deterministic(
         if value not in (None, "", [], {}):
             final_scope[field] = value
             merge_decisions.append({"field": field, "to": value, "decision": "accepted", "reason": "AI scope interpreter structured field."})
+    for field in (
+        "building_length_ft",
+        "building_width_ft",
+        "building_footprint_length_ft",
+        "building_footprint_width_ft",
+        "wall_height_ft",
+        "ceiling_included",
+        "outside_walls_included",
+        "openings",
+        "ceiling_area_sqft",
+        "gross_wall_area_sqft",
+        "gross_insulation_area_sqft",
+        "opening_area_known_sqft",
+        "opening_area_missing",
+        "net_insulation_area_sqft",
+        "customer_name",
+        "phone",
+        "address",
+        "requested_timing",
+        "building_installation_timing",
+        "assumptions",
+    ):
+        value = ai_scope.get(field)
+        if value not in (None, "", [], {}):
+            final_scope[field] = value
+            merge_decisions.append({"field": field, "to": value, "decision": "accepted", "reason": "AI insulation structured field validated by deterministic math."})
+    if _is_insulation_scope(final_scope):
+        final_scope = apply_insulation_geometry_validation(final_scope, notes=notes)
+        if final_scope.get("net_insulation_area_sqft"):
+            final_scope["estimated_sqft"] = final_scope.get("net_insulation_area_sqft")
+            final_scope["surface_area_sqft"] = final_scope.get("net_insulation_area_sqft")
     if ai_scope.get("penetration_count") is not None:
         set_field("penetration_count", ai_scope["penetration_count"], "AI interpreted penetration count.")
     if ai_scope.get("missing_info"):

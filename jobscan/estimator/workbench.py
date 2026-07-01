@@ -2101,7 +2101,7 @@ def _material_explanation(
             unit_label = "estimate files" if distinct_files else "rows"
             text = (
                 f"{package.replace('_', ' ').title()} appears in {history_total:,} historical {history_label.lower()} {unit_label}. "
-                f"{clean_rows or accepted:,} rows had clean quantity-per-sqft evidence, so quantity default is based on those. "
+                f"{clean_rows or accepted:,} had clean quantity-per-sqft evidence. Default is based on those rows. "
                 f"Historical cost fallback uses {cost_evidence:,} jobs. Median when used: {qty_per_sqft:g} per sqft."
                 f"{diagnostics} {reason}"
             )
@@ -2188,10 +2188,11 @@ def _short_material_note(
     if evidence_count > 0 and qty_per_sqft > 0:
         if _is_insulation_scope(scope) and (total_bucket_rows > clean_rows or distinct_files > evidence_count):
             history_total = distinct_files or total_bucket_rows
-            unit_label = "files" if distinct_files else "rows"
+            unit_label = "estimate files" if distinct_files else "rows"
+            package_label = package.replace("_", " ").title()
             notes.append(
-                f"Found {history_total:,} historical {history_label} {unit_label}; "
-                f"{clean_rows or evidence_count:,} clean qty/sqft rows set the quantity default. "
+                f"{package_label} appears in {history_total:,} {history_label} {unit_label}. "
+                f"{clean_rows or evidence_count:,} had clean quantity-per-sqft evidence. Default is based on those rows. "
                 f"Cost fallback uses {cost_evidence:,} jobs. Median: {qty_per_sqft:.4g}/sqft."
             )
         else:

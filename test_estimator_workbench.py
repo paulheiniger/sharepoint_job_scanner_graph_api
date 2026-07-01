@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from jobscan.estimator.insulation_diagnostics import build_insulation_history_diagnostics, write_insulation_history_diagnostics
 from jobscan.estimator.schemas import EstimateRecommendation, EstimatorData
 from jobscan.estimator.workbench import (
     apply_historical_filter_update,
@@ -642,7 +643,7 @@ def test_insulation_workbench_uses_insulation_filters_and_rows_only() -> None:
     assert foam["distinct_insulation_files_for_bucket"] > foam["evidence_count"]
     assert "appears in" in foam["explanation"]
     assert "clean quantity-per-sqft evidence" in foam["explanation"]
-    assert "clean qty/sqft rows" in foam["notes"]
+    assert "Default is based on those rows" in foam["notes"]
     assert labor["labor_foam"]["include"] is True
     assert labor["labor_set_up"]["include"] is True
     assert labor["labor_clean_up"]["include"] is True
@@ -753,6 +754,25 @@ def test_insulation_low_clean_quantity_uses_cost_fallback() -> None:
     assert foam["historical_cost_evidence_count"] >= 5
     assert foam["estimated_cost"] > 0
     assert foam["price_source"] == "historical_cost_default"
+
+
+def test_insulation_history_diagnostics_workbook_explains_clean_qty_gap(tmp_path) -> None:
+    data = sample_insulation_data()
+
+    sheets = build_insulation_history_diagnostics(data)
+    summary = sheets["Summary"]
+    foam = summary[summary["template_bucket"].astype(str).eq("foam")].iloc[0]
+
+    assert foam["total_files"] > foam["clean_qty_per_sqft_rows"]
+    assert foam["total_rows"] > foam["clean_qty_per_sqft_rows"]
+    assert foam["rows_with_quantity"] >= foam["clean_qty_per_sqft_rows"]
+    assert "missing_area" in foam["top_rejection_reasons"]
+
+    output = tmp_path / "insulation_history_diagnostics.xlsx"
+    write_insulation_history_diagnostics(data, output)
+
+    assert output.exists()
+    assert output.stat().st_size > 0
 
 
 def test_historical_filter_calculation_updates_material_and_labor_defaults() -> None:

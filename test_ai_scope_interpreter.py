@@ -243,3 +243,69 @@ def test_estimator_merges_ai_scope_with_deterministic_guardrails(monkeypatch) ->
     assert ai_debug["ai_parsed_scope"]["estimated_sqft"] == 9998
     assert ai_debug["final_merged_scope"]["estimated_sqft"] == 9536
     assert any(row["field"] == "estimated_sqft" and row["decision"] == "rejected" for row in ai_debug["merge_decisions"])
+
+
+def test_ai_insulation_geometry_is_structured_and_deterministically_computed() -> None:
+    notes = (
+        "I need foam sprayed in a 30x40 metal building with 9' walls. "
+        "Insulate the outside walls and ceiling. There are two 9ftX10ft rollup doors, "
+        "two 7ftX36\" walk-in doors, and five 24\"x36\" windows."
+    )
+
+    result = ai_scope_interpreter.interpret_field_notes_with_ai(
+        notes,
+        deterministic_scope={},
+        provider=lambda _notes, _scope: {
+            "estimate_mode": "insulation",
+            "division": "Insulation",
+            "project_type": "spray foam insulation",
+            "building_type": "metal building",
+            "building_length_ft": 30,
+            "building_width_ft": 40,
+            "wall_height_ft": 9,
+            "ceiling_included": True,
+            "outside_walls_included": True,
+            "gross_insulation_area_sqft": 9999,
+            "openings": [
+                {"opening_type": "rollup_door", "quantity": 2, "width_ft": 9, "height_ft": 10, "source_text": "two 9ftX10ft rollup doors"},
+                {"opening_type": "walk_in_door", "quantity": 2, "width_ft": 3, "height_ft": 7, "source_text": "two 7ftX36\" walk-in doors"},
+                {"opening_type": "window", "quantity": 5, "width_ft": 2, "height_ft": 3, "source_text": "five 24\"x36\" windows"},
+            ],
+        },
+    )
+
+    assert result["ceiling_area_sqft"] == 1200
+    assert result["gross_wall_area_sqft"] == 1260
+    assert result["gross_insulation_area_sqft"] == 2460
+    assert result["opening_area_known_sqft"] == 252
+    assert result["net_insulation_area_sqft"] == 2208
+    assert result["estimated_sqft"] == 2208
+    assert any("conflicted with deterministic insulation math" in flag for flag in result["review_flags"])
+
+
+def test_ai_insulation_geometry_keeps_missing_rollup_width() -> None:
+    notes = "Foam sprayed in a 30x40 metal building with 9' walls, outside walls and ceiling. Two 9 ft rollup doors."
+
+    result = ai_scope_interpreter.interpret_field_notes_with_ai(
+        notes,
+        deterministic_scope={},
+        provider=lambda _notes, _scope: {
+            "estimate_mode": "insulation",
+            "division": "Insulation",
+            "project_type": "spray foam insulation",
+            "building_length_ft": 30,
+            "building_width_ft": 40,
+            "wall_height_ft": 9,
+            "ceiling_included": True,
+            "outside_walls_included": True,
+            "openings": [
+                {"opening_type": "rollup_door", "quantity": 2, "height_ft": 9, "source_text": "Two 9 ft rollup doors"},
+            ],
+        },
+    )
+
+    assert result["gross_insulation_area_sqft"] == 2460
+    assert result["opening_area_known_sqft"] == 0
+    assert result["net_insulation_area_sqft"] == 2460
+    assert result["opening_area_missing"] is True
+    assert "Rollup door width?" in result["missing_questions"]

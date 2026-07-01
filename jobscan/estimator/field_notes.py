@@ -145,6 +145,22 @@ def _feet_from_inches(value: Any) -> float | None:
     return number / 12.0
 
 
+def _dimension_value_to_ft(value: Any, unit: str | None) -> float | None:
+    number = to_float(value)
+    if number is None:
+        return None
+    normalized_unit = (unit or "").lower()
+    if normalized_unit in {'"', "in", "inch", "inches"}:
+        return number / 12.0
+    return number
+
+
+def _opening_area(quantity: int, width_ft: float | None, height_ft: float | None) -> float | None:
+    if width_ft is None or height_ft is None:
+        return None
+    return round(quantity * width_ft * height_ft, 2)
+
+
 def _clean_phone(match_value: str | None) -> str:
     return re.sub(r"\s+", " ", match_value or "").strip()
 
@@ -216,12 +232,89 @@ def parse_insulation_quote_scope(notes: str) -> dict[str, Any]:
     opening_area_known = 0.0
     openings: list[dict[str, Any]] = []
 
+    dimension_unit = r"(?:ft|feet|foot|'|\"|in|inch|inches)"
+    count_pattern = r"one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2}"
+    consumed_spans: list[tuple[int, int]] = []
+
+    def span_consumed(match: re.Match[str]) -> bool:
+        return any(not (match.end() <= start or match.start() >= end) for start, end in consumed_spans)
+
+    for match in re.finditer(
+        rf"\b(?P<count>{count_pattern})\s+"
+        rf"(?P<dim1>\d+(?:\.\d+)?)\s*(?P<unit1>{dimension_unit})\s*(?:x|by)\s*"
+        rf"(?P<dim2>\d+(?:\.\d+)?)\s*(?P<unit2>{dimension_unit})\s*"
+        rf"(?P<kind>roll[- ]?up|rollup|overhead|walk[- ]?in)\s+doors?\b",
+        lowered,
+        re.I,
+    ):
+        count = _count_from_match(match.group("count")) or 1
+        first = _dimension_value_to_ft(match.group("dim1"), match.group("unit1"))
+        second = _dimension_value_to_ft(match.group("dim2"), match.group("unit2"))
+        kind = match.group("kind").lower()
+        if "walk" in kind and first and first >= 6 and second and second <= 4:
+            height_ft, width_ft = first, second
+        else:
+            width_ft, height_ft = first, second
+        area = _opening_area(count, width_ft, height_ft)
+        if area:
+            opening_area_known += area
+        opening_type = "walk_in_door" if "walk" in kind else "rollup_door"
+        openings.append(
+            {
+                "opening_type": opening_type,
+                "quantity": count,
+                "width_ft": round(width_ft, 3) if width_ft is not None else None,
+                "height_ft": round(height_ft, 3) if height_ft is not None else None,
+                "known_area_sqft": area,
+                "missing_dimensions": [] if area else ["width_ft", "height_ft"],
+                "source_text": match.group(0),
+            }
+        )
+        consumed_spans.append(match.span())
+
+    for match in re.finditer(
+        rf"\b(?P<count>{count_pattern})\s+"
+        rf"(?P<kind>roll[- ]?up|rollup|overhead|walk[- ]?in)\s+doors?\s+"
+        rf"(?P<dim1>\d+(?:\.\d+)?)\s*(?P<unit1>{dimension_unit})?\s*(?:x|by)\s*"
+        rf"(?P<dim2>\d+(?:\.\d+)?)\s*(?P<unit2>{dimension_unit})?\s*(?:each)?\b",
+        lowered,
+        re.I,
+    ):
+        if span_consumed(match):
+            continue
+        count = _count_from_match(match.group("count")) or 1
+        first = _dimension_value_to_ft(match.group("dim1"), match.group("unit1") or "ft")
+        second = _dimension_value_to_ft(match.group("dim2"), match.group("unit2") or "ft")
+        kind = match.group("kind").lower()
+        if "walk" in kind and first and first >= 6 and second and second <= 4:
+            height_ft, width_ft = first, second
+        else:
+            width_ft, height_ft = first, second
+        area = _opening_area(count, width_ft, height_ft)
+        if area:
+            opening_area_known += area
+        opening_type = "walk_in_door" if "walk" in kind else "rollup_door"
+        openings.append(
+            {
+                "opening_type": opening_type,
+                "quantity": count,
+                "width_ft": round(width_ft, 3) if width_ft is not None else None,
+                "height_ft": round(height_ft, 3) if height_ft is not None else None,
+                "known_area_sqft": area,
+                "missing_dimensions": [] if area else ["width_ft", "height_ft"],
+                "source_text": match.group(0),
+            }
+        )
+        consumed_spans.append(match.span())
+
     for match in re.finditer(
         r"\b(?P<count>one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2})\s+"
         r"(?P<height>\d+(?:\.\d+)?)\s*(?:ft|feet|foot|')\s*(?:roll\s*up|rollup)\s+doors?\b",
         lowered,
         re.I,
     ):
+        if span_consumed(match):
+            continue
         count = _count_from_match(match.group("count")) or 1
         height = to_float(match.group("height"))
         openings.append(
@@ -243,6 +336,8 @@ def parse_insulation_quote_scope(notes: str) -> dict[str, Any]:
         lowered,
         re.I,
     ):
+        if span_consumed(match):
+            continue
         count = _count_from_match(match.group("count")) or 1
         width_ft = _feet_from_inches(match.group("width"))
         assumed_height_ft = 7.0 if width_ft and abs(width_ft - 3.0) < 0.01 else None
