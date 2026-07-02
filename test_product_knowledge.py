@@ -8,8 +8,18 @@ import pytest
 from jobscan.estimator.decision_history import build_historical_decision_tables
 from jobscan.estimator.schemas import EstimatorData
 from jobscan.products.ai_document_parser import is_suspicious_product_name, normalize_extracted_measure
-from jobscan.products.document_queue import discover_product_documents, write_queue_csv
+from jobscan.products.document_queue import (
+    discover_product_documents,
+    is_approved_document_url,
+    queue_product_document_url,
+    write_queue_csv,
+)
 from jobscan.products.product_catalog import ProductKnowledge, export_product_catalog_xlsx, load_product_catalog_json
+from jobscan.products.product_family_lookup import (
+    build_document_queue_from_lookup,
+    infer_decision_nodes,
+    load_product_family_lookup,
+)
 from jobscan.products.product_ingest import ingest_product_directory, ingest_product_document
 from jobscan.products import product_ingest as product_ingest_module
 from jobscan.products.product_matching import match_product, product_context_for_decision
@@ -220,8 +230,68 @@ def test_product_document_queue_discovers_local_docs_and_writes_csv(tmp_path) ->
     assert len(rows) == 2
     assert {row["document_type"] for row in rows} == {"PDS", "SDS"}
     assert all(row["ingest_status"] == "pending" for row in rows)
+    assert all(row["approved_for_ingest"] is True for row in rows)
+    assert all(row["discovery_method"] == "local_folder" for row in rows)
     out = write_queue_csv(rows, tmp_path / "queue.csv")
     assert out.exists()
+
+
+def test_product_document_queue_records_controlled_approved_url_metadata() -> None:
+    approved = queue_product_document_url(
+        "https://www.gaco.com/documents/PDS-GACOPRIME.pdf",
+        manufacturer_hint="Gaco",
+        approved_domains=["gaco.com"],
+        decision_nodes=["roofing_primer"],
+    )
+    blocked = queue_product_document_url(
+        "https://example.net/random.pdf",
+        manufacturer_hint="Unknown",
+        approved_domains=["gaco.com"],
+    )
+
+    assert is_approved_document_url("https://sub.gaco.com/product.pdf", ["gaco.com"])
+    assert approved["domain_approved"] is True
+    assert approved["approved_for_ingest"] is True
+    assert approved["review_status"] == "approved"
+    assert approved["decision_nodes"] == ["roofing_primer"]
+    assert blocked["domain_approved"] is False
+    assert blocked["ingest_status"] == "blocked_domain_review"
+    assert "Domain not approved" in blocked["validation_warnings"][0]
+
+
+def test_product_family_lookup_seed_loads_and_builds_controlled_queue() -> None:
+    rows = load_product_family_lookup()
+    families = {row["canonical_product_family"]: row for row in rows}
+
+    assert len(rows) >= 40
+    assert families["GacoPrime"]["vendor"] == "Gaco"
+    assert families["GacoPrime"]["domain_approved"] is True
+    assert "roofing_primer" in families["GacoPrime"]["decision_nodes"]
+    assert "insulation_primer" in families["GacoPrime"]["decision_nodes"]
+    assert "insulation_thermal_barrier" in families["DC315"]["decision_nodes"]
+    assert "roofing_granules" in families["Mineral Shield Granules"]["decision_nodes"]
+
+    queue_rows = build_document_queue_from_lookup(rows)
+    urls = [row["source_url"] for row in queue_rows]
+    assert len(urls) == len(set(urls))
+    assert all(row["discovery_method"] == "product_family_lookup" for row in queue_rows)
+    gaco_home = next(row for row in queue_rows if row["source_url"] == "https://gaco.com/")
+    assert "GacoFlex S42" in gaco_home["notes"]
+    assert len(gaco_home["lookup_ids"]) > 1
+    assert "roofing_coating_system" in gaco_home["decision_nodes"]
+
+
+def test_product_family_lookup_infers_decision_nodes_from_terms() -> None:
+    assert infer_decision_nodes("GAF", "Premium Fabric", "GAF Premium Fabric PDS roof coating fabric") == [
+        "roofing_coating_system",
+        "roofing_fabric",
+        "roofing_seam_treatment",
+    ]
+    assert "insulation_foam_system" in infer_decision_nodes(
+        "NCFI",
+        "InsulStarLight",
+        "NCFI InsulStarLight PDS open cell spray foam",
+    )
 
 
 def test_ai_structured_gacoprime_extracts_primer_properties_and_rules(tmp_path, monkeypatch) -> None:

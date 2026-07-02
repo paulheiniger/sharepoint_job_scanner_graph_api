@@ -278,6 +278,17 @@ def _write_insulation_material(ws: Any, row: dict[str, Any], indexes: dict[str, 
             _write_cell(ws, f"E{target_row}", round(unit_price, 4))
         if yield_factor is not None:
             _write_cell(ws, f"F{target_row}", round(yield_factor, 4))
+    elif category in {"coating", "thermal_barrier_coating"} or any(term in text for term in ("thermal", "dc 315", "noburn", "coating")):
+        area_sqft = _number(row.get("area_sqft") or row.get("basis_sqft"))
+        gal_per_100 = _number(row.get("gal_per_100_sqft"))
+        if area_sqft is not None:
+            _write_cell(ws, f"C{target_row}", round(area_sqft, 2))
+        elif quantity is not None:
+            _write_cell(ws, f"C{target_row}", quantity)
+        if gal_per_100 is not None:
+            _write_cell(ws, f"D{target_row}", round(gal_per_100, 4))
+        if unit_price is not None:
+            _write_cell(ws, f"E{target_row}", round(unit_price, 4))
     else:
         if quantity is not None:
             _write_cell(ws, f"C{target_row}", quantity)

@@ -13,6 +13,16 @@ from typing import Any
 import pandas as pd
 
 from .decision_history import build_decision_recommendations, recommendation_lookup
+from .formula_mirror import (
+    calculate_insulation_foam,
+    calculate_insulation_thermal_barrier,
+    calculate_mixed_labor,
+    calculate_roofing_coating,
+    cell_preview_for_labor,
+    cell_preview_for_material,
+    decision_dict,
+    positive_number,
+)
 from .materials import find_current_price
 from .rules import first_nonblank, to_float
 from jobscan.products.product_matching import product_context_for_decision
@@ -900,6 +910,8 @@ def _estimate_area(scope: dict[str, Any]) -> float:
         first_nonblank(
             scope.get("net_sqft"),
             scope.get("estimated_sqft"),
+            scope.get("net_insulation_area_sqft"),
+            scope.get("gross_insulation_area_sqft"),
             scope.get("surface_area_sqft"),
             scope.get("net_area_sqft"),
             scope.get("C12_estimated_sqft"),
@@ -3120,43 +3132,156 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
             row["current_unit_price"] = round(unit_price, 4) if unit_price else 0.0
         row["current_price"] = round(unit_price, 4) if unit_price else 0.0
         historical_cost_per_sqft = safe_number(row.get("historical_cost_per_sqft"), 0.0)
-        quantity = qty_per_sqft * basis_sqft if include and basis_sqft else 0.0
         row["historical_median"] = round(historical_qty, 6)
         row["editable_default"] = round(qty_per_sqft, 6)
-        row["calculated_quantity"] = round(quantity, 2)
-        if include and unit_price > 0:
-            row["estimated_cost"] = round(quantity * unit_price, 2)
-            row["price_source"] = "current_pricing"
-        elif include and historical_cost_per_sqft > 0 and basis_sqft:
-            row["estimated_cost"] = round(historical_cost_per_sqft * basis_sqft, 2)
-            row["price_source"] = "historical_cost_default"
-            row["needs_review"] = True
+        package_key = str(row.get("package_key") or row.get("template_bucket") or "").lower()
+        existing_decisions = row.get("decision_values") if isinstance(row.get("decision_values"), dict) else {}
+        editable_decisions = decision_dict(row.get("editable_decision_value"))
+        formula_inputs = {**existing_decisions, **editable_decisions}
+        formula_result: dict[str, Any] | None = None
+        if package_key == "foam" and _is_insulation_scope(scope):
+            thickness = positive_number(
+                row.get("thickness_inches"),
+                row.get("foam_thickness_inches"),
+                editable_decisions.get("thickness_inches"),
+                existing_decisions.get("thickness_inches"),
+                default=0.0,
+            )
+            yield_factor = positive_number(
+                row.get("yield_factor"),
+                row.get("median_foam_yield"),
+                row.get("yield_or_coverage"),
+                editable_decisions.get("yield_or_coverage"),
+                editable_decisions.get("yield_factor"),
+                existing_decisions.get("yield_or_coverage"),
+                existing_decisions.get("yield_factor"),
+                default=0.0,
+            )
+            formula_result = calculate_insulation_foam(
+                area_sqft=basis_sqft,
+                thickness_inches=thickness,
+                yield_or_coverage=yield_factor,
+                unit_price=unit_price,
+                units_per_sqft_per_inch=row.get("median_units_per_sqft_per_inch"),
+                cost_per_sqft=historical_cost_per_sqft,
+                include=include,
+            )
+            row["quantity_model"] = formula_result["formula_model"]
+            row["formula_model"] = formula_result["formula_model"]
+            row["formula_source"] = formula_result["formula_source"]
+            row["thickness_inches"] = formula_result["thickness_inches"]
+            row["foam_thickness_inches"] = formula_result["thickness_inches"]
+            row["yield_factor"] = formula_result["yield_or_coverage"]
+            row["estimated_units"] = round(safe_number(formula_result.get("estimated_units"), 0.0), 2)
+            row["estimated_sets"] = round(safe_number(formula_result.get("estimated_sets"), 0.0), 6)
+            row["calculated_quantity"] = row["estimated_units"]
+            row["estimated_cost"] = formula_result["estimated_cost"]
+            row["price_source"] = formula_result["cost_source"]
+            row["unit"] = row.get("unit") or "estimated_units"
+        elif package_key in {"coating", "thermal_barrier_coating"}:
+            gal_per_100 = positive_number(
+                qty_per_sqft * 100 if qty_per_sqft else None,
+                row.get("gal_per_100_sqft"),
+                editable_decisions.get("gal_per_100_sqft"),
+                existing_decisions.get("gal_per_100_sqft"),
+                default=0.0,
+            )
+            waste_pct = safe_number(
+                first_nonblank(
+                    formula_inputs.get("waste_factor_pct"),
+                    row.get("waste_factor_pct"),
+                    row.get("margin_pct"),
+                ),
+                0.0,
+            )
+            calculator = calculate_insulation_thermal_barrier if package_key == "thermal_barrier_coating" else calculate_roofing_coating
+            formula_result = calculator(
+                area_sqft=basis_sqft,
+                gal_per_100_sqft=gal_per_100,
+                unit_price=unit_price,
+                waste_factor_pct=waste_pct,
+                cost_per_sqft=historical_cost_per_sqft,
+                include=include,
+            )
+            row["quantity_model"] = formula_result["formula_model"]
+            row["formula_model"] = formula_result["formula_model"]
+            row["formula_source"] = formula_result["formula_source"]
+            row["gal_per_100_sqft"] = formula_result["gal_per_100_sqft"]
+            row["gal_per_sqft"] = formula_result["gal_per_sqft"]
+            row["wet_mils_estimate"] = formula_result["wet_mils_estimate"]
+            row["waste_factor_pct"] = formula_result["waste_factor_pct"]
+            row["estimated_gallons"] = round(safe_number(formula_result.get("estimated_gallons"), 0.0), 2)
+            row["calculated_quantity"] = row["estimated_gallons"]
+            row["estimated_cost"] = formula_result["estimated_cost"]
+            row["price_source"] = formula_result["cost_source"]
+            row["editable_qty_per_sqft"] = round(safe_number(formula_result.get("gal_per_sqft"), qty_per_sqft), 8)
+            row["editable_default"] = row["editable_qty_per_sqft"]
         else:
-            row["estimated_cost"] = 0.0
-            row["price_source"] = "not_included" if not include else "current_pricing_missing"
+            quantity = qty_per_sqft * basis_sqft if include and basis_sqft else 0.0
+            row["calculated_quantity"] = round(quantity, 2)
+            if include and unit_price > 0:
+                row["estimated_cost"] = round(quantity * unit_price, 2)
+                row["price_source"] = "current_pricing"
+            elif include and historical_cost_per_sqft > 0 and basis_sqft:
+                row["estimated_cost"] = round(historical_cost_per_sqft * basis_sqft, 2)
+                row["price_source"] = "historical_cost_default"
+                row["needs_review"] = True
+            else:
+                row["estimated_cost"] = 0.0
+                row["price_source"] = "not_included" if not include else "current_pricing_missing"
+        if include and row.get("price_source") in {"historical_cost_default", "historical_cost_per_sqft_per_inch"}:
+            row["needs_review"] = True
         row["calculated_output"] = row["estimated_cost"]
         row["decision_values"] = {
             **(row.get("decision_values") if isinstance(row.get("decision_values"), dict) else {}),
             "selected_option": row.get("item_name") or row.get("current_item"),
             "basis_sqft": round(basis_sqft, 2),
-            "qty_per_sqft": round(qty_per_sqft, 6),
+            "qty_per_sqft": round(safe_number(row.get("editable_qty_per_sqft"), qty_per_sqft), 6),
             "calculated_quantity": row["calculated_quantity"],
             "estimated_cost": row["estimated_cost"],
         }
+        if formula_result:
+            row["decision_values"].update(
+                {
+                    key: value
+                    for key, value in formula_result.items()
+                    if key
+                    in {
+                        "formula_model",
+                        "formula_source",
+                        "thickness_inches",
+                        "yield_or_coverage",
+                        "estimated_units",
+                        "estimated_sets",
+                        "gal_per_100_sqft",
+                        "gal_per_sqft",
+                        "estimated_gallons",
+                        "wet_mils_estimate",
+                        "waste_factor_pct",
+                        "cost_source",
+                    }
+                }
+            )
         row["editable_decision_value"] = first_nonblank(row.get("item_name"), row.get("current_item"), row.get("editable_decision_value"))
         row["editable_value"] = _value_summary(
             {
                 "item": row.get("item_name") or row.get("current_item"),
                 "basis_sqft": round(basis_sqft, 2),
-                "qty_per_sqft": round(qty_per_sqft, 6),
+                "qty_per_sqft": round(safe_number(row.get("editable_qty_per_sqft"), qty_per_sqft), 6),
+                "thickness_inches": row.get("thickness_inches") if package_key == "foam" else None,
+                "yield": row.get("yield_factor") if package_key == "foam" else None,
+                "gal_per_100_sqft": row.get("gal_per_100_sqft") if package_key in {"coating", "thermal_barrier_coating"} else None,
             }
         )
         row["calculated_output_summary"] = _value_summary(
             {
                 "quantity": row["calculated_quantity"],
+                "sets": row.get("estimated_sets") if package_key == "foam" else None,
+                "gallons": row.get("estimated_gallons") if package_key in {"coating", "thermal_barrier_coating"} else None,
                 "cost": row["estimated_cost"],
             }
         )
+        row["workbook_cell_write_preview"] = cell_preview_for_material(row)
     for row in updated.get("labor") or []:
         if row.get("reset_to_historical_default"):
             row["editable_hours_per_1000_sqft"] = row.get("historical_hours_per_1000_sqft", 0.0)
@@ -3165,29 +3290,71 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
         hours_per_1000 = safe_number(row.get("editable_hours_per_1000_sqft"), 0.0)
         historical_hours = safe_number(row.get("historical_hours_per_1000_sqft"), 0.0)
         row["manual_override"] = abs(hours_per_1000 - historical_hours) > 1e-9
-        hours = hours_per_1000 * area / 1000 if include and area else 0.0
+        existing_decisions = row.get("decision_values") if isinstance(row.get("decision_values"), dict) else {}
+        editable_decisions = decision_dict(row.get("editable_decision_value"))
+        formula_inputs = {**existing_decisions, **editable_decisions}
+        labor_rate = safe_number(
+            first_nonblank(
+                formula_inputs.get("hourly_rate"),
+                row.get("hourly_rate"),
+                row.get("labor_rate"),
+                hourly_rate,
+            ),
+            hourly_rate,
+        )
+        days = safe_number(first_nonblank(formula_inputs.get("days"), row.get("editable_days"), row.get("days")), 0.0)
+        crew_size = safe_number(first_nonblank(formula_inputs.get("crew_size"), row.get("crew_size")), 0.0)
+        daily_rate = safe_number(first_nonblank(formula_inputs.get("daily_rate"), row.get("daily_rate")), 0.0)
+        explicit_total_hours = safe_number(
+            first_nonblank(editable_decisions.get("total_hours"), row.get("editable_total_hours")),
+            0.0,
+        )
+        formula_mode = str(first_nonblank(formula_inputs.get("formula_mode"), row.get("formula_mode"), "mixed_formula"))
+        labor_formula = calculate_mixed_labor(
+            days=days,
+            crew_size=crew_size,
+            total_hours=explicit_total_hours,
+            hours_per_1000_sqft=hours_per_1000,
+            area_sqft=area,
+            daily_rate=daily_rate,
+            hourly_rate=labor_rate,
+            formula_mode=formula_mode,
+            include=include,
+        )
+        hours = safe_number(labor_formula.get("total_hours"), 0.0)
         row["historical_median"] = round(historical_hours, 4)
         row["editable_default"] = round(hours_per_1000, 4)
         row["calculated_hours"] = round(hours, 2)
-        row["estimated_cost"] = round(hours * hourly_rate, 2)
+        row["estimated_cost"] = round(safe_number(labor_formula.get("estimated_cost"), 0.0), 2)
         row["total_hours"] = row["calculated_hours"]
         row["calculated_output"] = row["estimated_cost"]
-        daily_rate = safe_number(row.get("daily_rate"), 0.0)
+        row["days"] = round(safe_number(labor_formula.get("days"), days), 4)
+        row["editable_days"] = row["days"]
+        row["crew_size"] = int(safe_number(labor_formula.get("crew_size"), crew_size) or 0)
+        row["crew_people_selection"] = row["crew_size"]
+        row["daily_rate"] = round(safe_number(labor_formula.get("daily_rate"), daily_rate), 4)
+        row["hourly_rate"] = round(safe_number(labor_formula.get("hourly_rate"), labor_rate), 4)
+        row["labor_rate"] = row["hourly_rate"]
+        row["formula_mode"] = str(labor_formula.get("formula_mode") or formula_mode)
+        row["formula_model"] = str(labor_formula.get("formula_model") or "labor_cost_from_days_crew_rate")
+        row["formula_source"] = str(labor_formula.get("formula_source") or "")
         row["decision_values"] = {
             **(row.get("decision_values") if isinstance(row.get("decision_values"), dict) else {}),
-            "days": safe_number(row.get("days"), 0.0),
-            "crew_size": safe_number(row.get("crew_size"), 0.0),
+            "days": row["days"],
+            "crew_size": row["crew_size"],
             "total_hours": row["calculated_hours"],
-            "daily_rate": daily_rate,
-            "hourly_rate": safe_number(row.get("labor_rate"), hourly_rate),
+            "daily_rate": row["daily_rate"],
+            "hourly_rate": row["hourly_rate"],
             "formula_mode": row.get("formula_mode") or "",
+            "formula_model": row.get("formula_model") or "",
+            "formula_source": row.get("formula_source") or "",
             "estimated_cost": row["estimated_cost"],
         }
         row["editable_decision_value"] = {
-            "days": safe_number(row.get("days"), 0.0),
-            "crew_size": safe_number(row.get("crew_size"), 0.0),
-            "daily_rate": daily_rate,
-            "hourly_rate": safe_number(row.get("labor_rate"), hourly_rate),
+            "days": row["days"],
+            "crew_size": row["crew_size"],
+            "daily_rate": row["daily_rate"],
+            "hourly_rate": row["hourly_rate"],
             "formula_mode": row.get("formula_mode") or "",
         }
         row["editable_value"] = _value_summary(row["editable_decision_value"])
@@ -3196,8 +3363,10 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
                 "hours": row["calculated_hours"],
                 "cost": row["estimated_cost"],
                 "formula_mode": row.get("formula_mode") or "",
+                "formula_source": row.get("formula_source") or "",
             }
         )
+        row["workbook_cell_write_preview"] = cell_preview_for_labor(row)
     for row in updated.get("adders") or []:
         if row.get("reset_to_historical_default"):
             row["editable_value"] = row.get("historical_default_value", row.get("median_cost_when_used", 0.0))
@@ -3362,12 +3531,22 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any]) -> dict[str, A
                 "area_sqft": safe_number(row.get("editable_basis_sqft"), 0.0),
                 "thickness_inches": safe_number(row.get("thickness_inches"), 0.0),
                 "yield_factor": safe_number(row.get("yield_factor"), 0.0),
+                "yield_or_coverage": safe_number(row.get("yield_factor"), 0.0),
+                "gal_per_100_sqft": safe_number(row.get("gal_per_100_sqft"), 0.0),
+                "gal_per_sqft": safe_number(row.get("gal_per_sqft"), 0.0),
+                "waste_factor_pct": safe_number(row.get("waste_factor_pct"), 0.0),
+                "wet_mils_estimate": safe_number(row.get("wet_mils_estimate"), 0.0),
                 "estimated_units": safe_number(row.get("estimated_units"), 0.0),
                 "estimated_sets": safe_number(row.get("estimated_sets"), 0.0),
+                "estimated_gallons": safe_number(row.get("estimated_gallons"), 0.0),
                 "selector_code": row.get("selector_code"),
                 "unit": row.get("unit"),
                 "unit_price": safe_number(row.get("current_unit_price"), 0.0),
                 "estimated_cost": safe_number(row.get("estimated_cost"), 0.0),
+                "formula_model": row.get("formula_model"),
+                "formula_source": row.get("formula_source"),
+                "calculated_output_summary": row.get("calculated_output_summary"),
+                "workbook_cell_write_preview": row.get("workbook_cell_write_preview") or [],
                 "notes": (
                     f"Workbench edited value; item_source={row.get('item_source')}; "
                     f"source={row.get('source')}; evidence_count={row.get('evidence_count')}; "
@@ -3391,7 +3570,15 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any]) -> dict[str, A
                 "crew_size": crew_size,
                 "total_hours": hours,
                 "adjusted_days": round(hours / (crew_size * 8), 3) if crew_size else 0,
+                "base_days": safe_number(row.get("days"), 0.0),
+                "daily_rate": safe_number(row.get("daily_rate"), 0.0),
+                "hourly_rate": safe_number(row.get("hourly_rate"), safe_number(row.get("labor_rate"), 0.0)),
+                "formula_mode": row.get("formula_mode"),
+                "formula_model": row.get("formula_model"),
+                "formula_source": row.get("formula_source"),
                 "estimated_cost": safe_number(row.get("estimated_cost"), 0.0),
+                "calculated_output_summary": row.get("calculated_output_summary"),
+                "workbook_cell_write_preview": row.get("workbook_cell_write_preview") or [],
                 "notes": f"Workbench edited value; source={row.get('source')}; evidence_count={row.get('evidence_count')}",
             }
         )

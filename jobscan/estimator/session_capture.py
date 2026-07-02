@@ -835,6 +835,10 @@ def workbook_cell_writes_from_inputs(draft_workbook_inputs: dict[str, Any]) -> l
                 "quantity": row.get("quantity"),
                 "unit_price": row.get("unit_price"),
                 "estimated_cost": row.get("estimated_cost"),
+                "formula_model": row.get("formula_model"),
+                "formula_source": row.get("formula_source"),
+                "calculated_output_summary": row.get("calculated_output_summary"),
+                "workbook_cell_write_preview": row.get("workbook_cell_write_preview") or [],
                 "target_hint": row.get("workbook_row") or category,
             }
         )
@@ -853,6 +857,11 @@ def workbook_cell_writes_from_inputs(draft_workbook_inputs: dict[str, Any]) -> l
                 "total_hours": row.get("total_hours"),
                 "adjusted_days": row.get("adjusted_days"),
                 "estimated_cost": row.get("estimated_cost"),
+                "formula_mode": row.get("formula_mode"),
+                "formula_model": row.get("formula_model"),
+                "formula_source": row.get("formula_source"),
+                "calculated_output_summary": row.get("calculated_output_summary"),
+                "workbook_cell_write_preview": row.get("workbook_cell_write_preview") or [],
             }
         )
     for section in ("travel_rows", "adders_review_rows"):

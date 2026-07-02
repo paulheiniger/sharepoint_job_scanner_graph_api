@@ -772,6 +772,82 @@ def test_insulation_low_clean_quantity_uses_cost_fallback() -> None:
     assert foam["price_source"] == "historical_cost_default"
 
 
+def test_recalculate_workbench_uses_formula_mirror_for_edited_foam_and_labor() -> None:
+    workbench = {
+        "scope": {
+            "division": "Insulation",
+            "template_type": "insulation",
+            "net_insulation_area_sqft": 1000,
+        },
+        "materials": [
+            {
+                "include": True,
+                "decision_id": "insulation_foam_system",
+                "package_key": "foam",
+                "template_bucket": "foam",
+                "package": "Foam",
+                "workbook_row": "19-21",
+                "item_name": "Closed Cell Spray Foam",
+                "editable_basis_sqft": 1000,
+                "default_basis_sqft": 1000,
+                "historical_qty_per_sqft": 0.004,
+                "editable_qty_per_sqft": 0.004,
+                "thickness_inches": 2,
+                "yield_factor": 500000,
+                "current_unit_price": 100,
+            }
+        ],
+        "labor": [
+            {
+                "include": True,
+                "decision_id": "insulation_labor_foam",
+                "package_key": "labor_foam",
+                "template_bucket": "labor_foam",
+                "labor_package": "Foam",
+                "workbook_row": "86",
+                "historical_hours_per_1000_sqft": 10,
+                "editable_hours_per_1000_sqft": 10,
+                "days": 1,
+                "crew_size": 3,
+                "daily_rate": 1350,
+                "hourly_rate": 45,
+                "labor_rate": 45,
+                "formula_mode": "mixed_formula",
+            }
+        ],
+        "adders": [],
+    }
+
+    baseline = recalculate_workbench_tables(workbench)
+    foam = baseline["materials"][0]
+    labor = baseline["labor"][0]
+
+    assert foam["estimated_units"] == 4
+    assert foam["estimated_sets"] == 0.004
+    assert foam["estimated_cost"] == 400
+    assert "Estimate!G19" in {cell["cell"] for cell in foam["workbook_cell_write_preview"]}
+    assert labor["calculated_hours"] == 10
+    assert labor["estimated_cost"] == 450
+
+    edited = baseline
+    edited["materials"][0]["thickness_inches"] = 3
+    edited["labor"][0]["editable_hours_per_1000_sqft"] = 20
+    recalculated = recalculate_workbench_tables(edited)
+
+    assert recalculated["materials"][0]["estimated_units"] == 6
+    assert recalculated["materials"][0]["estimated_cost"] == 600
+    assert recalculated["labor"][0]["calculated_hours"] == 20
+    assert recalculated["labor"][0]["estimated_cost"] == 900
+    assert recalculated["labor"][0]["formula_source"] == "hours_hourly_rate"
+
+    draft = workbench_to_draft_workbook_inputs(recalculated)
+    assert draft["material_rows"][0]["formula_model"] == "foam_sets_from_area_thickness_yield"
+    assert draft["material_rows"][0]["estimated_sets"] == 0.006
+    assert draft["material_rows"][0]["workbook_cell_write_preview"]
+    assert draft["labor_rows"][0]["formula_model"] == "labor_cost_from_days_crew_rate"
+    assert draft["labor_rows"][0]["workbook_cell_write_preview"]
+
+
 def test_insulation_history_diagnostics_workbook_explains_clean_qty_gap(tmp_path) -> None:
     data = sample_insulation_data()
 
