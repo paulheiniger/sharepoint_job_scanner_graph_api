@@ -335,6 +335,15 @@ def _decision_base_output(rows: pd.DataFrame, decision_id: str, decision_node_ti
 
 
 def build_historical_decision_tables(data: EstimatorData | Any) -> dict[str, pd.DataFrame]:
+    existing_tables = getattr(data, "decision_history_tables", None)
+    if isinstance(existing_tables, dict) and existing_tables:
+        tables: dict[str, pd.DataFrame] = {}
+        for table_name in DECISION_TABLES:
+            frame = existing_tables.get(table_name, pd.DataFrame())
+            tables[table_name] = frame.copy() if isinstance(frame, pd.DataFrame) else pd.DataFrame(frame)
+        if any(not frame.empty for frame in tables.values()):
+            return tables
+
     rows = _base_decision_rows(data)
     if rows.empty:
         return {name: pd.DataFrame() for name in DECISION_TABLES}
@@ -397,7 +406,9 @@ def build_historical_decision_tables(data: EstimatorData | Any) -> dict[str, pd.
 
 
 def _apply_filters(rows: pd.DataFrame, filters: dict[str, Any] | None) -> tuple[pd.DataFrame, list[str]]:
-    filters = filters or {}
+    filters = dict(filters or {})
+    if "area_bucket" in filters and "size_bucket" not in filters:
+        filters["size_bucket"] = filters.get("area_bucket")
     filtered = rows.copy()
     applied: list[str] = []
     for field in [
@@ -441,6 +452,8 @@ def _relaxed_recommendation_rows(rows: pd.DataFrame, filters: dict[str, Any] | N
     if _source_jobs_count(filtered) >= min_count:
         return filtered, applied, relaxed
     filters = dict(filters or {})
+    if "area_bucket" in filters and "size_bucket" not in filters:
+        filters["size_bucket"] = filters.get("area_bucket")
     for field in [
         "penetrations_complexity",
         "access_complexity",
@@ -449,6 +462,7 @@ def _relaxed_recommendation_rows(rows: pd.DataFrame, filters: dict[str, Any] | N
         "warranty_years",
         "coating_type",
         "size_bucket",
+        "area_bucket",
         "substrate",
         "building_type",
         "project_type",
@@ -545,7 +559,14 @@ def _recommendation_for_field(
 
 
 def build_decision_recommendations(data: EstimatorData | Any, filters: dict[str, Any] | None = None, min_count: int = 3) -> pd.DataFrame:
+    requested_min_count = _safe_number((filters or {}).get("min_evidence_count"))
+    if requested_min_count is not None and requested_min_count > 0:
+        min_count = int(requested_min_count)
     tables = build_historical_decision_tables(data)
+    if not any(not frame.empty for frame in tables.values()):
+        existing_recommendations = getattr(data, "estimator_decision_recommendations", pd.DataFrame())
+        if isinstance(existing_recommendations, pd.DataFrame) and not existing_recommendations.empty:
+            return existing_recommendations.copy()
     specs = [
         ("insulation_foam_decision_history", "insulation_foam_system", ["resolved_item_name", "thickness_inches", "yield_or_coverage", "foam_density_lb"]),
         ("insulation_thermal_barrier_decision_history", "insulation_thermal_barrier", ["resolved_item_name", "gal_per_100_sqft", "gal_per_sqft"]),

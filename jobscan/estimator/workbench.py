@@ -375,12 +375,18 @@ def _decision_meta(decisions: dict[tuple[str, str], dict[str, Any]], decision_id
             "decision_confidence": "none",
             "decision_review_warning": "",
             "decision_recommendation_json": "{}",
+            "decision_source_tables": "",
+            "decision_filters_applied": "",
+            "decision_filters_relaxed": "",
         }
     evidence = max(int(safe_number(row.get("evidence_count"), 0)) for row in rows)
     jobs = max(int(safe_number(row.get("source_jobs_count"), 0)) for row in rows)
     confidence_order = {"high": 3, "medium": 2, "low": 1, "none": 0, "": 0}
     confidence = max((str(row.get("confidence") or "") for row in rows), key=lambda item: confidence_order.get(item, 0))
     warning = "; ".join(str(row.get("review_warning") or "") for row in rows if row.get("review_warning"))
+    source_tables = sorted({str(row.get("history_table") or "") for row in rows if row.get("history_table")})
+    filters_applied = sorted({str(row.get("filters_applied") or "") for row in rows if row.get("filters_applied")})
+    filters_relaxed = sorted({str(row.get("filters_relaxed") or "") for row in rows if row.get("filters_relaxed")})
     return {
         "decision_id": decision_id,
         "decision_evidence_count": evidence,
@@ -388,7 +394,71 @@ def _decision_meta(decisions: dict[tuple[str, str], dict[str, Any]], decision_id
         "decision_confidence": confidence or "none",
         "decision_review_warning": warning,
         "decision_recommendation_json": json.dumps(rows, default=str, sort_keys=True),
+        "decision_source_tables": ", ".join(source_tables),
+        "decision_filters_applied": ", ".join(filters_applied),
+        "decision_filters_relaxed": ", ".join(filters_relaxed),
     }
+
+
+def _value_summary(value: Any) -> str:
+    if isinstance(value, dict):
+        parts = []
+        for key, item in value.items():
+            if item in (None, "", [], {}):
+                continue
+            parts.append(f"{key}={item}")
+        return ", ".join(parts)
+    if isinstance(value, list):
+        return ", ".join(str(item) for item in value if item not in (None, ""))
+    return "" if value is None else str(value)
+
+
+def _material_decision_recommendation_summary(
+    *,
+    decision_output: dict[str, Any],
+    item_name: str,
+    evidence_count: int,
+    confidence: str,
+    package: str,
+    unit: str,
+) -> str:
+    selected = first_nonblank(decision_output.get("selected_option"), item_name)
+    details: list[str] = []
+    if decision_output.get("thickness_inches"):
+        details.append(f"thickness {decision_output.get('thickness_inches')} in")
+    if decision_output.get("yield_or_coverage"):
+        details.append(f"yield {decision_output.get('yield_or_coverage')}")
+    if decision_output.get("gal_per_100_sqft"):
+        details.append(f"{decision_output.get('gal_per_100_sqft')} gal/100 sqft")
+    if decision_output.get("wet_mils_estimate"):
+        details.append(f"{decision_output.get('wet_mils_estimate')} wet mils")
+    base = f"{selected}"
+    if details:
+        base = f"{base}; " + "; ".join(details)
+    return f"Historical {package.replace('_', ' ')} decision from {evidence_count} jobs ({confidence}). {base} [{unit}]"
+
+
+def _labor_decision_recommendation_summary(decision_value: dict[str, Any], evidence_count: int, confidence: str, package: str) -> str:
+    return (
+        f"Historical {package.replace('_', ' ')} decision from {evidence_count} jobs ({confidence}). "
+        f"{_value_summary(decision_value)}"
+    )
+
+
+def _product_guidance_summary(product_context: dict[str, Any]) -> str:
+    if not product_context:
+        return ""
+    parts: list[str] = []
+    if product_context.get("recommended_use"):
+        parts.append(str(product_context.get("recommended_use")))
+    if product_context.get("coverage"):
+        parts.append(f"Coverage: {product_context.get('coverage')}")
+    if product_context.get("important_limitations"):
+        parts.append(f"Limitations: {product_context.get('important_limitations')}")
+    warnings = product_context.get("warnings") or []
+    if warnings:
+        parts.append(f"Warnings: {_value_summary(warnings)}")
+    return " ".join(parts)
 
 
 def _package_aliases(package: str) -> set[str]:
@@ -2613,6 +2683,32 @@ def material_workbench_rows(
                 short_note = f"{short_note} {' '.join(context_note_parts)}"
             if product_context.get("important_limitations"):
                 explanation += f" Manufacturer limitations: {product_context.get('important_limitations')}."
+        historical_recommendation = _material_decision_recommendation_summary(
+            decision_output=decision_output,
+            item_name=item_name,
+            evidence_count=int(decision_meta.get("decision_evidence_count") or evidence_count),
+            confidence=str(decision_meta.get("decision_confidence") or sizing.get("confidence") or _confidence(evidence_count)),
+            package=package,
+            unit=str(selected_item.get("unit") or sizing.get("unit") or spec.get("default_unit") or ""),
+        )
+        editable_value_summary = _value_summary(
+            {
+                "item": item_name,
+                "basis_sqft": round(editable_basis_sqft, 2),
+                "qty_per_sqft": round(editable_qty_per_sqft, 6),
+                "thickness_inches": round(foam_thickness_inches, 4) if package == "foam" and _is_insulation_scope(scope) and foam_thickness_inches else None,
+                "yield": round(foam_yield_factor, 4) if package == "foam" and _is_insulation_scope(scope) and foam_yield_factor else None,
+                "gal_per_100_sqft": round(decision_gal_per_100, 4) if package in {"coating", "thermal_barrier_coating"} and decision_gal_per_100 else None,
+            }
+        )
+        calculated_output_summary = _value_summary(
+            {
+                "quantity": round(calculated_quantity, 2),
+                "sets": round(foam_estimated_sets, 4) if package == "foam" and _is_insulation_scope(scope) and foam_estimated_sets else None,
+                "cost": round(estimated_cost, 2),
+            }
+        )
+        product_guidance = _product_guidance_summary(product_context)
         rows.append(
             {
                 "include": bool(include),
@@ -2637,6 +2733,14 @@ def material_workbench_rows(
                 "workbook_rows_controlled": str(spec.get("workbook_row") or ""),
                 "row_traceability": f"Estimate rows {spec.get('workbook_row') or ''}",
                 "calculated_output": round(estimated_cost, 2),
+                "estimator_decision": f"{spec['label']} ({package})",
+                "historical_recommendation": historical_recommendation,
+                "editable_value": editable_value_summary,
+                "calculated_output_summary": calculated_output_summary,
+                "evidence_summary": f"{decision_meta.get('decision_evidence_count') or evidence_count} decision rows; {decision_meta.get('decision_source_jobs_count') or evidence_count} jobs",
+                "product_guidance": product_guidance,
+                "product_warning_summary": _value_summary(product_context.get("warnings") or product_context.get("important_limitations") or ""),
+                "product_source_evidence": _value_summary(product_context.get("source_documents") or []),
                 "item_name": item_name,
                 "product_id": product_context.get("product_id") or "",
                 "product_manufacturer": product_context.get("manufacturer") or "",
@@ -2768,6 +2872,21 @@ def labor_workbench_rows(
         if daily_rate <= 0 and crew_size > 0:
             daily_rate = hourly_rate * crew_size * hours_per_day
         formula_mode = str(_decision_value(decisions, decision_id, "formula_mode", sizing.get("formula_mode")) or ("mixed_formula" if package.startswith("labor_") else "hours_based"))
+        labor_decision_value = {
+            "days": round(default_days, 4),
+            "crew_size": crew_size,
+            "daily_rate": round(daily_rate, 4),
+            "hourly_rate": round(hourly_rate, 4),
+            "formula_mode": formula_mode,
+        }
+        labor_calculated_value = {
+            "days": round(default_days, 4),
+            "crew_size": crew_size,
+            "total_hours": round(calculated_hours, 2),
+            "daily_rate": round(daily_rate, 4),
+            "hourly_rate": round(hourly_rate, 4),
+            "formula_mode": formula_mode,
+        }
         explanation = _labor_explanation(
             package=package,
             sizing=sizing,
@@ -2784,31 +2903,31 @@ def labor_workbench_rows(
                 "template_bucket": package,
                 "workbook_row": str(spec.get("workbook_row") or ""),
                 **decision_meta,
-                "recommended_decision_value": {
-                    "days": round(default_days, 4),
-                    "crew_size": crew_size,
-                    "daily_rate": round(daily_rate, 4),
-                    "hourly_rate": round(hourly_rate, 4),
-                    "formula_mode": formula_mode,
-                },
-                "editable_decision_value": {
-                    "days": round(default_days, 4),
-                    "crew_size": crew_size,
-                    "daily_rate": round(daily_rate, 4),
-                    "hourly_rate": round(hourly_rate, 4),
-                    "formula_mode": formula_mode,
-                },
-                "decision_values": {
-                    "days": round(default_days, 4),
-                    "crew_size": crew_size,
-                    "total_hours": round(calculated_hours, 2),
-                    "daily_rate": round(daily_rate, 4),
-                    "hourly_rate": round(hourly_rate, 4),
-                    "formula_mode": formula_mode,
-                },
+                "recommended_decision_value": labor_decision_value,
+                "editable_decision_value": labor_decision_value,
+                "decision_values": labor_calculated_value,
                 "workbook_rows_controlled": str(spec.get("workbook_row") or ""),
                 "row_traceability": f"Estimate row {spec.get('workbook_row') or ''}",
                 "calculated_output": round(calculated_hours * hourly_rate, 2),
+                "estimator_decision": f"{spec['label']} ({package})",
+                "historical_recommendation": _labor_decision_recommendation_summary(
+                    labor_decision_value,
+                    int(decision_meta.get("decision_evidence_count") or evidence_count),
+                    str(decision_meta.get("decision_confidence") or sizing.get("confidence") or _confidence(evidence_count)),
+                    package,
+                ),
+                "editable_value": _value_summary(labor_decision_value),
+                "calculated_output_summary": _value_summary(
+                    {
+                        "hours": round(calculated_hours, 2),
+                        "cost": round(calculated_hours * hourly_rate, 2),
+                        "formula_mode": formula_mode,
+                    }
+                ),
+                "evidence_summary": f"{decision_meta.get('decision_evidence_count') or evidence_count} decision rows; {decision_meta.get('decision_source_jobs_count') or evidence_count} jobs",
+                "product_guidance": "",
+                "product_warning_summary": "",
+                "product_source_evidence": "",
                 "suggested_by_notes_rules": status,
                 "historical_hours_per_1000_sqft": round(hours_per_1000, 4),
                 "historical_median": round(hours_per_1000, 4),
@@ -3014,6 +3133,29 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
         else:
             row["estimated_cost"] = 0.0
             row["price_source"] = "not_included" if not include else "current_pricing_missing"
+        row["calculated_output"] = row["estimated_cost"]
+        row["decision_values"] = {
+            **(row.get("decision_values") if isinstance(row.get("decision_values"), dict) else {}),
+            "selected_option": row.get("item_name") or row.get("current_item"),
+            "basis_sqft": round(basis_sqft, 2),
+            "qty_per_sqft": round(qty_per_sqft, 6),
+            "calculated_quantity": row["calculated_quantity"],
+            "estimated_cost": row["estimated_cost"],
+        }
+        row["editable_decision_value"] = first_nonblank(row.get("item_name"), row.get("current_item"), row.get("editable_decision_value"))
+        row["editable_value"] = _value_summary(
+            {
+                "item": row.get("item_name") or row.get("current_item"),
+                "basis_sqft": round(basis_sqft, 2),
+                "qty_per_sqft": round(qty_per_sqft, 6),
+            }
+        )
+        row["calculated_output_summary"] = _value_summary(
+            {
+                "quantity": row["calculated_quantity"],
+                "cost": row["estimated_cost"],
+            }
+        )
     for row in updated.get("labor") or []:
         if row.get("reset_to_historical_default"):
             row["editable_hours_per_1000_sqft"] = row.get("historical_hours_per_1000_sqft", 0.0)
@@ -3027,6 +3169,34 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
         row["editable_default"] = round(hours_per_1000, 4)
         row["calculated_hours"] = round(hours, 2)
         row["estimated_cost"] = round(hours * hourly_rate, 2)
+        row["total_hours"] = row["calculated_hours"]
+        row["calculated_output"] = row["estimated_cost"]
+        daily_rate = safe_number(row.get("daily_rate"), 0.0)
+        row["decision_values"] = {
+            **(row.get("decision_values") if isinstance(row.get("decision_values"), dict) else {}),
+            "days": safe_number(row.get("days"), 0.0),
+            "crew_size": safe_number(row.get("crew_size"), 0.0),
+            "total_hours": row["calculated_hours"],
+            "daily_rate": daily_rate,
+            "hourly_rate": safe_number(row.get("labor_rate"), hourly_rate),
+            "formula_mode": row.get("formula_mode") or "",
+            "estimated_cost": row["estimated_cost"],
+        }
+        row["editable_decision_value"] = {
+            "days": safe_number(row.get("days"), 0.0),
+            "crew_size": safe_number(row.get("crew_size"), 0.0),
+            "daily_rate": daily_rate,
+            "hourly_rate": safe_number(row.get("labor_rate"), hourly_rate),
+            "formula_mode": row.get("formula_mode") or "",
+        }
+        row["editable_value"] = _value_summary(row["editable_decision_value"])
+        row["calculated_output_summary"] = _value_summary(
+            {
+                "hours": row["calculated_hours"],
+                "cost": row["estimated_cost"],
+                "formula_mode": row.get("formula_mode") or "",
+            }
+        )
     for row in updated.get("adders") or []:
         if row.get("reset_to_historical_default"):
             row["editable_value"] = row.get("historical_default_value", row.get("median_cost_when_used", 0.0))
@@ -3180,6 +3350,10 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any]) -> dict[str, A
             continue
         material_rows.append(
             {
+                "decision_id": row.get("decision_id"),
+                "template_bucket": row.get("template_bucket") or row.get("package_key"),
+                "workbook_row": row.get("workbook_row"),
+                "row_traceability": row.get("row_traceability"),
                 "item": first_nonblank(row.get("item_name"), row.get("package")),
                 "category": row.get("package_key"),
                 "quantity": safe_number(row.get("calculated_quantity"), 0.0),
@@ -3208,6 +3382,10 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any]) -> dict[str, A
         hours = safe_number(row.get("calculated_hours"), 0.0)
         labor_rows.append(
             {
+                "decision_id": row.get("decision_id"),
+                "template_bucket": row.get("template_bucket") or row.get("package_key"),
+                "workbook_row": row.get("workbook_row"),
+                "row_traceability": row.get("row_traceability"),
                 "task": row.get("package_key"),
                 "crew_size": crew_size,
                 "total_hours": hours,

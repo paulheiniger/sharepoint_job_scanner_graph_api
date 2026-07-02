@@ -9,6 +9,7 @@ import pandas as pd
 from sqlalchemy import text
 
 from jobscan.db_connections import create_resilient_engine
+from .decision_history import DECISION_NUMERIC_FIELDS, DECISION_TABLES
 from .schemas import DEFAULT_STAGE_FILES, PRICING_CANDIDATES, EstimatorData
 
 
@@ -162,6 +163,21 @@ def normalize_estimator_data(data: EstimatorData) -> EstimatorData:
     data.product_properties = normalize_estimator_dataframe(data.product_properties)
     data.product_rules = normalize_estimator_dataframe(data.product_rules)
     data.product_decision_links = normalize_estimator_dataframe(data.product_decision_links)
+    data.estimator_decision_recommendations = normalize_numeric_columns(
+        data.estimator_decision_recommendations,
+        [
+            "recommended_value",
+            "evidence_count",
+            "source_jobs_count",
+            "p25",
+            "median",
+            "p75",
+        ],
+    )
+    normalized_history: dict[str, pd.DataFrame] = {}
+    for table_name, frame in (data.decision_history_tables or {}).items():
+        normalized_history[table_name] = normalize_numeric_columns(frame, DECISION_NUMERIC_FIELDS)
+    data.decision_history_tables = normalized_history
     if data.pricing.empty and not data.pricing_catalog.empty:
         data.pricing = data.pricing_catalog
     if data.pricing_catalog.empty and not data.pricing.empty:
@@ -348,6 +364,19 @@ def load_estimator_data_from_database(database_url: str) -> EstimatorData:
             if relation_exists(connection, relation_name):
                 setattr(data, attr, _read_sql_dataframe(connection, f"SELECT * FROM {relation_name}"))
                 data.source_files_used.append(f"database: {relation_name}")
+
+        decision_history_tables: dict[str, pd.DataFrame] = {}
+        for table_name in DECISION_TABLES:
+            relation_name = f"analytics.{table_name}"
+            if relation_exists(connection, relation_name):
+                decision_history_tables[table_name] = _read_sql_dataframe(connection, f"SELECT * FROM {relation_name}")
+                data.source_files_used.append(f"database: {relation_name}")
+        data.decision_history_tables = decision_history_tables
+
+        recommendation_relation = "analytics.estimator_decision_recommendations"
+        if relation_exists(connection, recommendation_relation):
+            data.estimator_decision_recommendations = _read_sql_dataframe(connection, f"SELECT * FROM {recommendation_relation}")
+            data.source_files_used.append(f"database: {recommendation_relation}")
 
         data.pricing_catalog = load_current_pricing(connection, data)
         data.pricing = data.pricing_catalog

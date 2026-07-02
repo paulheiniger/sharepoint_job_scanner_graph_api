@@ -126,6 +126,19 @@ def _add_property_from_measure(
     default_unit: str = "",
 ) -> None:
     measure = normalize_extracted_measure(value, default_unit)
+    property_text = str(measure.get("value") or "").lower()
+    if property_name == "coverage_sqft_per_gallon":
+        measure["unit"] = "sqft/gal"
+    elif property_name == "wet_mils":
+        measure["unit"] = "mils"
+    elif property_name in {"dry_time", "topcoat_window"}:
+        measure["unit"] = "hours"
+    elif property_name == "R_value":
+        measure["unit"] = "R/in"
+    elif property_name == "pass_thickness":
+        measure["unit"] = "inches"
+    elif property_name == "density" and "specific gravity" in property_text:
+        measure["unit"] = "specific_gravity"
     rows.append(
         {
             "property_id": slugify(f"{product_id}_{document_id}_{property_name}_{len(rows)}"),
@@ -241,8 +254,8 @@ def _knowledge_from_structured_payload(
     for field, property_name, unit in (
         ("coverage_rates", "coverage_sqft_per_gallon", "sqft/gal"),
         ("wet_mils", "wet_mils", "mils"),
-        ("dry_times", "dry_time", ""),
-        ("topcoat_windows", "topcoat_window", ""),
+        ("dry_times", "dry_time", "hours"),
+        ("topcoat_windows", "topcoat_window", "hours"),
         ("density", "density", "pcf"),
         ("r_values", "R_value", "R/in"),
         ("pass_thickness", "pass_thickness", "inches"),

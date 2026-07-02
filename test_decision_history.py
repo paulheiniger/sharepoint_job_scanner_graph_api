@@ -133,6 +133,21 @@ def test_decision_recommendations_use_modes_and_medians() -> None:
     assert lookup[("insulation_labor_foam", "formula_mode")]["recommended_value"] == "mixed_formula"
 
 
+def test_decision_recommendations_use_loaded_analytics_history_tables() -> None:
+    mined_tables = build_historical_decision_tables(decision_history_data())
+    data = EstimatorData(decision_history_tables=mined_tables)
+
+    recommendations = build_decision_recommendations(
+        data,
+        filters={"division": "Insulation", "template_type": "insulation", "building_type": "metal building"},
+    )
+    lookup = recommendation_lookup(recommendations)
+
+    assert lookup[("insulation_foam_system", "resolved_item_name")]["recommended_value"] == "Gaco 2.0 lb."
+    assert lookup[("insulation_foam_system", "thickness_inches")]["median"] == 2.0
+    assert lookup[("insulation_labor_foam", "crew_size")]["median"] == 3
+
+
 def test_workbench_surfaces_decision_first_defaults() -> None:
     recommendation = EstimateRecommendation(
         parsed_fields={

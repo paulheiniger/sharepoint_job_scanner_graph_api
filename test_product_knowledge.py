@@ -327,3 +327,10 @@ def test_measure_normalization_parses_ranges_and_units() -> None:
         "numeric_min": 200.0,
         "numeric_max": 250.0,
     }
+    assert normalize_extracted_measure({"minimum": "0.75 in", "maximum": "1.5 in", "units": "inches"}) == {
+        "value": "0.75-1.5 inches",
+        "unit": "inches",
+        "numeric_value": 1.125,
+        "numeric_min": 0.75,
+        "numeric_max": 1.5,
+    }

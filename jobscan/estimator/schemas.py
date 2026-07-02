@@ -28,6 +28,8 @@ class EstimatorData:
     product_properties: pd.DataFrame = field(default_factory=pd.DataFrame)
     product_rules: pd.DataFrame = field(default_factory=pd.DataFrame)
     product_decision_links: pd.DataFrame = field(default_factory=pd.DataFrame)
+    decision_history_tables: dict[str, pd.DataFrame] = field(default_factory=dict)
+    estimator_decision_recommendations: pd.DataFrame = field(default_factory=pd.DataFrame)
     warnings: list[str] = field(default_factory=list)
     source_files_used: list[str] = field(default_factory=list)
 
