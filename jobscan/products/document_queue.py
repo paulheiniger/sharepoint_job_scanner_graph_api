@@ -81,6 +81,9 @@ def discover_product_documents(
                 "content_hash": "",
                 "decision_nodes": decision_nodes or [],
                 "lookup_ids": [],
+                "source_page_url": "",
+                "link_text": "",
+                "scrape_score": 0.0,
                 "priority": 100,
                 "validation_warnings": [],
                 "notes": "Discovered from local product document folder.",
@@ -139,6 +142,9 @@ def queue_product_document_url(
         "content_hash": "",
         "decision_nodes": decision_nodes or [],
         "lookup_ids": [],
+        "source_page_url": "",
+        "link_text": "",
+        "scrape_score": 0.0,
         "priority": priority,
         "validation_warnings": [] if approved else [f"Domain not approved for product document ingestion: {domain}"],
         "notes": notes or "Manual product document URL queued for controlled review.",
@@ -167,7 +173,12 @@ def write_queue_csv(rows: list[dict[str, Any]], out: str | Path) -> Path:
         "content_hash",
         "decision_nodes",
         "lookup_ids",
+        "source_page_url",
+        "link_text",
+        "scrape_score",
         "priority",
+        "fetched_at",
+        "last_checked_at",
         "validation_warnings",
         "notes",
     ]
@@ -209,6 +220,9 @@ def upsert_document_queue(db_url: str, rows: list[dict[str, Any]]) -> int:
                     content_hash TEXT,
                     decision_nodes JSONB DEFAULT '[]'::jsonb,
                     lookup_ids JSONB DEFAULT '[]'::jsonb,
+                    source_page_url TEXT,
+                    link_text TEXT,
+                    scrape_score NUMERIC,
                     priority INTEGER DEFAULT 100,
                     fetched_at TIMESTAMPTZ,
                     last_checked_at TIMESTAMPTZ,
@@ -232,6 +246,9 @@ def upsert_document_queue(db_url: str, rows: list[dict[str, Any]]) -> int:
                 "ALTER TABLE product_document_queue ADD COLUMN IF NOT EXISTS content_hash TEXT",
                 "ALTER TABLE product_document_queue ADD COLUMN IF NOT EXISTS decision_nodes JSONB DEFAULT '[]'::jsonb",
                 "ALTER TABLE product_document_queue ADD COLUMN IF NOT EXISTS lookup_ids JSONB DEFAULT '[]'::jsonb",
+                "ALTER TABLE product_document_queue ADD COLUMN IF NOT EXISTS source_page_url TEXT",
+                "ALTER TABLE product_document_queue ADD COLUMN IF NOT EXISTS link_text TEXT",
+                "ALTER TABLE product_document_queue ADD COLUMN IF NOT EXISTS scrape_score NUMERIC",
                 "ALTER TABLE product_document_queue ADD COLUMN IF NOT EXISTS priority INTEGER DEFAULT 100",
                 "ALTER TABLE product_document_queue ADD COLUMN IF NOT EXISTS fetched_at TIMESTAMPTZ",
                 "ALTER TABLE product_document_queue ADD COLUMN IF NOT EXISTS last_checked_at TIMESTAMPTZ",
@@ -246,7 +263,9 @@ def upsert_document_queue(db_url: str, rows: list[dict[str, Any]]) -> int:
                         queue_id, source_path, source_url, source_type, source_domain,
                         domain_approved, approved_for_ingest, review_status, discovery_method,
                         manufacturer_hint, document_type, discovered_at, ingest_status,
-                        product_id, catalog_path, content_hash, decision_nodes, lookup_ids, priority,
+                        product_id, catalog_path, content_hash, decision_nodes, lookup_ids,
+                        source_page_url, link_text, scrape_score, priority, fetched_at,
+                        last_checked_at,
                         validation_warnings, notes
                     )
                     VALUES (
@@ -254,7 +273,9 @@ def upsert_document_queue(db_url: str, rows: list[dict[str, Any]]) -> int:
                         :domain_approved, :approved_for_ingest, :review_status, :discovery_method,
                         :manufacturer_hint, :document_type, :discovered_at, :ingest_status,
                         :product_id, :catalog_path, :content_hash, CAST(:decision_nodes AS JSONB),
-                        CAST(:lookup_ids AS JSONB), :priority, CAST(:validation_warnings AS JSONB), :notes
+                        CAST(:lookup_ids AS JSONB), :source_page_url, :link_text,
+                        :scrape_score, :priority, :fetched_at, :last_checked_at,
+                        CAST(:validation_warnings AS JSONB), :notes
                     )
                     ON CONFLICT (queue_id) DO UPDATE SET
                         source_path = EXCLUDED.source_path,
@@ -270,7 +291,12 @@ def upsert_document_queue(db_url: str, rows: list[dict[str, Any]]) -> int:
                         content_hash = EXCLUDED.content_hash,
                         decision_nodes = EXCLUDED.decision_nodes,
                         lookup_ids = EXCLUDED.lookup_ids,
+                        source_page_url = EXCLUDED.source_page_url,
+                        link_text = EXCLUDED.link_text,
+                        scrape_score = EXCLUDED.scrape_score,
                         priority = EXCLUDED.priority,
+                        fetched_at = EXCLUDED.fetched_at,
+                        last_checked_at = EXCLUDED.last_checked_at,
                         validation_warnings = EXCLUDED.validation_warnings,
                         notes = EXCLUDED.notes
                     """
@@ -284,7 +310,12 @@ def upsert_document_queue(db_url: str, rows: list[dict[str, Any]]) -> int:
                     "content_hash": row.get("content_hash") or None,
                     "decision_nodes": json.dumps(row.get("decision_nodes") or []),
                     "lookup_ids": json.dumps(row.get("lookup_ids") or []),
+                    "source_page_url": row.get("source_page_url") or None,
+                    "link_text": row.get("link_text") or None,
+                    "scrape_score": row.get("scrape_score") or None,
                     "priority": int(row.get("priority") or 100),
+                    "fetched_at": row.get("fetched_at") or None,
+                    "last_checked_at": row.get("last_checked_at") or None,
                     "validation_warnings": json.dumps(row.get("validation_warnings") or []),
                 },
             )

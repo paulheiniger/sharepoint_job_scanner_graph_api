@@ -89,6 +89,9 @@ CREATE TABLE IF NOT EXISTS product_document_queue (
     content_hash TEXT,
     decision_nodes JSONB DEFAULT '[]'::jsonb,
     lookup_ids JSONB DEFAULT '[]'::jsonb,
+    source_page_url TEXT,
+    link_text TEXT,
+    scrape_score NUMERIC,
     priority INTEGER DEFAULT 100,
     fetched_at TIMESTAMPTZ,
     last_checked_at TIMESTAMPTZ,
@@ -140,6 +143,9 @@ ALTER TABLE product_document_queue ADD COLUMN IF NOT EXISTS discovery_method TEX
 ALTER TABLE product_document_queue ADD COLUMN IF NOT EXISTS content_hash TEXT;
 ALTER TABLE product_document_queue ADD COLUMN IF NOT EXISTS decision_nodes JSONB DEFAULT '[]'::jsonb;
 ALTER TABLE product_document_queue ADD COLUMN IF NOT EXISTS lookup_ids JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE product_document_queue ADD COLUMN IF NOT EXISTS source_page_url TEXT;
+ALTER TABLE product_document_queue ADD COLUMN IF NOT EXISTS link_text TEXT;
+ALTER TABLE product_document_queue ADD COLUMN IF NOT EXISTS scrape_score NUMERIC;
 ALTER TABLE product_document_queue ADD COLUMN IF NOT EXISTS priority INTEGER DEFAULT 100;
 ALTER TABLE product_document_queue ADD COLUMN IF NOT EXISTS fetched_at TIMESTAMPTZ;
 ALTER TABLE product_document_queue ADD COLUMN IF NOT EXISTS last_checked_at TIMESTAMPTZ;

@@ -14,6 +14,12 @@ from jobscan.products.document_queue import (
     queue_product_document_url,
     write_queue_csv,
 )
+from jobscan.products.document_scraper import (
+    FetchResult,
+    candidate_links_for_page,
+    download_queue_documents,
+    scrape_product_family_lookup,
+)
 from jobscan.products.product_catalog import ProductKnowledge, export_product_catalog_xlsx, load_product_catalog_json
 from jobscan.products.product_family_lookup import (
     build_document_queue_from_lookup,
@@ -292,6 +298,70 @@ def test_product_family_lookup_infers_decision_nodes_from_terms() -> None:
         "InsulStarLight",
         "NCFI InsulStarLight PDS open cell spray foam",
     )
+
+
+def test_controlled_scraper_finds_approved_pds_links_from_seed_page() -> None:
+    rows = [row for row in load_product_family_lookup() if row["canonical_product_family"] == "GacoPrime"]
+    html = """
+    <html><body>
+      <a href="/documents/PDS-GacoPrime-Low-VOC-Primer.pdf">GacoPrime Low VOC Primer PDS</a>
+      <a href="https://example.com/PDS-GacoPrime.pdf">offsite duplicate</a>
+      <a href="/documents/GacoPrime-SDS.pdf">GacoPrime SDS</a>
+    </body></html>
+    """
+
+    candidates = candidate_links_for_page(
+        page_url="https://gaco.com/product/gacoprime/",
+        html=html,
+        lookup_rows=rows,
+    )
+
+    assert candidates
+    assert candidates[0].url == "https://gaco.com/documents/PDS-GacoPrime-Low-VOC-Primer.pdf"
+    assert candidates[0].matched_lookup_ids == ["gaco_gacoprime"]
+    assert "roofing_primer" in candidates[0].decision_nodes
+    assert all("example.com" not in candidate.url for candidate in candidates)
+
+
+def test_scrape_product_family_lookup_builds_discovered_queue_rows() -> None:
+    rows = [row for row in load_product_family_lookup() if row["canonical_product_family"] == "GacoPrime"]
+
+    def fetcher(url: str) -> FetchResult:
+        assert url == "https://gaco.com/product/gacoprime/"
+        return FetchResult(
+            url=url,
+            content=b'<a href="/documents/PDS-GacoPrime-Low-VOC-Primer.pdf">GacoPrime PDS</a>',
+            content_type="text/html",
+        )
+
+    queue_rows, diagnostics = scrape_product_family_lookup(rows, fetcher=fetcher)
+
+    assert diagnostics[0]["status"] == "scraped"
+    assert len(queue_rows) == 1
+    row = queue_rows[0]
+    assert row["source_url"] == "https://gaco.com/documents/PDS-GacoPrime-Low-VOC-Primer.pdf"
+    assert row["source_type"] == "discovered_product_document_url"
+    assert row["discovery_method"] == "approved_domain_scrape"
+    assert row["lookup_ids"] == ["gaco_gacoprime"]
+    assert row["scrape_score"] > 0
+
+
+def test_download_queue_documents_writes_approved_pdf(tmp_path) -> None:
+    row = queue_product_document_url(
+        "https://gaco.com/documents/PDS-GacoPrime-Low-VOC-Primer.pdf",
+        manufacturer_hint="Gaco",
+        decision_nodes=["roofing_primer"],
+    )
+
+    def fetcher(url: str) -> FetchResult:
+        return FetchResult(url=url, content=b"%PDF-1.4 fake", content_type="application/pdf")
+
+    downloaded = download_queue_documents([row], out_dir=tmp_path, fetcher=fetcher)
+
+    assert downloaded[0]["ingest_status"] == "downloaded"
+    assert downloaded[0]["content_hash"]
+    assert downloaded[0]["source_path"].endswith(".pdf")
+    assert (tmp_path / downloaded[0]["source_path"].split("/")[-1]).exists()
 
 
 def test_ai_structured_gacoprime_extracts_primer_properties_and_rules(tmp_path, monkeypatch) -> None:
