@@ -623,13 +623,45 @@ def recommendation_lookup(recommendations: pd.DataFrame) -> dict[tuple[str, str]
     }
 
 
+def _is_postgres_engine(engine: Any) -> bool:
+    dialect = getattr(engine, "dialect", None)
+    return str(getattr(dialect, "name", "") or "").startswith("postgres")
+
+
+def _create_recommendation_summary_view(connection: Any) -> None:
+    connection.execute(
+        text(
+            """
+            CREATE OR REPLACE VIEW analytics.estimator_decision_recommendation_summary AS
+            SELECT
+                decision_id,
+                template_bucket,
+                history_table,
+                COUNT(*) AS recommendation_field_count,
+                MAX(evidence_count) AS max_evidence_count,
+                MAX(source_jobs_count) AS max_source_jobs_count,
+                MAX(confidence) AS confidence,
+                STRING_AGG(field_name || '=' || COALESCE(recommended_value::text, median::text, mode::text), '; ' ORDER BY field_name)
+                    AS recommendation_summary
+            FROM analytics.estimator_decision_recommendations
+            GROUP BY decision_id, template_bucket, history_table
+            """
+        )
+    )
+
+
 def write_decision_history_tables(engine: Any, tables: dict[str, pd.DataFrame], recommendations: pd.DataFrame | None = None) -> None:
     with engine.begin() as connection:
         connection.execute(text("CREATE SCHEMA IF NOT EXISTS analytics"))
+        if _is_postgres_engine(engine):
+            connection.execute(text("DROP VIEW IF EXISTS analytics.estimator_decision_recommendation_summary"))
     for table_name, frame in tables.items():
         frame.to_sql(table_name, engine, schema="analytics", if_exists="replace", index=False, chunksize=1000)
     if recommendations is not None:
         recommendations.to_sql("estimator_decision_recommendations", engine, schema="analytics", if_exists="replace", index=False, chunksize=1000)
+    if recommendations is not None and _is_postgres_engine(engine):
+        with engine.begin() as connection:
+            _create_recommendation_summary_view(connection)
 
 
 def write_decision_history_outputs(

@@ -71,6 +71,7 @@ AI_SCOPE_FIELDS = (
 
 PACKAGE_DECISION_VALUES = {True, False, "review", "light", "heavy"}
 TRUE_ENV_VALUES = {"1", "true", "yes", "y", "on"}
+FALSE_ENV_VALUES = {"0", "false", "no", "n", "off"}
 
 
 def ai_scope_interpreter_enabled(env: dict[str, str] | None = None) -> bool:
@@ -78,8 +79,12 @@ def ai_scope_interpreter_enabled(env: dict[str, str] | None = None) -> bool:
     if str(source.get("DISABLE_AI_SCOPE_INTERPRETER") or "").strip().lower() in TRUE_ENV_VALUES:
         return False
     configured = source.get("ENABLE_AI_SCOPE_INTERPRETER")
-    if configured is not None and str(configured).strip().lower() in TRUE_ENV_VALUES:
-        return True
+    if configured is not None:
+        normalized = str(configured).strip().lower()
+        if normalized in TRUE_ENV_VALUES:
+            return True
+        if normalized in FALSE_ENV_VALUES or normalized == "":
+            return False
     return bool(source.get("OPENAI_API_KEY"))
 
 
@@ -663,15 +668,27 @@ def _extract_warranty(notes: str) -> int | None:
         r"one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|"
         r"fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty"
     )
-    match = re.search(rf"\b(?P<value>\d{{1,2}}|{number_word_pattern})\s*[- ]?\s*(?:year|yr)\b", notes, re.I)
-    if not match:
+    candidates: list[tuple[int, int]] = []
+    for match in re.finditer(rf"\b(?P<value>\d{{1,2}}|{number_word_pattern})\s*[- ]?\s*(?:year|yr)\b", notes, re.I):
+        raw_value = match.group("value")
+        parsed_value = _number_word_value(raw_value)
+        if parsed_value is None:
+            continue
+        value = int(parsed_value)
+        if not 1 <= value <= 40:
+            continue
+        after = notes[match.end() : match.end() + 12].lower()
+        if after.startswith("-old") or after.startswith(" old"):
+            continue
+        window = notes[max(0, match.start() - 80) : min(len(notes), match.end() + 100)].lower()
+        score = 1
+        if re.search(r"\b(?:warranty|system|coating|restoration|maintenance)\b", window):
+            score += 10
+        candidates.append((score, value))
+    if not candidates:
         return None
-    raw_value = match.group("value")
-    parsed_value = _number_word_value(raw_value)
-    if parsed_value is None:
-        return None
-    value = int(parsed_value)
-    return value if 1 <= value <= 40 else None
+    candidates.sort(reverse=True)
+    return candidates[0][1]
 
 
 def _extract_penetration_count(notes: str) -> int | None:
@@ -895,13 +912,34 @@ def deterministic_scope_interpretation(notes: str, deterministic_scope: dict[str
     return cleaned
 
 
+def _fallback_scope_from_deterministic(
+    notes: str,
+    deterministic_scope: dict[str, Any] | None,
+    message: str | None = None,
+) -> dict[str, Any]:
+    """Return a safe fallback that never degrades already-validated deterministic scope."""
+
+    base = dict(deterministic_scope or {})
+    interpreted = deterministic_scope_interpretation(notes, deterministic_scope)
+    for key, value in interpreted.items():
+        current = base.get(key)
+        if current in (None, "", [], {}):
+            base[key] = value
+    review_flags = list(base.get("review_flags") or [])
+    if message:
+        review_flags.append(message)
+        base["ai_fallback_used"] = True
+    base["review_flags"] = list(dict.fromkeys(str(flag) for flag in review_flags if flag))
+    return base
+
+
 def interpret_field_notes_with_ai(
     notes: str,
     deterministic_scope: dict | None = None,
     *,
     provider: Callable[[str, dict[str, Any] | None], str | dict[str, Any]] | None = None,
 ) -> dict:
-    fallback = deterministic_scope_interpretation(notes, deterministic_scope)
+    fallback = _fallback_scope_from_deterministic(notes, deterministic_scope)
     enabled = ai_scope_interpreter_enabled()
     if provider is None and not os.getenv("OPENAI_API_KEY") and not enabled:
         return fallback
@@ -915,9 +953,11 @@ def interpret_field_notes_with_ai(
         cleaned["review_flags"].extend(warnings)
         return cleaned
     except Exception as exc:
-        cleaned = deterministic_scope_interpretation(notes, deterministic_scope)
-        cleaned["review_flags"].append(f"AI scope interpreter unavailable or invalid; deterministic parser used. ({type(exc).__name__})")
-        return cleaned
+        return _fallback_scope_from_deterministic(
+            notes,
+            deterministic_scope,
+            f"AI scope interpreter unavailable or invalid; deterministic parser used. ({type(exc).__name__})",
+        )
 
 
 def _dimension_math_is_high_confidence(deterministic_scope: dict[str, Any]) -> bool:
@@ -984,6 +1024,17 @@ def merge_ai_scope_with_deterministic(
     ai_scope: dict[str, Any] | None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
     ai_scope = ai_scope or _empty_scope()
+    if ai_scope.get("ai_fallback_used"):
+        final_scope = dict(deterministic_scope or {})
+        ai_review_flags = list(ai_scope.get("review_flags") or [])
+        merge_decisions = [
+            {
+                "field": "ai_scope",
+                "decision": "fallback_skipped",
+                "reason": "AI scope interpreter failed; deterministic parsed scope was preserved.",
+            }
+        ]
+        return final_scope, merge_decisions, ai_review_flags
     ai_scope = apply_insulation_geometry_validation(ai_scope, notes=notes)
     final_scope = dict(deterministic_scope)
     merge_decisions: list[dict[str, Any]] = []

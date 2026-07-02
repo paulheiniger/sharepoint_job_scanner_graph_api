@@ -25,6 +25,7 @@ CATEGORY_KEYWORDS = [
     ("primer", ["primer", "prime", "rust inhibitive", "epoxy primer", "acrylic primer"]),
     ("roof_coating", ["roof coating", "silicone coating", "acrylic coating", "high solids", "top coat", "base coat"]),
     ("spray_foam", ["spray foam", "spf", "closed cell", "open cell", "polyurethane foam", "2.0 lb", "0.5 lb"]),
+    ("fastener", ["fastener", "screw", "washer", "plate"]),
     ("sealant", ["sealant", "caulk", "flashing grade", "sausage", "tube", "cartridge"]),
     ("fabric", ["fabric", "reinforcement", "seam fabric"]),
     ("granules", ["granules", "ceramic granules", "broadcast"]),
@@ -32,13 +33,20 @@ CATEGORY_KEYWORDS = [
 ]
 
 DECISION_LINKS_BY_CATEGORY = {
-    "primer": ["roofing_primer"],
-    "roof_coating": ["roofing_coating_system"],
-    "spray_foam": ["insulation_foam_system", "roofing_spf"],
-    "thermal_barrier": ["insulation_thermal_barrier", "thermal_barrier"],
-    "sealant": ["caulk_detail", "seam_treatment"],
-    "fabric": ["fabric", "seam_treatment"],
-    "granules": ["granules"],
+    "primer": ["roofing_primer", "insulation_primer"],
+    "roof_coating": ["roofing_coating_system", "roofing_coating", "roofing_labor_base", "roofing_labor_top_coat"],
+    "spray_foam": ["insulation_foam_system", "insulation_foam", "roofing_spf", "roofing_foam"],
+    "thermal_barrier": ["insulation_thermal_barrier", "insulation_thermal_barrier_coating", "thermal_barrier"],
+    "fastener": ["roofing_fastener_treatment"],
+    "sealant": [
+        "caulk_detail",
+        "seam_treatment",
+        "roofing_caulk_detail",
+        "roofing_seam_treatment",
+        "insulation_caulk_sealant",
+    ],
+    "fabric": ["fabric", "seam_treatment", "roofing_fabric", "roofing_seam_treatment"],
+    "granules": ["granules", "roofing_granules"],
     "thinner": ["insulation_thinner"],
 }
 

@@ -8,6 +8,23 @@ import pandas as pd
 
 from .product_catalog import normalize_product_name
 
+WORKBENCH_CATEGORY_ALIASES = {
+    "coating": {"roof_coating"},
+    "roofing_coating_system": {"roof_coating"},
+    "primer": {"primer"},
+    "foam": {"spray_foam"},
+    "insulation_foam_system": {"spray_foam"},
+    "thermal_barrier_coating": {"thermal_barrier"},
+    "insulation_thermal_barrier": {"thermal_barrier"},
+    "caulk_detail": {"sealant"},
+    "caulk_sealant": {"sealant"},
+    "seam_treatment": {"sealant", "fabric"},
+    "fabric": {"fabric"},
+    "granules": {"granules"},
+    "fastener_treatment": {"fastener", "sealant"},
+    "thinner": {"thinner"},
+}
+
 
 def _records(value: Any) -> list[dict[str, Any]]:
     if value is None:
@@ -44,6 +61,19 @@ def _aliases(row: dict[str, Any]) -> list[str]:
     return [str(item) for item in aliases if str(item or "").strip()]
 
 
+def _category_matches(product_category: Any, requested_category: str | None, decision_id: str | None = None) -> bool:
+    product = str(product_category or "").lower().strip()
+    requested = str(requested_category or "").lower().strip()
+    decision = str(decision_id or "").lower().strip()
+    if not product or not requested:
+        return False
+    if product == requested:
+        return True
+    accepted = set(WORKBENCH_CATEGORY_ALIASES.get(requested, set()))
+    accepted.update(WORKBENCH_CATEGORY_ALIASES.get(decision, set()))
+    return product in accepted
+
+
 def match_product(
     product_name: str,
     product_catalog: Any,
@@ -69,7 +99,7 @@ def match_product(
             continue
         candidate_names = [row.get("product_name"), row.get("sku"), row.get("product_family"), *_aliases(row)]
         score = max(_contains_score(query, normalize_product_name(name)) for name in candidate_names if name)
-        if category and str(row.get("category") or "").lower() == str(category).lower():
+        if category and _category_matches(row.get("category"), category, decision_id):
             score += 0.06
         if link_product_ids and str(row.get("product_id") or "") in link_product_ids:
             score += 0.1
@@ -121,6 +151,19 @@ def product_context_for_decision(
         for row in properties
         if str(row.get("property_name") or "") in {"coverage_sqft_per_gallon", "coverage_gal_per_100_sqft", "wet_mils"}
     ]
+    source_evidence = []
+    for row in [*rules[:8], *properties[:8]]:
+        text = row.get("source_text")
+        if not text:
+            continue
+        source_evidence.append(
+            {
+                "field": row.get("rule_type") or row.get("property_name"),
+                "value": row.get("rule_value") or row.get("property_value"),
+                "source_page": row.get("source_page"),
+                "source_text": text,
+            }
+        )
     return {
         "product_id": product_id,
         "manufacturer": product.get("manufacturer") or "",
@@ -137,6 +180,7 @@ def product_context_for_decision(
         "important_limitations": "; ".join(str(row.get("rule_value") or "") for row in limitations[:5]),
         "warnings": [row.get("rule_value") for row in limitations[:5] if row.get("rule_value")],
         "source_documents": [row.get("source_path") for row in documents[:5] if row.get("source_path")],
+        "source_evidence": source_evidence[:10],
         "linked_decision_nodes": [row.get("decision_id") for row in linked_decisions if row.get("decision_id")],
         "confidence": "high" if float(product.get("match_score") or 0) >= 0.85 else "medium",
     }

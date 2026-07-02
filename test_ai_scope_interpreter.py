@@ -186,6 +186,13 @@ def test_ai_interpreter_is_preferred_when_openai_key_exists(monkeypatch) -> None
     assert ai_scope_interpreter.ai_scope_interpreter_enabled() is False
 
 
+def test_ai_interpreter_explicit_false_overrides_openai_key(monkeypatch) -> None:
+    monkeypatch.setenv("ENABLE_AI_SCOPE_INTERPRETER", "false")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    assert ai_scope_interpreter.ai_scope_interpreter_enabled() is False
+
+
 def test_estimator_merges_ai_scope_with_deterministic_guardrails(monkeypatch) -> None:
     monkeypatch.setenv("ENABLE_AI_SCOPE_INTERPRETER", "true")
 

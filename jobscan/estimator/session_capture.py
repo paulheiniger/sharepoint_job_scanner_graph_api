@@ -633,6 +633,7 @@ def load_estimator_session_payload(engine: Engine, session_id: str) -> dict[str,
         "estimator_edits": payload["decision_edits"],
         "final_decisions": latest_final.get("final_decisions") or {},
         "calculated_outputs": latest_final.get("calculated_outputs") or {},
+        "workbook_cell_writes": latest_final.get("workbook_cell_writes") or [],
         "workbook_export_path": latest_final.get("workbook_export_path") or payload["session"].get("exported_workbook_path"),
     }
     return _jsonable(payload)
@@ -662,6 +663,7 @@ def export_estimator_session_package(
         "estimator_edits.json": json.dumps(review.get("estimator_edits") or [], indent=2, sort_keys=True, default=str),
         "final_decisions.json": json.dumps(review.get("final_decisions") or {}, indent=2, sort_keys=True, default=str),
         "calculated_outputs.json": json.dumps(review.get("calculated_outputs") or {}, indent=2, sort_keys=True, default=str),
+        "workbook_cell_writes.json": json.dumps(review.get("workbook_cell_writes") or [], indent=2, sort_keys=True, default=str),
         "workbook_export_path.txt": str(review.get("workbook_export_path") or ""),
     }
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -685,9 +687,11 @@ def export_training_dataset(engine: Engine, out: str | Path) -> Path:
             row = {
                 "raw_input_notes": review.get("raw_input_notes"),
                 "parsed_scope": review.get("parsed_scope") or {},
+                "proposed_decisions": review.get("proposed_decisions") or [],
                 "final_decisions": review.get("final_decisions") or {},
                 "estimator_edits": review.get("estimator_edits") or [],
                 "calculated_outputs": review.get("calculated_outputs") or {},
+                "workbook_cell_writes": review.get("workbook_cell_writes") or [],
                 "template_type": payload["session"].get("template_type"),
                 "division": payload["session"].get("division"),
                 "estimate_status": payload["session"].get("estimate_status"),
@@ -706,43 +710,80 @@ def export_training_dataset(engine: Engine, out: str | Path) -> Path:
     return out_path
 
 
+def _product_guidance_snapshot(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "product_id": row.get("product_id"),
+        "manufacturer": row.get("product_manufacturer"),
+        "guidance": row.get("product_guidance"),
+        "recommended_use": row.get("product_recommended_use"),
+        "manufacturer_guidance": row.get("product_manufacturer_guidance"),
+        "coverage": row.get("product_coverage"),
+        "limitations": row.get("product_limitations"),
+        "warnings": row.get("product_warnings") or row.get("product_warning_summary"),
+        "source_documents": row.get("product_source_documents") or row.get("product_source_evidence"),
+        "source_evidence": row.get("product_source_evidence_rows") or [],
+        "confidence": row.get("product_context_confidence"),
+        "match_score": row.get("product_match_score"),
+    }
+
+
+def _source_evidence_snapshot(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "row_traceability": row.get("row_traceability"),
+        "workbook_rows_controlled": row.get("workbook_rows_controlled") or row.get("workbook_row"),
+        "decision_recommendation": _maybe_json(row.get("decision_recommendation_json")),
+        "decision_source_tables": row.get("decision_source_tables"),
+        "decision_filters_applied": row.get("decision_filters_applied"),
+        "decision_filters_relaxed": row.get("decision_filters_relaxed"),
+        "evidence_summary": row.get("evidence_summary"),
+        "notes": row.get("notes"),
+    }
+
+
+def _decision_record_from_workbench_row(row: dict[str, Any], section: str, *, final: bool = False) -> dict[str, Any]:
+    decision_id = row.get("decision_id") or row.get("package_key") or row.get("adder_key")
+    template_bucket = row.get("template_bucket") or row.get("package_key") or row.get("adder_key")
+    editable_value = row.get("editable_decision_value")
+    if editable_value in (None, "", [], {}):
+        editable_value = row.get("item_name") or row.get("labor_package") or row.get("editable_value")
+    record = {
+        "section": section,
+        "decision_id": decision_id,
+        "template_bucket": template_bucket,
+        "workbook_row": row.get("workbook_row"),
+        "workbook_traceability": row.get("row_traceability"),
+        "item_or_task": row.get("item_name") or row.get("labor_package") or row.get("adder"),
+        "include": bool(row.get("include")),
+        "suggested_by_notes_rules": row.get("suggested_by_notes_rules"),
+        "historical_recommendation": row.get("historical_recommendation"),
+        "recommended_value": row.get("recommended_decision_value"),
+        "editable_value": editable_value,
+        "decision_values": row.get("decision_values"),
+        "calculated_output": row.get("calculated_output"),
+        "calculated_output_summary": row.get("calculated_output_summary"),
+        "quantity": row.get("calculated_quantity"),
+        "hours": row.get("calculated_hours"),
+        "cost": row.get("estimated_cost"),
+        "evidence_count": row.get("evidence_count"),
+        "decision_evidence_count": row.get("decision_evidence_count"),
+        "decision_source_jobs_count": row.get("decision_source_jobs_count"),
+        "confidence": row.get("confidence"),
+        "decision_confidence": row.get("decision_confidence"),
+        "source_evidence": _source_evidence_snapshot(row),
+        "product_guidance_snapshot": _product_guidance_snapshot(row),
+    }
+    if final:
+        record["final_value"] = editable_value
+        record["final_decision_value"] = editable_value
+    return _jsonable(record)
+
+
 def proposed_decisions_from_workbench(workbench: dict[str, Any]) -> dict[str, Any]:
     recalculated = recalculate_workbench_tables(workbench)
     rows: list[dict[str, Any]] = []
     for section in ("materials", "labor", "adders"):
         for row in recalculated.get(section) or []:
-            rows.append(
-                {
-                    "section": section,
-                    "decision_id": row.get("decision_id") or row.get("package_key") or row.get("adder_key"),
-                    "template_bucket": row.get("template_bucket") or row.get("package_key") or row.get("adder_key"),
-                    "workbook_row": row.get("workbook_row"),
-                    "suggested_by_notes_rules": row.get("suggested_by_notes_rules"),
-                    "recommended_decision_value": row.get("recommended_decision_value"),
-                    "editable_decision_value": row.get("editable_decision_value"),
-                    "decision_values": row.get("decision_values"),
-                    "historical_recommendation": row.get("historical_recommendation"),
-                    "calculated_output": row.get("calculated_output"),
-                    "calculated_output_summary": row.get("calculated_output_summary"),
-                    "row_traceability": row.get("row_traceability"),
-                    "source_evidence": {
-                        "decision_recommendation": row.get("decision_recommendation_json"),
-                        "decision_source_tables": row.get("decision_source_tables"),
-                        "decision_filters_applied": row.get("decision_filters_applied"),
-                        "decision_filters_relaxed": row.get("decision_filters_relaxed"),
-                        "product_guidance": row.get("product_guidance"),
-                        "product_warnings": row.get("product_warnings") or row.get("product_warning_summary"),
-                        "product_source_documents": row.get("product_source_documents") or row.get("product_source_evidence"),
-                    },
-                    "include": row.get("include"),
-                    "evidence_count": row.get("evidence_count"),
-                    "decision_evidence_count": row.get("decision_evidence_count"),
-                    "decision_source_jobs_count": row.get("decision_source_jobs_count"),
-                    "confidence": row.get("confidence"),
-                    "decision_confidence": row.get("decision_confidence"),
-                    "notes": row.get("notes"),
-                }
-            )
+            rows.append(_decision_record_from_workbench_row(row, section, final=False))
     return {"decision_graph_version": DECISION_GRAPH_VERSION, "decisions": rows}
 
 
@@ -753,34 +794,7 @@ def final_decisions_from_workbench(workbench: dict[str, Any]) -> dict[str, Any]:
         for row in recalculated.get(section) or []:
             if not row.get("include"):
                 continue
-            decisions.append(
-                {
-                    "section": section,
-                    "decision_id": row.get("decision_id") or row.get("package_key") or row.get("adder_key"),
-                    "template_bucket": row.get("template_bucket") or row.get("package_key") or row.get("adder_key"),
-                    "workbook_row": row.get("workbook_row"),
-                    "item_or_task": row.get("item_name") or row.get("labor_package") or row.get("adder"),
-                    "historical_recommendation": row.get("historical_recommendation"),
-                    "final_value": row.get("editable_decision_value") or row.get("item_name") or row.get("editable_value"),
-                    "final_decision_value": row.get("editable_decision_value") or row.get("item_name") or row.get("editable_value"),
-                    "decision_values": row.get("decision_values"),
-                    "calculated_output": row.get("calculated_output"),
-                    "calculated_output_summary": row.get("calculated_output_summary"),
-                    "quantity": row.get("calculated_quantity"),
-                    "hours": row.get("calculated_hours"),
-                    "cost": row.get("estimated_cost"),
-                    "row_traceability": row.get("row_traceability"),
-                    "source_evidence": {
-                        "decision_recommendation": row.get("decision_recommendation_json"),
-                        "decision_source_tables": row.get("decision_source_tables"),
-                        "decision_filters_applied": row.get("decision_filters_applied"),
-                        "decision_filters_relaxed": row.get("decision_filters_relaxed"),
-                        "product_guidance": row.get("product_guidance"),
-                        "product_warnings": row.get("product_warnings") or row.get("product_warning_summary"),
-                        "product_source_documents": row.get("product_source_documents") or row.get("product_source_evidence"),
-                    },
-                }
-            )
+            decisions.append(_decision_record_from_workbench_row(row, section, final=True))
     return {
         "decision_graph_version": DECISION_GRAPH_VERSION,
         "scope": recalculated.get("scope") or {},

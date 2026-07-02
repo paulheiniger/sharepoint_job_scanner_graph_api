@@ -100,11 +100,23 @@ def parse_city_state(text: str) -> tuple[str, str]:
 
 
 def parse_field_warranty_target(text: str) -> int | None:
-    match = re.search(r"(\d{1,2})\s*[- ]?\s*(?:year|yr)", text, re.I)
-    if not match:
+    candidates: list[tuple[int, int]] = []
+    for match in re.finditer(r"(\d{1,2})\s*[- ]?\s*(?:year|yr)\b", text, re.I):
+        value = int(match.group(1))
+        if not 5 <= value <= 30:
+            continue
+        after = text[match.end() : match.end() + 12].lower()
+        if after.startswith("-old") or after.startswith(" old"):
+            continue
+        window = text[max(0, match.start() - 60) : min(len(text), match.end() + 80)].lower()
+        score = 1
+        if re.search(r"\b(?:warranty|system|coating|restoration|maintenance)\b", window):
+            score += 10
+        candidates.append((score, value))
+    if not candidates:
         return None
-    value = int(match.group(1))
-    return value if 5 <= value <= 30 else None
+    candidates.sort(reverse=True)
+    return candidates[0][1]
 
 
 def parse_count_word(value: str) -> int | None:

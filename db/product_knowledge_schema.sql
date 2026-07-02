@@ -70,6 +70,20 @@ CREATE TABLE IF NOT EXISTS product_decision_links (
     reason TEXT
 );
 
+CREATE TABLE IF NOT EXISTS product_document_queue (
+    queue_id TEXT PRIMARY KEY,
+    source_path TEXT NOT NULL UNIQUE,
+    source_type TEXT DEFAULT 'local_file',
+    manufacturer_hint TEXT,
+    document_type TEXT,
+    discovered_at TIMESTAMPTZ DEFAULT now(),
+    ingest_status TEXT DEFAULT 'pending',
+    product_id TEXT REFERENCES product_catalog(product_id) ON DELETE SET NULL,
+    catalog_path TEXT,
+    validation_warnings JSONB DEFAULT '[]'::jsonb,
+    notes TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_product_catalog_name ON product_catalog(product_name);
 CREATE INDEX IF NOT EXISTS idx_product_aliases_product ON product_aliases(product_id);
 CREATE INDEX IF NOT EXISTS idx_product_documents_product ON product_documents(product_id);
@@ -77,6 +91,7 @@ CREATE INDEX IF NOT EXISTS idx_product_properties_product ON product_properties(
 CREATE INDEX IF NOT EXISTS idx_product_rules_product ON product_rules(product_id);
 CREATE INDEX IF NOT EXISTS idx_product_decision_links_product ON product_decision_links(product_id);
 CREATE INDEX IF NOT EXISTS idx_product_decision_links_decision ON product_decision_links(decision_id);
+CREATE INDEX IF NOT EXISTS idx_product_document_queue_status ON product_document_queue(ingest_status);
 
 ALTER TABLE product_catalog ADD COLUMN IF NOT EXISTS extraction_method TEXT;
 ALTER TABLE product_catalog ADD COLUMN IF NOT EXISTS extraction_warnings JSONB DEFAULT '[]'::jsonb;
@@ -84,3 +99,5 @@ ALTER TABLE product_documents ADD COLUMN IF NOT EXISTS extraction_method TEXT;
 ALTER TABLE product_documents ADD COLUMN IF NOT EXISTS extraction_warnings JSONB DEFAULT '[]'::jsonb;
 ALTER TABLE product_properties ADD COLUMN IF NOT EXISTS numeric_min NUMERIC;
 ALTER TABLE product_properties ADD COLUMN IF NOT EXISTS numeric_max NUMERIC;
+ALTER TABLE product_document_queue ADD COLUMN IF NOT EXISTS manufacturer_hint TEXT;
+ALTER TABLE product_document_queue ADD COLUMN IF NOT EXISTS validation_warnings JSONB DEFAULT '[]'::jsonb;

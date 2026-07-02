@@ -223,17 +223,19 @@ def _normal_export_row_allowed(row: dict[str, Any], *, scope_type: str, debug_ev
     template_bucket = str(row.get("template_bucket") or row.get("package") or row.get("matched_package") or "").strip().lower()
     if template_bucket == "unknown":
         return False
+    division = str(row.get("division") or row.get("job_division") or "").strip().lower()
+    project_type = str(row.get("project_type") or row.get("job_project_type") or row.get("job_type") or "").strip().lower()
+    source_text = _row_source_text(row)
+    if division.startswith("floor") or project_type in {"floor system", "flooring"} or "floor system" in project_type or project_type.startswith("floor"):
+        return False
+    if "floor system" in source_text or "flooring" in source_text:
+        return False
     if scope_type == "roofing":
         row_type = _row_template_type(row)
         if row_type == "insulation":
             return False
-        division = str(row.get("division") or row.get("job_division") or "").strip().lower()
         if division and division not in {"roofing", "roof", "roofs"}:
             return False
-        project_type = str(row.get("project_type") or row.get("job_project_type") or row.get("job_type") or "").strip().lower()
-        if project_type in {"floor system", "flooring"} or "floor system" in project_type or project_type.startswith("floor"):
-            return False
-        source_text = _row_source_text(row)
         if any(term in source_text for term in ("insulation", "spray foam", "closed-cell", "closed cell", "open-cell", "open cell")):
             return False
     return True

@@ -101,6 +101,7 @@ def test_export_package_creates_zip_with_expected_files_and_workbook(tmp_path) -
             "workbench_summary.json",
             "workbench_summary.xlsx",
             "workbench_debug.json",
+            "README.txt",
             "estimator_input.txt",
             "exported_workbook.xlsx",
         }.issubset(names)
@@ -108,12 +109,23 @@ def test_export_package_creates_zip_with_expected_files_and_workbook(tmp_path) -
         summary = json.loads(archive.read("workbench_summary.json"))
         assert summary["input_notes"] == "Roof coating notes"
         assert summary["parsed_scope"]["project_type"] == "roof coating"
+        assert summary["decision_trace"][0]["section"] == "Material"
+        readme = archive.read("README.txt").decode("utf-8")
+        assert "Decision Trace" in readme
+        assert "Product Guidance" in readme
 
         archive.extract("workbench_summary.xlsx", path=tmp_path)
     summary_workbook = load_workbook(tmp_path / "workbench_summary.xlsx", read_only=True, data_only=True)
-    assert {"Materials Compact", "Labor Compact", "Adders Compact", "Debug Materials", "Debug Labor", "Debug Adders"}.issubset(
-        set(summary_workbook.sheetnames)
-    )
+    assert {
+        "Materials Compact",
+        "Labor Compact",
+        "Adders Compact",
+        "Decision Trace",
+        "Product Guidance",
+        "Debug Materials",
+        "Debug Labor",
+        "Debug Adders",
+    }.issubset(set(summary_workbook.sheetnames))
 
 
 def test_insulation_review_package_exports_without_workbook(tmp_path) -> None:
@@ -173,6 +185,7 @@ def test_insulation_review_package_exports_without_workbook(tmp_path) -> None:
         names = set(archive.namelist())
         assert "workbench_summary.json" in names
         assert "workbench_summary.xlsx" in names
+        assert "README.txt" in names
         assert "workbook_export_error.txt" in names
         assert "exported_workbook.xlsx" not in names
         summary = json.loads(archive.read("workbench_summary.json"))
@@ -273,6 +286,46 @@ def test_export_excel_handles_timezone_datetimes_and_long_text(tmp_path) -> None
     assert isinstance(value, str)
     assert len(value) <= EXCEL_CELL_LIMIT
     assert "truncated for Excel" in value
+
+
+def test_review_package_includes_product_guidance_sheet(tmp_path) -> None:
+    workbench = sample_workbench()
+    workbench["materials"][0].update(
+        {
+            "decision_id": "roofing_coating_system",
+            "estimator_decision": "Silicone coating",
+            "historical_recommendation": "Historical coating decision from 12 jobs.",
+            "editable_value": "item=GAF High Solids Silicone",
+            "calculated_output_summary": "quantity=200, cost=7600",
+            "row_traceability": "Estimate rows 26-28",
+            "decision_evidence_count": 12,
+            "decision_confidence": "high",
+            "product_id": "gaf_high_solids_silicone",
+            "product_manufacturer": "GAF",
+            "product_guidance": "Use as silicone roof coating.",
+            "product_warning_summary": "Do not apply over wet substrate.",
+            "product_source_documents": ["product_documents/GAF Silicone.pdf"],
+            "product_source_evidence_rows": [
+                {
+                    "field": "limitation",
+                    "source_page": 2,
+                    "source_text": "Do not apply over wet substrate.",
+                }
+            ],
+            "product_match_score": 0.95,
+        }
+    )
+
+    zip_path = export_workbench_review_package(workbench=workbench, input_notes="Notes", output_dir=tmp_path)
+
+    with zipfile.ZipFile(zip_path) as archive:
+        summary = json.loads(archive.read("workbench_summary.json"))
+        assert summary["product_guidance"][0]["product_id"] == "gaf_high_solids_silicone"
+        assert "wet substrate" in summary["product_guidance"][0]["warnings"]
+        archive.extract("workbench_summary.xlsx", path=tmp_path)
+
+    workbook = load_workbook(tmp_path / "workbench_summary.xlsx", read_only=True, data_only=True)
+    assert "Product Guidance" in workbook.sheetnames
 
 
 def test_missing_workbook_export_does_not_crash_package_export(tmp_path) -> None:

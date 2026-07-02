@@ -8,10 +8,12 @@ import pytest
 from jobscan.estimator.decision_history import build_historical_decision_tables
 from jobscan.estimator.schemas import EstimatorData
 from jobscan.products.ai_document_parser import is_suspicious_product_name, normalize_extracted_measure
+from jobscan.products.document_queue import discover_product_documents, write_queue_csv
 from jobscan.products.product_catalog import ProductKnowledge, export_product_catalog_xlsx, load_product_catalog_json
 from jobscan.products.product_ingest import ingest_product_directory, ingest_product_document
 from jobscan.products import product_ingest as product_ingest_module
 from jobscan.products.product_matching import match_product, product_context_for_decision
+from jobscan.products.product_rules import DECISION_LINKS_BY_CATEGORY
 from jobscan.products.validate_catalog import validate_product_catalog, write_validation_workbook
 
 
@@ -69,6 +71,7 @@ def test_local_product_pdf_ingest_matching_links_and_export(tmp_path) -> None:
     assert context["coverage"]
     assert context["warnings"]
     assert "roofing_coating_system" in context["linked_decision_nodes"]
+    assert context["source_evidence"]
 
     json_path = tmp_path / "product_catalog.json"
     json_path.write_text(json.dumps(knowledge.to_dict()), encoding="utf-8")
@@ -127,6 +130,98 @@ def test_historical_decision_rows_reference_product_ids() -> None:
     coating = tables["roofing_coating_decision_history"]
     assert coating.iloc[0]["product_id"] == "gaf_high_solids_silicone"
     assert coating.iloc[0]["product_match_score"] >= 0.55
+
+
+def test_product_decision_links_cover_workbench_decision_ids() -> None:
+    assert "roofing_primer" in DECISION_LINKS_BY_CATEGORY["primer"]
+    assert "insulation_primer" in DECISION_LINKS_BY_CATEGORY["primer"]
+    assert "roofing_seam_treatment" in DECISION_LINKS_BY_CATEGORY["sealant"]
+    assert "roofing_caulk_detail" in DECISION_LINKS_BY_CATEGORY["sealant"]
+    assert "insulation_caulk_sealant" in DECISION_LINKS_BY_CATEGORY["sealant"]
+    assert "roofing_fabric" in DECISION_LINKS_BY_CATEGORY["fabric"]
+    assert "roofing_granules" in DECISION_LINKS_BY_CATEGORY["granules"]
+
+
+def test_product_context_uses_decision_link_and_source_evidence() -> None:
+    product_id = "gaco_prime"
+    context = product_context_for_decision(
+        product_name="GacoPrime",
+        decision_id="insulation_primer",
+        product_catalog=pd.DataFrame(
+            [
+                {
+                    "product_id": product_id,
+                    "manufacturer": "Gaco",
+                    "product_name": "GacoPrime Low VOC Primer",
+                    "category": "primer",
+                    "aliases": ["GacoPrime"],
+                    "active": True,
+                }
+            ]
+        ),
+        product_properties=pd.DataFrame(
+            [
+                {
+                    "product_id": product_id,
+                    "property_name": "coverage_sqft_per_gallon",
+                    "property_value": "200-250",
+                    "unit": "sqft/gal",
+                    "source_page": 1,
+                    "source_text": "Coverage: 200-250 ft2/gal.",
+                }
+            ]
+        ),
+        product_rules=pd.DataFrame(
+            [
+                {
+                    "product_id": product_id,
+                    "rule_type": "limitation",
+                    "rule_value": "Existing silicone coatings should not be primed.",
+                    "severity": "warning",
+                    "source_page": 2,
+                    "source_text": "Existing silicone coatings should not be primed.",
+                }
+            ]
+        ),
+        product_documents=pd.DataFrame(
+            [
+                {
+                    "product_id": product_id,
+                    "source_path": "product_documents/GacoPrime.pdf",
+                }
+            ]
+        ),
+        product_decision_links=pd.DataFrame(
+            [
+                {
+                    "product_id": product_id,
+                    "decision_id": "insulation_primer",
+                    "influence_type": "candidate_product",
+                }
+            ]
+        ),
+        category="primer",
+    )
+
+    assert context["product_id"] == product_id
+    assert "Existing silicone" in context["important_limitations"]
+    assert context["source_documents"] == ["product_documents/GacoPrime.pdf"]
+    assert any(row["source_text"] == "Coverage: 200-250 ft2/gal." for row in context["source_evidence"])
+
+
+def test_product_document_queue_discovers_local_docs_and_writes_csv(tmp_path) -> None:
+    docs = tmp_path / "product_documents"
+    docs.mkdir()
+    (docs / "GacoPrime PDS.pdf").write_text("fake pdf text", encoding="utf-8")
+    (docs / "Gaco SDS.txt").write_text("fake sds text", encoding="utf-8")
+    (docs / "ignore.csv").write_text("not a product doc", encoding="utf-8")
+
+    rows = discover_product_documents(docs, manufacturer_hint="Gaco")
+    assert len(rows) == 2
+    assert {row["document_type"] for row in rows} == {"PDS", "SDS"}
+    assert all(row["ingest_status"] == "pending" for row in rows)
+    out = write_queue_csv(rows, tmp_path / "queue.csv")
+    assert out.exists()
 
 
 def test_ai_structured_gacoprime_extracts_primer_properties_and_rules(tmp_path, monkeypatch) -> None:

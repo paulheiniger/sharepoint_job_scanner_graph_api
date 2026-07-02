@@ -43,6 +43,12 @@ def sample_workbench() -> dict:
                 "package": "Silicone",
                 "workbook_row": "26",
                 "item_name": "GAF High Solids Silicone 55 Gal",
+                "historical_recommendation": "Historical coating decision from 11 jobs. GAF High Solids Silicone 55 Gal.",
+                "calculated_output_summary": "quantity=150, cost=6300",
+                "row_traceability": "Estimate rows 26-28",
+                "decision_source_tables": "roofing_coating_decision_history",
+                "decision_filters_applied": "division, template_type",
+                "decision_filters_relaxed": "",
                 "recommended_decision_value": "GAF High Solids Silicone 55 Gal",
                 "editable_decision_value": "GAF High Solids Silicone 55 Gal",
                 "decision_values": {"gal_per_100_sqft": 1.5},
@@ -53,7 +59,15 @@ def sample_workbench() -> dict:
                 "unit": "gal",
                 "current_unit_price": 42,
                 "evidence_count": 11,
+                "decision_evidence_count": 11,
+                "decision_source_jobs_count": 9,
+                "decision_confidence": "high",
                 "confidence": "high",
+                "product_id": "prod-gaf-silicone",
+                "product_manufacturer": "GAF",
+                "product_guidance": "Use as silicone roof coating.",
+                "product_warnings": ["Do not apply over wet substrate."],
+                "product_source_documents": ["gaf_silicone_pds.pdf"],
                 "notes": "Historical default from 11 roofing jobs.",
             }
         ],
@@ -65,6 +79,9 @@ def sample_workbench() -> dict:
                 "package_key": "labor_base",
                 "labor_package": "Base Coat",
                 "workbook_row": "122",
+                "historical_recommendation": "Historical labor_base decision from 8 jobs. days=2, crew_size=4",
+                "calculated_output_summary": "hours=60, cost=4320",
+                "row_traceability": "Estimate row 122",
                 "recommended_decision_value": "mixed_formula",
                 "editable_decision_value": "mixed_formula",
                 "decision_values": {"days": 2, "crew_size": 4},
@@ -73,6 +90,9 @@ def sample_workbench() -> dict:
                 "crew_size": 4,
                 "labor_rate": 72,
                 "evidence_count": 8,
+                "decision_evidence_count": 8,
+                "decision_source_jobs_count": 8,
+                "decision_confidence": "medium",
                 "confidence": "medium",
                 "notes": "Historical labor default.",
             }
@@ -104,6 +124,10 @@ def sample_workbook_inputs() -> dict:
         },
         "material_rows": [
             {
+                "decision_id": "roofing_coating_system",
+                "template_bucket": "coating",
+                "workbook_row": "26",
+                "row_traceability": "Estimate rows 26-28",
                 "item": "GAF High Solids Silicone 55 Gal",
                 "category": "coating",
                 "quantity": 150,
@@ -196,7 +220,12 @@ def test_estimator_session_lifecycle_and_exports(tmp_path) -> None:
     payload = load_estimator_session_payload(engine, session_id)
     assert payload["review"]["parsed_scope"]["estimated_sqft"] == 10000
     assert payload["review"]["final_decisions"]["decisions"][0]["decision_id"] == "roofing_coating_system"
+    assert payload["review"]["final_decisions"]["decisions"][0]["final_value"] == "GAF High Solids Silicone 55 Gal"
+    assert payload["review"]["final_decisions"]["decisions"][0]["source_evidence"]["decision_source_tables"] == "roofing_coating_decision_history"
+    assert payload["review"]["final_decisions"]["decisions"][0]["product_guidance_snapshot"]["source_documents"] == ["gaf_silicone_pds.pdf"]
     assert payload["review"]["calculated_outputs"]["totals"]["draft_total"] == 10620
+    material_write = next(row for row in payload["review"]["workbook_cell_writes"] if row.get("section") == "materials")
+    assert material_write["decision_id"] == "roofing_coating_system"
 
     zip_path = export_estimator_session_package(engine, session_id, tmp_path / "session_review.zip")
     assert zip_path.exists()
@@ -211,6 +240,7 @@ def test_estimator_session_lifecycle_and_exports(tmp_path) -> None:
             "final_decisions.json",
             "calculated_outputs.json",
             "workbook_export_path.txt",
+            "workbook_cell_writes.json",
         }.issubset(names)
         review = json.loads(archive.read("session_review.json"))
         assert review["raw_input_notes"] == "Roof coating notes from email."
@@ -223,3 +253,6 @@ def test_estimator_session_lifecycle_and_exports(tmp_path) -> None:
     assert rows[0]["template_type"] == "roofing"
     assert rows[0]["division"] == "Roofing"
     assert rows[0]["estimator_edits"][0]["field_name"] == "editable_hours_per_1000_sqft"
+    assert rows[0]["proposed_decisions"][0]["decisions"][0]["decision_id"] == "roofing_coating_system"
+    training_material_write = next(row for row in rows[0]["workbook_cell_writes"] if row.get("section") == "materials")
+    assert training_material_write["row_traceability"] == "Estimate rows 26-28"

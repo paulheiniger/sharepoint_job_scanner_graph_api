@@ -85,6 +85,100 @@ def _compact_rows(rows: list[dict[str, Any]], columns: list[str]) -> list[dict[s
     return compact
 
 
+def _decision_trace_rows(
+    materials: list[dict[str, Any]],
+    labor: list[dict[str, Any]],
+    adders: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for section, section_rows in (("Material", materials), ("Labor", labor), ("Adder", adders)):
+        for row in section_rows or []:
+            rows.append(
+                {
+                    "section": section,
+                    "include": row.get("include"),
+                    "decision_id": row.get("decision_id") or row.get("package_key") or row.get("adder_key"),
+                    "template_bucket": row.get("template_bucket") or row.get("package_key") or row.get("adder_key"),
+                    "workbook_row": row.get("workbook_row"),
+                    "item_or_task": row.get("item_name") or row.get("labor_package") or row.get("adder") or row.get("package"),
+                    "historical_recommendation": row.get("historical_recommendation"),
+                    "editable_value": row.get("editable_value") or row.get("editable_decision_value"),
+                    "calculated_output": row.get("calculated_output_summary") or row.get("calculated_output"),
+                    "estimated_cost": row.get("estimated_cost"),
+                    "evidence_count": row.get("decision_evidence_count") or row.get("evidence_count"),
+                    "confidence": row.get("decision_confidence") or row.get("confidence"),
+                    "row_traceability": row.get("row_traceability"),
+                    "notes": row.get("notes"),
+                }
+            )
+    return rows
+
+
+def _product_guidance_rows(materials: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for row in materials or []:
+        if not any(
+            row.get(key)
+            for key in (
+                "product_id",
+                "product_guidance",
+                "product_warning_summary",
+                "product_source_documents",
+                "product_source_evidence_rows",
+            )
+        ):
+            continue
+        rows.append(
+            {
+                "include": row.get("include"),
+                "decision_id": row.get("decision_id") or row.get("package_key"),
+                "workbook_row": row.get("workbook_row"),
+                "package": row.get("package"),
+                "item_name": row.get("item_name"),
+                "product_id": row.get("product_id"),
+                "manufacturer": row.get("product_manufacturer"),
+                "guidance": row.get("product_guidance"),
+                "warnings": row.get("product_warning_summary") or row.get("product_warnings"),
+                "coverage": row.get("product_coverage"),
+                "source_documents": row.get("product_source_documents") or row.get("product_source_evidence"),
+                "source_evidence": row.get("product_source_evidence_rows"),
+                "match_score": row.get("product_match_score"),
+            }
+        )
+    return rows
+
+
+def _readme_text(summary: dict[str, Any], *, workbook_path: str | Path | None = None, workbook_export_error: str | None = None) -> str:
+    totals = summary.get("totals") or {}
+    review_flags = summary.get("review_flags") or []
+    workbook_status = "included as exported_workbook.xlsx" if workbook_path else f"not included: {workbook_export_error or 'not generated'}"
+    return "\n".join(
+        [
+            "Estimating Assistant Review Package",
+            "",
+            f"Run ID: {summary.get('run_id')}",
+            f"Timestamp: {summary.get('timestamp')}",
+            f"Workbook: {workbook_status}",
+            "",
+            "Draft Totals",
+            f"- Materials: {totals.get('material_total')}",
+            f"- Labor: {totals.get('labor_total')}",
+            f"- Adders: {totals.get('adder_total')}",
+            f"- Draft Total: {totals.get('draft_total')}",
+            "",
+            "How to Review",
+            "- Start with workbench_summary.xlsx.",
+            "- Use Decision Trace to see each editable estimator decision, historical recommendation, calculated output, evidence, and workbook row.",
+            "- Use Product Guidance for manufacturer guidance and warnings. Product sheets are advisory only and do not override estimator decisions.",
+            "- Use Debug Materials/Labor/Adders only when troubleshooting evidence, filters, or rejected rows.",
+            "",
+            "Review Flags",
+            *(f"- {flag}" for flag in review_flags),
+            "",
+        ]
+    )
+
+
 def build_workbench_review_payloads(
     *,
     workbench: dict[str, Any],
@@ -102,6 +196,8 @@ def build_workbench_review_payloads(
     materials = list(recalculated.get("materials") or [])
     labor = list(recalculated.get("labor") or [])
     adders = list(recalculated.get("adders") or [])
+    decision_trace = _decision_trace_rows(materials, labor, adders)
+    product_guidance = _product_guidance_rows(materials)
 
     summary = {
         "run_id": resolved_run_id,
@@ -174,6 +270,8 @@ def build_workbench_review_payloads(
                 "notes",
             ],
         ),
+        "decision_trace": decision_trace,
+        "product_guidance": product_guidance,
         "totals": totals,
         "review_flags": recalculated.get("review_flags") or [],
         "runtime": runtime or recalculated.get("runtime") or {},
@@ -187,6 +285,8 @@ def build_workbench_review_payloads(
         "materials_diagnostics": materials,
         "labor_diagnostics": labor,
         "adders_diagnostics": adders,
+        "decision_trace": decision_trace,
+        "product_guidance": product_guidance,
         "totals": totals,
         "warnings": recalculated.get("review_flags") or [],
     }
@@ -197,6 +297,8 @@ def build_workbench_review_payloads(
         "Materials Compact": summary["materials_final"],
         "Labor Compact": summary["labor_final"],
         "Adders Compact": summary["adders_final"],
+        "Decision Trace": decision_trace,
+        "Product Guidance": product_guidance or [{"message": "No matched product guidance in this workbench."}],
         "Totals": summary["totals"],
         "Review Flags": [{"review_flag": flag} for flag in summary["review_flags"]] or [{"review_flag": ""}],
         "Similar Jobs": recalculated.get("similar_jobs") or [],
@@ -240,6 +342,10 @@ def export_workbench_review_package(
     (package_dir / "workbench_summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
     (package_dir / "workbench_debug.json").write_text(json.dumps(debug, indent=2, sort_keys=True), encoding="utf-8")
     (package_dir / "estimator_input.txt").write_text(input_notes or "", encoding="utf-8")
+    (package_dir / "README.txt").write_text(
+        _readme_text(summary, workbook_path=workbook_path, workbook_export_error=workbook_export_error),
+        encoding="utf-8",
+    )
     _write_xlsx(package_dir / "workbench_summary.xlsx", workbook_sheets)
 
     if workbook_path:
