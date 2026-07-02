@@ -242,6 +242,31 @@ def _base_decision_rows(data: EstimatorData | Any) -> pd.DataFrame:
         rows["resolved_item_name"].notna() & rows["resolved_item_name"].astype(str).ne(""),
         rows["selected_item_name"],
     )
+    product_catalog = getattr(data, "product_catalog", pd.DataFrame())
+    if product_catalog is not None and not product_catalog.empty:
+        try:
+            from jobscan.products.product_matching import match_product
+
+            product_links = getattr(data, "product_decision_links", pd.DataFrame())
+            product_ids = []
+            product_match_scores = []
+            for _, row in rows.iterrows():
+                matched = match_product(
+                    str(row.get("resolved_item_name") or ""),
+                    product_catalog,
+                    category=str(row.get("template_bucket") or ""),
+                    product_decision_links=product_links,
+                )
+                product_ids.append(matched.get("product_id") if matched else "")
+                product_match_scores.append(matched.get("match_score") if matched else None)
+            rows["product_id"] = product_ids
+            rows["product_match_score"] = product_match_scores
+        except Exception:
+            rows["product_id"] = ""
+            rows["product_match_score"] = None
+    else:
+        rows["product_id"] = ""
+        rows["product_match_score"] = None
     return rows
 
 
@@ -277,6 +302,8 @@ def _decision_base_output(rows: pd.DataFrame, decision_id: str, decision_node_ti
         "template_bucket",
         "line_item_kind",
         "selector_code",
+        "product_id",
+        "product_match_score",
         "selected_option",
         "resolved_item_name",
         "area_basis_sqft",

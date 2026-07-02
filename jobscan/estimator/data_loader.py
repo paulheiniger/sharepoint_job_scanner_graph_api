@@ -156,6 +156,12 @@ def normalize_estimator_data(data: EstimatorData) -> EstimatorData:
     data.relationship_labor_rates = normalize_estimator_dataframe(data.relationship_labor_rates)
     data.relationship_package_cooccurrence = normalize_estimator_dataframe(data.relationship_package_cooccurrence)
     data.job_package_summary = normalize_estimator_dataframe(data.job_package_summary)
+    data.product_catalog = normalize_estimator_dataframe(data.product_catalog)
+    data.product_aliases = normalize_estimator_dataframe(data.product_aliases)
+    data.product_documents = normalize_estimator_dataframe(data.product_documents)
+    data.product_properties = normalize_estimator_dataframe(data.product_properties)
+    data.product_rules = normalize_estimator_dataframe(data.product_rules)
+    data.product_decision_links = normalize_estimator_dataframe(data.product_decision_links)
     if data.pricing.empty and not data.pricing_catalog.empty:
         data.pricing = data.pricing_catalog
     if data.pricing_catalog.empty and not data.pricing.empty:
@@ -330,6 +336,18 @@ def load_estimator_data_from_database(database_url: str) -> EstimatorData:
         if relation_exists(connection, "job_package_summary"):
             data.job_package_summary = _read_sql_dataframe(connection, "SELECT * FROM job_package_summary")
             data.source_files_used.append("database: job_package_summary")
+
+        for attr, relation_name in (
+            ("product_catalog", "product_catalog"),
+            ("product_aliases", "product_aliases"),
+            ("product_documents", "product_documents"),
+            ("product_properties", "product_properties"),
+            ("product_rules", "product_rules"),
+            ("product_decision_links", "product_decision_links"),
+        ):
+            if relation_exists(connection, relation_name):
+                setattr(data, attr, _read_sql_dataframe(connection, f"SELECT * FROM {relation_name}"))
+                data.source_files_used.append(f"database: {relation_name}")
 
         data.pricing_catalog = load_current_pricing(connection, data)
         data.pricing = data.pricing_catalog

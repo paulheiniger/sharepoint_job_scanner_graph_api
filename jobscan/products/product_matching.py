@@ -1,0 +1,142 @@
+from __future__ import annotations
+
+import json
+from difflib import SequenceMatcher
+from typing import Any
+
+import pandas as pd
+
+from .product_catalog import normalize_product_name
+
+
+def _records(value: Any) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if isinstance(value, pd.DataFrame):
+        return value.to_dict(orient="records")
+    if isinstance(value, list):
+        return [row for row in value if isinstance(row, dict)]
+    return []
+
+
+def _contains_score(query: str, candidate: str) -> float:
+    if not query or not candidate:
+        return 0.0
+    if query == candidate:
+        return 1.0
+    if query in candidate or candidate in query:
+        return 0.9
+    query_parts = set(query.split())
+    candidate_parts = set(candidate.split())
+    if not query_parts or not candidate_parts:
+        return 0.0
+    overlap = len(query_parts & candidate_parts) / max(len(query_parts | candidate_parts), 1)
+    return max(overlap, SequenceMatcher(None, query, candidate).ratio())
+
+
+def _aliases(row: dict[str, Any]) -> list[str]:
+    aliases = row.get("aliases") or []
+    if isinstance(aliases, str):
+        try:
+            aliases = json.loads(aliases)
+        except Exception:
+            aliases = [aliases]
+    return [str(item) for item in aliases if str(item or "").strip()]
+
+
+def match_product(
+    product_name: str,
+    product_catalog: Any,
+    *,
+    category: str | None = None,
+    decision_id: str | None = None,
+    product_decision_links: Any = None,
+    min_score: float = 0.55,
+) -> dict[str, Any]:
+    products = _records(product_catalog)
+    if not products or not product_name:
+        return {}
+    link_product_ids: set[str] = set()
+    if decision_id and product_decision_links is not None:
+        for link in _records(product_decision_links):
+            if str(link.get("decision_id") or "") == decision_id:
+                link_product_ids.add(str(link.get("product_id") or ""))
+    query = normalize_product_name(product_name)
+    best: dict[str, Any] = {}
+    best_score = 0.0
+    for row in products:
+        if row.get("active") is False:
+            continue
+        candidate_names = [row.get("product_name"), row.get("sku"), row.get("product_family"), *_aliases(row)]
+        score = max(_contains_score(query, normalize_product_name(name)) for name in candidate_names if name)
+        if category and str(row.get("category") or "").lower() == str(category).lower():
+            score += 0.06
+        if link_product_ids and str(row.get("product_id") or "") in link_product_ids:
+            score += 0.1
+        if score > best_score:
+            best = row
+            best_score = score
+    if best_score < min_score:
+        return {}
+    return {**best, "match_score": round(min(best_score, 1.0), 4)}
+
+
+def product_context_for_decision(
+    *,
+    product_name: str,
+    decision_id: str,
+    product_catalog: Any,
+    product_properties: Any = None,
+    product_rules: Any = None,
+    product_documents: Any = None,
+    product_decision_links: Any = None,
+    category: str | None = None,
+) -> dict[str, Any]:
+    product = match_product(
+        product_name,
+        product_catalog,
+        category=category,
+        decision_id=decision_id,
+        product_decision_links=product_decision_links,
+    )
+    if not product:
+        return {}
+    product_id = str(product.get("product_id") or "")
+    properties = [row for row in _records(product_properties) if str(row.get("product_id") or "") == product_id]
+    rules = [row for row in _records(product_rules) if str(row.get("product_id") or "") == product_id]
+    documents = [row for row in _records(product_documents) if str(row.get("product_id") or "") == product_id]
+    linked_decisions = [
+        row for row in _records(product_decision_links) if str(row.get("product_id") or "") == product_id
+    ]
+    recommended = [row for row in rules if str(row.get("rule_type") or "") in {"recommended_use", "approved_substrate"}]
+    limitations = [
+        row
+        for row in rules
+        if str(row.get("severity") or "") == "warning"
+        or str(row.get("rule_type") or "").startswith("prohibited")
+        or "limitation" in str(row.get("rule_type") or "")
+    ]
+    coverage = [
+        row
+        for row in properties
+        if str(row.get("property_name") or "") in {"coverage_sqft_per_gallon", "coverage_gal_per_100_sqft", "wet_mils"}
+    ]
+    return {
+        "product_id": product_id,
+        "manufacturer": product.get("manufacturer") or "",
+        "product_family": product.get("product_family") or "",
+        "product_name": product.get("product_name") or "",
+        "category": product.get("category") or "",
+        "match_score": product.get("match_score"),
+        "recommended_use": "; ".join(str(row.get("rule_value") or "") for row in recommended[:3]),
+        "manufacturer_guidance": "; ".join(str(row.get("rule_value") or "") for row in rules[:5]),
+        "coverage": "; ".join(
+            f"{row.get('property_name')}: {row.get('property_value')} {row.get('unit') or ''}".strip()
+            for row in coverage[:5]
+        ),
+        "important_limitations": "; ".join(str(row.get("rule_value") or "") for row in limitations[:5]),
+        "warnings": [row.get("rule_value") for row in limitations[:5] if row.get("rule_value")],
+        "source_documents": [row.get("source_path") for row in documents[:5] if row.get("source_path")],
+        "linked_decision_nodes": [row.get("decision_id") for row in linked_decisions if row.get("decision_id")],
+        "confidence": "high" if float(product.get("match_score") or 0) >= 0.85 else "medium",
+    }

@@ -22,6 +22,12 @@ class EstimatorData:
     job_package_summary: pd.DataFrame = field(default_factory=pd.DataFrame)
     pricing: pd.DataFrame = field(default_factory=pd.DataFrame)
     pricing_catalog: pd.DataFrame = field(default_factory=pd.DataFrame)
+    product_catalog: pd.DataFrame = field(default_factory=pd.DataFrame)
+    product_aliases: pd.DataFrame = field(default_factory=pd.DataFrame)
+    product_documents: pd.DataFrame = field(default_factory=pd.DataFrame)
+    product_properties: pd.DataFrame = field(default_factory=pd.DataFrame)
+    product_rules: pd.DataFrame = field(default_factory=pd.DataFrame)
+    product_decision_links: pd.DataFrame = field(default_factory=pd.DataFrame)
     warnings: list[str] = field(default_factory=list)
     source_files_used: list[str] = field(default_factory=list)
 

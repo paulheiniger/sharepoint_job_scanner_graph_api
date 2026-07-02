@@ -15,6 +15,7 @@ import pandas as pd
 from .decision_history import build_decision_recommendations, recommendation_lookup
 from .materials import find_current_price
 from .rules import first_nonblank, to_float
+from jobscan.products.product_matching import product_context_for_decision
 
 DEFAULT_HOURLY_RATE = 72.0
 DEFAULT_MIN_EVIDENCE_COUNT = 3
@@ -279,6 +280,25 @@ def _records(value: Any) -> list[dict[str, Any]]:
 def _frame(data: Any, attr: str) -> pd.DataFrame:
     value = getattr(data, attr, pd.DataFrame()) if data is not None else pd.DataFrame()
     return value if isinstance(value, pd.DataFrame) else pd.DataFrame(value)
+
+
+def _product_context(data: Any, *, item_name: str, decision_id: str, package: str) -> dict[str, Any]:
+    catalog = _frame(data, "product_catalog")
+    if catalog.empty or not item_name:
+        return {}
+    try:
+        return product_context_for_decision(
+            product_name=item_name,
+            decision_id=decision_id,
+            product_catalog=catalog,
+            product_properties=_frame(data, "product_properties"),
+            product_rules=_frame(data, "product_rules"),
+            product_documents=_frame(data, "product_documents"),
+            product_decision_links=_frame(data, "product_decision_links"),
+            category=package,
+        )
+    except Exception:
+        return {}
 
 
 def _normalized(value: Any) -> str:
@@ -2544,6 +2564,7 @@ def material_workbench_rows(
                 spec["label"],
             )
         )
+        product_context = _product_context(data, item_name=item_name, decision_id=decision_id, package=package)
         decision_output = {
             "selected_option": _decision_value(decisions, decision_id, "resolved_item_name", item_name),
             "thickness_inches": foam_thickness_inches if package == "foam" else None,
@@ -2580,6 +2601,18 @@ def material_workbench_rows(
             historical_cost_per_sqft=historical_cost_per_sqft,
             sizing=sizing,
         )
+        if product_context:
+            context_note_parts = []
+            if product_context.get("recommended_use"):
+                context_note_parts.append(f"Product guidance: {product_context.get('recommended_use')}")
+            if product_context.get("coverage"):
+                context_note_parts.append(f"Coverage: {product_context.get('coverage')}")
+            if product_context.get("warnings"):
+                context_note_parts.append("Manufacturer warning available.")
+            if context_note_parts:
+                short_note = f"{short_note} {' '.join(context_note_parts)}"
+            if product_context.get("important_limitations"):
+                explanation += f" Manufacturer limitations: {product_context.get('important_limitations')}."
         rows.append(
             {
                 "include": bool(include),
@@ -2605,6 +2638,17 @@ def material_workbench_rows(
                 "row_traceability": f"Estimate rows {spec.get('workbook_row') or ''}",
                 "calculated_output": round(estimated_cost, 2),
                 "item_name": item_name,
+                "product_id": product_context.get("product_id") or "",
+                "product_manufacturer": product_context.get("manufacturer") or "",
+                "product_recommended_use": product_context.get("recommended_use") or "",
+                "product_manufacturer_guidance": product_context.get("manufacturer_guidance") or "",
+                "product_coverage": product_context.get("coverage") or "",
+                "product_limitations": product_context.get("important_limitations") or "",
+                "product_warnings": product_context.get("warnings") or [],
+                "product_source_documents": product_context.get("source_documents") or [],
+                "product_linked_decision_nodes": product_context.get("linked_decision_nodes") or [],
+                "product_context_confidence": product_context.get("confidence") or "",
+                "product_match_score": product_context.get("match_score") or 0.0,
                 "current_item": item_name,
                 "historical_item": item_name if item_source.startswith("historical") else first_nonblank(selected_item.get("historical_item"), ""),
                 "selected_item_reason": selected_item.get("selected_item_reason") or "",
