@@ -4725,7 +4725,17 @@ def estimator_prototype_page() -> None:
         add_material_key = f"wb_add_material_line_{workbench_key}_{scope_key}_{historical_filters_key}"
         if st.button("Add Material Line", key=add_material_key):
             original_workbench.setdefault("materials", []).append(manual_material_workbench_row(edited_scope))
-        materials_df = pd.DataFrame(original_workbench.get("materials") or [])
+        material_editable_fields = {
+            "include",
+            "item_name",
+            "editable_basis_sqft",
+            "editable_qty_per_sqft",
+            "unit",
+            "current_unit_price",
+            "reset_to_historical_default",
+        }
+        material_rows = original_workbench.get("materials") or []
+        materials_df = pd.DataFrame(display_safe_records(material_rows, editable_fields=material_editable_fields))
         material_column_order = [
             "include",
             "template_bucket",
@@ -4889,10 +4899,22 @@ def estimator_prototype_page() -> None:
                 "explanation",
             ],
         )
-        edited_workbench["materials"] = edited_materials_df.to_dict(orient="records")
+        edited_workbench["materials"] = merge_editable_rows(
+            material_rows,
+            edited_materials_df.to_dict(orient="records"),
+            material_editable_fields,
+        )
 
         st.markdown("#### Labor")
-        labor_df = pd.DataFrame(original_workbench.get("labor") or [])
+        labor_editable_fields = {
+            "include",
+            "editable_hours_per_1000_sqft",
+            "crew_size",
+            "labor_rate",
+            "reset_to_historical_default",
+        }
+        labor_rows = original_workbench.get("labor") or []
+        labor_df = pd.DataFrame(display_safe_records(labor_rows, editable_fields=labor_editable_fields))
         labor_column_order = [
             "include",
             "template_bucket",
@@ -5017,10 +5039,16 @@ def estimator_prototype_page() -> None:
                 "explanation",
             ],
         )
-        edited_workbench["labor"] = edited_labor_df.to_dict(orient="records")
+        edited_workbench["labor"] = merge_editable_rows(
+            labor_rows,
+            edited_labor_df.to_dict(orient="records"),
+            labor_editable_fields,
+        )
 
         st.markdown("#### Adders / Miscellaneous")
-        adders_df = pd.DataFrame(original_workbench.get("adders") or [])
+        adder_editable_fields = {"include", "editable_value", "reset_to_historical_default", "notes"}
+        adder_rows = original_workbench.get("adders") or []
+        adders_df = pd.DataFrame(display_safe_records(adder_rows, editable_fields=adder_editable_fields))
         adders_column_order = [
             "include",
             "template_bucket",
@@ -5103,7 +5131,11 @@ def estimator_prototype_page() -> None:
                 "needs_review",
             ],
         )
-        edited_workbench["adders"] = edited_adders_df.to_dict(orient="records")
+        edited_workbench["adders"] = merge_editable_rows(
+            adder_rows,
+            edited_adders_df.to_dict(orient="records"),
+            adder_editable_fields,
+        )
         edited_workbench = recalculate_workbench_tables(edited_workbench)
         st.session_state[previous_workbench_key] = edited_workbench
         totals = summarize_workbench_totals(edited_workbench)

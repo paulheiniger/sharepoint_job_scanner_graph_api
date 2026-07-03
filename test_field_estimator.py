@@ -1191,6 +1191,46 @@ def test_insulation_explicit_opening_dimensions_compute_net_area() -> None:
     assert parsed["estimated_sqft"] == 2208
 
 
+def test_insulation_gable_roof_underside_uses_rafter_area_not_flat_ceiling() -> None:
+    notes = """
+    Field Notes
+
+    Customer would like the entire building insulated.
+    Building footprint is 60’ x 30’ with 12’ sidewalls. Roof is a gable roof, 18' tall in the center.
+    Need to calculate rafter length to get area of the underside of the roof deck.
+    Customer wants the underside of the roof deck sprayed, not the ceiling.
+
+    Target insulation values:
+    * Exterior walls: R-14
+    * Roof deck / cathedral ceiling: R-30
+
+    Opening deductions:
+    * (2) overhead doors 12’ x 10’
+    * (1) man door 3’ x 7’
+    * (7) windows 3’ x 5’
+    """
+
+    recommendation = estimate_from_field_notes(notes, data=EstimatorData())
+    parsed = recommendation.parsed_fields
+
+    assert parsed["ceiling_included"] is False
+    assert parsed["roof_underside_included"] is True
+    assert parsed["ceiling_area_sqft"] == 0
+    assert parsed["gross_wall_area_sqft"] == 2160
+    assert parsed["roof_rise_ft"] == 6
+    assert parsed["roof_rafter_length_ft"] == 16.1555
+    assert parsed["roof_underside_area_sqft"] == 1938.66
+    assert parsed["opening_area_known_sqft"] == 366
+    assert parsed["gross_insulation_area_sqft"] == 4098.66
+    assert parsed["net_insulation_area_sqft"] == 3732.66
+
+    surfaces = {row["surface_type"]: row for row in parsed["insulation_surface_areas"]}
+    assert surfaces["walls"]["net_area_sqft"] == 1794
+    assert surfaces["walls"]["target_r_value"] == 14
+    assert surfaces["roof_underside"]["gross_area_sqft"] == 1938.66
+    assert surfaces["roof_underside"]["target_r_value"] == 30
+
+
 def test_insulation_notes_parse_surface_r_value_targets() -> None:
     notes = (
         "Need closed-cell foam in a 30x40 metal building with 9' walls. "

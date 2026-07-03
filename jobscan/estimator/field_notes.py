@@ -148,7 +148,7 @@ def is_insulation_quote(text: str) -> bool:
 def _count_from_match(value: str | None) -> int | None:
     if not value:
         return None
-    return parse_count_word(value)
+    return parse_count_word(value.strip().strip("()").strip())
 
 
 def _feet_from_inches(value: Any) -> float | None:
@@ -193,6 +193,9 @@ def parse_insulation_quote_scope(notes: str) -> dict[str, Any]:
         "building_type": "metal building" if "metal building" in lowered else "",
         "outside_walls_included": bool(re.search(r"\b(?:outside|exterior)?\s*walls?\b", lowered)),
         "ceiling_included": "ceiling" in lowered,
+        "roof_underside_included": bool(
+            re.search(r"\b(?:underside\s+of\s+the\s+roof\s+deck|underside\s+of\s+roof|roof\s+underside|roof\s+deck\s+sprayed|cathedral\s+ceiling)\b", lowered)
+        ),
         "openings": [],
         "opening_area_known_sqft": 0.0,
         "opening_area_missing": False,
@@ -201,14 +204,22 @@ def parse_insulation_quote_scope(notes: str) -> dict[str, Any]:
         "evidence_by_field": {},
         "confidence_by_field": {},
     }
+    if re.search(r"\bnot\s+(?:the\s+)?ceiling\b", lowered) and result["roof_underside_included"]:
+        result["ceiling_included"] = False
 
     footprint_match = re.search(
-        r"\b(?P<length>\d+(?:\.\d+)?)\s*(?:x|by)\s*(?P<width>\d+(?:\.\d+)?)\s*(?:ft|feet|foot)?\s*(?:metal\s+)?building\b",
+        r"\b(?P<length>\d+(?:\.\d+)?)\s*(?:'|’|ft|feet|foot)?\s*(?:x|by)\s*"
+        r"(?P<width>\d+(?:\.\d+)?)\s*(?:'|’|ft|feet|foot)?\s*(?:metal\s+)?building\b",
         lowered,
         re.I,
     )
     if not footprint_match:
-        footprint_match = re.search(r"\b(?P<length>\d+(?:\.\d+)?)\s*(?:x|by)\s*(?P<width>\d+(?:\.\d+)?)\b", lowered, re.I)
+        footprint_match = re.search(
+            r"\b(?P<length>\d+(?:\.\d+)?)\s*(?:'|’|ft|feet|foot)?\s*(?:x|by)\s*"
+            r"(?P<width>\d+(?:\.\d+)?)\s*(?:'|’|ft|feet|foot)?\b",
+            lowered,
+            re.I,
+        )
     if footprint_match:
         length = to_float(footprint_match.group("length"))
         width = to_float(footprint_match.group("width"))
@@ -221,13 +232,27 @@ def parse_insulation_quote_scope(notes: str) -> dict[str, Any]:
             result["evidence_by_field"]["building_footprint"] = footprint_match.group(0)
             result["confidence_by_field"]["building_footprint"] = "high"
 
-    wall_height_match = re.search(r"\b(?P<height>\d+(?:\.\d+)?)\s*(?:'|ft|feet|foot)\s+walls?\b", lowered, re.I)
+    wall_height_match = re.search(r"\b(?P<height>\d+(?:\.\d+)?)\s*(?:'|’|ft|feet|foot)\s+(?:side)?walls?\b", lowered, re.I)
     if wall_height_match:
         wall_height = to_float(wall_height_match.group("height"))
         if wall_height:
             result["wall_height_ft"] = wall_height
             result["evidence_by_field"]["wall_height_ft"] = wall_height_match.group(0)
             result["confidence_by_field"]["wall_height_ft"] = "high"
+
+    center_height_match = re.search(
+        r"\b(?P<height>\d+(?:\.\d+)?)\s*(?:'|’|ft|feet|foot)\s+tall\s+in\s+the\s+center\b|"
+        r"\b(?:center|ridge|peak)\s+(?:height\s+)?(?:is\s+)?(?P<height2>\d+(?:\.\d+)?)\s*(?:'|’|ft|feet|foot)\b",
+        lowered,
+        re.I,
+    )
+    if center_height_match:
+        center_height = to_float(center_height_match.group("height") or center_height_match.group("height2"))
+        if center_height:
+            result["roof_center_height_ft"] = center_height
+            result["ridge_height_ft"] = center_height
+            result["evidence_by_field"]["roof_center_height_ft"] = center_height_match.group(0)
+            result["confidence_by_field"]["roof_center_height_ft"] = "high"
 
     perimeter = to_float(result.get("building_perimeter_ft"))
     wall_height = to_float(result.get("wall_height_ft"))
@@ -236,27 +261,48 @@ def parse_insulation_quote_scope(notes: str) -> dict[str, Any]:
     elif perimeter and wall_height:
         result["gross_wall_area_sqft"] = round(perimeter * wall_height, 2)
 
-    ceiling_area = to_float(result.get("ceiling_area_sqft")) or 0.0
+    length = to_float(result.get("building_footprint_length_ft"))
+    width = to_float(result.get("building_footprint_width_ft"))
+    center_height = to_float(result.get("roof_center_height_ft")) or to_float(result.get("ridge_height_ft"))
+    roof_underside_area = 0.0
+    if result.get("roof_underside_included") and length and width and wall_height and center_height and center_height > wall_height:
+        half_span = width / 2.0
+        rise = center_height - wall_height
+        rafter_length = math.sqrt((half_span * half_span) + (rise * rise))
+        roof_underside_area = round(2 * rafter_length * length, 2)
+        result["roof_rise_ft"] = round(rise, 4)
+        result["roof_half_span_ft"] = round(half_span, 4)
+        result["roof_rafter_length_ft"] = round(rafter_length, 4)
+        result["roof_underside_area_sqft"] = roof_underside_area
+        result["pitched_roof_underside_area_sqft"] = roof_underside_area
+        result["roof_underside_area_formula"] = "2 * building_length_ft * sqrt((building_width_ft / 2)^2 + (roof_center_height_ft - wall_height_ft)^2)"
+        result["roof_underside_source_text"] = first_nonblank(
+            result["evidence_by_field"].get("roof_center_height_ft"),
+            result["evidence_by_field"].get("building_footprint"),
+        )
+    ceiling_area = 0.0 if result.get("roof_underside_included") else (to_float(result.get("ceiling_area_sqft")) or 0.0)
+    if result.get("roof_underside_included"):
+        result["ceiling_area_sqft"] = 0.0
     wall_area = to_float(result.get("gross_wall_area_sqft")) or 0.0
-    gross_area = wall_area + ceiling_area
+    gross_area = wall_area + ceiling_area + roof_underside_area
     if gross_area:
         result["gross_insulation_area_sqft"] = round(gross_area, 2)
 
     opening_area_known = 0.0
     openings: list[dict[str, Any]] = []
 
-    dimension_unit = r"(?:ft|feet|foot|'|\"|in|inch|inches)"
-    count_pattern = r"one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2}"
+    dimension_unit = r"(?:ft|feet|foot|'|’|\"|“|”|in|inch|inches)"
+    count_pattern = r"\(?\s*(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2})\s*\)?"
     consumed_spans: list[tuple[int, int]] = []
 
     def span_consumed(match: re.Match[str]) -> bool:
         return any(not (match.end() <= start or match.start() >= end) for start, end in consumed_spans)
 
     for match in re.finditer(
-        rf"\b(?P<count>{count_pattern})\s+"
+        rf"(?<!\w)(?P<count>{count_pattern})\s+"
         rf"(?P<dim1>\d+(?:\.\d+)?)\s*(?P<unit1>{dimension_unit})\s*(?:x|by)\s*"
         rf"(?P<dim2>\d+(?:\.\d+)?)\s*(?P<unit2>{dimension_unit})\s*"
-        rf"(?P<kind>roll[- ]?up|rollup|overhead|walk[- ]?in)\s+doors?\b",
+        rf"(?P<kind>roll[- ]?up|rollup|overhead|walk[- ]?in|man|personnel)\s+doors?\b",
         lowered,
         re.I,
     ):
@@ -271,7 +317,7 @@ def parse_insulation_quote_scope(notes: str) -> dict[str, Any]:
         area = _opening_area(count, width_ft, height_ft)
         if area:
             opening_area_known += area
-        opening_type = "walk_in_door" if "walk" in kind else "rollup_door"
+        opening_type = "walk_in_door" if any(token in kind for token in ("walk", "man", "personnel")) else "rollup_door"
         openings.append(
             {
                 "opening_type": opening_type,
@@ -286,8 +332,8 @@ def parse_insulation_quote_scope(notes: str) -> dict[str, Any]:
         consumed_spans.append(match.span())
 
     for match in re.finditer(
-        rf"\b(?P<count>{count_pattern})\s+"
-        rf"(?P<kind>roll[- ]?up|rollup|overhead|walk[- ]?in)\s+doors?\s+"
+        rf"(?<!\w)(?P<count>{count_pattern})\s+"
+        rf"(?P<kind>roll[- ]?up|rollup|overhead|walk[- ]?in|man|personnel)\s+doors?\s+"
         rf"(?P<dim1>\d+(?:\.\d+)?)\s*(?P<unit1>{dimension_unit})?\s*(?:x|by)\s*"
         rf"(?P<dim2>\d+(?:\.\d+)?)\s*(?P<unit2>{dimension_unit})?\s*(?:each)?\b",
         lowered,
@@ -306,7 +352,7 @@ def parse_insulation_quote_scope(notes: str) -> dict[str, Any]:
         area = _opening_area(count, width_ft, height_ft)
         if area:
             opening_area_known += area
-        opening_type = "walk_in_door" if "walk" in kind else "rollup_door"
+        opening_type = "walk_in_door" if any(token in kind for token in ("walk", "man", "personnel")) else "rollup_door"
         openings.append(
             {
                 "opening_type": opening_type,
@@ -321,7 +367,7 @@ def parse_insulation_quote_scope(notes: str) -> dict[str, Any]:
         consumed_spans.append(match.span())
 
     for match in re.finditer(
-        r"\b(?P<count>one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2})\s+"
+        r"(?<!\w)(?P<count>\(?\s*(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2})\s*\)?)\s+"
         r"(?P<height>\d+(?:\.\d+)?)\s*(?:ft|feet|foot|')\s*(?:roll\s*up|rollup)\s+doors?\b",
         lowered,
         re.I,
@@ -344,7 +390,7 @@ def parse_insulation_quote_scope(notes: str) -> dict[str, Any]:
         result["opening_area_missing"] = True
 
     for match in re.finditer(
-        r"\b(?P<count>one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2})\s+"
+        r"(?<!\w)(?P<count>\(?\s*(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2})\s*\)?)\s+"
         r"(?P<width>\d+(?:\.\d+)?)\s*(?:\"|in|inch|inches)\s*walk[- ]?in\s+doors?\b",
         lowered,
         re.I,
@@ -373,7 +419,7 @@ def parse_insulation_quote_scope(notes: str) -> dict[str, Any]:
             result["opening_area_missing"] = True
 
     for match in re.finditer(
-        r"\b(?P<count>one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2})\s+"
+        r"(?<!\w)(?P<count>\(?\s*(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2})\s*\)?)\s+"
         r"(?P<width>\d+(?:\.\d+)?)\s*(?:\"|in|inch|inches)\s*(?:x|by)\s*"
         r"(?P<height>\d+(?:\.\d+)?)\s*(?:\"|in|inch|inches)\s+windows?\b",
         lowered,
@@ -395,6 +441,34 @@ def parse_insulation_quote_scope(notes: str) -> dict[str, Any]:
                 "source_text": match.group(0),
             }
         )
+
+    for match in re.finditer(
+        rf"(?<!\w)(?P<count>{count_pattern})\s+"
+        rf"windows?\s+"
+        rf"(?P<width>\d+(?:\.\d+)?)\s*(?P<unit1>{dimension_unit})?\s*(?:x|by)\s*"
+        rf"(?P<height>\d+(?:\.\d+)?)\s*(?P<unit2>{dimension_unit})?\b",
+        lowered,
+        re.I,
+    ):
+        if span_consumed(match):
+            continue
+        count = _count_from_match(match.group("count")) or 1
+        width_ft = _dimension_value_to_ft(match.group("width"), match.group("unit1") or "ft") or 0.0
+        height_ft = _dimension_value_to_ft(match.group("height"), match.group("unit2") or "ft") or 0.0
+        area = round(count * width_ft * height_ft, 2)
+        opening_area_known += area
+        openings.append(
+            {
+                "opening_type": "window",
+                "quantity": count,
+                "width_ft": round(width_ft, 3),
+                "height_ft": round(height_ft, 3),
+                "known_area_sqft": area,
+                "missing_dimensions": [],
+                "source_text": match.group(0),
+            }
+        )
+        consumed_spans.append(match.span())
 
     result["openings"] = openings
     result["opening_area_known_sqft"] = round(opening_area_known, 2)
@@ -538,6 +612,14 @@ def parse_field_notes(field_input: FieldNotesInput | str, overrides: dict[str, A
         dimension_dict["gross_insulation_area_sqft"] = insulation_scope.get("gross_insulation_area_sqft")
         dimension_dict["gross_wall_area_sqft"] = insulation_scope.get("gross_wall_area_sqft")
         dimension_dict["ceiling_area_sqft"] = insulation_scope.get("ceiling_area_sqft")
+        dimension_dict["roof_underside_included"] = insulation_scope.get("roof_underside_included")
+        dimension_dict["roof_center_height_ft"] = insulation_scope.get("roof_center_height_ft")
+        dimension_dict["ridge_height_ft"] = insulation_scope.get("ridge_height_ft")
+        dimension_dict["roof_rise_ft"] = insulation_scope.get("roof_rise_ft")
+        dimension_dict["roof_half_span_ft"] = insulation_scope.get("roof_half_span_ft")
+        dimension_dict["roof_rafter_length_ft"] = insulation_scope.get("roof_rafter_length_ft")
+        dimension_dict["roof_underside_area_sqft"] = insulation_scope.get("roof_underside_area_sqft")
+        dimension_dict["pitched_roof_underside_area_sqft"] = insulation_scope.get("pitched_roof_underside_area_sqft")
         dimension_dict["opening_area_known_sqft"] = insulation_scope.get("opening_area_known_sqft")
         dimension_dict["opening_area_missing"] = insulation_scope.get("opening_area_missing")
         dimension_dict["openings"] = insulation_scope.get("openings") or []

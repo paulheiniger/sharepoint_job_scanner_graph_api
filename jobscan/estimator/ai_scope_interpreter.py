@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from typing import Any, Callable
@@ -20,9 +21,18 @@ AI_SCOPE_FIELDS = (
     "building_footprint_width_ft",
     "wall_height_ft",
     "ceiling_included",
+    "roof_underside_included",
     "outside_walls_included",
     "openings",
     "ceiling_area_sqft",
+    "roof_center_height_ft",
+    "ridge_height_ft",
+    "roof_rise_ft",
+    "roof_half_span_ft",
+    "roof_rafter_length_ft",
+    "roof_underside_area_sqft",
+    "pitched_roof_underside_area_sqft",
+    "roof_underside_area_formula",
     "gross_wall_area_sqft",
     "gross_insulation_area_sqft",
     "opening_area_known_sqft",
@@ -109,9 +119,18 @@ def _empty_scope() -> dict[str, Any]:
         "building_footprint_width_ft": None,
         "wall_height_ft": None,
         "ceiling_included": None,
+        "roof_underside_included": None,
         "outside_walls_included": None,
         "openings": [],
         "ceiling_area_sqft": None,
+        "roof_center_height_ft": None,
+        "ridge_height_ft": None,
+        "roof_rise_ft": None,
+        "roof_half_span_ft": None,
+        "roof_rafter_length_ft": None,
+        "roof_underside_area_sqft": None,
+        "pitched_roof_underside_area_sqft": None,
+        "roof_underside_area_formula": "",
         "gross_wall_area_sqft": None,
         "gross_insulation_area_sqft": None,
         "opening_area_known_sqft": None,
@@ -325,24 +344,57 @@ def apply_insulation_geometry_validation(scope: dict[str, Any], *, notes: str = 
         out["wall_height_ft"] = float(wall_height)
 
     raw_ceiling = out.get("ceiling_included")
+    raw_roof_underside = out.get("roof_underside_included")
     raw_walls = out.get("outside_walls_included")
     text = notes.lower()
+    roof_underside_included = _as_bool(raw_roof_underside) or bool(
+        re.search(r"\b(?:underside\s+of\s+the\s+roof\s+deck|underside\s+of\s+roof|roof\s+underside|roof\s+deck\s+sprayed|cathedral\s+ceiling)\b", text)
+    )
     ceiling_included = _as_bool(raw_ceiling) or ("ceiling" in text and raw_ceiling is not False)
+    if roof_underside_included and re.search(r"\bnot\s+(?:the\s+)?ceiling\b", text):
+        ceiling_included = False
     walls_included = _as_bool(raw_walls) or (bool(re.search(r"\b(?:outside|exterior)?\s*walls?\b", text)) and raw_walls is not False)
     out["ceiling_included"] = ceiling_included
+    out["roof_underside_included"] = roof_underside_included
     out["outside_walls_included"] = walls_included
 
     old_totals = {
         "ceiling_area_sqft": _as_number(out.get("ceiling_area_sqft")),
+        "roof_underside_area_sqft": _as_number(out.get("roof_underside_area_sqft")),
         "gross_wall_area_sqft": _as_number(out.get("gross_wall_area_sqft")),
         "gross_insulation_area_sqft": _as_number(out.get("gross_insulation_area_sqft")),
         "opening_area_known_sqft": _as_number(out.get("opening_area_known_sqft")),
         "net_insulation_area_sqft": _as_number(out.get("net_insulation_area_sqft")),
     }
 
-    ceiling_area = _round_area(length * width) if length and width and ceiling_included else 0.0 if ceiling_included else None
+    center_height = _as_number(out.get("roof_center_height_ft")) or _as_number(out.get("ridge_height_ft"))
+    if center_height is None:
+        center_height_match = re.search(
+            r"\b(?P<height>\d+(?:\.\d+)?)\s*(?:'|’|ft|feet|foot)\s+tall\s+in\s+the\s+center\b|"
+            r"\b(?:center|ridge|peak)\s+(?:height\s+)?(?:is\s+)?(?P<height2>\d+(?:\.\d+)?)\s*(?:'|’|ft|feet|foot)\b",
+            text,
+            re.I,
+        )
+        if center_height_match:
+            center_height = _as_number(center_height_match.group("height") or center_height_match.group("height2"))
+    if center_height is not None:
+        out["roof_center_height_ft"] = out["ridge_height_ft"] = float(center_height)
+
+    ceiling_area = _round_area(length * width) if length and width and ceiling_included and not roof_underside_included else 0.0 if ceiling_included and not roof_underside_included else None
+    roof_underside_area = None
+    if roof_underside_included and length and width and wall_height and center_height and center_height > wall_height:
+        half_span = width / 2.0
+        rise = center_height - wall_height
+        rafter_length = math.sqrt((half_span * half_span) + (rise * rise))
+        roof_underside_area = _round_area(2 * rafter_length * length)
+        out["roof_rise_ft"] = round(rise, 4)
+        out["roof_half_span_ft"] = round(half_span, 4)
+        out["roof_rafter_length_ft"] = round(rafter_length, 4)
+        out["roof_underside_area_sqft"] = roof_underside_area
+        out["pitched_roof_underside_area_sqft"] = roof_underside_area
+        out["roof_underside_area_formula"] = "2 * building_length_ft * sqrt((building_width_ft / 2)^2 + (roof_center_height_ft - wall_height_ft)^2)"
     wall_area = _round_area(2 * (length + width) * wall_height) if length and width and wall_height and walls_included else None
-    gross_area = _round_area((ceiling_area or 0.0) + (wall_area or 0.0)) if ceiling_area is not None or wall_area is not None else None
+    gross_area = _round_area((ceiling_area or 0.0) + (roof_underside_area or 0.0) + (wall_area or 0.0)) if ceiling_area is not None or roof_underside_area is not None or wall_area is not None else None
 
     normalized_openings: list[dict[str, Any]] = []
     for raw_opening in out.get("openings") or []:
@@ -358,6 +410,8 @@ def apply_insulation_geometry_validation(scope: dict[str, Any], *, notes: str = 
 
     if ceiling_area is not None:
         out["ceiling_area_sqft"] = ceiling_area
+    elif roof_underside_included:
+        out["ceiling_area_sqft"] = 0.0
     if wall_area is not None:
         out["gross_wall_area_sqft"] = wall_area
     if gross_area is not None:
@@ -475,6 +529,13 @@ def validate_ai_scope(payload: Any) -> tuple[dict[str, Any], list[str]]:
             "building_footprint_width_ft",
             "wall_height_ft",
             "ceiling_area_sqft",
+            "roof_center_height_ft",
+            "ridge_height_ft",
+            "roof_rise_ft",
+            "roof_half_span_ft",
+            "roof_rafter_length_ft",
+            "roof_underside_area_sqft",
+            "pitched_roof_underside_area_sqft",
             "gross_wall_area_sqft",
             "gross_insulation_area_sqft",
             "opening_area_known_sqft",
@@ -485,7 +546,7 @@ def validate_ai_scope(payload: Any) -> tuple[dict[str, Any], list[str]]:
             cleaned[field] = _as_int(value)
         elif field in {"condition_detail_flags", "condition_flags", "missing_info", "missing_questions", "review_flags", "dimension_evidence", "contradictions"}:
             cleaned[field] = _as_list(value)
-        elif field in {"ceiling_included", "outside_walls_included", "opening_area_missing"}:
+        elif field in {"ceiling_included", "roof_underside_included", "outside_walls_included", "opening_area_missing"}:
             cleaned[field] = _as_bool(value)
         elif field == "openings":
             openings: list[dict[str, Any]] = []
@@ -585,13 +646,15 @@ def _prompt(notes: str, deterministic_scope: dict[str, Any] | None = None) -> li
                 "scope_triggers and defects values are booleans. "
                 "partial_scope fields are numbers or null. "
                 "For insulation notes also return building_length_ft, building_width_ft, wall_height_ft, "
-                "ceiling_included, outside_walls_included, and openings. Each opening must include "
+                "ceiling_included, roof_underside_included, outside_walls_included, roof_center_height_ft/ridge_height_ft when present, and openings. Each opening must include "
                 "opening_type, quantity, width_ft, height_ft, source_text, assumption_used, and missing_dimensions. "
                 "Also return insulation_surface_areas, insulation_deductions, insulation_r_value_targets, "
                 "insulation_foam_type, insulation_product_selection, and insulation_thickness_calculation when present. "
                 "For R-values, extract phrases like R30, R-30, roof target R30, walls R14 and associate them with the closest surface. "
                 "For insulation geometry, also return area_calculation_explanation as a short plain-English explanation of the area math "
                 "and deductions using the original note phrasing where possible. "
+                "If notes say underside of roof deck, roof underside, or cathedral ceiling, set roof_underside_included true; if notes say not the ceiling, set ceiling_included false. "
+                "For a gable roof, return ridge/center height when stated so deterministic code can calculate rafter length. "
                 "Do not calculate final costs or prices. Do not invent R-values, product R/in, or missing dimensions. "
                 "Handle examples like 30x40 metal building with 9' walls, two 9ftX10ft rollup doors, "
                 "two 7ftX36\" walk-in doors, five 24\"x36\" windows, two 36 inch walk-in doors, and roll-up doors 9x10 each. "

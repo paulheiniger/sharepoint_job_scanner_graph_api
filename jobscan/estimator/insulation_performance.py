@@ -94,6 +94,7 @@ def build_area_calculation_trace(
     wall_height = scope.get("wall_height_ft")
     gross_wall = scope.get("gross_wall_area_sqft")
     ceiling = scope.get("ceiling_area_sqft")
+    roof_underside = scope.get("roof_underside_area_sqft") or scope.get("pitched_roof_underside_area_sqft")
     gross = scope.get("gross_insulation_area_sqft") or scope.get("gross_area_sqft")
     deductions = scope.get("opening_area_known_sqft") or scope.get("deduction_area_sqft")
     net = scope.get("net_insulation_area_sqft") or scope.get("net_area_sqft") or scope.get("estimated_sqft")
@@ -121,13 +122,31 @@ def build_area_calculation_trace(
         ),
         _trace_row(
             step="ceiling_or_roof_area",
-            formula="building_length_ft * building_width_ft when ceiling/roof underside is included",
+            formula="building_length_ft * building_width_ft when flat ceiling is included",
             inputs={"length_ft": length, "width_ft": width, "ceiling_included": scope.get("ceiling_included")},
             ai_value=_ai_value(ai_scope, "ceiling_area_sqft"),
             deterministic_value=deterministic_scope.get("ceiling_area_sqft") or ceiling,
             selected_value=ceiling,
             source_text=scope.get("notes"),
             confidence="high" if ceiling else "low",
+        ),
+        _trace_row(
+            step="roof_underside_area",
+            formula="2 * building_length_ft * sqrt((building_width_ft / 2)^2 + (roof_center_height_ft - wall_height_ft)^2)",
+            inputs={
+                "length_ft": length,
+                "width_ft": width,
+                "wall_height_ft": wall_height,
+                "roof_center_height_ft": scope.get("roof_center_height_ft") or scope.get("ridge_height_ft"),
+                "roof_rise_ft": scope.get("roof_rise_ft"),
+                "roof_rafter_length_ft": scope.get("roof_rafter_length_ft"),
+                "roof_underside_included": scope.get("roof_underside_included"),
+            },
+            ai_value=_ai_value(ai_scope, "roof_underside_area_sqft", "pitched_roof_underside_area_sqft"),
+            deterministic_value=deterministic_scope.get("roof_underside_area_sqft") or deterministic_scope.get("pitched_roof_underside_area_sqft") or roof_underside,
+            selected_value=roof_underside,
+            source_text=scope.get("roof_underside_source_text") or scope.get("notes"),
+            confidence="high" if roof_underside else "low",
         ),
         _trace_row(
             step="opening_deductions",
@@ -230,7 +249,19 @@ def build_area_calculation_explanation(
 
     ceiling = by_step.get("ceiling_or_roof_area", {})
     if ceiling.get("selected_value"):
-        parts.append(f"Ceiling/roof underside: {_display_number(ceiling.get('selected_value'))} sq ft.")
+        parts.append(f"Flat ceiling: {_display_number(ceiling.get('selected_value'))} sq ft.")
+
+    roof_underside = by_step.get("roof_underside_area", {})
+    if roof_underside.get("selected_value"):
+        inputs = roof_underside.get("inputs") or {}
+        rafter = _display_number(inputs.get("roof_rafter_length_ft"))
+        if rafter:
+            parts.append(
+                f"Roof underside: 2 x {_display_number(length)} ft x {rafter} ft rafter length = "
+                f"{_display_number(roof_underside.get('selected_value'))} sq ft."
+            )
+        else:
+            parts.append(f"Roof underside: {_display_number(roof_underside.get('selected_value'))} sq ft.")
 
     openings_text = _opening_summary(scope.get("openings") or [])
     deductions = by_step.get("opening_deductions", {})
