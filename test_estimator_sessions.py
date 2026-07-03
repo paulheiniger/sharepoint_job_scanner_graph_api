@@ -259,10 +259,14 @@ def test_estimator_session_lifecycle_and_exports(tmp_path) -> None:
 
     payload = load_estimator_session_payload(engine, session_id)
     assert payload["review"]["parsed_scope"]["estimated_sqft"] == 10000
-    assert payload["review"]["final_decisions"]["decisions"][0]["decision_id"] == "roofing_coating_system"
-    assert payload["review"]["final_decisions"]["decisions"][0]["final_value"] == "GAF High Solids Silicone 55 Gal"
-    assert payload["review"]["final_decisions"]["decisions"][0]["source_evidence"]["decision_source_tables"] == "roofing_coating_decision_history"
-    assert payload["review"]["final_decisions"]["decisions"][0]["product_guidance_snapshot"]["source_documents"] == ["gaf_silicone_pds.pdf"]
+    first_decision = payload["review"]["final_decisions"]["decisions"][0]
+    assert first_decision["decision_id"].startswith("roofing_coating_system_row_")
+    assert first_decision["final_value"]["selected_pricing_candidate"] == "GAF High Solids Silicone 55 Gal"
+    coating_material_decision = next(
+        row for row in payload["review"]["final_decisions"]["decisions"] if row["decision_id"] == "roofing_coating_system"
+    )
+    assert coating_material_decision["source_evidence"]["decision_source_tables"] == "roofing_coating_decision_history"
+    assert coating_material_decision["product_guidance_snapshot"]["source_documents"] == ["gaf_silicone_pds.pdf"]
     assert payload["review"]["calculated_outputs"]["totals"]["draft_total"] == 10620
     material_write = next(row for row in payload["review"]["workbook_cell_writes"] if row.get("section") == "materials")
     assert material_write["decision_id"] == "roofing_coating_system"
@@ -293,6 +297,6 @@ def test_estimator_session_lifecycle_and_exports(tmp_path) -> None:
     assert rows[0]["template_type"] == "roofing"
     assert rows[0]["division"] == "Roofing"
     assert rows[0]["estimator_edits"][0]["field_name"] == "editable_hours_per_1000_sqft"
-    assert rows[0]["proposed_decisions"][0]["decisions"][0]["decision_id"] == "roofing_coating_system"
+    assert rows[0]["proposed_decisions"][0]["decisions"][0]["decision_id"].startswith("roofing_coating_system_row_")
     training_material_write = next(row for row in rows[0]["workbook_cell_writes"] if row.get("section") == "materials")
     assert training_material_write["row_traceability"] == "Estimate rows 26-28"

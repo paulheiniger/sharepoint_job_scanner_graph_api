@@ -167,6 +167,447 @@ def calculate_roofing_coating(**kwargs: Any) -> dict[str, Any]:
     )
 
 
+def calculate_roofing_primer(
+    *,
+    area_sqft: Any,
+    coverage_sqft_per_unit: Any = 250,
+    unit_price: Any = None,
+    cost_per_sqft: Any = None,
+    include: bool = True,
+) -> dict[str, Any]:
+    """Mirror roofing primer row 39: G=SUM(C39/250), H=E39*G39."""
+
+    area = safe_number(area_sqft, 0.0)
+    coverage = safe_number(coverage_sqft_per_unit, 0.0)
+    price = safe_number(unit_price, 0.0)
+    if include and area > 0 and coverage > 0:
+        estimated_units = area / coverage
+        formula_source = "area_coverage"
+    else:
+        estimated_units = 0.0
+        formula_source = "insufficient_formula_inputs" if include else "not_included"
+    if include and price > 0 and estimated_units > 0:
+        estimated_cost = estimated_units * price
+        cost_source = "current_pricing"
+    elif include and area > 0 and safe_number(cost_per_sqft, 0.0) > 0:
+        estimated_cost = area * safe_number(cost_per_sqft, 0.0)
+        cost_source = "historical_cost_default"
+    else:
+        estimated_cost = 0.0
+        cost_source = "not_included" if not include else "current_pricing_missing"
+    return {
+        "formula_model": "primer_units_from_area_coverage",
+        "formula_source": formula_source,
+        "area_sqft": round(area, 4),
+        "coverage_sqft_per_unit": round(coverage, 6) if coverage else 0.0,
+        "estimated_units": round(estimated_units, 6),
+        "calculated_quantity": round(estimated_units, 6),
+        "estimated_cost": round(estimated_cost, 2),
+        "cost_source": cost_source,
+        "calculated_output": round(estimated_cost, 2),
+    }
+
+
+def calculate_roofing_granules(
+    *,
+    area_sqft: Any,
+    coverage_lbs_per_100_sqft: Any = 50,
+    bag_weight_lbs: Any = 100,
+    unit_price: Any = None,
+    cost_per_sqft: Any = None,
+    include: bool = True,
+) -> dict[str, Any]:
+    """Mirror roofing granules row 36: G=(((C36/100)*50)/100), H=E36*G36."""
+
+    area = safe_number(area_sqft, 0.0)
+    coverage = safe_number(coverage_lbs_per_100_sqft, 0.0)
+    bag_weight = safe_number(bag_weight_lbs, 0.0)
+    price = safe_number(unit_price, 0.0)
+    if include and area > 0 and coverage > 0 and bag_weight > 0:
+        estimated_units = ((area / 100.0) * coverage) / bag_weight
+        formula_source = "area_coverage_bag_weight"
+    else:
+        estimated_units = 0.0
+        formula_source = "insufficient_formula_inputs" if include else "not_included"
+    if include and price > 0 and estimated_units > 0:
+        estimated_cost = estimated_units * price
+        cost_source = "current_pricing"
+    elif include and area > 0 and safe_number(cost_per_sqft, 0.0) > 0:
+        estimated_cost = area * safe_number(cost_per_sqft, 0.0)
+        cost_source = "historical_cost_default"
+    else:
+        estimated_cost = 0.0
+        cost_source = "not_included" if not include else "current_pricing_missing"
+    return {
+        "formula_model": "granules_units_from_area_rate",
+        "formula_source": formula_source,
+        "area_sqft": round(area, 4),
+        "coverage_lbs_per_100_sqft": round(coverage, 6) if coverage else 0.0,
+        "bag_weight_lbs": round(bag_weight, 6) if bag_weight else 0.0,
+        "estimated_units": round(estimated_units, 6),
+        "calculated_quantity": round(estimated_units, 6),
+        "unit_price": round(price, 6) if price else 0.0,
+        "estimated_cost": round(estimated_cost, 2),
+        "cost_source": cost_source,
+        "calculated_output": round(estimated_cost, 2),
+    }
+
+
+def calculate_roofing_dumpster(
+    *,
+    area_sqft: Any,
+    thickness_inches: Any,
+    selector_code: Any = 3,
+    unit_price: Any = None,
+    margin_pct: Any = 25,
+    include: bool = True,
+) -> dict[str, Any]:
+    """Mirror roofing dumpster row 69.
+
+    Formula: G=(C*D/12/capacity)*(1+(F/100)), H=G*E
+    where selector code 1/2/3 maps to 20/30/40 yard capacities of 700/1000/1400.
+    """
+
+    area = safe_number(area_sqft, 0.0)
+    thickness = safe_number(thickness_inches, 0.0)
+    margin = safe_number(margin_pct, 0.0)
+    price = safe_number(unit_price, 0.0)
+    selector = str(first_nonblank(selector_code, "3")).strip()
+    if selector.endswith(".0"):
+        selector = selector[:-2]
+    capacity_by_selector = {"1": 700.0, "2": 1000.0, "3": 1400.0}
+    capacity = capacity_by_selector.get(selector, 1400.0)
+    if include and area > 0 and thickness > 0 and capacity > 0:
+        estimated_units = (area * thickness / 12.0 / capacity) * (1.0 + margin / 100.0)
+        formula_source = "area_thickness_capacity_margin"
+    else:
+        estimated_units = 0.0
+        formula_source = "insufficient_formula_inputs" if include else "not_included"
+    if include and price > 0 and estimated_units > 0:
+        estimated_cost = estimated_units * price
+        cost_source = "current_pricing"
+    else:
+        estimated_cost = 0.0
+        cost_source = "not_included" if not include else "current_pricing_missing"
+    return {
+        "formula_model": "dumpster_count_from_area_thickness_margin",
+        "formula_source": formula_source,
+        "selector_code": selector,
+        "area_sqft": round(area, 4),
+        "thickness_inches": round(thickness, 6),
+        "capacity_factor": capacity,
+        "margin_pct": round(margin, 6),
+        "unit_price": round(price, 6) if price else 0.0,
+        "estimated_units": round(estimated_units, 6),
+        "calculated_quantity": round(estimated_units, 6),
+        "estimated_cost": round(estimated_cost, 2),
+        "cost_source": cost_source,
+        "calculated_output": round(estimated_cost, 2),
+    }
+
+
+def calculate_roofing_equipment_cost(
+    *,
+    period: Any,
+    unit_price: Any = None,
+    margin_pct: Any = 20,
+    include: bool = True,
+) -> dict[str, Any]:
+    """Mirror roofing lift/equipment rows 73-74: H=D*E*(1+(F/100))."""
+
+    rental_period = safe_number(period, 0.0)
+    price = safe_number(unit_price, 0.0)
+    margin = safe_number(margin_pct, 0.0)
+    if include and rental_period > 0 and price > 0:
+        estimated_cost = rental_period * price * (1.0 + margin / 100.0)
+        formula_source = "period_price_margin"
+    else:
+        estimated_cost = 0.0
+        formula_source = "insufficient_formula_inputs" if include else "not_included"
+    return {
+        "formula_model": "equipment_cost_with_margin",
+        "formula_source": formula_source,
+        "period": round(rental_period, 6),
+        "unit_price": round(price, 6) if price else 0.0,
+        "margin_pct": round(margin, 6),
+        "estimated_cost": round(estimated_cost, 2),
+        "cost_source": "current_pricing" if estimated_cost > 0 else ("not_included" if not include else "current_pricing_missing"),
+        "calculated_output": round(estimated_cost, 2),
+    }
+
+
+def calculate_roofing_days_rate_cost(
+    *,
+    days: Any,
+    unit_price: Any = None,
+    include: bool = True,
+) -> dict[str, Any]:
+    """Mirror simple roofing day-rate rows such as generator row 99: H=C*E."""
+
+    day_count = safe_number(days, 0.0)
+    price = safe_number(unit_price, 0.0)
+    if include and day_count > 0 and price > 0:
+        estimated_cost = day_count * price
+        formula_source = "days_price"
+    else:
+        estimated_cost = 0.0
+        formula_source = "insufficient_formula_inputs" if include else "not_included"
+    return {
+        "formula_model": "days_rate_cost",
+        "formula_source": formula_source,
+        "days": round(day_count, 6),
+        "unit_price": round(price, 6) if price else 0.0,
+        "estimated_cost": round(estimated_cost, 2),
+        "cost_source": "current_pricing" if estimated_cost > 0 else ("not_included" if not include else "current_pricing_missing"),
+        "calculated_output": round(estimated_cost, 2),
+    }
+
+
+def calculate_roofing_travel_cost(
+    *,
+    trip_count: Any,
+    round_trip_miles: Any,
+    unit_price: Any = None,
+    include: bool = True,
+) -> dict[str, Any]:
+    """Mirror roofing travel-style rows 106/108: H=B*C*E."""
+
+    trips = safe_number(trip_count, 0.0)
+    miles = safe_number(round_trip_miles, 0.0)
+    price = safe_number(unit_price, 0.0)
+    if include and trips > 0 and miles > 0 and price > 0:
+        estimated_cost = trips * miles * price
+        formula_source = "trips_miles_rate"
+    else:
+        estimated_cost = 0.0
+        formula_source = "insufficient_formula_inputs" if include else "not_included"
+    return {
+        "formula_model": "travel_cost_from_trips_miles_rate",
+        "formula_source": formula_source,
+        "trip_count": round(trips, 6),
+        "round_trip_miles": round(miles, 6),
+        "unit_price": round(price, 6) if price else 0.0,
+        "estimated_cost": round(estimated_cost, 2),
+        "cost_source": "current_pricing" if estimated_cost > 0 else ("not_included" if not include else "current_pricing_missing"),
+        "calculated_output": round(estimated_cost, 2),
+    }
+
+
+def calculate_roofing_direct_cost(
+    *,
+    amount: Any,
+    include: bool = True,
+) -> dict[str, Any]:
+    """Mirror direct-cost rows such as freight row 103: H=E."""
+
+    cost = safe_number(amount, 0.0) if include else 0.0
+    return {
+        "formula_model": "direct_cost",
+        "formula_source": "direct_amount" if include and cost > 0 else ("not_included" if not include else "insufficient_formula_inputs"),
+        "estimated_cost": round(cost, 2),
+        "cost_source": "direct_amount" if cost > 0 else ("not_included" if not include else "current_pricing_missing"),
+        "calculated_output": round(cost, 2),
+    }
+
+
+def calculate_roofing_thinner(
+    *,
+    total_coating_gallons: Any,
+    unit_price: Any = None,
+    include: bool = True,
+) -> dict[str, Any]:
+    """Mirror roofing thinner row 33: G=((G26+G27+G28)/55)*4, H=E33*G33."""
+
+    gallons = safe_number(total_coating_gallons, 0.0)
+    price = safe_number(unit_price, 0.0)
+    if include and gallons > 0:
+        estimated_units = (gallons / 55.0) * 4.0
+        formula_source = "coating_gallons"
+    else:
+        estimated_units = 0.0
+        formula_source = "insufficient_formula_inputs" if include else "not_included"
+    if include and estimated_units > 0 and price > 0:
+        estimated_cost = estimated_units * price
+        cost_source = "current_pricing"
+    else:
+        estimated_cost = 0.0
+        cost_source = "not_included" if not include else "current_pricing_missing"
+    return {
+        "formula_model": "thinner_units_from_coating_gallons",
+        "formula_source": formula_source,
+        "total_coating_gallons": round(gallons, 6),
+        "estimated_units": round(estimated_units, 6),
+        "calculated_quantity": round(estimated_units, 6),
+        "unit_price": round(price, 6) if price else 0.0,
+        "estimated_cost": round(estimated_cost, 2),
+        "cost_source": cost_source,
+        "calculated_output": round(estimated_cost, 2),
+    }
+
+
+def calculate_roofing_linear_feet_cost(
+    *,
+    linear_ft: Any,
+    unit_price: Any = None,
+    include: bool = True,
+    formula_model: str = "linear_feet_unit_cost",
+) -> dict[str, Any]:
+    result = calculate_roofing_units_cost(
+        units=linear_ft,
+        unit_price=unit_price,
+        include=include,
+        formula_model=formula_model,
+    )
+    result["linear_ft"] = result["units"]
+    return result
+
+
+def calculate_roofing_detail_quantity(
+    *,
+    quantity: Any,
+    amount: Any = None,
+    include: bool = True,
+    quantity_role: str = "units",
+) -> dict[str, Any]:
+    """Mirror roofing detail quantity rows 47/49/51/53.
+
+    These workbook rows preserve estimator-entered quantities/counts. The
+    template intelligence exposes estimated_cost as an output field, but the
+    source workbook does not provide a reusable rate formula for these rows.
+    """
+
+    qty = safe_number(quantity, 0.0)
+    cost = safe_number(amount, 0.0) if include else 0.0
+    if include and qty > 0:
+        formula_source = "manual_detail_quantity"
+    else:
+        formula_source = "insufficient_formula_inputs" if include else "not_included"
+    return {
+        "formula_model": "manual_detail_quantity_cost",
+        "formula_source": formula_source,
+        quantity_role: round(qty, 6),
+        "estimated_units": round(qty, 6),
+        "calculated_quantity": round(qty, 6),
+        "estimated_cost": round(cost, 2),
+        "cost_source": "manual_amount" if cost > 0 else ("not_included" if not include else "manual_amount_missing"),
+        "calculated_output": round(cost, 2),
+    }
+
+
+def calculate_roofing_units_cost(
+    *,
+    units: Any,
+    unit_price: Any = None,
+    include: bool = True,
+    formula_model: str = "manual_units_cost",
+) -> dict[str, Any]:
+    quantity = safe_number(units, 0.0)
+    price = safe_number(unit_price, 0.0)
+    if include and quantity > 0 and price > 0:
+        cost = quantity * price
+        formula_source = "units_unit_price"
+        cost_source = "current_pricing"
+    elif include and quantity > 0:
+        cost = 0.0
+        formula_source = "units_unit_price"
+        cost_source = "current_pricing_missing"
+    else:
+        cost = 0.0
+        formula_source = "not_included" if not include else "insufficient_formula_inputs"
+        cost_source = "not_included" if not include else "current_pricing_missing"
+    return {
+        "formula_model": formula_model,
+        "formula_source": formula_source,
+        "units": round(quantity, 6),
+        "calculated_quantity": round(quantity, 6),
+        "estimated_cost": round(cost, 2),
+        "cost_source": cost_source,
+        "calculated_output": round(cost, 2),
+    }
+
+
+def calculate_roofing_fabric(*, linear_ft: Any, unit_price: Any = None, include: bool = True) -> dict[str, Any]:
+    result = calculate_roofing_units_cost(
+        units=linear_ft,
+        unit_price=unit_price,
+        include=include,
+        formula_model="fabric_cost_from_linear_feet",
+    )
+    result["linear_ft"] = result["units"]
+    return result
+
+
+def calculate_roofing_board_stock(
+    *,
+    area_sqft: Any,
+    price_per_square: Any = None,
+    thickness_inches: Any = None,
+    include: bool = True,
+) -> dict[str, Any]:
+    area = safe_number(area_sqft, 0.0)
+    price = safe_number(price_per_square, 0.0)
+    thickness = safe_number(thickness_inches, 0.0)
+    if include and area > 0 and price > 0:
+        cost = (area / 100.0) * price
+        formula_source = "area_price_per_square"
+        cost_source = "current_pricing"
+    elif include and area > 0:
+        cost = 0.0
+        formula_source = "area_price_per_square"
+        cost_source = "current_pricing_missing"
+    else:
+        cost = 0.0
+        formula_source = "not_included" if not include else "insufficient_formula_inputs"
+        cost_source = "not_included" if not include else "current_pricing_missing"
+    return {
+        "formula_model": "board_cost_from_squares",
+        "formula_source": formula_source,
+        "area_sqft": round(area, 4),
+        "thickness_inches": round(thickness, 6) if thickness else 0.0,
+        "price_per_square": round(price, 6) if price else 0.0,
+        "estimated_squares": round(area / 100.0, 6) if area else 0.0,
+        "estimated_cost": round(cost, 2),
+        "cost_source": cost_source,
+        "calculated_output": round(cost, 2),
+    }
+
+
+def calculate_roofing_board_fasteners(
+    *,
+    board_area_sqft: Any,
+    unit_price_per_thousand: Any = None,
+    include: bool = True,
+) -> dict[str, Any]:
+    area = safe_number(board_area_sqft, 0.0)
+    price = safe_number(unit_price_per_thousand, 0.0)
+    if include and area > 0:
+        units = (area / 32.0) * 12.0
+        formula_source = "board_area_fastener_pattern"
+    else:
+        units = 0.0
+        formula_source = "not_included" if not include else "insufficient_formula_inputs"
+    if include and units > 0 and price > 0:
+        cost = price * units / 1000.0
+        cost_source = "current_pricing"
+    elif include and units > 0:
+        cost = 0.0
+        cost_source = "current_pricing_missing"
+    else:
+        cost = 0.0
+        cost_source = "not_included" if not include else "current_pricing_missing"
+    return {
+        "formula_model": "fastener_units_from_board_area",
+        "formula_source": formula_source,
+        "board_area_sqft": round(area, 4),
+        "estimated_units": round(units, 6),
+        "calculated_quantity": round(units, 6),
+        "unit_price_per_thousand": round(price, 6) if price else 0.0,
+        "estimated_cost": round(cost, 2),
+        "cost_source": cost_source,
+        "calculated_output": round(cost, 2),
+    }
+
+
 def calculate_mixed_labor(
     *,
     days: Any = None,
@@ -248,10 +689,48 @@ def cell_preview_for_material(row: dict[str, Any]) -> list[dict[str, Any]]:
         ]
     if package in {"coating", "thermal_barrier_coating"}:
         return [
+            {"cell": f"Estimate!A{first_row}", "field": "selector_code", "value": row.get("selector_code")},
             {"cell": f"Estimate!C{first_row}", "field": "area_sqft", "value": row.get("editable_basis_sqft")},
             {"cell": f"Estimate!D{first_row}", "field": "gal_per_100_sqft", "value": row.get("gal_per_100_sqft")},
             {"cell": f"Estimate!E{first_row}", "field": "unit_price", "value": row.get("current_unit_price")},
             {"cell": f"Estimate!G{first_row}", "field": "estimated_gallons_formula_output", "value": row.get("estimated_gallons")},
+        ]
+    if package == "primer":
+        return [
+            {"cell": f"Estimate!A{first_row}", "field": "selector_code", "value": row.get("selector_code")},
+            {"cell": f"Estimate!C{first_row}", "field": "area_sqft", "value": row.get("editable_basis_sqft")},
+            {"cell": f"Estimate!E{first_row}", "field": "unit_price", "value": row.get("current_unit_price")},
+            {"cell": f"Estimate!G{first_row}", "field": "estimated_units_formula_output", "value": row.get("estimated_units")},
+        ]
+    if package == "granules":
+        return [
+            {"cell": f"Estimate!A{first_row}", "field": "selector_code", "value": row.get("selector_code")},
+            {"cell": f"Estimate!C{first_row}", "field": "area_sqft", "value": row.get("editable_basis_sqft")},
+            {"cell": f"Estimate!E{first_row}", "field": "unit_price", "value": row.get("current_unit_price")},
+            {"cell": f"Estimate!G{first_row}", "field": "estimated_units_formula_output", "value": row.get("estimated_units")},
+        ]
+    if package in {"caulk_detail", "caulk_sealant"}:
+        return [
+            {"cell": f"Estimate!A{first_row}", "field": "selector_code", "value": row.get("selector_code")},
+            {"cell": f"Estimate!E{first_row}", "field": "unit_price", "value": row.get("current_unit_price")},
+            {"cell": f"Estimate!G{first_row}", "field": "units", "value": row.get("calculated_quantity")},
+        ]
+    if package == "fabric":
+        return [
+            {"cell": f"Estimate!C{first_row}", "field": "linear_ft", "value": row.get("calculated_quantity")},
+            {"cell": f"Estimate!E{first_row}", "field": "unit_price", "value": row.get("current_unit_price")},
+        ]
+    if package == "board_stock":
+        return [
+            {"cell": f"Estimate!A{first_row}", "field": "selector_code", "value": row.get("selector_code")},
+            {"cell": f"Estimate!C{first_row}", "field": "area_sqft", "value": row.get("editable_basis_sqft")},
+            {"cell": f"Estimate!D{first_row}", "field": "thickness_inches", "value": row.get("thickness_inches")},
+            {"cell": f"Estimate!E{first_row}", "field": "price_per_square", "value": row.get("current_unit_price")},
+        ]
+    if package in {"fasteners", "fastener_treatment", "plates"}:
+        return [
+            {"cell": f"Estimate!E{first_row}", "field": "unit_price_per_thousand", "value": row.get("current_unit_price")},
+            {"cell": f"Estimate!G{first_row}", "field": "estimated_units_formula_output", "value": row.get("calculated_quantity")},
         ]
     return [
         {"cell": f"Estimate!C{first_row}", "field": "quantity", "value": row.get("calculated_quantity")},

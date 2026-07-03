@@ -17,7 +17,21 @@ from .formula_mirror import (
     calculate_insulation_foam,
     calculate_insulation_thermal_barrier,
     calculate_mixed_labor,
+    calculate_roofing_board_fasteners,
+    calculate_roofing_board_stock,
     calculate_roofing_coating,
+    calculate_roofing_days_rate_cost,
+    calculate_roofing_direct_cost,
+    calculate_roofing_dumpster,
+    calculate_roofing_equipment_cost,
+    calculate_roofing_fabric,
+    calculate_roofing_granules,
+    calculate_roofing_linear_feet_cost,
+    calculate_roofing_detail_quantity,
+    calculate_roofing_primer,
+    calculate_roofing_thinner,
+    calculate_roofing_travel_cost,
+    calculate_roofing_units_cost,
     cell_preview_for_labor,
     cell_preview_for_material,
     decision_dict,
@@ -253,6 +267,209 @@ COATING_FORBIDDEN_SIGNALS = [
     "plate",
 ]
 
+ROOFING_COATING_SELECTOR_MAP = {
+    "11": "Gaco Silicone",
+    "12": "Gaco Acrylic",
+    "13": "Gaco Urethane",
+    "21": "BASF Silicone",
+    "22": "BASF Acrylic",
+    "23": "BASF Urethane",
+    "31": "AW Silicone",
+    "32": "AW Acrylic",
+    "33": "AW Urethane",
+    "4": "Aluminum",
+}
+
+ROOFING_COATING_TEMPLATE_ROWS = [26, 27, 28]
+
+ROOFING_PRIMER_SELECTOR_MAP = {
+    "1": "Gaco E-5320",
+    "2": "Red Zinc Oxide",
+    "3": "Black Foam",
+}
+
+ROOFING_PRIMER_TEMPLATE_ROW = 39
+ROOFING_PRIMER_DEFAULT_COVERAGE_SQFT_PER_UNIT = 250.0
+
+ROOFING_FOAM_SELECTOR_MAP = {
+    "11": "Gaco Roof 2.7",
+    "21": "BASF Roof 2.7",
+}
+ROOFING_FOAM_TEMPLATE_ROWS = [19, 20, 21]
+ROOFING_FOAM_DEFAULTS = {
+    19: {"area_sqft": 0.0, "thickness_inches": 1.5, "yield_or_coverage": 2600.0, "unit_price": 2.25},
+    20: {"area_sqft": 0.0, "thickness_inches": 1.25, "yield_or_coverage": 2900.0, "unit_price": 2.25},
+    21: {"area_sqft": 0.0, "thickness_inches": 1.25, "yield_or_coverage": 2900.0, "unit_price": 2.25},
+}
+
+ROOFING_CAULK_SELECTOR_MAP = {
+    "1": "Silicone Tube",
+    "2": "Silicone Sausage",
+    "3": "Urethane Tube",
+    "4": "Urethane Sausage",
+    "5": "Gaco SF-2000",
+    "6": "Buttergrade",
+}
+
+ROOFING_CAULK_TEMPLATE_ROWS = [43, 45]
+ROOFING_FABRIC_TEMPLATE_ROW = 79
+ROOFING_DETAIL_QUANTITY_TEMPLATE_SPECS = [
+    {
+        "row": 47,
+        "bucket": "seams_misc",
+        "label": "Misc. / Seams",
+        "quantity_field": "linear_ft",
+        "write_cell": "C",
+        "material_keys": ["seam_treatment", "fabric"],
+        "signals": ["seam", "seams", "open seam", "misc seam", "misc./seams", "seam treatment"],
+    },
+    {
+        "row": 49,
+        "bucket": "penetrations",
+        "label": "Penetrations",
+        "quantity_field": "units",
+        "write_cell": "D",
+        "material_keys": ["caulk_detail", "penetrations"],
+        "signals": ["penetration", "penetrations", "pipe boot", "pipe flashing", "vent", "vents"],
+    },
+    {
+        "row": 51,
+        "bucket": "hvac_units",
+        "label": "HVAC Units",
+        "quantity_field": "units",
+        "write_cell": "D",
+        "material_keys": ["caulk_detail", "hvac_units"],
+        "signals": ["hvac", "rtu", "rtus", "rooftop unit", "unit curb"],
+    },
+    {
+        "row": 53,
+        "bucket": "drains",
+        "label": "Drains",
+        "quantity_field": "units",
+        "write_cell": "D",
+        "material_keys": ["caulk_detail", "drains"],
+        "signals": ["drain", "drains", "roof drain"],
+    },
+]
+ROOFING_BOARD_SELECTOR_MAP = {
+    "1": "ISO Board",
+    "2": "Wood Fiber",
+    "3": "Dens Deck",
+    "4": "Type X Gyp Board",
+    "5": "Flute Filler",
+}
+ROOFING_BOARD_TEMPLATE_ROWS = [58, 59, 60]
+ROOFING_FASTENER_TEMPLATE_ROW = 63
+ROOFING_PLATES_TEMPLATE_ROW = 65
+ROOFING_GRANULES_SELECTOR_MAP = {
+    "1": "3M",
+    "2": "SESCO",
+}
+ROOFING_GRANULES_TEMPLATE_ROW = 36
+ROOFING_GRANULES_DEFAULT_COVERAGE_LBS_PER_100_SQFT = 50.0
+ROOFING_GRANULES_DEFAULT_BAG_WEIGHT_LBS = 100.0
+ROOFING_DUMPSTER_SELECTOR_MAP = {
+    "1": "20 Yard",
+    "2": "30 Yard",
+    "3": "40 Yard",
+}
+ROOFING_LIFT_SELECTOR_MAP = {
+    "1": "Forklift",
+    "2": "Boom",
+    "3": "Scissor",
+    "4": "Articulating",
+}
+ROOFING_DUMPSTER_TEMPLATE_ROW = 69
+ROOFING_LIFT_TEMPLATE_ROWS = [73, 74]
+ROOFING_GENERATOR_TEMPLATE_ROW = 99
+ROOFING_DELIVERY_FEE_TEMPLATE_ROW = 76
+ROOFING_FREIGHT_TEMPLATE_ROW = 103
+ROOFING_SALES_INSPECTION_TEMPLATE_ROW = 106
+ROOFING_TRUCK_EXPENSE_TEMPLATE_ROW = 108
+ROOFING_DUMPSTER_DEFAULT_UNIT_PRICE = 400.0
+ROOFING_DUMPSTER_DEFAULT_MARGIN_PCT = 25.0
+ROOFING_LIFT_DEFAULT_SIZE = "20'"
+ROOFING_LIFT_DEFAULT_MARGIN_PCT = 20.0
+ROOFING_GENERATOR_DEFAULT_DAYS = 7.0
+ROOFING_GENERATOR_DEFAULT_UNIT_PRICE = 50.0
+ROOFING_SALES_INSPECTION_DEFAULT_TRIPS = 9.0
+ROOFING_TRUCK_EXPENSE_DEFAULT_TRIPS = 16.0
+ROOFING_TRAVEL_DEFAULT_ROUND_TRIP_MILES = 20.0
+ROOFING_SALES_INSPECTION_DEFAULT_RATE = 0.75
+ROOFING_TRUCK_EXPENSE_DEFAULT_RATE = 1.0
+ROOFING_THINNER_TEMPLATE_ROW = 33
+ROOFING_MISC_TEMPLATE_ROW = 101
+ROOFING_THINNER_SELECTOR_MAP = {
+    "1": "Naphtha VM&P",
+    "2": "Mineral Spirits",
+    "3": "Xylene",
+}
+ROOFING_ACCESSORY_TEMPLATE_SPECS = [
+    {
+        "row": 82,
+        "bucket": "edge_metal",
+        "label": "Edge Metal",
+        "formula": "linear_feet_unit_cost",
+        "signals": ["edge metal", "coping", "metal edge", "perimeter metal"],
+    },
+    {
+        "row": 84,
+        "bucket": "gutter",
+        "label": "Gutter",
+        "formula": "linear_feet_unit_cost",
+        "signals": ["gutter", "gutters"],
+    },
+    {
+        "row": 86,
+        "bucket": "downspouts",
+        "label": "Downspouts",
+        "formula": "linear_feet_unit_cost",
+        "signals": ["downspout", "downspouts"],
+    },
+    {
+        "row": 88,
+        "bucket": "roof_hatch",
+        "label": "Roof Hatch",
+        "formula": "units_rate_cost",
+        "signals": ["roof hatch", "hatch"],
+    },
+    {
+        "row": 90,
+        "bucket": "scuppers",
+        "label": "Scuppers",
+        "formula": "units_rate_cost",
+        "signals": ["scupper", "scuppers"],
+    },
+    {
+        "row": 92,
+        "bucket": "curbs",
+        "label": "Curbs",
+        "formula": "units_rate_cost",
+        "signals": ["curb", "curbs"],
+    },
+    {
+        "row": 94,
+        "bucket": "ladders",
+        "label": "Ladders",
+        "formula": "units_rate_cost",
+        "signals": ["ladder", "ladders"],
+    },
+    {
+        "row": 96,
+        "bucket": "pitch_pockets",
+        "label": "Pitch Pockets",
+        "formula": "units_rate_cost",
+        "signals": ["pitch pocket", "pitch pockets"],
+    },
+    {
+        "row": ROOFING_MISC_TEMPLATE_ROW,
+        "bucket": "misc",
+        "label": "Misc.",
+        "formula": "direct_cost",
+        "signals": ["misc", "miscellaneous", "allowance"],
+    },
+]
+
 
 def safe_number(value: Any, default: float = 0.0) -> float:
     number = to_float(value)
@@ -330,6 +547,16 @@ def _normalized(value: Any) -> str:
 
 def _is_insulation_scope(scope: dict[str, Any] | None) -> bool:
     scope = scope or {}
+    division = _normalized(scope.get("division"))
+    template_type = _normalized(scope.get("template_type"))
+    estimate_mode = _normalized(scope.get("estimate_mode"))
+    project_type = _normalized(scope.get("project_type"))
+    if estimate_mode in {"roofing", "roof restoration", "roof coating", "restoration"}:
+        return False
+    if division == "roofing" or template_type == "roofing" or "roof coating" in project_type or "roof restoration" in project_type:
+        return False
+    if division == "insulation" or template_type == "insulation" or estimate_mode == "insulation":
+        return True
     text = " ".join(
         _normalized(scope.get(key))
         for key in (
@@ -962,6 +1189,63 @@ def _foam_material_row(materials: list[dict[str, Any]] | None) -> dict[str, Any]
     return None
 
 
+def _coating_material_row(materials: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+    for row in materials or []:
+        if str(row.get("package_key") or row.get("template_bucket") or "").lower() == "coating":
+            return row
+    return None
+
+
+def _primer_material_row(materials: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+    for row in materials or []:
+        if str(row.get("package_key") or row.get("template_bucket") or "").lower() == "primer":
+            return row
+    return None
+
+
+def _caulk_detail_material_row(materials: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+    for row in materials or []:
+        key = str(row.get("package_key") or row.get("template_bucket") or "").lower()
+        if key in {"caulk_detail", "caulk_sealant"}:
+            return row
+    return None
+
+
+def _fabric_material_row(materials: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+    for row in materials or []:
+        if str(row.get("package_key") or row.get("template_bucket") or "").lower() == "fabric":
+            return row
+    return None
+
+
+def _board_stock_material_row(materials: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+    for row in materials or []:
+        if str(row.get("package_key") or row.get("template_bucket") or "").lower() == "board_stock":
+            return row
+    return None
+
+
+def _fastener_material_row(materials: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+    for row in materials or []:
+        if str(row.get("package_key") or row.get("template_bucket") or "").lower() in {"fastener_treatment", "fasteners"}:
+            return row
+    return None
+
+
+def _plates_material_row(materials: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+    for row in materials or []:
+        if str(row.get("package_key") or row.get("template_bucket") or "").lower() == "plates":
+            return row
+    return None
+
+
+def _granules_material_row(materials: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+    for row in materials or []:
+        if str(row.get("package_key") or row.get("template_bucket") or "").lower() == "granules":
+            return row
+    return None
+
+
 def _foam_selector_options() -> list[dict[str, Any]]:
     options: list[dict[str, Any]] = []
     for code, label in sorted(FOAM_SELECTOR_MAP.items(), key=lambda item: int(item[0])):
@@ -976,6 +1260,607 @@ def _foam_selector_options() -> list[dict[str, Any]]:
             }
         )
     return options
+
+
+def _roofing_foam_selector_options(row_number: int | None = None) -> list[dict[str, Any]]:
+    options: list[dict[str, Any]] = []
+    graph_path = Path("output/template_decision_graph_roofing.json")
+    if graph_path.exists():
+        try:
+            payload = json.loads(graph_path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+        for row in payload.get("selector_options") or []:
+            if row.get("decision_id") != "roofing_foam":
+                continue
+            try:
+                option_row_number = int(row.get("row_number"))
+            except Exception:
+                option_row_number = 0
+            if row_number is not None and option_row_number != row_number:
+                continue
+            label = str(row.get("resolved_item_name") or "").strip()
+            code = str(row.get("selector_code") or "").strip()
+            if not label or not code:
+                continue
+            traits = _foam_traits(label)
+            options.append(
+                {
+                    "selector_code": code,
+                    "resolved_template_option": label,
+                    "foam_type": traits["foam_type"],
+                    "density_class": traits["density_class"],
+                    "application": traits["application"] or "roofing",
+                    "row_number": option_row_number,
+                    "selector_cell": row.get("selector_cell") or (f"A{option_row_number}" if option_row_number else ""),
+                }
+            )
+    if not options:
+        row_numbers = [row_number] if row_number else ROOFING_FOAM_TEMPLATE_ROWS
+        for option_row_number in row_numbers:
+            for code, label in ROOFING_FOAM_SELECTOR_MAP.items():
+                traits = _foam_traits(label)
+                options.append(
+                    {
+                        "selector_code": code,
+                        "resolved_template_option": label,
+                        "foam_type": traits["foam_type"],
+                        "density_class": traits["density_class"],
+                        "application": "roofing",
+                        "row_number": option_row_number,
+                        "selector_cell": f"A{option_row_number}",
+                    }
+                )
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[int, str]] = set()
+    for option in options:
+        key = (int(safe_number(option.get("row_number"), 0)), str(option.get("selector_code") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(option)
+    deduped.sort(key=lambda option: (int(safe_number(option.get("row_number"), 0)), int(safe_number(option.get("selector_code"), 0))))
+    return deduped
+
+
+def _roofing_coating_selector_options(row_number: int | None = None) -> list[dict[str, Any]]:
+    options: list[dict[str, Any]] = []
+    graph_path = Path("output/template_decision_graph_roofing.json")
+    if graph_path.exists():
+        try:
+            payload = json.loads(graph_path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+        for row in payload.get("selector_options") or []:
+            if row.get("decision_id") != "roofing_coating_system":
+                continue
+            try:
+                option_row_number = int(row.get("row_number"))
+            except Exception:
+                option_row_number = 0
+            if row_number is not None and option_row_number != row_number:
+                continue
+            label = str(row.get("resolved_item_name") or "").strip()
+            code = str(row.get("selector_code") or "").strip()
+            if not label or not code:
+                continue
+            traits = _roofing_coating_traits(label)
+            options.append(
+                {
+                    "selector_code": code,
+                    "resolved_template_option": label,
+                    "manufacturer": traits["manufacturer"],
+                    "chemistry": traits["chemistry"],
+                    "row_number": option_row_number,
+                    "selector_cell": row.get("selector_cell") or (f"A{option_row_number}" if option_row_number else ""),
+                }
+            )
+    if not options:
+        for code, label in ROOFING_COATING_SELECTOR_MAP.items():
+            for option_row_number in ([row_number] if row_number else ROOFING_COATING_TEMPLATE_ROWS):
+                traits = _roofing_coating_traits(label)
+                options.append(
+                    {
+                        "selector_code": str(code),
+                        "resolved_template_option": label,
+                        "manufacturer": traits["manufacturer"],
+                        "chemistry": traits["chemistry"],
+                        "row_number": option_row_number,
+                        "selector_cell": f"A{option_row_number}",
+                    }
+                )
+    deduped: dict[tuple[str, str, int], dict[str, Any]] = {}
+    for option in options:
+        key = (
+            str(option.get("selector_code") or ""),
+            _normalized(option.get("resolved_template_option")),
+            int(safe_number(option.get("row_number"), 0)),
+        )
+        deduped.setdefault(key, option)
+    return sorted(
+        deduped.values(),
+        key=lambda item: (int(safe_number(item.get("row_number"), 0)), int(safe_number(item.get("selector_code"), 999))),
+    )
+
+
+def _roofing_coating_traits(*values: Any) -> dict[str, str]:
+    text = _normalized(" ".join(str(value or "") for value in values))
+    manufacturer = ""
+    if "gaco" in text:
+        manufacturer = "Gaco"
+    elif "basf" in text:
+        manufacturer = "BASF"
+    elif re.search(r"\baw\b", text):
+        manufacturer = "AW"
+    elif "aluminum" in text:
+        manufacturer = "Aluminum"
+    chemistry = ""
+    if "silicone" in text:
+        chemistry = "silicone"
+    elif "acrylic" in text:
+        chemistry = "acrylic"
+    elif "urethane" in text:
+        chemistry = "urethane"
+    elif "aluminum" in text:
+        chemistry = "aluminum"
+    return {"manufacturer": manufacturer, "chemistry": chemistry}
+
+
+def _roofing_selector_code_for_option(value: Any) -> str:
+    normalized = _normalized(value)
+    if not normalized:
+        return ""
+    for code, label in ROOFING_COATING_SELECTOR_MAP.items():
+        if normalized == _normalized(label):
+            return str(code)
+    for option in _roofing_coating_selector_options():
+        if normalized == _normalized(option.get("resolved_template_option")):
+            return str(option.get("selector_code") or "")
+    return ""
+
+
+def _resolved_roofing_selector_option(selector_code: Any, fallback: Any = "") -> str:
+    key = str(selector_code or "").strip()
+    if key.endswith(".0"):
+        key = key[:-2]
+    if key in ROOFING_COATING_SELECTOR_MAP:
+        return ROOFING_COATING_SELECTOR_MAP[key]
+    for option in _roofing_coating_selector_options():
+        if str(option.get("selector_code") or "").strip() == key:
+            return str(option.get("resolved_template_option") or fallback or "")
+    return str(fallback or "")
+
+
+def _default_roofing_selector_code_for_scope(scope: dict[str, Any]) -> str:
+    text = _normalized(" ".join(str(scope.get(key) or "") for key in ("coating_type", "project_type", "notes")))
+    if "aluminum" in text:
+        return "4"
+    if "urethane" in text:
+        return "13"
+    if "acrylic" in text:
+        return "12"
+    return "11"
+
+
+def _roofing_primer_selector_options() -> list[dict[str, Any]]:
+    options: list[dict[str, Any]] = []
+    graph_path = Path("output/template_decision_graph_roofing.json")
+    if graph_path.exists():
+        try:
+            payload = json.loads(graph_path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+        for row in payload.get("selector_options") or []:
+            if row.get("decision_id") != "roofing_primer":
+                continue
+            label = str(row.get("resolved_item_name") or "").strip()
+            code = str(row.get("selector_code") or "").strip()
+            if not label or not code:
+                continue
+            options.append(
+                {
+                    "selector_code": code,
+                    "resolved_template_option": label,
+                    "row_number": int(safe_number(row.get("row_number"), ROOFING_PRIMER_TEMPLATE_ROW)),
+                    "selector_cell": row.get("selector_cell") or "A39",
+                }
+            )
+    if not options:
+        for code, label in ROOFING_PRIMER_SELECTOR_MAP.items():
+            options.append(
+                {
+                    "selector_code": str(code),
+                    "resolved_template_option": label,
+                    "row_number": ROOFING_PRIMER_TEMPLATE_ROW,
+                    "selector_cell": "A39",
+                }
+            )
+    deduped: dict[str, dict[str, Any]] = {}
+    for option in options:
+        deduped.setdefault(str(option.get("selector_code") or ""), option)
+    return sorted(deduped.values(), key=lambda item: int(safe_number(item.get("selector_code"), 999)))
+
+
+def _roofing_primer_selector_code_for_option(value: Any) -> str:
+    normalized = _normalized(value)
+    if not normalized:
+        return ""
+    for code, label in ROOFING_PRIMER_SELECTOR_MAP.items():
+        if normalized == _normalized(label):
+            return str(code)
+    for option in _roofing_primer_selector_options():
+        if normalized == _normalized(option.get("resolved_template_option")):
+            return str(option.get("selector_code") or "")
+    return ""
+
+
+def _resolved_roofing_primer_option(selector_code: Any, fallback: Any = "") -> str:
+    key = str(selector_code or "").strip()
+    if key.endswith(".0"):
+        key = key[:-2]
+    if key in ROOFING_PRIMER_SELECTOR_MAP:
+        return ROOFING_PRIMER_SELECTOR_MAP[key]
+    for option in _roofing_primer_selector_options():
+        if str(option.get("selector_code") or "").strip() == key:
+            return str(option.get("resolved_template_option") or fallback or "")
+    return str(fallback or "")
+
+
+def _default_roofing_primer_selector_code_for_scope(scope: dict[str, Any]) -> str:
+    text = _normalized(
+        " ".join(
+            str(scope.get(key) or "")
+            for key in ("substrate", "roof_type_substrate", "roof_condition", "notes", "raw_input_notes")
+        )
+    )
+    if "foam" in text or "spf" in text:
+        return "3"
+    if "rust" in text or "metal" in text or "oxid" in text:
+        return "2"
+    return "1"
+
+
+def _roofing_caulk_selector_options(row_number: int | None = None) -> list[dict[str, Any]]:
+    options: list[dict[str, Any]] = []
+    graph_path = Path("output/template_decision_graph_roofing.json")
+    if graph_path.exists():
+        try:
+            payload = json.loads(graph_path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+        for row in payload.get("selector_options") or []:
+            if row.get("decision_id") != "roofing_caulk_sealant":
+                continue
+            if row_number and int(safe_number(row.get("row_number"), 0)) != int(row_number):
+                continue
+            label = str(row.get("resolved_item_name") or "").strip()
+            code = str(row.get("selector_code") or "").strip()
+            if not label or not code:
+                continue
+            options.append(
+                {
+                    "selector_code": code,
+                    "resolved_template_option": label,
+                    "row_number": int(safe_number(row.get("row_number"), row_number or 43)),
+                    "selector_cell": row.get("selector_cell") or f"A{int(safe_number(row.get('row_number'), row_number or 43))}",
+                }
+            )
+    if not options:
+        for code, label in ROOFING_CAULK_SELECTOR_MAP.items():
+            options.append(
+                {
+                    "selector_code": str(code),
+                    "resolved_template_option": label,
+                    "row_number": row_number or 43,
+                    "selector_cell": f"A{row_number or 43}",
+                }
+            )
+    deduped: dict[tuple[str, str], dict[str, Any]] = {}
+    for option in options:
+        deduped.setdefault((str(option.get("row_number") or ""), str(option.get("selector_code") or "")), option)
+    return sorted(deduped.values(), key=lambda item: (int(safe_number(item.get("row_number"), 999)), int(safe_number(item.get("selector_code"), 999))))
+
+
+def _roofing_caulk_selector_code_for_option(value: Any) -> str:
+    normalized = _normalized(value)
+    if not normalized:
+        return ""
+    for code, label in ROOFING_CAULK_SELECTOR_MAP.items():
+        if normalized == _normalized(label):
+            return str(code)
+    for option in _roofing_caulk_selector_options():
+        if normalized == _normalized(option.get("resolved_template_option")):
+            return str(option.get("selector_code") or "")
+    return ""
+
+
+def _resolved_roofing_caulk_option(selector_code: Any, fallback: Any = "") -> str:
+    key = str(selector_code or "").strip()
+    if key.endswith(".0"):
+        key = key[:-2]
+    if key in ROOFING_CAULK_SELECTOR_MAP:
+        return ROOFING_CAULK_SELECTOR_MAP[key]
+    for option in _roofing_caulk_selector_options():
+        if str(option.get("selector_code") or "").strip() == key:
+            return str(option.get("resolved_template_option") or fallback or "")
+    return str(fallback or "")
+
+
+def _default_roofing_caulk_selector_code_for_scope(scope: dict[str, Any]) -> str:
+    text = _normalized(" ".join(str(scope.get(key) or "") for key in ("coating_type", "project_type", "notes", "raw_input_notes")))
+    if "urethane" in text:
+        return "4"
+    if "sausage" in text:
+        return "2"
+    if "buttergrade" in text:
+        return "6"
+    if "sf 2000" in text or "sf-2000" in text:
+        return "5"
+    return "2" if "silicone" in text else "1"
+
+
+def _roofing_board_selector_options(row_number: int | None = None) -> list[dict[str, Any]]:
+    options: list[dict[str, Any]] = []
+    graph_path = Path("output/template_decision_graph_roofing.json")
+    if graph_path.exists():
+        try:
+            payload = json.loads(graph_path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+        for row in payload.get("selector_options") or []:
+            if row.get("decision_id") != "roofing_board_stock":
+                continue
+            if row_number and int(safe_number(row.get("row_number"), 0)) != int(row_number):
+                continue
+            label = str(row.get("resolved_item_name") or "").strip()
+            code = str(row.get("selector_code") or "").strip()
+            if not label or not code:
+                continue
+            resolved_row = int(safe_number(row.get("row_number"), row_number or 58))
+            options.append(
+                {
+                    "selector_code": code,
+                    "resolved_template_option": label,
+                    "row_number": resolved_row,
+                    "selector_cell": row.get("selector_cell") or f"A{resolved_row}",
+                }
+            )
+    if not options:
+        for code, label in ROOFING_BOARD_SELECTOR_MAP.items():
+            options.append(
+                {
+                    "selector_code": str(code),
+                    "resolved_template_option": label,
+                    "row_number": row_number or ROOFING_BOARD_TEMPLATE_ROWS[0],
+                    "selector_cell": f"A{row_number or ROOFING_BOARD_TEMPLATE_ROWS[0]}",
+                }
+            )
+    deduped: dict[tuple[str, str], dict[str, Any]] = {}
+    for option in options:
+        deduped.setdefault((str(option.get("row_number") or ""), str(option.get("selector_code") or "")), option)
+    return sorted(deduped.values(), key=lambda item: (int(safe_number(item.get("row_number"), 999)), int(safe_number(item.get("selector_code"), 999))))
+
+
+def _roofing_board_selector_code_for_option(value: Any) -> str:
+    normalized = _normalized(value)
+    if not normalized:
+        return ""
+    for code, label in ROOFING_BOARD_SELECTOR_MAP.items():
+        if normalized == _normalized(label):
+            return str(code)
+    for option in _roofing_board_selector_options():
+        if normalized == _normalized(option.get("resolved_template_option")):
+            return str(option.get("selector_code") or "")
+    return ""
+
+
+def _resolved_roofing_board_option(selector_code: Any, fallback: Any = "") -> str:
+    key = str(selector_code or "").strip()
+    if key.endswith(".0"):
+        key = key[:-2]
+    if key in ROOFING_BOARD_SELECTOR_MAP:
+        return ROOFING_BOARD_SELECTOR_MAP[key]
+    for option in _roofing_board_selector_options():
+        if str(option.get("selector_code") or "").strip() == key:
+            return str(option.get("resolved_template_option") or fallback or "")
+    return str(fallback or "")
+
+
+def _default_roofing_board_selector_code_for_scope(scope: dict[str, Any]) -> str:
+    text = _normalized(
+        " ".join(str(scope.get(key) or "") for key in ("notes", "raw_input_notes", "project_type", "roof_condition", "substrate", "roof_type_substrate"))
+    )
+    if "flute" in text:
+        return "5"
+    if "type x" in text or "gyp" in text or "gypsum" in text:
+        return "4"
+    if "dens" in text or "deck" in text:
+        return "3"
+    if "wood fiber" in text or "fiberboard" in text:
+        return "2"
+    return "1"
+
+
+def _roofing_granules_selector_options(row_number: int | None = None) -> list[dict[str, Any]]:
+    options: list[dict[str, Any]] = []
+    graph_path = Path("output/template_decision_graph_roofing.json")
+    if graph_path.exists():
+        try:
+            payload = json.loads(graph_path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+        for row in payload.get("selector_options") or []:
+            if row.get("decision_id") != "roofing_granules":
+                continue
+            if row_number and int(safe_number(row.get("row_number"), 0)) != int(row_number):
+                continue
+            label = str(row.get("resolved_item_name") or "").strip()
+            code = str(row.get("selector_code") or "").strip()
+            if not label or not code:
+                continue
+            resolved_row = int(safe_number(row.get("row_number"), row_number or ROOFING_GRANULES_TEMPLATE_ROW))
+            options.append(
+                {
+                    "selector_code": code,
+                    "resolved_template_option": label,
+                    "row_number": resolved_row,
+                    "selector_cell": row.get("selector_cell") or f"A{resolved_row}",
+                }
+            )
+    if not options:
+        for code, label in ROOFING_GRANULES_SELECTOR_MAP.items():
+            options.append(
+                {
+                    "selector_code": str(code),
+                    "resolved_template_option": label,
+                    "row_number": row_number or ROOFING_GRANULES_TEMPLATE_ROW,
+                    "selector_cell": f"A{row_number or ROOFING_GRANULES_TEMPLATE_ROW}",
+                }
+            )
+    deduped: dict[tuple[str, str], dict[str, Any]] = {}
+    for option in options:
+        deduped.setdefault((str(option.get("row_number") or ""), str(option.get("selector_code") or "")), option)
+    return sorted(deduped.values(), key=lambda item: (int(safe_number(item.get("row_number"), 999)), int(safe_number(item.get("selector_code"), 999))))
+
+
+def _roofing_granules_selector_code_for_option(value: Any) -> str:
+    normalized = _normalized(value)
+    if not normalized:
+        return ""
+    for code, label in ROOFING_GRANULES_SELECTOR_MAP.items():
+        if normalized == _normalized(label):
+            return str(code)
+    for option in _roofing_granules_selector_options():
+        if normalized == _normalized(option.get("resolved_template_option")):
+            return str(option.get("selector_code") or "")
+    return ""
+
+
+def _resolved_roofing_granules_option(selector_code: Any, fallback: Any = "") -> str:
+    key = str(selector_code or "").strip()
+    if key.endswith(".0"):
+        key = key[:-2]
+    if key in ROOFING_GRANULES_SELECTOR_MAP:
+        return ROOFING_GRANULES_SELECTOR_MAP[key]
+    for option in _roofing_granules_selector_options():
+        if str(option.get("selector_code") or "").strip() == key:
+            return str(option.get("resolved_template_option") or fallback or "")
+    return str(fallback or "")
+
+
+def _default_roofing_granules_selector_code_for_scope(scope: dict[str, Any]) -> str:
+    text = _normalized(" ".join(str(scope.get(key) or "") for key in ("notes", "raw_input_notes", "project_type", "coating_type")))
+    if "sesco" in text or "snow white" in text:
+        return "2"
+    if "3m" in text or "mineral shield" in text or "lr9300" in text:
+        return "1"
+    return "1"
+
+
+def _selector_options_from_roofing_graph(
+    decision_id: str,
+    fallback_map: dict[str, str],
+    *,
+    row_number: int | None = None,
+) -> list[dict[str, Any]]:
+    options: list[dict[str, Any]] = []
+    graph_path = Path("output/template_decision_graph_roofing.json")
+    if graph_path.exists():
+        try:
+            payload = json.loads(graph_path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+        for row in payload.get("selector_options") or []:
+            if row.get("decision_id") != decision_id:
+                continue
+            resolved_row = int(safe_number(row.get("row_number"), row_number or 0))
+            if row_number and resolved_row != int(row_number):
+                continue
+            label = str(row.get("resolved_item_name") or "").strip()
+            code = str(row.get("selector_code") or "").strip()
+            if not label or not code:
+                continue
+            options.append(
+                {
+                    "selector_code": code,
+                    "resolved_template_option": label,
+                    "row_number": resolved_row or row_number,
+                    "selector_cell": row.get("selector_cell") or f"A{resolved_row or row_number or ''}",
+                }
+            )
+    if not options:
+        for code, label in fallback_map.items():
+            options.append(
+                {
+                    "selector_code": str(code),
+                    "resolved_template_option": label,
+                    "row_number": row_number,
+                    "selector_cell": f"A{row_number or ''}",
+                }
+            )
+    deduped: dict[tuple[str, str], dict[str, Any]] = {}
+    for option in options:
+        deduped.setdefault((str(option.get("row_number") or ""), str(option.get("selector_code") or "")), option)
+    return sorted(
+        deduped.values(),
+        key=lambda item: (int(safe_number(item.get("row_number"), row_number or 999)), int(safe_number(item.get("selector_code"), 999))),
+    )
+
+
+def _selector_code_for_roofing_option(value: Any, fallback_map: dict[str, str], options: list[dict[str, Any]]) -> str:
+    normalized = _normalized(value)
+    if not normalized:
+        return ""
+    for code, label in fallback_map.items():
+        if normalized == _normalized(label):
+            return str(code)
+    for option in options:
+        if normalized == _normalized(option.get("resolved_template_option")):
+            return str(option.get("selector_code") or "")
+    return ""
+
+
+def _resolved_roofing_equipment_option(selector_code: Any, fallback_map: dict[str, str], options: list[dict[str, Any]], fallback: Any = "") -> str:
+    key = str(selector_code or "").strip()
+    if key.endswith(".0"):
+        key = key[:-2]
+    if key in fallback_map:
+        return fallback_map[key]
+    for option in options:
+        if str(option.get("selector_code") or "").strip() == key:
+            return str(option.get("resolved_template_option") or fallback or "")
+    return str(fallback or "")
+
+
+def _default_roofing_dumpster_selector_code_for_scope(scope: dict[str, Any]) -> str:
+    text = _normalized(" ".join(str(scope.get(key) or "") for key in ("notes", "raw_input_notes", "scope_of_work", "project_type")))
+    if "20 yard" in text or "20yd" in text:
+        return "1"
+    if "30 yard" in text or "30yd" in text:
+        return "2"
+    if "40 yard" in text or "40yd" in text:
+        return "3"
+    area = _estimate_area(scope)
+    if area >= 15000:
+        return "3"
+    if area >= 5000:
+        return "2"
+    return "1"
+
+
+def _default_roofing_lift_selector_code_for_scope(scope: dict[str, Any]) -> str:
+    text = _normalized(" ".join(str(scope.get(key) or "") for key in ("notes", "raw_input_notes", "scope_of_work", "access_complexity")))
+    if "articulating" in text:
+        return "4"
+    if "scissor" in text:
+        return "3"
+    if "boom" in text:
+        return "2"
+    if "forklift" in text:
+        return "1"
+    if "difficult" in text or "high access" in text or "lift" in text:
+        return "2"
+    return "1"
 
 
 def _selector_code_for_option(value: Any) -> str:
@@ -995,6 +1880,23 @@ def _resolved_selector_option(selector_code: Any, fallback: Any = "") -> str:
     return str(FOAM_SELECTOR_MAP.get(key) or fallback or "")
 
 
+def _roofing_foam_selector_code_for_option(value: Any) -> str:
+    normalized = _normalized(value)
+    if not normalized:
+        return ""
+    for code, label in ROOFING_FOAM_SELECTOR_MAP.items():
+        if normalized == _normalized(label):
+            return str(code)
+    return ""
+
+
+def _resolved_roofing_foam_selector_option(selector_code: Any, fallback: Any = "") -> str:
+    key = str(selector_code or "").strip()
+    if key and key.endswith(".0"):
+        key = key[:-2]
+    return str(ROOFING_FOAM_SELECTOR_MAP.get(key) or fallback or "")
+
+
 def _foam_traits(*values: Any) -> dict[str, str]:
     text = _normalized(" ".join(str(value or "") for value in values))
     density = ""
@@ -1002,6 +1904,8 @@ def _foam_traits(*values: Any) -> dict[str, str]:
     if match:
         density_value = safe_number(match.group("density"), 0.0)
         density = f"{density_value:g} lb" if density_value else ""
+    elif re.search(r"\b2\.7\b", text):
+        density = "2.7 lb"
     elif re.search(r"\b2(?:\.0)?\b", text) and "lb" in text:
         density = "2 lb"
     elif re.search(r"\b0\.5\b", text) and "lb" in text:
@@ -1144,6 +2048,651 @@ def _foam_pricing_candidates(row: dict[str, Any], scope: dict[str, Any], data: A
     return candidates[:8]
 
 
+def _roofing_foam_candidate_compatibility(
+    *,
+    template_option: str,
+    candidate: dict[str, Any],
+    product_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    product_context = product_context or {}
+    base = _foam_candidate_compatibility(
+        template_option=template_option,
+        candidate=candidate,
+        scope={"division": "Roofing", "template_type": "roofing", "project_type": "roof foam"},
+        product_context=product_context,
+    )
+    warnings = list(base.get("compatibility_warnings") or [])
+    candidate_traits = base.get("candidate_traits") or {}
+    if candidate_traits.get("application") == "wall_ceiling_insulation":
+        warnings.append("Pricing candidate appears to be wall/ceiling insulation foam; confirm roofing SPF application.")
+    if candidate_traits.get("foam_type") == "open_cell":
+        warnings.append("Open-cell foam is not a normal roofing SPF selection; estimator review required.")
+    if not _is_roofing_foam_candidate({**candidate, **base}):
+        warnings.append("Pricing candidate does not clearly look like roofing SPF foam; estimator should verify product application.")
+    status = "compatible" if not warnings else "review"
+    if any("open-cell" in warning.lower() or "wall/ceiling" in warning.lower() or "does not clearly look" in warning.lower() for warning in warnings):
+        status = "spec_mismatch"
+    return {
+        **base,
+        "compatibility_status": status,
+        "compatibility_warnings": list(dict.fromkeys(warnings)),
+    }
+
+
+def _roofing_foam_pricing_candidates(
+    row: dict[str, Any],
+    scope: dict[str, Any],
+    data: Any = None,
+    template_option: str = "",
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for option in _material_item_options(row):
+        item_name = str(option.get("item_name") or "").strip()
+        if not item_name:
+            continue
+        context = _product_context(data, item_name=item_name, decision_id="roofing_foam", package="foam") if data is not None else {}
+        compatibility = _roofing_foam_candidate_compatibility(
+            template_option=template_option,
+            candidate=option,
+            product_context=context,
+        )
+        candidates.append(
+            {
+                "item_name": item_name,
+                "pricing_item_id": option.get("pricing_item_id"),
+                "unit": option.get("unit"),
+                "unit_price": safe_number(option.get("unit_price"), 0.0),
+                "source": option.get("source") or option.get("item_source") or "pricing_or_history",
+                "why_suggested": option.get("selected_item_reason") or option.get("source") or "",
+                "product_id": context.get("product_id") or "",
+                "product_name": context.get("product_name") or "",
+                "manufacturer": context.get("manufacturer") or "",
+                "product_guidance": _candidate_guidance_summary(context),
+                "product_source_documents": context.get("source_documents") or [],
+                "product_match_score": context.get("match_score") or 0.0,
+                **compatibility,
+            }
+        )
+    candidates.sort(
+        key=lambda candidate: (
+            1 if _is_roofing_foam_candidate(candidate) else 0,
+            _foam_candidate_rank(candidate),
+            safe_number(candidate.get("product_match_score"), 0.0),
+            safe_number(candidate.get("unit_price"), 0.0) > 0,
+            candidate.get("item_name") or "",
+        ),
+        reverse=True,
+    )
+    return candidates[:8]
+
+
+def _selected_roofing_foam_candidate(candidates: list[dict[str, Any]], selected_name: Any) -> dict[str, Any]:
+    normalized = _normalized(selected_name)
+    if normalized:
+        for candidate in candidates:
+            if _normalized(candidate.get("item_name")) == normalized:
+                return candidate
+    for candidate in candidates:
+        if _is_roofing_foam_candidate(candidate) and str(candidate.get("compatibility_status") or "").lower() != "spec_mismatch":
+            return candidate
+    for candidate in candidates:
+        if _is_roofing_foam_candidate(candidate):
+            return candidate
+    return candidates[0] if candidates else {}
+
+
+def _roofing_coating_candidate_compatibility(
+    *,
+    template_option: str,
+    candidate: dict[str, Any],
+    product_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    product_context = product_context or {}
+    template_traits = _roofing_coating_traits(template_option)
+    candidate_traits = _roofing_coating_traits(
+        candidate.get("item_name"),
+        candidate.get("unit"),
+        candidate.get("category"),
+        product_context.get("category"),
+        product_context.get("recommended_use"),
+        product_context.get("product_family"),
+    )
+    warnings: list[str] = []
+    if not _is_valid_coating_option(candidate):
+        warnings.append("Pricing candidate does not look like a main roof coating product; estimator should select a coating product.")
+    if (
+        template_traits["chemistry"]
+        and candidate_traits["chemistry"]
+        and template_traits["chemistry"] != candidate_traits["chemistry"]
+    ):
+        warnings.append(
+            f"Chemistry mismatch: template option is {template_traits['chemistry']} but pricing candidate appears {candidate_traits['chemistry']}."
+        )
+    if not product_context.get("product_id"):
+        warnings.append("No product data sheet match is available for this pricing candidate.")
+    status = "compatible" if not warnings else "review"
+    if any("does not look like" in warning.lower() or "chemistry mismatch" in warning.lower() for warning in warnings):
+        status = "spec_mismatch"
+    return {
+        "compatibility_status": status,
+        "compatibility_warnings": warnings,
+        "template_traits": template_traits,
+        "candidate_traits": candidate_traits,
+    }
+
+
+def _roofing_coating_pricing_candidates(
+    row: dict[str, Any],
+    scope: dict[str, Any],
+    data: Any = None,
+    template_option: str = "",
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for option in _material_item_options(row):
+        item_name = str(option.get("item_name") or "").strip()
+        if not item_name:
+            continue
+        context = _product_context(data, item_name=item_name, decision_id="roofing_coating_system", package="coating") if data is not None else {}
+        compatibility = _roofing_coating_candidate_compatibility(
+            template_option=template_option,
+            candidate=option,
+            product_context=context,
+        )
+        score, reasons = _package_item_fit_details("coating", option, scope)
+        candidates.append(
+            {
+                "item_name": item_name,
+                "pricing_item_id": option.get("pricing_item_id"),
+                "unit": option.get("unit"),
+                "unit_price": safe_number(option.get("unit_price"), 0.0),
+                "source": option.get("source") or option.get("item_source") or "pricing_or_history",
+                "why_suggested": option.get("selected_item_reason") or option.get("source") or "; ".join(reasons),
+                "product_id": context.get("product_id") or "",
+                "product_name": context.get("product_name") or "",
+                "manufacturer": context.get("manufacturer") or "",
+                "product_guidance": _candidate_guidance_summary(context),
+                "product_source_documents": context.get("source_documents") or [],
+                "product_match_score": context.get("match_score") or 0.0,
+                "fit_score": round(score, 4),
+                "fit_reasons": reasons,
+                **compatibility,
+            }
+        )
+    candidates.sort(
+        key=lambda candidate: (
+            1 if candidate.get("compatibility_status") == "compatible" else 0,
+            1 if _is_valid_coating_option(candidate) else 0,
+            safe_number(candidate.get("fit_score"), 0.0),
+            safe_number(candidate.get("product_match_score"), 0.0),
+            safe_number(candidate.get("unit_price"), 0.0) > 0,
+            candidate.get("item_name") or "",
+        ),
+        reverse=True,
+    )
+    return candidates[:8]
+
+
+def _roofing_primer_candidate_compatibility(
+    *,
+    template_option: str,
+    candidate: dict[str, Any],
+    product_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    product_context = product_context or {}
+    warnings: list[str] = []
+    text = _normalized(
+        " ".join(
+            str(value or "")
+            for value in (
+                candidate.get("item_name"),
+                candidate.get("unit"),
+                candidate.get("category"),
+                product_context.get("category"),
+                product_context.get("recommended_use"),
+                product_context.get("product_family"),
+            )
+        )
+    )
+    template_text = _normalized(template_option)
+    if not _contains_any_text(text, ["primer", "prime", "rust inhibitive", "epoxy", "zinc oxide", "foam primer"]):
+        warnings.append("Pricing candidate does not look like a primer product; estimator should verify the selected item.")
+    if "foam" in template_text and "foam" not in text:
+        warnings.append("Template option is foam primer but pricing candidate does not clearly reference foam primer.")
+    if "zinc" in template_text and not _contains_any_text(text, ["zinc", "metal", "rust", "oxide"]):
+        warnings.append("Template option is zinc oxide primer but pricing candidate does not clearly reference metal/rust primer.")
+    if not product_context.get("product_id"):
+        warnings.append("No product data sheet match is available for this primer candidate.")
+    status = "compatible" if not warnings else "review"
+    if any("does not look" in warning.lower() for warning in warnings):
+        status = "spec_mismatch"
+    return {
+        "compatibility_status": status,
+        "compatibility_warnings": warnings,
+    }
+
+
+def _roofing_primer_pricing_candidates(
+    row: dict[str, Any],
+    scope: dict[str, Any],
+    data: Any = None,
+    template_option: str = "",
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for option in _material_item_options(row):
+        item_name = str(option.get("item_name") or "").strip()
+        if not item_name:
+            continue
+        context = _product_context(data, item_name=item_name, decision_id="roofing_primer", package="primer") if data is not None else {}
+        score, reasons = _package_item_fit_details("primer", option, scope)
+        compatibility = _roofing_primer_candidate_compatibility(
+            template_option=template_option,
+            candidate=option,
+            product_context=context,
+        )
+        candidates.append(
+            {
+                "item_name": item_name,
+                "pricing_item_id": option.get("pricing_item_id"),
+                "unit": option.get("unit"),
+                "unit_price": safe_number(option.get("unit_price"), 0.0),
+                "source": option.get("source") or option.get("item_source") or "pricing_or_history",
+                "why_suggested": option.get("selected_item_reason") or option.get("source") or "; ".join(reasons),
+                "product_id": context.get("product_id") or "",
+                "product_name": context.get("product_name") or "",
+                "manufacturer": context.get("manufacturer") or "",
+                "product_guidance": _candidate_guidance_summary(context),
+                "product_source_documents": context.get("source_documents") or [],
+                "product_match_score": context.get("match_score") or 0.0,
+                "fit_score": round(score, 4),
+                "fit_reasons": reasons,
+                **compatibility,
+            }
+        )
+    candidates.sort(
+        key=lambda candidate: (
+            1 if candidate.get("compatibility_status") == "compatible" else 0,
+            safe_number(candidate.get("fit_score"), 0.0),
+            safe_number(candidate.get("product_match_score"), 0.0),
+            safe_number(candidate.get("unit_price"), 0.0) > 0,
+            candidate.get("item_name") or "",
+        ),
+        reverse=True,
+    )
+    return candidates[:8]
+
+
+def _selected_roofing_coating_candidate(candidates: list[dict[str, Any]], selected_name: Any) -> dict[str, Any]:
+    normalized = _normalized(selected_name)
+    if normalized:
+        for candidate in candidates:
+            if _normalized(candidate.get("item_name")) == normalized:
+                return candidate
+    for candidate in candidates:
+        if candidate.get("compatibility_status") == "compatible" and _is_valid_coating_option(candidate):
+            return candidate
+    for candidate in candidates:
+        if _is_valid_coating_option(candidate):
+            return candidate
+    return candidates[0] if candidates else {}
+
+
+def _selected_roofing_primer_candidate(candidates: list[dict[str, Any]], selected_name: Any) -> dict[str, Any]:
+    normalized = _normalized(selected_name)
+    if normalized:
+        for candidate in candidates:
+            if _normalized(candidate.get("item_name")) == normalized:
+                return candidate
+    for candidate in candidates:
+        if candidate.get("compatibility_status") == "compatible":
+            return candidate
+    for candidate in candidates:
+        if safe_number(candidate.get("fit_score"), 0.0) > 0:
+            return candidate
+    return candidates[0] if candidates else {}
+
+
+def _roofing_detail_candidate_compatibility(
+    *,
+    package: str,
+    template_option: str,
+    candidate: dict[str, Any],
+    product_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    product_context = product_context or {}
+    warnings: list[str] = []
+    text = _normalized(
+        " ".join(
+            str(value or "")
+            for value in (
+                candidate.get("item_name"),
+                candidate.get("unit"),
+                candidate.get("category"),
+                product_context.get("category"),
+                product_context.get("recommended_use"),
+                product_context.get("product_family"),
+            )
+        )
+    )
+    if package == "fabric":
+        if not _contains_any_text(text, ["fabric", "roll", "reinforcement", "scrim"]):
+            warnings.append("Pricing candidate does not look like a reinforcement fabric product; estimator should verify the selected item.")
+    else:
+        if not _contains_any_text(text, ["sealant", "caulk", "flashing", "sausage", "tube", "buttergrade", "sf-2000", "sf 2000"]):
+            warnings.append("Pricing candidate does not look like a caulk/sealant product; estimator should verify the selected item.")
+        option_text = _normalized(template_option)
+        if "urethane" in option_text and "urethane" not in text:
+            warnings.append("Template option is urethane but pricing candidate does not clearly reference urethane.")
+        if "silicone" in option_text and "silicone" not in text:
+            warnings.append("Template option is silicone but pricing candidate does not clearly reference silicone.")
+    if not product_context.get("product_id"):
+        warnings.append("No product data sheet match is available for this detail candidate.")
+    status = "compatible" if not warnings else "review"
+    if any("does not look" in warning.lower() for warning in warnings):
+        status = "spec_mismatch"
+    return {
+        "compatibility_status": status,
+        "compatibility_warnings": warnings,
+    }
+
+
+def _roofing_board_candidate_compatibility(
+    *,
+    package: str,
+    template_option: str,
+    candidate: dict[str, Any],
+    product_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    product_context = product_context or {}
+    warnings: list[str] = []
+    text = _normalized(
+        " ".join(
+            str(value or "")
+            for value in (
+                candidate.get("item_name"),
+                candidate.get("unit"),
+                candidate.get("category"),
+                product_context.get("category"),
+                product_context.get("recommended_use"),
+                product_context.get("product_family"),
+            )
+        )
+    )
+    if package == "board_stock":
+        if not _contains_any_text(text, ["board", "iso", "wood fiber", "fiberboard", "dens", "deck", "gyp", "gypsum", "flute", "cover board"]):
+            warnings.append("Pricing candidate does not look like a board stock product; estimator should verify the selected item.")
+        option_text = _normalized(template_option)
+        if "iso" in option_text and not _contains_any_text(text, ["iso", "polyiso", "insulation board"]):
+            warnings.append("Template option is ISO Board but pricing candidate does not clearly reference ISO/polyiso board.")
+        if "dens" in option_text and not _contains_any_text(text, ["dens", "deck", "gypsum", "gyp"]):
+            warnings.append("Template option is Dens Deck but pricing candidate does not clearly reference Dens Deck/gypsum board.")
+        if "wood fiber" in option_text and not _contains_any_text(text, ["wood fiber", "fiberboard"]):
+            warnings.append("Template option is Wood Fiber but pricing candidate does not clearly reference wood fiber board.")
+        if "flute" in option_text and "flute" not in text:
+            warnings.append("Template option is Flute Filler but pricing candidate does not clearly reference flute filler.")
+    elif package == "plates":
+        if "plate" not in text:
+            warnings.append("Pricing candidate does not look like a plate product; estimator should verify the selected item.")
+    else:
+        if not _contains_any_text(text, ["fastener", "screw"]):
+            warnings.append("Pricing candidate does not look like a roofing fastener/screw product; estimator should verify the selected item.")
+    if not product_context.get("product_id"):
+        warnings.append("No product data sheet match is available for this board/fastener candidate.")
+    status = "compatible" if not warnings else "review"
+    if any("does not look" in warning.lower() for warning in warnings):
+        status = "spec_mismatch"
+    return {
+        "compatibility_status": status,
+        "compatibility_warnings": warnings,
+    }
+
+
+def _roofing_granules_candidate_compatibility(
+    *,
+    template_option: str,
+    candidate: dict[str, Any],
+    product_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    product_context = product_context or {}
+    warnings: list[str] = []
+    text = _normalized(
+        " ".join(
+            str(value or "")
+            for value in (
+                candidate.get("item_name"),
+                candidate.get("unit"),
+                candidate.get("category"),
+                product_context.get("category"),
+                product_context.get("recommended_use"),
+                product_context.get("product_family"),
+                product_context.get("manufacturer"),
+            )
+        )
+    )
+    if not _contains_any_text(text, ["granule", "granules", "broadcast", "mineral", "snow white", "lr9300", "bag"]):
+        warnings.append("Pricing candidate does not look like a granules/broadcast product; estimator should verify the selected item.")
+    option_text = _normalized(template_option)
+    if "3m" in option_text and not _contains_any_text(text, ["3m", "mineral", "lr9300"]):
+        warnings.append("Template option is 3M but pricing candidate does not clearly reference 3M/mineral granules.")
+    if "sesco" in option_text and not _contains_any_text(text, ["sesco", "snow white"]):
+        warnings.append("Template option is SESCO but pricing candidate does not clearly reference SESCO/Snow White granules.")
+    if _contains_any_text(text, ["roof coating", "silicone", "primer", "sealant", "caulk", "tube"]):
+        warnings.append("Pricing candidate includes coating/primer/sealant signals; granules row needs estimator review.")
+    if not product_context.get("product_id"):
+        warnings.append("No product data sheet match is available for this granules candidate.")
+    status = "compatible" if not warnings else "review"
+    if any("does not look" in warning.lower() or "coating/primer/sealant" in warning.lower() for warning in warnings):
+        status = "spec_mismatch"
+    return {
+        "compatibility_status": status,
+        "compatibility_warnings": warnings,
+    }
+
+
+def _roofing_detail_pricing_candidates(
+    row: dict[str, Any],
+    scope: dict[str, Any],
+    *,
+    package: str,
+    decision_id: str,
+    data: Any = None,
+    template_option: str = "",
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for option in _material_item_options(row):
+        item_name = str(option.get("item_name") or "").strip()
+        if not item_name:
+            continue
+        context = _product_context(data, item_name=item_name, decision_id=decision_id, package=package) if data is not None else {}
+        score, reasons = _package_item_fit_details(package, option, scope)
+        compatibility = _roofing_detail_candidate_compatibility(
+            package=package,
+            template_option=template_option,
+            candidate=option,
+            product_context=context,
+        )
+        candidates.append(
+            {
+                "item_name": item_name,
+                "pricing_item_id": option.get("pricing_item_id"),
+                "unit": option.get("unit"),
+                "unit_price": safe_number(option.get("unit_price"), 0.0),
+                "source": option.get("source") or option.get("item_source") or "pricing_or_history",
+                "why_suggested": option.get("selected_item_reason") or option.get("source") or "; ".join(reasons),
+                "product_id": context.get("product_id") or "",
+                "product_name": context.get("product_name") or "",
+                "manufacturer": context.get("manufacturer") or "",
+                "product_guidance": _candidate_guidance_summary(context),
+                "product_source_documents": context.get("source_documents") or [],
+                "product_match_score": context.get("match_score") or 0.0,
+                "fit_score": round(score, 4),
+                "fit_reasons": reasons,
+                **compatibility,
+            }
+        )
+    candidates.sort(
+        key=lambda candidate: (
+            1 if candidate.get("compatibility_status") == "compatible" else 0,
+            safe_number(candidate.get("fit_score"), 0.0),
+            safe_number(candidate.get("product_match_score"), 0.0),
+            safe_number(candidate.get("unit_price"), 0.0) > 0,
+            candidate.get("item_name") or "",
+        ),
+        reverse=True,
+    )
+    return candidates[:8]
+
+
+def _roofing_board_pricing_candidates(
+    row: dict[str, Any],
+    scope: dict[str, Any],
+    *,
+    package: str,
+    decision_id: str,
+    data: Any = None,
+    template_option: str = "",
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    fit_package = "fastener_treatment" if package == "fasteners" else package
+    for option in _material_item_options(row):
+        item_name = str(option.get("item_name") or "").strip()
+        if not item_name:
+            continue
+        context = _product_context(data, item_name=item_name, decision_id=decision_id, package=fit_package) if data is not None else {}
+        score, reasons = _package_item_fit_details(fit_package, option, scope)
+        compatibility = _roofing_board_candidate_compatibility(
+            package=package,
+            template_option=template_option,
+            candidate=option,
+            product_context=context,
+        )
+        candidates.append(
+            {
+                "item_name": item_name,
+                "pricing_item_id": option.get("pricing_item_id"),
+                "unit": option.get("unit"),
+                "unit_price": safe_number(option.get("unit_price"), 0.0),
+                "source": option.get("source") or option.get("item_source") or "pricing_or_history",
+                "why_suggested": option.get("selected_item_reason") or option.get("source") or "; ".join(reasons),
+                "product_id": context.get("product_id") or "",
+                "product_name": context.get("product_name") or "",
+                "manufacturer": context.get("manufacturer") or "",
+                "product_guidance": _candidate_guidance_summary(context),
+                "product_source_documents": context.get("source_documents") or [],
+                "product_match_score": context.get("match_score") or 0.0,
+                "fit_score": round(score, 4),
+                "fit_reasons": reasons,
+                **compatibility,
+            }
+        )
+    candidates.sort(
+        key=lambda candidate: (
+            1 if candidate.get("compatibility_status") == "compatible" else 0,
+            safe_number(candidate.get("fit_score"), 0.0),
+            safe_number(candidate.get("product_match_score"), 0.0),
+            safe_number(candidate.get("unit_price"), 0.0) > 0,
+            candidate.get("item_name") or "",
+        ),
+        reverse=True,
+    )
+    return candidates[:8]
+
+
+def _roofing_granules_pricing_candidates(
+    row: dict[str, Any],
+    scope: dict[str, Any],
+    *,
+    data: Any = None,
+    template_option: str = "",
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for option in _material_item_options(row):
+        item_name = str(option.get("item_name") or "").strip()
+        if not item_name:
+            continue
+        context = _product_context(data, item_name=item_name, decision_id="roofing_granules", package="granules") if data is not None else {}
+        score, reasons = _package_item_fit_details("granules", option, scope)
+        compatibility = _roofing_granules_candidate_compatibility(
+            template_option=template_option,
+            candidate=option,
+            product_context=context,
+        )
+        candidates.append(
+            {
+                "item_name": item_name,
+                "pricing_item_id": option.get("pricing_item_id"),
+                "unit": option.get("unit"),
+                "unit_price": safe_number(option.get("unit_price"), 0.0),
+                "source": option.get("source") or option.get("item_source") or "pricing_or_history",
+                "why_suggested": option.get("selected_item_reason") or option.get("source") or "; ".join(reasons),
+                "product_id": context.get("product_id") or "",
+                "product_name": context.get("product_name") or "",
+                "manufacturer": context.get("manufacturer") or "",
+                "product_guidance": _candidate_guidance_summary(context),
+                "product_source_documents": context.get("source_documents") or [],
+                "product_match_score": context.get("match_score") or 0.0,
+                "fit_score": round(score, 4),
+                "fit_reasons": reasons,
+                **compatibility,
+            }
+        )
+    candidates.sort(
+        key=lambda candidate: (
+            1 if candidate.get("compatibility_status") == "compatible" else 0,
+            safe_number(candidate.get("fit_score"), 0.0),
+            safe_number(candidate.get("product_match_score"), 0.0),
+            safe_number(candidate.get("unit_price"), 0.0) > 0,
+            candidate.get("item_name") or "",
+        ),
+        reverse=True,
+    )
+    return candidates[:8]
+
+
+def _selected_roofing_detail_candidate(candidates: list[dict[str, Any]], selected_name: Any) -> dict[str, Any]:
+    normalized = _normalized(selected_name)
+    if normalized:
+        for candidate in candidates:
+            if _normalized(candidate.get("item_name")) == normalized:
+                return candidate
+    for candidate in candidates:
+        if candidate.get("compatibility_status") == "compatible":
+            return candidate
+    for candidate in candidates:
+        if safe_number(candidate.get("fit_score"), 0.0) > 0:
+            return candidate
+    return candidates[0] if candidates else {}
+
+
+def _selected_roofing_board_candidate(candidates: list[dict[str, Any]], selected_name: Any) -> dict[str, Any]:
+    normalized = _normalized(selected_name)
+    if normalized:
+        for candidate in candidates:
+            if _normalized(candidate.get("item_name")) == normalized:
+                return candidate
+    for candidate in candidates:
+        if candidate.get("compatibility_status") == "compatible":
+            return candidate
+    for candidate in candidates:
+        if safe_number(candidate.get("fit_score"), 0.0) > 0:
+            return candidate
+    return candidates[0] if candidates else {}
+
+
+def _selected_roofing_granules_candidate(candidates: list[dict[str, Any]], selected_name: Any) -> dict[str, Any]:
+    normalized = _normalized(selected_name)
+    if normalized:
+        for candidate in candidates:
+            if _normalized(candidate.get("item_name")) == normalized:
+                return candidate
+    for candidate in candidates:
+        if candidate.get("compatibility_status") == "compatible":
+            return candidate
+    for candidate in candidates:
+        if safe_number(candidate.get("fit_score"), 0.0) > 0:
+            return candidate
+    return candidates[0] if candidates else {}
+
+
 def _foam_candidate_rank(candidate: dict[str, Any]) -> int:
     status = str(candidate.get("compatibility_status") or "").lower()
     if status == "compatible":
@@ -1165,7 +2714,22 @@ def _is_roofing_foam_candidate(candidate: dict[str, Any]) -> bool:
             ]
         )
     )
-    return any(term in text for term in ("roofing foam", "roof foam", "roof repair", "repair foam", "roof kit"))
+    return any(
+        term in text
+        for term in (
+            "roofing foam",
+            "roof foam",
+            "roof repair",
+            "repair foam",
+            "roof kit",
+            "gacorooffoam",
+            "gaco roof",
+            "basf roof",
+            "f2733",
+            "f2780",
+            "2.7 lb",
+        )
+    )
 
 
 def _is_bad_default_foam_candidate(candidate: dict[str, Any]) -> bool:
@@ -1373,6 +2937,3136 @@ def _apply_foam_template_decision_to_materials(workbench: dict[str, Any]) -> Non
         "thickness_inches": decision.get("thickness_inches"),
         "yield_or_coverage": decision.get("yield_or_coverage"),
     }
+
+
+def _roofing_foam_source_row(scope: dict[str, Any], data: Any = None, filters: dict[str, Any] | None = None) -> dict[str, Any]:
+    package_spec = {
+        "package": "foam",
+        "label": "Roofing SPF Foam",
+        "keywords": ["roof foam", "roofing foam", "spray foam", "spf", "gaco roof", "basf roof", "2.7"],
+        "default_unit": "set",
+    }
+    pricing_options = _pricing_options_for_package(_frame(data, "pricing_catalog"), package_spec, scope) if data is not None else []
+    historical_options = _historical_item_options(data, "foam", filters or historical_filters_from_scope(scope), "set") if data is not None else []
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for option in [*pricing_options, *historical_options]:
+        key = _normalized(option.get("item_name"))
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        merged.append(dict(option))
+    selected_name = first_nonblank(
+        next((option.get("item_name") for option in historical_options if _is_roofing_foam_candidate(option)), ""),
+        next((option.get("item_name") for option in pricing_options if _is_roofing_foam_candidate(option)), ""),
+        next((option.get("item_name") for option in merged), ""),
+    )
+    return {
+        "package_key": "roofing_foam",
+        "template_bucket": "foam",
+        "item_name": selected_name,
+        "item_options_json": json.dumps(merged, default=str),
+        "evidence_count": max([int(safe_number(option.get("evidence_count"), 0)) for option in historical_options] or [0]),
+    }
+
+
+def _roofing_foam_decision_defaults(data: Any, filters: dict[str, Any] | None) -> dict[str, Any]:
+    decisions = _decision_recommendation_lookup(data, filters) if data is not None else {}
+    decision_id = "roofing_foam"
+    return {
+        "selector_code": _decision_value(decisions, decision_id, "selector_code", ""),
+        "resolved_item_name": _decision_value(decisions, decision_id, "resolved_item_name", ""),
+        "area_sqft": _decision_value(decisions, decision_id, "area_sqft", ""),
+        "thickness_inches": _decision_value(decisions, decision_id, "thickness_inches", ""),
+        "unit_price": _decision_value(decisions, decision_id, "unit_price", ""),
+        "yield_or_coverage": _decision_value(decisions, decision_id, "yield_or_coverage", ""),
+        "meta": _decision_meta(decisions, decision_id, ["selector_code", "resolved_item_name", "area_sqft", "thickness_inches", "unit_price", "yield_or_coverage"]),
+    }
+
+
+def _build_roofing_foam_template_decisions(
+    *,
+    scope: dict[str, Any],
+    data: Any = None,
+    existing_rows: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    filters = historical_filters_from_scope(scope)
+    defaults = _roofing_foam_decision_defaults(data, filters)
+    source_row = _roofing_foam_source_row(scope, data, filters)
+    existing_by_row = {
+        str(row.get("workbook_row")): row
+        for row in existing_rows or []
+        if isinstance(row, dict) and row.get("workbook_row")
+    }
+    note_text = _normalized(
+        " ".join(
+            str(scope.get(key) or "")
+            for key in (
+                "notes",
+                "raw_input_notes",
+                "project_type",
+                "recommended_scope",
+                "scope_description",
+            )
+        )
+    )
+    foam_scope = _contains_any_text(note_text, ["roof foam", "roofing foam", "spf", "spray polyurethane foam", "spray foam roof", "foam roof"])
+    default_area = safe_number(_estimate_area(scope), 0.0)
+    historical_option = first_nonblank(
+        defaults.get("resolved_item_name"),
+        _resolved_roofing_foam_selector_option(defaults.get("selector_code")),
+        "Gaco Roof 2.7",
+    )
+    historical_code = first_nonblank(
+        defaults.get("selector_code"),
+        _roofing_foam_selector_code_for_option(historical_option),
+        "11",
+    )
+    meta = defaults.get("meta") if isinstance(defaults.get("meta"), dict) else {}
+    rows: list[dict[str, Any]] = []
+    for row_number in ROOFING_FOAM_TEMPLATE_ROWS:
+        row_key = str(row_number)
+        existing = existing_by_row.get(row_key, {})
+        template_defaults = ROOFING_FOAM_DEFAULTS.get(row_number, {})
+        selector_code = str(
+            first_nonblank(
+                existing.get("editable_selector_code"),
+                existing.get("selector_code"),
+                _roofing_foam_selector_code_for_option(existing.get("resolved_template_option")),
+                historical_code,
+                "11",
+            )
+        )
+        resolved_option = _resolved_roofing_foam_selector_option(selector_code, historical_option)
+        stored_candidates = _stored_candidates_from_row(existing)
+        candidates = stored_candidates if data is None and stored_candidates else _roofing_foam_pricing_candidates(source_row, scope, data=data, template_option=resolved_option)
+        selected_candidate = _selected_roofing_foam_candidate(
+            candidates,
+            first_nonblank(existing.get("selected_pricing_candidate"), source_row.get("item_name")),
+        )
+        include = bool(existing["include"]) if "include" in existing else bool(foam_scope and row_number == 19)
+        basis_sqft = positive_number(
+            existing.get("basis_sqft"),
+            defaults.get("area_sqft"),
+            default_area if include else "",
+            template_defaults.get("area_sqft"),
+            default=0.0,
+        )
+        thickness = positive_number(
+            existing.get("thickness_inches"),
+            defaults.get("thickness_inches"),
+            template_defaults.get("thickness_inches"),
+            default=0.0,
+        )
+        yield_or_coverage = positive_number(
+            existing.get("yield_or_coverage"),
+            defaults.get("yield_or_coverage"),
+            template_defaults.get("yield_or_coverage"),
+            default=0.0,
+        )
+        unit_price = positive_number(
+            existing.get("unit_price"),
+            selected_candidate.get("unit_price"),
+            defaults.get("unit_price"),
+            template_defaults.get("unit_price"),
+            default=0.0,
+        )
+        formula = calculate_insulation_foam(
+            area_sqft=basis_sqft,
+            thickness_inches=thickness,
+            yield_or_coverage=yield_or_coverage,
+            unit_price=unit_price,
+            include=include,
+        )
+        compatibility = _roofing_foam_candidate_compatibility(
+            template_option=resolved_option,
+            candidate=selected_candidate,
+            product_context=selected_candidate,
+        )
+        warnings = list(
+            dict.fromkeys([*(selected_candidate.get("compatibility_warnings") or []), *(compatibility.get("compatibility_warnings") or [])])
+        )
+        if yield_or_coverage <= 0:
+            warnings.append("Yield/coverage is missing; template formula output requires estimator review.")
+        rows.append(
+            {
+                "include": include,
+                "section": "roofing_foam_template_decisions",
+                "decision_id": f"roofing_foam_row_{row_number}",
+                "template_bucket": "roofing_foam",
+                "workbook_row": row_key,
+                "selector_cell": f"A{row_number}",
+                "selector_code": selector_code,
+                "editable_selector_code": selector_code,
+                "resolved_template_option": resolved_option,
+                "selector_options": _roofing_foam_selector_options(row_number),
+                "selector_options_json": json.dumps(_roofing_foam_selector_options(row_number), default=str),
+                "historical_selector_recommendation": historical_option,
+                "historical_selector_code": str(historical_code),
+                "historical_selector_evidence_count": int(safe_number(meta.get("decision_evidence_count") or source_row.get("evidence_count"), 0)),
+                "historical_selector_confidence": meta.get("decision_confidence") or ("medium" if source_row.get("evidence_count") else "none"),
+                "basis_sqft": round(basis_sqft, 2),
+                "thickness_inches": round(thickness, 4),
+                "yield_or_coverage": round(yield_or_coverage, 4),
+                "unit_price": round(unit_price, 4),
+                "estimated_units": formula.get("estimated_units"),
+                "estimated_sets": formula.get("estimated_sets"),
+                "estimated_cost": formula.get("estimated_cost"),
+                "formula_model": formula.get("formula_model"),
+                "formula_source": formula.get("formula_source"),
+                "selected_pricing_candidate": selected_candidate.get("item_name") or str(source_row.get("item_name") or ""),
+                "selected_pricing_item_id": selected_candidate.get("pricing_item_id"),
+                "pricing_candidates": candidates,
+                "pricing_candidates_json": json.dumps(candidates, default=str),
+                "compatibility_status": "review" if warnings and compatibility.get("compatibility_status") == "compatible" else compatibility.get("compatibility_status"),
+                "compatibility_warnings": warnings,
+                "product_guidance_status": "matched" if selected_candidate.get("product_id") else "missing",
+                "product_id": selected_candidate.get("product_id") or "",
+                "product_name": selected_candidate.get("product_name") or "",
+                "product_manufacturer": selected_candidate.get("manufacturer") or "",
+                "product_guidance": selected_candidate.get("product_guidance") or "",
+                "product_source_documents": selected_candidate.get("product_source_documents") or [],
+                "notes": (
+                    "Roofing SPF template selector is the estimator decision. Pricing/product candidate is supporting context. "
+                    + (" ".join(warnings) if warnings else "Current foam candidate fits the selected roofing foam option.")
+                ),
+                "decision_values": {
+                    "selector_code": selector_code,
+                    "resolved_template_option": resolved_option,
+                    "selected_pricing_candidate": selected_candidate.get("item_name") or str(source_row.get("item_name") or ""),
+                    "basis_sqft": round(basis_sqft, 2),
+                    "thickness_inches": round(thickness, 4),
+                    "yield_or_coverage": round(yield_or_coverage, 4),
+                    "unit_price": round(unit_price, 4),
+                },
+                "editable_decision_value": {
+                    "selector_code": selector_code,
+                    "resolved_template_option": resolved_option,
+                    "selected_pricing_candidate": selected_candidate.get("item_name") or str(source_row.get("item_name") or ""),
+                    "basis_sqft": round(basis_sqft, 2),
+                    "thickness_inches": round(thickness, 4),
+                    "yield_or_coverage": round(yield_or_coverage, 4),
+                    "unit_price": round(unit_price, 4),
+                },
+                "recommended_decision_value": {
+                    "selector_code": str(historical_code),
+                    "resolved_template_option": historical_option,
+                    "evidence_count": int(safe_number(meta.get("decision_evidence_count") or source_row.get("evidence_count"), 0)),
+                },
+                "calculated_output": formula.get("estimated_cost"),
+                "calculated_output_summary": _value_summary(
+                    {
+                        "units": formula.get("estimated_units"),
+                        "sets": formula.get("estimated_sets"),
+                        "cost": formula.get("estimated_cost"),
+                    }
+                ),
+                "workbook_cell_write_preview": [
+                    {"cell": f"Estimate!A{row_number}", "field": "selector_code", "value": selector_code},
+                    {"cell": f"Estimate!C{row_number}", "field": "area_sqft", "value": round(basis_sqft, 2)},
+                    {"cell": f"Estimate!D{row_number}", "field": "thickness_inches", "value": round(thickness, 4)},
+                    {"cell": f"Estimate!E{row_number}", "field": "unit_price", "value": round(unit_price, 4)},
+                    {"cell": f"Estimate!F{row_number}", "field": "yield_or_coverage", "value": round(yield_or_coverage, 4)},
+                    {"cell": f"Estimate!G{row_number}", "field": "estimated_units_formula_output", "value": formula.get("estimated_units")},
+                ],
+            }
+        )
+    return rows
+
+
+def _apply_roofing_foam_template_decisions_to_materials(workbench: dict[str, Any]) -> None:
+    decisions = [
+        row
+        for row in workbench.get("roofing_foam_template_decisions") or []
+        if isinstance(row, dict)
+    ]
+    if not decisions:
+        return
+    materials = workbench.setdefault("materials", [])
+    materials[:] = [
+        row
+        for row in materials
+        if str(row.get("package_key") or row.get("template_bucket") or "").lower() not in {"roofing_foam", "foam"}
+    ]
+    for decision in decisions:
+        if not decision.get("include"):
+            continue
+        materials.append(
+            {
+                "include": True,
+                "package": "Roofing SPF Foam",
+                "package_key": "roofing_foam",
+                "template_bucket": "roofing_foam",
+                "workbook_row": decision.get("workbook_row"),
+                "item_name": first_nonblank(decision.get("selected_pricing_candidate"), decision.get("resolved_template_option"), "Roofing SPF foam"),
+                "selector_code": decision.get("editable_selector_code") or decision.get("selector_code"),
+                "resolved_template_option": decision.get("resolved_template_option"),
+                "editable_basis_sqft": decision.get("basis_sqft"),
+                "default_basis_sqft": decision.get("basis_sqft"),
+                "thickness_inches": decision.get("thickness_inches"),
+                "yield_factor": decision.get("yield_or_coverage"),
+                "current_unit_price": decision.get("unit_price"),
+                "calculated_quantity": decision.get("estimated_units"),
+                "estimated_units": decision.get("estimated_units"),
+                "estimated_sets": decision.get("estimated_sets"),
+                "estimated_cost": decision.get("estimated_cost"),
+                "formula_model": decision.get("formula_model"),
+                "formula_source": "roofing_foam_template_decisions",
+                "calculated_output_summary": decision.get("calculated_output_summary"),
+                "workbook_cell_write_preview": decision.get("workbook_cell_write_preview") or [],
+                "evidence_count": decision.get("historical_selector_evidence_count") or 0,
+                "confidence": decision.get("historical_selector_confidence") or "none",
+                "notes": decision.get("notes") or "Roofing SPF foam template decision.",
+            }
+        )
+
+
+def _coating_historical_option(coating_row: dict[str, Any] | None, scope: dict[str, Any], existing: dict[str, Any] | None = None) -> str:
+    coating_row = coating_row or {}
+    existing = existing or {}
+    decision_values = coating_row.get("decision_values") if isinstance(coating_row.get("decision_values"), dict) else {}
+    recommended = coating_row.get("recommended_decision_value")
+    if isinstance(recommended, dict):
+        recommended_value = first_nonblank(recommended.get("resolved_template_option"), recommended.get("selected_option"))
+    else:
+        recommended_value = recommended
+    selector_code = first_nonblank(
+        existing.get("historical_selector_code"),
+        existing.get("editable_selector_code"),
+        existing.get("selector_code"),
+        coating_row.get("selector_code"),
+        decision_values.get("selector_code"),
+    )
+    return str(
+        first_nonblank(
+            existing.get("historical_selector_recommendation"),
+            existing.get("resolved_template_option"),
+            _resolved_roofing_selector_option(selector_code),
+            decision_values.get("selected_option"),
+            recommended_value if _roofing_selector_code_for_option(recommended_value) else "",
+            _resolved_roofing_selector_option(_default_roofing_selector_code_for_scope(scope)),
+            "Gaco Silicone",
+        )
+    )
+
+
+def _stored_candidates_from_row(row: dict[str, Any]) -> list[dict[str, Any]]:
+    if isinstance(row.get("pricing_candidates"), list):
+        return [dict(item) for item in row.get("pricing_candidates") or [] if isinstance(item, dict)]
+    try:
+        parsed = json.loads(row.get("pricing_candidates_json") or "[]")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        parsed = []
+    return [dict(item) for item in parsed if isinstance(item, dict)]
+
+
+def _build_roofing_coating_template_decisions(
+    *,
+    scope: dict[str, Any],
+    coating_row: dict[str, Any] | None,
+    existing_rows: list[dict[str, Any]] | None = None,
+    data: Any = None,
+) -> list[dict[str, Any]]:
+    if not coating_row or _is_insulation_scope(scope):
+        return []
+
+    existing_by_row = {str(row.get("workbook_row") or ""): row for row in existing_rows or [] if isinstance(row, dict)}
+    coating_scope = bool(coating_row.get("include")) or bool(scope.get("coating_type")) or "coating" in _normalized(scope.get("project_type"))
+    default_basis = safe_number(first_nonblank(coating_row.get("editable_basis_sqft"), coating_row.get("default_basis_sqft"), _estimate_area(scope)), 0.0)
+    base_historical_option = _coating_historical_option(coating_row, scope)
+    base_selector_code = first_nonblank(
+        coating_row.get("selector_code"),
+        _roofing_selector_code_for_option(base_historical_option),
+        _default_roofing_selector_code_for_scope(scope),
+    )
+    decision_values = coating_row.get("decision_values") if isinstance(coating_row.get("decision_values"), dict) else {}
+    material_rate = safe_number(coating_row.get("editable_qty_per_sqft"), 0.0)
+    historical_rate = safe_number(coating_row.get("historical_qty_per_sqft"), 0.0)
+    existing_formula_total_gallons = 0.0
+    for existing_row in existing_rows or []:
+        if not isinstance(existing_row, dict) or not existing_row.get("include"):
+            continue
+        existing_formula = calculate_roofing_coating(
+            area_sqft=existing_row.get("basis_sqft"),
+            gal_per_100_sqft=existing_row.get("gal_per_100_sqft"),
+            waste_factor_pct=existing_row.get("waste_factor_pct"),
+            include=True,
+        )
+        existing_formula_total_gallons += safe_number(existing_formula.get("estimated_gallons"), 0.0)
+    material_total_gallons = material_rate * default_basis if material_rate > 0 and default_basis > 0 else 0.0
+    material_rate_override = (
+        material_rate > 0
+        and historical_rate > 0
+        and abs(material_rate - historical_rate) > 1e-9
+        and (existing_formula_total_gallons <= 0 or abs(material_total_gallons - existing_formula_total_gallons) > 0.01)
+    )
+    existing_included_rows = {
+        int(safe_number(row.get("workbook_row"), 0))
+        for row in existing_rows or []
+        if isinstance(row, dict) and row.get("include") and int(safe_number(row.get("workbook_row"), 0)) in ROOFING_COATING_TEMPLATE_ROWS
+    }
+    default_included_rows = existing_included_rows or ({26, 27} if coating_scope else set())
+    default_include_count = max(1, len(default_included_rows))
+    default_total_gal_per_100 = positive_number(
+        safe_number(coating_row.get("editable_qty_per_sqft"), 0.0) * 100,
+        safe_number(coating_row.get("historical_qty_per_sqft"), 0.0) * 100,
+        decision_values.get("gal_per_100_sqft"),
+        coating_row.get("gal_per_100_sqft"),
+        default=1.0,
+    )
+    default_gal_per_100 = default_total_gal_per_100 / default_include_count
+    default_waste = safe_number(first_nonblank(coating_row.get("waste_factor_pct"), decision_values.get("waste_factor_pct"), 0), 0.0)
+    default_selected_candidate = first_nonblank(coating_row.get("item_name"), coating_row.get("current_item"))
+
+    rows: list[dict[str, Any]] = []
+    for row_number in ROOFING_COATING_TEMPLATE_ROWS:
+        row_key = str(row_number)
+        existing = existing_by_row.get(row_key, {})
+        historical_option = _coating_historical_option(coating_row, scope, existing)
+        selector_code = str(
+            first_nonblank(
+                existing.get("editable_selector_code"),
+                existing.get("selector_code"),
+                _roofing_selector_code_for_option(existing.get("resolved_template_option")),
+                base_selector_code,
+            )
+        )
+        resolved_option = _resolved_roofing_selector_option(selector_code, historical_option)
+        candidates = _stored_candidates_from_row(existing)
+        if not (data is None and candidates):
+            candidates = _roofing_coating_pricing_candidates(coating_row, scope, data=data, template_option=resolved_option)
+        selected_candidate = _selected_roofing_coating_candidate(
+            candidates,
+            first_nonblank(existing.get("selected_pricing_candidate"), default_selected_candidate),
+        )
+        unit_price = safe_number(
+            first_nonblank(
+                existing.get("unit_price"),
+                selected_candidate.get("unit_price"),
+                coating_row.get("current_unit_price"),
+                coating_row.get("current_price"),
+            ),
+            0.0,
+        )
+        include = bool(existing["include"]) if "include" in existing else bool(row_number in default_included_rows)
+        basis_sqft = safe_number(first_nonblank(existing.get("basis_sqft"), default_basis), 0.0)
+        gal_per_100 = positive_number(
+            "" if material_rate_override else existing.get("gal_per_100_sqft"),
+            default_gal_per_100,
+            default=0.0,
+        )
+        waste_pct = safe_number(first_nonblank(existing.get("waste_factor_pct"), default_waste), 0.0)
+        formula = calculate_roofing_coating(
+            area_sqft=basis_sqft,
+            gal_per_100_sqft=gal_per_100,
+            unit_price=unit_price,
+            waste_factor_pct=waste_pct,
+            cost_per_sqft=coating_row.get("historical_cost_per_sqft"),
+            include=include,
+        )
+        compatibility = _roofing_coating_candidate_compatibility(
+            template_option=resolved_option,
+            candidate=selected_candidate,
+            product_context=selected_candidate,
+        )
+        warnings = list(
+            dict.fromkeys([*(selected_candidate.get("compatibility_warnings") or []), *(compatibility.get("compatibility_warnings") or [])])
+        )
+        if gal_per_100 <= 0:
+            warnings.append("Gallons per 100 sqft is missing; formula output requires estimator review.")
+        product_context_status = "matched" if selected_candidate.get("product_id") else "missing"
+        rows.append(
+            {
+                "include": include,
+                "section": "roofing_coating_template_decisions",
+                "decision_id": f"roofing_coating_system_row_{row_number}",
+                "template_bucket": "coating",
+                "workbook_row": row_key,
+                "selector_cell": f"A{row_number}",
+                "selector_code": selector_code,
+                "editable_selector_code": selector_code,
+                "resolved_template_option": resolved_option,
+                "selector_options": _roofing_coating_selector_options(row_number),
+                "selector_options_json": json.dumps(_roofing_coating_selector_options(row_number), default=str),
+                "historical_selector_recommendation": historical_option,
+                "historical_selector_code": _roofing_selector_code_for_option(historical_option),
+                "historical_selector_evidence_count": int(safe_number(coating_row.get("decision_evidence_count") or coating_row.get("evidence_count"), 0)),
+                "historical_selector_confidence": coating_row.get("decision_confidence") or coating_row.get("confidence") or "",
+                "basis_sqft": round(basis_sqft, 2),
+                "gal_per_100_sqft": round(gal_per_100, 6),
+                "gal_per_sqft": round(safe_number(formula.get("gal_per_sqft"), 0.0), 8),
+                "waste_factor_pct": round(waste_pct, 4),
+                "wet_mils_estimate": formula.get("wet_mils_estimate"),
+                "unit_price": round(unit_price, 4),
+                "estimated_gallons": formula.get("estimated_gallons"),
+                "estimated_cost": formula.get("estimated_cost"),
+                "formula_model": formula.get("formula_model"),
+                "formula_source": formula.get("formula_source"),
+                "selected_pricing_candidate": selected_candidate.get("item_name") or str(default_selected_candidate or ""),
+                "selected_pricing_item_id": selected_candidate.get("pricing_item_id"),
+                "pricing_candidates": candidates,
+                "pricing_candidates_json": json.dumps(candidates, default=str),
+                "compatibility_status": "review" if warnings and compatibility.get("compatibility_status") == "compatible" else compatibility.get("compatibility_status"),
+                "compatibility_warnings": warnings,
+                "product_guidance_status": product_context_status,
+                "product_id": selected_candidate.get("product_id") or "",
+                "product_name": selected_candidate.get("product_name") or "",
+                "product_manufacturer": selected_candidate.get("manufacturer") or "",
+                "product_guidance": selected_candidate.get("product_guidance") or "",
+                "product_source_documents": selected_candidate.get("product_source_documents") or [],
+                "notes": (
+                    "Template selector is the estimator decision. Pricing/product candidate is supporting context. "
+                    + (" ".join(warnings) if warnings else "Current coating candidate fits the selected template option.")
+                ),
+                "decision_values": {
+                    "selector_code": selector_code,
+                    "resolved_template_option": resolved_option,
+                    "selected_pricing_candidate": selected_candidate.get("item_name") or str(default_selected_candidate or ""),
+                    "basis_sqft": round(basis_sqft, 2),
+                    "gal_per_100_sqft": round(gal_per_100, 6),
+                    "waste_factor_pct": round(waste_pct, 4),
+                    "unit_price": round(unit_price, 4),
+                },
+                "editable_decision_value": {
+                    "selector_code": selector_code,
+                    "resolved_template_option": resolved_option,
+                    "selected_pricing_candidate": selected_candidate.get("item_name") or str(default_selected_candidate or ""),
+                    "basis_sqft": round(basis_sqft, 2),
+                    "gal_per_100_sqft": round(gal_per_100, 6),
+                    "waste_factor_pct": round(waste_pct, 4),
+                    "unit_price": round(unit_price, 4),
+                },
+                "recommended_decision_value": {
+                    "selector_code": _roofing_selector_code_for_option(historical_option),
+                    "resolved_template_option": historical_option,
+                    "evidence_count": int(safe_number(coating_row.get("decision_evidence_count") or coating_row.get("evidence_count"), 0)),
+                },
+                "calculated_output": formula.get("estimated_cost"),
+                "calculated_output_summary": _value_summary(
+                    {
+                        "gallons": formula.get("estimated_gallons"),
+                        "wet_mils": formula.get("wet_mils_estimate"),
+                        "cost": formula.get("estimated_cost"),
+                    }
+                ),
+                "workbook_cell_write_preview": [
+                    {"cell": f"Estimate!A{row_number}", "field": "selector_code", "value": selector_code},
+                    {"cell": f"Estimate!C{row_number}", "field": "area_sqft", "value": round(basis_sqft, 2)},
+                    {"cell": f"Estimate!D{row_number}", "field": "gal_per_100_sqft", "value": round(gal_per_100, 6)},
+                    {"cell": f"Estimate!E{row_number}", "field": "unit_price", "value": round(unit_price, 4)},
+                    {"cell": "Estimate!A30", "field": "waste_factor_pct", "value": round(waste_pct, 4)},
+                    {"cell": f"Estimate!G{row_number}", "field": "estimated_gallons_formula_output", "value": formula.get("estimated_gallons")},
+                ],
+            }
+        )
+    return rows
+
+
+def _apply_roofing_coating_template_decisions_to_materials(workbench: dict[str, Any]) -> None:
+    coating_row = _coating_material_row(workbench.get("materials"))
+    decisions = [row for row in workbench.get("roofing_coating_template_decisions") or [] if isinstance(row, dict)]
+    if not coating_row or not decisions:
+        return
+    included = [row for row in decisions if row.get("include")]
+    primary = included[0] if included else decisions[0]
+    total_gallons = sum(safe_number(row.get("estimated_gallons"), 0.0) for row in included)
+    total_cost = sum(safe_number(row.get("estimated_cost"), 0.0) for row in included)
+    basis = safe_number(primary.get("basis_sqft"), safe_number(coating_row.get("editable_basis_sqft"), 0.0))
+    coating_row["include"] = bool(included)
+    coating_row["selector_code"] = primary.get("editable_selector_code") or primary.get("selector_code")
+    coating_row["resolved_template_option"] = primary.get("resolved_template_option")
+    coating_row["template_selector_option"] = primary.get("resolved_template_option")
+    if primary.get("selected_pricing_candidate"):
+        coating_row["item_name"] = primary.get("selected_pricing_candidate")
+        coating_row["current_item"] = primary.get("selected_pricing_candidate")
+    coating_row["editable_basis_sqft"] = round(basis, 2)
+    coating_row["default_basis_sqft"] = round(basis, 2)
+    coating_row["estimated_gallons"] = round(total_gallons, 2)
+    coating_row["calculated_quantity"] = round(total_gallons, 2)
+    coating_row["estimated_cost"] = round(total_cost, 2)
+    coating_row["current_unit_price"] = safe_number(primary.get("unit_price"), 0.0)
+    coating_row["current_price"] = coating_row["current_unit_price"]
+    coating_row["gal_per_100_sqft"] = safe_number(primary.get("gal_per_100_sqft"), 0.0)
+    coating_row["gal_per_sqft"] = safe_number(primary.get("gal_per_sqft"), 0.0)
+    coating_row["editable_qty_per_sqft"] = round(total_gallons / basis, 8) if basis > 0 and total_gallons > 0 else safe_number(primary.get("gal_per_sqft"), 0.0)
+    coating_row["editable_default"] = coating_row["editable_qty_per_sqft"]
+    coating_row["waste_factor_pct"] = safe_number(primary.get("waste_factor_pct"), 0.0)
+    coating_row["wet_mils_estimate"] = safe_number(primary.get("wet_mils_estimate"), 0.0)
+    coating_row["formula_model"] = primary.get("formula_model")
+    coating_row["formula_source"] = "roofing_coating_template_decisions"
+    coating_row["price_source"] = "current_pricing" if coating_row["current_unit_price"] > 0 else "current_pricing_missing"
+    coating_row["decision_values"] = {
+        "selector_code": coating_row["selector_code"],
+        "resolved_template_option": coating_row.get("resolved_template_option"),
+        "selected_pricing_candidate": coating_row.get("item_name"),
+        "basis_sqft": round(basis, 2),
+        "gal_per_100_sqft": coating_row["gal_per_100_sqft"],
+        "waste_factor_pct": coating_row["waste_factor_pct"],
+        "estimated_gallons": round(total_gallons, 2),
+        "estimated_cost": round(total_cost, 2),
+    }
+    coating_row["editable_decision_value"] = dict(coating_row["decision_values"])
+    coating_row["calculated_output"] = coating_row["estimated_cost"]
+    coating_row["calculated_output_summary"] = _value_summary(
+        {"gallons": round(total_gallons, 2), "cost": round(total_cost, 2), "rows": len(included)}
+    )
+    coating_row["workbook_cell_write_preview"] = [
+        write for decision in included for write in (decision.get("workbook_cell_write_preview") or [])
+    ]
+    coating_row["notes"] = (
+        f"Synced from {len(included)} included roof coating template decision row(s). "
+        "Template selector rows are the primary estimator-facing controls."
+    )
+
+
+def _primer_historical_option(primer_row: dict[str, Any] | None, scope: dict[str, Any], existing: dict[str, Any] | None = None) -> str:
+    primer_row = primer_row or {}
+    existing = existing or {}
+    decision_values = primer_row.get("decision_values") if isinstance(primer_row.get("decision_values"), dict) else {}
+    recommended = primer_row.get("recommended_decision_value")
+    if isinstance(recommended, dict):
+        recommended_value = first_nonblank(recommended.get("resolved_template_option"), recommended.get("selected_option"))
+    else:
+        recommended_value = recommended
+    selector_code = first_nonblank(
+        existing.get("historical_selector_code"),
+        existing.get("editable_selector_code"),
+        existing.get("selector_code"),
+        primer_row.get("selector_code"),
+        decision_values.get("selector_code"),
+    )
+    return str(
+        first_nonblank(
+            existing.get("historical_selector_recommendation"),
+            existing.get("resolved_template_option"),
+            _resolved_roofing_primer_option(selector_code),
+            decision_values.get("selected_option"),
+            recommended_value if _roofing_primer_selector_code_for_option(recommended_value) else "",
+            _resolved_roofing_primer_option(_default_roofing_primer_selector_code_for_scope(scope)),
+            "Gaco E-5320",
+        )
+    )
+
+
+def _build_roofing_primer_template_decisions(
+    *,
+    scope: dict[str, Any],
+    primer_row: dict[str, Any] | None,
+    existing_rows: list[dict[str, Any]] | None = None,
+    data: Any = None,
+) -> list[dict[str, Any]]:
+    if not primer_row or _is_insulation_scope(scope):
+        return []
+    existing = (existing_rows or [{}])[0] if existing_rows else {}
+    historical_option = _primer_historical_option(primer_row, scope, existing)
+    selector_code = str(
+        first_nonblank(
+            existing.get("editable_selector_code"),
+            existing.get("selector_code"),
+            _roofing_primer_selector_code_for_option(existing.get("resolved_template_option")),
+            primer_row.get("selector_code"),
+            _roofing_primer_selector_code_for_option(historical_option),
+            _default_roofing_primer_selector_code_for_scope(scope),
+        )
+    )
+    resolved_option = _resolved_roofing_primer_option(selector_code, historical_option)
+    area = _estimate_area(scope)
+    notes = _normalized(" ".join(str(scope.get(key) or "") for key in ("notes", "raw_input_notes", "roof_condition", "project_type")))
+    explicit_include_signal = bool(
+        re.search(r"\b(include|included|add|apply)\s+(?:\w+\s+){0,4}(primer|priming)\b", notes)
+        or re.search(r"\b(primer|priming)\s+(?:is\s+)?included\b", notes)
+    )
+    default_include = bool(
+        primer_row.get("include")
+        or str(primer_row.get("suggested_by_notes_rules") or "").lower() == "yes"
+        or explicit_include_signal
+    )
+    include = bool(existing["include"]) if "include" in existing else default_include
+    basis_sqft = positive_number(
+        existing.get("basis_sqft"),
+        primer_row.get("editable_basis_sqft"),
+        primer_row.get("default_basis_sqft"),
+        area if include else "",
+        0.0,
+    )
+    coverage = positive_number(
+        existing.get("coverage_sqft_per_unit"),
+        primer_row.get("coverage_sqft_per_unit"),
+        ROOFING_PRIMER_DEFAULT_COVERAGE_SQFT_PER_UNIT,
+        default=ROOFING_PRIMER_DEFAULT_COVERAGE_SQFT_PER_UNIT,
+    )
+    stored_candidates = _stored_candidates_from_row(existing)
+    candidates = stored_candidates if data is None and stored_candidates else _roofing_primer_pricing_candidates(
+        primer_row,
+        scope,
+        data=data,
+        template_option=resolved_option,
+    )
+    selected_candidate = _selected_roofing_primer_candidate(
+        candidates,
+        first_nonblank(existing.get("selected_pricing_candidate"), primer_row.get("item_name"), primer_row.get("current_item")),
+    )
+    unit_price = safe_number(
+        first_nonblank(
+            existing.get("unit_price"),
+            selected_candidate.get("unit_price"),
+            primer_row.get("current_unit_price"),
+            primer_row.get("current_price"),
+        ),
+        0.0,
+    )
+    formula = calculate_roofing_primer(
+        area_sqft=basis_sqft,
+        coverage_sqft_per_unit=coverage,
+        unit_price=unit_price,
+        cost_per_sqft=primer_row.get("historical_cost_per_sqft"),
+        include=include,
+    )
+    compatibility = _roofing_primer_candidate_compatibility(
+        template_option=resolved_option,
+        candidate=selected_candidate,
+        product_context=selected_candidate,
+    )
+    warnings = list(
+        dict.fromkeys([*(selected_candidate.get("compatibility_warnings") or []), *(compatibility.get("compatibility_warnings") or [])])
+    )
+    if coverage <= 0:
+        warnings.append("Primer coverage is missing; formula output requires estimator review.")
+    product_context_status = "matched" if selected_candidate.get("product_id") else "missing"
+    selected_name = selected_candidate.get("item_name") or str(first_nonblank(primer_row.get("item_name"), primer_row.get("current_item"), ""))
+    return [
+        {
+            "include": include,
+            "section": "roofing_primer_template_decisions",
+            "decision_id": "roofing_primer_system_row_39",
+            "template_bucket": "primer",
+            "workbook_row": str(ROOFING_PRIMER_TEMPLATE_ROW),
+            "selector_cell": "A39",
+            "selector_code": selector_code,
+            "editable_selector_code": selector_code,
+            "resolved_template_option": resolved_option,
+            "selector_options": _roofing_primer_selector_options(),
+            "selector_options_json": json.dumps(_roofing_primer_selector_options(), default=str),
+            "historical_selector_recommendation": historical_option,
+            "historical_selector_code": _roofing_primer_selector_code_for_option(historical_option),
+            "historical_selector_evidence_count": int(safe_number(primer_row.get("decision_evidence_count") or primer_row.get("evidence_count"), 0)),
+            "historical_selector_confidence": primer_row.get("decision_confidence") or primer_row.get("confidence") or "",
+            "basis_sqft": round(basis_sqft, 2),
+            "coverage_sqft_per_unit": round(coverage, 4),
+            "unit_price": round(unit_price, 4),
+            "estimated_units": formula.get("estimated_units"),
+            "estimated_cost": formula.get("estimated_cost"),
+            "formula_model": formula.get("formula_model"),
+            "formula_source": formula.get("formula_source"),
+            "selected_pricing_candidate": selected_name,
+            "selected_pricing_item_id": selected_candidate.get("pricing_item_id"),
+            "pricing_candidates": candidates,
+            "pricing_candidates_json": json.dumps(candidates, default=str),
+            "compatibility_status": "review" if warnings and compatibility.get("compatibility_status") == "compatible" else compatibility.get("compatibility_status"),
+            "compatibility_warnings": warnings,
+            "product_guidance_status": product_context_status,
+            "product_id": selected_candidate.get("product_id") or "",
+            "product_name": selected_candidate.get("product_name") or "",
+            "product_manufacturer": selected_candidate.get("manufacturer") or "",
+            "product_guidance": selected_candidate.get("product_guidance") or "",
+            "product_source_documents": selected_candidate.get("product_source_documents") or [],
+            "notes": (
+                "Template selector is the estimator decision. Pricing/product candidate is supporting context. "
+                + (" ".join(warnings) if warnings else "Current primer candidate fits the selected template option.")
+            ),
+            "decision_values": {
+                "selector_code": selector_code,
+                "resolved_template_option": resolved_option,
+                "selected_pricing_candidate": selected_name,
+                "basis_sqft": round(basis_sqft, 2),
+                "coverage_sqft_per_unit": round(coverage, 4),
+                "unit_price": round(unit_price, 4),
+            },
+            "editable_decision_value": {
+                "selector_code": selector_code,
+                "resolved_template_option": resolved_option,
+                "selected_pricing_candidate": selected_name,
+                "basis_sqft": round(basis_sqft, 2),
+                "coverage_sqft_per_unit": round(coverage, 4),
+                "unit_price": round(unit_price, 4),
+            },
+            "recommended_decision_value": {
+                "selector_code": _roofing_primer_selector_code_for_option(historical_option),
+                "resolved_template_option": historical_option,
+                "evidence_count": int(safe_number(primer_row.get("decision_evidence_count") or primer_row.get("evidence_count"), 0)),
+            },
+            "calculated_output": formula.get("estimated_cost"),
+            "calculated_output_summary": _value_summary(
+                {
+                    "units": formula.get("estimated_units"),
+                    "cost": formula.get("estimated_cost"),
+                }
+            ),
+            "workbook_cell_write_preview": [
+                {"cell": "Estimate!A39", "field": "selector_code", "value": selector_code},
+                {"cell": "Estimate!C39", "field": "area_sqft", "value": round(basis_sqft, 2)},
+                {"cell": "Estimate!E39", "field": "unit_price", "value": round(unit_price, 4)},
+                {"cell": "Estimate!G39", "field": "estimated_units_formula_output", "value": formula.get("estimated_units")},
+            ],
+        }
+    ]
+
+
+def _apply_roofing_primer_template_decisions_to_materials(workbench: dict[str, Any]) -> None:
+    primer_row = _primer_material_row(workbench.get("materials"))
+    decisions = [row for row in workbench.get("roofing_primer_template_decisions") or [] if isinstance(row, dict)]
+    if not primer_row or not decisions:
+        return
+    included = [row for row in decisions if row.get("include")]
+    if not included:
+        return
+    primary = included[0] if included else decisions[0]
+    basis = safe_number(primary.get("basis_sqft"), safe_number(primer_row.get("editable_basis_sqft"), 0.0))
+    units = sum(safe_number(row.get("estimated_units"), 0.0) for row in included)
+    cost = sum(safe_number(row.get("estimated_cost"), 0.0) for row in included)
+    primer_row["include"] = bool(included)
+    primer_row["selector_code"] = primary.get("editable_selector_code") or primary.get("selector_code")
+    primer_row["resolved_template_option"] = primary.get("resolved_template_option")
+    primer_row["template_selector_option"] = primary.get("resolved_template_option")
+    if primary.get("selected_pricing_candidate"):
+        primer_row["item_name"] = primary.get("selected_pricing_candidate")
+        primer_row["current_item"] = primary.get("selected_pricing_candidate")
+    primer_row["editable_basis_sqft"] = round(basis, 2)
+    primer_row["default_basis_sqft"] = round(basis, 2)
+    primer_row["coverage_sqft_per_unit"] = safe_number(primary.get("coverage_sqft_per_unit"), ROOFING_PRIMER_DEFAULT_COVERAGE_SQFT_PER_UNIT)
+    primer_row["estimated_units"] = round(units, 2)
+    primer_row["calculated_quantity"] = round(units, 2)
+    primer_row["estimated_cost"] = round(cost, 2)
+    primer_row["current_unit_price"] = safe_number(primary.get("unit_price"), 0.0)
+    primer_row["current_price"] = primer_row["current_unit_price"]
+    primer_row["editable_qty_per_sqft"] = round(units / basis, 8) if basis > 0 and units > 0 else 0.0
+    primer_row["editable_default"] = primer_row["editable_qty_per_sqft"]
+    primer_row["unit"] = "unit"
+    primer_row["formula_model"] = primary.get("formula_model")
+    primer_row["formula_source"] = "roofing_primer_template_decisions"
+    primer_row["price_source"] = "current_pricing" if primer_row["current_unit_price"] > 0 else "current_pricing_missing"
+    primer_row["decision_values"] = {
+        "selector_code": primer_row["selector_code"],
+        "resolved_template_option": primer_row.get("resolved_template_option"),
+        "selected_pricing_candidate": primer_row.get("item_name"),
+        "basis_sqft": round(basis, 2),
+        "coverage_sqft_per_unit": primer_row["coverage_sqft_per_unit"],
+        "estimated_units": round(units, 2),
+        "estimated_cost": round(cost, 2),
+    }
+    primer_row["editable_decision_value"] = dict(primer_row["decision_values"])
+    primer_row["calculated_output"] = primer_row["estimated_cost"]
+    primer_row["calculated_output_summary"] = _value_summary({"units": round(units, 2), "cost": round(cost, 2), "rows": len(included)})
+    primer_row["workbook_cell_write_preview"] = [
+        write for decision in included for write in (decision.get("workbook_cell_write_preview") or [])
+    ]
+    primer_row["notes"] = (
+        f"Synced from {len(included)} included roofing primer template decision row(s). "
+        "Template selector row is the primary estimator-facing control."
+    )
+
+
+def _build_roofing_detail_template_decisions(
+    *,
+    scope: dict[str, Any],
+    caulk_row: dict[str, Any] | None,
+    fabric_row: dict[str, Any] | None,
+    existing_rows: list[dict[str, Any]] | None = None,
+    data: Any = None,
+) -> list[dict[str, Any]]:
+    if _is_insulation_scope(scope):
+        return []
+    existing_by_row = {str(row.get("workbook_row") or ""): row for row in existing_rows or [] if isinstance(row, dict)}
+    notes = _normalized(" ".join(str(scope.get(key) or "") for key in ("notes", "raw_input_notes", "roof_condition", "project_type")))
+    detail_signal = _has_positive_note_signal(
+        notes,
+        [
+            "open seam",
+            "open seams",
+            "seam repair",
+            "failed seam",
+            "separate",
+            "separating",
+            "curb",
+            "penetration",
+            "pipe boot",
+            "pitch pocket",
+            "detail",
+            "caulk",
+            "sealant",
+            "fabric",
+            "reinforce",
+        ],
+    )
+    caulk_signal = detail_signal or bool((caulk_row or {}).get("include"))
+    fabric_signal = _has_positive_note_signal(notes, ["fabric", "reinforce", "reinforcement", "open seam", "open seams", "seam repair"])
+    rows: list[dict[str, Any]] = []
+
+    for row_number in ROOFING_CAULK_TEMPLATE_ROWS:
+        row_key = str(row_number)
+        existing = existing_by_row.get(row_key, {})
+        default_include = bool(caulk_signal and row_number == ROOFING_CAULK_TEMPLATE_ROWS[0])
+        include = bool(existing["include"]) if "include" in existing else default_include
+        selector_code = str(
+            first_nonblank(
+                existing.get("editable_selector_code"),
+                existing.get("selector_code"),
+                _roofing_caulk_selector_code_for_option(existing.get("resolved_template_option")),
+                (caulk_row or {}).get("selector_code"),
+                _default_roofing_caulk_selector_code_for_scope(scope),
+            )
+        )
+        resolved_option = _resolved_roofing_caulk_option(selector_code, "Silicone Sausage")
+        stored_candidates = _stored_candidates_from_row(existing)
+        candidates = stored_candidates if data is None and stored_candidates else _roofing_detail_pricing_candidates(
+            caulk_row or {},
+            scope,
+            package="caulk_detail",
+            decision_id="roofing_caulk_sealant",
+            data=data,
+            template_option=resolved_option,
+        )
+        selected_candidate = _selected_roofing_detail_candidate(
+            candidates,
+            first_nonblank(existing.get("selected_pricing_candidate"), (caulk_row or {}).get("item_name"), (caulk_row or {}).get("current_item")),
+        )
+        unit_price = safe_number(
+            first_nonblank(
+                existing.get("unit_price"),
+                selected_candidate.get("unit_price"),
+                (caulk_row or {}).get("current_unit_price"),
+                (caulk_row or {}).get("current_price"),
+            ),
+            0.0,
+        )
+        units = positive_number(
+            existing.get("units"),
+            existing.get("estimated_units"),
+            existing.get("calculated_quantity"),
+            (caulk_row or {}).get("calculated_quantity") if include else "",
+            default=0.0,
+        )
+        formula = calculate_roofing_units_cost(
+            units=units,
+            unit_price=unit_price,
+            include=include,
+            formula_model="sealant_units_cost_from_template_inputs",
+        )
+        compatibility = _roofing_detail_candidate_compatibility(
+            package="caulk_detail",
+            template_option=resolved_option,
+            candidate=selected_candidate,
+            product_context=selected_candidate,
+        )
+        warnings = list(
+            dict.fromkeys([*(selected_candidate.get("compatibility_warnings") or []), *(compatibility.get("compatibility_warnings") or [])])
+        )
+        if include and units <= 0:
+            warnings.append("Sealant units are missing; formula output requires estimator review.")
+        selected_name = selected_candidate.get("item_name") or str(first_nonblank((caulk_row or {}).get("item_name"), (caulk_row or {}).get("current_item"), ""))
+        rows.append(
+            {
+                "include": include,
+                "section": "roofing_detail_template_decisions",
+                "decision_id": f"roofing_caulk_sealant_row_{row_number}",
+                "template_bucket": "caulk_detail",
+                "workbook_row": row_key,
+                "selector_cell": f"A{row_number}",
+                "selector_code": selector_code,
+                "editable_selector_code": selector_code,
+                "resolved_template_option": resolved_option,
+                "selector_options": _roofing_caulk_selector_options(row_number),
+                "selector_options_json": json.dumps(_roofing_caulk_selector_options(row_number), default=str),
+                "historical_selector_recommendation": first_nonblank((caulk_row or {}).get("recommended_decision_value"), resolved_option),
+                "historical_selector_code": _roofing_caulk_selector_code_for_option(first_nonblank((caulk_row or {}).get("recommended_decision_value"), resolved_option)),
+                "historical_selector_evidence_count": int(safe_number((caulk_row or {}).get("decision_evidence_count") or (caulk_row or {}).get("evidence_count"), 0)),
+                "historical_selector_confidence": (caulk_row or {}).get("decision_confidence") or (caulk_row or {}).get("confidence") or "",
+                "units": round(units, 4),
+                "estimated_units": formula.get("units"),
+                "unit_price": round(unit_price, 4),
+                "estimated_cost": formula.get("estimated_cost"),
+                "formula_model": formula.get("formula_model"),
+                "formula_source": formula.get("formula_source"),
+                "selected_pricing_candidate": selected_name,
+                "selected_pricing_item_id": selected_candidate.get("pricing_item_id"),
+                "pricing_candidates": candidates,
+                "pricing_candidates_json": json.dumps(candidates, default=str),
+                "compatibility_status": "review" if warnings and compatibility.get("compatibility_status") == "compatible" else compatibility.get("compatibility_status"),
+                "compatibility_warnings": warnings,
+                "product_guidance_status": "matched" if selected_candidate.get("product_id") else "missing",
+                "product_id": selected_candidate.get("product_id") or "",
+                "product_name": selected_candidate.get("product_name") or "",
+                "product_manufacturer": selected_candidate.get("manufacturer") or "",
+                "product_guidance": selected_candidate.get("product_guidance") or "",
+                "product_source_documents": selected_candidate.get("product_source_documents") or [],
+                "notes": (
+                    "Template selector is the estimator decision. Pricing/product candidate is supporting context. "
+                    + (" ".join(warnings) if warnings else "Current sealant candidate fits the selected template option.")
+                ),
+                "decision_values": {
+                    "selector_code": selector_code,
+                    "resolved_template_option": resolved_option,
+                    "selected_pricing_candidate": selected_name,
+                    "units": round(units, 4),
+                    "unit_price": round(unit_price, 4),
+                },
+                "editable_decision_value": {
+                    "selector_code": selector_code,
+                    "resolved_template_option": resolved_option,
+                    "selected_pricing_candidate": selected_name,
+                    "units": round(units, 4),
+                    "unit_price": round(unit_price, 4),
+                },
+                "recommended_decision_value": {
+                    "selector_code": _roofing_caulk_selector_code_for_option(first_nonblank((caulk_row or {}).get("recommended_decision_value"), resolved_option)),
+                    "resolved_template_option": first_nonblank((caulk_row or {}).get("recommended_decision_value"), resolved_option),
+                    "evidence_count": int(safe_number((caulk_row or {}).get("decision_evidence_count") or (caulk_row or {}).get("evidence_count"), 0)),
+                },
+                "calculated_output": formula.get("estimated_cost"),
+                "calculated_output_summary": _value_summary({"units": formula.get("units"), "cost": formula.get("estimated_cost")}),
+                "workbook_cell_write_preview": [
+                    {"cell": f"Estimate!A{row_number}", "field": "selector_code", "value": selector_code},
+                    {"cell": f"Estimate!E{row_number}", "field": "unit_price", "value": round(unit_price, 4)},
+                    {"cell": f"Estimate!G{row_number}", "field": "units", "value": formula.get("units")},
+                ],
+            }
+        )
+
+    existing = existing_by_row.get(str(ROOFING_FABRIC_TEMPLATE_ROW), {})
+    fabric_include = bool(existing["include"]) if "include" in existing else bool(fabric_signal or (fabric_row or {}).get("include"))
+    stored_candidates = _stored_candidates_from_row(existing)
+    candidates = stored_candidates if data is None and stored_candidates else _roofing_detail_pricing_candidates(
+        fabric_row or {},
+        scope,
+        package="fabric",
+        decision_id="roofing_fabric",
+        data=data,
+        template_option="Fabric",
+    )
+    selected_candidate = _selected_roofing_detail_candidate(
+        candidates,
+        first_nonblank(existing.get("selected_pricing_candidate"), (fabric_row or {}).get("item_name"), (fabric_row or {}).get("current_item")),
+    )
+    unit_price = safe_number(
+        first_nonblank(
+            existing.get("unit_price"),
+            selected_candidate.get("unit_price"),
+            (fabric_row or {}).get("current_unit_price"),
+            (fabric_row or {}).get("current_price"),
+        ),
+        0.0,
+    )
+    linear_ft = positive_number(
+        existing.get("linear_ft"),
+        existing.get("units"),
+        existing.get("estimated_units"),
+        existing.get("calculated_quantity"),
+        (fabric_row or {}).get("calculated_quantity") if fabric_include else "",
+        default=0.0,
+    )
+    formula = calculate_roofing_fabric(linear_ft=linear_ft, unit_price=unit_price, include=fabric_include)
+    compatibility = _roofing_detail_candidate_compatibility(
+        package="fabric",
+        template_option="Fabric",
+        candidate=selected_candidate,
+        product_context=selected_candidate,
+    )
+    warnings = list(
+        dict.fromkeys([*(selected_candidate.get("compatibility_warnings") or []), *(compatibility.get("compatibility_warnings") or [])])
+    )
+    if fabric_include and linear_ft <= 0:
+        warnings.append("Fabric linear feet are missing; formula output requires estimator review.")
+    selected_name = selected_candidate.get("item_name") or str(first_nonblank((fabric_row or {}).get("item_name"), (fabric_row or {}).get("current_item"), ""))
+    rows.append(
+        {
+            "include": fabric_include,
+            "section": "roofing_detail_template_decisions",
+            "decision_id": "roofing_fabric_row_79",
+            "template_bucket": "fabric",
+            "workbook_row": str(ROOFING_FABRIC_TEMPLATE_ROW),
+            "selector_cell": "",
+            "selector_code": "",
+            "editable_selector_code": "",
+            "resolved_template_option": "Fabric",
+            "selector_options": [],
+            "selector_options_json": "[]",
+            "historical_selector_recommendation": first_nonblank((fabric_row or {}).get("recommended_decision_value"), "Fabric"),
+            "historical_selector_code": "",
+            "historical_selector_evidence_count": int(safe_number((fabric_row or {}).get("decision_evidence_count") or (fabric_row or {}).get("evidence_count"), 0)),
+            "historical_selector_confidence": (fabric_row or {}).get("decision_confidence") or (fabric_row or {}).get("confidence") or "",
+            "linear_ft": round(linear_ft, 4),
+            "units": round(linear_ft, 4),
+            "estimated_units": formula.get("units"),
+            "unit_price": round(unit_price, 4),
+            "estimated_cost": formula.get("estimated_cost"),
+            "formula_model": formula.get("formula_model"),
+            "formula_source": formula.get("formula_source"),
+            "selected_pricing_candidate": selected_name,
+            "selected_pricing_item_id": selected_candidate.get("pricing_item_id"),
+            "pricing_candidates": candidates,
+            "pricing_candidates_json": json.dumps(candidates, default=str),
+            "compatibility_status": "review" if warnings and compatibility.get("compatibility_status") == "compatible" else compatibility.get("compatibility_status"),
+            "compatibility_warnings": warnings,
+            "product_guidance_status": "matched" if selected_candidate.get("product_id") else "missing",
+            "product_id": selected_candidate.get("product_id") or "",
+            "product_name": selected_candidate.get("product_name") or "",
+            "product_manufacturer": selected_candidate.get("manufacturer") or "",
+            "product_guidance": selected_candidate.get("product_guidance") or "",
+            "product_source_documents": selected_candidate.get("product_source_documents") or [],
+            "notes": (
+                "Fabric linear feet are the estimator input. Pricing/product candidate is supporting context. "
+                + (" ".join(warnings) if warnings else "Current fabric candidate fits the selected template row.")
+            ),
+            "decision_values": {
+                "resolved_template_option": "Fabric",
+                "selected_pricing_candidate": selected_name,
+                "linear_ft": round(linear_ft, 4),
+                "unit_price": round(unit_price, 4),
+            },
+            "editable_decision_value": {
+                "resolved_template_option": "Fabric",
+                "selected_pricing_candidate": selected_name,
+                "linear_ft": round(linear_ft, 4),
+                "unit_price": round(unit_price, 4),
+            },
+            "recommended_decision_value": {
+                "resolved_template_option": first_nonblank((fabric_row or {}).get("recommended_decision_value"), "Fabric"),
+                "evidence_count": int(safe_number((fabric_row or {}).get("decision_evidence_count") or (fabric_row or {}).get("evidence_count"), 0)),
+            },
+            "calculated_output": formula.get("estimated_cost"),
+            "calculated_output_summary": _value_summary({"linear_ft": formula.get("linear_ft"), "cost": formula.get("estimated_cost")}),
+            "workbook_cell_write_preview": [
+                {"cell": f"Estimate!C{ROOFING_FABRIC_TEMPLATE_ROW}", "field": "linear_ft", "value": formula.get("linear_ft")},
+                {"cell": f"Estimate!E{ROOFING_FABRIC_TEMPLATE_ROW}", "field": "unit_price", "value": round(unit_price, 4)},
+            ],
+        }
+    )
+    return rows
+
+
+def _apply_roofing_detail_template_decisions_to_materials(workbench: dict[str, Any]) -> None:
+    decisions = [row for row in workbench.get("roofing_detail_template_decisions") or [] if isinstance(row, dict) and row.get("include")]
+    if not decisions:
+        return
+    caulk_rows = [row for row in decisions if str(row.get("template_bucket") or "") in {"caulk_detail", "caulk_sealant"}]
+    fabric_rows = [row for row in decisions if str(row.get("template_bucket") or "") == "fabric"]
+    caulk_material = _caulk_detail_material_row(workbench.get("materials"))
+    if caulk_material and caulk_rows:
+        primary = caulk_rows[0]
+        units = sum(safe_number(row.get("estimated_units") or row.get("units"), 0.0) for row in caulk_rows)
+        cost = sum(safe_number(row.get("estimated_cost"), 0.0) for row in caulk_rows)
+        area = _estimate_area(workbench.get("scope") or {})
+        caulk_material["include"] = True
+        caulk_material["selector_code"] = primary.get("editable_selector_code") or primary.get("selector_code")
+        caulk_material["resolved_template_option"] = primary.get("resolved_template_option")
+        caulk_material["template_selector_option"] = primary.get("resolved_template_option")
+        caulk_material["item_name"] = first_nonblank(primary.get("selected_pricing_candidate"), caulk_material.get("item_name"), caulk_material.get("current_item"))
+        caulk_material["current_item"] = caulk_material["item_name"]
+        caulk_material["estimated_units"] = round(units, 2)
+        caulk_material["calculated_quantity"] = round(units, 2)
+        caulk_material["estimated_cost"] = round(cost, 2)
+        caulk_material["current_unit_price"] = safe_number(primary.get("unit_price"), 0.0)
+        caulk_material["current_price"] = caulk_material["current_unit_price"]
+        caulk_material["editable_basis_sqft"] = round(area, 2) if area else safe_number(caulk_material.get("editable_basis_sqft"), 0.0)
+        caulk_material["editable_qty_per_sqft"] = round(units / area, 8) if area > 0 and units > 0 else 0.0
+        caulk_material["editable_default"] = caulk_material["editable_qty_per_sqft"]
+        caulk_material["unit"] = primary.get("unit") or "unit"
+        caulk_material["formula_model"] = primary.get("formula_model")
+        caulk_material["formula_source"] = "roofing_detail_template_decisions"
+        caulk_material["price_source"] = "current_pricing" if caulk_material["current_unit_price"] > 0 else "current_pricing_missing"
+        caulk_material["decision_values"] = {
+            "selector_code": caulk_material["selector_code"],
+            "resolved_template_option": caulk_material.get("resolved_template_option"),
+            "selected_pricing_candidate": caulk_material.get("item_name"),
+            "units": round(units, 2),
+            "estimated_cost": round(cost, 2),
+        }
+        caulk_material["editable_decision_value"] = dict(caulk_material["decision_values"])
+        caulk_material["calculated_output"] = caulk_material["estimated_cost"]
+        caulk_material["calculated_output_summary"] = _value_summary({"units": round(units, 2), "cost": round(cost, 2), "rows": len(caulk_rows)})
+        caulk_material["workbook_cell_write_preview"] = [
+            write for decision in caulk_rows for write in (decision.get("workbook_cell_write_preview") or [])
+        ]
+        caulk_material["notes"] = "Synced from included roofing caulk/sealant template decision row(s)."
+
+    fabric_material = _fabric_material_row(workbench.get("materials"))
+    if fabric_material and fabric_rows:
+        primary = fabric_rows[0]
+        linear_ft = sum(safe_number(row.get("linear_ft") or row.get("estimated_units") or row.get("units"), 0.0) for row in fabric_rows)
+        cost = sum(safe_number(row.get("estimated_cost"), 0.0) for row in fabric_rows)
+        area = _estimate_area(workbench.get("scope") or {})
+        fabric_material["include"] = True
+        fabric_material["item_name"] = first_nonblank(primary.get("selected_pricing_candidate"), fabric_material.get("item_name"), fabric_material.get("current_item"))
+        fabric_material["current_item"] = fabric_material["item_name"]
+        fabric_material["linear_ft"] = round(linear_ft, 2)
+        fabric_material["estimated_units"] = round(linear_ft, 2)
+        fabric_material["calculated_quantity"] = round(linear_ft, 2)
+        fabric_material["estimated_cost"] = round(cost, 2)
+        fabric_material["current_unit_price"] = safe_number(primary.get("unit_price"), 0.0)
+        fabric_material["current_price"] = fabric_material["current_unit_price"]
+        fabric_material["editable_basis_sqft"] = round(area, 2) if area else safe_number(fabric_material.get("editable_basis_sqft"), 0.0)
+        fabric_material["editable_qty_per_sqft"] = round(linear_ft / area, 8) if area > 0 and linear_ft > 0 else 0.0
+        fabric_material["editable_default"] = fabric_material["editable_qty_per_sqft"]
+        fabric_material["unit"] = primary.get("unit") or "lf"
+        fabric_material["formula_model"] = primary.get("formula_model")
+        fabric_material["formula_source"] = "roofing_detail_template_decisions"
+        fabric_material["price_source"] = "current_pricing" if fabric_material["current_unit_price"] > 0 else "current_pricing_missing"
+        fabric_material["decision_values"] = {
+            "selected_pricing_candidate": fabric_material.get("item_name"),
+            "linear_ft": round(linear_ft, 2),
+            "estimated_cost": round(cost, 2),
+        }
+        fabric_material["editable_decision_value"] = dict(fabric_material["decision_values"])
+        fabric_material["calculated_output"] = fabric_material["estimated_cost"]
+        fabric_material["calculated_output_summary"] = _value_summary({"linear_ft": round(linear_ft, 2), "cost": round(cost, 2), "rows": len(fabric_rows)})
+        fabric_material["workbook_cell_write_preview"] = [
+            write for decision in fabric_rows for write in (decision.get("workbook_cell_write_preview") or [])
+        ]
+        fabric_material["notes"] = "Synced from included roofing fabric template decision row(s)."
+
+
+def _build_roofing_detail_quantity_template_decisions(
+    *,
+    scope: dict[str, Any],
+    materials: list[dict[str, Any]] | None = None,
+    existing_rows: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    if _is_insulation_scope(scope):
+        return []
+    materials = materials or []
+    existing_by_row = {str(row.get("workbook_row") or ""): row for row in existing_rows or [] if isinstance(row, dict)}
+    material_by_key = {str(row.get("package_key") or row.get("template_bucket") or "").lower(): row for row in materials if isinstance(row, dict)}
+    notes = _normalized(
+        " ".join(
+            str(scope.get(key) or "")
+            for key in ("notes", "raw_input_notes", "scope_of_work", "project_type", "penetrations_complexity")
+        )
+    )
+    rows: list[dict[str, Any]] = []
+    for spec in ROOFING_DETAIL_QUANTITY_TEMPLATE_SPECS:
+        row_number = int(spec["row"])
+        row_key = str(row_number)
+        bucket = str(spec["bucket"])
+        quantity_field = str(spec["quantity_field"])
+        existing = existing_by_row.get(row_key, {})
+        related_material = {}
+        for material_key in spec.get("material_keys") or []:
+            related_material = material_by_key.get(str(material_key)) or {}
+            if related_material:
+                break
+        signal = bool((related_material or {}).get("include") or _has_positive_note_signal(notes, spec.get("signals") or []))
+        include = bool(existing["include"]) if "include" in existing else signal
+        if quantity_field == "linear_ft":
+            quantity = positive_number(
+                existing.get("linear_ft"),
+                existing.get("units"),
+                existing.get("estimated_units"),
+                existing.get("calculated_quantity"),
+                related_material.get("calculated_quantity"),
+                default=0.0,
+            )
+        else:
+            quantity = positive_number(
+                existing.get("units"),
+                existing.get("estimated_units"),
+                existing.get("linear_ft"),
+                existing.get("calculated_quantity"),
+                related_material.get("calculated_quantity"),
+                default=0.0,
+            )
+        amount = safe_number(first_nonblank(existing.get("amount"), existing.get("estimated_cost")), 0.0)
+        formula = calculate_roofing_detail_quantity(
+            quantity=quantity,
+            amount=amount,
+            include=include,
+            quantity_role=quantity_field,
+        )
+        warnings = []
+        if include and quantity <= 0:
+            warnings.append("Detail quantity is missing.")
+        rows.append(
+            {
+                "include": include,
+                "section": "roofing_detail_quantity_template_decisions",
+                "decision_id": f"roofing_{bucket}_row_{row_number}",
+                "template_bucket": bucket,
+                "workbook_row": row_key,
+                "resolved_template_option": spec["label"],
+                "linear_ft": formula.get("linear_ft"),
+                "units": formula.get("units"),
+                "estimated_units": formula.get("estimated_units"),
+                "amount": round(amount, 2),
+                "estimated_cost": formula.get("estimated_cost"),
+                "formula_model": formula.get("formula_model"),
+                "formula_source": formula.get("formula_source"),
+                "compatibility_status": "review" if warnings else "compatible",
+                "compatibility_warnings": warnings,
+                "notes": f"{spec['label']} preserves the workbook detail quantity input for row {row_number}."
+                + (" " + " ".join(warnings) if warnings else ""),
+                "decision_values": {
+                    quantity_field: round(quantity, 4),
+                    "amount": round(amount, 2),
+                },
+                "editable_decision_value": {
+                    quantity_field: round(quantity, 4),
+                    "amount": round(amount, 2),
+                },
+                "recommended_decision_value": {"resolved_template_option": spec["label"]},
+                "calculated_output": formula.get("estimated_cost"),
+                "calculated_output_summary": _value_summary(
+                    {
+                        quantity_field: round(quantity, 4),
+                        "cost": formula.get("estimated_cost"),
+                    }
+                ),
+                "workbook_cell_write_preview": [
+                    {
+                        "cell": f"Estimate!{spec['write_cell']}{row_number}",
+                        "field": quantity_field,
+                        "value": round(quantity, 4),
+                    },
+                    {"cell": f"Estimate!H{row_number}", "field": "estimated_cost", "value": formula.get("estimated_cost")},
+                ],
+            }
+        )
+    return rows
+
+
+def _apply_roofing_detail_quantity_template_decisions_to_materials(workbench: dict[str, Any]) -> None:
+    decisions = [
+        row
+        for row in workbench.get("roofing_detail_quantity_template_decisions") or []
+        if isinstance(row, dict) and row.get("include")
+    ]
+    if not decisions:
+        return
+    materials = workbench.setdefault("materials", [])
+    by_key = {str(row.get("package_key") or row.get("template_bucket") or "").lower(): row for row in materials if isinstance(row, dict)}
+    for decision in decisions:
+        key = str(decision.get("template_bucket") or "").lower()
+        material = by_key.get(key)
+        if not material:
+            material = {
+                "package": decision.get("resolved_template_option") or key,
+                "package_key": key,
+                "template_bucket": key,
+                "workbook_row": decision.get("workbook_row"),
+                "historical_qty_per_sqft": 0.0,
+                "editable_qty_per_sqft": 0.0,
+                "historical_cost_per_sqft": 0.0,
+                "evidence_count": 0,
+                "confidence": "review",
+                "source": "roofing_detail_quantity_template_decisions",
+            }
+            materials.append(material)
+            by_key[key] = material
+        quantity = safe_number(first_nonblank(decision.get("linear_ft"), decision.get("units"), decision.get("estimated_units")), 0.0)
+        material["include"] = True
+        material["item_name"] = decision.get("resolved_template_option")
+        material["current_item"] = decision.get("resolved_template_option")
+        material["workbook_row"] = decision.get("workbook_row")
+        material["calculated_quantity"] = quantity
+        material["estimated_units"] = quantity
+        material["linear_ft"] = safe_number(decision.get("linear_ft"), 0.0)
+        material["amount"] = safe_number(decision.get("amount"), 0.0)
+        material["estimated_cost"] = safe_number(decision.get("estimated_cost"), 0.0)
+        material["formula_model"] = decision.get("formula_model")
+        material["formula_source"] = "roofing_detail_quantity_template_decisions"
+        material["unit"] = "lf" if material["linear_ft"] else "unit"
+        material["decision_values"] = decision.get("decision_values")
+        material["editable_decision_value"] = decision.get("editable_decision_value")
+        material["calculated_output"] = material["estimated_cost"]
+        material["calculated_output_summary"] = decision.get("calculated_output_summary")
+        material["workbook_cell_write_preview"] = decision.get("workbook_cell_write_preview") or []
+        material["notes"] = f"Synced from roofing detail quantity template decision row {decision.get('workbook_row')}."
+
+
+def _build_roofing_board_fastener_template_decisions(
+    *,
+    scope: dict[str, Any],
+    board_row: dict[str, Any] | None,
+    fastener_row: dict[str, Any] | None,
+    plates_row: dict[str, Any] | None,
+    existing_rows: list[dict[str, Any]] | None = None,
+    data: Any = None,
+) -> list[dict[str, Any]]:
+    if _is_insulation_scope(scope):
+        return []
+
+    board_row = board_row or {}
+    fastener_row = fastener_row or {}
+    plates_row = plates_row or {}
+    existing_by_row = {str(row.get("workbook_row") or ""): row for row in existing_rows or [] if isinstance(row, dict)}
+    notes = _normalized(
+        " ".join(
+            str(scope.get(key) or "")
+            for key in ("notes", "raw_input_notes", "roof_condition", "project_type", "substrate", "roof_type_substrate")
+        )
+    )
+    board_signal = bool(
+        board_row.get("include")
+        or _has_positive_note_signal(
+            notes,
+            [
+                "cover board",
+                "iso board",
+                "dens deck",
+                "deck board",
+                "board stock",
+                "flute filler",
+                "wood fiber",
+                "wet insulation",
+                "damaged board",
+                "replace board",
+                "recover board",
+                "tear off",
+                "tearoff",
+            ],
+        )
+    )
+    default_selector = str(first_nonblank(board_row.get("selector_code"), _default_roofing_board_selector_code_for_scope(scope), "1"))
+    default_area = positive_number(
+        board_row.get("editable_basis_sqft"),
+        board_row.get("default_basis_sqft"),
+        _estimate_area(scope),
+        default=0.0,
+    )
+    default_selected_candidate = first_nonblank(board_row.get("item_name"), board_row.get("current_item"))
+
+    rows: list[dict[str, Any]] = []
+    for row_number in ROOFING_BOARD_TEMPLATE_ROWS:
+        row_key = str(row_number)
+        existing = existing_by_row.get(row_key, {})
+        include = bool(existing["include"]) if "include" in existing else bool(board_signal and row_number == ROOFING_BOARD_TEMPLATE_ROWS[0])
+        selector_code = str(
+            first_nonblank(
+                existing.get("editable_selector_code"),
+                existing.get("selector_code"),
+                _roofing_board_selector_code_for_option(existing.get("resolved_template_option")),
+                default_selector,
+            )
+        )
+        resolved_option = _resolved_roofing_board_option(selector_code, _resolved_roofing_board_option(default_selector, "ISO Board"))
+        candidates = _stored_candidates_from_row(existing)
+        if not (data is None and candidates):
+            candidates = _roofing_board_pricing_candidates(
+                board_row,
+                scope,
+                package="board_stock",
+                decision_id="roofing_board_stock",
+                data=data,
+                template_option=resolved_option,
+            )
+        selected_candidate = _selected_roofing_board_candidate(
+            candidates,
+            first_nonblank(existing.get("selected_pricing_candidate"), default_selected_candidate),
+        )
+        price_per_square = safe_number(
+            first_nonblank(
+                existing.get("price_per_square"),
+                existing.get("unit_price"),
+                selected_candidate.get("unit_price"),
+                board_row.get("current_unit_price"),
+                board_row.get("current_price"),
+            ),
+            0.0,
+        )
+        basis_sqft = positive_number(existing.get("basis_sqft"), board_row.get("editable_basis_sqft"), default_area if include else "", default=0.0)
+        thickness = safe_number(first_nonblank(existing.get("thickness_inches"), board_row.get("thickness_inches")), 0.0)
+        formula = calculate_roofing_board_stock(
+            area_sqft=basis_sqft,
+            thickness_inches=thickness,
+            price_per_square=price_per_square,
+            include=include,
+        )
+        compatibility = _roofing_board_candidate_compatibility(
+            package="board_stock",
+            template_option=resolved_option,
+            candidate=selected_candidate,
+            product_context=selected_candidate,
+        )
+        warnings = list(
+            dict.fromkeys([*(selected_candidate.get("compatibility_warnings") or []), *(compatibility.get("compatibility_warnings") or [])])
+        )
+        if include and basis_sqft <= 0:
+            warnings.append("Board area is missing; board cost formula requires estimator review.")
+        selected_name = selected_candidate.get("item_name") or str(default_selected_candidate or "")
+        rows.append(
+            {
+                "include": include,
+                "section": "roofing_board_fastener_template_decisions",
+                "decision_id": f"roofing_board_stock_row_{row_number}",
+                "template_bucket": "board_stock",
+                "workbook_row": row_key,
+                "selector_cell": f"A{row_number}",
+                "selector_code": selector_code,
+                "editable_selector_code": selector_code,
+                "resolved_template_option": resolved_option,
+                "selector_options": _roofing_board_selector_options(row_number),
+                "selector_options_json": json.dumps(_roofing_board_selector_options(row_number), default=str),
+                "historical_selector_recommendation": _resolved_roofing_board_option(default_selector, resolved_option),
+                "historical_selector_code": default_selector,
+                "historical_selector_evidence_count": int(safe_number(board_row.get("decision_evidence_count") or board_row.get("evidence_count"), 0)),
+                "historical_selector_confidence": board_row.get("decision_confidence") or board_row.get("confidence") or "",
+                "basis_sqft": round(basis_sqft, 2),
+                "thickness_inches": round(thickness, 4),
+                "price_per_square": round(price_per_square, 4),
+                "unit_price": round(price_per_square, 4),
+                "estimated_squares": formula.get("estimated_squares"),
+                "estimated_cost": formula.get("estimated_cost"),
+                "formula_model": formula.get("formula_model"),
+                "formula_source": formula.get("formula_source"),
+                "selected_pricing_candidate": selected_name,
+                "selected_pricing_item_id": selected_candidate.get("pricing_item_id"),
+                "pricing_candidates": candidates,
+                "pricing_candidates_json": json.dumps(candidates, default=str),
+                "compatibility_status": "review" if warnings and compatibility.get("compatibility_status") == "compatible" else compatibility.get("compatibility_status"),
+                "compatibility_warnings": warnings,
+                "product_guidance_status": "matched" if selected_candidate.get("product_id") else "missing",
+                "product_id": selected_candidate.get("product_id") or "",
+                "product_name": selected_candidate.get("product_name") or "",
+                "product_manufacturer": selected_candidate.get("manufacturer") or "",
+                "product_guidance": selected_candidate.get("product_guidance") or "",
+                "product_source_documents": selected_candidate.get("product_source_documents") or [],
+                "notes": (
+                    "Template selector is the estimator decision. Board area and price per square feed the workbook formula. "
+                    + (" ".join(warnings) if warnings else "Current board candidate fits the selected template option.")
+                ),
+                "decision_values": {
+                    "selector_code": selector_code,
+                    "resolved_template_option": resolved_option,
+                    "selected_pricing_candidate": selected_name,
+                    "basis_sqft": round(basis_sqft, 2),
+                    "thickness_inches": round(thickness, 4),
+                    "price_per_square": round(price_per_square, 4),
+                },
+                "editable_decision_value": {
+                    "selector_code": selector_code,
+                    "resolved_template_option": resolved_option,
+                    "selected_pricing_candidate": selected_name,
+                    "basis_sqft": round(basis_sqft, 2),
+                    "thickness_inches": round(thickness, 4),
+                    "price_per_square": round(price_per_square, 4),
+                },
+                "recommended_decision_value": {
+                    "selector_code": default_selector,
+                    "resolved_template_option": _resolved_roofing_board_option(default_selector, resolved_option),
+                    "evidence_count": int(safe_number(board_row.get("decision_evidence_count") or board_row.get("evidence_count"), 0)),
+                },
+                "calculated_output": formula.get("estimated_cost"),
+                "calculated_output_summary": _value_summary({"squares": formula.get("estimated_squares"), "cost": formula.get("estimated_cost")}),
+                "workbook_cell_write_preview": [
+                    {"cell": f"Estimate!A{row_number}", "field": "selector_code", "value": selector_code},
+                    {"cell": f"Estimate!C{row_number}", "field": "area_sqft", "value": round(basis_sqft, 2)},
+                    {"cell": f"Estimate!D{row_number}", "field": "thickness_inches", "value": round(thickness, 4)},
+                    {"cell": f"Estimate!E{row_number}", "field": "price_per_square", "value": round(price_per_square, 4)},
+                    {"cell": f"Estimate!H{row_number}", "field": "estimated_cost_formula_output", "value": formula.get("estimated_cost")},
+                ],
+            }
+        )
+
+    included_board_rows = [row for row in rows if row.get("template_bucket") == "board_stock" and row.get("include")]
+    primary_board_area = safe_number(included_board_rows[0].get("basis_sqft"), 0.0) if included_board_rows else 0.0
+    board_area_for_fasteners = positive_number(
+        *(row.get("basis_sqft") for row in included_board_rows),
+        *(row.get("board_area_sqft") for row in existing_rows or [] if isinstance(row, dict)),
+        default=0.0,
+    )
+    if board_area_for_fasteners <= 0:
+        board_area_for_fasteners = primary_board_area
+
+    for row_number, package, label, source_row, decision_id in (
+        (ROOFING_FASTENER_TEMPLATE_ROW, "fasteners", "Fasteners", fastener_row, "roofing_fasteners"),
+        (ROOFING_PLATES_TEMPLATE_ROW, "plates", "Plates", plates_row, "roofing_plates"),
+    ):
+        row_key = str(row_number)
+        existing = existing_by_row.get(row_key, {})
+        include = bool(existing["include"]) if "include" in existing else bool(included_board_rows)
+        candidates = _stored_candidates_from_row(existing)
+        if not (data is None and candidates):
+            candidates = _roofing_board_pricing_candidates(
+                source_row,
+                scope,
+                package=package,
+                decision_id=decision_id,
+                data=data,
+                template_option=label,
+            )
+        selected_candidate = _selected_roofing_board_candidate(
+            candidates,
+            first_nonblank(existing.get("selected_pricing_candidate"), source_row.get("item_name"), source_row.get("current_item")),
+        )
+        unit_price = safe_number(
+            first_nonblank(
+                existing.get("unit_price_per_thousand"),
+                existing.get("unit_price"),
+                selected_candidate.get("unit_price"),
+                source_row.get("current_unit_price"),
+                source_row.get("current_price"),
+            ),
+            0.0,
+        )
+        board_area = positive_number(existing.get("board_area_sqft"), board_area_for_fasteners, default=0.0)
+        formula = calculate_roofing_board_fasteners(
+            board_area_sqft=board_area,
+            unit_price_per_thousand=unit_price,
+            include=include,
+        )
+        compatibility = _roofing_board_candidate_compatibility(
+            package=package,
+            template_option=label,
+            candidate=selected_candidate,
+            product_context=selected_candidate,
+        )
+        warnings = list(
+            dict.fromkeys([*(selected_candidate.get("compatibility_warnings") or []), *(compatibility.get("compatibility_warnings") or [])])
+        )
+        if include and board_area <= 0:
+            warnings.append(f"{label} board area is missing; workbook formula requires estimator review.")
+        selected_name = selected_candidate.get("item_name") or str(first_nonblank(source_row.get("item_name"), source_row.get("current_item"), ""))
+        rows.append(
+            {
+                "include": include,
+                "section": "roofing_board_fastener_template_decisions",
+                "decision_id": f"{decision_id}_row_{row_number}",
+                "template_bucket": package,
+                "workbook_row": row_key,
+                "selector_cell": "",
+                "selector_code": "",
+                "editable_selector_code": "",
+                "resolved_template_option": label,
+                "selector_options": [],
+                "selector_options_json": "[]",
+                "historical_selector_recommendation": first_nonblank(source_row.get("recommended_decision_value"), label),
+                "historical_selector_code": "",
+                "historical_selector_evidence_count": int(safe_number(source_row.get("decision_evidence_count") or source_row.get("evidence_count"), 0)),
+                "historical_selector_confidence": source_row.get("decision_confidence") or source_row.get("confidence") or "",
+                "board_area_sqft": round(board_area, 2),
+                "unit_price_per_thousand": round(unit_price, 4),
+                "unit_price": round(unit_price, 4),
+                "estimated_units": formula.get("estimated_units"),
+                "estimated_cost": formula.get("estimated_cost"),
+                "formula_model": formula.get("formula_model"),
+                "formula_source": formula.get("formula_source"),
+                "selected_pricing_candidate": selected_name,
+                "selected_pricing_item_id": selected_candidate.get("pricing_item_id"),
+                "pricing_candidates": candidates,
+                "pricing_candidates_json": json.dumps(candidates, default=str),
+                "compatibility_status": "review" if warnings and compatibility.get("compatibility_status") == "compatible" else compatibility.get("compatibility_status"),
+                "compatibility_warnings": warnings,
+                "product_guidance_status": "matched" if selected_candidate.get("product_id") else "missing",
+                "product_id": selected_candidate.get("product_id") or "",
+                "product_name": selected_candidate.get("product_name") or "",
+                "product_manufacturer": selected_candidate.get("manufacturer") or "",
+                "product_guidance": selected_candidate.get("product_guidance") or "",
+                "product_source_documents": selected_candidate.get("product_source_documents") or [],
+                "notes": (
+                    f"{label} are calculated from the primary included board area using the workbook fastening pattern. "
+                    + (" ".join(warnings) if warnings else f"Current {label.lower()} candidate fits the selected template row.")
+                ),
+                "decision_values": {
+                    "resolved_template_option": label,
+                    "selected_pricing_candidate": selected_name,
+                    "board_area_sqft": round(board_area, 2),
+                    "unit_price_per_thousand": round(unit_price, 4),
+                },
+                "editable_decision_value": {
+                    "resolved_template_option": label,
+                    "selected_pricing_candidate": selected_name,
+                    "board_area_sqft": round(board_area, 2),
+                    "unit_price_per_thousand": round(unit_price, 4),
+                },
+                "recommended_decision_value": {
+                    "resolved_template_option": first_nonblank(source_row.get("recommended_decision_value"), label),
+                    "evidence_count": int(safe_number(source_row.get("decision_evidence_count") or source_row.get("evidence_count"), 0)),
+                },
+                "calculated_output": formula.get("estimated_cost"),
+                "calculated_output_summary": _value_summary({"units": formula.get("estimated_units"), "cost": formula.get("estimated_cost")}),
+                "workbook_cell_write_preview": [
+                    {"cell": f"Estimate!E{row_number}", "field": "unit_price_per_thousand", "value": round(unit_price, 4)},
+                    {"cell": f"Estimate!G{row_number}", "field": "estimated_units_formula_output", "value": formula.get("estimated_units")},
+                ],
+            }
+        )
+    return rows
+
+
+def _apply_roofing_board_fastener_template_decisions_to_materials(workbench: dict[str, Any]) -> None:
+    decisions = [
+        row
+        for row in workbench.get("roofing_board_fastener_template_decisions") or []
+        if isinstance(row, dict) and row.get("include")
+    ]
+    if not decisions:
+        return
+    board_rows = [row for row in decisions if str(row.get("template_bucket") or "") == "board_stock"]
+    fastener_rows = [row for row in decisions if str(row.get("template_bucket") or "") == "fasteners"]
+    plate_rows = [row for row in decisions if str(row.get("template_bucket") or "") == "plates"]
+
+    board_material = _board_stock_material_row(workbench.get("materials"))
+    if board_material and board_rows:
+        primary = board_rows[0]
+        total_area = sum(safe_number(row.get("basis_sqft"), 0.0) for row in board_rows)
+        total_squares = sum(safe_number(row.get("estimated_squares"), 0.0) for row in board_rows)
+        total_cost = sum(safe_number(row.get("estimated_cost"), 0.0) for row in board_rows)
+        board_material["include"] = True
+        board_material["selector_code"] = primary.get("editable_selector_code") or primary.get("selector_code")
+        board_material["resolved_template_option"] = primary.get("resolved_template_option")
+        board_material["template_selector_option"] = primary.get("resolved_template_option")
+        board_material["item_name"] = first_nonblank(primary.get("selected_pricing_candidate"), board_material.get("item_name"), board_material.get("current_item"))
+        board_material["current_item"] = board_material["item_name"]
+        board_material["editable_basis_sqft"] = round(total_area, 2)
+        board_material["default_basis_sqft"] = round(total_area, 2)
+        board_material["thickness_inches"] = safe_number(primary.get("thickness_inches"), 0.0)
+        board_material["estimated_squares"] = round(total_squares, 4)
+        board_material["calculated_quantity"] = round(total_squares, 4)
+        board_material["estimated_units"] = round(total_squares, 4)
+        board_material["estimated_cost"] = round(total_cost, 2)
+        board_material["current_unit_price"] = safe_number(primary.get("price_per_square") or primary.get("unit_price"), 0.0)
+        board_material["current_price"] = board_material["current_unit_price"]
+        board_material["editable_qty_per_sqft"] = round(total_squares / total_area, 8) if total_area > 0 and total_squares > 0 else 0.0
+        board_material["editable_default"] = board_material["editable_qty_per_sqft"]
+        board_material["unit"] = primary.get("unit") or "square"
+        board_material["formula_model"] = primary.get("formula_model")
+        board_material["formula_source"] = "roofing_board_fastener_template_decisions"
+        board_material["decision_values"] = {
+            "selector_code": board_material["selector_code"],
+            "resolved_template_option": board_material.get("resolved_template_option"),
+            "selected_pricing_candidate": board_material.get("item_name"),
+            "basis_sqft": round(total_area, 2),
+            "estimated_squares": round(total_squares, 4),
+            "estimated_cost": round(total_cost, 2),
+        }
+        board_material["editable_decision_value"] = dict(board_material["decision_values"])
+        board_material["calculated_output"] = board_material["estimated_cost"]
+        board_material["calculated_output_summary"] = _value_summary({"squares": round(total_squares, 4), "cost": round(total_cost, 2), "rows": len(board_rows)})
+        board_material["workbook_cell_write_preview"] = [write for decision in board_rows for write in (decision.get("workbook_cell_write_preview") or [])]
+        board_material["notes"] = "Synced from included roofing board stock template decision row(s)."
+
+    fastener_material = _fastener_material_row(workbench.get("materials"))
+    if fastener_material and fastener_rows:
+        primary = fastener_rows[0]
+        units = sum(safe_number(row.get("estimated_units"), 0.0) for row in fastener_rows)
+        cost = sum(safe_number(row.get("estimated_cost"), 0.0) for row in fastener_rows)
+        fastener_material["include"] = True
+        fastener_material["template_bucket"] = "fasteners"
+        fastener_material["package_key"] = "fasteners"
+        fastener_material["item_name"] = first_nonblank(primary.get("selected_pricing_candidate"), fastener_material.get("item_name"), fastener_material.get("current_item"))
+        fastener_material["current_item"] = fastener_material["item_name"]
+        fastener_material["calculated_quantity"] = round(units, 2)
+        fastener_material["estimated_units"] = round(units, 2)
+        fastener_material["estimated_cost"] = round(cost, 2)
+        fastener_material["current_unit_price"] = safe_number(primary.get("unit_price_per_thousand") or primary.get("unit_price"), 0.0)
+        fastener_material["current_price"] = fastener_material["current_unit_price"]
+        fastener_material["unit"] = primary.get("unit") or "m"
+        fastener_material["formula_model"] = primary.get("formula_model")
+        fastener_material["formula_source"] = "roofing_board_fastener_template_decisions"
+        fastener_material["decision_values"] = {
+            "selected_pricing_candidate": fastener_material.get("item_name"),
+            "board_area_sqft": primary.get("board_area_sqft"),
+            "estimated_units": round(units, 2),
+            "estimated_cost": round(cost, 2),
+        }
+        fastener_material["editable_decision_value"] = dict(fastener_material["decision_values"])
+        fastener_material["calculated_output"] = fastener_material["estimated_cost"]
+        fastener_material["calculated_output_summary"] = _value_summary({"units": round(units, 2), "cost": round(cost, 2)})
+        fastener_material["workbook_cell_write_preview"] = [write for decision in fastener_rows for write in (decision.get("workbook_cell_write_preview") or [])]
+        fastener_material["notes"] = "Synced from included roofing fastener template decision row(s)."
+
+    plates_material = _plates_material_row(workbench.get("materials"))
+    if plates_material and plate_rows:
+        primary = plate_rows[0]
+        units = sum(safe_number(row.get("estimated_units"), 0.0) for row in plate_rows)
+        cost = sum(safe_number(row.get("estimated_cost"), 0.0) for row in plate_rows)
+        plates_material["include"] = True
+        plates_material["item_name"] = first_nonblank(primary.get("selected_pricing_candidate"), plates_material.get("item_name"), plates_material.get("current_item"))
+        plates_material["current_item"] = plates_material["item_name"]
+        plates_material["calculated_quantity"] = round(units, 2)
+        plates_material["estimated_units"] = round(units, 2)
+        plates_material["estimated_cost"] = round(cost, 2)
+        plates_material["current_unit_price"] = safe_number(primary.get("unit_price_per_thousand") or primary.get("unit_price"), 0.0)
+        plates_material["current_price"] = plates_material["current_unit_price"]
+        plates_material["unit"] = primary.get("unit") or "m"
+        plates_material["formula_model"] = primary.get("formula_model")
+        plates_material["formula_source"] = "roofing_board_fastener_template_decisions"
+        plates_material["decision_values"] = {
+            "selected_pricing_candidate": plates_material.get("item_name"),
+            "board_area_sqft": primary.get("board_area_sqft"),
+            "estimated_units": round(units, 2),
+            "estimated_cost": round(cost, 2),
+        }
+        plates_material["editable_decision_value"] = dict(plates_material["decision_values"])
+        plates_material["calculated_output"] = plates_material["estimated_cost"]
+        plates_material["calculated_output_summary"] = _value_summary({"units": round(units, 2), "cost": round(cost, 2)})
+        plates_material["workbook_cell_write_preview"] = [write for decision in plate_rows for write in (decision.get("workbook_cell_write_preview") or [])]
+        plates_material["notes"] = "Synced from included roofing plate template decision row(s)."
+
+
+def _build_roofing_granules_template_decisions(
+    *,
+    scope: dict[str, Any],
+    granules_row: dict[str, Any] | None,
+    existing_rows: list[dict[str, Any]] | None = None,
+    data: Any = None,
+) -> list[dict[str, Any]]:
+    if _is_insulation_scope(scope):
+        return []
+
+    granules_row = granules_row or {}
+    existing = (existing_rows or [{}])[0] if existing_rows else {}
+    notes = _normalized(
+        " ".join(str(scope.get(key) or "") for key in ("notes", "raw_input_notes", "project_type", "coating_type", "scope_of_work"))
+    )
+    granules_signal = bool(
+        granules_row.get("include")
+        or _has_positive_note_signal(notes, ["granule", "granules", "broadcast", "mineral shield", "snow white", "walkway"])
+    )
+    include = bool(existing["include"]) if isinstance(existing, dict) and "include" in existing else granules_signal
+    default_selector = str(first_nonblank(granules_row.get("selector_code"), _default_roofing_granules_selector_code_for_scope(scope), "1"))
+    selector_code = str(
+        first_nonblank(
+            existing.get("editable_selector_code") if isinstance(existing, dict) else "",
+            existing.get("selector_code") if isinstance(existing, dict) else "",
+            _roofing_granules_selector_code_for_option(existing.get("resolved_template_option") if isinstance(existing, dict) else ""),
+            default_selector,
+        )
+    )
+    resolved_option = _resolved_roofing_granules_option(selector_code, _resolved_roofing_granules_option(default_selector, "3M"))
+    default_area = positive_number(
+        granules_row.get("editable_basis_sqft"),
+        granules_row.get("default_basis_sqft"),
+        _estimate_area(scope),
+        default=0.0,
+    )
+    basis_sqft = positive_number(
+        existing.get("basis_sqft") if isinstance(existing, dict) else None,
+        granules_row.get("editable_basis_sqft"),
+        default_area if include else "",
+        default=0.0,
+    )
+    coverage = positive_number(
+        existing.get("coverage_lbs_per_100_sqft") if isinstance(existing, dict) else None,
+        granules_row.get("coverage_lbs_per_100_sqft"),
+        ROOFING_GRANULES_DEFAULT_COVERAGE_LBS_PER_100_SQFT,
+        default=ROOFING_GRANULES_DEFAULT_COVERAGE_LBS_PER_100_SQFT,
+    )
+    bag_weight = positive_number(
+        existing.get("bag_weight_lbs") if isinstance(existing, dict) else None,
+        granules_row.get("bag_weight_lbs"),
+        ROOFING_GRANULES_DEFAULT_BAG_WEIGHT_LBS,
+        default=ROOFING_GRANULES_DEFAULT_BAG_WEIGHT_LBS,
+    )
+    stored_candidates = _stored_candidates_from_row(existing) if isinstance(existing, dict) else []
+    candidates = stored_candidates if data is None and stored_candidates else _roofing_granules_pricing_candidates(
+        granules_row,
+        scope,
+        data=data,
+        template_option=resolved_option,
+    )
+    selected_candidate = _selected_roofing_granules_candidate(
+        candidates,
+        first_nonblank(
+            existing.get("selected_pricing_candidate") if isinstance(existing, dict) else "",
+            granules_row.get("item_name"),
+            granules_row.get("current_item"),
+        ),
+    )
+    unit_price = safe_number(
+        first_nonblank(
+            existing.get("unit_price") if isinstance(existing, dict) else "",
+            selected_candidate.get("unit_price"),
+            granules_row.get("current_unit_price"),
+            granules_row.get("current_price"),
+        ),
+        0.0,
+    )
+    formula = calculate_roofing_granules(
+        area_sqft=basis_sqft,
+        coverage_lbs_per_100_sqft=coverage,
+        bag_weight_lbs=bag_weight,
+        unit_price=unit_price,
+        cost_per_sqft=granules_row.get("historical_cost_per_sqft"),
+        include=include,
+    )
+    compatibility = _roofing_granules_candidate_compatibility(
+        template_option=resolved_option,
+        candidate=selected_candidate,
+        product_context=selected_candidate,
+    )
+    warnings = list(
+        dict.fromkeys([*(selected_candidate.get("compatibility_warnings") or []), *(compatibility.get("compatibility_warnings") or [])])
+    )
+    if include and basis_sqft <= 0:
+        warnings.append("Granules area is missing; workbook formula requires estimator review.")
+    if include and unit_price <= 0:
+        warnings.append("Granules unit price is missing; cost preview is zero until pricing is selected.")
+    selected_name = selected_candidate.get("item_name") or str(first_nonblank(granules_row.get("item_name"), granules_row.get("current_item"), ""))
+    row = {
+        "include": include,
+        "section": "roofing_granules_template_decisions",
+        "decision_id": f"roofing_granules_row_{ROOFING_GRANULES_TEMPLATE_ROW}",
+        "template_bucket": "granules",
+        "workbook_row": str(ROOFING_GRANULES_TEMPLATE_ROW),
+        "selector_cell": f"A{ROOFING_GRANULES_TEMPLATE_ROW}",
+        "selector_code": selector_code,
+        "editable_selector_code": selector_code,
+        "resolved_template_option": resolved_option,
+        "selector_options": _roofing_granules_selector_options(ROOFING_GRANULES_TEMPLATE_ROW),
+        "selector_options_json": json.dumps(_roofing_granules_selector_options(ROOFING_GRANULES_TEMPLATE_ROW), default=str),
+        "historical_selector_recommendation": _resolved_roofing_granules_option(default_selector, resolved_option),
+        "historical_selector_code": default_selector,
+        "historical_selector_evidence_count": int(safe_number(granules_row.get("decision_evidence_count") or granules_row.get("evidence_count"), 0)),
+        "historical_selector_confidence": granules_row.get("decision_confidence") or granules_row.get("confidence") or "",
+        "basis_sqft": round(basis_sqft, 2),
+        "coverage_lbs_per_100_sqft": round(coverage, 4),
+        "bag_weight_lbs": round(bag_weight, 4),
+        "unit_price": round(unit_price, 4),
+        "estimated_units": formula.get("estimated_units"),
+        "calculated_quantity": formula.get("calculated_quantity"),
+        "estimated_cost": formula.get("estimated_cost"),
+        "formula_model": formula.get("formula_model"),
+        "formula_source": formula.get("formula_source"),
+        "selected_pricing_candidate": selected_name,
+        "selected_pricing_item_id": selected_candidate.get("pricing_item_id"),
+        "pricing_candidates": candidates,
+        "pricing_candidates_json": json.dumps(candidates, default=str),
+        "compatibility_status": "review" if warnings and compatibility.get("compatibility_status") == "compatible" else compatibility.get("compatibility_status"),
+        "compatibility_warnings": warnings,
+        "product_guidance_status": "matched" if selected_candidate.get("product_id") else "missing",
+        "product_id": selected_candidate.get("product_id") or "",
+        "product_name": selected_candidate.get("product_name") or "",
+        "product_manufacturer": selected_candidate.get("manufacturer") or "",
+        "product_guidance": selected_candidate.get("product_guidance") or "",
+        "product_source_documents": selected_candidate.get("product_source_documents") or [],
+        "notes": (
+            "Template selector is the estimator decision. Area, coverage rate, bag weight, and unit price feed the workbook formula. "
+            + (" ".join(warnings) if warnings else "Current granules candidate fits the selected template option.")
+        ),
+        "decision_values": {
+            "selector_code": selector_code,
+            "resolved_template_option": resolved_option,
+            "selected_pricing_candidate": selected_name,
+            "basis_sqft": round(basis_sqft, 2),
+            "coverage_lbs_per_100_sqft": round(coverage, 4),
+            "bag_weight_lbs": round(bag_weight, 4),
+            "unit_price": round(unit_price, 4),
+        },
+        "editable_decision_value": {
+            "selector_code": selector_code,
+            "resolved_template_option": resolved_option,
+            "selected_pricing_candidate": selected_name,
+            "basis_sqft": round(basis_sqft, 2),
+            "coverage_lbs_per_100_sqft": round(coverage, 4),
+            "bag_weight_lbs": round(bag_weight, 4),
+            "unit_price": round(unit_price, 4),
+        },
+        "recommended_decision_value": {
+            "selector_code": default_selector,
+            "resolved_template_option": _resolved_roofing_granules_option(default_selector, resolved_option),
+            "evidence_count": int(safe_number(granules_row.get("decision_evidence_count") or granules_row.get("evidence_count"), 0)),
+        },
+        "calculated_output": formula.get("estimated_cost"),
+        "calculated_output_summary": _value_summary({"bags": formula.get("estimated_units"), "cost": formula.get("estimated_cost")}),
+        "workbook_cell_write_preview": [
+            {"cell": f"Estimate!A{ROOFING_GRANULES_TEMPLATE_ROW}", "field": "selector_code", "value": selector_code},
+            {"cell": f"Estimate!C{ROOFING_GRANULES_TEMPLATE_ROW}", "field": "area_sqft", "value": round(basis_sqft, 2)},
+            {"cell": f"Estimate!E{ROOFING_GRANULES_TEMPLATE_ROW}", "field": "unit_price", "value": round(unit_price, 4)},
+            {"cell": f"Estimate!G{ROOFING_GRANULES_TEMPLATE_ROW}", "field": "estimated_units_formula_output", "value": formula.get("estimated_units")},
+        ],
+    }
+    return [row]
+
+
+def _apply_roofing_granules_template_decisions_to_materials(workbench: dict[str, Any]) -> None:
+    decisions = [
+        row
+        for row in workbench.get("roofing_granules_template_decisions") or []
+        if isinstance(row, dict) and row.get("include")
+    ]
+    if not decisions:
+        return
+    material = _granules_material_row(workbench.get("materials"))
+    if not material:
+        return
+    primary = decisions[0]
+    area = safe_number(primary.get("basis_sqft"), 0.0)
+    units = sum(safe_number(row.get("estimated_units"), 0.0) for row in decisions)
+    cost = sum(safe_number(row.get("estimated_cost"), 0.0) for row in decisions)
+    material["include"] = True
+    material["selector_code"] = primary.get("editable_selector_code") or primary.get("selector_code")
+    material["resolved_template_option"] = primary.get("resolved_template_option")
+    material["template_selector_option"] = primary.get("resolved_template_option")
+    material["item_name"] = first_nonblank(primary.get("selected_pricing_candidate"), material.get("item_name"), material.get("current_item"))
+    material["current_item"] = material["item_name"]
+    material["editable_basis_sqft"] = round(area, 2)
+    material["default_basis_sqft"] = round(area, 2)
+    material["coverage_lbs_per_100_sqft"] = safe_number(primary.get("coverage_lbs_per_100_sqft"), ROOFING_GRANULES_DEFAULT_COVERAGE_LBS_PER_100_SQFT)
+    material["bag_weight_lbs"] = safe_number(primary.get("bag_weight_lbs"), ROOFING_GRANULES_DEFAULT_BAG_WEIGHT_LBS)
+    material["calculated_quantity"] = round(units, 4)
+    material["estimated_units"] = round(units, 4)
+    material["estimated_cost"] = round(cost, 2)
+    material["current_unit_price"] = safe_number(primary.get("unit_price"), 0.0)
+    material["current_price"] = material["current_unit_price"]
+    material["editable_qty_per_sqft"] = round(units / area, 8) if area > 0 and units > 0 else 0.0
+    material["editable_default"] = material["editable_qty_per_sqft"]
+    material["unit"] = primary.get("unit") or "bag"
+    material["formula_model"] = primary.get("formula_model")
+    material["formula_source"] = "roofing_granules_template_decisions"
+    material["decision_values"] = {
+        "selector_code": material["selector_code"],
+        "resolved_template_option": material.get("resolved_template_option"),
+        "selected_pricing_candidate": material.get("item_name"),
+        "basis_sqft": round(area, 2),
+        "coverage_lbs_per_100_sqft": material["coverage_lbs_per_100_sqft"],
+        "bag_weight_lbs": material["bag_weight_lbs"],
+        "estimated_units": round(units, 4),
+        "estimated_cost": round(cost, 2),
+    }
+    material["editable_decision_value"] = dict(material["decision_values"])
+    material["calculated_output"] = material["estimated_cost"]
+    material["calculated_output_summary"] = _value_summary({"bags": round(units, 4), "cost": round(cost, 2)})
+    material["workbook_cell_write_preview"] = [write for decision in decisions for write in (decision.get("workbook_cell_write_preview") or [])]
+    material["notes"] = "Synced from included roofing granules template decision row(s)."
+
+
+def _build_roofing_equipment_template_decisions(
+    *,
+    scope: dict[str, Any],
+    adders: list[dict[str, Any]] | None = None,
+    existing_rows: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    if _is_insulation_scope(scope):
+        return []
+
+    adders = adders or []
+    existing_by_row = {str(row.get("workbook_row") or ""): row for row in existing_rows or [] if isinstance(row, dict)}
+    adder_by_key = {str(row.get("adder_key") or row.get("template_bucket") or "").lower(): row for row in adders if isinstance(row, dict)}
+    notes = _normalized(
+        " ".join(
+            str(scope.get(key) or "")
+            for key in ("notes", "raw_input_notes", "scope_of_work", "project_type", "roof_condition", "access_complexity")
+        )
+    )
+    area_default = _estimate_area(scope)
+
+    def adder_default(key: str) -> float:
+        row = adder_by_key.get(key) or {}
+        return safe_number(first_nonblank(row.get("editable_value"), row.get("historical_default_value"), row.get("median_cost_when_used")), 0.0)
+
+    rows: list[dict[str, Any]] = []
+
+    dumpster_options = _selector_options_from_roofing_graph(
+        "roofing_dumpsters",
+        ROOFING_DUMPSTER_SELECTOR_MAP,
+        row_number=ROOFING_DUMPSTER_TEMPLATE_ROW,
+    )
+    existing = existing_by_row.get(str(ROOFING_DUMPSTER_TEMPLATE_ROW), {})
+    dumpster_signal = bool(
+        (adder_by_key.get("dumpster") or {}).get("include")
+        or _has_positive_note_signal(notes, ["dumpster", "dumpsters", "tear off", "tearoff", "disposal", "remove wet", "wet insulation"])
+    )
+    include = bool(existing["include"]) if "include" in existing else dumpster_signal
+    default_selector = _default_roofing_dumpster_selector_code_for_scope(scope)
+    selector_code = str(
+        first_nonblank(
+            existing.get("editable_selector_code"),
+            existing.get("selector_code"),
+            _selector_code_for_roofing_option(existing.get("resolved_template_option"), ROOFING_DUMPSTER_SELECTOR_MAP, dumpster_options),
+            default_selector,
+        )
+    )
+    resolved_option = _resolved_roofing_equipment_option(selector_code, ROOFING_DUMPSTER_SELECTOR_MAP, dumpster_options, "40 Yard")
+    basis_sqft = positive_number(existing.get("basis_sqft"), area_default if include else "", default=0.0)
+    thickness = safe_number(first_nonblank(existing.get("thickness_inches"), existing.get("roof_thickness_inches")), 0.0)
+    unit_price = positive_number(
+        existing.get("unit_price"),
+        adder_default("dumpster"),
+        ROOFING_DUMPSTER_DEFAULT_UNIT_PRICE,
+        default=ROOFING_DUMPSTER_DEFAULT_UNIT_PRICE,
+    )
+    margin_pct = safe_number(first_nonblank(existing.get("margin_pct"), ROOFING_DUMPSTER_DEFAULT_MARGIN_PCT), ROOFING_DUMPSTER_DEFAULT_MARGIN_PCT)
+    formula = calculate_roofing_dumpster(
+        area_sqft=basis_sqft,
+        thickness_inches=thickness,
+        selector_code=selector_code,
+        unit_price=unit_price,
+        margin_pct=margin_pct,
+        include=include,
+    )
+    warnings = []
+    if include and basis_sqft <= 0:
+        warnings.append("Dumpster area is missing.")
+    if include and thickness <= 0:
+        warnings.append("Roof thickness is missing; dumpster count preview is zero until thickness is entered.")
+    if include and unit_price <= 0:
+        warnings.append("Dumpster unit price is missing.")
+    rows.append(
+        {
+            "include": include,
+            "section": "roofing_equipment_template_decisions",
+            "decision_id": f"roofing_dumpsters_row_{ROOFING_DUMPSTER_TEMPLATE_ROW}",
+            "template_bucket": "dumpster",
+            "workbook_row": str(ROOFING_DUMPSTER_TEMPLATE_ROW),
+            "selector_cell": f"A{ROOFING_DUMPSTER_TEMPLATE_ROW}",
+            "selector_code": selector_code,
+            "editable_selector_code": selector_code,
+            "resolved_template_option": resolved_option,
+            "selector_options": dumpster_options,
+            "selector_options_json": json.dumps(dumpster_options, default=str),
+            "historical_selector_recommendation": _resolved_roofing_equipment_option(default_selector, ROOFING_DUMPSTER_SELECTOR_MAP, dumpster_options, resolved_option),
+            "historical_selector_code": default_selector,
+            "historical_selector_evidence_count": int(safe_number((adder_by_key.get("dumpster") or {}).get("evidence_count"), 0)),
+            "historical_selector_confidence": (adder_by_key.get("dumpster") or {}).get("confidence") or "",
+            "basis_sqft": round(basis_sqft, 2),
+            "thickness_inches": round(thickness, 4),
+            "unit_price": round(unit_price, 4),
+            "margin_pct": round(margin_pct, 4),
+            "estimated_units": formula.get("estimated_units"),
+            "calculated_quantity": formula.get("calculated_quantity"),
+            "estimated_cost": formula.get("estimated_cost"),
+            "formula_model": formula.get("formula_model"),
+            "formula_source": formula.get("formula_source"),
+            "selected_pricing_candidate": resolved_option,
+            "compatibility_status": "review" if warnings else "compatible",
+            "compatibility_warnings": warnings,
+            "product_guidance": "",
+            "notes": "Template selector is the estimator decision. Area, roof thickness, unit price, and margin feed the dumpster formula."
+            + (" " + " ".join(warnings) if warnings else ""),
+            "decision_values": {
+                "selector_code": selector_code,
+                "resolved_template_option": resolved_option,
+                "basis_sqft": round(basis_sqft, 2),
+                "thickness_inches": round(thickness, 4),
+                "unit_price": round(unit_price, 4),
+                "margin_pct": round(margin_pct, 4),
+            },
+            "editable_decision_value": {
+                "selector_code": selector_code,
+                "resolved_template_option": resolved_option,
+                "basis_sqft": round(basis_sqft, 2),
+                "thickness_inches": round(thickness, 4),
+                "unit_price": round(unit_price, 4),
+                "margin_pct": round(margin_pct, 4),
+            },
+            "recommended_decision_value": {"selector_code": default_selector, "resolved_template_option": resolved_option},
+            "calculated_output": formula.get("estimated_cost"),
+            "calculated_output_summary": _value_summary({"dumpsters": formula.get("estimated_units"), "cost": formula.get("estimated_cost")}),
+            "workbook_cell_write_preview": [
+                {"cell": f"Estimate!A{ROOFING_DUMPSTER_TEMPLATE_ROW}", "field": "selector_code", "value": selector_code},
+                {"cell": f"Estimate!C{ROOFING_DUMPSTER_TEMPLATE_ROW}", "field": "area_sqft", "value": round(basis_sqft, 2)},
+                {"cell": f"Estimate!D{ROOFING_DUMPSTER_TEMPLATE_ROW}", "field": "thickness_inches", "value": round(thickness, 4)},
+                {"cell": f"Estimate!E{ROOFING_DUMPSTER_TEMPLATE_ROW}", "field": "unit_price", "value": round(unit_price, 4)},
+                {"cell": f"Estimate!F{ROOFING_DUMPSTER_TEMPLATE_ROW}", "field": "margin_pct", "value": round(margin_pct, 4)},
+                {"cell": f"Estimate!G{ROOFING_DUMPSTER_TEMPLATE_ROW}", "field": "estimated_units_formula_output", "value": formula.get("estimated_units")},
+            ],
+        }
+    )
+
+    lift_options = _selector_options_from_roofing_graph("roofing_lift_equipment", ROOFING_LIFT_SELECTOR_MAP)
+    lift_signal = bool(
+        (adder_by_key.get("lift") or {}).get("include")
+        or _has_positive_note_signal(notes, ["lift", "boom", "scissor", "forklift", "articulating", "difficult access", "high access"])
+    )
+    lift_default_selector = _default_roofing_lift_selector_code_for_scope(scope)
+    lift_default_cost = adder_default("lift")
+    for row_number in ROOFING_LIFT_TEMPLATE_ROWS:
+        row_options = [option for option in lift_options if int(safe_number(option.get("row_number"), row_number)) == row_number] or _selector_options_from_roofing_graph(
+            "roofing_lift_equipment",
+            ROOFING_LIFT_SELECTOR_MAP,
+            row_number=row_number,
+        )
+        existing = existing_by_row.get(str(row_number), {})
+        include = bool(existing["include"]) if "include" in existing else bool(lift_signal and row_number == ROOFING_LIFT_TEMPLATE_ROWS[0])
+        selector_code = str(
+            first_nonblank(
+                existing.get("editable_selector_code"),
+                existing.get("selector_code"),
+                _selector_code_for_roofing_option(existing.get("resolved_template_option"), ROOFING_LIFT_SELECTOR_MAP, row_options),
+                lift_default_selector,
+            )
+        )
+        resolved_option = _resolved_roofing_equipment_option(selector_code, ROOFING_LIFT_SELECTOR_MAP, row_options, "Forklift")
+        margin_pct = safe_number(first_nonblank(existing.get("margin_pct"), ROOFING_LIFT_DEFAULT_MARGIN_PCT), ROOFING_LIFT_DEFAULT_MARGIN_PCT)
+        period = safe_number(first_nonblank(existing.get("period"), existing.get("rental_period")), 0.0)
+        unit_price = safe_number(first_nonblank(existing.get("unit_price")), 0.0)
+        if include and period <= 0 and unit_price <= 0 and lift_default_cost > 0 and row_number == ROOFING_LIFT_TEMPLATE_ROWS[0]:
+            period = 1.0
+            unit_price = lift_default_cost / (1.0 + margin_pct / 100.0) if margin_pct > -100 else lift_default_cost
+        size = str(first_nonblank(existing.get("size"), ROOFING_LIFT_DEFAULT_SIZE))
+        formula = calculate_roofing_equipment_cost(period=period, unit_price=unit_price, margin_pct=margin_pct, include=include)
+        warnings = []
+        if include and period <= 0:
+            warnings.append("Rental period is missing.")
+        if include and unit_price <= 0:
+            warnings.append("Lift unit price is missing.")
+        rows.append(
+            {
+                "include": include,
+                "section": "roofing_equipment_template_decisions",
+                "decision_id": f"roofing_lift_equipment_row_{row_number}",
+                "template_bucket": "lift",
+                "workbook_row": str(row_number),
+                "selector_cell": f"A{row_number}",
+                "selector_code": selector_code,
+                "editable_selector_code": selector_code,
+                "resolved_template_option": resolved_option,
+                "selector_options": row_options,
+                "selector_options_json": json.dumps(row_options, default=str),
+                "historical_selector_recommendation": _resolved_roofing_equipment_option(lift_default_selector, ROOFING_LIFT_SELECTOR_MAP, row_options, resolved_option),
+                "historical_selector_code": lift_default_selector,
+                "historical_selector_evidence_count": int(safe_number((adder_by_key.get("lift") or {}).get("evidence_count"), 0)),
+                "historical_selector_confidence": (adder_by_key.get("lift") or {}).get("confidence") or "",
+                "size": size,
+                "period": round(period, 4),
+                "unit_price": round(unit_price, 4),
+                "margin_pct": round(margin_pct, 4),
+                "estimated_cost": formula.get("estimated_cost"),
+                "formula_model": formula.get("formula_model"),
+                "formula_source": formula.get("formula_source"),
+                "selected_pricing_candidate": resolved_option,
+                "compatibility_status": "review" if warnings else "compatible",
+                "compatibility_warnings": warnings,
+                "product_guidance": "",
+                "notes": "Template selector is the estimator decision. Size, rental period, unit price, and margin feed the lift formula."
+                + (" " + " ".join(warnings) if warnings else ""),
+                "decision_values": {
+                    "selector_code": selector_code,
+                    "resolved_template_option": resolved_option,
+                    "size": size,
+                    "period": round(period, 4),
+                    "unit_price": round(unit_price, 4),
+                    "margin_pct": round(margin_pct, 4),
+                },
+                "editable_decision_value": {
+                    "selector_code": selector_code,
+                    "resolved_template_option": resolved_option,
+                    "size": size,
+                    "period": round(period, 4),
+                    "unit_price": round(unit_price, 4),
+                    "margin_pct": round(margin_pct, 4),
+                },
+                "recommended_decision_value": {"selector_code": lift_default_selector, "resolved_template_option": resolved_option},
+                "calculated_output": formula.get("estimated_cost"),
+                "calculated_output_summary": _value_summary({"period": formula.get("period"), "cost": formula.get("estimated_cost")}),
+                "workbook_cell_write_preview": [
+                    {"cell": f"Estimate!A{row_number}", "field": "selector_code", "value": selector_code},
+                    {"cell": f"Estimate!C{row_number}", "field": "size", "value": size},
+                    {"cell": f"Estimate!D{row_number}", "field": "period", "value": round(period, 4)},
+                    {"cell": f"Estimate!E{row_number}", "field": "unit_price", "value": round(unit_price, 4)},
+                    {"cell": f"Estimate!F{row_number}", "field": "margin_pct", "value": round(margin_pct, 4)},
+                    {"cell": f"Estimate!H{row_number}", "field": "estimated_cost_formula_output", "value": formula.get("estimated_cost")},
+                ],
+            }
+        )
+
+    existing = existing_by_row.get(str(ROOFING_GENERATOR_TEMPLATE_ROW), {})
+    generator_signal = bool((adder_by_key.get("generator") or {}).get("include") or _has_positive_note_signal(notes, ["generator", "no power", "power unavailable"]))
+    include = bool(existing["include"]) if "include" in existing else generator_signal
+    days = safe_number(first_nonblank(existing.get("days"), existing.get("period"), ROOFING_GENERATOR_DEFAULT_DAYS if include else 0), 0.0)
+    unit_price = safe_number(first_nonblank(existing.get("unit_price"), ROOFING_GENERATOR_DEFAULT_UNIT_PRICE), ROOFING_GENERATOR_DEFAULT_UNIT_PRICE)
+    formula = calculate_roofing_days_rate_cost(days=days, unit_price=unit_price, include=include)
+    warnings = []
+    if include and days <= 0:
+        warnings.append("Generator days are missing.")
+    if include and unit_price <= 0:
+        warnings.append("Generator daily price is missing.")
+    rows.append(
+        {
+            "include": include,
+            "section": "roofing_equipment_template_decisions",
+            "decision_id": f"roofing_generator_row_{ROOFING_GENERATOR_TEMPLATE_ROW}",
+            "template_bucket": "generator",
+            "workbook_row": str(ROOFING_GENERATOR_TEMPLATE_ROW),
+            "resolved_template_option": "Generator",
+            "historical_selector_recommendation": "Generator",
+            "historical_selector_evidence_count": int(safe_number((adder_by_key.get("generator") or {}).get("evidence_count"), 0)),
+            "historical_selector_confidence": (adder_by_key.get("generator") or {}).get("confidence") or "",
+            "days": round(days, 4),
+            "unit_price": round(unit_price, 4),
+            "estimated_cost": formula.get("estimated_cost"),
+            "formula_model": formula.get("formula_model"),
+            "formula_source": formula.get("formula_source"),
+            "selected_pricing_candidate": "Generator",
+            "compatibility_status": "review" if warnings else "compatible",
+            "compatibility_warnings": warnings,
+            "product_guidance": "",
+            "notes": "Generator days and daily price feed the workbook formula." + (" " + " ".join(warnings) if warnings else ""),
+            "decision_values": {"days": round(days, 4), "unit_price": round(unit_price, 4)},
+            "editable_decision_value": {"days": round(days, 4), "unit_price": round(unit_price, 4)},
+            "recommended_decision_value": {"days": ROOFING_GENERATOR_DEFAULT_DAYS, "unit_price": ROOFING_GENERATOR_DEFAULT_UNIT_PRICE},
+            "calculated_output": formula.get("estimated_cost"),
+            "calculated_output_summary": _value_summary({"days": formula.get("days"), "cost": formula.get("estimated_cost")}),
+            "workbook_cell_write_preview": [
+                {"cell": f"Estimate!C{ROOFING_GENERATOR_TEMPLATE_ROW}", "field": "days", "value": round(days, 4)},
+                {"cell": f"Estimate!E{ROOFING_GENERATOR_TEMPLATE_ROW}", "field": "unit_price", "value": round(unit_price, 4)},
+                {"cell": f"Estimate!H{ROOFING_GENERATOR_TEMPLATE_ROW}", "field": "estimated_cost_formula_output", "value": formula.get("estimated_cost")},
+            ],
+        }
+    )
+    return rows
+
+
+def _apply_roofing_equipment_template_decisions_to_adders(workbench: dict[str, Any]) -> None:
+    decisions = [
+        row
+        for row in workbench.get("roofing_equipment_template_decisions") or []
+        if isinstance(row, dict) and row.get("include")
+    ]
+    if not decisions:
+        return
+    adders = workbench.setdefault("adders", [])
+    by_key = {str(row.get("adder_key") or row.get("template_bucket") or "").lower(): row for row in adders if isinstance(row, dict)}
+    label_by_key = {"dumpster": "Dumpster", "lift": "Lift", "generator": "Generator"}
+    row_by_key = {"dumpster": "69", "lift": "73/74", "generator": "99"}
+    for key in ("dumpster", "lift", "generator"):
+        selected = [row for row in decisions if str(row.get("template_bucket") or "").lower() == key]
+        if not selected:
+            continue
+        total = round(sum(safe_number(row.get("estimated_cost"), 0.0) for row in selected), 2)
+        adder = by_key.get(key)
+        if not adder:
+            adder = {
+                "adder": label_by_key[key],
+                "adder_key": key,
+                "template_bucket": key,
+                "workbook_row": row_by_key[key],
+                "historical_default_value": 0.0,
+                "median_cost_when_used": 0.0,
+                "evidence_count": 0,
+                "confidence": "review",
+            }
+            adders.append(adder)
+            by_key[key] = adder
+        adder["include"] = True
+        adder["editable_value"] = total
+        adder["editable_default"] = total
+        adder["estimated_cost"] = total
+        adder["manual_override"] = True
+        adder["source"] = "roofing_equipment_template_decisions"
+        adder["confidence"] = "review"
+        adder["notes"] = f"Synced from included roofing equipment template decision row(s): {', '.join(str(row.get('workbook_row')) for row in selected)}."
+        adder["decision_values"] = [row.get("decision_values") for row in selected]
+        adder["calculated_output_summary"] = _value_summary({"cost": total})
+        adder["workbook_cell_write_preview"] = [write for row in selected for write in (row.get("workbook_cell_write_preview") or [])]
+
+
+def _build_roofing_travel_freight_template_decisions(
+    *,
+    scope: dict[str, Any],
+    adders: list[dict[str, Any]] | None = None,
+    existing_rows: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    if _is_insulation_scope(scope):
+        return []
+    adders = adders or []
+    existing_by_row = {str(row.get("workbook_row") or ""): row for row in existing_rows or [] if isinstance(row, dict)}
+    adder_by_key = {str(row.get("adder_key") or row.get("template_bucket") or "").lower(): row for row in adders if isinstance(row, dict)}
+    notes = _normalized(
+        " ".join(
+            str(scope.get(key) or "")
+            for key in ("notes", "raw_input_notes", "scope_of_work", "project_type", "site_address", "address")
+        )
+    )
+
+    def adder_default(*keys: str) -> float:
+        for key in keys:
+            row = adder_by_key.get(key) or {}
+            value = safe_number(first_nonblank(row.get("editable_value"), row.get("historical_default_value"), row.get("median_cost_when_used")), 0.0)
+            if value > 0:
+                return value
+        return 0.0
+
+    rows: list[dict[str, Any]] = []
+
+    existing = existing_by_row.get(str(ROOFING_DELIVERY_FEE_TEMPLATE_ROW), {})
+    delivery_signal = bool(
+        (adder_by_key.get("delivery_fee") or {}).get("include")
+        or _has_positive_note_signal(notes, ["delivery", "deliver", "material drop", "supplier delivery"])
+    )
+    include = bool(existing["include"]) if "include" in existing else delivery_signal
+    delivery_default = adder_default("delivery_fee")
+    units = safe_number(first_nonblank(existing.get("estimated_units"), existing.get("units"), existing.get("quantity")), 0.0)
+    unit_price = safe_number(first_nonblank(existing.get("unit_price")), 0.0)
+    if include and units <= 0 and unit_price <= 0 and delivery_default > 0:
+        units = 1.0
+        unit_price = delivery_default
+    formula = calculate_roofing_units_cost(
+        units=units,
+        unit_price=unit_price,
+        include=include,
+        formula_model="delivery_fee_units_rate_cost",
+    )
+    warnings = []
+    if include and units <= 0:
+        warnings.append("Delivery unit count is missing.")
+    if include and unit_price <= 0:
+        warnings.append("Delivery unit price is missing.")
+    rows.append(
+        {
+            "include": include,
+            "section": "roofing_travel_freight_template_decisions",
+            "decision_id": f"roofing_delivery_fee_row_{ROOFING_DELIVERY_FEE_TEMPLATE_ROW}",
+            "template_bucket": "delivery_fee",
+            "workbook_row": str(ROOFING_DELIVERY_FEE_TEMPLATE_ROW),
+            "resolved_template_option": "Delivery Fee",
+            "estimated_units": formula.get("estimated_units") or formula.get("units"),
+            "units": formula.get("units"),
+            "unit_price": round(unit_price, 4),
+            "estimated_cost": formula.get("estimated_cost"),
+            "formula_model": formula.get("formula_model"),
+            "formula_source": formula.get("formula_source"),
+            "compatibility_status": "review" if warnings else "compatible",
+            "compatibility_warnings": warnings,
+            "notes": "Delivery fee uses the workbook units x unit price formula." + (" " + " ".join(warnings) if warnings else ""),
+            "decision_values": {"units": formula.get("units"), "unit_price": round(unit_price, 4)},
+            "editable_decision_value": {"units": formula.get("units"), "unit_price": round(unit_price, 4)},
+            "recommended_decision_value": {"historical_default_amount": delivery_default},
+            "calculated_output": formula.get("estimated_cost"),
+            "calculated_output_summary": _value_summary({"units": formula.get("units"), "cost": formula.get("estimated_cost")}),
+            "workbook_cell_write_preview": [
+                {"cell": f"Estimate!E{ROOFING_DELIVERY_FEE_TEMPLATE_ROW}", "field": "unit_price", "value": round(unit_price, 4)},
+                {"cell": f"Estimate!G{ROOFING_DELIVERY_FEE_TEMPLATE_ROW}", "field": "estimated_units", "value": formula.get("units")},
+                {"cell": f"Estimate!H{ROOFING_DELIVERY_FEE_TEMPLATE_ROW}", "field": "estimated_cost_formula_output", "value": formula.get("estimated_cost")},
+            ],
+        }
+    )
+
+    existing = existing_by_row.get(str(ROOFING_FREIGHT_TEMPLATE_ROW), {})
+    freight_signal = bool((adder_by_key.get("freight") or {}).get("include") or _has_positive_note_signal(notes, ["freight", "shipping"]))
+    include = bool(existing["include"]) if "include" in existing else freight_signal
+    freight_amount = safe_number(
+        first_nonblank(existing.get("amount"), existing.get("estimated_cost"), existing.get("unit_price"), adder_default("freight")),
+        0.0,
+    )
+    formula = calculate_roofing_direct_cost(amount=freight_amount, include=include)
+    warnings = ["Freight amount is missing."] if include and freight_amount <= 0 else []
+    rows.append(
+        {
+            "include": include,
+            "section": "roofing_travel_freight_template_decisions",
+            "decision_id": f"roofing_freight_row_{ROOFING_FREIGHT_TEMPLATE_ROW}",
+            "template_bucket": "freight",
+            "workbook_row": str(ROOFING_FREIGHT_TEMPLATE_ROW),
+            "resolved_template_option": "Freight",
+            "amount": round(freight_amount, 2),
+            "unit_price": round(freight_amount, 2),
+            "estimated_cost": formula.get("estimated_cost"),
+            "formula_model": formula.get("formula_model"),
+            "formula_source": formula.get("formula_source"),
+            "compatibility_status": "review" if warnings else "compatible",
+            "compatibility_warnings": warnings,
+            "notes": "Freight uses the direct workbook amount in row 103." + (" " + " ".join(warnings) if warnings else ""),
+            "decision_values": {"amount": round(freight_amount, 2)},
+            "editable_decision_value": {"amount": round(freight_amount, 2)},
+            "recommended_decision_value": {"historical_default_amount": adder_default("freight")},
+            "calculated_output": formula.get("estimated_cost"),
+            "calculated_output_summary": _value_summary({"cost": formula.get("estimated_cost")}),
+            "workbook_cell_write_preview": [
+                {"cell": f"Estimate!E{ROOFING_FREIGHT_TEMPLATE_ROW}", "field": "estimated_cost", "value": round(freight_amount, 2)},
+                {"cell": f"Estimate!H{ROOFING_FREIGHT_TEMPLATE_ROW}", "field": "estimated_cost_formula_output", "value": formula.get("estimated_cost")},
+            ],
+        }
+    )
+
+    travel_specs = [
+        (
+            ROOFING_SALES_INSPECTION_TEMPLATE_ROW,
+            "sales_trips",
+            "Sales / Inspection Trips",
+            ["sales trip", "sales trips", "inspection", "inspect", "site visit"],
+            ROOFING_SALES_INSPECTION_DEFAULT_TRIPS,
+            ROOFING_SALES_INSPECTION_DEFAULT_RATE,
+            ("sales_trips", "inspection"),
+        ),
+        (
+            ROOFING_TRUCK_EXPENSE_TEMPLATE_ROW,
+            "truck_expense",
+            "Truck Expense",
+            ["truck", "truck expense", "travel", "miles", "mobilization"],
+            ROOFING_TRUCK_EXPENSE_DEFAULT_TRIPS,
+            ROOFING_TRUCK_EXPENSE_DEFAULT_RATE,
+            ("truck_expense", "travel"),
+        ),
+    ]
+    for row_number, bucket, label, signal_terms, default_trips, default_rate, adder_keys in travel_specs:
+        existing = existing_by_row.get(str(row_number), {})
+        signal = bool(any((adder_by_key.get(key) or {}).get("include") for key in adder_keys) or _has_positive_note_signal(notes, signal_terms))
+        include = bool(existing["include"]) if "include" in existing else signal
+        default_amount = adder_default(*adder_keys)
+        trips = safe_number(first_nonblank(existing.get("trip_count"), existing.get("trips")), 0.0)
+        miles = safe_number(first_nonblank(existing.get("round_trip_miles"), existing.get("miles")), 0.0)
+        rate = safe_number(first_nonblank(existing.get("unit_price"), existing.get("rate")), 0.0)
+        if include and trips <= 0:
+            trips = default_trips
+        if include and miles <= 0:
+            miles = ROOFING_TRAVEL_DEFAULT_ROUND_TRIP_MILES
+        if include and rate <= 0:
+            rate = default_amount / (trips * miles) if default_amount > 0 and trips > 0 and miles > 0 else default_rate
+        formula = calculate_roofing_travel_cost(
+            trip_count=trips,
+            round_trip_miles=miles,
+            unit_price=rate,
+            include=include,
+        )
+        warnings = []
+        if include and trips <= 0:
+            warnings.append("Trip count is missing.")
+        if include and miles <= 0:
+            warnings.append("Round-trip miles are missing.")
+        if include and rate <= 0:
+            warnings.append("Mileage rate is missing.")
+        rows.append(
+            {
+                "include": include,
+                "section": "roofing_travel_freight_template_decisions",
+                "decision_id": f"roofing_{bucket}_row_{row_number}",
+                "template_bucket": bucket,
+                "workbook_row": str(row_number),
+                "resolved_template_option": label,
+                "trip_count": formula.get("trip_count"),
+                "round_trip_miles": formula.get("round_trip_miles"),
+                "unit_price": formula.get("unit_price"),
+                "estimated_cost": formula.get("estimated_cost"),
+                "formula_model": formula.get("formula_model"),
+                "formula_source": formula.get("formula_source"),
+                "compatibility_status": "review" if warnings else "compatible",
+                "compatibility_warnings": warnings,
+                "notes": f"{label} uses trips x round-trip miles x rate in the workbook." + (" " + " ".join(warnings) if warnings else ""),
+                "decision_values": {
+                    "trip_count": formula.get("trip_count"),
+                    "round_trip_miles": formula.get("round_trip_miles"),
+                    "unit_price": formula.get("unit_price"),
+                },
+                "editable_decision_value": {
+                    "trip_count": formula.get("trip_count"),
+                    "round_trip_miles": formula.get("round_trip_miles"),
+                    "unit_price": formula.get("unit_price"),
+                },
+                "recommended_decision_value": {"historical_default_amount": default_amount},
+                "calculated_output": formula.get("estimated_cost"),
+                "calculated_output_summary": _value_summary(
+                    {
+                        "trips": formula.get("trip_count"),
+                        "miles": formula.get("round_trip_miles"),
+                        "cost": formula.get("estimated_cost"),
+                    }
+                ),
+                "workbook_cell_write_preview": [
+                    {"cell": f"Estimate!B{row_number}", "field": "trip_count", "value": formula.get("trip_count")},
+                    {"cell": f"Estimate!C{row_number}", "field": "round_trip_miles", "value": formula.get("round_trip_miles")},
+                    {"cell": f"Estimate!E{row_number}", "field": "unit_price", "value": formula.get("unit_price")},
+                    {"cell": f"Estimate!H{row_number}", "field": "estimated_cost_formula_output", "value": formula.get("estimated_cost")},
+                ],
+            }
+        )
+    return rows
+
+
+def _apply_roofing_travel_freight_template_decisions_to_adders(workbench: dict[str, Any]) -> None:
+    decisions = [
+        row
+        for row in workbench.get("roofing_travel_freight_template_decisions") or []
+        if isinstance(row, dict) and row.get("include")
+    ]
+    if not decisions:
+        return
+    adders = workbench.setdefault("adders", [])
+    by_key = {str(row.get("adder_key") or row.get("template_bucket") or "").lower(): row for row in adders if isinstance(row, dict)}
+    label_by_key = {
+        "delivery_fee": "Delivery Fee",
+        "freight": "Freight",
+        "sales_trips": "Sales Trips",
+        "truck_expense": "Truck Expense",
+    }
+    row_by_key = {"delivery_fee": "76", "freight": "103", "sales_trips": "106", "truck_expense": "108"}
+    for key in ("delivery_fee", "freight", "sales_trips", "truck_expense"):
+        selected = [row for row in decisions if str(row.get("template_bucket") or "").lower() == key]
+        if not selected:
+            continue
+        total = round(sum(safe_number(row.get("estimated_cost"), 0.0) for row in selected), 2)
+        adder = by_key.get(key)
+        if not adder:
+            adder = {
+                "adder": label_by_key[key],
+                "adder_key": key,
+                "template_bucket": key,
+                "workbook_row": row_by_key[key],
+                "historical_default_value": 0.0,
+                "median_cost_when_used": 0.0,
+                "evidence_count": 0,
+                "confidence": "review",
+            }
+            adders.append(adder)
+            by_key[key] = adder
+        adder["include"] = True
+        adder["editable_value"] = total
+        adder["editable_default"] = total
+        adder["estimated_cost"] = total
+        adder["manual_override"] = True
+        adder["source"] = "roofing_travel_freight_template_decisions"
+        adder["confidence"] = "review"
+        adder["notes"] = f"Synced from included roofing travel/freight template decision row(s): {', '.join(str(row.get('workbook_row')) for row in selected)}."
+        adder["decision_values"] = [row.get("decision_values") for row in selected]
+        adder["calculated_output_summary"] = _value_summary({"cost": total})
+        adder["workbook_cell_write_preview"] = [write for row in selected for write in (row.get("workbook_cell_write_preview") or [])]
+
+
+def _roofing_thinner_selector_options(row_number: int = ROOFING_THINNER_TEMPLATE_ROW) -> list[dict[str, Any]]:
+    return [
+        {
+            "selector_code": code,
+            "resolved_template_option": label,
+            "resolved_item_name": label,
+            "row_number": row_number,
+            "selector_cell": f"A{row_number}",
+            "resolved_cell": f"B{row_number}",
+            "decision_id": "roofing_thinner",
+            "template_type": "roofing",
+            "source_type": "row_selector_map",
+        }
+        for code, label in ROOFING_THINNER_SELECTOR_MAP.items()
+    ]
+
+
+def _resolved_roofing_thinner_option(selector_code: Any, fallback: str = "Naphtha VM&P") -> str:
+    code = str(first_nonblank(selector_code, "1")).strip()
+    if code.endswith(".0"):
+        code = code[:-2]
+    return ROOFING_THINNER_SELECTOR_MAP.get(code, fallback)
+
+
+def _coating_gallons_from_decisions(decisions: list[dict[str, Any]] | None, materials: list[dict[str, Any]] | None) -> float:
+    gallons = sum(
+        safe_number(row.get("estimated_gallons") or row.get("calculated_quantity"), 0.0)
+        for row in decisions or []
+        if isinstance(row, dict) and row.get("include")
+    )
+    if gallons > 0:
+        return gallons
+    return sum(
+        safe_number(row.get("estimated_gallons") or row.get("calculated_quantity"), 0.0)
+        for row in materials or []
+        if isinstance(row, dict) and row.get("include") and str(row.get("package_key") or row.get("template_bucket") or "").lower() == "coating"
+    )
+
+
+def _build_roofing_accessory_template_decisions(
+    *,
+    scope: dict[str, Any],
+    materials: list[dict[str, Any]] | None = None,
+    coating_decisions: list[dict[str, Any]] | None = None,
+    existing_rows: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    if _is_insulation_scope(scope):
+        return []
+    materials = materials or []
+    existing_by_row = {str(row.get("workbook_row") or ""): row for row in existing_rows or [] if isinstance(row, dict)}
+    material_by_key = {str(row.get("package_key") or row.get("template_bucket") or "").lower(): row for row in materials if isinstance(row, dict)}
+    notes = _normalized(" ".join(str(scope.get(key) or "") for key in ("notes", "raw_input_notes", "scope_of_work", "project_type")))
+    rows: list[dict[str, Any]] = []
+
+    existing = existing_by_row.get(str(ROOFING_THINNER_TEMPLATE_ROW), {})
+    thinner_material = material_by_key.get("thinner") or {}
+    thinner_signal = bool((thinner_material or {}).get("include") or _has_positive_note_signal(notes, ["thinner", "solvent", "xylene", "mineral spirits", "naphtha"]))
+    include = bool(existing["include"]) if "include" in existing else thinner_signal
+    selector_code = str(first_nonblank(existing.get("editable_selector_code"), existing.get("selector_code"), "1")).strip()
+    if selector_code.endswith(".0"):
+        selector_code = selector_code[:-2]
+    resolved_option = _resolved_roofing_thinner_option(selector_code)
+    unit_price = safe_number(first_nonblank(existing.get("unit_price"), thinner_material.get("current_unit_price"), thinner_material.get("current_price")), 0.0)
+    coating_gallons = safe_number(first_nonblank(existing.get("total_coating_gallons")), 0.0)
+    if coating_gallons <= 0:
+        coating_gallons = _coating_gallons_from_decisions(coating_decisions, materials)
+    formula = calculate_roofing_thinner(total_coating_gallons=coating_gallons, unit_price=unit_price, include=include)
+    warnings = []
+    if include and coating_gallons <= 0:
+        warnings.append("Coating gallons are missing; thinner formula depends on rows 26-28.")
+    if include and unit_price <= 0:
+        warnings.append("Thinner unit price is missing.")
+    rows.append(
+        {
+            "include": include,
+            "section": "roofing_accessory_template_decisions",
+            "decision_id": f"roofing_thinner_row_{ROOFING_THINNER_TEMPLATE_ROW}",
+            "template_bucket": "thinner",
+            "workbook_row": str(ROOFING_THINNER_TEMPLATE_ROW),
+            "selector_cell": f"A{ROOFING_THINNER_TEMPLATE_ROW}",
+            "selector_code": selector_code,
+            "editable_selector_code": selector_code,
+            "resolved_template_option": resolved_option,
+            "selector_options": _roofing_thinner_selector_options(),
+            "selector_options_json": json.dumps(_roofing_thinner_selector_options(), default=str),
+            "total_coating_gallons": round(coating_gallons, 4),
+            "estimated_units": formula.get("estimated_units"),
+            "unit_price": round(unit_price, 4),
+            "estimated_cost": formula.get("estimated_cost"),
+            "formula_model": formula.get("formula_model"),
+            "formula_source": formula.get("formula_source"),
+            "compatibility_status": "review" if warnings else "compatible",
+            "compatibility_warnings": warnings,
+            "notes": "Thinner uses the workbook formula ((coating gallons rows 26-28)/55)*4." + (" " + " ".join(warnings) if warnings else ""),
+            "decision_values": {
+                "selector_code": selector_code,
+                "resolved_template_option": resolved_option,
+                "total_coating_gallons": round(coating_gallons, 4),
+                "unit_price": round(unit_price, 4),
+            },
+            "editable_decision_value": {
+                "selector_code": selector_code,
+                "resolved_template_option": resolved_option,
+                "total_coating_gallons": round(coating_gallons, 4),
+                "unit_price": round(unit_price, 4),
+            },
+            "recommended_decision_value": {"selector_code": selector_code, "resolved_template_option": resolved_option},
+            "calculated_output": formula.get("estimated_cost"),
+            "calculated_output_summary": _value_summary({"units": formula.get("estimated_units"), "cost": formula.get("estimated_cost")}),
+            "workbook_cell_write_preview": [
+                {"cell": f"Estimate!A{ROOFING_THINNER_TEMPLATE_ROW}", "field": "selector_code", "value": selector_code},
+                {"cell": f"Estimate!E{ROOFING_THINNER_TEMPLATE_ROW}", "field": "unit_price", "value": round(unit_price, 4)},
+                {"cell": f"Estimate!G{ROOFING_THINNER_TEMPLATE_ROW}", "field": "estimated_units_formula_output", "value": formula.get("estimated_units")},
+            ],
+        }
+    )
+
+    material_key_by_bucket = {"gutter": "gutter_downspouts", "downspouts": "gutter_downspouts"}
+    for spec in ROOFING_ACCESSORY_TEMPLATE_SPECS:
+        row_number = int(spec["row"])
+        bucket = str(spec["bucket"])
+        row_key = str(row_number)
+        existing = existing_by_row.get(row_key, {})
+        material = material_by_key.get(material_key_by_bucket.get(bucket, bucket)) or {}
+        signal = bool((material or {}).get("include") or _has_positive_note_signal(notes, spec.get("signals") or []))
+        include = bool(existing["include"]) if "include" in existing else signal
+        formula_model = str(spec["formula"])
+        unit_price = safe_number(first_nonblank(existing.get("unit_price"), material.get("current_unit_price"), material.get("current_price")), 0.0)
+        amount = safe_number(first_nonblank(existing.get("amount"), existing.get("estimated_cost"), material.get("estimated_cost")), 0.0)
+        if formula_model == "linear_feet_unit_cost":
+            units = positive_number(
+                existing.get("linear_ft"),
+                existing.get("units"),
+                existing.get("estimated_units"),
+                existing.get("calculated_quantity"),
+                material.get("calculated_quantity"),
+                default=0.0,
+            )
+        else:
+            units = positive_number(
+                existing.get("estimated_units"),
+                existing.get("units"),
+                existing.get("linear_ft"),
+                existing.get("calculated_quantity"),
+                material.get("calculated_quantity"),
+                default=0.0,
+            )
+        if formula_model == "direct_cost":
+            formula = calculate_roofing_direct_cost(amount=amount, include=include)
+        elif formula_model == "linear_feet_unit_cost":
+            formula = calculate_roofing_linear_feet_cost(linear_ft=units, unit_price=unit_price, include=include)
+        else:
+            formula = calculate_roofing_units_cost(
+                units=units,
+                unit_price=unit_price,
+                include=include,
+                formula_model=formula_model,
+            )
+        warnings = []
+        if include and formula_model != "direct_cost" and units <= 0:
+            warnings.append("Quantity is missing.")
+        if include and formula_model != "direct_cost" and unit_price <= 0:
+            warnings.append("Unit price is missing.")
+        if include and formula_model == "direct_cost" and amount <= 0:
+            warnings.append("Amount is missing.")
+        decision_values = {"unit_price": round(unit_price, 4)}
+        if formula_model == "linear_feet_unit_cost":
+            decision_values["linear_ft"] = formula.get("linear_ft")
+        elif formula_model == "direct_cost":
+            decision_values["amount"] = round(amount, 2)
+        else:
+            decision_values["units"] = formula.get("units")
+        rows.append(
+            {
+                "include": include,
+                "section": "roofing_accessory_template_decisions",
+                "decision_id": f"roofing_{bucket}_row_{row_number}",
+                "template_bucket": bucket,
+                "workbook_row": row_key,
+                "resolved_template_option": spec["label"],
+                "linear_ft": formula.get("linear_ft"),
+                "units": formula.get("units"),
+                "estimated_units": formula.get("estimated_units") or formula.get("units"),
+                "amount": round(amount, 2) if formula_model == "direct_cost" else 0.0,
+                "unit_price": round(unit_price, 4),
+                "estimated_cost": formula.get("estimated_cost"),
+                "formula_model": formula.get("formula_model"),
+                "formula_source": formula.get("formula_source"),
+                "compatibility_status": "review" if warnings else "compatible",
+                "compatibility_warnings": warnings,
+                "notes": f"{spec['label']} uses the workbook {formula_model} formula." + (" " + " ".join(warnings) if warnings else ""),
+                "decision_values": decision_values,
+                "editable_decision_value": dict(decision_values),
+                "recommended_decision_value": {"resolved_template_option": spec["label"]},
+                "calculated_output": formula.get("estimated_cost"),
+                "calculated_output_summary": _value_summary({**decision_values, "cost": formula.get("estimated_cost")}),
+                "workbook_cell_write_preview": _accessory_cell_preview(row_number, bucket, formula_model, decision_values, formula),
+            }
+        )
+    return rows
+
+
+def _accessory_cell_preview(
+    row_number: int,
+    bucket: str,
+    formula_model: str,
+    decision_values: dict[str, Any],
+    formula: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if bucket == "thinner":
+        return []
+    if formula_model == "direct_cost":
+        amount = decision_values.get("amount")
+        return [
+            {"cell": f"Estimate!E{row_number}", "field": "amount", "value": amount},
+            {"cell": f"Estimate!H{row_number}", "field": "estimated_cost_formula_output", "value": formula.get("estimated_cost")},
+        ]
+    if formula_model == "linear_feet_unit_cost":
+        return [
+            {"cell": f"Estimate!C{row_number}", "field": "linear_ft", "value": decision_values.get("linear_ft")},
+            {"cell": f"Estimate!E{row_number}", "field": "unit_price", "value": decision_values.get("unit_price")},
+            {"cell": f"Estimate!H{row_number}", "field": "estimated_cost_formula_output", "value": formula.get("estimated_cost")},
+        ]
+    return [
+        {"cell": f"Estimate!E{row_number}", "field": "unit_price", "value": decision_values.get("unit_price")},
+        {"cell": f"Estimate!G{row_number}", "field": "units", "value": decision_values.get("units")},
+        {"cell": f"Estimate!H{row_number}", "field": "estimated_cost_formula_output", "value": formula.get("estimated_cost")},
+    ]
+
+
+def _apply_roofing_accessory_template_decisions_to_materials(workbench: dict[str, Any]) -> None:
+    decisions = [
+        row
+        for row in workbench.get("roofing_accessory_template_decisions") or []
+        if isinstance(row, dict) and row.get("include")
+    ]
+    if not decisions:
+        return
+    materials = workbench.setdefault("materials", [])
+    by_key = {str(row.get("package_key") or row.get("template_bucket") or "").lower(): row for row in materials if isinstance(row, dict)}
+    for decision in decisions:
+        key = str(decision.get("template_bucket") or "").lower()
+        material = by_key.get(key)
+        if not material:
+            material = {
+                "package": decision.get("resolved_template_option") or key,
+                "package_key": key,
+                "template_bucket": key,
+                "workbook_row": decision.get("workbook_row"),
+                "historical_qty_per_sqft": 0.0,
+                "editable_qty_per_sqft": 0.0,
+                "historical_cost_per_sqft": 0.0,
+                "evidence_count": 0,
+                "confidence": "review",
+                "source": "roofing_accessory_template_decisions",
+            }
+            materials.append(material)
+            by_key[key] = material
+        quantity = safe_number(
+            first_nonblank(decision.get("estimated_units"), decision.get("units"), decision.get("linear_ft")),
+            0.0,
+        )
+        material["include"] = True
+        material["item_name"] = decision.get("resolved_template_option")
+        material["current_item"] = decision.get("resolved_template_option")
+        material["workbook_row"] = decision.get("workbook_row")
+        material["calculated_quantity"] = quantity
+        material["estimated_units"] = quantity
+        material["linear_ft"] = safe_number(decision.get("linear_ft"), 0.0)
+        material["amount"] = safe_number(decision.get("amount"), 0.0)
+        material["current_unit_price"] = safe_number(decision.get("unit_price"), 0.0)
+        material["current_price"] = material["current_unit_price"]
+        material["estimated_cost"] = safe_number(decision.get("estimated_cost"), 0.0)
+        material["formula_model"] = decision.get("formula_model")
+        material["formula_source"] = "roofing_accessory_template_decisions"
+        material["selector_code"] = decision.get("editable_selector_code") or decision.get("selector_code")
+        material["resolved_template_option"] = decision.get("resolved_template_option")
+        material["unit"] = "lf" if material["linear_ft"] else "unit"
+        material["decision_values"] = decision.get("decision_values")
+        material["editable_decision_value"] = decision.get("editable_decision_value")
+        material["calculated_output"] = material["estimated_cost"]
+        material["calculated_output_summary"] = decision.get("calculated_output_summary")
+        material["workbook_cell_write_preview"] = decision.get("workbook_cell_write_preview") or []
+        material["notes"] = f"Synced from roofing accessory template decision row {decision.get('workbook_row')}."
+
+
+def _roofing_labor_crew_options() -> list[dict[str, Any]]:
+    options: list[dict[str, Any]] = []
+    graph_path = Path("output/template_decision_graph_roofing.json")
+    if graph_path.exists():
+        try:
+            payload = json.loads(graph_path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+        for row in payload.get("selector_options") or []:
+            if row.get("decision_id") != "roofing_crew_rate_selection":
+                continue
+            code = str(row.get("selector_code") or "").strip()
+            label = str(row.get("resolved_item_name") or "").strip()
+            if not code or not label:
+                continue
+            options.append(
+                {
+                    "selector_code": code,
+                    "resolved_template_option": label,
+                    "resolved_cell": row.get("resolved_cell") or "",
+                    "source_type": row.get("source_type") or "people_daily_rate_selector",
+                }
+            )
+    if not options:
+        for code in range(1, 9):
+            column_letter = chr(ord("C") + code)
+            options.append(
+                {
+                    "selector_code": str(code),
+                    "resolved_template_option": f"{code} person crew daily rate",
+                    "resolved_cell": f"People!{column_letter}12",
+                    "source_type": "fallback_people_daily_rate_selector",
+                }
+            )
+    deduped: dict[str, dict[str, Any]] = {}
+    for option in options:
+        deduped.setdefault(str(option.get("selector_code") or ""), option)
+    return sorted(deduped.values(), key=lambda item: int(safe_number(item.get("selector_code"), 999)))
+
+
+def _resolved_roofing_labor_crew_option(crew_size: Any) -> str:
+    key = str(int(safe_number(crew_size, 0))) if safe_number(crew_size, 0) > 0 else ""
+    for option in _roofing_labor_crew_options():
+        if str(option.get("selector_code") or "") == key:
+            return str(option.get("resolved_template_option") or "")
+    return f"{key} person crew daily rate" if key else ""
+
+
+def _roofing_labor_daily_rate_cell(crew_size: Any) -> str:
+    key = str(int(safe_number(crew_size, 0))) if safe_number(crew_size, 0) > 0 else ""
+    for option in _roofing_labor_crew_options():
+        if str(option.get("selector_code") or "") == key:
+            return str(option.get("resolved_cell") or "")
+    if key:
+        column_letter = chr(ord("C") + int(key))
+        return f"People!{column_letter}12"
+    return ""
+
+
+def _build_roofing_labor_template_decisions(
+    *,
+    scope: dict[str, Any],
+    labor_rows: list[dict[str, Any]] | None = None,
+    existing_rows: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    if _is_insulation_scope(scope):
+        return []
+    labor_rows = labor_rows or []
+    existing_by_key = {
+        str(first_nonblank(row.get("template_bucket"), row.get("package_key"), row.get("workbook_row"))): row
+        for row in existing_rows or []
+        if isinstance(row, dict)
+    }
+    crew_options = _roofing_labor_crew_options()
+    area = _estimate_area(scope)
+    decisions: list[dict[str, Any]] = []
+    for labor in labor_rows:
+        if not isinstance(labor, dict):
+            continue
+        package = str(labor.get("package_key") or labor.get("template_bucket") or "")
+        workbook_row = str(labor.get("workbook_row") or "")
+        if not package or not workbook_row:
+            continue
+        existing = existing_by_key.get(package) or existing_by_key.get(workbook_row) or {}
+        include = bool(existing["include"]) if "include" in existing else bool(labor.get("include"))
+        crew_size = int(
+            safe_number(
+                first_nonblank(
+                    existing.get("crew_size"),
+                    existing.get("crew_people_selection"),
+                    existing.get("crew_selector_code"),
+                    labor.get("crew_size"),
+                    labor.get("crew_people_selection"),
+                    4,
+                ),
+                4,
+            )
+            or 4
+        )
+        labor_days_value = safe_number(first_nonblank(labor.get("days"), labor.get("editable_days")), 0.0)
+        existing_days_value = safe_number(first_nonblank(existing.get("days"), existing.get("editable_days")), 0.0)
+        existing_days_changed = bool(existing) and abs(existing_days_value - labor_days_value) > 1e-9
+        days_was_explicit = bool(existing.get("days_was_explicit") or labor.get("days_was_explicit") or existing_days_changed)
+        days = existing_days_value if (existing and (existing.get("days_was_explicit") or existing_days_changed)) else labor_days_value
+        labor_hours_rate = safe_number(labor.get("editable_hours_per_1000_sqft"), 0.0)
+        existing_hours_rate = safe_number(existing.get("editable_hours_per_1000_sqft"), labor_hours_rate)
+        flat_hours_rate_changed = bool(existing) and abs(labor_hours_rate - existing_hours_rate) > 1e-9
+        hours_per_1000 = labor_hours_rate if flat_hours_rate_changed else safe_number(first_nonblank(existing.get("editable_hours_per_1000_sqft"), labor_hours_rate), 0.0)
+        total_hours = safe_number(
+            first_nonblank(
+                None if flat_hours_rate_changed else existing.get("total_hours"),
+                None if flat_hours_rate_changed else existing.get("editable_total_hours"),
+                None if flat_hours_rate_changed else labor.get("calculated_hours"),
+                None if flat_hours_rate_changed else labor.get("total_hours"),
+            ),
+            0.0,
+        )
+        hourly_rate = safe_number(first_nonblank(existing.get("hourly_rate"), existing.get("labor_rate"), labor.get("hourly_rate"), labor.get("labor_rate")), DEFAULT_HOURLY_RATE)
+        daily_rate = safe_number(first_nonblank(existing.get("daily_rate"), labor.get("daily_rate")), 0.0)
+        formula_mode = str(first_nonblank(existing.get("formula_mode"), labor.get("formula_mode"), "mixed_formula"))
+        formula = calculate_mixed_labor(
+            days=days,
+            crew_size=crew_size,
+            total_hours=total_hours,
+            hours_per_1000_sqft=hours_per_1000,
+            area_sqft=area,
+            daily_rate=daily_rate,
+            hourly_rate=hourly_rate,
+            formula_mode=formula_mode,
+            include=include,
+        )
+        calculated_hours = safe_number(formula.get("total_hours"), 0.0)
+        calculated_days = safe_number(formula.get("days"), days)
+        calculated_daily_rate = safe_number(formula.get("daily_rate"), daily_rate)
+        calculated_hourly_rate = safe_number(formula.get("hourly_rate"), hourly_rate)
+        selected_cell = _roofing_labor_daily_rate_cell(crew_size)
+        row_number = int(safe_number(workbook_row, 0))
+        preview = [
+            {"cell": f"Estimate!B{row_number}", "field": "days", "value": round(calculated_days, 4)},
+            {"cell": f"Estimate!C{row_number}", "field": "crew_selector_code", "value": crew_size},
+            {"cell": f"Estimate!D{row_number}", "field": "hourly_rate", "value": round(calculated_hourly_rate, 4)},
+            {"cell": f"Estimate!G{row_number}", "field": "total_hours", "value": round(calculated_hours, 4)},
+            {"cell": f"Estimate!J{row_number}", "field": "daily_rate_formula_output", "value": round(calculated_daily_rate, 4)},
+        ]
+        task_label = str(first_nonblank(labor.get("labor_package"), package.replace("_", " ").title()))
+        warnings = []
+        if include and calculated_hours <= 0 and calculated_days <= 0:
+            warnings.append("Labor days or total hours are missing.")
+        if include and calculated_hourly_rate <= 0 and calculated_daily_rate <= 0:
+            warnings.append("Labor rate is missing.")
+        decisions.append(
+            {
+                "include": include,
+                "section": "roofing_labor_template_decisions",
+                "decision_id": f"roofing_{package}_row_{workbook_row}",
+                "template_bucket": package,
+                "package_key": package,
+                "workbook_row": workbook_row,
+                "labor_task": task_label,
+                "labor_package": task_label,
+                "days": round(calculated_days, 4),
+                "editable_days": round(calculated_days, 4),
+                "crew_size": crew_size,
+                "crew_people_selection": crew_size,
+                "crew_selector_code": crew_size,
+                "crew_selector_options": crew_options,
+                "crew_selector_options_json": json.dumps(crew_options, default=str),
+                "crew_selection": _resolved_roofing_labor_crew_option(crew_size),
+                "selected_daily_rate_cell": selected_cell,
+                "daily_rate": round(calculated_daily_rate, 4),
+                "hourly_rate": round(calculated_hourly_rate, 4),
+                "labor_rate": round(calculated_hourly_rate, 4),
+                "editable_hours_per_1000_sqft": round(hours_per_1000, 4),
+                "total_hours": round(calculated_hours, 4),
+                "calculated_hours": round(calculated_hours, 4),
+                "editable_total_hours": round(calculated_hours, 4),
+                "formula_mode": str(formula.get("formula_mode") or formula_mode),
+                "formula_model": str(formula.get("formula_model") or "labor_cost_from_days_crew_rate"),
+                "formula_source": str(formula.get("formula_source") or ""),
+                "estimated_cost": formula.get("estimated_cost"),
+                "days_was_explicit": days_was_explicit,
+                "calculated_output": formula.get("estimated_cost"),
+                "calculated_output_summary": _value_summary(
+                    {
+                        "days": round(calculated_days, 4),
+                        "hours": round(calculated_hours, 4),
+                        "cost": formula.get("estimated_cost"),
+                        "formula_mode": str(formula.get("formula_mode") or formula_mode),
+                    }
+                ),
+                "historical_recommendation": labor.get("historical_recommendation") or "",
+                "historical_selector_recommendation": _resolved_roofing_labor_crew_option(crew_size),
+                "historical_selector_evidence_count": int(safe_number(labor.get("decision_evidence_count") or labor.get("evidence_count"), 0)),
+                "historical_selector_confidence": labor.get("decision_confidence") or labor.get("confidence") or "",
+                "decision_evidence_count": int(safe_number(labor.get("decision_evidence_count") or labor.get("evidence_count"), 0)),
+                "decision_confidence": labor.get("decision_confidence") or labor.get("confidence") or "",
+                "evidence_count": int(safe_number(labor.get("evidence_count"), 0)),
+                "confidence": labor.get("confidence") or "",
+                "compatibility_status": "review" if warnings else "compatible",
+                "compatibility_warnings": warnings,
+                "notes": "Labor decision mirrors the workbook mixed formula: if total hours are zero, cost uses days x daily rate; otherwise cost uses hourly rate x total hours."
+                + (" " + " ".join(warnings) if warnings else ""),
+                "decision_values": {
+                    "days": round(calculated_days, 4),
+                    "days_was_explicit": days_was_explicit,
+                    "crew_size": crew_size,
+                    "crew_selector_code": crew_size,
+                    "daily_rate": round(calculated_daily_rate, 4),
+                    "hourly_rate": round(calculated_hourly_rate, 4),
+                    "total_hours": round(calculated_hours, 4),
+                    "formula_mode": str(formula.get("formula_mode") or formula_mode),
+                    "formula_model": str(formula.get("formula_model") or "labor_cost_from_days_crew_rate"),
+                    "formula_source": str(formula.get("formula_source") or ""),
+                    "estimated_cost": formula.get("estimated_cost"),
+                },
+                "editable_decision_value": {
+                    "days": round(calculated_days, 4),
+                    "days_was_explicit": days_was_explicit,
+                    "crew_size": crew_size,
+                    "daily_rate": round(calculated_daily_rate, 4),
+                    "hourly_rate": round(calculated_hourly_rate, 4),
+                    "total_hours": round(calculated_hours, 4),
+                    "formula_mode": str(formula.get("formula_mode") or formula_mode),
+                },
+                "recommended_decision_value": labor.get("recommended_decision_value") or {},
+                "row_traceability": f"Estimate row {workbook_row}; daily rate from {selected_cell or 'People sheet selector'}",
+                "workbook_cell_write_preview": preview,
+            }
+        )
+    return decisions
+
+
+def _apply_roofing_labor_template_decisions_to_labor(workbench: dict[str, Any]) -> None:
+    decisions = {
+        str(first_nonblank(row.get("template_bucket"), row.get("package_key"))): row
+        for row in workbench.get("roofing_labor_template_decisions") or []
+        if isinstance(row, dict)
+    }
+    if not decisions:
+        return
+    for labor in workbench.get("labor") or []:
+        if not isinstance(labor, dict):
+            continue
+        key = str(first_nonblank(labor.get("template_bucket"), labor.get("package_key")))
+        decision = decisions.get(key)
+        if not decision:
+            continue
+        labor["include"] = bool(decision.get("include"))
+        labor["days"] = safe_number(decision.get("days"), 0.0)
+        labor["editable_days"] = labor["days"]
+        labor["crew_size"] = int(safe_number(decision.get("crew_size"), 0) or 0)
+        labor["crew_people_selection"] = labor["crew_size"]
+        labor["daily_rate"] = safe_number(decision.get("daily_rate"), 0.0)
+        labor["hourly_rate"] = safe_number(decision.get("hourly_rate"), 0.0)
+        labor["labor_rate"] = labor["hourly_rate"]
+        labor["editable_hours_per_1000_sqft"] = safe_number(decision.get("editable_hours_per_1000_sqft"), labor.get("editable_hours_per_1000_sqft"))
+        labor["calculated_hours"] = safe_number(decision.get("calculated_hours"), 0.0)
+        labor["total_hours"] = labor["calculated_hours"]
+        labor["editable_total_hours"] = labor["calculated_hours"]
+        labor["formula_mode"] = str(decision.get("formula_mode") or labor.get("formula_mode") or "mixed_formula")
+        labor["formula_model"] = str(decision.get("formula_model") or "labor_cost_from_days_crew_rate")
+        labor["formula_source"] = str(decision.get("formula_source") or "")
+        labor["days_was_explicit"] = bool(decision.get("days_was_explicit"))
+        labor["estimated_cost"] = safe_number(decision.get("estimated_cost"), 0.0) if labor["include"] else 0.0
+        labor["calculated_output"] = labor["estimated_cost"]
+        labor["decision_values"] = dict(decision.get("decision_values") or {})
+        labor["editable_decision_value"] = dict(decision.get("editable_decision_value") or {})
+        labor["calculated_output_summary"] = decision.get("calculated_output_summary")
+        labor["workbook_cell_write_preview"] = decision.get("workbook_cell_write_preview") or []
+        labor["notes"] = "Synced from roofing labor template decision row."
 
 
 def _ai_scope_debug_context(recommendation: Any | None) -> dict[str, Any]:
@@ -3598,6 +8292,98 @@ def build_estimating_workbench(
         if _is_insulation_scope(scope)
         else []
     )
+    roofing_foam_template_decisions = (
+        _build_roofing_foam_template_decisions(scope=scope, data=data)
+        if not _is_insulation_scope(scope)
+        else []
+    )
+    if roofing_foam_template_decisions:
+        _apply_roofing_foam_template_decisions_to_materials(
+            {"materials": materials, "roofing_foam_template_decisions": roofing_foam_template_decisions}
+        )
+    roofing_coating_template_decisions = (
+        _build_roofing_coating_template_decisions(scope=scope, coating_row=_coating_material_row(materials), data=data)
+        if not _is_insulation_scope(scope)
+        else []
+    )
+    roofing_primer_template_decisions = (
+        _build_roofing_primer_template_decisions(scope=scope, primer_row=_primer_material_row(materials), data=data)
+        if not _is_insulation_scope(scope)
+        else []
+    )
+    roofing_detail_template_decisions = (
+        _build_roofing_detail_template_decisions(
+            scope=scope,
+            caulk_row=_caulk_detail_material_row(materials),
+            fabric_row=_fabric_material_row(materials),
+            data=data,
+        )
+        if not _is_insulation_scope(scope)
+        else []
+    )
+    roofing_detail_quantity_template_decisions = (
+        _build_roofing_detail_quantity_template_decisions(
+            scope=scope,
+            materials=materials,
+        )
+        if not _is_insulation_scope(scope)
+        else []
+    )
+    roofing_board_fastener_template_decisions = (
+        _build_roofing_board_fastener_template_decisions(
+            scope=scope,
+            board_row=_board_stock_material_row(materials),
+            fastener_row=_fastener_material_row(materials),
+            plates_row=_plates_material_row(materials),
+            data=data,
+        )
+        if not _is_insulation_scope(scope)
+        else []
+    )
+    roofing_granules_template_decisions = (
+        _build_roofing_granules_template_decisions(
+            scope=scope,
+            granules_row=_granules_material_row(materials),
+            data=data,
+        )
+        if not _is_insulation_scope(scope)
+        else []
+    )
+    labor_rows = labor_workbench_rows(recommendation, data, scope, historical_filters=filters)
+    adder_rows = adder_workbench_rows(recommendation, data, scope, filters)
+    roofing_equipment_template_decisions = (
+        _build_roofing_equipment_template_decisions(
+            scope=scope,
+            adders=adder_rows,
+        )
+        if not _is_insulation_scope(scope)
+        else []
+    )
+    roofing_travel_freight_template_decisions = (
+        _build_roofing_travel_freight_template_decisions(
+            scope=scope,
+            adders=adder_rows,
+        )
+        if not _is_insulation_scope(scope)
+        else []
+    )
+    roofing_accessory_template_decisions = (
+        _build_roofing_accessory_template_decisions(
+            scope=scope,
+            materials=materials,
+            coating_decisions=roofing_coating_template_decisions,
+        )
+        if not _is_insulation_scope(scope)
+        else []
+    )
+    roofing_labor_template_decisions = (
+        _build_roofing_labor_template_decisions(
+            scope=scope,
+            labor_rows=labor_rows,
+        )
+        if not _is_insulation_scope(scope)
+        else []
+    )
     surface_rows = _build_insulation_surface_rows_for_workbench(
         scope,
         notes=_scope_note_text(recommendation, scope),
@@ -3624,12 +8410,23 @@ def build_estimating_workbench(
         "area_calculation_explanation": area_explanation,
         "insulation_surfaces": surface_rows,
         "insulation_foam_template_decisions": foam_template_decisions,
+        "roofing_foam_template_decisions": roofing_foam_template_decisions,
+        "roofing_coating_template_decisions": roofing_coating_template_decisions,
+        "roofing_primer_template_decisions": roofing_primer_template_decisions,
+        "roofing_detail_template_decisions": roofing_detail_template_decisions,
+        "roofing_detail_quantity_template_decisions": roofing_detail_quantity_template_decisions,
+        "roofing_board_fastener_template_decisions": roofing_board_fastener_template_decisions,
+        "roofing_granules_template_decisions": roofing_granules_template_decisions,
+        "roofing_equipment_template_decisions": roofing_equipment_template_decisions,
+        "roofing_travel_freight_template_decisions": roofing_travel_freight_template_decisions,
+        "roofing_accessory_template_decisions": roofing_accessory_template_decisions,
+        "roofing_labor_template_decisions": roofing_labor_template_decisions,
         "insulation_performance_specs": [],
         "insulation_deductions": build_insulation_deductions(scope) if _is_insulation_scope(scope) else [],
         "insulation_r_value_targets": parse_r_value_targets(_scope_note_text(recommendation, scope)) if _is_insulation_scope(scope) else [],
         "materials": materials,
-        "labor": labor_workbench_rows(recommendation, data, scope, historical_filters=filters),
-        "adders": adder_workbench_rows(recommendation, data, scope, filters),
+        "labor": labor_rows,
+        "adders": adder_rows,
         "similar_jobs": _records(_rec_value(recommendation, "similar_examples", [])),
         "review_flags": review_flags,
         "suggested_rules": [
@@ -3893,6 +8690,86 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
             }
         )
         row["workbook_cell_write_preview"] = cell_preview_for_material(row)
+    if not _is_insulation_scope(scope):
+        if "roofing_foam_template_decisions" in updated:
+            updated["roofing_foam_template_decisions"] = _build_roofing_foam_template_decisions(
+                scope=scope,
+                existing_rows=updated.get("roofing_foam_template_decisions") or None,
+            )
+            _apply_roofing_foam_template_decisions_to_materials(updated)
+        updated["roofing_coating_template_decisions"] = _build_roofing_coating_template_decisions(
+            scope=scope,
+            coating_row=_coating_material_row(updated.get("materials")),
+            existing_rows=updated.get("roofing_coating_template_decisions") or None,
+        )
+        _apply_roofing_coating_template_decisions_to_materials(updated)
+        if "roofing_primer_template_decisions" in updated:
+            updated["roofing_primer_template_decisions"] = _build_roofing_primer_template_decisions(
+                scope=scope,
+                primer_row=_primer_material_row(updated.get("materials")),
+                existing_rows=updated.get("roofing_primer_template_decisions") or None,
+            )
+            _apply_roofing_primer_template_decisions_to_materials(updated)
+        if "roofing_detail_template_decisions" in updated:
+            updated["roofing_detail_template_decisions"] = _build_roofing_detail_template_decisions(
+                scope=scope,
+                caulk_row=_caulk_detail_material_row(updated.get("materials")),
+                fabric_row=_fabric_material_row(updated.get("materials")),
+                existing_rows=updated.get("roofing_detail_template_decisions") or None,
+            )
+            _apply_roofing_detail_template_decisions_to_materials(updated)
+        if "roofing_detail_quantity_template_decisions" in updated:
+            updated["roofing_detail_quantity_template_decisions"] = _build_roofing_detail_quantity_template_decisions(
+                scope=scope,
+                materials=updated.get("materials") or [],
+                existing_rows=updated.get("roofing_detail_quantity_template_decisions") or None,
+            )
+            _apply_roofing_detail_quantity_template_decisions_to_materials(updated)
+        if "roofing_board_fastener_template_decisions" in updated:
+            updated["roofing_board_fastener_template_decisions"] = _build_roofing_board_fastener_template_decisions(
+                scope=scope,
+                board_row=_board_stock_material_row(updated.get("materials")),
+                fastener_row=_fastener_material_row(updated.get("materials")),
+                plates_row=_plates_material_row(updated.get("materials")),
+                existing_rows=updated.get("roofing_board_fastener_template_decisions") or None,
+            )
+            _apply_roofing_board_fastener_template_decisions_to_materials(updated)
+        if "roofing_granules_template_decisions" in updated:
+            updated["roofing_granules_template_decisions"] = _build_roofing_granules_template_decisions(
+                scope=scope,
+                granules_row=_granules_material_row(updated.get("materials")),
+                existing_rows=updated.get("roofing_granules_template_decisions") or None,
+            )
+            _apply_roofing_granules_template_decisions_to_materials(updated)
+        if "roofing_equipment_template_decisions" in updated:
+            updated["roofing_equipment_template_decisions"] = _build_roofing_equipment_template_decisions(
+                scope=scope,
+                adders=updated.get("adders") or [],
+                existing_rows=updated.get("roofing_equipment_template_decisions") or None,
+            )
+            _apply_roofing_equipment_template_decisions_to_adders(updated)
+        if "roofing_travel_freight_template_decisions" in updated:
+            updated["roofing_travel_freight_template_decisions"] = _build_roofing_travel_freight_template_decisions(
+                scope=scope,
+                adders=updated.get("adders") or [],
+                existing_rows=updated.get("roofing_travel_freight_template_decisions") or None,
+            )
+            _apply_roofing_travel_freight_template_decisions_to_adders(updated)
+        if "roofing_accessory_template_decisions" in updated:
+            updated["roofing_accessory_template_decisions"] = _build_roofing_accessory_template_decisions(
+                scope=scope,
+                materials=updated.get("materials") or [],
+                coating_decisions=updated.get("roofing_coating_template_decisions") or [],
+                existing_rows=updated.get("roofing_accessory_template_decisions") or None,
+            )
+            _apply_roofing_accessory_template_decisions_to_materials(updated)
+        if "roofing_labor_template_decisions" in updated:
+            updated["roofing_labor_template_decisions"] = _build_roofing_labor_template_decisions(
+                scope=scope,
+                labor_rows=updated.get("labor") or [],
+                existing_rows=updated.get("roofing_labor_template_decisions") or None,
+            )
+            _apply_roofing_labor_template_decisions_to_labor(updated)
     if _is_insulation_scope(scope):
         if not updated.get("area_calculation_trace"):
             updated["area_calculation_trace"] = build_area_calculation_trace(scope)
@@ -4155,8 +9032,366 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any]) -> dict[str, A
     workbench = recalculate_workbench_tables(workbench)
     scope = workbench.get("scope") or {}
     material_rows = []
+    roofing_foam_decision_rows = [
+        row for row in workbench.get("roofing_foam_template_decisions") or [] if isinstance(row, dict) and row.get("include")
+    ]
+    roofing_coating_decision_rows = [
+        row for row in workbench.get("roofing_coating_template_decisions") or [] if isinstance(row, dict) and row.get("include")
+    ]
+    roofing_primer_decision_rows = [
+        row for row in workbench.get("roofing_primer_template_decisions") or [] if isinstance(row, dict) and row.get("include")
+    ]
+    roofing_detail_decision_rows = [
+        row for row in workbench.get("roofing_detail_template_decisions") or [] if isinstance(row, dict) and row.get("include")
+    ]
+    roofing_detail_quantity_decision_rows = [
+        row
+        for row in workbench.get("roofing_detail_quantity_template_decisions") or []
+        if isinstance(row, dict) and row.get("include")
+    ]
+    roofing_board_fastener_decision_rows = [
+        row
+        for row in workbench.get("roofing_board_fastener_template_decisions") or []
+        if isinstance(row, dict) and row.get("include")
+    ]
+    roofing_granules_decision_rows = [
+        row
+        for row in workbench.get("roofing_granules_template_decisions") or []
+        if isinstance(row, dict) and row.get("include")
+    ]
+    roofing_equipment_decision_rows = [
+        row
+        for row in workbench.get("roofing_equipment_template_decisions") or []
+        if isinstance(row, dict) and row.get("include")
+    ]
+    roofing_travel_freight_decision_rows = [
+        row
+        for row in workbench.get("roofing_travel_freight_template_decisions") or []
+        if isinstance(row, dict) and row.get("include")
+    ]
+    roofing_accessory_decision_rows = [
+        row
+        for row in workbench.get("roofing_accessory_template_decisions") or []
+        if isinstance(row, dict) and row.get("include")
+    ]
+    for row in roofing_foam_decision_rows:
+        material_rows.append(
+            {
+                "decision_id": row.get("decision_id"),
+                "template_bucket": "roofing_foam",
+                "workbook_row": row.get("workbook_row"),
+                "row_traceability": f"Estimate row {row.get('workbook_row')}",
+                "item": first_nonblank(row.get("selected_pricing_candidate"), row.get("resolved_template_option"), "Roofing SPF foam"),
+                "category": "roofing_foam",
+                "quantity": safe_number(row.get("estimated_units"), 0.0),
+                "basis_sqft": safe_number(row.get("basis_sqft"), 0.0),
+                "area_sqft": safe_number(row.get("basis_sqft"), 0.0),
+                "thickness_inches": safe_number(row.get("thickness_inches"), 0.0),
+                "yield_factor": safe_number(row.get("yield_or_coverage"), 0.0),
+                "yield_or_coverage": safe_number(row.get("yield_or_coverage"), 0.0),
+                "estimated_units": safe_number(row.get("estimated_units"), 0.0),
+                "estimated_sets": safe_number(row.get("estimated_sets"), 0.0),
+                "selector_code": row.get("editable_selector_code") or row.get("selector_code"),
+                "unit": "estimated_units",
+                "unit_price": safe_number(row.get("unit_price"), 0.0),
+                "estimated_cost": safe_number(row.get("estimated_cost"), 0.0),
+                "formula_model": row.get("formula_model"),
+                "formula_source": row.get("formula_source"),
+                "calculated_output_summary": row.get("calculated_output_summary"),
+                "workbook_cell_write_preview": row.get("workbook_cell_write_preview") or [],
+                "notes": (
+                    f"Roofing SPF foam template decision; selector={row.get('editable_selector_code') or row.get('selector_code')}; "
+                    f"template_option={row.get('resolved_template_option')}; evidence_count={row.get('historical_selector_evidence_count')}"
+                ),
+            }
+        )
+    for row in roofing_coating_decision_rows:
+        material_rows.append(
+            {
+                "decision_id": row.get("decision_id"),
+                "template_bucket": "coating",
+                "workbook_row": row.get("workbook_row"),
+                "row_traceability": f"Estimate row {row.get('workbook_row')}",
+                "item": first_nonblank(row.get("selected_pricing_candidate"), row.get("resolved_template_option"), "Roof coating"),
+                "category": "coating",
+                "quantity": safe_number(row.get("estimated_gallons"), 0.0),
+                "basis_sqft": safe_number(row.get("basis_sqft"), 0.0),
+                "area_sqft": safe_number(row.get("basis_sqft"), 0.0),
+                "gal_per_100_sqft": safe_number(row.get("gal_per_100_sqft"), 0.0),
+                "gal_per_sqft": safe_number(row.get("gal_per_sqft"), 0.0),
+                "waste_factor_pct": safe_number(row.get("waste_factor_pct"), 0.0),
+                "wet_mils_estimate": safe_number(row.get("wet_mils_estimate"), 0.0),
+                "estimated_gallons": safe_number(row.get("estimated_gallons"), 0.0),
+                "selector_code": row.get("editable_selector_code") or row.get("selector_code"),
+                "unit": "gal",
+                "unit_price": safe_number(row.get("unit_price"), 0.0),
+                "estimated_cost": safe_number(row.get("estimated_cost"), 0.0),
+                "formula_model": row.get("formula_model"),
+                "formula_source": row.get("formula_source"),
+                "calculated_output_summary": row.get("calculated_output_summary"),
+                "workbook_cell_write_preview": row.get("workbook_cell_write_preview") or [],
+                "notes": (
+                    f"Roof coating template decision; selector={row.get('editable_selector_code') or row.get('selector_code')}; "
+                    f"template_option={row.get('resolved_template_option')}; evidence_count={row.get('historical_selector_evidence_count')}"
+                ),
+            }
+        )
+    for row in roofing_primer_decision_rows:
+        material_rows.append(
+            {
+                "decision_id": row.get("decision_id"),
+                "template_bucket": "primer",
+                "workbook_row": row.get("workbook_row"),
+                "row_traceability": f"Estimate row {row.get('workbook_row')}",
+                "item": first_nonblank(row.get("selected_pricing_candidate"), row.get("resolved_template_option"), "Primer"),
+                "category": "primer",
+                "quantity": safe_number(row.get("estimated_units"), 0.0),
+                "basis_sqft": safe_number(row.get("basis_sqft"), 0.0),
+                "area_sqft": safe_number(row.get("basis_sqft"), 0.0),
+                "coverage_sqft_per_unit": safe_number(row.get("coverage_sqft_per_unit"), ROOFING_PRIMER_DEFAULT_COVERAGE_SQFT_PER_UNIT),
+                "estimated_units": safe_number(row.get("estimated_units"), 0.0),
+                "selector_code": row.get("editable_selector_code") or row.get("selector_code"),
+                "unit": "unit",
+                "unit_price": safe_number(row.get("unit_price"), 0.0),
+                "estimated_cost": safe_number(row.get("estimated_cost"), 0.0),
+                "formula_model": row.get("formula_model"),
+                "formula_source": row.get("formula_source"),
+                "calculated_output_summary": row.get("calculated_output_summary"),
+                "workbook_cell_write_preview": row.get("workbook_cell_write_preview") or [],
+                "notes": (
+                    f"Roofing primer template decision; selector={row.get('editable_selector_code') or row.get('selector_code')}; "
+                    f"template_option={row.get('resolved_template_option')}; evidence_count={row.get('historical_selector_evidence_count')}"
+                ),
+            }
+        )
+    for row in roofing_detail_decision_rows:
+        template_bucket = str(row.get("template_bucket") or "")
+        is_fabric = template_bucket == "fabric"
+        material_rows.append(
+            {
+                "decision_id": row.get("decision_id"),
+                "template_bucket": template_bucket,
+                "workbook_row": row.get("workbook_row"),
+                "row_traceability": f"Estimate row {row.get('workbook_row')}",
+                "item": first_nonblank(row.get("selected_pricing_candidate"), row.get("resolved_template_option"), "Fabric" if is_fabric else "Caulk / sealant"),
+                "category": "fabric" if is_fabric else "caulk_detail",
+                "quantity": safe_number(row.get("linear_ft") if is_fabric else row.get("estimated_units") or row.get("units"), 0.0),
+                "linear_ft": safe_number(row.get("linear_ft"), 0.0),
+                "estimated_units": safe_number(row.get("estimated_units") or row.get("units"), 0.0),
+                "selector_code": row.get("editable_selector_code") or row.get("selector_code"),
+                "unit": "lf" if is_fabric else "unit",
+                "unit_price": safe_number(row.get("unit_price"), 0.0),
+                "estimated_cost": safe_number(row.get("estimated_cost"), 0.0),
+                "formula_model": row.get("formula_model"),
+                "formula_source": row.get("formula_source"),
+                "calculated_output_summary": row.get("calculated_output_summary"),
+                "workbook_cell_write_preview": row.get("workbook_cell_write_preview") or [],
+                "notes": (
+                    f"Roofing {'fabric' if is_fabric else 'caulk/sealant'} template decision; "
+                    f"selector={row.get('editable_selector_code') or row.get('selector_code')}; "
+                    f"template_option={row.get('resolved_template_option')}; evidence_count={row.get('historical_selector_evidence_count')}"
+                ),
+            }
+        )
+    for row in roofing_detail_quantity_decision_rows:
+        bucket = str(row.get("template_bucket") or "").lower()
+        material_rows.append(
+            {
+                "decision_id": row.get("decision_id"),
+                "template_bucket": bucket,
+                "workbook_row": row.get("workbook_row"),
+                "row_traceability": f"Estimate row {row.get('workbook_row')}",
+                "item": first_nonblank(row.get("resolved_template_option"), row.get("template_bucket")),
+                "category": bucket,
+                "quantity": safe_number(row.get("linear_ft") or row.get("units") or row.get("estimated_units"), 0.0),
+                "linear_ft": safe_number(row.get("linear_ft"), 0.0),
+                "estimated_units": safe_number(row.get("estimated_units") or row.get("units"), 0.0),
+                "amount": safe_number(row.get("amount"), 0.0),
+                "unit": "lf" if safe_number(row.get("linear_ft"), 0.0) > 0 else "unit",
+                "estimated_cost": safe_number(row.get("estimated_cost"), 0.0),
+                "formula_model": row.get("formula_model"),
+                "formula_source": row.get("formula_source"),
+                "calculated_output_summary": row.get("calculated_output_summary"),
+                "workbook_cell_write_preview": row.get("workbook_cell_write_preview") or [],
+                "notes": f"Roofing detail quantity template decision; template_option={row.get('resolved_template_option')}.",
+            }
+        )
+    for row in roofing_board_fastener_decision_rows:
+        template_bucket = str(row.get("template_bucket") or "")
+        is_board = template_bucket == "board_stock"
+        is_plate = template_bucket == "plates"
+        material_rows.append(
+            {
+                "decision_id": row.get("decision_id"),
+                "template_bucket": template_bucket,
+                "workbook_row": row.get("workbook_row"),
+                "row_traceability": f"Estimate row {row.get('workbook_row')}",
+                "item": first_nonblank(
+                    row.get("selected_pricing_candidate"),
+                    row.get("resolved_template_option"),
+                    "Board stock" if is_board else ("Plates" if is_plate else "Fasteners"),
+                ),
+                "category": template_bucket,
+                "quantity": safe_number(row.get("estimated_squares") if is_board else row.get("estimated_units"), 0.0),
+                "basis_sqft": safe_number(row.get("basis_sqft"), 0.0),
+                "area_sqft": safe_number(row.get("basis_sqft"), 0.0),
+                "board_area_sqft": safe_number(row.get("board_area_sqft"), 0.0),
+                "thickness_inches": safe_number(row.get("thickness_inches"), 0.0),
+                "estimated_squares": safe_number(row.get("estimated_squares"), 0.0),
+                "estimated_units": safe_number(row.get("estimated_units"), 0.0),
+                "selector_code": row.get("editable_selector_code") or row.get("selector_code"),
+                "unit": "square" if is_board else "m",
+                "unit_price": safe_number(row.get("price_per_square") if is_board else row.get("unit_price_per_thousand") or row.get("unit_price"), 0.0),
+                "price_per_square": safe_number(row.get("price_per_square"), 0.0),
+                "unit_price_per_thousand": safe_number(row.get("unit_price_per_thousand") or row.get("unit_price"), 0.0),
+                "estimated_cost": safe_number(row.get("estimated_cost"), 0.0),
+                "formula_model": row.get("formula_model"),
+                "formula_source": row.get("formula_source"),
+                "calculated_output_summary": row.get("calculated_output_summary"),
+                "workbook_cell_write_preview": row.get("workbook_cell_write_preview") or [],
+                "notes": (
+                    f"Roofing board/fastener template decision; template_option={row.get('resolved_template_option')}; "
+                    f"evidence_count={row.get('historical_selector_evidence_count')}"
+                ),
+            }
+        )
+    for row in roofing_granules_decision_rows:
+        material_rows.append(
+            {
+                "decision_id": row.get("decision_id"),
+                "template_bucket": "granules",
+                "workbook_row": row.get("workbook_row"),
+                "row_traceability": f"Estimate row {row.get('workbook_row')}",
+                "item": first_nonblank(row.get("selected_pricing_candidate"), row.get("resolved_template_option"), "Granules"),
+                "category": "granules",
+                "quantity": safe_number(row.get("estimated_units"), 0.0),
+                "basis_sqft": safe_number(row.get("basis_sqft"), 0.0),
+                "area_sqft": safe_number(row.get("basis_sqft"), 0.0),
+                "coverage_lbs_per_100_sqft": safe_number(row.get("coverage_lbs_per_100_sqft"), ROOFING_GRANULES_DEFAULT_COVERAGE_LBS_PER_100_SQFT),
+                "bag_weight_lbs": safe_number(row.get("bag_weight_lbs"), ROOFING_GRANULES_DEFAULT_BAG_WEIGHT_LBS),
+                "estimated_units": safe_number(row.get("estimated_units"), 0.0),
+                "selector_code": row.get("editable_selector_code") or row.get("selector_code"),
+                "unit": "bag",
+                "unit_price": safe_number(row.get("unit_price"), 0.0),
+                "estimated_cost": safe_number(row.get("estimated_cost"), 0.0),
+                "formula_model": row.get("formula_model"),
+                "formula_source": row.get("formula_source"),
+                "calculated_output_summary": row.get("calculated_output_summary"),
+                "workbook_cell_write_preview": row.get("workbook_cell_write_preview") or [],
+                "notes": (
+                    f"Roofing granules template decision; selector={row.get('editable_selector_code') or row.get('selector_code')}; "
+                    f"template_option={row.get('resolved_template_option')}; evidence_count={row.get('historical_selector_evidence_count')}"
+                ),
+            }
+        )
+    for row in roofing_equipment_decision_rows:
+        bucket = str(row.get("template_bucket") or "").lower()
+        payload = {
+            "decision_id": row.get("decision_id"),
+            "template_bucket": bucket,
+            "workbook_row": row.get("workbook_row"),
+            "row_traceability": f"Estimate row {row.get('workbook_row')}",
+            "item": first_nonblank(row.get("selected_pricing_candidate"), row.get("resolved_template_option"), row.get("template_bucket")),
+            "category": bucket,
+            "quantity": safe_number(row.get("estimated_units") or row.get("calculated_quantity"), 0.0),
+            "estimated_units": safe_number(row.get("estimated_units") or row.get("calculated_quantity"), 0.0),
+            "basis_sqft": safe_number(row.get("basis_sqft"), 0.0),
+            "area_sqft": safe_number(row.get("basis_sqft"), 0.0),
+            "thickness_inches": safe_number(row.get("thickness_inches"), 0.0),
+            "selector_code": row.get("editable_selector_code") or row.get("selector_code"),
+            "size": row.get("size"),
+            "period": safe_number(row.get("period"), 0.0),
+            "days": safe_number(row.get("days"), 0.0),
+            "unit": "unit",
+            "unit_price": safe_number(row.get("unit_price"), 0.0),
+            "margin_pct": safe_number(row.get("margin_pct"), 0.0),
+            "estimated_cost": safe_number(row.get("estimated_cost"), 0.0),
+            "formula_model": row.get("formula_model"),
+            "formula_source": row.get("formula_source"),
+            "calculated_output_summary": row.get("calculated_output_summary"),
+            "workbook_cell_write_preview": row.get("workbook_cell_write_preview") or [],
+            "notes": (
+                f"Roofing equipment template decision; selector={row.get('editable_selector_code') or row.get('selector_code')}; "
+                f"template_option={row.get('resolved_template_option')}; evidence_count={row.get('historical_selector_evidence_count')}"
+            ),
+        }
+        material_rows.append(payload)
+    for row in roofing_travel_freight_decision_rows:
+        bucket = str(row.get("template_bucket") or "").lower()
+        payload = {
+            "decision_id": row.get("decision_id"),
+            "template_bucket": bucket,
+            "workbook_row": row.get("workbook_row"),
+            "row_traceability": f"Estimate row {row.get('workbook_row')}",
+            "item": first_nonblank(row.get("resolved_template_option"), row.get("template_bucket")),
+            "category": bucket,
+            "quantity": safe_number(row.get("estimated_units") or row.get("units"), 0.0),
+            "estimated_units": safe_number(row.get("estimated_units") or row.get("units"), 0.0),
+            "amount": safe_number(row.get("amount"), 0.0),
+            "trip_count": safe_number(row.get("trip_count"), 0.0),
+            "round_trip_miles": safe_number(row.get("round_trip_miles"), 0.0),
+            "unit": "trip" if bucket in {"sales_trips", "truck_expense"} else "unit",
+            "unit_price": safe_number(row.get("unit_price"), 0.0),
+            "estimated_cost": safe_number(row.get("estimated_cost"), 0.0),
+            "formula_model": row.get("formula_model"),
+            "formula_source": row.get("formula_source"),
+            "calculated_output_summary": row.get("calculated_output_summary"),
+            "workbook_cell_write_preview": row.get("workbook_cell_write_preview") or [],
+            "notes": f"Roofing travel/freight template decision; template_option={row.get('resolved_template_option')}.",
+        }
+        material_rows.append(payload)
+    for row in roofing_accessory_decision_rows:
+        bucket = str(row.get("template_bucket") or "").lower()
+        payload = {
+            "decision_id": row.get("decision_id"),
+            "template_bucket": bucket,
+            "workbook_row": row.get("workbook_row"),
+            "row_traceability": f"Estimate row {row.get('workbook_row')}",
+            "item": first_nonblank(row.get("resolved_template_option"), row.get("template_bucket")),
+            "category": bucket,
+            "quantity": safe_number(row.get("estimated_units") or row.get("units") or row.get("linear_ft"), 0.0),
+            "estimated_units": safe_number(row.get("estimated_units") or row.get("units"), 0.0),
+            "linear_ft": safe_number(row.get("linear_ft"), 0.0),
+            "amount": safe_number(row.get("amount"), 0.0),
+            "total_coating_gallons": safe_number(row.get("total_coating_gallons"), 0.0),
+            "selector_code": row.get("editable_selector_code") or row.get("selector_code"),
+            "unit": "lf" if safe_number(row.get("linear_ft"), 0.0) > 0 else "unit",
+            "unit_price": safe_number(row.get("unit_price"), 0.0),
+            "estimated_cost": safe_number(row.get("estimated_cost"), 0.0),
+            "formula_model": row.get("formula_model"),
+            "formula_source": row.get("formula_source"),
+            "calculated_output_summary": row.get("calculated_output_summary"),
+            "workbook_cell_write_preview": row.get("workbook_cell_write_preview") or [],
+            "notes": f"Roofing accessory/support template decision; template_option={row.get('resolved_template_option')}.",
+        }
+        material_rows.append(payload)
     for row in workbench.get("materials") or []:
         if not row.get("include"):
+            continue
+        if roofing_foam_decision_rows and str(row.get("package_key") or row.get("template_bucket") or "").lower() in {"roofing_foam", "foam"}:
+            continue
+        if roofing_coating_decision_rows and str(row.get("package_key") or row.get("template_bucket") or "").lower() == "coating":
+            continue
+        if roofing_primer_decision_rows and str(row.get("package_key") or row.get("template_bucket") or "").lower() == "primer":
+            continue
+        if roofing_detail_decision_rows and str(row.get("package_key") or row.get("template_bucket") or "").lower() in {"caulk_detail", "caulk_sealant", "fabric"}:
+            continue
+        if roofing_detail_quantity_decision_rows and str(row.get("package_key") or row.get("template_bucket") or "").lower() in {
+            str(decision.get("template_bucket") or "").lower() for decision in roofing_detail_quantity_decision_rows
+        }:
+            continue
+        if roofing_board_fastener_decision_rows and str(row.get("package_key") or row.get("template_bucket") or "").lower() in {
+            "board_stock",
+            "fastener_treatment",
+            "fasteners",
+            "plates",
+        }:
+            continue
+        if roofing_granules_decision_rows and str(row.get("package_key") or row.get("template_bucket") or "").lower() == "granules":
+            continue
+        if roofing_accessory_decision_rows and str(row.get("package_key") or row.get("template_bucket") or "").lower() in {
+            str(decision.get("template_bucket") or "").lower() for decision in roofing_accessory_decision_rows
+        }:
             continue
         material_rows.append(
             {
@@ -4202,6 +9437,8 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any]) -> dict[str, A
             continue
         crew_size = max(1, int(safe_number(row.get("crew_size"), 1)))
         hours = safe_number(row.get("calculated_hours"), 0.0)
+        decision_based_labor = str(row.get("formula_model") or "") == "labor_cost_from_days_crew_rate"
+        base_days = safe_number(row.get("days"), 0.0)
         labor_rows.append(
             {
                 "decision_id": row.get("decision_id"),
@@ -4211,8 +9448,10 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any]) -> dict[str, A
                 "task": row.get("package_key"),
                 "crew_size": crew_size,
                 "total_hours": hours,
-                "adjusted_days": round(hours / (crew_size * 8), 3) if crew_size else 0,
-                "base_days": safe_number(row.get("days"), 0.0),
+                "adjusted_days": round(base_days, 3)
+                if decision_based_labor and row.get("days_was_explicit")
+                else (round(hours / (crew_size * 8), 3) if crew_size else 0),
+                "base_days": base_days,
                 "daily_rate": safe_number(row.get("daily_rate"), 0.0),
                 "hourly_rate": safe_number(row.get("hourly_rate"), safe_number(row.get("labor_rate"), 0.0)),
                 "formula_mode": row.get("formula_mode"),
@@ -4224,7 +9463,27 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any]) -> dict[str, A
                 "notes": f"Workbench edited value; source={row.get('source')}; evidence_count={row.get('evidence_count')}",
             }
         )
-    adders = [row for row in workbench.get("adders") or [] if row.get("include")]
+    covered_equipment_adders = {
+        str(row.get("template_bucket") or "").lower()
+        for row in roofing_equipment_decision_rows
+        if str(row.get("template_bucket") or "").lower() in {"dumpster", "lift", "generator"}
+    }
+    covered_travel_freight_adders = {
+        str(row.get("template_bucket") or "").lower()
+        for row in roofing_travel_freight_decision_rows
+        if str(row.get("template_bucket") or "").lower() in {"delivery_fee", "freight", "sales_trips", "truck_expense"}
+    }
+    if "sales_trips" in covered_travel_freight_adders:
+        covered_travel_freight_adders.add("inspection")
+    if "truck_expense" in covered_travel_freight_adders:
+        covered_travel_freight_adders.add("travel")
+    adders = [
+        row
+        for row in workbench.get("adders") or []
+        if row.get("include")
+        and str(row.get("adder_key") or row.get("template_bucket") or "").lower()
+        not in (covered_equipment_adders | covered_travel_freight_adders)
+    ]
     travel_rows = []
     adders_review_rows = []
     for row in adders:
@@ -4258,11 +9517,124 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any]) -> dict[str, A
     }
 
 
+ROOFING_MATERIAL_TOTAL_DECISION_SECTIONS = (
+    "roofing_foam_template_decisions",
+    "roofing_coating_template_decisions",
+    "roofing_primer_template_decisions",
+    "roofing_detail_template_decisions",
+    "roofing_detail_quantity_template_decisions",
+    "roofing_board_fastener_template_decisions",
+    "roofing_granules_template_decisions",
+    "roofing_accessory_template_decisions",
+)
+
+ROOFING_ADDER_TOTAL_DECISION_SECTIONS = (
+    "roofing_equipment_template_decisions",
+    "roofing_travel_freight_template_decisions",
+)
+
+ROOFING_LABOR_TOTAL_DECISION_SECTIONS = ("roofing_labor_template_decisions",)
+
+INSULATION_MATERIAL_TOTAL_DECISION_SECTIONS = ("insulation_performance_specs", "insulation_foam_template_decisions")
+
+
+def _decision_total_rows(workbench: dict[str, Any], section_names: Iterable[str]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for section_name in section_names:
+        for row in workbench.get(section_name) or []:
+            if isinstance(row, dict):
+                rows.append(row)
+    return rows
+
+
+def _included_cost_total(rows: Iterable[dict[str, Any]]) -> float:
+    return sum(safe_number(row.get("estimated_cost"), 0.0) for row in rows if row.get("include"))
+
+
+def _coverage_key_values(row: dict[str, Any]) -> set[str]:
+    values: set[str] = set()
+    for key in ("template_bucket", "package_key", "category", "adder_key", "labor_package", "task"):
+        value = str(row.get(key) or "").strip().lower()
+        if value:
+            values.add(value)
+    return values
+
+
+def _coverage_row_values(row: dict[str, Any]) -> set[str]:
+    value = str(row.get("workbook_row") or "").strip().lower()
+    if not value:
+        return set()
+    return {part.strip() for part in re.split(r"[,/]|\\band\\b", value) if part.strip()}
+
+
+def _coverage_from_decision_rows(rows: Iterable[dict[str, Any]], *, extra_keys: Iterable[str] | None = None) -> tuple[set[str], set[str]]:
+    keys = {str(value).strip().lower() for value in (extra_keys or []) if str(value).strip()}
+    workbook_rows: set[str] = set()
+    for row in rows:
+        keys.update(_coverage_key_values(row))
+        workbook_rows.update(_coverage_row_values(row))
+    return keys, workbook_rows
+
+
+def _flat_row_is_covered(row: dict[str, Any], covered_keys: set[str], covered_workbook_rows: set[str]) -> bool:
+    if _coverage_key_values(row) & covered_keys:
+        return True
+    if _coverage_row_values(row) & covered_workbook_rows:
+        return True
+    return False
+
+
+def _flat_fallback_total(rows: Iterable[dict[str, Any]], covered_keys: set[str], covered_workbook_rows: set[str]) -> float:
+    return sum(
+        safe_number(row.get("estimated_cost"), 0.0)
+        for row in rows
+        if row.get("include") and not _flat_row_is_covered(row, covered_keys, covered_workbook_rows)
+    )
+
+
+def _insulation_material_total_rows(workbench: dict[str, Any]) -> tuple[list[dict[str, Any]], set[str], set[str]]:
+    performance_rows = [row for row in workbench.get("insulation_performance_specs") or [] if isinstance(row, dict)]
+    if any(row.get("include") and safe_number(row.get("estimated_cost"), 0.0) > 0 for row in performance_rows):
+        covered_keys, covered_rows = _coverage_from_decision_rows(performance_rows, extra_keys={"foam"})
+        return performance_rows, covered_keys, covered_rows
+    foam_rows = [row for row in workbench.get("insulation_foam_template_decisions") or [] if isinstance(row, dict)]
+    covered_keys, covered_rows = _coverage_from_decision_rows(foam_rows, extra_keys={"foam"} if foam_rows else set())
+    return foam_rows, covered_keys, covered_rows
+
+
 def summarize_workbench_totals(workbench: dict[str, Any]) -> dict[str, float]:
     workbench = recalculate_workbench_tables(workbench)
-    material_total = sum(safe_number(row.get("estimated_cost"), 0.0) for row in workbench.get("materials") or [] if row.get("include"))
-    labor_total = sum(safe_number(row.get("estimated_cost"), 0.0) for row in workbench.get("labor") or [] if row.get("include"))
-    adder_total = sum(safe_number(row.get("estimated_cost"), 0.0) for row in workbench.get("adders") or [] if row.get("include"))
+    if _is_insulation_scope(workbench.get("scope") or {}):
+        material_decision_rows, material_covered_keys, material_covered_workbook_rows = _insulation_material_total_rows(workbench)
+        labor_decision_rows: list[dict[str, Any]] = []
+        labor_covered_keys: set[str] = set()
+        labor_covered_workbook_rows: set[str] = set()
+        adder_decision_rows: list[dict[str, Any]] = []
+        adder_covered_keys: set[str] = set()
+        adder_covered_workbook_rows: set[str] = set()
+    else:
+        material_decision_rows = _decision_total_rows(workbench, ROOFING_MATERIAL_TOTAL_DECISION_SECTIONS)
+        material_covered_keys, material_covered_workbook_rows = _coverage_from_decision_rows(material_decision_rows)
+        labor_decision_rows = _decision_total_rows(workbench, ROOFING_LABOR_TOTAL_DECISION_SECTIONS)
+        labor_covered_keys, labor_covered_workbook_rows = _coverage_from_decision_rows(labor_decision_rows)
+        adder_decision_rows = _decision_total_rows(workbench, ROOFING_ADDER_TOTAL_DECISION_SECTIONS)
+        adder_covered_keys, adder_covered_workbook_rows = _coverage_from_decision_rows(adder_decision_rows)
+
+    material_total = _included_cost_total(material_decision_rows) + _flat_fallback_total(
+        workbench.get("materials") or [],
+        material_covered_keys,
+        material_covered_workbook_rows,
+    )
+    labor_total = _included_cost_total(labor_decision_rows) + _flat_fallback_total(
+        workbench.get("labor") or [],
+        labor_covered_keys,
+        labor_covered_workbook_rows,
+    )
+    adder_total = _included_cost_total(adder_decision_rows) + _flat_fallback_total(
+        workbench.get("adders") or [],
+        adder_covered_keys,
+        adder_covered_workbook_rows,
+    )
     return {
         "material_total": round(material_total, 2),
         "labor_total": round(labor_total, 2),

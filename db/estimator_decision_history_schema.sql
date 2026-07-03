@@ -62,6 +62,27 @@ CREATE TABLE IF NOT EXISTS analytics.insulation_labor_decision_history
 CREATE TABLE IF NOT EXISTS analytics.roofing_coating_decision_history
     (LIKE analytics.insulation_foam_decision_history INCLUDING DEFAULTS);
 
+CREATE TABLE IF NOT EXISTS analytics.roofing_primer_decision_history
+    (LIKE analytics.insulation_foam_decision_history INCLUDING DEFAULTS);
+
+CREATE TABLE IF NOT EXISTS analytics.roofing_caulk_sealant_decision_history
+    (LIKE analytics.insulation_foam_decision_history INCLUDING DEFAULTS);
+
+CREATE TABLE IF NOT EXISTS analytics.roofing_fabric_decision_history
+    (LIKE analytics.insulation_foam_decision_history INCLUDING DEFAULTS);
+
+CREATE TABLE IF NOT EXISTS analytics.roofing_board_stock_decision_history
+    (LIKE analytics.insulation_foam_decision_history INCLUDING DEFAULTS);
+
+CREATE TABLE IF NOT EXISTS analytics.roofing_fasteners_decision_history
+    (LIKE analytics.insulation_foam_decision_history INCLUDING DEFAULTS);
+
+CREATE TABLE IF NOT EXISTS analytics.roofing_plates_decision_history
+    (LIKE analytics.insulation_foam_decision_history INCLUDING DEFAULTS);
+
+CREATE TABLE IF NOT EXISTS analytics.roofing_granules_decision_history
+    (LIKE analytics.insulation_foam_decision_history INCLUDING DEFAULTS);
+
 CREATE TABLE IF NOT EXISTS analytics.roofing_scope_decision_history
     (LIKE analytics.insulation_foam_decision_history INCLUDING DEFAULTS);
 
@@ -97,6 +118,20 @@ CREATE INDEX IF NOT EXISTS idx_insulation_labor_decision_history_decision
     ON analytics.insulation_labor_decision_history (decision_id, template_bucket);
 CREATE INDEX IF NOT EXISTS idx_roofing_coating_decision_history_decision
     ON analytics.roofing_coating_decision_history (decision_id, template_bucket);
+CREATE INDEX IF NOT EXISTS idx_roofing_primer_decision_history_decision
+    ON analytics.roofing_primer_decision_history (decision_id, template_bucket);
+CREATE INDEX IF NOT EXISTS idx_roofing_caulk_sealant_decision_history_decision
+    ON analytics.roofing_caulk_sealant_decision_history (decision_id, template_bucket);
+CREATE INDEX IF NOT EXISTS idx_roofing_fabric_decision_history_decision
+    ON analytics.roofing_fabric_decision_history (decision_id, template_bucket);
+CREATE INDEX IF NOT EXISTS idx_roofing_board_stock_decision_history_decision
+    ON analytics.roofing_board_stock_decision_history (decision_id, template_bucket);
+CREATE INDEX IF NOT EXISTS idx_roofing_fasteners_decision_history_decision
+    ON analytics.roofing_fasteners_decision_history (decision_id, template_bucket);
+CREATE INDEX IF NOT EXISTS idx_roofing_plates_decision_history_decision
+    ON analytics.roofing_plates_decision_history (decision_id, template_bucket);
+CREATE INDEX IF NOT EXISTS idx_roofing_granules_decision_history_decision
+    ON analytics.roofing_granules_decision_history (decision_id, template_bucket);
 CREATE INDEX IF NOT EXISTS idx_roofing_scope_decision_history_decision
     ON analytics.roofing_scope_decision_history (decision_id, template_bucket);
 CREATE INDEX IF NOT EXISTS idx_roofing_labor_decision_history_decision

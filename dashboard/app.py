@@ -114,6 +114,31 @@ AREA_TRACE_COMPACT_COLUMNS = [
     "notes",
 ]
 
+SURFACE_AREA_REVIEW_COLUMNS = [
+    "component",
+    "quantity",
+    "length_ft",
+    "width_ft",
+    "height_ft",
+    "gross_area_sqft",
+    "deduction_area_sqft",
+    "net_area_sqft",
+    "target_r_value",
+    "foam_type",
+    "edited_thickness_inches",
+    "area_formula",
+    "notes",
+]
+
+SURFACE_AREA_DETAIL_COLUMNS = [
+    *SURFACE_AREA_REVIEW_COLUMNS,
+    "source_text",
+    "confidence",
+    "selected_source",
+    "ai_value",
+    "deterministic_value",
+]
+
 INSULATION_PERFORMANCE_COMPACT_COLUMNS = [
     "surface",
     "application_context",
@@ -153,6 +178,215 @@ INSULATION_FOAM_TEMPLATE_COMPACT_COLUMNS = [
     "compatibility_status",
     "compatibility_warnings",
     "product_guidance",
+    "notes",
+]
+
+ROOFING_FOAM_TEMPLATE_COMPACT_COLUMNS = [
+    "include",
+    "workbook_row",
+    "editable_selector_code",
+    "resolved_template_option",
+    "historical_selector_recommendation",
+    "historical_selector_evidence_count",
+    "basis_sqft",
+    "thickness_inches",
+    "yield_or_coverage",
+    "unit_price",
+    "estimated_units",
+    "estimated_sets",
+    "estimated_cost",
+    "selected_pricing_candidate",
+    "compatibility_status",
+    "compatibility_warnings",
+    "product_guidance",
+    "notes",
+]
+
+ROOFING_COATING_TEMPLATE_COMPACT_COLUMNS = [
+    "include",
+    "workbook_row",
+    "editable_selector_code",
+    "resolved_template_option",
+    "historical_selector_recommendation",
+    "historical_selector_evidence_count",
+    "basis_sqft",
+    "gal_per_100_sqft",
+    "waste_factor_pct",
+    "wet_mils_estimate",
+    "unit_price",
+    "estimated_gallons",
+    "estimated_cost",
+    "selected_pricing_candidate",
+    "compatibility_status",
+    "compatibility_warnings",
+    "product_guidance",
+    "notes",
+]
+
+ROOFING_PRIMER_TEMPLATE_COMPACT_COLUMNS = [
+    "include",
+    "workbook_row",
+    "editable_selector_code",
+    "resolved_template_option",
+    "historical_selector_recommendation",
+    "historical_selector_evidence_count",
+    "basis_sqft",
+    "coverage_sqft_per_unit",
+    "unit_price",
+    "estimated_units",
+    "estimated_cost",
+    "selected_pricing_candidate",
+    "compatibility_status",
+    "compatibility_warnings",
+    "product_guidance",
+    "notes",
+]
+
+ROOFING_DETAIL_TEMPLATE_COMPACT_COLUMNS = [
+    "include",
+    "workbook_row",
+    "editable_selector_code",
+    "resolved_template_option",
+    "historical_selector_recommendation",
+    "historical_selector_evidence_count",
+    "units",
+    "linear_ft",
+    "unit_price",
+    "estimated_units",
+    "estimated_cost",
+    "selected_pricing_candidate",
+    "compatibility_status",
+    "compatibility_warnings",
+    "product_guidance",
+    "notes",
+]
+
+ROOFING_DETAIL_QUANTITY_TEMPLATE_COMPACT_COLUMNS = [
+    "include",
+    "workbook_row",
+    "resolved_template_option",
+    "linear_ft",
+    "units",
+    "estimated_units",
+    "amount",
+    "estimated_cost",
+    "compatibility_status",
+    "compatibility_warnings",
+    "notes",
+]
+
+ROOFING_BOARD_FASTENER_TEMPLATE_COMPACT_COLUMNS = [
+    "include",
+    "workbook_row",
+    "editable_selector_code",
+    "resolved_template_option",
+    "historical_selector_recommendation",
+    "historical_selector_evidence_count",
+    "basis_sqft",
+    "board_area_sqft",
+    "thickness_inches",
+    "price_per_square",
+    "unit_price_per_thousand",
+    "estimated_squares",
+    "estimated_units",
+    "estimated_cost",
+    "selected_pricing_candidate",
+    "compatibility_status",
+    "compatibility_warnings",
+    "product_guidance",
+    "notes",
+]
+
+ROOFING_GRANULES_TEMPLATE_COMPACT_COLUMNS = [
+    "include",
+    "workbook_row",
+    "editable_selector_code",
+    "resolved_template_option",
+    "historical_selector_recommendation",
+    "historical_selector_evidence_count",
+    "basis_sqft",
+    "coverage_lbs_per_100_sqft",
+    "bag_weight_lbs",
+    "unit_price",
+    "estimated_units",
+    "estimated_cost",
+    "selected_pricing_candidate",
+    "compatibility_status",
+    "compatibility_warnings",
+    "product_guidance",
+    "notes",
+]
+
+ROOFING_EQUIPMENT_TEMPLATE_COMPACT_COLUMNS = [
+    "include",
+    "workbook_row",
+    "editable_selector_code",
+    "resolved_template_option",
+    "historical_selector_recommendation",
+    "historical_selector_evidence_count",
+    "basis_sqft",
+    "thickness_inches",
+    "size",
+    "period",
+    "days",
+    "unit_price",
+    "margin_pct",
+    "estimated_units",
+    "estimated_cost",
+    "compatibility_status",
+    "compatibility_warnings",
+    "notes",
+]
+
+ROOFING_TRAVEL_FREIGHT_TEMPLATE_COMPACT_COLUMNS = [
+    "include",
+    "workbook_row",
+    "resolved_template_option",
+    "estimated_units",
+    "amount",
+    "trip_count",
+    "round_trip_miles",
+    "unit_price",
+    "estimated_cost",
+    "compatibility_status",
+    "compatibility_warnings",
+    "notes",
+]
+
+ROOFING_ACCESSORY_TEMPLATE_COMPACT_COLUMNS = [
+    "include",
+    "workbook_row",
+    "editable_selector_code",
+    "resolved_template_option",
+    "total_coating_gallons",
+    "linear_ft",
+    "estimated_units",
+    "amount",
+    "unit_price",
+    "estimated_cost",
+    "compatibility_status",
+    "compatibility_warnings",
+    "notes",
+]
+
+ROOFING_LABOR_TEMPLATE_COMPACT_COLUMNS = [
+    "include",
+    "workbook_row",
+    "labor_task",
+    "days",
+    "crew_people_selection",
+    "crew_selection",
+    "selected_daily_rate_cell",
+    "daily_rate",
+    "hourly_rate",
+    "editable_hours_per_1000_sqft",
+    "total_hours",
+    "formula_mode",
+    "estimated_cost",
+    "historical_selector_evidence_count",
+    "decision_confidence",
+    "compatibility_status",
+    "compatibility_warnings",
     "notes",
 ]
 
@@ -3928,6 +4162,167 @@ def dataframe_from_records(records: list[dict[str, Any]]) -> pd.DataFrame:
     return pd.DataFrame(records) if records else pd.DataFrame()
 
 
+def _surface_review_number(value: Any, digits: int = 2) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        if pd.isna(value):
+            return None
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return round(number, digits)
+
+
+def _surface_trace_for(surface_type: str, trace_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    step_by_surface = {
+        "walls": "wall_area",
+        "wall": "wall_area",
+        "ceiling": "ceiling_or_roof_area",
+        "roof_underside": "roof_underside_area",
+        "roof underside": "roof_underside_area",
+        "gable": "gable_area",
+        "gables": "gable_area",
+    }
+    target_step = step_by_surface.get(str(surface_type or "").lower())
+    if not target_step:
+        return {}
+    for row in trace_rows or []:
+        if row.get("step") == target_step:
+            return row
+    return {}
+
+
+def build_surface_area_review_rows(parsed_fields: dict[str, Any], workbench: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Build the single estimator-facing surface/dimension review table."""
+
+    workbench = workbench or {}
+    parsed_fields = parsed_fields or {}
+    rows: list[dict[str, Any]] = []
+    trace_rows = [row for row in workbench.get("area_calculation_trace") or [] if isinstance(row, dict)]
+    performance_by_surface = {
+        row.get("surface_type"): row
+        for row in workbench.get("insulation_performance_specs") or []
+        if isinstance(row, dict)
+    }
+
+    for surface in workbench.get("insulation_surfaces") or []:
+        if not isinstance(surface, dict):
+            continue
+        surface_type = str(surface.get("surface_type") or "").lower()
+        trace = _surface_trace_for(surface_type, trace_rows)
+        inputs = trace.get("inputs") if isinstance(trace.get("inputs"), dict) else {}
+        performance = performance_by_surface.get(surface.get("surface_type")) or {}
+        rows.append(
+            {
+                "component": surface.get("surface") or surface_type.replace("_", " ").title() or "Surface",
+                "component_type": "surface",
+                "surface_type": surface.get("surface_type"),
+                "quantity": _surface_review_number(inputs.get("quantity"), 0),
+                "length_ft": _surface_review_number(inputs.get("length_ft")),
+                "width_ft": _surface_review_number(inputs.get("width_ft")),
+                "height_ft": _surface_review_number(inputs.get("wall_height_ft") or inputs.get("height_ft") or inputs.get("roof_rise_ft")),
+                "gross_area_sqft": _surface_review_number(surface.get("gross_area_sqft")),
+                "deduction_area_sqft": _surface_review_number(surface.get("deduction_area_sqft")),
+                "net_area_sqft": _surface_review_number(surface.get("net_area_sqft")),
+                "target_r_value": surface.get("target_r_value") if surface.get("target_r_value") not in (None, "") else performance.get("target_r_value"),
+                "foam_type": surface.get("foam_type") or performance.get("foam_type"),
+                "edited_thickness_inches": surface.get("edited_thickness_inches")
+                if surface.get("edited_thickness_inches") not in (None, "")
+                else performance.get("edited_thickness_inches"),
+                "area_formula": surface.get("area_formula") or trace.get("formula"),
+                "source_text": surface.get("source_text") or trace.get("source_text"),
+                "confidence": surface.get("confidence") or trace.get("confidence"),
+                "selected_source": trace.get("selected_source"),
+                "ai_value": trace.get("ai_value"),
+                "deterministic_value": trace.get("deterministic_value"),
+                "notes": surface.get("notes") or performance.get("notes") or trace.get("notes"),
+            }
+        )
+
+    dimension_summary = parsed_fields.get("dimension_summary") or {}
+    if not isinstance(dimension_summary, dict):
+        dimension_summary = {}
+    if dimension_summary:
+        if not rows:
+            for item in dimension_summary.get("included_areas") or []:
+                if not isinstance(item, dict):
+                    continue
+                total_area = item.get("total_area") or item.get("area_sqft")
+                rows.append(
+                    {
+                        "component": item.get("label") or item.get("component") or "Included area",
+                        "component_type": "surface",
+                        "quantity": item.get("quantity"),
+                        "length_ft": item.get("length") or item.get("length_ft"),
+                        "width_ft": item.get("width") or item.get("width_ft"),
+                        "height_ft": item.get("height") or item.get("height_ft"),
+                        "gross_area_sqft": _surface_review_number(total_area),
+                        "deduction_area_sqft": 0,
+                        "net_area_sqft": _surface_review_number(total_area),
+                        "area_formula": item.get("formula"),
+                        "source_text": item.get("source_text"),
+                        "notes": item.get("notes"),
+                    }
+                )
+        for item in dimension_summary.get("deducted_areas") or []:
+            if not isinstance(item, dict):
+                continue
+            total_area = item.get("total_area") or item.get("area_sqft")
+            rows.append(
+                {
+                    "component": "Deduction - " + str(item.get("label") or item.get("component") or "opening"),
+                    "component_type": "deduction",
+                    "quantity": item.get("quantity"),
+                    "length_ft": item.get("length") or item.get("length_ft"),
+                    "width_ft": item.get("width") or item.get("width_ft"),
+                    "height_ft": item.get("height") or item.get("height_ft"),
+                    "gross_area_sqft": None,
+                    "deduction_area_sqft": _surface_review_number(total_area),
+                    "net_area_sqft": None,
+                    "area_formula": item.get("formula"),
+                    "source_text": item.get("source_text"),
+                    "notes": item.get("notes"),
+                }
+            )
+
+    if rows:
+        surface_rows = [row for row in rows if row.get("component_type") == "surface"]
+        total_gross = sum(float(row.get("gross_area_sqft") or 0) for row in surface_rows)
+        total_deductions = sum(float(row.get("deduction_area_sqft") or 0) for row in surface_rows)
+        total_net = sum(float(row.get("net_area_sqft") or 0) for row in surface_rows)
+        if not total_gross:
+            total_gross = _surface_review_number(parsed_fields.get("gross_insulation_area_sqft") or parsed_fields.get("gross_area_sqft") or parsed_fields.get("gross_sqft")) or 0
+        if not total_deductions:
+            total_deductions = _surface_review_number(parsed_fields.get("opening_area_known_sqft") or parsed_fields.get("deduction_area_sqft") or parsed_fields.get("deduction_sqft")) or 0
+        if not total_net:
+            total_net = _surface_review_number(parsed_fields.get("net_insulation_area_sqft") or parsed_fields.get("net_area_sqft") or parsed_fields.get("net_sqft")) or 0
+        rows.append(
+            {
+                "component": "Total",
+                "component_type": "total",
+                "gross_area_sqft": _surface_review_number(total_gross),
+                "deduction_area_sqft": _surface_review_number(total_deductions),
+                "net_area_sqft": _surface_review_number(total_net),
+                "area_formula": "surface totals",
+                "notes": workbench.get("area_calculation_explanation") or "; ".join(str(item) for item in dimension_summary.get("warnings") or []),
+            }
+        )
+    elif any(parsed_fields.get(key) for key in ("gross_insulation_area_sqft", "gross_area_sqft", "gross_sqft", "net_insulation_area_sqft", "net_area_sqft", "net_sqft")):
+        rows.append(
+            {
+                "component": "Total",
+                "component_type": "total",
+                "gross_area_sqft": _surface_review_number(parsed_fields.get("gross_insulation_area_sqft") or parsed_fields.get("gross_area_sqft") or parsed_fields.get("gross_sqft")),
+                "deduction_area_sqft": _surface_review_number(parsed_fields.get("opening_area_known_sqft") or parsed_fields.get("deduction_area_sqft") or parsed_fields.get("deduction_sqft")),
+                "net_area_sqft": _surface_review_number(parsed_fields.get("net_insulation_area_sqft") or parsed_fields.get("net_area_sqft") or parsed_fields.get("net_sqft")),
+                "area_formula": "parsed total",
+                "notes": "; ".join(str(item) for item in dimension_summary.get("warnings") or []),
+            }
+        )
+    return rows
+
+
 def display_safe_cell_value(value: Any) -> Any:
     if isinstance(value, (dict, list, tuple, set)):
         return json.dumps(value, sort_keys=True, default=str)
@@ -4382,38 +4777,17 @@ def estimator_prototype_page() -> None:
                     st.info("Missing questions: " + "; ".join(str(item) for item in missing_questions))
             with st.expander("Raw parser details", expanded=False):
                 st.dataframe(pd.DataFrame([parsed_fields]), use_container_width=True, hide_index=True)
-        dimension_summary = field_recommendation.parsed_fields.get("dimension_summary") or {}
-        if isinstance(dimension_summary, dict) and (
-            dimension_summary.get("net_area_sqft") or dimension_summary.get("included_areas") or dimension_summary.get("deducted_areas")
-        ):
-            st.markdown("**Dimension Math**")
-            metric_row(
-                [
-                    ("Gross Area", f"{dimension_summary.get('gross_area_sqft') or 0:,.0f} sqft"),
-                    ("Deductions", f"{dimension_summary.get('deduction_area_sqft') or 0:,.0f} sqft"),
-                    ("Net Area", f"{dimension_summary.get('net_area_sqft') or 0:,.0f} sqft"),
-                ]
-            )
-            d1, d2 = st.columns(2)
-            with d1:
-                st.caption("Included areas")
-                show_table(
-                    dataframe_from_records(dimension_summary.get("included_areas") or []),
-                    ["label", "length", "width", "quantity", "area_each", "total_area", "source_text"],
-                    height=180,
-                )
-            with d2:
-                st.caption("Deducted areas")
-                show_table(
-                    dataframe_from_records(dimension_summary.get("deducted_areas") or []),
-                    ["label", "length", "width", "quantity", "area_each", "total_area", "source_text"],
-                    height=180,
-                )
-            if dimension_summary.get("warnings"):
-                st.warning("\n".join(dimension_summary.get("warnings") or []))
         if field_recommendation.review_flags:
             st.warning("\n".join(field_recommendation.review_flags))
         if estimate_status != "READY_TO_ESTIMATE":
+            surface_review_rows = build_surface_area_review_rows(parsed_fields)
+            if surface_review_rows:
+                st.markdown("**Surface Areas / Dimensions**")
+                show_table(
+                    dataframe_from_records(surface_review_rows),
+                    SURFACE_AREA_REVIEW_COLUMNS,
+                    height=220,
+                )
             st.info("Estimate generation stopped before material selection, labor calibration, similar jobs, pricing, workbook export, and evidence export.")
             return
         parsed_workbench = build_estimating_workbench(field_recommendation, data)
@@ -4604,12 +4978,61 @@ def estimator_prototype_page() -> None:
             key=f"wb_show_row_details_{workbench_key}_{historical_filters_key}",
             help="Shows accepted/rejected evidence, percentile ranges, relaxed filters, and source diagnostics.",
         )
-        if original_workbench.get("area_calculation_explanation") or original_workbench.get("area_calculation_trace"):
-            st.markdown("#### Area Calculation")
-            if original_workbench.get("area_calculation_explanation"):
-                st.info(str(original_workbench.get("area_calculation_explanation")))
+        surface_review_rows = build_surface_area_review_rows(parsed_fields, original_workbench)
+        if surface_review_rows:
+            st.markdown("#### Surface Areas / Dimensions")
+            st.caption("Review the parsed components once here. Target R and edited thickness feed the insulation foam decision; detailed formula trace stays in diagnostics.")
+            surface_area_editable_fields = {"target_r_value", "edited_thickness_inches"}
+            surface_area_df = pd.DataFrame(display_safe_records(surface_review_rows, editable_fields=surface_area_editable_fields))
+            surface_area_column_order = (
+                [column for column in SURFACE_AREA_DETAIL_COLUMNS if column in surface_area_df.columns]
+                if show_row_details
+                else [column for column in SURFACE_AREA_REVIEW_COLUMNS if column in surface_area_df.columns]
+            )
+            edited_surface_area_df = st.data_editor(
+                surface_area_df,
+                use_container_width=True,
+                hide_index=True,
+                num_rows="fixed",
+                key=f"wb_surface_area_review_{workbench_key}_{scope_key}_{historical_filters_key}",
+                column_order=surface_area_column_order,
+                column_config={
+                    "component": "Component",
+                    "quantity": "Qty",
+                    "length_ft": "Length",
+                    "width_ft": "Width",
+                    "height_ft": "Height",
+                    "gross_area_sqft": "Gross Sq Ft",
+                    "deduction_area_sqft": "Deductions",
+                    "net_area_sqft": "Net Sq Ft",
+                    "target_r_value": "Target R",
+                    "foam_type": "Foam Type",
+                    "edited_thickness_inches": "Edited Thickness",
+                    "area_formula": "Formula",
+                    "source_text": "Source Text",
+                    "confidence": "Confidence",
+                    "selected_source": "Selected Source",
+                    "ai_value": "AI Value",
+                    "deterministic_value": "Deterministic Value",
+                    "notes": "Notes",
+                },
+                disabled=[column for column in surface_area_column_order if column not in surface_area_editable_fields],
+            )
+            edited_surface_rows = edited_surface_area_df.to_dict(orient="records")
+            surfaces_by_type = {row.get("surface_type"): row for row in edited_workbench.get("insulation_surfaces") or []}
+            surfaces_by_name = {str(row.get("surface") or "").lower(): row for row in edited_workbench.get("insulation_surfaces") or []}
+            for row in edited_surface_rows:
+                if row.get("component_type") != "surface":
+                    continue
+                surface = surfaces_by_type.get(row.get("surface_type")) or surfaces_by_name.get(str(row.get("component") or "").lower())
+                if not surface:
+                    continue
+                for field in ("target_r_value", "edited_thickness_inches"):
+                    if row.get(field) not in (None, ""):
+                        surface[field] = row.get(field)
+            edited_workbench["insulation_surfaces"] = list(surfaces_by_type.values()) or list(surfaces_by_name.values())
             if original_workbench.get("area_calculation_trace") and show_row_details:
-                with st.expander("Show area calculation trace", expanded=False):
+                with st.expander("Show formula trace", expanded=False):
                     area_trace_rows = display_safe_records(original_workbench.get("area_calculation_trace") or [])
                     area_trace_df = pd.DataFrame(area_trace_rows)
                     st.dataframe(
@@ -4617,56 +5040,6 @@ def estimator_prototype_page() -> None:
                         use_container_width=True,
                         hide_index=True,
                     )
-
-        if original_workbench.get("insulation_performance_specs"):
-            st.markdown("#### Insulation Performance")
-            performance_editable_fields = {"target_r_value", "edited_thickness_inches"}
-            performance_rows = original_workbench.get("insulation_performance_specs") or []
-            performance_df = pd.DataFrame(display_safe_records(performance_rows, editable_fields=performance_editable_fields))
-            performance_column_order = (
-                list(performance_df.columns)
-                if show_row_details
-                else [column for column in INSULATION_PERFORMANCE_COMPACT_COLUMNS if column in performance_df.columns]
-            )
-            edited_performance_df = st.data_editor(
-                performance_df,
-                use_container_width=True,
-                hide_index=True,
-                num_rows="fixed",
-                key=f"wb_insulation_performance_{workbench_key}_{scope_key}_{historical_filters_key}",
-                column_order=performance_column_order,
-                column_config={
-                    "surface": "Surface",
-                    "application_context": "Application",
-                    "net_area_sqft": "Net Sq Ft",
-                    "target_r_value": "Target R",
-                    "foam_type": "Foam Type",
-                    "historical_product_decision": "Historical Product",
-                    "selected_current_product": "Selected Product",
-                    "product_knowledge_match": "Product Sheet Match",
-                    "alignment_status": "Alignment",
-                    "product_fit_status": "Product Fit",
-                    "product_r_value_per_inch": "R / Inch",
-                    "required_thickness_inches": "Required Thickness",
-                    "edited_thickness_inches": "Edited Thickness",
-                    "estimated_sets": "Sets",
-                    "estimated_cost": "Cost",
-                    "product_guidance": "Product Guidance",
-                    "product_warnings": "Warnings",
-                    "notes": "Notes",
-                },
-                disabled=[column for column in performance_column_order if column not in performance_editable_fields],
-            )
-            edited_performance_rows = edited_performance_df.to_dict(orient="records")
-            surfaces_by_type = {row.get("surface_type"): row for row in edited_workbench.get("insulation_surfaces") or []}
-            for row in edited_performance_rows:
-                surface = surfaces_by_type.get(row.get("surface_type"))
-                if not surface:
-                    continue
-                for field in ("target_r_value", "edited_thickness_inches"):
-                    if row.get(field) not in (None, ""):
-                        surface[field] = row.get(field)
-            edited_workbench["insulation_surfaces"] = list(surfaces_by_type.values())
 
         if original_workbench.get("insulation_foam_template_decisions"):
             st.markdown("#### Insulation Foam Template Decision")
@@ -4721,421 +5094,623 @@ def estimator_prototype_page() -> None:
                 foam_template_editable_fields,
             )
 
-        st.markdown("#### Materials")
-        add_material_key = f"wb_add_material_line_{workbench_key}_{scope_key}_{historical_filters_key}"
-        if st.button("Add Material Line", key=add_material_key):
-            original_workbench.setdefault("materials", []).append(manual_material_workbench_row(edited_scope))
-        material_editable_fields = {
-            "include",
-            "item_name",
-            "editable_basis_sqft",
-            "editable_qty_per_sqft",
-            "unit",
-            "current_unit_price",
-            "reset_to_historical_default",
-        }
-        material_rows = original_workbench.get("materials") or []
-        materials_df = pd.DataFrame(display_safe_records(material_rows, editable_fields=material_editable_fields))
-        material_column_order = [
-            "include",
-            "template_bucket",
-            "workbook_row",
-            "package",
-            "current_item",
-            "historical_item",
-            "item_name",
-            "selected_item_reason",
-            "top_rejected_item_reasons",
-            "item_source",
-            "suggested_by_notes_rules",
-            "historical_median",
-            "editable_default",
-            "historical_usage_rate",
-            "historical_qty_per_basis_sqft",
-            "editable_basis_sqft",
-            "historical_qty_per_sqft",
-            "p25_qty_per_sqft",
-            "p75_qty_per_sqft",
-            "editable_qty_per_sqft",
-            "calculated_quantity",
-            "unit",
-            "current_price",
-            "current_unit_price",
-            "historical_cost_default",
-            "historical_cost_per_sqft",
-            "estimated_cost",
-            "evidence_count",
-            "historical_cost_evidence_count",
-            "historical_jobs_found",
-            "rows_accepted",
-            "rows_rejected",
-            "range_width",
-            "relative_range_width",
-            "variability_warning",
-            "confidence",
-            "source",
-            "filters_applied",
-            "filters_relaxed",
-            "price_source",
-            "needs_review",
-            "manual_override",
-            "reset_to_historical_default",
-            "rejection_reasons",
-            "notes",
-            "explanation",
-        ] if show_row_details else MATERIAL_WORKBENCH_COMPACT_COLUMNS
-        edited_materials_df = st.data_editor(
-            materials_df,
-            use_container_width=True,
-            hide_index=True,
-            num_rows="fixed",
-            key=f"wb_materials_{workbench_key}_{scope_key}_{historical_filters_key}",
-            column_order=material_column_order,
-            column_config={
-                "include": st.column_config.CheckboxColumn("Include"),
-                "template_bucket": "Template Bucket",
-                "workbook_row": "Row",
-                "package": "Template Line",
-                "estimator_decision": "Estimator Decision",
-                "historical_recommendation": "Historical Recommendation",
-                "editable_value": "Editable Decision",
-                "calculated_output_summary": "Calculated Output",
-                "current_item": "Current Item",
-                "historical_item": "Historical Item",
-                "item_name": "Item Name",
-                "selected_item_reason": "Selected Item Reason",
-                "top_rejected_item_reasons": "Rejected Item Reasons",
-                "item_source": "Item Source",
-                "suggested_by_notes_rules": "Suggested",
-                "historical_median": "Historical Median",
-                "editable_default": "Editable Default",
-                "historical_usage_rate": "Historical Usage Rate",
-                "historical_qty_per_basis_sqft": "Historical Qty / Basis Sq Ft",
-                "editable_basis_sqft": "Basis Sq Ft",
-                "historical_qty_per_sqft": "Historical Qty / Sq Ft",
-                "p25_qty_per_sqft": "P25 Qty / Sq Ft",
-                "p75_qty_per_sqft": "P75 Qty / Sq Ft",
-                "editable_qty_per_sqft": "Qty / Sq Ft",
-                "calculated_quantity": "Quantity",
-                "unit": "Unit",
-                "current_price": "Current Price",
-                "current_unit_price": "Unit Price",
-                "historical_cost_default": "Historical Cost Default",
-                "historical_cost_per_sqft": "Historical Cost / Sq Ft",
-                "estimated_cost": "Cost",
-                "evidence_count": "Evidence",
-                "decision_evidence_count": "Decision Evidence",
-                "decision_confidence": "Decision Confidence",
-                "product_guidance": "Product Guidance",
-                "product_warning_summary": "Product Warnings",
-                "row_traceability": "Workbook Trace",
-                "historical_cost_evidence_count": "Cost Evidence Count",
-                "historical_jobs_found": "Historical Jobs Found",
-                "rows_accepted": "Rows Accepted",
-                "rows_rejected": "Rows Rejected",
-                "range_width": "Range Width",
-                "relative_range_width": "Relative Range Width",
-                "variability_warning": "Variability",
-                "confidence": "Confidence",
-                "source": "Source",
-                "filters_applied": "Filters Applied",
-                "filters_relaxed": "Filters Relaxed",
-                "price_source": "Price Source",
-                "needs_review": "Needs Review",
-                "manual_override": "Manual Override",
-                "reset_to_historical_default": st.column_config.CheckboxColumn("Reset"),
-                "rejection_reasons": "Rejected Row Reasons",
-                "notes": "Notes",
-                "explanation": "Explanation",
-            },
-            disabled=[
-                "template_bucket",
-                "workbook_row",
-                "package",
-                "estimator_decision",
-                "historical_recommendation",
-                "editable_value",
-                "calculated_output_summary",
-                "current_item",
-                "historical_item",
-                "selected_item_reason",
-                "top_rejected_item_reasons",
-                "item_source",
-                "suggested_by_notes_rules",
-                "historical_median",
-                "editable_default",
-                "historical_usage_rate",
-                "historical_qty_per_basis_sqft",
-                "historical_qty_per_sqft",
-                "p25_qty_per_sqft",
-                "p75_qty_per_sqft",
-                "calculated_quantity",
-                "current_price",
-                "estimated_cost",
-                "evidence_count",
-                "decision_evidence_count",
-                "decision_confidence",
-                "product_guidance",
-                "product_warning_summary",
-                "row_traceability",
-                "historical_cost_default",
-                "historical_cost_per_sqft",
-                "historical_cost_evidence_count",
-                "historical_jobs_found",
-                "rows_accepted",
-                "rows_rejected",
-                "range_width",
-                "relative_range_width",
-                "variability_warning",
-                "confidence",
-                "source",
-                "filters_applied",
-                "filters_relaxed",
-                "price_source",
-                "needs_review",
-                "manual_override",
-                "rejection_reasons",
-                "notes",
-                "explanation",
-            ],
-        )
-        edited_workbench["materials"] = merge_editable_rows(
-            material_rows,
-            edited_materials_df.to_dict(orient="records"),
-            material_editable_fields,
-        )
+        if original_workbench.get("roofing_foam_template_decisions"):
+            st.markdown("#### Roofing SPF Foam Decision")
+            roofing_foam_template_editable_fields = {
+                "include",
+                "editable_selector_code",
+                "basis_sqft",
+                "thickness_inches",
+                "yield_or_coverage",
+                "unit_price",
+                "selected_pricing_candidate",
+            }
+            roofing_foam_template_rows = original_workbench.get("roofing_foam_template_decisions") or []
+            roofing_foam_template_df = pd.DataFrame(
+                display_safe_records(roofing_foam_template_rows, editable_fields=roofing_foam_template_editable_fields)
+            )
+            roofing_foam_template_column_order = (
+                list(roofing_foam_template_df.columns)
+                if show_row_details
+                else [column for column in ROOFING_FOAM_TEMPLATE_COMPACT_COLUMNS if column in roofing_foam_template_df.columns]
+            )
+            edited_roofing_foam_template_df = st.data_editor(
+                roofing_foam_template_df,
+                use_container_width=True,
+                hide_index=True,
+                num_rows="fixed",
+                key=f"wb_roofing_foam_template_{workbench_key}_{scope_key}_{historical_filters_key}",
+                column_order=roofing_foam_template_column_order,
+                column_config={
+                    "include": "Include",
+                    "workbook_row": "Row",
+                    "editable_selector_code": "Selector",
+                    "resolved_template_option": "Template Option",
+                    "historical_selector_recommendation": "Historical Default",
+                    "historical_selector_evidence_count": "Evidence",
+                    "basis_sqft": "Basis Sq Ft",
+                    "thickness_inches": "Thickness",
+                    "yield_or_coverage": "Yield",
+                    "unit_price": "Unit Price",
+                    "estimated_units": "Units",
+                    "estimated_sets": "Sets",
+                    "estimated_cost": "Cost",
+                    "selected_pricing_candidate": "Pricing Candidate",
+                    "compatibility_status": "Compatibility",
+                    "compatibility_warnings": "Warnings",
+                    "product_guidance": "Product Guidance",
+                    "notes": "Notes",
+                },
+                disabled=[
+                    column for column in roofing_foam_template_column_order if column not in roofing_foam_template_editable_fields
+                ],
+            )
+            edited_workbench["roofing_foam_template_decisions"] = merge_editable_rows(
+                roofing_foam_template_rows,
+                edited_roofing_foam_template_df.to_dict(orient="records"),
+                roofing_foam_template_editable_fields,
+            )
 
-        st.markdown("#### Labor")
-        labor_editable_fields = {
-            "include",
-            "editable_hours_per_1000_sqft",
-            "crew_size",
-            "labor_rate",
-            "reset_to_historical_default",
-        }
-        labor_rows = original_workbench.get("labor") or []
-        labor_df = pd.DataFrame(display_safe_records(labor_rows, editable_fields=labor_editable_fields))
-        labor_column_order = [
-            "include",
-            "template_bucket",
-            "workbook_row",
-            "labor_package",
-            "suggested_by_notes_rules",
-            "historical_median",
-            "editable_default",
-            "historical_hours_per_1000_sqft",
-            "p25_hours_per_1000_sqft",
-            "p75_hours_per_1000_sqft",
-            "editable_hours_per_1000_sqft",
-            "calculated_hours",
-            "crew_size",
-            "labor_rate",
-            "estimated_cost",
-            "evidence_count",
-            "historical_jobs_found",
-            "rows_accepted",
-            "rows_rejected",
-            "range_width",
-            "relative_range_width",
-            "variability_warning",
-            "confidence",
-            "source",
-            "filters_applied",
-            "filters_relaxed",
-            "manual_override",
-            "reset_to_historical_default",
-            "rejection_reasons",
-            "notes",
-            "explanation",
-        ] if show_row_details else LABOR_WORKBENCH_COMPACT_COLUMNS
-        edited_labor_df = st.data_editor(
-            labor_df,
-            use_container_width=True,
-            hide_index=True,
-            num_rows="fixed",
-            key=f"wb_labor_{workbench_key}_{scope_key}_{historical_filters_key}",
-            column_order=labor_column_order,
-            column_config={
-                "include": st.column_config.CheckboxColumn("Include"),
-                "template_bucket": "Template Bucket",
-                "workbook_row": "Row",
-                "labor_package": "Labor Task",
-                "estimator_decision": "Estimator Decision",
-                "historical_recommendation": "Historical Recommendation",
-                "editable_value": "Editable Decision",
-                "calculated_output_summary": "Calculated Output",
-                "suggested_by_notes_rules": "Suggested",
-                "days": "Days",
-                "crew_people_selection": "Crew / People",
-                "daily_rate": "Daily Rate",
-                "formula_mode": "Formula Mode",
-                "historical_median": "Historical Median",
-                "editable_default": "Editable Default",
-                "historical_hours_per_1000_sqft": "Historical Hours / 1000 Sq Ft",
-                "p25_hours_per_1000_sqft": "P25 Hours / 1000 Sq Ft",
-                "p75_hours_per_1000_sqft": "P75 Hours / 1000 Sq Ft",
-                "editable_hours_per_1000_sqft": "Hrs / 1000 Sq Ft",
-                "calculated_hours": "Hours",
-                "crew_size": "Crew Size",
-                "labor_rate": "Rate",
-                "estimated_cost": "Cost",
-                "evidence_count": "Evidence",
-                "decision_evidence_count": "Decision Evidence",
-                "decision_confidence": "Decision Confidence",
-                "row_traceability": "Workbook Trace",
-                "historical_jobs_found": "Historical Jobs Found",
-                "rows_accepted": "Rows Accepted",
-                "rows_rejected": "Rows Rejected",
-                "range_width": "Range Width",
-                "relative_range_width": "Relative Range Width",
-                "variability_warning": "Variability",
-                "confidence": "Confidence",
-                "source": "Source",
-                "filters_applied": "Filters Applied",
-                "filters_relaxed": "Filters Relaxed",
-                "manual_override": "Manual Override",
-                "reset_to_historical_default": st.column_config.CheckboxColumn("Reset"),
-                "rejection_reasons": "Rejected Row Reasons",
-                "notes": "Notes",
-                "explanation": "Explanation",
-            },
-            disabled=[
-                "template_bucket",
-                "workbook_row",
-                "labor_package",
-                "estimator_decision",
-                "historical_recommendation",
-                "editable_value",
-                "calculated_output_summary",
-                "suggested_by_notes_rules",
+        if original_workbench.get("roofing_coating_template_decisions"):
+            st.markdown("#### Roof Coating System Decision")
+            coating_template_editable_fields = {
+                "include",
+                "editable_selector_code",
+                "basis_sqft",
+                "gal_per_100_sqft",
+                "waste_factor_pct",
+                "unit_price",
+                "selected_pricing_candidate",
+            }
+            coating_template_rows = original_workbench.get("roofing_coating_template_decisions") or []
+            coating_template_df = pd.DataFrame(display_safe_records(coating_template_rows, editable_fields=coating_template_editable_fields))
+            coating_template_column_order = (
+                list(coating_template_df.columns)
+                if show_row_details
+                else [column for column in ROOFING_COATING_TEMPLATE_COMPACT_COLUMNS if column in coating_template_df.columns]
+            )
+            edited_coating_template_df = st.data_editor(
+                coating_template_df,
+                use_container_width=True,
+                hide_index=True,
+                num_rows="fixed",
+                key=f"wb_roofing_coating_template_{workbench_key}_{scope_key}_{historical_filters_key}",
+                column_order=coating_template_column_order,
+                column_config={
+                    "include": "Include",
+                    "workbook_row": "Row",
+                    "editable_selector_code": "Selector",
+                    "resolved_template_option": "Template Option",
+                    "historical_selector_recommendation": "Historical Default",
+                    "historical_selector_evidence_count": "Evidence",
+                    "basis_sqft": "Basis Sq Ft",
+                    "gal_per_100_sqft": "Gal / 100 Sq Ft",
+                    "waste_factor_pct": "Waste %",
+                    "wet_mils_estimate": "Wet Mils",
+                    "unit_price": "Unit Price",
+                    "estimated_gallons": "Gallons",
+                    "estimated_cost": "Cost",
+                    "selected_pricing_candidate": "Pricing Candidate",
+                    "compatibility_status": "Compatibility",
+                    "compatibility_warnings": "Warnings",
+                    "product_guidance": "Product Guidance",
+                    "notes": "Notes",
+                },
+                disabled=[column for column in coating_template_column_order if column not in coating_template_editable_fields],
+            )
+            edited_workbench["roofing_coating_template_decisions"] = merge_editable_rows(
+                coating_template_rows,
+                edited_coating_template_df.to_dict(orient="records"),
+                coating_template_editable_fields,
+            )
+
+        if original_workbench.get("roofing_primer_template_decisions"):
+            st.markdown("#### Roofing Primer System Decision")
+            primer_template_editable_fields = {
+                "include",
+                "editable_selector_code",
+                "basis_sqft",
+                "coverage_sqft_per_unit",
+                "unit_price",
+                "selected_pricing_candidate",
+            }
+            primer_template_rows = original_workbench.get("roofing_primer_template_decisions") or []
+            primer_template_df = pd.DataFrame(display_safe_records(primer_template_rows, editable_fields=primer_template_editable_fields))
+            primer_template_column_order = (
+                list(primer_template_df.columns)
+                if show_row_details
+                else [column for column in ROOFING_PRIMER_TEMPLATE_COMPACT_COLUMNS if column in primer_template_df.columns]
+            )
+            edited_primer_template_df = st.data_editor(
+                primer_template_df,
+                use_container_width=True,
+                hide_index=True,
+                num_rows="fixed",
+                key=f"wb_roofing_primer_template_{workbench_key}_{scope_key}_{historical_filters_key}",
+                column_order=primer_template_column_order,
+                column_config={
+                    "include": "Include",
+                    "workbook_row": "Row",
+                    "editable_selector_code": "Selector",
+                    "resolved_template_option": "Template Option",
+                    "historical_selector_recommendation": "Historical Default",
+                    "historical_selector_evidence_count": "Evidence",
+                    "basis_sqft": "Basis Sq Ft",
+                    "coverage_sqft_per_unit": "Sq Ft / Unit",
+                    "unit_price": "Unit Price",
+                    "estimated_units": "Units",
+                    "estimated_cost": "Cost",
+                    "selected_pricing_candidate": "Pricing Candidate",
+                    "compatibility_status": "Compatibility",
+                    "compatibility_warnings": "Warnings",
+                    "product_guidance": "Product Guidance",
+                    "notes": "Notes",
+                },
+                disabled=[column for column in primer_template_column_order if column not in primer_template_editable_fields],
+            )
+            edited_workbench["roofing_primer_template_decisions"] = merge_editable_rows(
+                primer_template_rows,
+                edited_primer_template_df.to_dict(orient="records"),
+                primer_template_editable_fields,
+            )
+
+        if original_workbench.get("roofing_detail_template_decisions"):
+            st.markdown("#### Roofing Fabric / Sealant System Decision")
+            detail_template_editable_fields = {
+                "include",
+                "editable_selector_code",
+                "units",
+                "linear_ft",
+                "unit_price",
+                "selected_pricing_candidate",
+            }
+            detail_template_rows = original_workbench.get("roofing_detail_template_decisions") or []
+            detail_template_df = pd.DataFrame(display_safe_records(detail_template_rows, editable_fields=detail_template_editable_fields))
+            detail_template_column_order = (
+                list(detail_template_df.columns)
+                if show_row_details
+                else [column for column in ROOFING_DETAIL_TEMPLATE_COMPACT_COLUMNS if column in detail_template_df.columns]
+            )
+            edited_detail_template_df = st.data_editor(
+                detail_template_df,
+                use_container_width=True,
+                hide_index=True,
+                num_rows="fixed",
+                key=f"wb_roofing_detail_template_{workbench_key}_{scope_key}_{historical_filters_key}",
+                column_order=detail_template_column_order,
+                column_config={
+                    "include": "Include",
+                    "workbook_row": "Row",
+                    "editable_selector_code": "Selector",
+                    "resolved_template_option": "Template Option",
+                    "historical_selector_recommendation": "Historical Default",
+                    "historical_selector_evidence_count": "Evidence",
+                    "units": "Units",
+                    "linear_ft": "Linear Ft",
+                    "unit_price": "Unit Price",
+                    "estimated_units": "Calculated Units",
+                    "estimated_cost": "Cost",
+                    "selected_pricing_candidate": "Pricing Candidate",
+                    "compatibility_status": "Compatibility",
+                    "compatibility_warnings": "Warnings",
+                    "product_guidance": "Product Guidance",
+                    "notes": "Notes",
+                },
+                disabled=[column for column in detail_template_column_order if column not in detail_template_editable_fields],
+            )
+            edited_workbench["roofing_detail_template_decisions"] = merge_editable_rows(
+                detail_template_rows,
+                edited_detail_template_df.to_dict(orient="records"),
+                detail_template_editable_fields,
+            )
+
+        if original_workbench.get("roofing_detail_quantity_template_decisions"):
+            st.markdown("#### Roofing Detail Quantity Decision")
+            detail_quantity_template_editable_fields = {
+                "include",
+                "linear_ft",
+                "units",
+                "estimated_units",
+                "amount",
+            }
+            detail_quantity_template_rows = original_workbench.get("roofing_detail_quantity_template_decisions") or []
+            detail_quantity_template_df = pd.DataFrame(
+                display_safe_records(detail_quantity_template_rows, editable_fields=detail_quantity_template_editable_fields)
+            )
+            detail_quantity_template_column_order = (
+                list(detail_quantity_template_df.columns)
+                if show_row_details
+                else [column for column in ROOFING_DETAIL_QUANTITY_TEMPLATE_COMPACT_COLUMNS if column in detail_quantity_template_df.columns]
+            )
+            edited_detail_quantity_template_df = st.data_editor(
+                detail_quantity_template_df,
+                use_container_width=True,
+                hide_index=True,
+                num_rows="fixed",
+                key=f"wb_roofing_detail_quantity_template_{workbench_key}_{scope_key}_{historical_filters_key}",
+                column_order=detail_quantity_template_column_order,
+                column_config={
+                    "include": "Include",
+                    "workbook_row": "Row",
+                    "resolved_template_option": "Template Line",
+                    "linear_ft": "Linear Ft",
+                    "units": "Units",
+                    "estimated_units": "Estimated Units",
+                    "amount": "Amount",
+                    "estimated_cost": "Cost",
+                    "compatibility_status": "Status",
+                    "compatibility_warnings": "Warnings",
+                    "notes": "Notes",
+                },
+                disabled=[
+                    column
+                    for column in detail_quantity_template_column_order
+                    if column not in detail_quantity_template_editable_fields
+                ],
+            )
+            edited_workbench["roofing_detail_quantity_template_decisions"] = merge_editable_rows(
+                detail_quantity_template_rows,
+                edited_detail_quantity_template_df.to_dict(orient="records"),
+                detail_quantity_template_editable_fields,
+            )
+
+        if original_workbench.get("roofing_board_fastener_template_decisions"):
+            st.markdown("#### Roofing Board / Fastener System Decision")
+            board_template_editable_fields = {
+                "include",
+                "editable_selector_code",
+                "basis_sqft",
+                "board_area_sqft",
+                "thickness_inches",
+                "price_per_square",
+                "unit_price",
+                "unit_price_per_thousand",
+                "selected_pricing_candidate",
+            }
+            board_template_rows = original_workbench.get("roofing_board_fastener_template_decisions") or []
+            board_template_df = pd.DataFrame(display_safe_records(board_template_rows, editable_fields=board_template_editable_fields))
+            board_template_column_order = (
+                list(board_template_df.columns)
+                if show_row_details
+                else [column for column in ROOFING_BOARD_FASTENER_TEMPLATE_COMPACT_COLUMNS if column in board_template_df.columns]
+            )
+            edited_board_template_df = st.data_editor(
+                board_template_df,
+                use_container_width=True,
+                hide_index=True,
+                num_rows="fixed",
+                key=f"wb_roofing_board_fastener_template_{workbench_key}_{scope_key}_{historical_filters_key}",
+                column_order=board_template_column_order,
+                column_config={
+                    "include": "Include",
+                    "workbook_row": "Row",
+                    "editable_selector_code": "Selector",
+                    "resolved_template_option": "Template Option",
+                    "historical_selector_recommendation": "Historical Default",
+                    "historical_selector_evidence_count": "Evidence",
+                    "basis_sqft": "Board Area",
+                    "board_area_sqft": "Fastener Area",
+                    "thickness_inches": "Thickness",
+                    "price_per_square": "Price / Sq",
+                    "unit_price": "Unit Price",
+                    "unit_price_per_thousand": "Price / 1,000",
+                    "estimated_squares": "Squares",
+                    "estimated_units": "Units",
+                    "estimated_cost": "Cost",
+                    "selected_pricing_candidate": "Pricing Candidate",
+                    "compatibility_status": "Compatibility",
+                    "compatibility_warnings": "Warnings",
+                    "product_guidance": "Product Guidance",
+                    "notes": "Notes",
+                },
+                disabled=[column for column in board_template_column_order if column not in board_template_editable_fields],
+            )
+            edited_workbench["roofing_board_fastener_template_decisions"] = merge_editable_rows(
+                board_template_rows,
+                edited_board_template_df.to_dict(orient="records"),
+                board_template_editable_fields,
+            )
+
+        if original_workbench.get("roofing_granules_template_decisions"):
+            st.markdown("#### Roofing Granules System Decision")
+            granules_template_editable_fields = {
+                "include",
+                "editable_selector_code",
+                "basis_sqft",
+                "coverage_lbs_per_100_sqft",
+                "bag_weight_lbs",
+                "unit_price",
+                "selected_pricing_candidate",
+            }
+            granules_template_rows = original_workbench.get("roofing_granules_template_decisions") or []
+            granules_template_df = pd.DataFrame(display_safe_records(granules_template_rows, editable_fields=granules_template_editable_fields))
+            granules_template_column_order = (
+                list(granules_template_df.columns)
+                if show_row_details
+                else [column for column in ROOFING_GRANULES_TEMPLATE_COMPACT_COLUMNS if column in granules_template_df.columns]
+            )
+            edited_granules_template_df = st.data_editor(
+                granules_template_df,
+                use_container_width=True,
+                hide_index=True,
+                num_rows="fixed",
+                key=f"wb_roofing_granules_template_{workbench_key}_{scope_key}_{historical_filters_key}",
+                column_order=granules_template_column_order,
+                column_config={
+                    "include": "Include",
+                    "workbook_row": "Row",
+                    "editable_selector_code": "Selector",
+                    "resolved_template_option": "Template Option",
+                    "historical_selector_recommendation": "Historical Default",
+                    "historical_selector_evidence_count": "Evidence",
+                    "basis_sqft": "Basis Sq Ft",
+                    "coverage_lbs_per_100_sqft": "Lb / 100 Sq Ft",
+                    "bag_weight_lbs": "Bag Lb",
+                    "unit_price": "Unit Price",
+                    "estimated_units": "Bags",
+                    "estimated_cost": "Cost",
+                    "selected_pricing_candidate": "Pricing Candidate",
+                    "compatibility_status": "Compatibility",
+                    "compatibility_warnings": "Warnings",
+                    "product_guidance": "Product Guidance",
+                    "notes": "Notes",
+                },
+                disabled=[column for column in granules_template_column_order if column not in granules_template_editable_fields],
+            )
+            edited_workbench["roofing_granules_template_decisions"] = merge_editable_rows(
+                granules_template_rows,
+                edited_granules_template_df.to_dict(orient="records"),
+                granules_template_editable_fields,
+            )
+
+        if original_workbench.get("roofing_equipment_template_decisions"):
+            st.markdown("#### Roofing Equipment / Dumpster Decision")
+            equipment_template_editable_fields = {
+                "include",
+                "editable_selector_code",
+                "basis_sqft",
+                "thickness_inches",
+                "size",
+                "period",
                 "days",
+                "unit_price",
+                "margin_pct",
+            }
+            equipment_template_rows = original_workbench.get("roofing_equipment_template_decisions") or []
+            equipment_template_df = pd.DataFrame(display_safe_records(equipment_template_rows, editable_fields=equipment_template_editable_fields))
+            equipment_template_column_order = (
+                list(equipment_template_df.columns)
+                if show_row_details
+                else [column for column in ROOFING_EQUIPMENT_TEMPLATE_COMPACT_COLUMNS if column in equipment_template_df.columns]
+            )
+            edited_equipment_template_df = st.data_editor(
+                equipment_template_df,
+                use_container_width=True,
+                hide_index=True,
+                num_rows="fixed",
+                key=f"wb_roofing_equipment_template_{workbench_key}_{scope_key}_{historical_filters_key}",
+                column_order=equipment_template_column_order,
+                column_config={
+                    "include": "Include",
+                    "workbook_row": "Row",
+                    "editable_selector_code": "Selector",
+                    "resolved_template_option": "Template Option",
+                    "historical_selector_recommendation": "Historical Default",
+                    "historical_selector_evidence_count": "Evidence",
+                    "basis_sqft": "Basis Sq Ft",
+                    "thickness_inches": "Thickness",
+                    "size": "Size",
+                    "period": "Period",
+                    "days": "Days",
+                    "unit_price": "Unit Price",
+                    "margin_pct": "Margin %",
+                    "estimated_units": "Units",
+                    "estimated_cost": "Cost",
+                    "compatibility_status": "Compatibility",
+                    "compatibility_warnings": "Warnings",
+                    "notes": "Notes",
+                },
+                disabled=[column for column in equipment_template_column_order if column not in equipment_template_editable_fields],
+            )
+            edited_workbench["roofing_equipment_template_decisions"] = merge_editable_rows(
+                equipment_template_rows,
+                edited_equipment_template_df.to_dict(orient="records"),
+                equipment_template_editable_fields,
+            )
+
+        if original_workbench.get("roofing_travel_freight_template_decisions"):
+            st.markdown("#### Roofing Travel / Freight Decision")
+            travel_freight_template_editable_fields = {
+                "include",
+                "estimated_units",
+                "units",
+                "amount",
+                "trip_count",
+                "round_trip_miles",
+                "unit_price",
+            }
+            travel_freight_template_rows = original_workbench.get("roofing_travel_freight_template_decisions") or []
+            travel_freight_template_df = pd.DataFrame(
+                display_safe_records(travel_freight_template_rows, editable_fields=travel_freight_template_editable_fields)
+            )
+            travel_freight_template_column_order = (
+                list(travel_freight_template_df.columns)
+                if show_row_details
+                else [column for column in ROOFING_TRAVEL_FREIGHT_TEMPLATE_COMPACT_COLUMNS if column in travel_freight_template_df.columns]
+            )
+            edited_travel_freight_template_df = st.data_editor(
+                travel_freight_template_df,
+                use_container_width=True,
+                hide_index=True,
+                num_rows="fixed",
+                key=f"wb_roofing_travel_freight_template_{workbench_key}_{scope_key}_{historical_filters_key}",
+                column_order=travel_freight_template_column_order,
+                column_config={
+                    "include": "Include",
+                    "workbook_row": "Row",
+                    "resolved_template_option": "Template Option",
+                    "estimated_units": "Units",
+                    "units": "Units",
+                    "amount": "Amount",
+                    "trip_count": "Trips",
+                    "round_trip_miles": "Round Trip Miles",
+                    "unit_price": "Rate / Unit Price",
+                    "estimated_cost": "Cost",
+                    "compatibility_status": "Status",
+                    "compatibility_warnings": "Warnings",
+                    "notes": "Notes",
+                },
+                disabled=[
+                    column
+                    for column in travel_freight_template_column_order
+                    if column not in travel_freight_template_editable_fields
+                ],
+            )
+            edited_workbench["roofing_travel_freight_template_decisions"] = merge_editable_rows(
+                travel_freight_template_rows,
+                edited_travel_freight_template_df.to_dict(orient="records"),
+                travel_freight_template_editable_fields,
+            )
+
+        if original_workbench.get("roofing_accessory_template_decisions"):
+            st.markdown("#### Roofing Accessories / Support Decision")
+            accessory_template_editable_fields = {
+                "include",
+                "editable_selector_code",
+                "total_coating_gallons",
+                "linear_ft",
+                "units",
+                "estimated_units",
+                "amount",
+                "unit_price",
+            }
+            accessory_template_rows = original_workbench.get("roofing_accessory_template_decisions") or []
+            accessory_template_df = pd.DataFrame(display_safe_records(accessory_template_rows, editable_fields=accessory_template_editable_fields))
+            accessory_template_column_order = (
+                list(accessory_template_df.columns)
+                if show_row_details
+                else [column for column in ROOFING_ACCESSORY_TEMPLATE_COMPACT_COLUMNS if column in accessory_template_df.columns]
+            )
+            edited_accessory_template_df = st.data_editor(
+                accessory_template_df,
+                use_container_width=True,
+                hide_index=True,
+                num_rows="fixed",
+                key=f"wb_roofing_accessory_template_{workbench_key}_{scope_key}_{historical_filters_key}",
+                column_order=accessory_template_column_order,
+                column_config={
+                    "include": "Include",
+                    "workbook_row": "Row",
+                    "editable_selector_code": "Selector",
+                    "resolved_template_option": "Template Option",
+                    "total_coating_gallons": "Coating Gallons",
+                    "linear_ft": "Linear Ft",
+                    "units": "Units",
+                    "estimated_units": "Units",
+                    "amount": "Amount",
+                    "unit_price": "Unit Price",
+                    "estimated_cost": "Cost",
+                    "compatibility_status": "Status",
+                    "compatibility_warnings": "Warnings",
+                    "notes": "Notes",
+                },
+                disabled=[column for column in accessory_template_column_order if column not in accessory_template_editable_fields],
+            )
+            edited_workbench["roofing_accessory_template_decisions"] = merge_editable_rows(
+                accessory_template_rows,
+                edited_accessory_template_df.to_dict(orient="records"),
+                accessory_template_editable_fields,
+            )
+
+        edited_workbench["materials"] = original_workbench.get("materials") or []
+
+        if original_workbench.get("roofing_labor_template_decisions"):
+            st.markdown("#### Roofing Labor Planning Decision")
+            labor_template_editable_fields = {
+                "include",
+                "days",
+                "crew_size",
                 "crew_people_selection",
                 "daily_rate",
+                "hourly_rate",
+                "labor_rate",
+                "editable_hours_per_1000_sqft",
+                "total_hours",
+                "editable_total_hours",
                 "formula_mode",
-                "historical_median",
-                "editable_default",
-                "historical_hours_per_1000_sqft",
-                "p25_hours_per_1000_sqft",
-                "p75_hours_per_1000_sqft",
-                "calculated_hours",
-                "estimated_cost",
-                "evidence_count",
-                "decision_evidence_count",
-                "decision_confidence",
-                "row_traceability",
-                "historical_jobs_found",
-                "rows_accepted",
-                "rows_rejected",
-                "range_width",
-                "relative_range_width",
-                "variability_warning",
-                "confidence",
-                "source",
-                "filters_applied",
-                "filters_relaxed",
-                "manual_override",
-                "rejection_reasons",
-                "notes",
-                "explanation",
-            ],
-        )
-        edited_workbench["labor"] = merge_editable_rows(
-            labor_rows,
-            edited_labor_df.to_dict(orient="records"),
-            labor_editable_fields,
-        )
+            }
+            labor_template_rows = original_workbench.get("roofing_labor_template_decisions") or []
+            labor_template_df = pd.DataFrame(display_safe_records(labor_template_rows, editable_fields=labor_template_editable_fields))
+            labor_template_column_order = (
+                list(labor_template_df.columns)
+                if show_row_details
+                else [column for column in ROOFING_LABOR_TEMPLATE_COMPACT_COLUMNS if column in labor_template_df.columns]
+            )
+            edited_labor_template_df = st.data_editor(
+                labor_template_df,
+                use_container_width=True,
+                hide_index=True,
+                num_rows="fixed",
+                key=f"wb_roofing_labor_template_{workbench_key}_{scope_key}_{historical_filters_key}",
+                column_order=labor_template_column_order,
+                column_config={
+                    "include": "Include",
+                    "workbook_row": "Row",
+                    "labor_task": "Labor Task",
+                    "days": "Days",
+                    "crew_size": "Crew",
+                    "crew_people_selection": "Crew / People",
+                    "crew_selection": "People Rate",
+                    "selected_daily_rate_cell": "Daily Rate Cell",
+                    "daily_rate": "Daily Rate",
+                    "hourly_rate": "Hourly Rate",
+                    "labor_rate": "Hourly Rate",
+                    "editable_hours_per_1000_sqft": "Hrs / 1000 Sq Ft",
+                    "total_hours": "Total Hours",
+                    "editable_total_hours": "Total Hours",
+                    "formula_mode": "Formula Mode",
+                    "estimated_cost": "Cost",
+                    "historical_selector_evidence_count": "Evidence",
+                    "decision_confidence": "Confidence",
+                    "compatibility_status": "Status",
+                    "compatibility_warnings": "Warnings",
+                    "notes": "Notes",
+                },
+                disabled=[column for column in labor_template_column_order if column not in labor_template_editable_fields],
+            )
+            edited_workbench["roofing_labor_template_decisions"] = merge_editable_rows(
+                labor_template_rows,
+                edited_labor_template_df.to_dict(orient="records"),
+                labor_template_editable_fields,
+            )
 
-        st.markdown("#### Adders / Miscellaneous")
-        adder_editable_fields = {"include", "editable_value", "reset_to_historical_default", "notes"}
-        adder_rows = original_workbench.get("adders") or []
-        adders_df = pd.DataFrame(display_safe_records(adder_rows, editable_fields=adder_editable_fields))
-        adders_column_order = [
-            "include",
-            "template_bucket",
-            "workbook_row",
-            "adder",
-            "historical_median",
-            "editable_default",
-            "historical_usage_rate",
-            "median_cost_when_used",
-            "median_cost_per_sqft",
-            "historical_default_value",
-            "editable_value",
-            "estimated_cost",
-            "evidence_count",
-            "range_width",
-            "relative_range_width",
-            "variability_warning",
-            "confidence",
-            "source",
-            "filters_applied",
-            "filters_relaxed",
-            "needs_review",
-            "manual_override",
-            "reset_to_historical_default",
-            "notes",
-        ] if show_row_details else ADDER_WORKBENCH_COMPACT_COLUMNS
-        edited_adders_df = st.data_editor(
-            adders_df,
-            use_container_width=True,
-            hide_index=True,
-            num_rows="fixed",
-            key=f"wb_adders_{workbench_key}_{scope_key}_{historical_filters_key}",
-            column_order=adders_column_order,
-            column_config={
-                "include": st.column_config.CheckboxColumn("Include"),
-                "template_bucket": "Template Bucket",
-                "workbook_row": "Row",
-                "adder": "Adder",
-                "historical_median": "Historical Median",
-                "editable_default": "Editable Default",
-                "historical_usage_rate": "Historical Usage Rate",
-                "median_cost_when_used": "Median Cost When Used",
-                "median_cost_per_sqft": "Median Cost / Sq Ft",
-                "historical_default_value": "Historical Default",
-                "editable_value": "Amount",
-                "estimated_cost": "Cost",
-                "evidence_count": "Evidence",
-                "range_width": "Range Width",
-                "relative_range_width": "Relative Range Width",
-                "variability_warning": "Variability",
-                "confidence": "Confidence",
-                "source": "Source",
-                "filters_applied": "Filters Applied",
-                "filters_relaxed": "Filters Relaxed",
-                "needs_review": "Needs Review",
-                "manual_override": "Manual Override",
-                "reset_to_historical_default": st.column_config.CheckboxColumn("Reset"),
-                "notes": "Notes",
-            },
-            disabled=[
-                "template_bucket",
-                "workbook_row",
-                "adder",
-                "historical_median",
-                "editable_default",
-                "historical_usage_rate",
-                "median_cost_when_used",
-                "median_cost_per_sqft",
-                "historical_default_value",
-                "estimated_cost",
-                "evidence_count",
-                "range_width",
-                "relative_range_width",
-                "variability_warning",
-                "confidence",
-                "source",
-                "filters_applied",
-                "filters_relaxed",
-                "manual_override",
-                "needs_review",
-            ],
-        )
-        edited_workbench["adders"] = merge_editable_rows(
-            adder_rows,
-            edited_adders_df.to_dict(orient="records"),
-            adder_editable_fields,
-        )
+        edited_workbench["labor"] = original_workbench.get("labor") or []
+        edited_workbench["adders"] = original_workbench.get("adders") or []
+        if show_row_details:
+            with st.expander("Show compatibility material / labor / adder rows", expanded=False):
+                st.caption(
+                    "These legacy rows remain available for troubleshooting and export compatibility. "
+                    "Diagnostics include rows_accepted, rows_rejected, filters_relaxed, pricing, and evidence fields when present. "
+                    "Estimator-facing edits should happen in the template decision sections above."
+                )
+                material_rows = display_safe_records(original_workbench.get("materials") or [])
+                labor_rows = display_safe_records(original_workbench.get("labor") or [])
+                adder_rows = display_safe_records(original_workbench.get("adders") or [])
+                show_table(
+                    dataframe_from_records(material_rows),
+                    [column for column in MATERIAL_WORKBENCH_COMPACT_COLUMNS if any(column in row for row in material_rows)],
+                    height=220,
+                )
+                show_table(
+                    dataframe_from_records(labor_rows),
+                    [column for column in LABOR_WORKBENCH_COMPACT_COLUMNS if any(column in row for row in labor_rows)],
+                    height=220,
+                )
+                show_table(
+                    dataframe_from_records(adder_rows),
+                    [column for column in ADDER_WORKBENCH_COMPACT_COLUMNS if any(column in row for row in adder_rows)],
+                    height=180,
+                )
         edited_workbench = recalculate_workbench_tables(edited_workbench)
         st.session_state[previous_workbench_key] = edited_workbench
         totals = summarize_workbench_totals(edited_workbench)

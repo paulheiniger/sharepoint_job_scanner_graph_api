@@ -782,7 +782,26 @@ def _decision_record_from_workbench_row(row: dict[str, Any], section: str, *, fi
 def proposed_decisions_from_workbench(workbench: dict[str, Any]) -> dict[str, Any]:
     recalculated = recalculate_workbench_tables(workbench)
     rows: list[dict[str, Any]] = []
-    for section in ("area_calculation_trace", "insulation_surfaces", "insulation_foam_template_decisions", "insulation_performance_specs", "materials", "labor", "adders"):
+    for section in (
+        "area_calculation_trace",
+        "insulation_surfaces",
+        "insulation_foam_template_decisions",
+        "insulation_performance_specs",
+        "roofing_foam_template_decisions",
+        "roofing_coating_template_decisions",
+        "roofing_primer_template_decisions",
+        "roofing_detail_template_decisions",
+        "roofing_detail_quantity_template_decisions",
+        "roofing_board_fastener_template_decisions",
+        "roofing_granules_template_decisions",
+        "roofing_equipment_template_decisions",
+        "roofing_travel_freight_template_decisions",
+        "roofing_accessory_template_decisions",
+        "roofing_labor_template_decisions",
+        "materials",
+        "labor",
+        "adders",
+    ):
         for row in recalculated.get(section) or []:
             rows.append(_decision_record_from_workbench_row(row, section, final=False))
     return {
@@ -795,7 +814,26 @@ def proposed_decisions_from_workbench(workbench: dict[str, Any]) -> dict[str, An
 def final_decisions_from_workbench(workbench: dict[str, Any]) -> dict[str, Any]:
     recalculated = recalculate_workbench_tables(workbench)
     decisions: list[dict[str, Any]] = []
-    for section in ("area_calculation_trace", "insulation_surfaces", "insulation_foam_template_decisions", "insulation_performance_specs", "materials", "labor", "adders"):
+    for section in (
+        "area_calculation_trace",
+        "insulation_surfaces",
+        "insulation_foam_template_decisions",
+        "insulation_performance_specs",
+        "roofing_foam_template_decisions",
+        "roofing_coating_template_decisions",
+        "roofing_primer_template_decisions",
+        "roofing_detail_template_decisions",
+        "roofing_detail_quantity_template_decisions",
+        "roofing_board_fastener_template_decisions",
+        "roofing_granules_template_decisions",
+        "roofing_equipment_template_decisions",
+        "roofing_travel_freight_template_decisions",
+        "roofing_accessory_template_decisions",
+        "roofing_labor_template_decisions",
+        "materials",
+        "labor",
+        "adders",
+    ):
         for row in recalculated.get(section) or []:
             if not row.get("include"):
                 continue

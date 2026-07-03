@@ -146,24 +146,43 @@ def _write_manual_adder(ws: Any, row_number: int, row: dict[str, Any]) -> None:
 
 def _write_coating_row(ws: Any, row_number: int, row: dict[str, Any], sqft: float | None) -> None:
     item = first_nonblank(row.get("item"), "Roof coating")
-    gallons = _number(row.get("quantity"))
+    selector_code = _number(row.get("selector_code"))
+    gallons = _number(row.get("estimated_gallons") or row.get("quantity"))
     unit_price = _number(row.get("unit_price"))
-    _write_cell(ws, f"A{row_number}", item)
-    if sqft:
-        _write_cell(ws, f"C{row_number}", round(sqft, 2))
-    if sqft and gallons:
-        _write_cell(ws, f"D{row_number}", round(gallons * 100 / sqft, 4))
+    area_sqft = _number(row.get("area_sqft") or row.get("basis_sqft")) or sqft
+    gal_per_100_sqft = _number(row.get("gal_per_100_sqft"))
+    waste_factor_pct = _number(row.get("waste_factor_pct"))
+    if selector_code is not None:
+        _write_cell(ws, f"A{row_number}", int(selector_code) if float(selector_code).is_integer() else selector_code)
+    else:
+        _write_cell(ws, f"A{row_number}", item)
+    if area_sqft:
+        _write_cell(ws, f"C{row_number}", round(area_sqft, 2))
+    if gal_per_100_sqft is not None:
+        _write_cell(ws, f"D{row_number}", round(gal_per_100_sqft, 4))
+    elif area_sqft and gallons:
+        _write_cell(ws, f"D{row_number}", round(gallons * 100 / area_sqft, 4))
     elif gallons:
         _write_cell(ws, f"G{row_number}", round(gallons, 2))
     if unit_price is not None:
         _write_cell(ws, f"E{row_number}", round(unit_price, 4))
+    if waste_factor_pct is not None:
+        _write_cell(ws, "A30", round(waste_factor_pct, 4))
     _add_comment(ws, f"A{row_number}", first_nonblank(row.get("notes"), "Generated from estimator material plan."))
 
 
 def _write_primer_row(ws: Any, row: dict[str, Any], sqft: float | None) -> None:
+    selector_code = _number(row.get("selector_code"))
+    area_sqft = _number(row.get("area_sqft") or row.get("basis_sqft"))
     quantity = _quantity(row)
     unit_price = _number(row.get("unit_price"))
-    if quantity is not None:
+    if selector_code is not None:
+        _write_cell(ws, "A39", int(selector_code) if float(selector_code).is_integer() else selector_code)
+        if area_sqft is not None:
+            _write_cell(ws, "C39", round(area_sqft, 2))
+        elif quantity is not None:
+            _write_cell(ws, "C39", quantity)
+    elif quantity is not None:
         _write_cell(ws, "C39", quantity)
     elif sqft:
         _write_cell(ws, "C39", round(sqft, 2))
@@ -172,16 +191,326 @@ def _write_primer_row(ws: Any, row: dict[str, Any], sqft: float | None) -> None:
     _add_comment(ws, "A39", first_nonblank(row.get("item"), "Primer allowance") + "\n" + first_nonblank(row.get("notes")))
 
 
+def _write_caulk_sealant_row(ws: Any, row: dict[str, Any]) -> None:
+    explicit_row = _number(row.get("workbook_row"))
+    row_number = int(explicit_row) if explicit_row is not None and int(explicit_row) in {43, 45} else 43
+    selector_code = _number(row.get("selector_code"))
+    quantity = _number(row.get("estimated_units") or row.get("quantity"))
+    unit_price = _number(row.get("unit_price"))
+    if selector_code is not None:
+        _write_cell(ws, f"A{row_number}", int(selector_code) if float(selector_code).is_integer() else selector_code)
+    if unit_price is not None:
+        _write_cell(ws, f"E{row_number}", round(unit_price, 4))
+    if quantity is not None:
+        _write_cell(ws, f"G{row_number}", round(quantity, 4))
+    _add_comment(ws, f"A{row_number}", first_nonblank(row.get("item"), "Caulk / sealant allowance") + "\n" + first_nonblank(row.get("notes")))
+
+
+def _write_fabric_row(ws: Any, row: dict[str, Any]) -> None:
+    linear_ft = _number(row.get("linear_ft") or row.get("quantity") or row.get("estimated_units"))
+    unit_price = _number(row.get("unit_price"))
+    if linear_ft is not None:
+        _write_cell(ws, "C79", round(linear_ft, 4))
+    if unit_price is not None:
+        _write_cell(ws, "E79", round(unit_price, 4))
+    _add_comment(ws, "A79", first_nonblank(row.get("item"), "Fabric allowance") + "\n" + first_nonblank(row.get("notes")))
+
+
+def _write_board_stock_row(ws: Any, row: dict[str, Any]) -> None:
+    explicit_row = _number(row.get("workbook_row"))
+    row_number = int(explicit_row) if explicit_row is not None and int(explicit_row) in {58, 59, 60} else 58
+    selector_code = _number(row.get("selector_code"))
+    area_sqft = _number(row.get("area_sqft") or row.get("basis_sqft"))
+    thickness = _number(row.get("thickness_inches"))
+    price_per_square = _number(row.get("price_per_square") or row.get("unit_price"))
+    if selector_code is not None:
+        _write_cell(ws, f"A{row_number}", int(selector_code) if float(selector_code).is_integer() else selector_code)
+    if area_sqft is not None:
+        _write_cell(ws, f"C{row_number}", round(area_sqft, 2))
+    if thickness is not None:
+        _write_cell(ws, f"D{row_number}", round(thickness, 4))
+    if price_per_square is not None:
+        _write_cell(ws, f"E{row_number}", round(price_per_square, 4))
+    _add_comment(ws, f"A{row_number}", first_nonblank(row.get("item"), "Board stock allowance") + "\n" + first_nonblank(row.get("notes")))
+
+
+def _write_board_fastener_or_plate_row(ws: Any, row: dict[str, Any]) -> None:
+    category = str(row.get("category") or row.get("template_bucket") or "").lower()
+    explicit_row = _number(row.get("workbook_row"))
+    if explicit_row is not None and int(explicit_row) in {63, 65}:
+        row_number = int(explicit_row)
+    else:
+        row_number = 65 if category == "plates" else 63
+    unit_price = _number(row.get("unit_price_per_thousand") or row.get("unit_price"))
+    quantity = _number(row.get("estimated_units") or row.get("quantity"))
+    if unit_price is not None:
+        _write_cell(ws, f"E{row_number}", round(unit_price, 4))
+    if quantity is not None:
+        _write_cell(ws, f"G{row_number}", round(quantity, 4))
+    _add_comment(ws, f"A{row_number}", first_nonblank(row.get("item"), "Board fastener/plate allowance") + "\n" + first_nonblank(row.get("notes")))
+
+
+def _write_granules_row(ws: Any, row: dict[str, Any]) -> None:
+    selector_code = _number(row.get("selector_code"))
+    area_sqft = _number(row.get("area_sqft") or row.get("basis_sqft"))
+    unit_price = _number(row.get("unit_price"))
+    quantity = _number(row.get("estimated_units") or row.get("quantity"))
+    if selector_code is not None:
+        _write_cell(ws, "A36", int(selector_code) if float(selector_code).is_integer() else selector_code)
+    if area_sqft is not None:
+        _write_cell(ws, "C36", round(area_sqft, 2))
+    if unit_price is not None:
+        _write_cell(ws, "E36", round(unit_price, 4))
+    if quantity is not None:
+        _write_cell(ws, "G36", round(quantity, 4))
+    _add_comment(ws, "A36", first_nonblank(row.get("item"), "Granules allowance") + "\n" + first_nonblank(row.get("notes")))
+
+
+def _write_dumpster_row(ws: Any, row: dict[str, Any]) -> None:
+    selector_code = _number(row.get("selector_code"))
+    area_sqft = _number(row.get("area_sqft") or row.get("basis_sqft"))
+    thickness = _number(row.get("thickness_inches"))
+    unit_price = _number(row.get("unit_price"))
+    margin_pct = _number(row.get("margin_pct"))
+    if selector_code is not None:
+        _write_cell(ws, "A69", int(selector_code) if float(selector_code).is_integer() else selector_code)
+    if area_sqft is not None:
+        _write_cell(ws, "C69", round(area_sqft, 2))
+    if thickness is not None:
+        _write_cell(ws, "D69", round(thickness, 4))
+    if unit_price is not None:
+        _write_cell(ws, "E69", round(unit_price, 4))
+    if margin_pct is not None:
+        _write_cell(ws, "F69", round(margin_pct, 4))
+    _add_comment(ws, "A69", first_nonblank(row.get("item"), "Dumpster allowance") + "\n" + first_nonblank(row.get("notes")))
+
+
+def _write_lift_row(ws: Any, row: dict[str, Any]) -> None:
+    explicit_row = _number(row.get("workbook_row"))
+    row_number = int(explicit_row) if explicit_row is not None and int(explicit_row) in {73, 74} else 73
+    selector_code = _number(row.get("selector_code"))
+    size = first_nonblank(row.get("size"))
+    period = _number(row.get("period"))
+    unit_price = _number(row.get("unit_price"))
+    margin_pct = _number(row.get("margin_pct"))
+    if selector_code is not None:
+        _write_cell(ws, f"A{row_number}", int(selector_code) if float(selector_code).is_integer() else selector_code)
+    if size:
+        _write_cell(ws, f"C{row_number}", size)
+    if period is not None:
+        _write_cell(ws, f"D{row_number}", round(period, 4))
+    if unit_price is not None:
+        _write_cell(ws, f"E{row_number}", round(unit_price, 4))
+    if margin_pct is not None:
+        _write_cell(ws, f"F{row_number}", round(margin_pct, 4))
+    _add_comment(ws, f"A{row_number}", first_nonblank(row.get("item"), "Lift allowance") + "\n" + first_nonblank(row.get("notes")))
+
+
+def _write_generator_row(ws: Any, row: dict[str, Any]) -> None:
+    days = _number(row.get("days") or row.get("period"))
+    unit_price = _number(row.get("unit_price"))
+    if days is not None:
+        _write_cell(ws, "C99", round(days, 4))
+    if unit_price is not None:
+        _write_cell(ws, "E99", round(unit_price, 4))
+    _add_comment(ws, "A99", first_nonblank(row.get("item"), "Generator allowance") + "\n" + first_nonblank(row.get("notes")))
+
+
+def _write_delivery_fee_row(ws: Any, row: dict[str, Any]) -> None:
+    units = _number(row.get("estimated_units") or row.get("units") or row.get("quantity"))
+    unit_price = _number(row.get("unit_price"))
+    if unit_price is not None:
+        _write_cell(ws, "E76", round(unit_price, 4))
+    if units is not None:
+        _write_cell(ws, "G76", round(units, 4))
+    _add_comment(ws, "A76", first_nonblank(row.get("item"), "Delivery fee") + "\n" + first_nonblank(row.get("notes")))
+
+
+def _write_freight_row(ws: Any, row: dict[str, Any]) -> None:
+    amount = _number(row.get("amount") or row.get("estimated_cost") or row.get("unit_price"))
+    if amount is not None:
+        _write_cell(ws, "E103", round(amount, 2))
+    _add_comment(ws, "A103", first_nonblank(row.get("item"), "Freight") + "\n" + first_nonblank(row.get("notes")))
+
+
+def _write_roofing_travel_cost_row(ws: Any, row: dict[str, Any]) -> None:
+    explicit_row = _number(row.get("workbook_row"))
+    row_number = int(explicit_row) if explicit_row is not None and int(explicit_row) in {106, 108} else 108
+    trips = _number(row.get("trip_count") or row.get("trips"))
+    miles = _number(row.get("round_trip_miles") or row.get("miles"))
+    unit_price = _number(row.get("unit_price") or row.get("rate"))
+    if trips is not None:
+        _write_cell(ws, f"B{row_number}", round(trips, 4))
+    if miles is not None:
+        _write_cell(ws, f"C{row_number}", round(miles, 4))
+    if unit_price is not None:
+        _write_cell(ws, f"E{row_number}", round(unit_price, 4))
+    _add_comment(ws, f"A{row_number}", first_nonblank(row.get("item"), "Travel / truck expense") + "\n" + first_nonblank(row.get("notes")))
+
+
+def _write_thinner_row(ws: Any, row: dict[str, Any]) -> None:
+    selector_code = _number(row.get("selector_code"))
+    unit_price = _number(row.get("unit_price"))
+    if selector_code is not None:
+        _write_cell(ws, "A33", int(selector_code) if float(selector_code).is_integer() else selector_code)
+    if unit_price is not None:
+        _write_cell(ws, "E33", round(unit_price, 4))
+    _add_comment(ws, "A33", first_nonblank(row.get("item"), "Thinner") + "\n" + first_nonblank(row.get("notes")))
+
+
+def _write_roofing_accessory_row(ws: Any, row: dict[str, Any]) -> None:
+    explicit_row = _number(row.get("workbook_row"))
+    if explicit_row is None:
+        return
+    row_number = int(explicit_row)
+    category = str(row.get("category") or row.get("template_bucket") or "").lower()
+    unit_price = _number(row.get("unit_price"))
+    amount = _number(row.get("amount") or row.get("estimated_cost"))
+    quantity = _number(row.get("estimated_units") or row.get("units") or row.get("quantity"))
+    linear_ft = _number(row.get("linear_ft") or row.get("quantity"))
+    if row_number in {82, 84, 86}:
+        if linear_ft is not None:
+            _write_cell(ws, f"C{row_number}", round(linear_ft, 4))
+        if unit_price is not None:
+            _write_cell(ws, f"E{row_number}", round(unit_price, 4))
+    elif row_number in {88, 90, 92, 94, 96}:
+        if unit_price is not None:
+            _write_cell(ws, f"E{row_number}", round(unit_price, 4))
+        if quantity is not None:
+            _write_cell(ws, f"G{row_number}", round(quantity, 4))
+    elif row_number == 101:
+        if amount is not None:
+            _write_cell(ws, "E101", round(amount, 2))
+    else:
+        if unit_price is not None:
+            _write_cell(ws, f"E{row_number}", round(unit_price, 4))
+        if quantity is not None:
+            _write_cell(ws, f"G{row_number}", round(quantity, 4))
+    _add_comment(ws, f"A{row_number}", first_nonblank(row.get("item"), category, "Roof accessory") + "\n" + first_nonblank(row.get("notes")))
+
+
+def _write_roofing_detail_quantity_row(ws: Any, row: dict[str, Any]) -> None:
+    explicit_row = _number(row.get("workbook_row"))
+    if explicit_row is None or int(explicit_row) not in {47, 49, 51, 53}:
+        return
+    row_number = int(explicit_row)
+    linear_ft = _number(row.get("linear_ft") or row.get("quantity"))
+    units = _number(row.get("estimated_units") or row.get("units") or row.get("quantity"))
+    amount = _number(row.get("amount") or row.get("estimated_cost"))
+
+    if row_number == 47:
+        if linear_ft is not None:
+            _write_cell(ws, "C47", round(linear_ft, 4))
+    elif units is not None:
+        _write_cell(ws, f"D{row_number}", round(units, 4))
+
+    if amount is not None and amount > 0:
+        _write_cell(ws, f"H{row_number}", round(amount, 2))
+
+    _add_comment(
+        ws,
+        f"A{row_number}",
+        first_nonblank(row.get("item"), row.get("template_bucket"), "Roof detail quantity") + "\n" + first_nonblank(row.get("notes")),
+    )
+
+
+def _write_roofing_foam_row(ws: Any, row: dict[str, Any]) -> None:
+    explicit_row = _number(row.get("workbook_row"))
+    if explicit_row is None or int(explicit_row) not in {19, 20, 21}:
+        return
+    row_number = int(explicit_row)
+    selector_code = _number(row.get("selector_code") or row.get("editable_selector_code"))
+    area_sqft = _number(row.get("area_sqft") or row.get("basis_sqft"))
+    thickness = _number(row.get("thickness_inches"))
+    unit_price = _number(row.get("unit_price"))
+    yield_factor = _number(row.get("yield_factor") or row.get("yield_or_coverage"))
+
+    if selector_code is not None:
+        _write_cell(ws, f"A{row_number}", int(selector_code))
+    if area_sqft is not None:
+        _write_cell(ws, f"C{row_number}", round(area_sqft, 2))
+    if thickness is not None:
+        _write_cell(ws, f"D{row_number}", round(thickness, 4))
+    if unit_price is not None:
+        _write_cell(ws, f"E{row_number}", round(unit_price, 4))
+    if yield_factor is not None:
+        _write_cell(ws, f"F{row_number}", round(yield_factor, 4))
+
+    _add_comment(
+        ws,
+        f"A{row_number}",
+        first_nonblank(row.get("item"), row.get("template_bucket"), "Roofing SPF foam")
+        + "\n"
+        + first_nonblank(row.get("notes")),
+    )
+
+
 def _write_known_material(ws: Any, row: dict[str, Any], sqft: float | None, coating_row_index: int) -> tuple[bool, int]:
     text = _row_text(row)
     category = str(row.get("category") or "").lower()
+    explicit_row = _number(row.get("workbook_row"))
+    if category in {"roofing_foam", "foam"} or (explicit_row is not None and int(explicit_row) in {19, 20, 21}):
+        _write_roofing_foam_row(ws, row)
+        return True, coating_row_index
+    if category in {"seams_misc", "penetrations", "hvac_units", "drains"} or (
+        explicit_row is not None and int(explicit_row) in {47, 49, 51, 53}
+    ):
+        _write_roofing_detail_quantity_row(ws, row)
+        return True, coating_row_index
+    if category in {"dumpster", "dumpsters"} or (explicit_row is not None and int(explicit_row) == 69):
+        _write_dumpster_row(ws, row)
+        return True, coating_row_index
+    if category == "lift" or (explicit_row is not None and int(explicit_row) in {73, 74}):
+        _write_lift_row(ws, row)
+        return True, coating_row_index
+    if category == "generator" or (explicit_row is not None and int(explicit_row) == 99):
+        _write_generator_row(ws, row)
+        return True, coating_row_index
+    if category == "delivery_fee" or (explicit_row is not None and int(explicit_row) == 76):
+        _write_delivery_fee_row(ws, row)
+        return True, coating_row_index
+    if category == "freight" or (explicit_row is not None and int(explicit_row) == 103):
+        _write_freight_row(ws, row)
+        return True, coating_row_index
+    if category in {"sales_trips", "sales_inspection_trips", "truck_expense"} or (
+        explicit_row is not None and int(explicit_row) in {106, 108}
+    ):
+        _write_roofing_travel_cost_row(ws, row)
+        return True, coating_row_index
+    if category == "thinner" or (explicit_row is not None and int(explicit_row) == 33):
+        _write_thinner_row(ws, row)
+        return True, coating_row_index
+    if category in {"edge_metal", "gutter", "downspouts", "roof_hatch", "scuppers", "curbs", "ladders", "pitch_pockets", "misc"} or (
+        explicit_row is not None and int(explicit_row) in {82, 84, 86, 88, 90, 92, 94, 96, 101}
+    ):
+        _write_roofing_accessory_row(ws, row)
+        return True, coating_row_index
     if category == "coating":
+        if explicit_row is not None and int(explicit_row) in COATING_ROWS:
+            target_row = int(explicit_row)
+            _write_coating_row(ws, target_row, row, sqft)
+            return True, max(coating_row_index, COATING_ROWS.index(target_row) + 1)
         if coating_row_index >= len(COATING_ROWS):
             return False, coating_row_index
         _write_coating_row(ws, COATING_ROWS[coating_row_index], row, sqft)
         return True, coating_row_index + 1
     if "primer" in text:
         _write_primer_row(ws, row, sqft)
+        return True, coating_row_index
+    if category in {"caulk_detail", "caulk_sealant"} or (row.get("workbook_row") and int(_number(row.get("workbook_row")) or 0) in {43, 45}):
+        _write_caulk_sealant_row(ws, row)
+        return True, coating_row_index
+    if category == "fabric" or (row.get("workbook_row") and int(_number(row.get("workbook_row")) or 0) == 79) or ("fabric" in text and "coating" not in text):
+        _write_fabric_row(ws, row)
+        return True, coating_row_index
+    if category == "board_stock" or (row.get("workbook_row") and int(_number(row.get("workbook_row")) or 0) in {58, 59, 60}):
+        _write_board_stock_row(ws, row)
+        return True, coating_row_index
+    if category in {"fasteners", "fastener_treatment", "plates"} or (row.get("workbook_row") and int(_number(row.get("workbook_row")) or 0) in {63, 65}):
+        _write_board_fastener_or_plate_row(ws, row)
+        return True, coating_row_index
+    if category == "granules" or (row.get("workbook_row") and int(_number(row.get("workbook_row")) or 0) == 36):
+        _write_granules_row(ws, row)
         return True, coating_row_index
     if "caulk" in text or "sealant" in text:
         quantity = _quantity(row)
@@ -308,6 +637,7 @@ def _write_labor_row(ws: Any, row: dict[str, Any]) -> bool:
     days = _number(row.get("adjusted_days") or row.get("base_days"))
     crew_size = _number(row.get("crew_size"))
     total_hours = _number(row.get("total_hours"))
+    hourly_rate = _number(row.get("hourly_rate"))
     estimated_cost = _number(row.get("estimated_cost"))
     if task in {"labor_loading", "labor_traveling"}:
         if total_hours is not None and crew_size:
@@ -319,6 +649,10 @@ def _write_labor_row(ws: Any, row: dict[str, Any]) -> bool:
             _write_cell(ws, f"B{row_number}", round(days, 2))
         if crew_size is not None:
             _write_cell(ws, f"C{row_number}", int(crew_size))
+    if hourly_rate is not None:
+        _write_cell(ws, f"D{row_number}", round(hourly_rate, 4))
+    if total_hours is not None:
+        _write_cell(ws, f"G{row_number}", round(total_hours, 4))
     if estimated_cost is not None:
         _add_comment(ws, f"A{row_number}", f"Estimator estimated cost: ${estimated_cost:,.2f}")
     return True

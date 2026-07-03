@@ -12,6 +12,7 @@ from jobscan.estimator.workbench import (
     build_estimating_workbench,
     historical_filters_from_scope,
     recalculate_workbench_tables,
+    summarize_workbench_totals,
     workbench_to_draft_workbook_inputs,
 )
 
@@ -1219,6 +1220,83 @@ def test_insulation_foam_template_decision_feeds_draft_workbook_selector_inputs(
     assert any(cell["cell"] == "Estimate!A19" and cell["value"] == "21" for cell in foam["workbook_cell_write_preview"])
 
 
+def test_roofing_detail_template_decisions_preserve_caulk_selector_and_fabric_rows() -> None:
+    data = sample_data()
+    data.pricing_catalog = pd.concat(
+        [
+            data.pricing_catalog,
+            pd.DataFrame(
+                [
+                    {
+                        "pricing_item_id": "S1",
+                        "product_name": "Silicone Sealant Sausage",
+                        "category": "Sealant",
+                        "unit_price": 12,
+                        "unit_of_measure": "sausage",
+                        "is_current": True,
+                    },
+                    {
+                        "pricing_item_id": "F1",
+                        "product_name": "Premium Seam Fabric Roll",
+                        "category": "Fabric",
+                        "unit_price": 5,
+                        "unit_of_measure": "lf",
+                        "is_current": True,
+                    },
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+
+    workbench = build_estimating_workbench(
+        sample_recommendation(),
+        data,
+        scope_override={"notes": "Open seams need silicone sausage sealant and fabric reinforcement."},
+    )
+    details = {str(row["workbook_row"]): row for row in workbench["roofing_detail_template_decisions"]}
+
+    assert {"43", "45", "79"}.issubset(details)
+    assert details["43"]["include"] is True
+    assert details["79"]["include"] is True
+    assert "Silicone Sausage" in {option["resolved_template_option"] for option in details["43"]["selector_options"]}
+    assert details["43"]["resolved_template_option"] != details["43"]["selected_pricing_candidate"]
+    assert "Sealant" in details["43"]["selected_pricing_candidate"]
+    assert "Fabric" in details["79"]["selected_pricing_candidate"]
+
+
+def test_roofing_detail_template_decisions_recalculate_and_feed_workbook_inputs() -> None:
+    workbench = build_estimating_workbench(
+        sample_recommendation(),
+        sample_data(),
+        scope_override={"notes": "Open seams need sealant and fabric reinforcement."},
+    )
+    for row in workbench["roofing_detail_template_decisions"]:
+        if row["workbook_row"] == "43":
+            row.update({"include": True, "editable_selector_code": "2", "units": 48, "unit_price": 12, "selected_pricing_candidate": "Silicone Sealant Sausage"})
+        elif row["workbook_row"] == "79":
+            row.update({"include": True, "linear_ft": 100, "unit_price": 5, "selected_pricing_candidate": "Premium Seam Fabric Roll"})
+        else:
+            row["include"] = False
+
+    recalculated = recalculate_workbench_tables(workbench)
+    details = {str(row["workbook_row"]): row for row in recalculated["roofing_detail_template_decisions"]}
+
+    assert details["43"]["estimated_cost"] == 576
+    assert details["43"]["estimated_units"] == 48
+    assert details["79"]["estimated_cost"] == 500
+    assert details["79"]["linear_ft"] == 100
+
+    draft = workbench_to_draft_workbook_inputs(recalculated)
+    detail_rows = {str(row["workbook_row"]): row for row in draft["material_rows"] if row["category"] in {"caulk_detail", "fabric"}}
+
+    assert detail_rows["43"]["selector_code"] == "2"
+    assert detail_rows["43"]["quantity"] == 48
+    assert detail_rows["79"]["linear_ft"] == 100
+    assert any(cell["cell"] == "Estimate!A43" and cell["value"] == "2" for cell in detail_rows["43"]["workbook_cell_write_preview"])
+    assert any(cell["cell"] == "Estimate!C79" and cell["value"] == 100 for cell in detail_rows["79"]["workbook_cell_write_preview"])
+
+
 def test_insulation_surface_builder_uses_default_r_per_inch_when_product_missing() -> None:
     rows = build_insulation_surface_decisions(
         {
@@ -1325,6 +1403,320 @@ def test_roof_coating_item_selection_rejects_sealant_tube_for_main_coating() -> 
     assert "High Solids Silicone" in coating["item_name"]
     assert "roof coating product signal" in coating["selected_item_reason"]
     assert any("Sealant" in str(item.get("item_name")) for item in coating["top_rejected_item_reasons"])
+
+
+def test_roofing_coating_template_decision_uses_selector_options_not_pricing_skus() -> None:
+    workbench = build_estimating_workbench(sample_recommendation(), sample_data())
+    decisions = workbench["roofing_coating_template_decisions"]
+
+    assert [row["workbook_row"] for row in decisions] == ["26", "27", "28"]
+    assert decisions[0]["include"] is True
+    assert decisions[1]["include"] is True
+    assert decisions[2]["include"] is False
+    assert decisions[0]["editable_selector_code"] == "11"
+    assert decisions[0]["resolved_template_option"] == "Gaco Silicone"
+    assert any(option["resolved_template_option"] == "BASF Acrylic" for option in decisions[0]["selector_options"])
+    assert decisions[0]["selected_pricing_candidate"] == "GAF High Solids Silicone 55 Gal - Standard Colors"
+    assert decisions[0]["selected_pricing_candidate"] != decisions[0]["resolved_template_option"]
+
+
+def test_roofing_coating_template_decision_excludes_sealant_tube_candidates() -> None:
+    data = EstimatorData(
+        pricing_catalog=pd.DataFrame(
+            [
+                {
+                    "pricing_item_id": "BAD",
+                    "product_name": "Silicone Sealant Flashing Grade - 11 oz tube",
+                    "category": "Sealant",
+                    "unit_price": 8,
+                    "unit_of_measure": "tube",
+                    "is_current": True,
+                },
+                {
+                    "pricing_item_id": "GOOD",
+                    "product_name": "GAF High Solids Silicone 55 Gal - Standard Colors",
+                    "category": "Coating",
+                    "price_per_gallon": 38,
+                    "unit_price": 38,
+                    "unit_of_measure": "gal",
+                    "is_current": True,
+                },
+            ]
+        )
+    )
+
+    workbench = build_estimating_workbench(sample_recommendation(), data)
+    decision = workbench["roofing_coating_template_decisions"][0]
+
+    assert "Sealant" not in decision["selected_pricing_candidate"]
+    assert "High Solids Silicone" in decision["selected_pricing_candidate"]
+    assert any("Silicone Sealant" in candidate["item_name"] for candidate in decision["pricing_candidates"])
+
+
+def test_roofing_coating_template_decision_recalculates_formula_outputs() -> None:
+    workbench = build_estimating_workbench(sample_recommendation(), sample_data())
+    first = workbench["roofing_coating_template_decisions"][0]
+    first["editable_selector_code"] = "21"
+    first["basis_sqft"] = 1000
+    first["gal_per_100_sqft"] = 1.5
+    first["waste_factor_pct"] = 10
+    first["unit_price"] = 50
+    first["include"] = True
+    workbench["roofing_coating_template_decisions"][1]["include"] = False
+
+    edited = recalculate_workbench_tables(workbench)
+    decision = edited["roofing_coating_template_decisions"][0]
+
+    assert decision["resolved_template_option"] == "BASF Silicone"
+    assert round(decision["estimated_gallons"], 4) == round(((1000 / 100) * 1.5) / 0.9, 4)
+    assert round(decision["estimated_cost"], 2) == round(decision["estimated_gallons"] * 50, 2)
+    assert decision["wet_mils_estimate"] == 24
+
+
+def test_roofing_coating_template_decisions_feed_workbook_inputs() -> None:
+    workbench = build_estimating_workbench(sample_recommendation(), sample_data())
+    first = workbench["roofing_coating_template_decisions"][0]
+    first["editable_selector_code"] = "21"
+    first["basis_sqft"] = 1000
+    first["gal_per_100_sqft"] = 1.5
+    first["waste_factor_pct"] = 10
+    first["unit_price"] = 50
+    workbench["roofing_coating_template_decisions"][1]["include"] = False
+
+    draft = workbench_to_draft_workbook_inputs(workbench)
+    coating_rows = [row for row in draft["material_rows"] if row["category"] == "coating"]
+
+    assert len(coating_rows) == 1
+    coating = coating_rows[0]
+    assert coating["workbook_row"] == "26"
+    assert coating["selector_code"] == "21"
+    assert coating["basis_sqft"] == 1000
+    assert coating["gal_per_100_sqft"] == 1.5
+    assert coating["waste_factor_pct"] == 10
+    assert any(write["cell"] == "Estimate!A26" and write["value"] == "21" for write in coating["workbook_cell_write_preview"])
+
+
+def test_roofing_foam_template_decision_uses_template_options_and_roofing_candidates() -> None:
+    recommendation = sample_recommendation()
+    recommendation.parsed_fields["notes"] = "Install SPF roofing foam in low areas before coating."
+    data = sample_data()
+    data.pricing_catalog = pd.concat(
+        [
+            data.pricing_catalog,
+            pd.DataFrame(
+                [
+                    {
+                        "pricing_item_id": "RF1",
+                        "product_name": "GacoRoofFoam F2733RHFO Roofing Foam",
+                        "category": "Spray Foam",
+                        "unit_price": 2.5,
+                        "unit_of_measure": "set",
+                        "is_current": True,
+                    },
+                    {
+                        "pricing_item_id": "IF1",
+                        "product_name": "NCFI InsulBloc OptiMaxx Closed Cell Spray Foam",
+                        "category": "Spray Foam",
+                        "unit_price": 2.0,
+                        "unit_of_measure": "set",
+                        "is_current": True,
+                    },
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+
+    workbench = build_estimating_workbench(recommendation, data)
+    decisions = workbench["roofing_foam_template_decisions"]
+
+    assert [row["workbook_row"] for row in decisions] == ["19", "20", "21"]
+    assert decisions[0]["include"] is True
+    assert decisions[1]["include"] is False
+    assert decisions[2]["include"] is False
+    assert decisions[0]["editable_selector_code"] == "11"
+    assert decisions[0]["resolved_template_option"] == "Gaco Roof 2.7"
+    assert any(option["resolved_template_option"] == "BASF Roof 2.7" for option in decisions[0]["selector_options"])
+    assert decisions[0]["selected_pricing_candidate"] == "GacoRoofFoam F2733RHFO Roofing Foam"
+    assert decisions[0]["selected_pricing_candidate"] != decisions[0]["resolved_template_option"]
+    assert any(
+        candidate["item_name"] == "NCFI InsulBloc OptiMaxx Closed Cell Spray Foam"
+        and candidate["compatibility_status"] == "spec_mismatch"
+        for candidate in decisions[0]["pricing_candidates"]
+    )
+    assert decisions[0]["estimated_units"] > 0
+
+
+def test_roofing_foam_template_decision_recalculates_and_feeds_workbook_inputs() -> None:
+    recommendation = sample_recommendation()
+    recommendation.parsed_fields["notes"] = "Install SPF roofing foam before coating."
+    data = sample_data()
+    data.pricing_catalog = pd.concat(
+        [
+            data.pricing_catalog,
+            pd.DataFrame(
+                [
+                    {
+                        "pricing_item_id": "RF1",
+                        "product_name": "GacoRoofFoam F2733RHFO Roofing Foam",
+                        "category": "Spray Foam",
+                        "unit_price": 2.5,
+                        "unit_of_measure": "set",
+                        "is_current": True,
+                    }
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+    workbench = build_estimating_workbench(recommendation, data)
+    first = workbench["roofing_foam_template_decisions"][0]
+    first["editable_selector_code"] = "21"
+    first["basis_sqft"] = 865
+    first["thickness_inches"] = 1.5
+    first["yield_or_coverage"] = 2600
+    first["unit_price"] = 2.25
+    first["include"] = True
+    workbench["roofing_foam_template_decisions"][1]["include"] = False
+    workbench["roofing_foam_template_decisions"][2]["include"] = False
+
+    edited = recalculate_workbench_tables(workbench)
+    decision = edited["roofing_foam_template_decisions"][0]
+
+    assert decision["resolved_template_option"] == "BASF Roof 2.7"
+    assert round(decision["estimated_units"], 6) == round(((865 / 2600) * 1.5) * 1000, 6)
+    assert round(decision["estimated_cost"], 2) == 1122.84
+
+    draft = workbench_to_draft_workbook_inputs(edited)
+    foam_rows = [row for row in draft["material_rows"] if row["category"] == "roofing_foam"]
+
+    assert len(foam_rows) == 1
+    foam = foam_rows[0]
+    assert foam["workbook_row"] == "19"
+    assert foam["selector_code"] == "21"
+    assert foam["basis_sqft"] == 865
+    assert foam["thickness_inches"] == 1.5
+    assert foam["yield_factor"] == 2600
+    assert any(write["cell"] == "Estimate!A19" and write["value"] == "21" for write in foam["workbook_cell_write_preview"])
+    assert any(write["cell"] == "Estimate!C19" and write["value"] == 865 for write in foam["workbook_cell_write_preview"])
+
+
+def test_roofing_primer_template_decision_uses_selector_options_and_explicit_include() -> None:
+    recommendation = sample_recommendation()
+    recommendation.parsed_fields["notes"] = "Metal roof with scattered rust. Include primer before coating."
+
+    workbench = build_estimating_workbench(recommendation, sample_data())
+    decision = workbench["roofing_primer_template_decisions"][0]
+
+    assert decision["include"] is True
+    assert decision["workbook_row"] == "39"
+    assert decision["editable_selector_code"] == "2"
+    assert decision["resolved_template_option"] == "Red Zinc Oxide"
+    assert decision["basis_sqft"] == 10000
+    assert any(option["resolved_template_option"] == "Gaco E-5320" for option in decision["selector_options"])
+    assert decision["selected_pricing_candidate"] == "Epoxy Primer 5 Gal - Clear/Black"
+    assert decision["selected_pricing_candidate"] != decision["resolved_template_option"]
+
+
+def test_roofing_primer_template_decision_recalculates_formula_outputs_and_guidance() -> None:
+    recommendation = sample_recommendation()
+    recommendation.parsed_fields["notes"] = "Prime the rusted metal before silicone coating."
+    data = sample_data()
+    data.product_catalog = pd.DataFrame(
+        [
+            {
+                "product_id": "gaf_epoxy_primer",
+                "manufacturer": "GAF",
+                "product_name": "Epoxy Primer 5 Gal - Clear/Black",
+                "category": "primer",
+                "active": True,
+            }
+        ]
+    )
+    data.product_rules = pd.DataFrame(
+        [
+            {
+                "product_id": "gaf_epoxy_primer",
+                "rule_type": "recommended_use",
+                "rule_value": "Primer for metal and coating restoration applications.",
+                "severity": "info",
+                "source_text": "Recommended for metal restoration primer use.",
+            },
+            {
+                "product_id": "gaf_epoxy_primer",
+                "rule_type": "limitation",
+                "rule_value": "Confirm substrate preparation before applying primer.",
+                "severity": "warning",
+                "source_text": "Substrate must be clean and prepared.",
+            },
+        ]
+    )
+    data.product_properties = pd.DataFrame(
+        [
+            {
+                "product_id": "gaf_epoxy_primer",
+                "property_name": "coverage_sqft_per_gallon",
+                "property_value": "250",
+                "numeric_value": 250,
+                "unit": "sqft/gal",
+                "source_text": "Coverage: 250 square feet per gallon.",
+            }
+        ]
+    )
+    data.product_documents = pd.DataFrame(
+        [{"product_id": "gaf_epoxy_primer", "source_path": "product_documents/gaf_epoxy_primer.pdf"}]
+    )
+    data.product_decision_links = pd.DataFrame(
+        [{"product_id": "gaf_epoxy_primer", "decision_id": "roofing_primer", "confidence": "high"}]
+    )
+
+    workbench = build_estimating_workbench(recommendation, data)
+    workbench["roofing_primer_template_decisions"][0].update(
+        {
+            "include": True,
+            "editable_selector_code": "1",
+            "basis_sqft": 1000,
+            "coverage_sqft_per_unit": 250,
+            "unit_price": 100,
+            "selected_pricing_candidate": "Epoxy Primer 5 Gal - Clear/Black",
+        }
+    )
+    edited = recalculate_workbench_tables(workbench)
+    decision = edited["roofing_primer_template_decisions"][0]
+
+    assert decision["resolved_template_option"] == "Gaco E-5320"
+    assert decision["estimated_units"] == 4
+    assert decision["estimated_cost"] == 400
+    assert "Primer for metal" in decision["product_guidance"]
+    assert decision["product_guidance_status"] == "matched"
+    assert any("Estimate!A39" == write["cell"] and write["value"] == "1" for write in decision["workbook_cell_write_preview"])
+
+
+def test_roofing_primer_template_decisions_feed_workbook_inputs() -> None:
+    recommendation = sample_recommendation()
+    recommendation.parsed_fields["notes"] = "Prime the metal roof before coating."
+    workbench = build_estimating_workbench(recommendation, sample_data())
+    workbench["roofing_primer_template_decisions"][0].update(
+        {
+            "include": True,
+            "editable_selector_code": "1",
+            "basis_sqft": 1000,
+            "coverage_sqft_per_unit": 250,
+            "unit_price": 100,
+        }
+    )
+
+    draft = workbench_to_draft_workbook_inputs(workbench)
+    primer_rows = [row for row in draft["material_rows"] if row["category"] == "primer"]
+
+    assert len(primer_rows) == 1
+    primer = primer_rows[0]
+    assert primer["workbook_row"] == "39"
+    assert primer["selector_code"] == "1"
+    assert primer["basis_sqft"] == 1000
+    assert primer["coverage_sqft_per_unit"] == 250
+    assert primer["estimated_units"] == 4
+    assert any(write["cell"] == "Estimate!A39" and write["value"] == "1" for write in primer["workbook_cell_write_preview"])
 
 
 def test_roof_coating_item_selection_does_not_fall_back_to_sealant_when_only_bad_candidate_exists() -> None:
@@ -1595,9 +1987,10 @@ def test_workbook_export_uses_filtered_final_values() -> None:
         if row["package_key"] == "coating":
             row["include"] = True
     draft = workbench_to_draft_workbook_inputs(workbench)
-    coating = next(row for row in draft["material_rows"] if row["category"] == "coating")
+    coating_rows = [row for row in draft["material_rows"] if row["category"] == "coating"]
 
-    assert coating["quantity"] == 500
+    assert sum(row["quantity"] for row in coating_rows) == 500
+    assert {row["workbook_row"] for row in coating_rows} == {"26", "27"}
 
 
 def test_edited_workbench_values_populate_workbook_inputs() -> None:
@@ -1613,10 +2006,10 @@ def test_edited_workbench_values_populate_workbook_inputs() -> None:
     draft = workbench_to_draft_workbook_inputs(edited)
 
     assert draft["header"]["C12_estimated_sqft"] == 10000
-    coating = next(row for row in draft["material_rows"] if row["category"] == "coating")
+    coating_rows = [row for row in draft["material_rows"] if row["category"] == "coating"]
     labor = next(row for row in draft["labor_rows"] if row["task"] == "labor_base")
-    assert coating["quantity"] == 300
-    assert coating["estimated_cost"] == 11400
+    assert sum(row["quantity"] for row in coating_rows) == 300
+    assert sum(row["estimated_cost"] for row in coating_rows) == 11400
     assert labor["total_hours"] == 50
     assert labor["estimated_cost"] == 3600
 
@@ -1638,6 +2031,62 @@ def test_unchecked_rows_keep_defaults_but_do_not_contribute_until_included() -> 
     assert total_cost == material_packages["coating"]["estimated_cost"]
     assert total_labor > 0
     assert total_labor >= labor_packages["labor_base"]["estimated_cost"]
+
+
+def test_summarize_totals_prefers_roofing_decision_sections_over_flat_rows() -> None:
+    workbench = build_estimating_workbench(sample_recommendation(), sample_data())
+    for row in workbench["materials"]:
+        if row.get("package_key") == "coating":
+            row["include"] = True
+            row["estimated_cost"] = 999000
+    for row in workbench["labor"]:
+        if row.get("package_key") in {"labor_prep", "labor_base", "labor_top_coat"}:
+            row["include"] = True
+            row["estimated_cost"] = 999000
+
+    totals = summarize_workbench_totals(workbench)
+    recalculated = recalculate_workbench_tables(workbench)
+    expected_material = sum(
+        row["estimated_cost"]
+        for section in (
+            "roofing_foam_template_decisions",
+            "roofing_coating_template_decisions",
+            "roofing_primer_template_decisions",
+            "roofing_detail_template_decisions",
+            "roofing_detail_quantity_template_decisions",
+            "roofing_board_fastener_template_decisions",
+            "roofing_granules_template_decisions",
+            "roofing_accessory_template_decisions",
+        )
+        for row in recalculated.get(section, [])
+        if row.get("include")
+    )
+    expected_labor = sum(row["estimated_cost"] for row in recalculated["roofing_labor_template_decisions"] if row.get("include"))
+
+    assert totals["material_total"] == expected_material
+    assert totals["labor_total"] == expected_labor
+    assert totals["material_total"] != 999000
+    assert totals["labor_total"] != 999000
+
+
+def test_summarize_totals_uses_insulation_performance_decisions_before_flat_foam_row() -> None:
+    workbench = build_estimating_workbench(sample_insulation_recommendation(), sample_insulation_data())
+    for row in workbench["materials"]:
+        if row.get("package_key") == "foam":
+            row["include"] = True
+            row["estimated_cost"] = 999000
+
+    totals = summarize_workbench_totals(workbench)
+    recalculated = recalculate_workbench_tables(workbench)
+    expected_material = sum(
+        row["estimated_cost"]
+        for row in recalculated.get("insulation_performance_specs", [])
+        if row.get("include")
+    )
+
+    assert expected_material > 0
+    assert totals["material_total"] == round(expected_material, 2)
+    assert totals["material_total"] != 999000
 
 
 def test_missing_current_price_uses_historical_cost_default_when_included() -> None:
@@ -1708,3 +2157,536 @@ def test_edit_history_flags_large_material_and_labor_changes() -> None:
     assert any(row["section"] == "labor.labor_base" for row in required)
     assert any(row["section"] == "labor.labor_prime" and row["field_name"] == "include" for row in required)
     assert all("suggested_value" in row and "difference_pct" in row for row in rows)
+
+
+def board_fastener_sample_data() -> EstimatorData:
+    data = sample_data()
+    data.pricing_catalog = pd.concat(
+        [
+            data.pricing_catalog,
+            pd.DataFrame(
+                [
+                    {
+                        "pricing_item_id": "BOARD1",
+                        "product_name": "Dens Deck Cover Board 1/2 inch",
+                        "category": "Board Stock",
+                        "unit_price": 45,
+                        "unit_of_measure": "square",
+                        "is_current": True,
+                    },
+                    {
+                        "pricing_item_id": "FAST1",
+                        "product_name": "Roofing Fastener Screws",
+                        "category": "Fasteners",
+                        "unit_price": 100,
+                        "unit_of_measure": "M",
+                        "is_current": True,
+                    },
+                    {
+                        "pricing_item_id": "PLATE1",
+                        "product_name": "Insulation Plates",
+                        "category": "Plates",
+                        "unit_price": 80,
+                        "unit_of_measure": "M",
+                        "is_current": True,
+                    },
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+    data.job_package_summary = pd.concat(
+        [
+            data.job_package_summary,
+            pd.DataFrame(
+                [
+                    {
+                        "job_id": "B1",
+                        "division": "Roofing",
+                        "template_type": "roofing",
+                        "project_type": "roof coating",
+                        "substrate": "metal",
+                        "package": "board_stock",
+                        "item_name": "Dens Deck Cover Board 1/2 inch",
+                        "area_sqft": 3200,
+                        "total_quantity": 32,
+                        "unit": "square",
+                        "qty_per_sqft": 0.01,
+                        "has_physical_quantity": True,
+                    },
+                    {
+                        "job_id": "B1",
+                        "division": "Roofing",
+                        "template_type": "roofing",
+                        "project_type": "roof coating",
+                        "substrate": "metal",
+                        "package": "fasteners",
+                        "item_name": "Roofing Fastener Screws",
+                        "area_sqft": 3200,
+                        "total_quantity": 1200,
+                        "unit": "ea",
+                        "qty_per_sqft": 0.375,
+                        "has_physical_quantity": True,
+                    },
+                    {
+                        "job_id": "B1",
+                        "division": "Roofing",
+                        "template_type": "roofing",
+                        "project_type": "roof coating",
+                        "substrate": "metal",
+                        "package": "plates",
+                        "item_name": "Insulation Plates",
+                        "area_sqft": 3200,
+                        "total_quantity": 1200,
+                        "unit": "ea",
+                        "qty_per_sqft": 0.375,
+                        "has_physical_quantity": True,
+                    },
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+    return data
+
+
+def test_roofing_board_fastener_template_decisions_preserve_selector_and_follow_board_scope() -> None:
+    recommendation = sample_recommendation()
+    recommendation.parsed_fields["notes"] = "Replace wet insulation with Dens Deck cover board and use screws and plates."
+    workbench = build_estimating_workbench(recommendation, board_fastener_sample_data())
+    rows = workbench["roofing_board_fastener_template_decisions"]
+
+    assert {row["workbook_row"] for row in rows} == {"58", "59", "60", "63", "65"}
+    board_row = next(row for row in rows if row["workbook_row"] == "58")
+    fastener_row = next(row for row in rows if row["workbook_row"] == "63")
+    plate_row = next(row for row in rows if row["workbook_row"] == "65")
+
+    assert board_row["include"] is True
+    assert fastener_row["include"] is True
+    assert plate_row["include"] is True
+    assert any(option["resolved_template_option"] == "Dens Deck" for option in board_row["selector_options"])
+    assert "Dens Deck" in board_row["selected_pricing_candidate"]
+    assert "Fastener" in fastener_row["selected_pricing_candidate"]
+    assert "Plate" in plate_row["selected_pricing_candidate"]
+
+
+def test_roofing_board_fastener_template_decisions_recalculate_and_feed_workbook_inputs() -> None:
+    recommendation = sample_recommendation()
+    recommendation.parsed_fields["notes"] = "Replace wet insulation with cover board."
+    workbench = build_estimating_workbench(recommendation, board_fastener_sample_data())
+    for row in workbench["roofing_board_fastener_template_decisions"]:
+        if row["workbook_row"] == "58":
+            row.update(
+                {
+                    "include": True,
+                    "editable_selector_code": "3",
+                    "basis_sqft": 3200,
+                    "thickness_inches": 0.5,
+                    "price_per_square": 45,
+                    "unit_price": 45,
+                    "selected_pricing_candidate": "Dens Deck Cover Board 1/2 inch",
+                }
+            )
+        elif row["workbook_row"] in {"59", "60"}:
+            row["include"] = False
+        elif row["workbook_row"] == "63":
+            row.update(
+                {
+                    "include": True,
+                    "board_area_sqft": 3200,
+                    "unit_price": 100,
+                    "unit_price_per_thousand": 100,
+                    "selected_pricing_candidate": "Roofing Fastener Screws",
+                }
+            )
+        elif row["workbook_row"] == "65":
+            row.update(
+                {
+                    "include": True,
+                    "board_area_sqft": 3200,
+                    "unit_price": 80,
+                    "unit_price_per_thousand": 80,
+                    "selected_pricing_candidate": "Insulation Plates",
+                }
+            )
+
+    recalculated = recalculate_workbench_tables(workbench)
+    rows = {row["workbook_row"]: row for row in recalculated["roofing_board_fastener_template_decisions"]}
+
+    assert rows["58"]["estimated_cost"] == 1440
+    assert rows["63"]["estimated_units"] == 1200
+    assert rows["63"]["estimated_cost"] == 120
+    assert rows["65"]["estimated_units"] == 1200
+    assert rows["65"]["estimated_cost"] == 96
+
+    draft = workbench_to_draft_workbook_inputs(recalculated)
+    material_by_row = {row["workbook_row"]: row for row in draft["material_rows"]}
+    assert material_by_row["58"]["selector_code"] == "3"
+    assert material_by_row["58"]["basis_sqft"] == 3200
+    assert material_by_row["63"]["unit_price_per_thousand"] == 100
+    assert material_by_row["65"]["unit_price_per_thousand"] == 80
+    assert any(write["cell"] == "Estimate!A58" for write in material_by_row["58"]["workbook_cell_write_preview"])
+
+
+def granules_sample_data() -> EstimatorData:
+    data = sample_data()
+    data.pricing_catalog = pd.concat(
+        [
+            data.pricing_catalog,
+            pd.DataFrame(
+                [
+                    {
+                        "pricing_item_id": "GRAN1",
+                        "product_name": "3M LR9300 Roofing Granules",
+                        "category": "Granules",
+                        "unit_price": 42,
+                        "unit_of_measure": "bag",
+                        "is_current": True,
+                    },
+                    {
+                        "pricing_item_id": "GRAN2",
+                        "product_name": "SESCO Snow White Roofing Granules",
+                        "category": "Granules",
+                        "unit_price": 39,
+                        "unit_of_measure": "bag",
+                        "is_current": True,
+                    },
+                    {
+                        "pricing_item_id": "BADGRAN",
+                        "product_name": "White Silicone Roof Coating 55 Gal",
+                        "category": "Coating",
+                        "unit_price": 190,
+                        "unit_of_measure": "gal",
+                        "is_current": True,
+                    },
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+    data.job_package_summary = pd.concat(
+        [
+            data.job_package_summary,
+            pd.DataFrame(
+                [
+                    {
+                        "job_id": "G1",
+                        "division": "Roofing",
+                        "template_type": "roofing",
+                        "project_type": "roof coating",
+                        "substrate": "metal",
+                        "package": "granules",
+                        "item_name": "3M LR9300 Roofing Granules",
+                        "area_sqft": 10000,
+                        "total_quantity": 50,
+                        "unit": "bag",
+                        "qty_per_sqft": 0.005,
+                        "has_physical_quantity": True,
+                    }
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+    return data
+
+
+def test_roofing_granules_template_decision_uses_selector_options_and_separate_candidates() -> None:
+    recommendation = sample_recommendation()
+    recommendation.parsed_fields["notes"] = "Add broadcast granules to the coating walkway area."
+    workbench = build_estimating_workbench(recommendation, granules_sample_data())
+
+    decisions = workbench["roofing_granules_template_decisions"]
+    assert len(decisions) == 1
+    decision = decisions[0]
+    assert decision["include"] is True
+    assert decision["workbook_row"] == "36"
+    assert {option["resolved_template_option"] for option in decision["selector_options"]} >= {"3M", "SESCO"}
+    assert decision["resolved_template_option"] in {"3M", "SESCO"}
+    assert "Granules" in decision["selected_pricing_candidate"]
+    assert "Silicone Roof Coating" not in decision["selected_pricing_candidate"]
+    assert decision["selected_pricing_candidate"] != decision["resolved_template_option"]
+
+
+def test_roofing_granules_template_decision_recalculates_and_feeds_workbook_inputs() -> None:
+    recommendation = sample_recommendation()
+    recommendation.parsed_fields["notes"] = "Broadcast SESCO granules over the coating."
+    workbench = build_estimating_workbench(recommendation, granules_sample_data())
+    workbench["roofing_granules_template_decisions"][0].update(
+        {
+            "include": True,
+            "editable_selector_code": "2",
+            "basis_sqft": 12000,
+            "coverage_lbs_per_100_sqft": 50,
+            "bag_weight_lbs": 100,
+            "unit_price": 40,
+            "selected_pricing_candidate": "SESCO Snow White Roofing Granules",
+        }
+    )
+
+    recalculated = recalculate_workbench_tables(workbench)
+    decision = recalculated["roofing_granules_template_decisions"][0]
+    assert decision["resolved_template_option"] == "SESCO"
+    assert decision["estimated_units"] == 60
+    assert decision["estimated_cost"] == 2400
+
+    draft = workbench_to_draft_workbook_inputs(recalculated)
+    granules_rows = [row for row in draft["material_rows"] if row["category"] == "granules"]
+    assert len(granules_rows) == 1
+    granules = granules_rows[0]
+    assert granules["workbook_row"] == "36"
+    assert granules["selector_code"] == "2"
+    assert granules["basis_sqft"] == 12000
+    assert granules["coverage_lbs_per_100_sqft"] == 50
+    assert granules["bag_weight_lbs"] == 100
+    assert granules["quantity"] == 60
+    assert any(write["cell"] == "Estimate!A36" and write["value"] == "2" for write in granules["workbook_cell_write_preview"])
+
+
+def test_roofing_equipment_template_decisions_use_selector_options_and_note_triggers() -> None:
+    recommendation = sample_recommendation()
+    recommendation.parsed_fields["notes"] = "Tear off wet insulation, include 40 yard dumpster, boom lift, and generator."
+    workbench = build_estimating_workbench(recommendation, sample_data())
+
+    rows = {row["workbook_row"]: row for row in workbench["roofing_equipment_template_decisions"]}
+    assert {"69", "73", "74", "99"}.issubset(rows)
+    assert rows["69"]["include"] is True
+    assert rows["69"]["resolved_template_option"] == "40 Yard"
+    assert {option["resolved_template_option"] for option in rows["69"]["selector_options"]} >= {"20 Yard", "30 Yard", "40 Yard"}
+    assert rows["73"]["include"] is True
+    assert rows["73"]["resolved_template_option"] == "Boom"
+    assert {option["resolved_template_option"] for option in rows["73"]["selector_options"]} >= {"Forklift", "Boom", "Scissor", "Articulating"}
+    assert rows["74"]["include"] is False
+    assert rows["99"]["include"] is True
+
+
+def test_roofing_equipment_template_decisions_recalculate_and_feed_workbook_inputs() -> None:
+    recommendation = sample_recommendation()
+    recommendation.parsed_fields["notes"] = "Tear off wet insulation, include dumpster, lift, and generator."
+    workbench = build_estimating_workbench(recommendation, sample_data())
+    for row in workbench["roofing_equipment_template_decisions"]:
+        if row["workbook_row"] == "69":
+            row.update(
+                {
+                    "include": True,
+                    "editable_selector_code": "3",
+                    "basis_sqft": 14000,
+                    "thickness_inches": 2,
+                    "unit_price": 400,
+                    "margin_pct": 25,
+                }
+            )
+        elif row["workbook_row"] == "73":
+            row.update(
+                {
+                    "include": True,
+                    "editable_selector_code": "2",
+                    "size": "60'",
+                    "period": 5,
+                    "unit_price": 600,
+                    "margin_pct": 20,
+                }
+            )
+        elif row["workbook_row"] == "74":
+            row["include"] = False
+        elif row["workbook_row"] == "99":
+            row.update({"include": True, "days": 7, "unit_price": 50})
+
+    recalculated = recalculate_workbench_tables(workbench)
+    rows = {row["workbook_row"]: row for row in recalculated["roofing_equipment_template_decisions"]}
+    assert rows["69"]["estimated_units"] == 2.083333
+    assert rows["69"]["estimated_cost"] == 833.33
+    assert rows["73"]["estimated_cost"] == 3600
+    assert rows["99"]["estimated_cost"] == 350
+
+    draft = workbench_to_draft_workbook_inputs(recalculated)
+    equipment_rows = {row["workbook_row"]: row for row in draft["material_rows"] if row["category"] in {"dumpster", "lift", "generator"}}
+    assert {"69", "73", "99"}.issubset(equipment_rows)
+    assert equipment_rows["69"]["selector_code"] == "3"
+    assert equipment_rows["69"]["basis_sqft"] == 14000
+    assert equipment_rows["69"]["thickness_inches"] == 2
+    assert equipment_rows["73"]["selector_code"] == "2"
+    assert equipment_rows["73"]["period"] == 5
+    assert equipment_rows["99"]["days"] == 7
+    assert not any(row["category"] in {"dumpster", "lift", "generator"} for row in draft["adders_review_rows"])
+    assert any(write["cell"] == "Estimate!A69" and write["value"] == "3" for write in equipment_rows["69"]["workbook_cell_write_preview"])
+
+
+def test_roofing_travel_freight_template_decisions_recalculate_and_feed_workbook_inputs() -> None:
+    recommendation = sample_recommendation()
+    recommendation.parsed_fields["notes"] = "Include delivery fee, freight, sales inspection trips, and truck expense miles."
+    workbench = build_estimating_workbench(recommendation, sample_data())
+    for row in workbench["roofing_travel_freight_template_decisions"]:
+        if row["workbook_row"] == "76":
+            row.update({"include": True, "estimated_units": 2, "unit_price": 150})
+        elif row["workbook_row"] == "103":
+            row.update({"include": True, "amount": 425, "unit_price": 425})
+        elif row["workbook_row"] == "106":
+            row.update({"include": True, "trip_count": 3, "round_trip_miles": 40, "unit_price": 0.75})
+        elif row["workbook_row"] == "108":
+            row.update({"include": True, "trip_count": 4, "round_trip_miles": 50, "unit_price": 1.25})
+
+    recalculated = recalculate_workbench_tables(workbench)
+    rows = {row["workbook_row"]: row for row in recalculated["roofing_travel_freight_template_decisions"]}
+    assert rows["76"]["estimated_cost"] == 300
+    assert rows["103"]["estimated_cost"] == 425
+    assert rows["106"]["estimated_cost"] == 90
+    assert rows["108"]["estimated_cost"] == 250
+
+    draft = workbench_to_draft_workbook_inputs(recalculated)
+    travel_rows = {
+        row["workbook_row"]: row
+        for row in draft["material_rows"]
+        if row["category"] in {"delivery_fee", "freight", "sales_trips", "truck_expense"}
+    }
+    assert {"76", "103", "106", "108"}.issubset(travel_rows)
+    assert travel_rows["76"]["estimated_units"] == 2
+    assert travel_rows["103"]["amount"] == 425
+    assert travel_rows["106"]["trip_count"] == 3
+    assert travel_rows["106"]["round_trip_miles"] == 40
+    assert travel_rows["108"]["unit_price"] == 1.25
+    assert not any(
+        row["category"] in {"delivery_fee", "freight", "sales_trips", "inspection", "truck_expense", "travel"}
+        for row in draft["adders_review_rows"]
+    )
+    assert any(write["cell"] == "Estimate!B106" and write["value"] == 3 for write in travel_rows["106"]["workbook_cell_write_preview"])
+    assert any(write["cell"] == "Estimate!C108" and write["value"] == 50 for write in travel_rows["108"]["workbook_cell_write_preview"])
+
+
+def test_roofing_accessory_template_decisions_recalculate_and_feed_workbook_inputs() -> None:
+    recommendation = sample_recommendation()
+    recommendation.parsed_fields["notes"] = "Use xylene thinner, replace edge metal, include roof hatch, and add misc allowance."
+    workbench = build_estimating_workbench(recommendation, sample_data())
+    for row in workbench["roofing_accessory_template_decisions"]:
+        if row["workbook_row"] == "33":
+            row.update({"include": True, "editable_selector_code": "3", "total_coating_gallons": 220, "unit_price": 12.5})
+        elif row["workbook_row"] == "82":
+            row.update({"include": True, "linear_ft": 100, "unit_price": 15})
+        elif row["workbook_row"] == "88":
+            row.update({"include": True, "estimated_units": 2, "unit_price": 300})
+        elif row["workbook_row"] == "101":
+            row.update({"include": True, "amount": 275, "unit_price": 275})
+        else:
+            row["include"] = False
+
+    recalculated = recalculate_workbench_tables(workbench)
+    rows = {row["workbook_row"]: row for row in recalculated["roofing_accessory_template_decisions"]}
+    assert rows["33"]["resolved_template_option"] == "Xylene"
+    assert rows["33"]["estimated_units"] == 16
+    assert rows["33"]["estimated_cost"] == 200
+    assert rows["82"]["estimated_cost"] == 1500
+    assert rows["88"]["estimated_cost"] == 600
+    assert rows["101"]["estimated_cost"] == 275
+
+    draft = workbench_to_draft_workbook_inputs(recalculated)
+    accessory_rows = {
+        row["workbook_row"]: row
+        for row in draft["material_rows"]
+        if row["category"] in {"thinner", "edge_metal", "roof_hatch", "misc"}
+    }
+    assert {"33", "82", "88", "101"}.issubset(accessory_rows)
+    assert accessory_rows["33"]["selector_code"] == "3"
+    assert accessory_rows["33"]["total_coating_gallons"] == 220
+    assert accessory_rows["82"]["linear_ft"] == 100
+    assert accessory_rows["88"]["estimated_units"] == 2
+    assert accessory_rows["101"]["amount"] == 275
+    assert any(write["cell"] == "Estimate!A33" and write["value"] == "3" for write in accessory_rows["33"]["workbook_cell_write_preview"])
+    assert any(write["cell"] == "Estimate!C82" and write["value"] == 100 for write in accessory_rows["82"]["workbook_cell_write_preview"])
+
+
+def test_roofing_detail_quantity_template_decisions_recalculate_and_feed_workbook_inputs() -> None:
+    recommendation = sample_recommendation()
+    recommendation.parsed_fields["notes"] = "Open seams, 12 penetrations, two HVAC units, and 4 roof drains."
+    workbench = build_estimating_workbench(recommendation, sample_data())
+
+    rows = {row["workbook_row"]: row for row in workbench["roofing_detail_quantity_template_decisions"]}
+    assert {"47", "49", "51", "53"}.issubset(rows)
+    assert rows["47"]["include"] is True
+    assert rows["49"]["include"] is True
+    assert rows["51"]["include"] is True
+    assert rows["53"]["include"] is True
+
+    for row in workbench["roofing_detail_quantity_template_decisions"]:
+        if row["workbook_row"] == "47":
+            row.update({"include": True, "linear_ft": 240, "amount": 1200})
+        elif row["workbook_row"] == "49":
+            row.update({"include": True, "units": 12, "amount": 600})
+        elif row["workbook_row"] == "51":
+            row.update({"include": True, "units": 2, "amount": 300})
+        elif row["workbook_row"] == "53":
+            row.update({"include": True, "units": 4, "amount": 400})
+
+    recalculated = recalculate_workbench_tables(workbench)
+    rows = {row["workbook_row"]: row for row in recalculated["roofing_detail_quantity_template_decisions"]}
+    assert rows["47"]["linear_ft"] == 240
+    assert rows["47"]["estimated_cost"] == 1200
+    assert rows["49"]["estimated_units"] == 12
+    assert rows["51"]["estimated_units"] == 2
+    assert rows["53"]["estimated_units"] == 4
+    assert rows["49"]["formula_model"] == "manual_detail_quantity_cost"
+
+    draft = workbench_to_draft_workbook_inputs(recalculated)
+    detail_rows = {
+        row["workbook_row"]: row
+        for row in draft["material_rows"]
+        if row["category"] in {"seams_misc", "penetrations", "hvac_units", "drains"}
+    }
+    assert {"47", "49", "51", "53"}.issubset(detail_rows)
+    assert detail_rows["47"]["linear_ft"] == 240
+    assert detail_rows["49"]["estimated_units"] == 12
+    assert detail_rows["51"]["estimated_units"] == 2
+    assert detail_rows["53"]["estimated_units"] == 4
+    assert any(write["cell"] == "Estimate!C47" and write["value"] == 240 for write in detail_rows["47"]["workbook_cell_write_preview"])
+    assert any(write["cell"] == "Estimate!D49" and write["value"] == 12 for write in detail_rows["49"]["workbook_cell_write_preview"])
+    assert any(write["cell"] == "Estimate!D51" and write["value"] == 2 for write in detail_rows["51"]["workbook_cell_write_preview"])
+    assert any(write["cell"] == "Estimate!D53" and write["value"] == 4 for write in detail_rows["53"]["workbook_cell_write_preview"])
+
+
+def test_roofing_labor_template_decisions_expose_people_selector_options() -> None:
+    workbench = build_estimating_workbench(sample_recommendation(), sample_data())
+
+    decisions = {row["template_bucket"]: row for row in workbench["roofing_labor_template_decisions"]}
+    assert "labor_base" in decisions
+    labor_base = decisions["labor_base"]
+    assert labor_base["workbook_row"] == "122"
+    assert labor_base["include"] is True
+    assert {option["selector_code"] for option in labor_base["crew_selector_options"]} >= {"1", "4", "8"}
+    assert "person crew daily rate" in labor_base["crew_selection"]
+    assert labor_base["selected_daily_rate_cell"].startswith("People!")
+
+
+def test_roofing_labor_template_decisions_recalculate_and_feed_workbook_inputs() -> None:
+    workbench = build_estimating_workbench(sample_recommendation(), sample_data())
+    for row in workbench["roofing_labor_template_decisions"]:
+        if row["template_bucket"] == "labor_base":
+            row.update(
+                {
+                    "include": True,
+                    "days": 2,
+                    "crew_size": 4,
+                    "crew_people_selection": 4,
+                    "daily_rate": 1600,
+                    "hourly_rate": 90,
+                    "total_hours": 40,
+                    "editable_total_hours": 40,
+                    "formula_mode": "mixed_formula",
+                }
+            )
+        else:
+            row["include"] = False
+
+    recalculated = recalculate_workbench_tables(workbench)
+    decision = next(row for row in recalculated["roofing_labor_template_decisions"] if row["template_bucket"] == "labor_base")
+    assert decision["estimated_cost"] == 3600
+    assert decision["formula_source"] == "hours_hourly_rate"
+    assert any(write["cell"] == "Estimate!D122" and write["value"] == 90 for write in decision["workbook_cell_write_preview"])
+    assert any(write["cell"] == "Estimate!G122" and write["value"] == 40 for write in decision["workbook_cell_write_preview"])
+
+    draft = workbench_to_draft_workbook_inputs(recalculated)
+    labor_rows = {row["task"]: row for row in draft["labor_rows"]}
+    assert labor_rows["labor_base"]["base_days"] == 2
+    assert labor_rows["labor_base"]["adjusted_days"] == 2
+    assert labor_rows["labor_base"]["crew_size"] == 4
+    assert labor_rows["labor_base"]["hourly_rate"] == 90
+    assert labor_rows["labor_base"]["total_hours"] == 40
+    assert labor_rows["labor_base"]["estimated_cost"] == 3600

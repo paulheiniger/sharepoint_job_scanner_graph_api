@@ -18,6 +18,13 @@ DECISION_TABLES = [
     "insulation_thermal_barrier_decision_history",
     "insulation_labor_decision_history",
     "roofing_coating_decision_history",
+    "roofing_primer_decision_history",
+    "roofing_caulk_sealant_decision_history",
+    "roofing_fabric_decision_history",
+    "roofing_board_stock_decision_history",
+    "roofing_fasteners_decision_history",
+    "roofing_plates_decision_history",
+    "roofing_granules_decision_history",
     "roofing_scope_decision_history",
     "roofing_labor_decision_history",
     "equipment_decision_history",
@@ -175,7 +182,7 @@ def _source_year_from_file(value: Any) -> Any:
     return None
 
 
-def _base_decision_rows(data: EstimatorData | Any) -> pd.DataFrame:
+def _base_decision_rows(data: EstimatorData | Any, *, include_product_matches: bool = True) -> pd.DataFrame:
     rows = _frame(data, "template_rows")
     if rows.empty:
         return pd.DataFrame()
@@ -242,20 +249,22 @@ def _base_decision_rows(data: EstimatorData | Any) -> pd.DataFrame:
         rows["resolved_item_name"].notna() & rows["resolved_item_name"].astype(str).ne(""),
         rows["selected_item_name"],
     )
-    product_catalog = getattr(data, "product_catalog", pd.DataFrame())
+    product_catalog = getattr(data, "product_catalog", pd.DataFrame()) if include_product_matches else pd.DataFrame()
     if product_catalog is not None and not product_catalog.empty:
         try:
             from jobscan.products.product_matching import match_product
 
             product_links = getattr(data, "product_decision_links", pd.DataFrame())
+            product_records = product_catalog.to_dict(orient="records")
+            product_link_records = product_links.to_dict(orient="records") if isinstance(product_links, pd.DataFrame) else product_links
             product_ids = []
             product_match_scores = []
             for _, row in rows.iterrows():
                 matched = match_product(
                     str(row.get("resolved_item_name") or ""),
-                    product_catalog,
+                    product_records,
                     category=str(row.get("template_bucket") or ""),
-                    product_decision_links=product_links,
+                    product_decision_links=product_link_records,
                 )
                 product_ids.append(matched.get("product_id") if matched else "")
                 product_match_scores.append(matched.get("match_score") if matched else None)
@@ -334,9 +343,14 @@ def _decision_base_output(rows: pd.DataFrame, decision_id: str, decision_node_ti
     return out[keep].copy()
 
 
-def build_historical_decision_tables(data: EstimatorData | Any) -> dict[str, pd.DataFrame]:
+def build_historical_decision_tables(
+    data: EstimatorData | Any,
+    *,
+    force_rebuild: bool = False,
+    include_product_matches: bool = True,
+) -> dict[str, pd.DataFrame]:
     existing_tables = getattr(data, "decision_history_tables", None)
-    if isinstance(existing_tables, dict) and existing_tables:
+    if not force_rebuild and isinstance(existing_tables, dict) and existing_tables:
         tables: dict[str, pd.DataFrame] = {}
         for table_name in DECISION_TABLES:
             frame = existing_tables.get(table_name, pd.DataFrame())
@@ -344,7 +358,7 @@ def build_historical_decision_tables(data: EstimatorData | Any) -> dict[str, pd.
         if any(not frame.empty for frame in tables.values()):
             return tables
 
-    rows = _base_decision_rows(data)
+    rows = _base_decision_rows(data, include_product_matches=include_product_matches)
     if rows.empty:
         return {name: pd.DataFrame() for name in DECISION_TABLES}
     rows["wet_mils_estimate"] = pd.to_numeric(rows["gal_per_100_sqft"], errors="coerce") * 16
@@ -361,6 +375,13 @@ def build_historical_decision_tables(data: EstimatorData | Any) -> dict[str, pd.
         insulation_thermal = rows[(template_type.eq("insulation")) & (formula_model.eq("coating gallons from area rate waste"))].copy()
     insulation_labor = rows[(template_type.eq("insulation")) & ((kind.eq("labor")) | bucket.str.startswith("labor"))].copy()
     roofing_coating = rows[(template_type.eq("roofing")) & (bucket.eq("coating"))].copy()
+    roofing_primer = rows[(template_type.eq("roofing")) & (bucket.eq("primer"))].copy()
+    roofing_caulk_sealant = rows[(template_type.eq("roofing")) & (bucket.isin({"caulk sealant", "caulk detail"}))].copy()
+    roofing_fabric = rows[(template_type.eq("roofing")) & (bucket.eq("fabric"))].copy()
+    roofing_board_stock = rows[(template_type.eq("roofing")) & (bucket.eq("board stock"))].copy()
+    roofing_fasteners = rows[(template_type.eq("roofing")) & (bucket.isin({"fasteners", "fastener treatment"}))].copy()
+    roofing_plates = rows[(template_type.eq("roofing")) & (bucket.eq("plates"))].copy()
+    roofing_granules = rows[(template_type.eq("roofing")) & (bucket.eq("granules"))].copy()
     roofing_scope = rows[(template_type.eq("roofing")) & (bucket.isin({"coating", "foam", "primer"}))].copy()
     roofing_labor = rows[(template_type.eq("roofing")) & ((kind.eq("labor")) | bucket.str.startswith("labor"))].copy()
     equipment = rows[
@@ -392,6 +413,27 @@ def build_historical_decision_tables(data: EstimatorData | Any) -> dict[str, pd.
         ),
         "roofing_coating_decision_history": _decision_base_output(
             roofing_coating, "roofing_coating_system", "Roofing Coating System", "product_selection"
+        ),
+        "roofing_primer_decision_history": _decision_base_output(
+            roofing_primer, "roofing_primer", "Roofing Primer System", "product_selection"
+        ),
+        "roofing_caulk_sealant_decision_history": _decision_base_output(
+            roofing_caulk_sealant, "roofing_caulk_sealant", "Roofing Caulk / Sealant System", "product_selection"
+        ),
+        "roofing_fabric_decision_history": _decision_base_output(
+            roofing_fabric, "roofing_fabric", "Roofing Fabric / Reinforcement", "product_selection"
+        ),
+        "roofing_board_stock_decision_history": _decision_base_output(
+            roofing_board_stock, "roofing_board_stock", "Roofing Board Stock", "product_selection"
+        ),
+        "roofing_fasteners_decision_history": _decision_base_output(
+            roofing_fasteners, "roofing_fasteners", "Roofing Board Fasteners", "product_selection"
+        ),
+        "roofing_plates_decision_history": _decision_base_output(
+            roofing_plates, "roofing_plates", "Roofing Plates", "product_selection"
+        ),
+        "roofing_granules_decision_history": _decision_base_output(
+            roofing_granules, "roofing_granules", "Roofing Granules", "product_selection"
         ),
         "roofing_scope_decision_history": _decision_base_output(
             roofing_scope, "roofing_scope", "Roofing Scope Decisions", "scope_decision"
@@ -558,11 +600,22 @@ def _recommendation_for_field(
     }
 
 
-def build_decision_recommendations(data: EstimatorData | Any, filters: dict[str, Any] | None = None, min_count: int = 3) -> pd.DataFrame:
+def build_decision_recommendations(
+    data: EstimatorData | Any,
+    filters: dict[str, Any] | None = None,
+    min_count: int = 3,
+    *,
+    force_rebuild: bool = False,
+    include_product_matches: bool = True,
+) -> pd.DataFrame:
     requested_min_count = _safe_number((filters or {}).get("min_evidence_count"))
     if requested_min_count is not None and requested_min_count > 0:
         min_count = int(requested_min_count)
-    tables = build_historical_decision_tables(data)
+    tables = build_historical_decision_tables(
+        data,
+        force_rebuild=force_rebuild,
+        include_product_matches=include_product_matches,
+    )
     if not any(not frame.empty for frame in tables.values()):
         existing_recommendations = getattr(data, "estimator_decision_recommendations", pd.DataFrame())
         if isinstance(existing_recommendations, pd.DataFrame) and not existing_recommendations.empty:
@@ -570,7 +623,14 @@ def build_decision_recommendations(data: EstimatorData | Any, filters: dict[str,
     specs = [
         ("insulation_foam_decision_history", "insulation_foam_system", ["resolved_item_name", "thickness_inches", "yield_or_coverage", "foam_density_lb"]),
         ("insulation_thermal_barrier_decision_history", "insulation_thermal_barrier", ["resolved_item_name", "gal_per_100_sqft", "gal_per_sqft"]),
-        ("roofing_coating_decision_history", "roofing_coating_system", ["resolved_item_name", "warranty_years", "wet_mils_estimate", "gal_per_100_sqft", "gal_per_sqft", "waste_factor_pct"]),
+        ("roofing_coating_decision_history", "roofing_coating_system", ["selector_code", "resolved_item_name", "warranty_years", "wet_mils_estimate", "gal_per_100_sqft", "gal_per_sqft", "waste_factor_pct"]),
+        ("roofing_primer_decision_history", "roofing_primer", ["selector_code", "resolved_item_name", "area_basis_sqft", "estimated_units", "unit_price"]),
+        ("roofing_caulk_sealant_decision_history", "roofing_caulk_sealant", ["selector_code", "resolved_item_name", "estimated_units", "unit_price"]),
+        ("roofing_fabric_decision_history", "roofing_fabric", ["resolved_item_name", "estimated_units", "unit_price", "area_basis_sqft"]),
+        ("roofing_board_stock_decision_history", "roofing_board_stock", ["selector_code", "resolved_item_name", "area_basis_sqft", "thickness_inches", "unit_price", "estimated_cost"]),
+        ("roofing_fasteners_decision_history", "roofing_fasteners", ["resolved_item_name", "estimated_units", "unit_price", "estimated_cost"]),
+        ("roofing_plates_decision_history", "roofing_plates", ["resolved_item_name", "estimated_units", "unit_price", "estimated_cost"]),
+        ("roofing_granules_decision_history", "roofing_granules", ["selector_code", "resolved_item_name", "area_basis_sqft", "estimated_units", "unit_price", "estimated_cost"]),
         ("roofing_scope_decision_history", "roofing_scope", ["warranty_years", "area_basis_sqft", "coating_type"]),
     ]
     rows: list[dict[str, Any]] = []
@@ -606,7 +666,17 @@ def build_decision_recommendations(data: EstimatorData | Any, filters: dict[str,
             if not package:
                 continue
             decision_id = f"equipment_{package}"
-            for field in ["equipment_choice", "selector_code", "unit_price"]:
+            for field in [
+                "equipment_choice",
+                "selector_code",
+                "area_basis_sqft",
+                "thickness_inches",
+                "margin_pct",
+                "estimated_units",
+                "unit_price",
+                "days",
+                "estimated_cost",
+            ]:
                 rec = _recommendation_for_field(package_rows, decision_id=decision_id, field=field, filters=filters, min_count=min_count)
                 rec["history_table"] = "equipment_decision_history"
                 rec["template_bucket"] = package
@@ -705,8 +775,17 @@ def main(argv: list[str] | None = None) -> int:
     else:
         data = EstimatorData()
         engine = None
-    tables = build_historical_decision_tables(data)
-    recommendations = build_decision_recommendations(data, min_count=args.min_count)
+    tables = build_historical_decision_tables(
+        data,
+        force_rebuild=args.write_db,
+        include_product_matches=not args.write_db,
+    )
+    recommendations = build_decision_recommendations(
+        data,
+        min_count=args.min_count,
+        force_rebuild=args.write_db,
+        include_product_matches=not args.write_db,
+    )
     xlsx_path = write_decision_history_outputs(tables, recommendations, args.out_dir)
     if args.write_db:
         if engine is None:

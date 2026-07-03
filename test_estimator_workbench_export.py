@@ -109,7 +109,18 @@ def test_export_package_creates_zip_with_expected_files_and_workbook(tmp_path) -
         summary = json.loads(archive.read("workbench_summary.json"))
         assert summary["input_notes"] == "Roof coating notes"
         assert summary["parsed_scope"]["project_type"] == "roof coating"
-        assert summary["decision_trace"][0]["section"] == "Material"
+        assert summary["decision_trace"][0]["section"] == "Roof Coating System"
+        assert "roofing_foam_template_decisions" in summary
+        assert summary["roofing_coating_template_decisions"]
+        assert "roofing_primer_template_decisions" in summary
+        assert "roofing_detail_template_decisions" in summary
+        assert "roofing_detail_quantity_template_decisions" in summary
+        assert "roofing_board_fastener_template_decisions" in summary
+        assert "roofing_granules_template_decisions" in summary
+        assert "roofing_equipment_template_decisions" in summary
+        assert "roofing_travel_freight_template_decisions" in summary
+        assert "roofing_accessory_template_decisions" in summary
+        assert "roofing_labor_template_decisions" in summary
         readme = archive.read("README.txt").decode("utf-8")
         assert "Decision Trace" in readme
         assert "Product Guidance" in readme
@@ -118,6 +129,17 @@ def test_export_package_creates_zip_with_expected_files_and_workbook(tmp_path) -
     summary_workbook = load_workbook(tmp_path / "workbench_summary.xlsx", read_only=True, data_only=True)
     assert {
         "Materials Compact",
+        "Roofing SPF Foam",
+        "Roof Coating System",
+        "Roofing Primer System",
+        "Roofing Fabric Sealant",
+        "Roof Detail Quantities",
+        "Roof Board Fasteners",
+        "Roofing Granules",
+        "Roof Equipment",
+        "Roof Travel Freight",
+        "Roof Accessories",
+        "Roofing Labor Plan",
         "Labor Compact",
         "Adders Compact",
         "Decision Trace",
@@ -277,8 +299,9 @@ def test_workbench_output_generates_estimate_workbook_and_review_package_include
     workbook = load_workbook(workbook_path, data_only=False)
     ws = workbook["Estimate"]
 
-    assert ws["A26"].value == "GAF High Solids Silicone 55 Gal"
+    assert ws["A26"].value == 11
     assert ws["C26"].value == 10000
+    assert ws["D26"].value == 1
     assert ws["E26"].value == 38
     assert ws["C39"].value == 10
     assert ws["E39"].value == 275
@@ -356,8 +379,9 @@ def test_review_package_includes_product_guidance_sheet(tmp_path) -> None:
 
     with zipfile.ZipFile(zip_path) as archive:
         summary = json.loads(archive.read("workbench_summary.json"))
-        assert summary["product_guidance"][0]["product_id"] == "gaf_high_solids_silicone"
-        assert "wet substrate" in summary["product_guidance"][0]["warnings"]
+        guidance = summary["product_guidance"]
+        assert any(row["product_id"] == "gaf_high_solids_silicone" for row in guidance)
+        assert any("wet substrate" in str(row.get("warnings") or "") for row in guidance)
         archive.extract("workbench_summary.xlsx", path=tmp_path)
 
     workbook = load_workbook(tmp_path / "workbench_summary.xlsx", read_only=True, data_only=True)
