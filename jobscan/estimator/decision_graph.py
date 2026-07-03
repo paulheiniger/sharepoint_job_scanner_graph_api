@@ -439,6 +439,92 @@ def _group_rows(intelligence: dict[str, Any]) -> dict[str, list[dict[str, Any]]]
     return groups
 
 
+def _insulation_surface_decision_nodes(template_type: str) -> list[dict[str, Any]]:
+    if template_type != "insulation":
+        return []
+    return [
+        {
+            "decision_id": "insulation_surface_areas",
+            "template_type": "insulation",
+            "category": "scope_geometry",
+            "label": "Insulation Surface Areas",
+            "description": "Surface-specific gross, deduction, and net insulation areas that feed foam quantity rows.",
+            "rows_controlled": [],
+            "input_fields": [
+                "surface_type",
+                "gross_area_sqft",
+                "deduction_area_sqft",
+                "net_area_sqft",
+                "area_formula",
+                "source_text",
+            ],
+            "computed_fields": ["net_area_sqft"],
+            "dependencies": ["field_notes", "Sq Ft Calculation"],
+            "selector_options": [],
+        },
+        {
+            "decision_id": "insulation_deductions",
+            "template_type": "insulation",
+            "category": "scope_geometry",
+            "label": "Insulation Deductions",
+            "description": "Opening deductions by type, quantity, width, height, and source evidence.",
+            "rows_controlled": [],
+            "input_fields": ["opening_type", "quantity", "width_ft", "height_ft"],
+            "computed_fields": ["area_each_sqft", "total_area_sqft"],
+            "dependencies": ["field_notes"],
+            "selector_options": [],
+        },
+        {
+            "decision_id": "insulation_r_value_targets",
+            "template_type": "insulation",
+            "category": "scope_requirement",
+            "label": "Insulation R-Value Targets",
+            "description": "Surface-specific target R-values parsed from notes or edited by the estimator.",
+            "rows_controlled": [],
+            "input_fields": ["surface_type", "target_r_value", "source_text"],
+            "computed_fields": [],
+            "dependencies": ["field_notes"],
+            "selector_options": [],
+        },
+        {
+            "decision_id": "insulation_foam_type",
+            "template_type": "insulation",
+            "category": "product_selection",
+            "label": "Insulation Foam Type",
+            "description": "Open-cell vs closed-cell foam selection used for product and R/in defaults.",
+            "rows_controlled": [19, 20, 21],
+            "input_fields": ["foam_type"],
+            "computed_fields": [],
+            "dependencies": ["insulation_surface_areas", "insulation_r_value_targets"],
+            "selector_options": [],
+        },
+        {
+            "decision_id": "insulation_product_selection",
+            "template_type": "insulation",
+            "category": "product_selection",
+            "label": "Insulation Product Selection",
+            "description": "Selected foam product, manufacturer, density, yield, and product-sheet R-value per inch.",
+            "rows_controlled": [19, 20, 21],
+            "input_fields": ["product_id", "product_name", "manufacturer", "r_value_per_inch", "density", "approved_use"],
+            "computed_fields": ["yield_or_coverage"],
+            "dependencies": ["insulation_foam_system", "product_knowledge"],
+            "selector_options": [],
+        },
+        {
+            "decision_id": "insulation_thickness_calculation",
+            "template_type": "insulation",
+            "category": "formula_model",
+            "label": "Insulation Thickness Calculation",
+            "description": "Required thickness by surface: target R-value divided by selected product R-value per inch.",
+            "rows_controlled": [19, 20, 21],
+            "input_fields": ["surface_type", "target_r_value", "product_r_value_per_inch"],
+            "computed_fields": ["required_thickness_inches", "rounded_thickness_inches"],
+            "dependencies": ["insulation_surface_areas", "insulation_r_value_targets", "insulation_product_selection"],
+            "selector_options": [],
+        },
+    ]
+
+
 def build_decision_graph(intelligence: dict[str, Any]) -> dict[str, Any]:
     """Build a normalized estimator decision graph from template intelligence JSON."""
     template_type = _safe_text(intelligence.get("template_type"))
@@ -447,6 +533,7 @@ def build_decision_graph(intelligence: dict[str, Any]) -> dict[str, Any]:
     area_node = _area_node(intelligence)
     if area_node:
         nodes.insert(0, area_node)
+    nodes.extend(_insulation_surface_decision_nodes(template_type))
     selector_options = [option for node in nodes for option in node.get("selector_options", [])]
     crew_options = _crew_rate_options(intelligence)
     selector_options.extend(
@@ -532,7 +619,7 @@ def _row_traceability_rows(intelligence: dict[str, Any], nodes: list[dict[str, A
     node_for_row: dict[int, str] = {}
     for node in nodes:
         for row_number in node.get("rows_controlled", []):
-            node_for_row[int(row_number)] = node["decision_id"]
+            node_for_row.setdefault(int(row_number), node["decision_id"])
     rows: list[dict[str, Any]] = []
     for row_number, source in sorted(by_row_number.items()):
         rows.append(

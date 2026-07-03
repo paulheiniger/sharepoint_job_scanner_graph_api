@@ -23,6 +23,13 @@ from .formula_mirror import (
     decision_dict,
     positive_number,
 )
+from .insulation_surfaces import (
+    apply_thickness_decisions,
+    aggregate_surface_foam_outputs,
+    build_insulation_surface_decisions,
+    build_insulation_deductions,
+    parse_r_value_targets,
+)
 from .materials import find_current_price
 from .rules import first_nonblank, to_float
 from jobscan.products.product_matching import product_context_for_decision
@@ -917,6 +924,65 @@ def _estimate_area(scope: dict[str, Any]) -> float:
             scope.get("C12_estimated_sqft"),
         ),
         0.0,
+    )
+
+
+def _foam_product_context_from_row(row: dict[str, Any] | None) -> dict[str, Any]:
+    row = row or {}
+    return {
+        "product_name": row.get("item_name") or row.get("foam_product") or row.get("current_item") or "",
+        "manufacturer": row.get("product_manufacturer") or "",
+        "r_value_per_inch": first_nonblank(
+            row.get("product_aged_r_value_per_inch"),
+            row.get("product_r_value_per_inch"),
+            row.get("product_initial_r_value_per_inch"),
+        ),
+        "r_value_per_inch_source": first_nonblank(
+            row.get("product_aged_r_value_per_inch_source"),
+            row.get("product_r_value_per_inch_source"),
+            row.get("product_initial_r_value_per_inch_source"),
+        ),
+        "aged_r_value_per_inch": row.get("product_aged_r_value_per_inch"),
+        "aged_r_value_per_inch_source": row.get("product_aged_r_value_per_inch_source"),
+        "initial_r_value_per_inch": row.get("product_initial_r_value_per_inch"),
+        "initial_r_value_per_inch_source": row.get("product_initial_r_value_per_inch_source"),
+    }
+
+
+def _foam_material_row(materials: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+    for row in materials or []:
+        if str(row.get("package_key") or row.get("template_bucket") or "").lower() == "foam":
+            return row
+    return None
+
+
+def _build_insulation_surface_rows_for_workbench(
+    scope: dict[str, Any],
+    *,
+    notes: str = "",
+    foam_row: dict[str, Any] | None = None,
+    existing_rows: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    if not _is_insulation_scope(scope):
+        return []
+    product_context = _foam_product_context_from_row(foam_row)
+    default_thickness = first_nonblank(
+        (foam_row or {}).get("thickness_inches"),
+        (foam_row or {}).get("foam_thickness_inches"),
+        scope.get("foam_thickness_inches"),
+    )
+    if existing_rows:
+        return apply_thickness_decisions(
+            _records(existing_rows),
+            product_context=product_context,
+            foam_type=scope.get("foam_type"),
+            default_thickness_inches=default_thickness,
+        )
+    return build_insulation_surface_decisions(
+        scope,
+        notes=notes,
+        product_context=product_context,
+        default_thickness_inches=default_thickness,
     )
 
 
@@ -2766,6 +2832,12 @@ def material_workbench_rows(
                 "product_linked_decision_nodes": product_context.get("linked_decision_nodes") or [],
                 "product_context_confidence": product_context.get("confidence") or "",
                 "product_match_score": product_context.get("match_score") or 0.0,
+                "product_r_value_per_inch": product_context.get("r_value_per_inch") or 0.0,
+                "product_r_value_per_inch_source": product_context.get("r_value_per_inch_source") or "",
+                "product_aged_r_value_per_inch": product_context.get("aged_r_value_per_inch") or 0.0,
+                "product_aged_r_value_per_inch_source": product_context.get("aged_r_value_per_inch_source") or "",
+                "product_initial_r_value_per_inch": product_context.get("initial_r_value_per_inch") or 0.0,
+                "product_initial_r_value_per_inch_source": product_context.get("initial_r_value_per_inch_source") or "",
                 "current_item": item_name,
                 "historical_item": item_name if item_source.startswith("historical") else first_nonblank(selected_item.get("historical_item"), ""),
                 "selected_item_reason": selected_item.get("selected_item_reason") or "",
@@ -3076,12 +3148,21 @@ def build_estimating_workbench(
         placeholder_warning = "Insulation workbench: verify foam type, thickness/R-value, opening deductions, and thermal barrier requirements before quoting."
         if placeholder_warning not in review_flags:
             review_flags.append(placeholder_warning)
-    return {
+    materials = material_workbench_rows(recommendation, data, scope, filters)
+    surface_rows = _build_insulation_surface_rows_for_workbench(
+        scope,
+        notes=_scope_note_text(recommendation, scope),
+        foam_row=_foam_material_row(materials),
+    )
+    workbench = {
         "estimate_id": estimate_id,
         "scope": scope,
         "historical_filters": filters,
         "historical_filter_hash": historical_filter_hash(filters),
-        "materials": material_workbench_rows(recommendation, data, scope, filters),
+        "insulation_surfaces": surface_rows,
+        "insulation_deductions": build_insulation_deductions(scope) if _is_insulation_scope(scope) else [],
+        "insulation_r_value_targets": parse_r_value_targets(_scope_note_text(recommendation, scope)) if _is_insulation_scope(scope) else [],
+        "materials": materials,
         "labor": labor_workbench_rows(recommendation, data, scope, historical_filters=filters),
         "adders": adder_workbench_rows(recommendation, data, scope, filters),
         "similar_jobs": _records(_rec_value(recommendation, "similar_examples", [])),
@@ -3094,6 +3175,7 @@ def build_estimating_workbench(
             }
         ],
     }
+    return recalculate_workbench_tables(workbench)
 
 
 def _records_from_editor(value: Any) -> list[dict[str, Any]]:
@@ -3106,6 +3188,16 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
     updated = deepcopy(workbench)
     scope = updated.setdefault("scope", {})
     area = _estimate_area(scope)
+    if _is_insulation_scope(scope):
+        updated["insulation_surfaces"] = _build_insulation_surface_rows_for_workbench(
+            scope,
+            notes=str(first_nonblank(scope.get("notes"), scope.get("raw_input_notes"), "")),
+            foam_row=_foam_material_row(updated.get("materials")),
+            existing_rows=updated.get("insulation_surfaces") or None,
+        )
+        updated["insulation_deductions"] = build_insulation_deductions(scope)
+        if not updated.get("insulation_r_value_targets"):
+            updated["insulation_r_value_targets"] = parse_r_value_targets(str(first_nonblank(scope.get("notes"), scope.get("raw_input_notes"), "")))
     for row in updated.get("materials") or []:
         if row.get("reset_to_historical_default"):
             row["editable_qty_per_sqft"] = row.get("historical_qty_per_sqft", 0.0)
@@ -3166,6 +3258,54 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
                 cost_per_sqft=historical_cost_per_sqft,
                 include=include,
             )
+            surface_rows = _records(updated.get("insulation_surfaces"))
+            has_surface_decisions = any(
+                str(surface.get("surface_type") or "").lower() != "general" or safe_number(surface.get("target_r_value"), 0.0) > 0
+                for surface in surface_rows
+            )
+            if has_surface_decisions:
+                surface_aggregate = aggregate_surface_foam_outputs(
+                    surface_rows,
+                    yield_or_coverage=yield_factor,
+                    unit_price=unit_price,
+                    units_per_sqft_per_inch=row.get("median_units_per_sqft_per_inch"),
+                    cost_per_sqft=historical_cost_per_sqft,
+                    include=include,
+                )
+                if safe_number(surface_aggregate.get("area_sqft"), 0.0) > 0:
+                    formula_result = {
+                        **formula_result,
+                        **surface_aggregate,
+                        "thickness_inches": surface_aggregate.get("weighted_thickness_inches"),
+                        "yield_or_coverage": yield_factor,
+                        "formula_source": "insulation_surface_decisions",
+                    }
+                    basis_sqft = safe_number(surface_aggregate.get("area_sqft"), basis_sqft)
+                    row["editable_basis_sqft"] = round(basis_sqft, 2)
+                    row["default_basis_sqft"] = round(basis_sqft, 2)
+                    row["surface_formula_outputs"] = surface_aggregate.get("surface_outputs") or []
+                    row["surface_weighted_thickness_inches"] = surface_aggregate.get("weighted_thickness_inches")
+            if include and safe_number(formula_result.get("estimated_units"), 0.0) <= 0 and qty_per_sqft > 0 and basis_sqft > 0:
+                fallback_units = qty_per_sqft * basis_sqft
+                if unit_price > 0:
+                    fallback_cost = fallback_units * unit_price
+                    fallback_cost_source = "current_pricing"
+                elif historical_cost_per_sqft > 0:
+                    fallback_cost = historical_cost_per_sqft * basis_sqft
+                    fallback_cost_source = "historical_cost_default"
+                else:
+                    fallback_cost = 0.0
+                    fallback_cost_source = "current_pricing_missing"
+                formula_result = {
+                    **formula_result,
+                    "formula_model": "historical_qty_per_sqft_fallback",
+                    "formula_source": "historical_qty_per_sqft",
+                    "area_sqft": round(basis_sqft, 4),
+                    "estimated_units": round(fallback_units, 6),
+                    "estimated_sets": round(fallback_units / 1000.0, 6),
+                    "estimated_cost": round(fallback_cost, 2),
+                    "cost_source": fallback_cost_source,
+                }
             row["quantity_model"] = formula_result["formula_model"]
             row["formula_model"] = formula_result["formula_model"]
             row["formula_source"] = formula_result["formula_source"]
@@ -3177,7 +3317,7 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
             row["calculated_quantity"] = row["estimated_units"]
             row["estimated_cost"] = formula_result["estimated_cost"]
             row["price_source"] = formula_result["cost_source"]
-            row["unit"] = row.get("unit") or "estimated_units"
+            row["unit"] = "estimated_units"
         elif package_key in {"coating", "thermal_barrier_coating"}:
             gal_per_100 = positive_number(
                 qty_per_sqft * 100 if qty_per_sqft else None,
@@ -3449,6 +3589,18 @@ def apply_historical_filter_update(previous_workbench: dict[str, Any] | None, fi
             row["editable_value"] = previous.get("editable_value", row.get("editable_value"))
             row["manual_override"] = True
 
+    previous_surfaces = {row.get("surface_type"): row for row in previous_workbench.get("insulation_surfaces") or []}
+    for row in updated.get("insulation_surfaces") or []:
+        previous = previous_surfaces.get(row.get("surface_type"))
+        if not previous:
+            continue
+        row["include"] = previous.get("include", row.get("include"))
+        for field in ("target_r_value", "edited_thickness_inches", "net_area_sqft", "deduction_area_sqft"):
+            if previous.get(field) not in (None, ""):
+                row[field] = previous.get(field)
+        if previous.get("edited_thickness_inches") != previous.get("rounded_thickness_inches"):
+            row["manual_override"] = True
+
     return recalculate_workbench_tables(updated)
 
 
@@ -3546,6 +3698,8 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any]) -> dict[str, A
                 "formula_model": row.get("formula_model"),
                 "formula_source": row.get("formula_source"),
                 "calculated_output_summary": row.get("calculated_output_summary"),
+                "surface_formula_outputs": row.get("surface_formula_outputs") or [],
+                "surface_weighted_thickness_inches": safe_number(row.get("surface_weighted_thickness_inches"), 0.0),
                 "workbook_cell_write_preview": row.get("workbook_cell_write_preview") or [],
                 "notes": (
                     f"Workbench edited value; item_source={row.get('item_source')}; "

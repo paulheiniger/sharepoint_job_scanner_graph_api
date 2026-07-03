@@ -45,6 +45,20 @@ def test_decision_graph_collapses_repeated_material_rows() -> None:
     assert {"coating_product_selector", "gal_per_100_sqft", "unit_price"}.issubset(set(thermal_barrier["input_fields"]))
     assert {"estimated_gallons", "estimated_cost"}.issubset(set(thermal_barrier["computed_fields"]))
 
+    surface_areas = _node(insulation, "insulation_surface_areas")
+    assert surface_areas["category"] == "scope_geometry"
+    assert {"surface_type", "gross_area_sqft", "deduction_area_sqft", "net_area_sqft"}.issubset(
+        set(surface_areas["input_fields"])
+    )
+
+    r_targets = _node(insulation, "insulation_r_value_targets")
+    assert r_targets["category"] == "scope_requirement"
+    assert {"surface_type", "target_r_value", "source_text"}.issubset(set(r_targets["input_fields"]))
+
+    thickness = _node(insulation, "insulation_thickness_calculation")
+    assert thickness["category"] == "formula_model"
+    assert {"required_thickness_inches", "rounded_thickness_inches"}.issubset(set(thickness["computed_fields"]))
+
     coating = _node(roofing, "roofing_coating_system")
     assert coating["rows_controlled"] == [26, 27, 28]
     assert coating["category"] == "product_selection"

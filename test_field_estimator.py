@@ -1191,6 +1191,25 @@ def test_insulation_explicit_opening_dimensions_compute_net_area() -> None:
     assert parsed["estimated_sqft"] == 2208
 
 
+def test_insulation_notes_parse_surface_r_value_targets() -> None:
+    notes = (
+        "Need closed-cell foam in a 30x40 metal building with 9' walls. "
+        "Insulate the outside walls and ceiling. Walls target R14 and ceiling target R30. "
+        "No deductions."
+    )
+    recommendation = estimate_from_field_notes(notes, data=EstimatorData())
+    parsed = recommendation.parsed_fields
+
+    targets = {row["surface_type"]: row["target_r_value"] for row in parsed["insulation_r_value_targets"]}
+    assert targets["walls"] == 14
+    assert targets["ceiling"] == 30
+    surfaces = {row["surface_type"]: row for row in parsed["insulation_surface_areas"]}
+    assert surfaces["walls"]["gross_area_sqft"] == 1260
+    assert surfaces["ceiling"]["gross_area_sqft"] == 1200
+    assert parsed["foam_type"] == "closed_cell"
+    assert not any("thickness or R-value" in question for question in recommendation.required_questions)
+
+
 def test_line_item_classification_fallback_remains_available() -> None:
     recommendation = estimate_from_field_notes(
         "Metal roof 12000 sqft silicone coating Louisville KY",

@@ -144,6 +144,40 @@ def sample_workbook_inputs() -> dict:
     }
 
 
+def test_session_decision_helpers_include_insulation_surface_decisions() -> None:
+    workbench = {
+        "scope": {"division": "Insulation", "template_type": "insulation", "foam_type": "closed_cell"},
+        "insulation_surfaces": [
+            {
+                "include": True,
+                "section": "insulation_surfaces",
+                "decision_id": "insulation_surface_walls",
+                "template_bucket": "insulation_surface_areas",
+                "surface": "Walls",
+                "surface_type": "walls",
+                "net_area_sqft": 1188,
+                "target_r_value": 14,
+                "product_r_value_per_inch": 5.7,
+                "required_thickness_inches": 2.4561,
+                "edited_thickness_inches": 2.5,
+                "notes": "R14 target using 5.7 R/in gives 2.4561 in; rounded to 2.5 in.",
+            }
+        ],
+        "materials": [],
+        "labor": [],
+        "adders": [],
+    }
+
+    proposed = proposed_decisions_from_workbench(workbench)
+    final = final_decisions_from_workbench(workbench)
+
+    assert any(row["section"] == "insulation_surfaces" for row in proposed["decisions"])
+    surface = next(row for row in final["decisions"] if row["section"] == "insulation_surfaces")
+    assert surface["decision_id"] == "insulation_surface_walls"
+    assert surface["item_or_task"] == "Walls"
+    assert surface["final_decision_value"]["edited_thickness_inches"] == 2.5
+
+
 def test_estimator_session_lifecycle_and_exports(tmp_path) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     ensure_estimator_session_tables(engine)

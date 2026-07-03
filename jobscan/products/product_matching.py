@@ -74,6 +74,61 @@ def _category_matches(product_category: Any, requested_category: str | None, dec
     return product in accepted
 
 
+def _numeric_value(row: dict[str, Any]) -> float | None:
+    for key in ("numeric_value", "value_numeric", "property_value"):
+        value = row.get(key)
+        if value is None:
+            continue
+        try:
+            text = str(value).replace(",", "").strip()
+            if not text:
+                continue
+            return float(text.split()[0])
+        except Exception:
+            continue
+    return None
+
+
+def _r_value_context(properties: list[dict[str, Any]]) -> dict[str, Any]:
+    r_rows = [
+        row
+        for row in properties
+        if str(row.get("property_name") or "").lower() in {"r_value", "r-value", "r value"}
+        or "r/in" in str(row.get("unit") or "").lower()
+    ]
+    if not r_rows:
+        return {}
+    aged: dict[str, Any] | None = None
+    initial: dict[str, Any] | None = None
+    fallback: dict[str, Any] | None = None
+    for row in r_rows:
+        value = _numeric_value(row)
+        if value is None or value <= 0:
+            continue
+        text = " ".join(str(row.get(key) or "") for key in ("property_value", "source_text", "notes")).lower()
+        normalized = {**row, "numeric_value": value}
+        if "aged" in text:
+            aged = normalized
+        elif "initial" in text:
+            initial = normalized
+        elif fallback is None:
+            fallback = normalized
+    chosen = aged or fallback or initial
+    if not chosen:
+        return {}
+    out: dict[str, Any] = {
+        "r_value_per_inch": chosen["numeric_value"],
+        "r_value_per_inch_source": chosen.get("source_text") or chosen.get("property_value") or "product property",
+    }
+    if aged:
+        out["aged_r_value_per_inch"] = aged["numeric_value"]
+        out["aged_r_value_per_inch_source"] = aged.get("source_text") or aged.get("property_value") or "aged product property"
+    if initial:
+        out["initial_r_value_per_inch"] = initial["numeric_value"]
+        out["initial_r_value_per_inch_source"] = initial.get("source_text") or initial.get("property_value") or "initial product property"
+    return out
+
+
 def match_product(
     product_name: str,
     product_catalog: Any,
@@ -151,6 +206,7 @@ def product_context_for_decision(
         for row in properties
         if str(row.get("property_name") or "") in {"coverage_sqft_per_gallon", "coverage_gal_per_100_sqft", "wet_mils"}
     ]
+    r_value_context = _r_value_context(properties)
     source_evidence = []
     for row in [*rules[:8], *properties[:8]]:
         text = row.get("source_text")
@@ -177,6 +233,7 @@ def product_context_for_decision(
             f"{row.get('property_name')}: {row.get('property_value')} {row.get('unit') or ''}".strip()
             for row in coverage[:5]
         ),
+        **r_value_context,
         "important_limitations": "; ".join(str(row.get("rule_value") or "") for row in limitations[:5]),
         "warnings": [row.get("rule_value") for row in limitations[:5] if row.get("rule_value")],
         "source_documents": [row.get("source_path") for row in documents[:5] if row.get("source_path")],

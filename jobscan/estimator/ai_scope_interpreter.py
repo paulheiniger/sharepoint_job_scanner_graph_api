@@ -28,6 +28,14 @@ AI_SCOPE_FIELDS = (
     "opening_area_known_sqft",
     "opening_area_missing",
     "net_insulation_area_sqft",
+    "insulation_surface_areas",
+    "insulation_deductions",
+    "insulation_r_value_targets",
+    "insulation_foam_type",
+    "insulation_product_selection",
+    "insulation_thickness_calculation",
+    "foam_type",
+    "foam_thickness_inches",
     "customer_name",
     "phone",
     "address",
@@ -108,6 +116,14 @@ def _empty_scope() -> dict[str, Any]:
         "opening_area_known_sqft": None,
         "opening_area_missing": False,
         "net_insulation_area_sqft": None,
+        "insulation_surface_areas": [],
+        "insulation_deductions": [],
+        "insulation_r_value_targets": [],
+        "insulation_foam_type": "",
+        "insulation_product_selection": {},
+        "insulation_thickness_calculation": [],
+        "foam_type": "",
+        "foam_thickness_inches": None,
         "customer_name": "",
         "phone": "",
         "address": "",
@@ -569,6 +585,10 @@ def _prompt(notes: str, deterministic_scope: dict[str, Any] | None = None) -> li
                 "For insulation notes also return building_length_ft, building_width_ft, wall_height_ft, "
                 "ceiling_included, outside_walls_included, and openings. Each opening must include "
                 "opening_type, quantity, width_ft, height_ft, source_text, assumption_used, and missing_dimensions. "
+                "Also return insulation_surface_areas, insulation_deductions, insulation_r_value_targets, "
+                "insulation_foam_type, insulation_product_selection, and insulation_thickness_calculation when present. "
+                "For R-values, extract phrases like R30, R-30, roof target R30, walls R14 and associate them with the closest surface. "
+                "Do not calculate final costs or prices. Do not invent R-values, product R/in, or missing dimensions. "
                 "Handle examples like 30x40 metal building with 9' walls, two 9ftX10ft rollup doors, "
                 "two 7ftX36\" walk-in doors, five 24\"x36\" windows, two 36 inch walk-in doors, and roll-up doors 9x10 each. "
                 "Do not invent roll-up door dimensions. A 36 inch walk-in door may assume 3 ft x 7 ft using the company default. "

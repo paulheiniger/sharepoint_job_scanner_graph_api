@@ -3,6 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 from jobscan.estimator.insulation_diagnostics import build_insulation_history_diagnostics, write_insulation_history_diagnostics
+from jobscan.estimator.insulation_surfaces import build_insulation_surface_decisions, parse_r_value_targets
 from jobscan.estimator.schemas import EstimateRecommendation, EstimatorData
 from jobscan.estimator.workbench import (
     apply_historical_filter_update,
@@ -846,6 +847,100 @@ def test_recalculate_workbench_uses_formula_mirror_for_edited_foam_and_labor() -
     assert draft["material_rows"][0]["workbook_cell_write_preview"]
     assert draft["labor_rows"][0]["formula_model"] == "labor_cost_from_days_crew_rate"
     assert draft["labor_rows"][0]["workbook_cell_write_preview"]
+
+
+def test_insulation_r_value_targets_drive_surface_thickness_and_foam_aggregate() -> None:
+    targets = parse_r_value_targets("Set roof/ceiling target R30 and walls R14 with closed-cell foam.")
+    assert {row["surface_type"]: row["target_r_value"] for row in targets}["ceiling"] == 30
+    assert {row["surface_type"]: row["target_r_value"] for row in targets}["walls"] == 14
+
+    workbench = {
+        "scope": {
+            "division": "Insulation",
+            "template_type": "insulation",
+            "foam_type": "closed_cell",
+            "notes": "Set ceiling target R30 and walls R14 with closed-cell foam.",
+        },
+        "insulation_surfaces": [
+            {
+                "include": True,
+                "surface_type": "walls",
+                "surface": "Walls",
+                "gross_area_sqft": 1260,
+                "deduction_area_sqft": 72,
+                "net_area_sqft": 1188,
+                "target_r_value": 14,
+                "foam_type": "closed_cell",
+            },
+            {
+                "include": True,
+                "surface_type": "ceiling",
+                "surface": "Ceiling",
+                "gross_area_sqft": 1200,
+                "deduction_area_sqft": 0,
+                "net_area_sqft": 1200,
+                "target_r_value": 30,
+                "foam_type": "closed_cell",
+            },
+        ],
+        "materials": [
+            {
+                "include": True,
+                "decision_id": "insulation_foam_system",
+                "package_key": "foam",
+                "template_bucket": "foam",
+                "package": "Foam",
+                "workbook_row": "19-21",
+                "item_name": "GacoRoofFoam Low GWP F2780",
+                "editable_basis_sqft": 2388,
+                "default_basis_sqft": 2388,
+                "historical_qty_per_sqft": 0,
+                "editable_qty_per_sqft": 0,
+                "thickness_inches": 2,
+                "yield_factor": 500000,
+                "current_unit_price": 100,
+                "product_aged_r_value_per_inch": 5.7,
+                "product_aged_r_value_per_inch_source": "Aged R-value 5.7 per inch.",
+            }
+        ],
+        "labor": [],
+        "adders": [],
+    }
+
+    recalculated = recalculate_workbench_tables(workbench)
+    surfaces = {row["surface_type"]: row for row in recalculated["insulation_surfaces"]}
+    assert surfaces["walls"]["edited_thickness_inches"] == 2.5
+    assert surfaces["ceiling"]["edited_thickness_inches"] == 5.5
+    assert surfaces["walls"]["r_value_source"] == "product_knowledge"
+
+    foam = recalculated["materials"][0]
+    assert foam["formula_model"] == "surface_weighted_foam_sets_from_r_value_thickness"
+    assert foam["editable_basis_sqft"] == 2388
+    assert foam["surface_weighted_thickness_inches"] > 4
+    assert foam["estimated_units"] == 19.14
+    assert foam["estimated_sets"] == 0.01914
+    assert foam["estimated_cost"] == 1914
+    assert len(foam["surface_formula_outputs"]) == 2
+
+
+def test_insulation_surface_builder_uses_default_r_per_inch_when_product_missing() -> None:
+    rows = build_insulation_surface_decisions(
+        {
+            "division": "Insulation",
+            "template_type": "insulation",
+            "foam_type": "closed_cell",
+            "gross_wall_area_sqft": 1260,
+            "ceiling_area_sqft": 1200,
+            "opening_area_known_sqft": 72,
+            "openings": [{"opening_type": "window", "quantity": 5, "known_area_sqft": 30}],
+            "notes": "Walls R14 and ceiling R30.",
+        },
+        notes="Walls R14 and ceiling R30.",
+    )
+    by_surface = {row["surface_type"]: row for row in rows}
+    assert by_surface["walls"]["product_r_value_per_inch"] == 5.7
+    assert by_surface["walls"]["r_value_source"] == "estimator_default_by_foam_type"
+    assert by_surface["ceiling"]["rounded_thickness_inches"] == 5.5
 
 
 def test_insulation_history_diagnostics_workbook_explains_clean_qty_gap(tmp_path) -> None:

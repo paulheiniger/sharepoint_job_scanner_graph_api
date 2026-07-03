@@ -8,3 +8,4 @@ __pycache__/
 output/
 data/
 context_export/
+product_documents/scraped/

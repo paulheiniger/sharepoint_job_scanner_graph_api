@@ -6,6 +6,7 @@ from dataclasses import asdict
 from typing import Any
 
 from .dimensions import parse_dimensions
+from .insulation_surfaces import build_insulation_deductions, build_insulation_surface_area_rows, parse_r_value_targets
 from .rules import clean_text, extract_scope, first_nonblank, to_float
 from .schemas import FieldNotesInput, ParsedFieldNotes
 
@@ -419,6 +420,14 @@ def parse_insulation_quote_scope(notes: str) -> dict[str, Any]:
         result["evidence_by_field"]["openings"] = [opening.get("source_text") for opening in openings]
         result["confidence_by_field"]["openings"] = "medium" if result["opening_area_missing"] else "high"
 
+    r_value_targets = parse_r_value_targets(text)
+    if r_value_targets:
+        result["insulation_r_value_targets"] = r_value_targets
+        result["evidence_by_field"]["insulation_r_value_targets"] = [row.get("source_text") for row in r_value_targets]
+        result["confidence_by_field"]["insulation_r_value_targets"] = "high"
+    result["insulation_deductions"] = build_insulation_deductions(result)
+    result["insulation_surface_areas"] = build_insulation_surface_area_rows(result, text)
+
     if re.search(r"\bseptember\s+or\s+october\b", lowered, re.I):
         result["requested_timing"] = "September or October"
     elif re.search(r"\bseptember\b", lowered, re.I):
@@ -449,7 +458,7 @@ def parse_insulation_quote_scope(notes: str) -> dict[str, Any]:
     missing_questions = []
     if not first_nonblank(result.get("foam_type")):
         missing_questions.append("What foam type: open-cell or closed-cell?")
-    if not to_float(result.get("foam_thickness_inches")):
+    if not to_float(result.get("foam_thickness_inches")) and not r_value_targets:
         missing_questions.append("Desired foam thickness or R-value?")
     if any(opening.get("opening_type") == "rollup_door" and "width_ft" in opening.get("missing_dimensions", []) for opening in openings):
         missing_questions.append("Rollup door width?")
