@@ -135,6 +135,27 @@ INSULATION_PERFORMANCE_COMPACT_COLUMNS = [
     "notes",
 ]
 
+INSULATION_FOAM_TEMPLATE_COMPACT_COLUMNS = [
+    "include",
+    "workbook_row",
+    "editable_selector_code",
+    "resolved_template_option",
+    "historical_selector_recommendation",
+    "historical_selector_evidence_count",
+    "basis_sqft",
+    "thickness_inches",
+    "yield_or_coverage",
+    "unit_price",
+    "estimated_units",
+    "estimated_sets",
+    "estimated_cost",
+    "selected_pricing_candidate",
+    "compatibility_status",
+    "compatibility_warnings",
+    "product_guidance",
+    "notes",
+]
+
 LABOR_WORKBENCH_COMPACT_COLUMNS = [
     "include",
     "workbook_row",
@@ -4606,6 +4627,58 @@ def estimator_prototype_page() -> None:
                     if row.get(field) not in (None, ""):
                         surface[field] = row.get(field)
             edited_workbench["insulation_surfaces"] = list(surfaces_by_type.values())
+
+        if original_workbench.get("insulation_foam_template_decisions"):
+            st.markdown("#### Insulation Foam Template Decision")
+            foam_template_df = pd.DataFrame(original_workbench.get("insulation_foam_template_decisions") or [])
+            foam_template_column_order = (
+                list(foam_template_df.columns)
+                if show_row_details
+                else [column for column in INSULATION_FOAM_TEMPLATE_COMPACT_COLUMNS if column in foam_template_df.columns]
+            )
+            edited_foam_template_df = st.data_editor(
+                foam_template_df,
+                use_container_width=True,
+                hide_index=True,
+                num_rows="fixed",
+                key=f"wb_insulation_foam_template_{workbench_key}_{scope_key}_{historical_filters_key}",
+                column_order=foam_template_column_order,
+                column_config={
+                    "include": "Include",
+                    "workbook_row": "Rows",
+                    "editable_selector_code": "Selector",
+                    "resolved_template_option": "Template Option",
+                    "historical_selector_recommendation": "Historical Default",
+                    "historical_selector_evidence_count": "Evidence",
+                    "basis_sqft": "Basis Sq Ft",
+                    "thickness_inches": "Thickness",
+                    "yield_or_coverage": "Yield",
+                    "unit_price": "Unit Price",
+                    "estimated_units": "Units",
+                    "estimated_sets": "Sets",
+                    "estimated_cost": "Cost",
+                    "selected_pricing_candidate": "Pricing Candidate",
+                    "compatibility_status": "Compatibility",
+                    "compatibility_warnings": "Warnings",
+                    "product_guidance": "Product Guidance",
+                    "notes": "Notes",
+                },
+                disabled=[
+                    column
+                    for column in foam_template_column_order
+                    if column
+                    not in {
+                        "include",
+                        "editable_selector_code",
+                        "basis_sqft",
+                        "thickness_inches",
+                        "yield_or_coverage",
+                        "unit_price",
+                        "selected_pricing_candidate",
+                    }
+                ],
+            )
+            edited_workbench["insulation_foam_template_decisions"] = edited_foam_template_df.to_dict(orient="records")
 
         st.markdown("#### Materials")
         add_material_key = f"wb_add_material_line_{workbench_key}_{scope_key}_{historical_filters_key}"

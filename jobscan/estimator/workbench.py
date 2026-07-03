@@ -36,6 +36,7 @@ from .insulation_performance import (
 )
 from .materials import find_current_price
 from .rules import first_nonblank, to_float
+from .template_intelligence import FOAM_SELECTOR_MAP
 from jobscan.products.product_matching import product_context_for_decision
 
 DEFAULT_HOURLY_RATE = 72.0
@@ -958,6 +959,375 @@ def _foam_material_row(materials: list[dict[str, Any]] | None) -> dict[str, Any]
         if str(row.get("package_key") or row.get("template_bucket") or "").lower() == "foam":
             return row
     return None
+
+
+def _foam_selector_options() -> list[dict[str, Any]]:
+    options: list[dict[str, Any]] = []
+    for code, label in sorted(FOAM_SELECTOR_MAP.items(), key=lambda item: int(item[0])):
+        traits = _foam_traits(label)
+        options.append(
+            {
+                "selector_code": str(code),
+                "resolved_template_option": label,
+                "foam_type": traits["foam_type"],
+                "density_class": traits["density_class"],
+                "application": traits["application"],
+            }
+        )
+    return options
+
+
+def _selector_code_for_option(value: Any) -> str:
+    normalized = _normalized(value)
+    if not normalized:
+        return ""
+    for code, label in FOAM_SELECTOR_MAP.items():
+        if normalized == _normalized(label):
+            return str(code)
+    return ""
+
+
+def _resolved_selector_option(selector_code: Any, fallback: Any = "") -> str:
+    key = str(selector_code or "").strip()
+    if key and key.endswith(".0"):
+        key = key[:-2]
+    return str(FOAM_SELECTOR_MAP.get(key) or fallback or "")
+
+
+def _foam_traits(*values: Any) -> dict[str, str]:
+    text = _normalized(" ".join(str(value or "") for value in values))
+    density = ""
+    match = re.search(r"\b(?P<density>\d+(?:\.\d+)?)\s*lb\b", text)
+    if match:
+        density_value = safe_number(match.group("density"), 0.0)
+        density = f"{density_value:g} lb" if density_value else ""
+    elif re.search(r"\b2(?:\.0)?\b", text) and "lb" in text:
+        density = "2 lb"
+    elif re.search(r"\b0\.5\b", text) and "lb" in text:
+        density = "0.5 lb"
+
+    foam_type = "unknown"
+    if "open cell" in text or "open-cell" in text or density.startswith("0.5"):
+        foam_type = "open_cell"
+    elif "closed cell" in text or "closed-cell" in text or density.startswith("2") or density.startswith("3"):
+        foam_type = "closed_cell"
+
+    application = "unknown"
+    if any(term in text for term in ("roof foam", "roofing foam", "roof deck", "roofing")):
+        application = "roofing"
+    elif any(term in text for term in ("wall", "ceiling", "insulation", "spray foam", "closed cell", "open cell")):
+        application = "wall_ceiling_insulation"
+    return {"foam_type": foam_type, "density_class": density, "application": application}
+
+
+def _foam_candidate_compatibility(
+    *,
+    template_option: str,
+    candidate: dict[str, Any],
+    scope: dict[str, Any],
+    product_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    product_context = product_context or {}
+    template_traits = _foam_traits(template_option)
+    candidate_traits = _foam_traits(
+        candidate.get("item_name"),
+        candidate.get("unit"),
+        candidate.get("category"),
+        product_context.get("category"),
+        product_context.get("recommended_use"),
+        product_context.get("product_family"),
+    )
+    warnings: list[str] = []
+    if template_traits["foam_type"] != "unknown" and candidate_traits["foam_type"] != "unknown" and template_traits["foam_type"] != candidate_traits["foam_type"]:
+        warnings.append(
+            "Foam type mismatch: template option is "
+            f"{template_traits['foam_type'].replace('_', '-')} but pricing candidate appears "
+            f"{candidate_traits['foam_type'].replace('_', '-')}."
+        )
+    if template_traits["density_class"] and candidate_traits["density_class"] and template_traits["density_class"] != candidate_traits["density_class"]:
+        warnings.append(
+            f"Density mismatch: template option is {template_traits['density_class']} but pricing candidate appears {candidate_traits['density_class']}."
+        )
+    scope_text = _normalized(" ".join(str(scope.get(key) or "") for key in ("project_type", "building_type", "substrate", "notes", "raw_input_notes")))
+    if candidate_traits["application"] == "roofing" and any(term in scope_text for term in ("wall", "ceiling", "metal building", "insulation")):
+        warnings.append("Pricing candidate appears to be roofing foam; confirm fit for wall/ceiling insulation.")
+    if not product_context.get("product_id"):
+        warnings.append("No product data sheet match is available for this pricing candidate.")
+    status = "compatible" if not warnings else "review"
+    if any("mismatch" in warning.lower() for warning in warnings):
+        status = "spec_mismatch"
+    return {
+        "compatibility_status": status,
+        "compatibility_warnings": warnings,
+        "template_traits": template_traits,
+        "candidate_traits": candidate_traits,
+    }
+
+
+def _candidate_guidance_summary(product_context: dict[str, Any]) -> str:
+    if not product_context:
+        return ""
+    parts = []
+    if product_context.get("recommended_use"):
+        parts.append(str(product_context.get("recommended_use")))
+    if product_context.get("r_value_per_inch"):
+        parts.append(f"R/in {product_context.get('r_value_per_inch')}")
+    if product_context.get("coverage"):
+        parts.append(f"Coverage {product_context.get('coverage')}")
+    if product_context.get("important_limitations"):
+        parts.append(f"Limitations: {product_context.get('important_limitations')}")
+    if product_context.get("warnings"):
+        parts.append("Warnings available.")
+    return " ".join(parts)
+
+
+def _material_item_options(row: dict[str, Any]) -> list[dict[str, Any]]:
+    options: list[dict[str, Any]] = []
+    try:
+        payload = json.loads(row.get("item_options_json") or "[]")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        payload = []
+    if isinstance(payload, list):
+        for item in payload:
+            if isinstance(item, dict) and item.get("item_name"):
+                options.append(dict(item))
+    if row.get("item_name") and not any(_normalized(option.get("item_name")) == _normalized(row.get("item_name")) for option in options):
+        options.append(
+            {
+                "item_name": row.get("item_name"),
+                "unit": row.get("unit"),
+                "unit_price": row.get("current_unit_price"),
+                "pricing_item_id": row.get("pricing_item_id"),
+                "source": row.get("item_source") or "selected_item",
+                "selected_item_reason": row.get("selected_item_reason"),
+            }
+        )
+    return options
+
+
+def _foam_pricing_candidates(row: dict[str, Any], scope: dict[str, Any], data: Any = None, template_option: str = "") -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for option in _material_item_options(row):
+        item_name = str(option.get("item_name") or "").strip()
+        if not item_name:
+            continue
+        context = _product_context(data, item_name=item_name, decision_id="insulation_foam_system", package="foam") if data is not None else {}
+        compatibility = _foam_candidate_compatibility(template_option=template_option, candidate=option, scope=scope, product_context=context)
+        candidates.append(
+            {
+                "item_name": item_name,
+                "pricing_item_id": option.get("pricing_item_id"),
+                "unit": option.get("unit"),
+                "unit_price": safe_number(option.get("unit_price"), 0.0),
+                "source": option.get("source") or option.get("item_source") or "pricing_or_history",
+                "why_suggested": option.get("selected_item_reason") or option.get("source") or "",
+                "product_id": context.get("product_id") or "",
+                "product_name": context.get("product_name") or "",
+                "manufacturer": context.get("manufacturer") or "",
+                "product_guidance": _candidate_guidance_summary(context),
+                "product_source_documents": context.get("source_documents") or [],
+                "product_match_score": context.get("match_score") or 0.0,
+                **compatibility,
+            }
+        )
+    candidates.sort(
+        key=lambda candidate: (
+            candidate.get("compatibility_status") == "compatible",
+            safe_number(candidate.get("unit_price"), 0.0) > 0,
+            safe_number(candidate.get("product_match_score"), 0.0),
+            candidate.get("item_name") or "",
+        ),
+        reverse=True,
+    )
+    return candidates[:8]
+
+
+def _selected_foam_candidate(candidates: list[dict[str, Any]], selected_name: Any) -> dict[str, Any]:
+    normalized = _normalized(selected_name)
+    if normalized:
+        for candidate in candidates:
+            if _normalized(candidate.get("item_name")) == normalized:
+                return candidate
+    return candidates[0] if candidates else {}
+
+
+def _build_insulation_foam_template_decisions(
+    *,
+    scope: dict[str, Any],
+    foam_row: dict[str, Any] | None,
+    existing_rows: list[dict[str, Any]] | None = None,
+    data: Any = None,
+) -> list[dict[str, Any]]:
+    if not foam_row:
+        return []
+    existing = (existing_rows or [{}])[0] if existing_rows else {}
+    historical_option = first_nonblank(
+        existing.get("historical_selector_recommendation"),
+        foam_row.get("recommended_decision_value"),
+        (foam_row.get("decision_values") or {}).get("selected_option") if isinstance(foam_row.get("decision_values"), dict) else "",
+        _resolved_selector_option(foam_row.get("selector_code")),
+        "Gaco 2.0 lb.",
+    )
+    selector_code = first_nonblank(
+        existing.get("editable_selector_code"),
+        existing.get("selector_code"),
+        foam_row.get("selector_code"),
+        _selector_code_for_option(historical_option),
+        "11",
+    )
+    resolved_option = _resolved_selector_option(selector_code, historical_option)
+    basis_sqft = safe_number(first_nonblank(existing.get("basis_sqft"), foam_row.get("editable_basis_sqft"), foam_row.get("default_basis_sqft")), 0.0)
+    material_thickness = safe_number(foam_row.get("thickness_inches"), 0.0)
+    material_synced_thickness = safe_number(foam_row.get("foam_thickness_inches"), 0.0)
+    direct_material_thickness_edit = material_thickness > 0 and material_synced_thickness > 0 and abs(material_thickness - material_synced_thickness) > 1e-9
+    thickness = safe_number(
+        first_nonblank(
+            foam_row.get("thickness_inches") if direct_material_thickness_edit else "",
+            existing.get("thickness_inches"),
+            foam_row.get("thickness_inches"),
+            foam_row.get("foam_thickness_inches"),
+        ),
+        0.0,
+    )
+    yield_or_coverage = safe_number(first_nonblank(existing.get("yield_or_coverage"), foam_row.get("yield_factor"), foam_row.get("median_foam_yield")), 0.0)
+    selected_candidate_name = first_nonblank(existing.get("selected_pricing_candidate"), foam_row.get("item_name"), foam_row.get("current_item"))
+    stored_candidates = existing.get("pricing_candidates") if isinstance(existing.get("pricing_candidates"), list) else []
+    if not stored_candidates:
+        try:
+            parsed_candidates = json.loads(existing.get("pricing_candidates_json") or "[]")
+            stored_candidates = parsed_candidates if isinstance(parsed_candidates, list) else []
+        except (TypeError, ValueError, json.JSONDecodeError):
+            stored_candidates = []
+    candidates = stored_candidates if data is None and stored_candidates else _foam_pricing_candidates(foam_row, scope, data=data, template_option=resolved_option)
+    selected_candidate = _selected_foam_candidate(candidates, selected_candidate_name)
+    unit_price = safe_number(first_nonblank(existing.get("unit_price"), selected_candidate.get("unit_price"), foam_row.get("current_unit_price")), 0.0)
+    include = bool(existing["include"]) if "include" in existing else bool(foam_row.get("include"))
+    formula = calculate_insulation_foam(
+        area_sqft=basis_sqft,
+        thickness_inches=thickness,
+        yield_or_coverage=yield_or_coverage,
+        unit_price=unit_price,
+        include=include,
+    )
+    compatibility = _foam_candidate_compatibility(template_option=resolved_option, candidate=selected_candidate, scope=scope, product_context=selected_candidate)
+    warnings = list(dict.fromkeys([*(selected_candidate.get("compatibility_warnings") or []), *(compatibility.get("compatibility_warnings") or [])]))
+    if yield_or_coverage <= 0:
+        warnings.append("Yield/coverage is missing; template formula output requires estimator review.")
+    return [
+        {
+            "include": include,
+            "section": "insulation_foam_template_decisions",
+            "decision_id": "insulation_foam_template_selector",
+            "template_bucket": "foam",
+            "workbook_row": "19-21",
+            "template_rows": "19,20,21",
+            "selector_cell": "A19",
+            "selector_code": str(selector_code),
+            "editable_selector_code": str(selector_code),
+            "resolved_template_option": resolved_option,
+            "selector_options": _foam_selector_options(),
+            "selector_options_json": json.dumps(_foam_selector_options(), default=str),
+            "historical_selector_recommendation": historical_option,
+            "historical_selector_code": _selector_code_for_option(historical_option),
+            "historical_selector_evidence_count": int(safe_number(foam_row.get("decision_evidence_count") or foam_row.get("evidence_count"), 0)),
+            "historical_selector_confidence": foam_row.get("decision_confidence") or foam_row.get("confidence") or "",
+            "basis_sqft": round(basis_sqft, 2),
+            "thickness_inches": round(thickness, 4),
+            "yield_or_coverage": round(yield_or_coverage, 4),
+            "unit_price": round(unit_price, 4),
+            "estimated_units": formula.get("estimated_units"),
+            "estimated_sets": formula.get("estimated_sets"),
+            "estimated_cost": formula.get("estimated_cost"),
+            "formula_model": formula.get("formula_model"),
+            "formula_source": formula.get("formula_source"),
+            "selected_pricing_candidate": selected_candidate.get("item_name") or str(selected_candidate_name or ""),
+            "selected_pricing_item_id": selected_candidate.get("pricing_item_id"),
+            "pricing_candidates": candidates,
+            "pricing_candidates_json": json.dumps(candidates, default=str),
+            "compatibility_status": "review" if warnings and compatibility.get("compatibility_status") == "compatible" else compatibility.get("compatibility_status"),
+            "compatibility_warnings": warnings,
+            "product_guidance": selected_candidate.get("product_guidance") or "",
+            "product_source_documents": selected_candidate.get("product_source_documents") or [],
+            "notes": (
+                "Template selector is the estimator decision. Pricing/product candidate is shown separately for review. "
+                + (" ".join(warnings) if warnings else "No clear template/product compatibility warnings.")
+            ),
+            "decision_values": {
+                "selector_code": str(selector_code),
+                "resolved_template_option": resolved_option,
+                "selected_pricing_candidate": selected_candidate.get("item_name") or str(selected_candidate_name or ""),
+                "basis_sqft": round(basis_sqft, 2),
+                "thickness_inches": round(thickness, 4),
+                "yield_or_coverage": round(yield_or_coverage, 4),
+                "unit_price": round(unit_price, 4),
+            },
+            "editable_decision_value": {
+                "selector_code": str(selector_code),
+                "resolved_template_option": resolved_option,
+                "selected_pricing_candidate": selected_candidate.get("item_name") or str(selected_candidate_name or ""),
+                "basis_sqft": round(basis_sqft, 2),
+                "thickness_inches": round(thickness, 4),
+                "yield_or_coverage": round(yield_or_coverage, 4),
+                "unit_price": round(unit_price, 4),
+            },
+            "recommended_decision_value": {
+                "selector_code": _selector_code_for_option(historical_option),
+                "resolved_template_option": historical_option,
+                "evidence_count": int(safe_number(foam_row.get("decision_evidence_count") or foam_row.get("evidence_count"), 0)),
+            },
+            "calculated_output": formula.get("estimated_cost"),
+            "calculated_output_summary": _value_summary(
+                {
+                    "units": formula.get("estimated_units"),
+                    "sets": formula.get("estimated_sets"),
+                    "cost": formula.get("estimated_cost"),
+                }
+            ),
+            "workbook_cell_write_preview": [
+                {"cell": "Estimate!A19", "field": "selector_code", "value": str(selector_code)},
+                {"cell": "Estimate!C19", "field": "area_sqft", "value": round(basis_sqft, 2)},
+                {"cell": "Estimate!D19", "field": "thickness_inches", "value": round(thickness, 4)},
+                {"cell": "Estimate!E19", "field": "unit_price", "value": round(unit_price, 4)},
+                {"cell": "Estimate!F19", "field": "yield_or_coverage", "value": round(yield_or_coverage, 4)},
+                {"cell": "Estimate!G19", "field": "estimated_units_formula_output", "value": formula.get("estimated_units")},
+            ],
+        }
+    ]
+
+
+def _apply_foam_template_decision_to_materials(workbench: dict[str, Any]) -> None:
+    foam_row = _foam_material_row(workbench.get("materials"))
+    decisions = workbench.get("insulation_foam_template_decisions") or []
+    decision = decisions[0] if decisions else {}
+    if not foam_row or not decision:
+        return
+    previous_basis = safe_number(foam_row.get("editable_basis_sqft"), 0.0)
+    foam_row["selector_code"] = decision.get("editable_selector_code") or decision.get("selector_code")
+    foam_row["resolved_template_option"] = decision.get("resolved_template_option")
+    foam_row["template_selector_option"] = decision.get("resolved_template_option")
+    if decision.get("selected_pricing_candidate"):
+        foam_row["item_name"] = decision.get("selected_pricing_candidate")
+    for source_field, target_field in (
+        ("basis_sqft", "editable_basis_sqft"),
+        ("basis_sqft", "default_basis_sqft"),
+        ("thickness_inches", "thickness_inches"),
+        ("thickness_inches", "foam_thickness_inches"),
+        ("yield_or_coverage", "yield_factor"),
+        ("yield_or_coverage", "median_foam_yield"),
+        ("unit_price", "current_unit_price"),
+    ):
+        value = decision.get(source_field)
+        if value not in (None, ""):
+            foam_row[target_field] = value
+    decision_basis = safe_number(decision.get("basis_sqft"), 0.0)
+    foam_row["_foam_template_basis_override"] = bool(decision_basis > 0 and previous_basis > 0 and abs(decision_basis - previous_basis) > 1e-9)
+    foam_row["editable_decision_value"] = {
+        "selector_code": decision.get("editable_selector_code") or decision.get("selector_code"),
+        "resolved_template_option": decision.get("resolved_template_option"),
+        "selected_pricing_candidate": decision.get("selected_pricing_candidate"),
+        "thickness_inches": decision.get("thickness_inches"),
+        "yield_or_coverage": decision.get("yield_or_coverage"),
+    }
 
 
 def _ai_scope_debug_context(recommendation: Any | None) -> dict[str, Any]:
@@ -3164,6 +3534,11 @@ def build_estimating_workbench(
         if placeholder_warning not in review_flags:
             review_flags.append(placeholder_warning)
     materials = material_workbench_rows(recommendation, data, scope, filters)
+    foam_template_decisions = (
+        _build_insulation_foam_template_decisions(scope=scope, foam_row=_foam_material_row(materials), data=data)
+        if _is_insulation_scope(scope)
+        else []
+    )
     surface_rows = _build_insulation_surface_rows_for_workbench(
         scope,
         notes=_scope_note_text(recommendation, scope),
@@ -3187,6 +3562,7 @@ def build_estimating_workbench(
         "historical_filter_hash": historical_filter_hash(filters),
         "area_calculation_trace": area_trace,
         "insulation_surfaces": surface_rows,
+        "insulation_foam_template_decisions": foam_template_decisions,
         "insulation_performance_specs": [],
         "insulation_deductions": build_insulation_deductions(scope) if _is_insulation_scope(scope) else [],
         "insulation_r_value_targets": parse_r_value_targets(_scope_note_text(recommendation, scope)) if _is_insulation_scope(scope) else [],
@@ -3226,6 +3602,12 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
         updated["insulation_deductions"] = build_insulation_deductions(scope)
         if not updated.get("insulation_r_value_targets"):
             updated["insulation_r_value_targets"] = parse_r_value_targets(str(first_nonblank(scope.get("notes"), scope.get("raw_input_notes"), "")))
+        updated["insulation_foam_template_decisions"] = _build_insulation_foam_template_decisions(
+            scope=scope,
+            foam_row=_foam_material_row(updated.get("materials")),
+            existing_rows=updated.get("insulation_foam_template_decisions") or None,
+        )
+        _apply_foam_template_decision_to_materials(updated)
     for row in updated.get("materials") or []:
         if row.get("reset_to_historical_default"):
             row["editable_qty_per_sqft"] = row.get("historical_qty_per_sqft", 0.0)
@@ -3291,7 +3673,7 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
                 str(surface.get("surface_type") or "").lower() != "general" or safe_number(surface.get("target_r_value"), 0.0) > 0
                 for surface in surface_rows
             )
-            if has_surface_decisions:
+            if has_surface_decisions and not row.get("_foam_template_basis_override"):
                 surface_aggregate = aggregate_surface_foam_outputs(
                     surface_rows,
                     yield_or_coverage=yield_factor,
@@ -3453,6 +3835,11 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
     if _is_insulation_scope(scope):
         if not updated.get("area_calculation_trace"):
             updated["area_calculation_trace"] = build_area_calculation_trace(scope)
+        updated["insulation_foam_template_decisions"] = _build_insulation_foam_template_decisions(
+            scope=scope,
+            foam_row=_foam_material_row(updated.get("materials")),
+            existing_rows=updated.get("insulation_foam_template_decisions") or None,
+        )
         updated["insulation_performance_specs"] = build_insulation_performance_specs(
             scope=scope,
             surface_rows=_records(updated.get("insulation_surfaces")),

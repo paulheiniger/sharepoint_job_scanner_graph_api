@@ -753,7 +753,7 @@ def _decision_record_from_workbench_row(row: dict[str, Any], section: str, *, fi
         "template_bucket": template_bucket,
         "workbook_row": row.get("workbook_row"),
         "workbook_traceability": row.get("row_traceability"),
-        "item_or_task": row.get("surface") or row.get("step") or row.get("item_name") or row.get("labor_package") or row.get("adder"),
+        "item_or_task": row.get("resolved_template_option") or row.get("surface") or row.get("step") or row.get("item_name") or row.get("labor_package") or row.get("adder"),
         "include": bool(row.get("include")),
         "suggested_by_notes_rules": row.get("suggested_by_notes_rules"),
         "historical_recommendation": row.get("historical_recommendation"),
@@ -782,7 +782,7 @@ def _decision_record_from_workbench_row(row: dict[str, Any], section: str, *, fi
 def proposed_decisions_from_workbench(workbench: dict[str, Any]) -> dict[str, Any]:
     recalculated = recalculate_workbench_tables(workbench)
     rows: list[dict[str, Any]] = []
-    for section in ("area_calculation_trace", "insulation_surfaces", "insulation_performance_specs", "materials", "labor", "adders"):
+    for section in ("area_calculation_trace", "insulation_surfaces", "insulation_foam_template_decisions", "insulation_performance_specs", "materials", "labor", "adders"):
         for row in recalculated.get(section) or []:
             rows.append(_decision_record_from_workbench_row(row, section, final=False))
     return {"decision_graph_version": DECISION_GRAPH_VERSION, "decisions": rows}
@@ -791,7 +791,7 @@ def proposed_decisions_from_workbench(workbench: dict[str, Any]) -> dict[str, An
 def final_decisions_from_workbench(workbench: dict[str, Any]) -> dict[str, Any]:
     recalculated = recalculate_workbench_tables(workbench)
     decisions: list[dict[str, Any]] = []
-    for section in ("area_calculation_trace", "insulation_surfaces", "insulation_performance_specs", "materials", "labor", "adders"):
+    for section in ("area_calculation_trace", "insulation_surfaces", "insulation_foam_template_decisions", "insulation_performance_specs", "materials", "labor", "adders"):
         for row in recalculated.get(section) or []:
             if not row.get("include"):
                 continue

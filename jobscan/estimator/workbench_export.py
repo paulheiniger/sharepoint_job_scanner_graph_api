@@ -90,9 +90,11 @@ def _decision_trace_rows(
     labor: list[dict[str, Any]],
     adders: list[dict[str, Any]],
     performance_specs: list[dict[str, Any]] | None = None,
+    foam_template_decisions: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for section, section_rows in (
+        ("Insulation Foam Template", foam_template_decisions or []),
         ("Insulation Performance", performance_specs or []),
         ("Material", materials),
         ("Labor", labor),
@@ -106,7 +108,7 @@ def _decision_trace_rows(
                     "decision_id": row.get("decision_id") or row.get("package_key") or row.get("adder_key"),
                     "template_bucket": row.get("template_bucket") or row.get("package_key") or row.get("adder_key"),
                     "workbook_row": row.get("workbook_row"),
-                    "item_or_task": row.get("surface") or row.get("item_name") or row.get("labor_package") or row.get("adder") or row.get("package"),
+                    "item_or_task": row.get("resolved_template_option") or row.get("surface") or row.get("item_name") or row.get("labor_package") or row.get("adder") or row.get("package"),
                     "historical_recommendation": row.get("historical_recommendation"),
                     "editable_value": row.get("editable_value") or row.get("editable_decision_value"),
                     "calculated_output": row.get("calculated_output_summary") or row.get("calculated_output"),
@@ -120,9 +122,13 @@ def _decision_trace_rows(
     return rows
 
 
-def _product_guidance_rows(materials: list[dict[str, Any]], performance_specs: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+def _product_guidance_rows(
+    materials: list[dict[str, Any]],
+    performance_specs: list[dict[str, Any]] | None = None,
+    foam_template_decisions: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for row in [*(performance_specs or []), *(materials or [])]:
+    for row in [*(foam_template_decisions or []), *(performance_specs or []), *(materials or [])]:
         if not any(
             row.get(key)
             for key in (
@@ -133,6 +139,7 @@ def _product_guidance_rows(materials: list[dict[str, Any]], performance_specs: l
                 "product_source_documents",
                 "source_evidence",
                 "product_source_evidence_rows",
+                "pricing_candidates",
             )
         ):
             continue
@@ -141,12 +148,12 @@ def _product_guidance_rows(materials: list[dict[str, Any]], performance_specs: l
                 "include": row.get("include"),
                 "decision_id": row.get("decision_id") or row.get("package_key"),
                 "workbook_row": row.get("workbook_row"),
-                "package": row.get("package") or row.get("surface"),
-                "item_name": row.get("item_name"),
+                "package": row.get("package") or row.get("surface") or row.get("resolved_template_option"),
+                "item_name": row.get("item_name") or row.get("selected_pricing_candidate"),
                 "product_id": row.get("product_id"),
                 "manufacturer": row.get("product_manufacturer"),
                 "guidance": row.get("product_guidance"),
-                "warnings": row.get("product_warning_summary") or row.get("product_warnings"),
+                "warnings": row.get("product_warning_summary") or row.get("product_warnings") or row.get("compatibility_warnings"),
                 "coverage": row.get("product_coverage"),
                 "source_documents": row.get("product_source_documents") or row.get("product_source_evidence"),
                 "source_evidence": row.get("product_source_evidence_rows") or row.get("source_evidence"),
@@ -205,9 +212,10 @@ def build_workbench_review_payloads(
     labor = list(recalculated.get("labor") or [])
     adders = list(recalculated.get("adders") or [])
     performance_specs = list(recalculated.get("insulation_performance_specs") or [])
+    foam_template_decisions = list(recalculated.get("insulation_foam_template_decisions") or [])
     area_trace = list(recalculated.get("area_calculation_trace") or [])
-    decision_trace = _decision_trace_rows(materials, labor, adders, performance_specs)
-    product_guidance = _product_guidance_rows(materials, performance_specs)
+    decision_trace = _decision_trace_rows(materials, labor, adders, performance_specs, foam_template_decisions)
+    product_guidance = _product_guidance_rows(materials, performance_specs, foam_template_decisions)
 
     summary = {
         "run_id": resolved_run_id,
@@ -215,6 +223,29 @@ def build_workbench_review_payloads(
         "input_notes": input_notes or "",
         "parsed_scope": recalculated.get("scope") or {},
         "area_calculation_trace": area_trace,
+        "insulation_foam_template_decisions": _compact_rows(
+            foam_template_decisions,
+            [
+                "include",
+                "workbook_row",
+                "editable_selector_code",
+                "resolved_template_option",
+                "historical_selector_recommendation",
+                "historical_selector_evidence_count",
+                "basis_sqft",
+                "thickness_inches",
+                "yield_or_coverage",
+                "unit_price",
+                "estimated_units",
+                "estimated_sets",
+                "estimated_cost",
+                "selected_pricing_candidate",
+                "compatibility_status",
+                "compatibility_warnings",
+                "product_guidance",
+                "notes",
+            ],
+        ),
         "insulation_performance_specs": _compact_rows(
             performance_specs,
             [
@@ -320,6 +351,7 @@ def build_workbench_review_payloads(
         "input_notes": input_notes or "",
         "workbench": recalculated,
         "area_calculation_trace": area_trace,
+        "insulation_foam_template_decisions": foam_template_decisions,
         "insulation_performance_specs": performance_specs,
         "materials_diagnostics": materials,
         "labor_diagnostics": labor,
@@ -333,6 +365,7 @@ def build_workbench_review_payloads(
     workbook_sheets = {
         "Parsed Scope": summary["parsed_scope"],
         "Area Calculation Trace": area_trace,
+        "Insulation Foam Template": summary["insulation_foam_template_decisions"],
         "Insulation Performance": summary["insulation_performance_specs"],
         "Historical Filters": summary["historical_filters"],
         "Materials Compact": summary["materials_final"],

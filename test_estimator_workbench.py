@@ -180,6 +180,101 @@ def sample_insulation_data() -> EstimatorData:
     return EstimatorData(job_package_summary=pd.DataFrame(rows), template_rows=pd.DataFrame(template_rows))
 
 
+def sample_insulation_template_option_data() -> EstimatorData:
+    template_rows = []
+    for idx, thickness in enumerate([4.0, 4.25, 4.25, 4.5, 4.25], start=1):
+        template_rows.append(
+            {
+                "job_id": f"TFD{idx}",
+                "source_file": f"insulation_decision_{idx}.xlsx",
+                "division": "Insulation",
+                "template_type": "insulation",
+                "project_type": "spray foam insulation",
+                "sheet_name": "Estimate",
+                "row_number": 19,
+                "template_bucket": "foam",
+                "line_item_kind": "material",
+                "selector_code": 11,
+                "resolved_item_name": "Gaco 2.0 lb.",
+                "area_sqft": 2400,
+                "thickness_inches": thickness,
+                "yield_or_coverage": 13500,
+                "yield_factor": 13500,
+                "estimated_units": ((2400 / 13500) * thickness) * 1000,
+                "estimated_sets": ((2400 / 13500) * thickness),
+                "estimated_cost": 1200,
+                "unit_price": 1.63,
+                "formula_model": "foam_sets_from_area_thickness_yield",
+            }
+        )
+    return EstimatorData(
+        template_rows=pd.DataFrame(template_rows),
+        pricing_catalog=pd.DataFrame(
+            [
+                {
+                    "pricing_item_id": "OPEN",
+                    "product_name": "AccuFoam Open Cell AAF1",
+                    "category": "Spray Foam",
+                    "unit_price": 1.2,
+                    "unit_of_measure": "unit",
+                    "is_current": True,
+                },
+                {
+                    "pricing_item_id": "CLOSED",
+                    "product_name": "NCFI Closed Cell InsulBloc OptiMaxx",
+                    "category": "Spray Foam",
+                    "unit_price": 2.4,
+                    "unit_of_measure": "unit",
+                    "is_current": True,
+                },
+            ]
+        ),
+        product_catalog=pd.DataFrame(
+            [
+                {
+                    "product_id": "ncfi_optimaxx",
+                    "manufacturer": "NCFI",
+                    "product_name": "NCFI Closed Cell InsulBloc OptiMaxx",
+                    "product_family": "InsulBloc OptiMaxx",
+                    "category": "spray_foam",
+                    "active": True,
+                }
+            ]
+        ),
+        product_properties=pd.DataFrame(
+            [
+                {
+                    "product_id": "ncfi_optimaxx",
+                    "property_name": "r_value",
+                    "property_value": "Aged R-value 6.2 per inch",
+                    "numeric_value": 6.2,
+                    "unit": "R/in",
+                    "source_text": "Aged R-value 6.2 per inch.",
+                }
+            ]
+        ),
+        product_rules=pd.DataFrame(
+            [
+                {
+                    "product_id": "ncfi_optimaxx",
+                    "rule_type": "recommended_use",
+                    "rule_value": "Closed-cell spray foam for insulation applications.",
+                    "severity": "info",
+                    "source_text": "Recommended for insulation applications.",
+                }
+            ]
+        ),
+        product_documents=pd.DataFrame(
+            [
+                {
+                    "product_id": "ncfi_optimaxx",
+                    "source_path": "product_documents/ncfi_optimaxx.pdf",
+                }
+            ]
+        ),
+    )
+
+
 def sample_data() -> EstimatorData:
     return EstimatorData(
         relationship_material_qty_ratios=pd.DataFrame(
@@ -1003,6 +1098,73 @@ def test_insulation_performance_specs_handle_missing_product_knowledge() -> None
     assert spec["alignment_status"] == "no_product_knowledge_match"
     assert spec["product_fit_status"] == "review"
     assert any("No product knowledge match" in warning for warning in spec["product_warnings"])
+
+
+def test_insulation_foam_template_decision_preserves_selector_and_separates_pricing_candidates() -> None:
+    workbench = build_estimating_workbench(sample_insulation_recommendation(), sample_insulation_template_option_data())
+
+    foam_decision = workbench["insulation_foam_template_decisions"][0]
+    option_labels = {option["resolved_template_option"] for option in foam_decision["selector_options"]}
+    candidate_names = {candidate["item_name"] for candidate in foam_decision["pricing_candidates"]}
+
+    assert "Gaco 2.0 lb." in option_labels
+    assert "NCFI 0.5 lb." in option_labels
+    assert foam_decision["historical_selector_recommendation"] == "Gaco 2.0 lb."
+    assert foam_decision["editable_selector_code"] == "11"
+    assert foam_decision["resolved_template_option"] == "Gaco 2.0 lb."
+    assert "AccuFoam Open Cell AAF1" in candidate_names
+    assert "NCFI Closed Cell InsulBloc OptiMaxx" in candidate_names
+    assert foam_decision["selected_pricing_candidate"] != foam_decision["resolved_template_option"]
+    assert foam_decision["compatibility_status"] == "spec_mismatch"
+    assert any("Foam type mismatch" in warning for warning in foam_decision["compatibility_warnings"])
+
+    expected_units = round(((foam_decision["basis_sqft"] / foam_decision["yield_or_coverage"]) * foam_decision["thickness_inches"]) * 1000, 6)
+    assert foam_decision["formula_model"] == "foam_sets_from_area_thickness_yield"
+    assert foam_decision["estimated_units"] == expected_units
+
+    foam = next(row for row in workbench["materials"] if row["package_key"] == "foam")
+    assert foam["selector_code"] == "11"
+    assert any(cell["cell"] == "Estimate!A19" and cell["value"] == "11" for cell in foam["workbook_cell_write_preview"])
+
+
+def test_insulation_foam_template_decision_does_not_warn_for_manufacturer_mismatch_alone() -> None:
+    workbench = build_estimating_workbench(sample_insulation_recommendation(), sample_insulation_template_option_data())
+    workbench["insulation_foam_template_decisions"][0]["selected_pricing_candidate"] = "NCFI Closed Cell InsulBloc OptiMaxx"
+
+    recalculated = recalculate_workbench_tables(workbench)
+    foam_decision = recalculated["insulation_foam_template_decisions"][0]
+
+    assert foam_decision["resolved_template_option"] == "Gaco 2.0 lb."
+    assert foam_decision["selected_pricing_candidate"] == "NCFI Closed Cell InsulBloc OptiMaxx"
+    assert not any("manufacturer" in warning.lower() for warning in foam_decision["compatibility_warnings"])
+    assert not any("Foam type mismatch" in warning for warning in foam_decision["compatibility_warnings"])
+    assert foam_decision["compatibility_status"] in {"compatible", "review"}
+    assert "Closed-cell spray foam" in foam_decision["product_guidance"]
+
+
+def test_insulation_foam_template_decision_feeds_draft_workbook_selector_inputs() -> None:
+    workbench = build_estimating_workbench(sample_insulation_recommendation(), sample_insulation_template_option_data())
+    workbench["insulation_foam_template_decisions"][0].update(
+        {
+            "editable_selector_code": "21",
+            "basis_sqft": 1200,
+            "thickness_inches": 3,
+            "yield_or_coverage": 12000,
+            "unit_price": 2.4,
+            "selected_pricing_candidate": "NCFI Closed Cell InsulBloc OptiMaxx",
+        }
+    )
+
+    draft = workbench_to_draft_workbook_inputs(workbench)
+    foam = next(row for row in draft["material_rows"] if row["category"] == "foam")
+
+    assert foam["selector_code"] == "21"
+    assert foam["basis_sqft"] == 1200
+    assert foam["thickness_inches"] == 3
+    assert foam["yield_factor"] == 12000
+    assert foam["unit_price"] == 2.4
+    assert foam["estimated_units"] == 300
+    assert any(cell["cell"] == "Estimate!A19" and cell["value"] == "21" for cell in foam["workbook_cell_write_preview"])
 
 
 def test_insulation_surface_builder_uses_default_r_per_inch_when_product_missing() -> None:

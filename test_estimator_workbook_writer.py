@@ -150,7 +150,17 @@ def test_generate_insulation_workbook_uses_sqft_calculation_and_insulation_rows(
             "C12_estimated_sqft": 2637,
         },
         "material_rows": [
-            {"item": "Gaco 2.0 lb.", "category": "foam", "quantity": 2637, "unit_price": 1.63, "estimated_cost": 4298.31},
+            {
+                "item": "Gaco 2.0 lb.",
+                "category": "foam",
+                "quantity": 2637,
+                "selector_code": 11,
+                "area_sqft": 2637,
+                "thickness_inches": 3.0,
+                "yield_factor": 13500,
+                "unit_price": 1.63,
+                "estimated_cost": 4298.31,
+            },
             {"item": "DC 315 thermal barrier", "category": "thermal_barrier_coating", "quantity": 2637, "unit_price": 52},
         ],
         "labor_rows": [
@@ -173,6 +183,9 @@ def test_generate_insulation_workbook_uses_sqft_calculation_and_insulation_rows(
     assert sqft_ws["B4"].value == "Estimated area from field notes"
     assert sqft_ws["C4"].value == 1
     assert sqft_ws["D4"].value == 2637
+    assert ws["A19"].value == 11
     assert ws["C19"].value == 2637
+    assert ws["D19"].value == 3
     assert ws["E19"].value == 1.63
+    assert ws["F19"].value == 13500
     assert ws["C86"].value == 3

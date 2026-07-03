@@ -239,6 +239,7 @@ def cell_preview_for_material(row: dict[str, Any]) -> list[dict[str, Any]]:
     package = str(row.get("package_key") or row.get("template_bucket") or "")
     if package == "foam":
         return [
+            {"cell": f"Estimate!A{first_row}", "field": "selector_code", "value": row.get("selector_code")},
             {"cell": f"Estimate!C{first_row}", "field": "area_sqft", "value": row.get("editable_basis_sqft")},
             {"cell": f"Estimate!D{first_row}", "field": "thickness_inches", "value": row.get("thickness_inches")},
             {"cell": f"Estimate!E{first_row}", "field": "unit_price", "value": row.get("current_unit_price")},
