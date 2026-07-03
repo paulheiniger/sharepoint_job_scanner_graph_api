@@ -3,7 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 from jobscan.estimator.insulation_diagnostics import build_insulation_history_diagnostics, write_insulation_history_diagnostics
-from jobscan.estimator.insulation_performance import build_area_calculation_trace
+from jobscan.estimator.insulation_performance import build_area_calculation_explanation, build_area_calculation_trace
 from jobscan.estimator.insulation_surfaces import build_insulation_surface_decisions, parse_r_value_targets
 from jobscan.estimator.schemas import EstimateRecommendation, EstimatorData
 from jobscan.estimator.workbench import (
@@ -1062,6 +1062,27 @@ def test_insulation_area_trace_shows_ai_conflict_and_selected_deterministic_valu
     assert by_step["net_insulation_area"]["conflict"] is True
     assert by_step["net_insulation_area"]["selected_value"] == 2388
 
+    explanation = build_area_calculation_explanation(
+        {
+            "division": "Insulation",
+            "template_type": "insulation",
+            "building_footprint_length_ft": 30,
+            "building_footprint_width_ft": 40,
+            "wall_height_ft": 9,
+            "footprint_area_sqft": 1200,
+            "gross_wall_area_sqft": 1260,
+            "ceiling_area_sqft": 1200,
+            "gross_insulation_area_sqft": 2460,
+            "opening_area_known_sqft": 72,
+            "net_insulation_area_sqft": 2388,
+            "notes": "30x40 metal building with 9 ft walls.",
+        },
+        trace_rows=rows,
+    )
+    assert "Footprint: 30 ft x 40 ft = 1,200 sq ft." in explanation
+    assert "Final area used: 2,388 sq ft." in explanation
+    assert "deterministic value was used" in explanation
+
 
 def test_insulation_performance_specs_handle_missing_product_knowledge() -> None:
     workbench = {
@@ -1115,8 +1136,8 @@ def test_insulation_foam_template_decision_preserves_selector_and_separates_pric
     assert "AccuFoam Open Cell AAF1" in candidate_names
     assert "NCFI Closed Cell InsulBloc OptiMaxx" in candidate_names
     assert foam_decision["selected_pricing_candidate"] != foam_decision["resolved_template_option"]
-    assert foam_decision["compatibility_status"] == "spec_mismatch"
-    assert any("Foam type mismatch" in warning for warning in foam_decision["compatibility_warnings"])
+    assert foam_decision["selected_pricing_candidate"] == "NCFI Closed Cell InsulBloc OptiMaxx"
+    assert not any("Foam type mismatch" in warning for warning in foam_decision["compatibility_warnings"])
 
     expected_units = round(((foam_decision["basis_sqft"] / foam_decision["yield_or_coverage"]) * foam_decision["thickness_inches"]) * 1000, 6)
     assert foam_decision["formula_model"] == "foam_sets_from_area_thickness_yield"
@@ -1125,6 +1146,37 @@ def test_insulation_foam_template_decision_preserves_selector_and_separates_pric
     foam = next(row for row in workbench["materials"] if row["package_key"] == "foam")
     assert foam["selector_code"] == "11"
     assert any(cell["cell"] == "Estimate!A19" and cell["value"] == "11" for cell in foam["workbook_cell_write_preview"])
+
+
+def test_insulation_foam_template_decision_warns_for_open_cell_selection_on_closed_cell_template() -> None:
+    workbench = build_estimating_workbench(sample_insulation_recommendation(), sample_insulation_template_option_data())
+    workbench["insulation_foam_template_decisions"][0]["selected_pricing_candidate"] = "AccuFoam Open Cell AAF1"
+
+    recalculated = recalculate_workbench_tables(workbench)
+    foam_decision = recalculated["insulation_foam_template_decisions"][0]
+
+    assert foam_decision["selected_pricing_candidate"] == "AccuFoam Open Cell AAF1"
+    assert foam_decision["compatibility_status"] == "spec_mismatch"
+    assert any("Foam type mismatch" in warning for warning in foam_decision["compatibility_warnings"])
+
+
+def test_insulation_foam_template_decision_does_not_default_to_roof_repair_foam() -> None:
+    data = sample_insulation_template_option_data()
+    roof_repair_row = {
+        "pricing_item_id": "ROOF_REPAIR",
+        "product_name": "TNF Roof Repair 3 LB Foam 120 Kit",
+        "category": "Spray Foam",
+        "unit_price": 0.5,
+        "unit_of_measure": "unit",
+        "is_current": True,
+    }
+    data.pricing_catalog = pd.concat([pd.DataFrame([roof_repair_row]), data.pricing_catalog], ignore_index=True)
+    workbench = build_estimating_workbench(sample_insulation_recommendation(), data)
+
+    foam_decision = workbench["insulation_foam_template_decisions"][0]
+
+    assert "TNF Roof Repair 3 LB Foam 120 Kit" in {candidate["item_name"] for candidate in foam_decision["pricing_candidates"]}
+    assert foam_decision["selected_pricing_candidate"] != "TNF Roof Repair 3 LB Foam 120 Kit"
 
 
 def test_insulation_foam_template_decision_does_not_warn_for_manufacturer_mismatch_alone() -> None:

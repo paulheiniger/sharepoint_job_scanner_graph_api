@@ -31,6 +31,7 @@ from .insulation_surfaces import (
     parse_r_value_targets,
 )
 from .insulation_performance import (
+    build_area_calculation_explanation,
     build_area_calculation_trace,
     build_insulation_performance_specs,
 )
@@ -1013,7 +1014,7 @@ def _foam_traits(*values: Any) -> dict[str, str]:
         foam_type = "closed_cell"
 
     application = "unknown"
-    if any(term in text for term in ("roof foam", "roofing foam", "roof deck", "roofing")):
+    if any(term in text for term in ("roof foam", "roofing foam", "roof repair", "repair foam", "roof kit", "roof deck", "roofing")):
         application = "roofing"
     elif any(term in text for term in ("wall", "ceiling", "insulation", "spray foam", "closed cell", "open cell")):
         application = "wall_ceiling_insulation"
@@ -1054,7 +1055,7 @@ def _foam_candidate_compatibility(
     if not product_context.get("product_id"):
         warnings.append("No product data sheet match is available for this pricing candidate.")
     status = "compatible" if not warnings else "review"
-    if any("mismatch" in warning.lower() for warning in warnings):
+    if any("mismatch" in warning.lower() or "roofing foam" in warning.lower() for warning in warnings):
         status = "spec_mismatch"
     return {
         "compatibility_status": status,
@@ -1132,7 +1133,8 @@ def _foam_pricing_candidates(row: dict[str, Any], scope: dict[str, Any], data: A
         )
     candidates.sort(
         key=lambda candidate: (
-            candidate.get("compatibility_status") == "compatible",
+            _foam_candidate_rank(candidate),
+            not _is_roofing_foam_candidate(candidate),
             safe_number(candidate.get("unit_price"), 0.0) > 0,
             safe_number(candidate.get("product_match_score"), 0.0),
             candidate.get("item_name") or "",
@@ -1142,12 +1144,51 @@ def _foam_pricing_candidates(row: dict[str, Any], scope: dict[str, Any], data: A
     return candidates[:8]
 
 
-def _selected_foam_candidate(candidates: list[dict[str, Any]], selected_name: Any) -> dict[str, Any]:
+def _foam_candidate_rank(candidate: dict[str, Any]) -> int:
+    status = str(candidate.get("compatibility_status") or "").lower()
+    if status == "compatible":
+        return 3
+    if status == "review":
+        return 2
+    if status == "spec_mismatch":
+        return 0
+    return 1
+
+
+def _is_roofing_foam_candidate(candidate: dict[str, Any]) -> bool:
+    text = _normalized(
+        " ".join(
+            [
+                str(candidate.get("item_name") or ""),
+                " ".join(str(warning) for warning in candidate.get("compatibility_warnings") or []),
+                str((candidate.get("candidate_traits") or {}).get("application") or ""),
+            ]
+        )
+    )
+    return any(term in text for term in ("roofing foam", "roof foam", "roof repair", "repair foam", "roof kit"))
+
+
+def _is_bad_default_foam_candidate(candidate: dict[str, Any]) -> bool:
+    if not candidate:
+        return True
+    return str(candidate.get("compatibility_status") or "").lower() == "spec_mismatch" or _is_roofing_foam_candidate(candidate)
+
+
+def _selected_foam_candidate(candidates: list[dict[str, Any]], selected_name: Any, *, preserve_bad_selection: bool = False) -> dict[str, Any]:
     normalized = _normalized(selected_name)
+    requested: dict[str, Any] | None = None
     if normalized:
         for candidate in candidates:
             if _normalized(candidate.get("item_name")) == normalized:
-                return candidate
+                requested = candidate
+                break
+    if requested and (preserve_bad_selection or not _is_bad_default_foam_candidate(requested)):
+        return requested
+    for candidate in candidates:
+        if not _is_bad_default_foam_candidate(candidate):
+            return candidate
+    if requested:
+        return requested
     return candidates[0] if candidates else {}
 
 
@@ -1199,7 +1240,11 @@ def _build_insulation_foam_template_decisions(
         except (TypeError, ValueError, json.JSONDecodeError):
             stored_candidates = []
     candidates = stored_candidates if data is None and stored_candidates else _foam_pricing_candidates(foam_row, scope, data=data, template_option=resolved_option)
-    selected_candidate = _selected_foam_candidate(candidates, selected_candidate_name)
+    selected_candidate = _selected_foam_candidate(
+        candidates,
+        selected_candidate_name,
+        preserve_bad_selection=bool(first_nonblank(existing.get("selected_pricing_candidate"))),
+    )
     unit_price = safe_number(first_nonblank(existing.get("unit_price"), selected_candidate.get("unit_price"), foam_row.get("current_unit_price")), 0.0)
     include = bool(existing["include"]) if "include" in existing else bool(foam_row.get("include"))
     formula = calculate_insulation_foam(
@@ -2521,8 +2566,8 @@ def _package_item_fit_details(package: str, option: dict[str, Any], scope: dict[
         elif _contains_any_text(combined, ["foam"]):
             score += 80
             reasons.append("foam product signal")
-        if _is_insulation_scope(scope) and _contains_any_text(combined, ["roofing foam", "roof foam", "roofing"]):
-            score -= 180
+        if _is_insulation_scope(scope) and _contains_any_text(combined, ["roof repair", "repair foam", "roof kit", "roofing foam", "roof foam", "roofing"]):
+            score -= 900
             reasons.append("less suitable for wall/ceiling insulation than insulation foam")
         if _contains_any_text(combined, ["roof coating", "silicone", "primer", "sealant", "caulk", "tube"]):
             score -= 300
@@ -3555,12 +3600,14 @@ def build_estimating_workbench(
         if _is_insulation_scope(scope)
         else []
     )
+    area_explanation = build_area_calculation_explanation(scope, trace_rows=area_trace) if _is_insulation_scope(scope) else ""
     workbench = {
         "estimate_id": estimate_id,
         "scope": scope,
         "historical_filters": filters,
         "historical_filter_hash": historical_filter_hash(filters),
         "area_calculation_trace": area_trace,
+        "area_calculation_explanation": area_explanation,
         "insulation_surfaces": surface_rows,
         "insulation_foam_template_decisions": foam_template_decisions,
         "insulation_performance_specs": [],
@@ -3835,6 +3882,10 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
     if _is_insulation_scope(scope):
         if not updated.get("area_calculation_trace"):
             updated["area_calculation_trace"] = build_area_calculation_trace(scope)
+        updated["area_calculation_explanation"] = build_area_calculation_explanation(
+            scope,
+            trace_rows=updated.get("area_calculation_trace") or [],
+        )
         updated["insulation_foam_template_decisions"] = _build_insulation_foam_template_decisions(
             scope=scope,
             foam_row=_foam_material_row(updated.get("materials")),

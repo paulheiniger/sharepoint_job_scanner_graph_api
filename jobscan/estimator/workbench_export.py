@@ -214,6 +214,7 @@ def build_workbench_review_payloads(
     performance_specs = list(recalculated.get("insulation_performance_specs") or [])
     foam_template_decisions = list(recalculated.get("insulation_foam_template_decisions") or [])
     area_trace = list(recalculated.get("area_calculation_trace") or [])
+    area_explanation = recalculated.get("area_calculation_explanation") or ""
     decision_trace = _decision_trace_rows(materials, labor, adders, performance_specs, foam_template_decisions)
     product_guidance = _product_guidance_rows(materials, performance_specs, foam_template_decisions)
 
@@ -222,6 +223,7 @@ def build_workbench_review_payloads(
         "timestamp": resolved_timestamp,
         "input_notes": input_notes or "",
         "parsed_scope": recalculated.get("scope") or {},
+        "area_calculation_explanation": area_explanation,
         "area_calculation_trace": area_trace,
         "insulation_foam_template_decisions": _compact_rows(
             foam_template_decisions,
@@ -364,6 +366,7 @@ def build_workbench_review_payloads(
 
     workbook_sheets = {
         "Parsed Scope": summary["parsed_scope"],
+        "Area Explanation": [{"area_calculation_explanation": area_explanation}] if area_explanation else [],
         "Area Calculation Trace": area_trace,
         "Insulation Foam Template": summary["insulation_foam_template_decisions"],
         "Insulation Performance": summary["insulation_performance_specs"],

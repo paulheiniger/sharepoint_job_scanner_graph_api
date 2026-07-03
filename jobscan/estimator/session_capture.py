@@ -785,7 +785,11 @@ def proposed_decisions_from_workbench(workbench: dict[str, Any]) -> dict[str, An
     for section in ("area_calculation_trace", "insulation_surfaces", "insulation_foam_template_decisions", "insulation_performance_specs", "materials", "labor", "adders"):
         for row in recalculated.get(section) or []:
             rows.append(_decision_record_from_workbench_row(row, section, final=False))
-    return {"decision_graph_version": DECISION_GRAPH_VERSION, "decisions": rows}
+    return {
+        "decision_graph_version": DECISION_GRAPH_VERSION,
+        "area_calculation_explanation": recalculated.get("area_calculation_explanation") or "",
+        "decisions": rows,
+    }
 
 
 def final_decisions_from_workbench(workbench: dict[str, Any]) -> dict[str, Any]:
@@ -800,6 +804,7 @@ def final_decisions_from_workbench(workbench: dict[str, Any]) -> dict[str, Any]:
         "decision_graph_version": DECISION_GRAPH_VERSION,
         "scope": recalculated.get("scope") or {},
         "historical_filters": recalculated.get("historical_filters") or {},
+        "area_calculation_explanation": recalculated.get("area_calculation_explanation") or "",
         "decisions": decisions,
     }
 

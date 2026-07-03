@@ -50,6 +50,7 @@ AI_SCOPE_FIELDS = (
     "deduction_area_sqft",
     "estimated_sqft",
     "dimension_evidence",
+    "area_calculation_explanation",
     "coating_type",
     "warranty_years",
     "warranty_target_years",
@@ -138,6 +139,7 @@ def _empty_scope() -> dict[str, Any]:
         "deduction_area_sqft": None,
         "estimated_sqft": None,
         "dimension_evidence": [],
+        "area_calculation_explanation": "",
         "coating_type": "",
         "warranty_years": None,
         "warranty_target_years": None,
@@ -588,6 +590,8 @@ def _prompt(notes: str, deterministic_scope: dict[str, Any] | None = None) -> li
                 "Also return insulation_surface_areas, insulation_deductions, insulation_r_value_targets, "
                 "insulation_foam_type, insulation_product_selection, and insulation_thickness_calculation when present. "
                 "For R-values, extract phrases like R30, R-30, roof target R30, walls R14 and associate them with the closest surface. "
+                "For insulation geometry, also return area_calculation_explanation as a short plain-English explanation of the area math "
+                "and deductions using the original note phrasing where possible. "
                 "Do not calculate final costs or prices. Do not invent R-values, product R/in, or missing dimensions. "
                 "Handle examples like 30x40 metal building with 9' walls, two 9ftX10ft rollup doors, "
                 "two 7ftX36\" walk-in doors, five 24\"x36\" windows, two 36 inch walk-in doors, and roll-up doors 9x10 each. "

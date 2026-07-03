@@ -3928,6 +3928,39 @@ def dataframe_from_records(records: list[dict[str, Any]]) -> pd.DataFrame:
     return pd.DataFrame(records) if records else pd.DataFrame()
 
 
+def display_safe_cell_value(value: Any) -> Any:
+    if isinstance(value, (dict, list, tuple, set)):
+        return json.dumps(value, sort_keys=True, default=str)
+    return value
+
+
+def display_safe_records(records: list[dict[str, Any]], *, editable_fields: set[str] | None = None) -> list[dict[str, Any]]:
+    editable_fields = editable_fields or set()
+    rows: list[dict[str, Any]] = []
+    for row in records or []:
+        safe_row: dict[str, Any] = {}
+        for key, value in row.items():
+            safe_row[key] = value if key in editable_fields else display_safe_cell_value(value)
+        rows.append(safe_row)
+    return rows
+
+
+def merge_editable_rows(
+    original_rows: list[dict[str, Any]],
+    edited_rows: list[dict[str, Any]],
+    editable_fields: set[str],
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    for idx, original in enumerate(original_rows or []):
+        row = dict(original)
+        edited = edited_rows[idx] if idx < len(edited_rows) else {}
+        for field in editable_fields:
+            if field in edited:
+                row[field] = edited[field]
+        merged.append(row)
+    return merged
+
+
 def estimate_export_payload(result: dict[str, Any]) -> dict[str, Any]:
     payload = {
         "scope": result.get("scope", {}),
@@ -4571,18 +4604,25 @@ def estimator_prototype_page() -> None:
             key=f"wb_show_row_details_{workbench_key}_{historical_filters_key}",
             help="Shows accepted/rejected evidence, percentile ranges, relaxed filters, and source diagnostics.",
         )
-        if original_workbench.get("area_calculation_trace"):
-            st.markdown("#### Area Calculation Trace")
-            area_trace_df = pd.DataFrame(original_workbench.get("area_calculation_trace") or [])
-            st.dataframe(
-                area_trace_df[[column for column in AREA_TRACE_COMPACT_COLUMNS if column in area_trace_df.columns]],
-                use_container_width=True,
-                hide_index=True,
-            )
+        if original_workbench.get("area_calculation_explanation") or original_workbench.get("area_calculation_trace"):
+            st.markdown("#### Area Calculation")
+            if original_workbench.get("area_calculation_explanation"):
+                st.info(str(original_workbench.get("area_calculation_explanation")))
+            if original_workbench.get("area_calculation_trace") and show_row_details:
+                with st.expander("Show area calculation trace", expanded=False):
+                    area_trace_rows = display_safe_records(original_workbench.get("area_calculation_trace") or [])
+                    area_trace_df = pd.DataFrame(area_trace_rows)
+                    st.dataframe(
+                        area_trace_df[[column for column in AREA_TRACE_COMPACT_COLUMNS if column in area_trace_df.columns]],
+                        use_container_width=True,
+                        hide_index=True,
+                    )
 
         if original_workbench.get("insulation_performance_specs"):
             st.markdown("#### Insulation Performance")
-            performance_df = pd.DataFrame(original_workbench.get("insulation_performance_specs") or [])
+            performance_editable_fields = {"target_r_value", "edited_thickness_inches"}
+            performance_rows = original_workbench.get("insulation_performance_specs") or []
+            performance_df = pd.DataFrame(display_safe_records(performance_rows, editable_fields=performance_editable_fields))
             performance_column_order = (
                 list(performance_df.columns)
                 if show_row_details
@@ -4615,7 +4655,7 @@ def estimator_prototype_page() -> None:
                     "product_warnings": "Warnings",
                     "notes": "Notes",
                 },
-                disabled=[column for column in performance_column_order if column not in {"target_r_value", "edited_thickness_inches"}],
+                disabled=[column for column in performance_column_order if column not in performance_editable_fields],
             )
             edited_performance_rows = edited_performance_df.to_dict(orient="records")
             surfaces_by_type = {row.get("surface_type"): row for row in edited_workbench.get("insulation_surfaces") or []}
@@ -4630,7 +4670,17 @@ def estimator_prototype_page() -> None:
 
         if original_workbench.get("insulation_foam_template_decisions"):
             st.markdown("#### Insulation Foam Template Decision")
-            foam_template_df = pd.DataFrame(original_workbench.get("insulation_foam_template_decisions") or [])
+            foam_template_editable_fields = {
+                "include",
+                "editable_selector_code",
+                "basis_sqft",
+                "thickness_inches",
+                "yield_or_coverage",
+                "unit_price",
+                "selected_pricing_candidate",
+            }
+            foam_template_rows = original_workbench.get("insulation_foam_template_decisions") or []
+            foam_template_df = pd.DataFrame(display_safe_records(foam_template_rows, editable_fields=foam_template_editable_fields))
             foam_template_column_order = (
                 list(foam_template_df.columns)
                 if show_row_details
@@ -4663,22 +4713,13 @@ def estimator_prototype_page() -> None:
                     "product_guidance": "Product Guidance",
                     "notes": "Notes",
                 },
-                disabled=[
-                    column
-                    for column in foam_template_column_order
-                    if column
-                    not in {
-                        "include",
-                        "editable_selector_code",
-                        "basis_sqft",
-                        "thickness_inches",
-                        "yield_or_coverage",
-                        "unit_price",
-                        "selected_pricing_candidate",
-                    }
-                ],
+                disabled=[column for column in foam_template_column_order if column not in foam_template_editable_fields],
             )
-            edited_workbench["insulation_foam_template_decisions"] = edited_foam_template_df.to_dict(orient="records")
+            edited_workbench["insulation_foam_template_decisions"] = merge_editable_rows(
+                foam_template_rows,
+                edited_foam_template_df.to_dict(orient="records"),
+                foam_template_editable_fields,
+            )
 
         st.markdown("#### Materials")
         add_material_key = f"wb_add_material_line_{workbench_key}_{scope_key}_{historical_filters_key}"

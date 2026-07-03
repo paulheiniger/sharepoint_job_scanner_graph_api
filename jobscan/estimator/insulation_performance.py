@@ -167,6 +167,91 @@ def build_area_calculation_trace(
     return rows
 
 
+def _display_number(value: Any) -> str:
+    number = optional_number(value)
+    if number is None:
+        return ""
+    if abs(number - round(number)) < 1e-9:
+        return f"{round(number):,}"
+    return f"{number:,.2f}".rstrip("0").rstrip(".")
+
+
+def _trace_lookup(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    return {str(row.get("step") or ""): row for row in rows or [] if isinstance(row, dict)}
+
+
+def _opening_summary(openings: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for opening in openings or []:
+        quantity = opening.get("quantity") or 1
+        opening_type = str(opening.get("opening_type") or "opening").replace("_", " ")
+        width = _display_number(opening.get("width_ft"))
+        height = _display_number(opening.get("height_ft"))
+        area = _display_number(opening.get("known_area_sqft"))
+        if width and height and area:
+            parts.append(f"{quantity} {opening_type} at {width} ft x {height} ft = {area} sq ft")
+        elif opening.get("missing_dimensions"):
+            missing = ", ".join(str(item).replace("_ft", "") for item in opening.get("missing_dimensions") or [])
+            parts.append(f"{quantity} {opening_type} missing {missing}")
+    return "; ".join(parts)
+
+
+def build_area_calculation_explanation(
+    scope: dict[str, Any],
+    *,
+    trace_rows: list[dict[str, Any]] | None = None,
+) -> str:
+    """Return a short estimator-facing summary of the insulation area math."""
+
+    rows = trace_rows if trace_rows is not None else build_area_calculation_trace(scope)
+    by_step = _trace_lookup(rows)
+    length = first_nonblank(scope.get("building_footprint_length_ft"), scope.get("building_length_ft"))
+    width = first_nonblank(scope.get("building_footprint_width_ft"), scope.get("building_width_ft"))
+    wall_height = scope.get("wall_height_ft")
+
+    parts: list[str] = []
+    ai_explanation = _clean_text(scope.get("area_calculation_explanation"))
+    if ai_explanation:
+        parts.append(ai_explanation.rstrip(".") + ".")
+
+    footprint = by_step.get("building_footprint", {})
+    if length and width and footprint.get("selected_value"):
+        parts.append(
+            f"Footprint: {_display_number(length)} ft x {_display_number(width)} ft = "
+            f"{_display_number(footprint.get('selected_value'))} sq ft."
+        )
+
+    wall = by_step.get("wall_area", {})
+    if length and width and wall_height and wall.get("selected_value"):
+        parts.append(
+            f"Walls: 2 x ({_display_number(length)} + {_display_number(width)}) x "
+            f"{_display_number(wall_height)} ft = {_display_number(wall.get('selected_value'))} sq ft."
+        )
+
+    ceiling = by_step.get("ceiling_or_roof_area", {})
+    if ceiling.get("selected_value"):
+        parts.append(f"Ceiling/roof underside: {_display_number(ceiling.get('selected_value'))} sq ft.")
+
+    openings_text = _opening_summary(scope.get("openings") or [])
+    deductions = by_step.get("opening_deductions", {})
+    if openings_text:
+        parts.append(f"Openings: {openings_text}.")
+    if deductions.get("selected_value"):
+        parts.append(f"Known opening deductions: {_display_number(deductions.get('selected_value'))} sq ft.")
+
+    net = by_step.get("net_insulation_area", {})
+    if net.get("selected_value"):
+        parts.append(f"Final area used: {_display_number(net.get('selected_value'))} sq ft.")
+
+    conflicts = [str(row.get("step") or "") for row in rows or [] if row.get("conflict")]
+    if conflicts:
+        parts.append("AI-stated area conflicted with deterministic dimension math, so the deterministic value was used.")
+    if scope.get("opening_area_missing"):
+        parts.append("Some opening dimensions are still missing, so deductions may need estimator review.")
+
+    return " ".join(part for part in parts if part).strip()
+
+
 def product_alignment_for_foam_row(row: dict[str, Any]) -> dict[str, Any]:
     historical = first_nonblank(
         row.get("historical_item"),
