@@ -103,13 +103,20 @@ CREATE TABLE IF NOT EXISTS product_family_lookup (
     lookup_id TEXT PRIMARY KEY,
     vendor TEXT,
     canonical_product_family TEXT,
+    template_option TEXT,
+    cell_type TEXT,
+    density_class TEXT,
+    application_hint TEXT,
+    lookup_priority TEXT,
     lookup_terms TEXT,
+    preferred_documents TEXT,
     official_vendor_url TEXT,
     source_domain TEXT,
     domain_approved BOOLEAN DEFAULT false,
     decision_nodes JSONB DEFAULT '[]'::jsonb,
     priority INTEGER DEFAULT 50,
     active BOOLEAN DEFAULT true,
+    status TEXT,
     notes TEXT,
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
@@ -152,9 +159,16 @@ ALTER TABLE product_document_queue ADD COLUMN IF NOT EXISTS last_checked_at TIME
 ALTER TABLE product_document_queue ADD COLUMN IF NOT EXISTS validation_warnings JSONB DEFAULT '[]'::jsonb;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_product_document_queue_source_url ON product_document_queue(source_url) WHERE source_url IS NOT NULL AND source_url <> '';
 ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS source_domain TEXT;
+ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS template_option TEXT;
+ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS cell_type TEXT;
+ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS density_class TEXT;
+ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS application_hint TEXT;
+ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS lookup_priority TEXT;
+ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS preferred_documents TEXT;
 ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS domain_approved BOOLEAN DEFAULT false;
 ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS decision_nodes JSONB DEFAULT '[]'::jsonb;
 ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS priority INTEGER DEFAULT 50;
 ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT true;
+ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS status TEXT;
 ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS notes TEXT;
 ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();

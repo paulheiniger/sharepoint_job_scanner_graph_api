@@ -20,6 +20,8 @@ DEFAULT_APPROVED_DOMAINS = {
     "www.accufoam.com",
     "aldo-coatings.com",
     "www.aldo-coatings.com",
+    "basf.com",
+    "www.basf.com",
     "envergesprayfoam.com",
     "www.envergesprayfoam.com",
     "gaco.com",

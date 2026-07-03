@@ -20,6 +20,14 @@ from jobscan.products.document_scraper import (
     download_queue_documents,
     scrape_product_family_lookup,
 )
+from jobscan.products.catalog_db import (
+    _document_params,
+    _json_param,
+    _product_params,
+    _property_params,
+    _rule_params,
+    _schema_statements,
+)
 from jobscan.products.product_catalog import ProductKnowledge, export_product_catalog_xlsx, load_product_catalog_json
 from jobscan.products.product_family_lookup import (
     build_document_queue_from_lookup,
@@ -39,6 +47,82 @@ def write_pdf(path, text: str) -> None:
     page = doc.new_page()
     page.insert_text((72, 72), text, fontsize=10)
     doc.save(path)
+
+
+def test_product_catalog_database_params_sanitize_json_and_numbers() -> None:
+    product = _product_params(
+        {
+            "product_id": "gaco_onepass",
+            "manufacturer": "Gaco",
+            "product_name": "GacoOnePass",
+            "category": "spray_foam",
+            "aliases": ["Gaco 2.0 lb", "GacoOnePass"],
+            "active": "true",
+            "extraction_warnings": ["needs review"],
+        }
+    )
+    assert product["product_id"] == "gaco_onepass"
+    assert json.loads(product["aliases"]) == ["Gaco 2.0 lb", "GacoOnePass"]
+    assert json.loads(product["extraction_warnings"]) == ["needs review"]
+    assert product["active"] is True
+
+    document = _document_params(
+        {
+            "document_id": "doc1",
+            "product_id": "gaco_onepass",
+            "source_path": "product_documents/scraped/gaco_onepass.pdf",
+            "revision_date": "Revision 2026 pending",
+            "extraction_warnings": [],
+        }
+    )
+    assert document["revision_date"] is None
+    assert json.loads(document["extraction_warnings"]) == []
+
+    prop = _property_params(
+        {
+            "property_id": "prop1",
+            "product_id": "gaco_onepass",
+            "property_name": "R_value",
+            "numeric_value": "5.7",
+            "source_page": "2",
+            "confidence": "0.85",
+        }
+    )
+    assert prop["numeric_value"] == 5.7
+    assert prop["source_page"] == 2
+    assert prop["confidence"] == 0.85
+
+    rule = _rule_params(
+        {
+            "rule_id": "rule1",
+            "product_id": "gaco_onepass",
+            "rule_type": "limitation",
+            "confidence": "bad",
+        }
+    )
+    assert rule["confidence"] is None
+
+
+def test_product_catalog_schema_splitter_handles_multiline_statements() -> None:
+    statements = _schema_statements(
+        """
+        -- comment
+        CREATE TABLE IF NOT EXISTS product_catalog (
+            product_id TEXT PRIMARY KEY
+        );
+
+        ALTER TABLE product_catalog ADD COLUMN IF NOT EXISTS extraction_method TEXT;
+        """
+    )
+    assert len(statements) == 2
+    assert statements[0].startswith("CREATE TABLE")
+    assert statements[1].startswith("ALTER TABLE")
+
+
+def test_json_param_preserves_json_strings_and_wraps_plain_text() -> None:
+    assert json.loads(_json_param(["a"])) == ["a"]
+    assert json.loads(_json_param('["already"]')) == ["already"]
+    assert json.loads(_json_param("plain warning")) == ["plain warning"]
 
 
 def test_local_product_pdf_ingest_matching_links_and_export(tmp_path) -> None:
@@ -274,6 +358,13 @@ def test_product_family_lookup_seed_loads_and_builds_controlled_queue() -> None:
     assert families["GacoPrime"]["domain_approved"] is True
     assert "roofing_primer" in families["GacoPrime"]["decision_nodes"]
     assert "insulation_primer" in families["GacoPrime"]["decision_nodes"]
+    assert families["GacoOnePass"]["template_option"] == "Gaco 2.0 lb"
+    assert families["GacoOnePass"]["cell_type"] == "closed_cell"
+    assert families["GacoOnePass"]["density_class"] == "2.0 lb"
+    assert families["GacoOnePass"]["priority"] == 20
+    assert "insulation_foam_system" in families["GacoOnePass"]["decision_nodes"]
+    assert families["WALLTITE"]["domain_approved"] is True
+    assert families["PSI closed-cell SPF"]["domain_approved"] is False
     assert "insulation_thermal_barrier" in families["DC315"]["decision_nodes"]
     assert "roofing_granules" in families["Mineral Shield Granules"]["decision_nodes"]
 
@@ -283,8 +374,11 @@ def test_product_family_lookup_seed_loads_and_builds_controlled_queue() -> None:
     assert all(row["discovery_method"] == "product_family_lookup" for row in queue_rows)
     gaco_home = next(row for row in queue_rows if row["source_url"] == "https://gaco.com/")
     assert "GacoFlex S42" in gaco_home["notes"]
+    assert "GacoOnePass [Gaco 2.0 lb]" in gaco_home["notes"]
+    assert "preferred docs: PDS; application guide; installation guide; SDS" in gaco_home["notes"]
     assert len(gaco_home["lookup_ids"]) > 1
     assert "roofing_coating_system" in gaco_home["decision_nodes"]
+    assert "insulation_foam_system" in gaco_home["decision_nodes"]
 
 
 def test_product_family_lookup_infers_decision_nodes_from_terms() -> None:

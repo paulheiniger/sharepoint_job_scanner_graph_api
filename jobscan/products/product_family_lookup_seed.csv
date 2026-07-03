@@ -1,4 +1,4 @@
-vendor,canonical_product_family,lookup_terms,official_vendor_url
+vendor,canonical_product_family,lookup_terms,official_vendor_url,template_option,cell_type,density_class,application_hint,lookup_priority,preferred_documents,status,notes
 Gaco,GacoFlex S20,GacoFlex S20 PDS silicone roof coating,https://gaco.com/product/gacoflex-s20/
 Gaco,GacoFlex S42,GacoFlex S42 PDS silicone roof coating,https://gaco.com/
 Gaco,GacoRoofFoam F2733RHFO,GacoRoofFoam F2733RHFO PDS roof foam,https://gaco.com/product/gacorooffoam-series/
@@ -29,9 +29,18 @@ GAF,UniBase Primer,GAF UniBase Primer PDS,https://www.gaf.com/
 GAF,TPO Red Primer,GAF TPO Red Primer PDS,https://www.gaf.com/
 GAF,Premium Fabric,GAF Premium Fabric PDS roof coating fabric,https://www.gaf.com/
 GAF,Mineral Shield Granules,GAF Mineral Shield Granules PDS,https://www.gaf.com/
-NCFI,InsulBloc OptiMaxx,NCFI InsulBloc OptiMaxx PDS closed cell spray foam,https://www.ncfi.com/
-NCFI,InsulStarLight,NCFI InsulStarLight PDS open cell spray foam,https://www.ncfi.com/
+Gaco,GacoOnePass,GacoOnePass 2 lb closed cell spray foam PDS application guide SDS,https://gaco.com/,Gaco 2.0 lb,closed_cell,2.0 lb,wall/building insulation,high,PDS; application guide; installation guide; SDS,research,Likely better wall-foam match than GacoRoofFoam for insulation template.
+Gaco,GacoWallFoam 183M,GacoWallFoam 183M product data sheet closed cell spray foam,https://gaco.com/,Gaco 2.0 lb,closed_cell,2.0 lb,wall/building insulation,high,PDS; application guide; SDS,research,Legacy/current wall foam option mentioned in lookup.
+Gaco,Gaco open-cell wall foam,Gaco 0.5 lb open cell wall foam PDS GacoWallFoam open cell,https://gaco.com/,Gaco 0.5 lb,open_cell,0.5 lb,wall/building insulation,high,PDS; application guide; SDS,research,Need identify actual Gaco open-cell product family.
+NCFI,InsulBloc OptiMaxx,NCFI InsulBloc OptiMaxx PDS closed cell spray foam,https://www.ncfi.com/,NCFI 2.0 lb,closed_cell,2.0 lb,wall/building insulation,high,PDS; application guide; SDS,known,Likely current NCFI closed-cell equivalent.
+NCFI,InsulStarLight,NCFI InsulStarLight PDS open cell spray foam,https://www.ncfi.com/,NCFI 0.5 lb,open_cell,0.5 lb,wall/building insulation,high,PDS; application guide; SDS,known,Likely current NCFI open-cell equivalent.
 NCFI,3 lb Roofing Foam,NCFI 3 lb roofing foam PDS,https://www.ncfi.com/
+BASF,WALLTITE,BASF WALLTITE closed cell spray foam PDS application guide,https://www.basf.com,BASF 2.0 lb,closed_cell,2.0 lb,wall/building insulation,high,PDS; application guide; SDS,research,Likely BASF closed-cell system.
+BASF,ENERTITE,BASF ENERTITE open cell spray foam PDS application guide,https://www.basf.com,BASF 0.5 lb,open_cell,0.5 lb,wall/building insulation,high,PDS; application guide; SDS,research,Likely BASF open-cell system.
+PSI,PSI closed-cell SPF,PSI 2 lb closed cell spray foam PDS polyurethane systems insulation,,PSI 2.0 lb,closed_cell,2.0 lb,wall/building insulation,medium,PDS; application guide; SDS,unknown,Manufacturer/product family unclear. Needs manual review.
+PSI,PSI open-cell SPF,PSI 0.5 lb open cell spray foam PDS polyurethane systems insulation,,PSI 0.5 lb,open_cell,0.5 lb,wall/building insulation,medium,PDS; application guide; SDS,unknown,Manufacturer/product family unclear. Needs manual review.
+Demilec,Heatlok,Demilec Heatlok closed cell spray foam PDS application guide,https://www.huntsmanbuildingsolutions.com,Demilec 2.0 lb,closed_cell,2.0 lb,wall/building insulation,high,PDS; application guide; SDS,research,Demilec product line now associated with Huntsman Building Solutions.
+Demilec,Sealection 500,Demilec Sealection 500 open cell spray foam PDS application guide,https://www.huntsmanbuildingsolutions.com,Demilec 0.5 lb,open_cell,0.5 lb,wall/building insulation,high,PDS; application guide; SDS,research,Known Demilec open-cell family; verify current documentation.
 AccuFoam,Open Cell AAF1,AccuFoam Open Cell AAF1 PDS,https://www.accufoam.com/
 AccuFoam,Closed Cell 2.0 HFC,AccuFoam Closed Cell 2.0 HFC PDS,https://www.accufoam.com/
 AccuFoam,3 lb Roofing Foam,AccuFoam 3 lb Roofing Foam PDS,https://www.accufoam.com/

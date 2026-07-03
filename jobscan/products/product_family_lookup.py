@@ -17,7 +17,13 @@ LOOKUP_COLUMNS = [
     "lookup_id",
     "vendor",
     "canonical_product_family",
+    "template_option",
+    "cell_type",
+    "density_class",
+    "application_hint",
+    "lookup_priority",
     "lookup_terms",
+    "preferred_documents",
     "official_vendor_url",
     "source_domain",
     "domain_approved",
@@ -26,6 +32,12 @@ LOOKUP_COLUMNS = [
     "active",
     "notes",
 ]
+
+LOOKUP_PRIORITY_TO_QUEUE_PRIORITY = {
+    "high": 20,
+    "medium": 50,
+    "low": 80,
+}
 
 
 def _source_domain(source_url: str) -> str:
@@ -67,10 +79,21 @@ def infer_decision_nodes(vendor: str, product_family: str, lookup_terms: str) ->
     return nodes
 
 
+def _priority_from_lookup_priority(value: Any) -> int:
+    text_value = clean_text(value).lower()
+    return LOOKUP_PRIORITY_TO_QUEUE_PRIORITY.get(text_value, 50)
+
+
 def normalize_lookup_row(row: dict[str, Any], *, approved_domains: set[str] | list[str] | None = None) -> dict[str, Any]:
     vendor = clean_text(row.get("vendor"))
     family = clean_text(row.get("canonical_product_family"))
     lookup_terms = clean_text(row.get("lookup_terms"))
+    template_option = clean_text(row.get("template_option"))
+    cell_type = clean_text(row.get("cell_type"))
+    density_class = clean_text(row.get("density_class"))
+    application_hint = clean_text(row.get("application_hint"))
+    lookup_priority = clean_text(row.get("lookup_priority"))
+    preferred_documents = clean_text(row.get("preferred_documents"))
     official_url = clean_text(row.get("official_vendor_url"))
     domain = _source_domain(official_url)
     nodes = row.get("decision_nodes")
@@ -80,19 +103,31 @@ def normalize_lookup_row(row: dict[str, Any], *, approved_domains: set[str] | li
         except Exception:
             nodes = [part.strip() for part in nodes.split("|") if part.strip()]
     if not nodes:
-        nodes = infer_decision_nodes(vendor, family, lookup_terms)
+        node_text = " ".join(
+            part
+            for part in (lookup_terms, template_option, cell_type, density_class, application_hint, preferred_documents)
+            if part
+        )
+        nodes = infer_decision_nodes(vendor, family, node_text)
     return {
         "lookup_id": clean_text(row.get("lookup_id")) or slugify(f"{vendor}_{family}", "product_family"),
         "vendor": vendor,
         "canonical_product_family": family,
+        "template_option": template_option,
+        "cell_type": cell_type,
+        "density_class": density_class,
+        "application_hint": application_hint,
+        "lookup_priority": lookup_priority,
         "lookup_terms": lookup_terms,
+        "preferred_documents": preferred_documents,
         "official_vendor_url": official_url,
         "source_domain": domain,
         "domain_approved": is_approved_document_url(official_url, approved_domains or DEFAULT_APPROVED_DOMAINS),
         "decision_nodes": nodes,
-        "priority": int(row.get("priority") or 50),
+        "priority": int(row.get("priority") or _priority_from_lookup_priority(lookup_priority)),
         "active": row.get("active", True) is not False and str(row.get("active", "true")).lower() not in {"false", "0", "no"},
         "notes": clean_text(row.get("notes")),
+        "status": clean_text(row.get("status")),
     }
 
 
@@ -147,12 +182,22 @@ def build_document_queue_from_lookup(
             for node in row.get("decision_nodes") or []:
                 if node not in nodes:
                     nodes.append(node)
+        ordered_family_rows = sorted(
+            family_rows,
+            key=lambda row: (int(row.get("priority") or 50), str(row.get("canonical_product_family") or "")),
+        )
         family_labels = [
-            f"{row.get('canonical_product_family')} (terms: {row.get('lookup_terms')})"
-            for row in family_rows[:12]
+            (
+                f"{row.get('canonical_product_family')}"
+                + (f" [{row.get('template_option')}]" if row.get("template_option") else "")
+                + f" (terms: {row.get('lookup_terms')}"
+                + (f"; preferred docs: {row.get('preferred_documents')}" if row.get("preferred_documents") else "")
+                + ")"
+            )
+            for row in ordered_family_rows[:12]
         ]
-        if len(family_rows) > 12:
-            family_labels.append(f"...and {len(family_rows) - 12} more product families")
+        if len(ordered_family_rows) > 12:
+            family_labels.append(f"...and {len(ordered_family_rows) - 12} more product families")
         queue_rows.append(
             queue_product_document_url(
                 url,
@@ -180,7 +225,13 @@ def upsert_product_family_lookup(db_url: str, rows: list[dict[str, Any]]) -> int
                     lookup_id TEXT PRIMARY KEY,
                     vendor TEXT,
                     canonical_product_family TEXT,
+                    template_option TEXT,
+                    cell_type TEXT,
+                    density_class TEXT,
+                    application_hint TEXT,
+                    lookup_priority TEXT,
                     lookup_terms TEXT,
+                    preferred_documents TEXT,
                     official_vendor_url TEXT,
                     source_domain TEXT,
                     domain_approved BOOLEAN DEFAULT false,
@@ -196,6 +247,13 @@ def upsert_product_family_lookup(db_url: str, rows: list[dict[str, Any]]) -> int
         )
         for statement in [
             "ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS source_domain TEXT",
+            "ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS template_option TEXT",
+            "ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS cell_type TEXT",
+            "ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS density_class TEXT",
+            "ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS application_hint TEXT",
+            "ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS lookup_priority TEXT",
+            "ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS preferred_documents TEXT",
+            "ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS status TEXT",
             "ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS domain_approved BOOLEAN DEFAULT false",
             "ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS decision_nodes JSONB DEFAULT '[]'::jsonb",
             "ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS priority INTEGER DEFAULT 50",
@@ -211,19 +269,29 @@ def upsert_product_family_lookup(db_url: str, rows: list[dict[str, Any]]) -> int
                 text(
                     """
                     INSERT INTO product_family_lookup (
-                        lookup_id, vendor, canonical_product_family, lookup_terms,
-                        official_vendor_url, source_domain, domain_approved, decision_nodes,
-                        priority, active, notes, updated_at
+                        lookup_id, vendor, canonical_product_family, template_option,
+                        cell_type, density_class, application_hint, lookup_priority,
+                        lookup_terms, preferred_documents, official_vendor_url,
+                        source_domain, domain_approved, decision_nodes,
+                        priority, active, notes, status, updated_at
                     )
                     VALUES (
-                        :lookup_id, :vendor, :canonical_product_family, :lookup_terms,
-                        :official_vendor_url, :source_domain, :domain_approved,
-                        CAST(:decision_nodes AS JSONB), :priority, :active, :notes, now()
+                        :lookup_id, :vendor, :canonical_product_family, :template_option,
+                        :cell_type, :density_class, :application_hint, :lookup_priority,
+                        :lookup_terms, :preferred_documents, :official_vendor_url,
+                        :source_domain, :domain_approved,
+                        CAST(:decision_nodes AS JSONB), :priority, :active, :notes, :status, now()
                     )
                     ON CONFLICT (lookup_id) DO UPDATE SET
                         vendor = EXCLUDED.vendor,
                         canonical_product_family = EXCLUDED.canonical_product_family,
+                        template_option = EXCLUDED.template_option,
+                        cell_type = EXCLUDED.cell_type,
+                        density_class = EXCLUDED.density_class,
+                        application_hint = EXCLUDED.application_hint,
+                        lookup_priority = EXCLUDED.lookup_priority,
                         lookup_terms = EXCLUDED.lookup_terms,
+                        preferred_documents = EXCLUDED.preferred_documents,
                         official_vendor_url = EXCLUDED.official_vendor_url,
                         source_domain = EXCLUDED.source_domain,
                         domain_approved = EXCLUDED.domain_approved,
@@ -231,6 +299,7 @@ def upsert_product_family_lookup(db_url: str, rows: list[dict[str, Any]]) -> int
                         priority = EXCLUDED.priority,
                         active = EXCLUDED.active,
                         notes = EXCLUDED.notes,
+                        status = EXCLUDED.status,
                         updated_at = now()
                     """
                 ),
