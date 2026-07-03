@@ -171,11 +171,17 @@ def test_session_decision_helpers_include_insulation_surface_decisions() -> None
     proposed = proposed_decisions_from_workbench(workbench)
     final = final_decisions_from_workbench(workbench)
 
+    assert any(row["section"] == "area_calculation_trace" for row in proposed["decisions"])
     assert any(row["section"] == "insulation_surfaces" for row in proposed["decisions"])
+    assert any(row["section"] == "insulation_performance_specs" for row in proposed["decisions"])
     surface = next(row for row in final["decisions"] if row["section"] == "insulation_surfaces")
     assert surface["decision_id"] == "insulation_surface_walls"
     assert surface["item_or_task"] == "Walls"
     assert surface["final_decision_value"]["edited_thickness_inches"] == 2.5
+    performance = next(row for row in final["decisions"] if row["section"] == "insulation_performance_specs")
+    assert performance["decision_id"] == "insulation_performance_walls"
+    assert performance["item_or_task"] == "Walls"
+    assert performance["final_decision_value"]["edited_thickness_inches"] == 2.5
 
 
 def test_estimator_session_lifecycle_and_exports(tmp_path) -> None:

@@ -608,7 +608,11 @@ def _call_openai_scope_interpreter(notes: str, deterministic_scope: dict[str, An
     except Exception as exc:  # pragma: no cover - depends on optional dependency
         raise RuntimeError("openai package is not installed") from exc
     model = os.getenv("OPENAI_SCOPE_INTERPRETER_MODEL") or "gpt-4o-mini"
-    client = OpenAI()
+    try:
+        timeout_seconds = float(os.getenv("OPENAI_SCOPE_INTERPRETER_TIMEOUT_SECONDS", "20"))
+    except (TypeError, ValueError):
+        timeout_seconds = 20.0
+    client = OpenAI(timeout=timeout_seconds)
     response = client.chat.completions.create(
         model=model,
         temperature=0,

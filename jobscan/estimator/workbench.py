@@ -30,6 +30,10 @@ from .insulation_surfaces import (
     build_insulation_deductions,
     parse_r_value_targets,
 )
+from .insulation_performance import (
+    build_area_calculation_trace,
+    build_insulation_performance_specs,
+)
 from .materials import find_current_price
 from .rules import first_nonblank, to_float
 from jobscan.products.product_matching import product_context_for_decision
@@ -954,6 +958,14 @@ def _foam_material_row(materials: list[dict[str, Any]] | None) -> dict[str, Any]
         if str(row.get("package_key") or row.get("template_bucket") or "").lower() == "foam":
             return row
     return None
+
+
+def _ai_scope_debug_context(recommendation: Any | None) -> dict[str, Any]:
+    debug = _rec_value(recommendation, "debug", {}) or {}
+    if not isinstance(debug, dict):
+        return {}
+    ai_debug = debug.get("ai_scope_interpreter") or {}
+    return ai_debug if isinstance(ai_debug, dict) else {}
 
 
 def _build_insulation_surface_rows_for_workbench(
@@ -2822,6 +2834,9 @@ def material_workbench_rows(
                 "item_name": item_name,
                 "product_id": product_context.get("product_id") or "",
                 "product_manufacturer": product_context.get("manufacturer") or "",
+                "product_knowledge_product_name": product_context.get("product_name") or "",
+                "product_knowledge_product_family": product_context.get("product_family") or "",
+                "product_knowledge_category": product_context.get("category") or "",
                 "product_recommended_use": product_context.get("recommended_use") or "",
                 "product_manufacturer_guidance": product_context.get("manufacturer_guidance") or "",
                 "product_coverage": product_context.get("coverage") or "",
@@ -3154,12 +3169,25 @@ def build_estimating_workbench(
         notes=_scope_note_text(recommendation, scope),
         foam_row=_foam_material_row(materials),
     )
+    ai_context = _ai_scope_debug_context(recommendation)
+    area_trace = (
+        build_area_calculation_trace(
+            scope,
+            ai_scope=ai_context.get("ai_parsed_scope"),
+            deterministic_scope=ai_context.get("deterministic_scope"),
+            merge_decisions=ai_context.get("merge_decisions"),
+        )
+        if _is_insulation_scope(scope)
+        else []
+    )
     workbench = {
         "estimate_id": estimate_id,
         "scope": scope,
         "historical_filters": filters,
         "historical_filter_hash": historical_filter_hash(filters),
+        "area_calculation_trace": area_trace,
         "insulation_surfaces": surface_rows,
+        "insulation_performance_specs": [],
         "insulation_deductions": build_insulation_deductions(scope) if _is_insulation_scope(scope) else [],
         "insulation_r_value_targets": parse_r_value_targets(_scope_note_text(recommendation, scope)) if _is_insulation_scope(scope) else [],
         "materials": materials,
@@ -3422,6 +3450,14 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
             }
         )
         row["workbook_cell_write_preview"] = cell_preview_for_material(row)
+    if _is_insulation_scope(scope):
+        if not updated.get("area_calculation_trace"):
+            updated["area_calculation_trace"] = build_area_calculation_trace(scope)
+        updated["insulation_performance_specs"] = build_insulation_performance_specs(
+            scope=scope,
+            surface_rows=_records(updated.get("insulation_surfaces")),
+            foam_row=_foam_material_row(updated.get("materials")),
+        )
     for row in updated.get("labor") or []:
         if row.get("reset_to_historical_default"):
             row["editable_hours_per_1000_sqft"] = row.get("historical_hours_per_1000_sqft", 0.0)

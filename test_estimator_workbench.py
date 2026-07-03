@@ -3,6 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 from jobscan.estimator.insulation_diagnostics import build_insulation_history_diagnostics, write_insulation_history_diagnostics
+from jobscan.estimator.insulation_performance import build_area_calculation_trace
 from jobscan.estimator.insulation_surfaces import build_insulation_surface_decisions, parse_r_value_targets
 from jobscan.estimator.schemas import EstimateRecommendation, EstimatorData
 from jobscan.estimator.workbench import (
@@ -899,8 +900,15 @@ def test_insulation_r_value_targets_drive_surface_thickness_and_foam_aggregate()
                 "thickness_inches": 2,
                 "yield_factor": 500000,
                 "current_unit_price": 100,
+                "historical_item": "NCFI Closed Cell Foam",
+                "product_id": "gaco_roof_foam_f2780",
+                "product_manufacturer": "Gaco",
+                "product_knowledge_product_name": "GacoRoofFoam Low GWP F2780",
                 "product_aged_r_value_per_inch": 5.7,
                 "product_aged_r_value_per_inch_source": "Aged R-value 5.7 per inch.",
+                "product_warnings": ["Verify application conditions and pass thickness."],
+                "product_source_documents": ["product_documents/GacoRoofFoam-F2780.pdf"],
+                "product_source_evidence_rows": [{"field": "aged_r_value", "source_page": 2}],
             }
         ],
         "labor": [],
@@ -921,6 +929,80 @@ def test_insulation_r_value_targets_drive_surface_thickness_and_foam_aggregate()
     assert foam["estimated_sets"] == 0.01914
     assert foam["estimated_cost"] == 1914
     assert len(foam["surface_formula_outputs"]) == 2
+
+    performance = {row["surface_type"]: row for row in recalculated["insulation_performance_specs"]}
+    assert performance["walls"]["product_knowledge_match"] == "GacoRoofFoam Low GWP F2780"
+    assert performance["walls"]["alignment_status"] == "different_current_item"
+    assert performance["walls"]["product_r_value_per_inch"] == 5.7
+    assert performance["walls"]["edited_thickness_inches"] == 2.5
+    assert performance["walls"]["estimated_cost"] > 0
+    assert "Historical recommendation differs" in performance["walls"]["notes"]
+    assert performance["ceiling"]["required_thickness_inches"] > performance["walls"]["required_thickness_inches"]
+
+
+def test_insulation_area_trace_shows_ai_conflict_and_selected_deterministic_value() -> None:
+    rows = build_area_calculation_trace(
+        {
+            "division": "Insulation",
+            "template_type": "insulation",
+            "building_footprint_length_ft": 30,
+            "building_footprint_width_ft": 40,
+            "wall_height_ft": 9,
+            "footprint_area_sqft": 1200,
+            "gross_wall_area_sqft": 1260,
+            "ceiling_area_sqft": 1200,
+            "gross_insulation_area_sqft": 2460,
+            "opening_area_known_sqft": 72,
+            "net_insulation_area_sqft": 2388,
+            "notes": "30x40 metal building with 9 ft walls.",
+        },
+        ai_scope={"gross_wall_area_sqft": 1300, "net_insulation_area_sqft": 2400},
+        deterministic_scope={"gross_wall_area_sqft": 1260, "net_insulation_area_sqft": 2388},
+    )
+
+    by_step = {row["step"]: row for row in rows}
+    assert by_step["wall_area"]["conflict"] is True
+    assert by_step["wall_area"]["selected_value"] == 1260
+    assert by_step["wall_area"]["selected_source"] == "deterministic"
+    assert by_step["net_insulation_area"]["conflict"] is True
+    assert by_step["net_insulation_area"]["selected_value"] == 2388
+
+
+def test_insulation_performance_specs_handle_missing_product_knowledge() -> None:
+    workbench = {
+        "scope": {"division": "Insulation", "template_type": "insulation", "foam_type": "closed_cell"},
+        "insulation_surfaces": [
+            {
+                "include": True,
+                "surface_type": "walls",
+                "surface": "Walls",
+                "net_area_sqft": 1000,
+                "target_r_value": 14,
+                "foam_type": "closed_cell",
+            }
+        ],
+        "materials": [
+            {
+                "include": True,
+                "decision_id": "insulation_foam_system",
+                "package_key": "foam",
+                "template_bucket": "foam",
+                "package": "Foam",
+                "item_name": "Manual closed-cell foam",
+                "yield_factor": 500000,
+                "current_unit_price": 100,
+            }
+        ],
+        "labor": [],
+        "adders": [],
+    }
+
+    recalculated = recalculate_workbench_tables(workbench)
+    spec = recalculated["insulation_performance_specs"][0]
+
+    assert spec["alignment_status"] == "no_product_knowledge_match"
+    assert spec["product_fit_status"] == "review"
+    assert any("No product knowledge match" in warning for warning in spec["product_warnings"])
 
 
 def test_insulation_surface_builder_uses_default_r_per_inch_when_product_missing() -> None:

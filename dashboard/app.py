@@ -101,6 +101,40 @@ MATERIAL_WORKBENCH_COMPACT_COLUMNS = [
     "notes",
 ]
 
+AREA_TRACE_COMPACT_COLUMNS = [
+    "step",
+    "formula",
+    "inputs",
+    "ai_value",
+    "deterministic_value",
+    "selected_value",
+    "selected_source",
+    "confidence",
+    "conflict",
+    "notes",
+]
+
+INSULATION_PERFORMANCE_COMPACT_COLUMNS = [
+    "surface",
+    "application_context",
+    "net_area_sqft",
+    "target_r_value",
+    "foam_type",
+    "historical_product_decision",
+    "selected_current_product",
+    "product_knowledge_match",
+    "alignment_status",
+    "product_fit_status",
+    "product_r_value_per_inch",
+    "required_thickness_inches",
+    "edited_thickness_inches",
+    "estimated_sets",
+    "estimated_cost",
+    "product_guidance",
+    "product_warnings",
+    "notes",
+]
+
 LABOR_WORKBENCH_COMPACT_COLUMNS = [
     "include",
     "workbook_row",
@@ -4516,6 +4550,63 @@ def estimator_prototype_page() -> None:
             key=f"wb_show_row_details_{workbench_key}_{historical_filters_key}",
             help="Shows accepted/rejected evidence, percentile ranges, relaxed filters, and source diagnostics.",
         )
+        if original_workbench.get("area_calculation_trace"):
+            st.markdown("#### Area Calculation Trace")
+            area_trace_df = pd.DataFrame(original_workbench.get("area_calculation_trace") or [])
+            st.dataframe(
+                area_trace_df[[column for column in AREA_TRACE_COMPACT_COLUMNS if column in area_trace_df.columns]],
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        if original_workbench.get("insulation_performance_specs"):
+            st.markdown("#### Insulation Performance")
+            performance_df = pd.DataFrame(original_workbench.get("insulation_performance_specs") or [])
+            performance_column_order = (
+                list(performance_df.columns)
+                if show_row_details
+                else [column for column in INSULATION_PERFORMANCE_COMPACT_COLUMNS if column in performance_df.columns]
+            )
+            edited_performance_df = st.data_editor(
+                performance_df,
+                use_container_width=True,
+                hide_index=True,
+                num_rows="fixed",
+                key=f"wb_insulation_performance_{workbench_key}_{scope_key}_{historical_filters_key}",
+                column_order=performance_column_order,
+                column_config={
+                    "surface": "Surface",
+                    "application_context": "Application",
+                    "net_area_sqft": "Net Sq Ft",
+                    "target_r_value": "Target R",
+                    "foam_type": "Foam Type",
+                    "historical_product_decision": "Historical Product",
+                    "selected_current_product": "Selected Product",
+                    "product_knowledge_match": "Product Sheet Match",
+                    "alignment_status": "Alignment",
+                    "product_fit_status": "Product Fit",
+                    "product_r_value_per_inch": "R / Inch",
+                    "required_thickness_inches": "Required Thickness",
+                    "edited_thickness_inches": "Edited Thickness",
+                    "estimated_sets": "Sets",
+                    "estimated_cost": "Cost",
+                    "product_guidance": "Product Guidance",
+                    "product_warnings": "Warnings",
+                    "notes": "Notes",
+                },
+                disabled=[column for column in performance_column_order if column not in {"target_r_value", "edited_thickness_inches"}],
+            )
+            edited_performance_rows = edited_performance_df.to_dict(orient="records")
+            surfaces_by_type = {row.get("surface_type"): row for row in edited_workbench.get("insulation_surfaces") or []}
+            for row in edited_performance_rows:
+                surface = surfaces_by_type.get(row.get("surface_type"))
+                if not surface:
+                    continue
+                for field in ("target_r_value", "edited_thickness_inches"):
+                    if row.get(field) not in (None, ""):
+                        surface[field] = row.get(field)
+            edited_workbench["insulation_surfaces"] = list(surfaces_by_type.values())
+
         st.markdown("#### Materials")
         add_material_key = f"wb_add_material_line_{workbench_key}_{scope_key}_{historical_filters_key}"
         if st.button("Add Material Line", key=add_material_key):

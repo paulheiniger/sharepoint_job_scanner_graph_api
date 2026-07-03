@@ -89,9 +89,15 @@ def _decision_trace_rows(
     materials: list[dict[str, Any]],
     labor: list[dict[str, Any]],
     adders: list[dict[str, Any]],
+    performance_specs: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for section, section_rows in (("Material", materials), ("Labor", labor), ("Adder", adders)):
+    for section, section_rows in (
+        ("Insulation Performance", performance_specs or []),
+        ("Material", materials),
+        ("Labor", labor),
+        ("Adder", adders),
+    ):
         for row in section_rows or []:
             rows.append(
                 {
@@ -100,7 +106,7 @@ def _decision_trace_rows(
                     "decision_id": row.get("decision_id") or row.get("package_key") or row.get("adder_key"),
                     "template_bucket": row.get("template_bucket") or row.get("package_key") or row.get("adder_key"),
                     "workbook_row": row.get("workbook_row"),
-                    "item_or_task": row.get("item_name") or row.get("labor_package") or row.get("adder") or row.get("package"),
+                    "item_or_task": row.get("surface") or row.get("item_name") or row.get("labor_package") or row.get("adder") or row.get("package"),
                     "historical_recommendation": row.get("historical_recommendation"),
                     "editable_value": row.get("editable_value") or row.get("editable_decision_value"),
                     "calculated_output": row.get("calculated_output_summary") or row.get("calculated_output"),
@@ -114,16 +120,18 @@ def _decision_trace_rows(
     return rows
 
 
-def _product_guidance_rows(materials: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _product_guidance_rows(materials: list[dict[str, Any]], performance_specs: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for row in materials or []:
+    for row in [*(performance_specs or []), *(materials or [])]:
         if not any(
             row.get(key)
             for key in (
                 "product_id",
                 "product_guidance",
                 "product_warning_summary",
+                "product_warnings",
                 "product_source_documents",
+                "source_evidence",
                 "product_source_evidence_rows",
             )
         ):
@@ -133,7 +141,7 @@ def _product_guidance_rows(materials: list[dict[str, Any]]) -> list[dict[str, An
                 "include": row.get("include"),
                 "decision_id": row.get("decision_id") or row.get("package_key"),
                 "workbook_row": row.get("workbook_row"),
-                "package": row.get("package"),
+                "package": row.get("package") or row.get("surface"),
                 "item_name": row.get("item_name"),
                 "product_id": row.get("product_id"),
                 "manufacturer": row.get("product_manufacturer"),
@@ -141,7 +149,7 @@ def _product_guidance_rows(materials: list[dict[str, Any]]) -> list[dict[str, An
                 "warnings": row.get("product_warning_summary") or row.get("product_warnings"),
                 "coverage": row.get("product_coverage"),
                 "source_documents": row.get("product_source_documents") or row.get("product_source_evidence"),
-                "source_evidence": row.get("product_source_evidence_rows"),
+                "source_evidence": row.get("product_source_evidence_rows") or row.get("source_evidence"),
                 "match_score": row.get("product_match_score"),
             }
         )
@@ -196,14 +204,43 @@ def build_workbench_review_payloads(
     materials = list(recalculated.get("materials") or [])
     labor = list(recalculated.get("labor") or [])
     adders = list(recalculated.get("adders") or [])
-    decision_trace = _decision_trace_rows(materials, labor, adders)
-    product_guidance = _product_guidance_rows(materials)
+    performance_specs = list(recalculated.get("insulation_performance_specs") or [])
+    area_trace = list(recalculated.get("area_calculation_trace") or [])
+    decision_trace = _decision_trace_rows(materials, labor, adders, performance_specs)
+    product_guidance = _product_guidance_rows(materials, performance_specs)
 
     summary = {
         "run_id": resolved_run_id,
         "timestamp": resolved_timestamp,
         "input_notes": input_notes or "",
         "parsed_scope": recalculated.get("scope") or {},
+        "area_calculation_trace": area_trace,
+        "insulation_performance_specs": _compact_rows(
+            performance_specs,
+            [
+                "include",
+                "surface",
+                "application_context",
+                "net_area_sqft",
+                "target_r_value",
+                "foam_type",
+                "historical_product_decision",
+                "selected_current_product",
+                "product_knowledge_match",
+                "alignment_status",
+                "product_fit_status",
+                "product_r_value_per_inch",
+                "r_value_source",
+                "required_thickness_inches",
+                "edited_thickness_inches",
+                "estimated_units",
+                "estimated_sets",
+                "estimated_cost",
+                "product_guidance",
+                "product_warnings",
+                "notes",
+            ],
+        ),
         "historical_filters": recalculated.get("historical_filters") or {},
         "materials_final": _compact_rows(
             materials,
@@ -282,6 +319,8 @@ def build_workbench_review_payloads(
         "timestamp": resolved_timestamp,
         "input_notes": input_notes or "",
         "workbench": recalculated,
+        "area_calculation_trace": area_trace,
+        "insulation_performance_specs": performance_specs,
         "materials_diagnostics": materials,
         "labor_diagnostics": labor,
         "adders_diagnostics": adders,
@@ -293,6 +332,8 @@ def build_workbench_review_payloads(
 
     workbook_sheets = {
         "Parsed Scope": summary["parsed_scope"],
+        "Area Calculation Trace": area_trace,
+        "Insulation Performance": summary["insulation_performance_specs"],
         "Historical Filters": summary["historical_filters"],
         "Materials Compact": summary["materials_final"],
         "Labor Compact": summary["labor_final"],

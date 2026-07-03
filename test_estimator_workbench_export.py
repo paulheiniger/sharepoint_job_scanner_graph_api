@@ -147,6 +147,13 @@ def test_insulation_review_package_exports_without_workbook(tmp_path) -> None:
                 "package": "Foam",
                 "package_key": "foam",
                 "item_name": "Foam",
+                "historical_item": "Closed-cell spray foam",
+                "product_id": "gaco_roof_foam_f2780",
+                "product_manufacturer": "Gaco",
+                "product_knowledge_product_name": "GacoRoofFoam Low GWP F2780",
+                "product_aged_r_value_per_inch": 5.7,
+                "product_aged_r_value_per_inch_source": "Aged R-value 5.7 per inch.",
+                "product_source_documents": ["product_documents/GacoRoofFoam-F2780.pdf"],
                 "editable_qty_per_sqft": 0,
                 "calculated_quantity": 0,
                 "estimated_cost": 0,
@@ -154,6 +161,28 @@ def test_insulation_review_package_exports_without_workbook(tmp_path) -> None:
                 "confidence": "none",
                 "notes": "Confirm foam type and thickness.",
             }
+        ],
+        "insulation_surfaces": [
+            {
+                "include": True,
+                "surface_type": "walls",
+                "surface": "Walls",
+                "gross_area_sqft": 1260,
+                "deduction_area_sqft": 72,
+                "net_area_sqft": 1188,
+                "target_r_value": 14,
+                "foam_type": "closed_cell",
+            },
+            {
+                "include": True,
+                "surface_type": "ceiling",
+                "surface": "Ceiling",
+                "gross_area_sqft": 1200,
+                "deduction_area_sqft": 0,
+                "net_area_sqft": 1200,
+                "target_r_value": 30,
+                "foam_type": "closed_cell",
+            },
         ],
         "labor": [
             {
@@ -190,6 +219,13 @@ def test_insulation_review_package_exports_without_workbook(tmp_path) -> None:
         assert "exported_workbook.xlsx" not in names
         summary = json.loads(archive.read("workbench_summary.json"))
         assert summary["historical_filters"]["template_type"] == "insulation"
+        assert summary["area_calculation_trace"]
+        assert {row["surface"] for row in summary["insulation_performance_specs"]} == {"Walls", "Ceiling"}
+        archive.extract("workbench_summary.xlsx", path=tmp_path)
+
+    summary_workbook = load_workbook(tmp_path / "workbench_summary.xlsx", read_only=True, data_only=True)
+    assert "Area Calculation Trace" in summary_workbook.sheetnames
+    assert "Insulation Performance" in summary_workbook.sheetnames
 
 
 def test_workbench_output_generates_estimate_workbook_and_review_package_includes_it(tmp_path) -> None:
