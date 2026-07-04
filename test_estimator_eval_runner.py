@@ -34,9 +34,16 @@ def test_numeric_matches_with_small_tolerance() -> None:
 def test_review_text_collects_flags_and_notes() -> None:
     result = {
         "review_flags": ["Verify infrared moisture scan"],
-        "draft_workbook_inputs": {"adders_review_rows": [{"flag": "manual review"}]},
-        "material_plan": [{"notes": "Primer review due to rust"}],
-        "labor_plan": [{"notes": "Labor review"}],
+        "decision_workbench": {
+            "roofing_primer_template_decisions": [
+                {"notes": "Primer review due to rust", "compatibility_warnings": ["substrate warning"]}
+            ]
+        },
+        "draft_workbook_inputs": {
+            "workbook_decisions": [
+                {"notes": "Labor review", "calculated_output_summary": "hours=12"},
+            ]
+        },
     }
     text = runner.review_text(result)
     assert "infrared" in text
@@ -57,9 +64,25 @@ def test_eval_case_report_shape_with_fake_result(monkeypatch) -> None:
         labor_plan = []
         travel_plan = {"travel_labor_hours": 0}
         review_flags = []
-        draft_workbook_inputs = {"header": {"C12_estimated_sqft": 100}, "adders_review_rows": []}
+        draft_workbook_inputs = {"header": {"C12_estimated_sqft": 100}, "workbook_decisions": []}
 
     monkeypatch.setattr(runner, "estimate_from_field_notes", lambda *args, **kwargs: FakeRecommendation())
+    monkeypatch.setattr(runner, "build_estimating_workbench", lambda *args, **kwargs: {"review_flags": []})
+    monkeypatch.setattr(
+        runner,
+        "workbench_to_draft_workbook_inputs",
+        lambda _workbench: {
+            "header": {"C12_estimated_sqft": 100},
+            "workbook_decisions": [
+                {
+                    "row_type": "material",
+                    "template_bucket": "coating",
+                    "category": "coating",
+                    "item": "silicone coating",
+                }
+            ],
+        },
+    )
     report = runner.evaluate_case(
         {
             "case_id": "fake",
@@ -89,7 +112,14 @@ def test_print_report_includes_audit_command_for_failures_or_warnings(capsys) ->
                     "passed": False,
                     "failures": ["bad"],
                     "warnings": [],
-                    "actual": {"header": {}, "parsed_fields": {}, "material_items": [], "labor_tasks": [], "review_flags": []},
+                    "actual": {
+                        "header": {},
+                        "parsed_fields": {},
+                        "workbook_decision_count": 0,
+                        "material_decisions": [],
+                        "labor_decisions": [],
+                        "review_flags": [],
+                    },
                 }
             ],
         }
@@ -100,7 +130,7 @@ def test_print_report_includes_audit_command_for_failures_or_warnings(capsys) ->
     assert '--database-url "$NEON_DATABASE_URL"' in output
 
 
-def test_eval_fails_when_historical_cost_ratio_is_priced(monkeypatch) -> None:
+def test_eval_ignores_legacy_flat_material_plan(monkeypatch) -> None:
     class FakeRecommendation:
         parsed_fields = {"estimated_sqft": 10000, "project_type": "roof coating", "substrate": "metal", "coating_type": "silicone"}
         recommended_scope = ["roof coating"]
@@ -116,13 +146,30 @@ def test_eval_fails_when_historical_cost_ratio_is_priced(monkeypatch) -> None:
         labor_plan = []
         travel_plan = {"travel_labor_hours": 0}
         review_flags = []
-        draft_workbook_inputs = {"header": {"C12_estimated_sqft": 10000}, "adders_review_rows": []}
+        draft_workbook_inputs = {"header": {"C12_estimated_sqft": 10000}, "workbook_decisions": []}
 
     monkeypatch.setattr(runner, "estimate_from_field_notes", lambda *args, **kwargs: FakeRecommendation())
+    monkeypatch.setattr(runner, "build_estimating_workbench", lambda *args, **kwargs: {"review_flags": []})
+    monkeypatch.setattr(
+        runner,
+        "workbench_to_draft_workbook_inputs",
+        lambda _workbench: {
+            "header": {"C12_estimated_sqft": 10000},
+            "workbook_decisions": [
+                {
+                    "row_type": "material",
+                    "template_bucket": "coating",
+                    "category": "coating",
+                    "item": "silicone",
+                    "estimated_cost": 10000,
+                }
+            ],
+        },
+    )
     report = runner.evaluate_case({"case_id": "fake", "notes": "fake", "expected": {"estimated_sqft": 10000}})
 
-    assert not report["passed"]
-    assert any("historical_cost_ratio_fallback" in failure for failure in report["failures"])
+    assert report["passed"]
+    assert "historical_cost_ratio_fallback" not in json.dumps(report)
 
 
 def test_eval_fails_when_simple_roof_labor_hours_are_extreme(monkeypatch) -> None:
@@ -133,9 +180,27 @@ def test_eval_fails_when_simple_roof_labor_hours_are_extreme(monkeypatch) -> Non
         labor_plan = [{"task": "labor_prep", "total_hours": 900, "estimated_cost": 65000}]
         travel_plan = {"travel_labor_hours": 0}
         review_flags = []
-        draft_workbook_inputs = {"header": {"C12_estimated_sqft": 10000}, "adders_review_rows": []}
+        draft_workbook_inputs = {"header": {"C12_estimated_sqft": 10000}, "workbook_decisions": []}
 
     monkeypatch.setattr(runner, "estimate_from_field_notes", lambda *args, **kwargs: FakeRecommendation())
+    monkeypatch.setattr(runner, "build_estimating_workbench", lambda *args, **kwargs: {"review_flags": []})
+    monkeypatch.setattr(
+        runner,
+        "workbench_to_draft_workbook_inputs",
+        lambda _workbench: {
+            "header": {"C12_estimated_sqft": 10000},
+            "workbook_decisions": [
+                {"row_type": "material", "template_bucket": "coating", "category": "coating", "item": "silicone"},
+                {
+                    "row_type": "labor",
+                    "template_bucket": "labor_prep",
+                    "task": "labor_prep",
+                    "total_hours": 900,
+                    "estimated_cost": 65000,
+                },
+            ],
+        },
+    )
     report = runner.evaluate_case({"case_id": "fake", "notes": "fake", "expected": {"estimated_sqft": 10000}})
 
     assert not report["passed"]

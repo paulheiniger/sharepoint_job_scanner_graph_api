@@ -805,9 +805,6 @@ def proposed_decisions_from_workbench(workbench: dict[str, Any]) -> dict[str, An
         "roofing_travel_freight_template_decisions",
         "roofing_accessory_template_decisions",
         "roofing_labor_template_decisions",
-        "materials",
-        "labor",
-        "adders",
     ):
         for row in recalculated.get(section) or []:
             rows.append(_decision_record_from_workbench_row(row, section, final=False))
@@ -844,9 +841,6 @@ def final_decisions_from_workbench(workbench: dict[str, Any]) -> dict[str, Any]:
         "roofing_travel_freight_template_decisions",
         "roofing_accessory_template_decisions",
         "roofing_labor_template_decisions",
-        "materials",
-        "labor",
-        "adders",
     ):
         for row in recalculated.get(section) or []:
             if not row.get("include"):
@@ -876,14 +870,16 @@ def workbook_cell_writes_from_inputs(draft_workbook_inputs: dict[str, Any]) -> l
     }.items():
         if key in header:
             writes.append({"section": "header", "cell": cell, "field": key, "value": header.get(key)})
-    material_rows = draft_workbook_inputs.get("material_rows") or []
-    for index, row in enumerate(material_rows):
-        category = str(row.get("category") or "")
+    for index, row in enumerate(draft_workbook_inputs.get("workbook_decisions") or []):
+        if not isinstance(row, dict):
+            continue
+        category = str(row.get("category") or row.get("template_bucket") or "")
         writes.append(
             {
-                "section": "materials",
+                "section": row.get("section") or row.get("source_section") or "workbook_decisions",
                 "template_type": template_type,
                 "row_index": index,
+                "row_type": row.get("row_type"),
                 "decision_id": row.get("decision_id"),
                 "template_bucket": row.get("template_bucket") or category,
                 "workbook_row": row.get("workbook_row"),
@@ -893,6 +889,11 @@ def workbook_cell_writes_from_inputs(draft_workbook_inputs: dict[str, Any]) -> l
                 "quantity": row.get("quantity"),
                 "unit_price": row.get("unit_price"),
                 "estimated_cost": row.get("estimated_cost"),
+                "task": row.get("task"),
+                "crew_size": row.get("crew_size"),
+                "total_hours": row.get("total_hours"),
+                "adjusted_days": row.get("adjusted_days"),
+                "formula_mode": row.get("formula_mode"),
                 "formula_model": row.get("formula_model"),
                 "formula_source": row.get("formula_source"),
                 "calculated_output_summary": row.get("calculated_output_summary"),
@@ -900,31 +901,6 @@ def workbook_cell_writes_from_inputs(draft_workbook_inputs: dict[str, Any]) -> l
                 "target_hint": row.get("workbook_row") or category,
             }
         )
-    for index, row in enumerate(draft_workbook_inputs.get("labor_rows") or []):
-        writes.append(
-            {
-                "section": "labor",
-                "template_type": template_type,
-                "row_index": index,
-                "decision_id": row.get("decision_id"),
-                "template_bucket": row.get("template_bucket") or row.get("task"),
-                "workbook_row": row.get("workbook_row"),
-                "row_traceability": row.get("row_traceability"),
-                "task": row.get("task"),
-                "crew_size": row.get("crew_size"),
-                "total_hours": row.get("total_hours"),
-                "adjusted_days": row.get("adjusted_days"),
-                "estimated_cost": row.get("estimated_cost"),
-                "formula_mode": row.get("formula_mode"),
-                "formula_model": row.get("formula_model"),
-                "formula_source": row.get("formula_source"),
-                "calculated_output_summary": row.get("calculated_output_summary"),
-                "workbook_cell_write_preview": row.get("workbook_cell_write_preview") or [],
-            }
-        )
-    for section in ("travel_rows", "adders_review_rows"):
-        for index, row in enumerate(draft_workbook_inputs.get(section) or []):
-            writes.append({"section": section, "row_index": index, **row})
     return _jsonable(writes)
 
 

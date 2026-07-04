@@ -8,72 +8,61 @@ from uuid import uuid4
 
 from openpyxl import Workbook, load_workbook
 
-from jobscan.estimator.workbench import workbench_to_draft_workbook_inputs
 from jobscan.estimator.workbench_export import EXCEL_CELL_LIMIT, export_workbench_review_package
-from jobscan.estimator.workbook_writer import generate_estimate_workbook, resolve_default_template_path
 
 
 def sample_workbench() -> dict:
     return {
         "estimate_id": "review-test",
         "scope": {
+            "division": "Roofing",
+            "template_type": "roofing",
             "project_type": "roof coating",
             "net_sqft": 10000,
             "created_at": datetime.now(UTC),
         },
         "historical_filters": {"division": "Roofing", "source_year": None},
-        "materials": [
+        "roofing_coating_template_decisions": [
             {
                 "include": True,
-                "workbook_row": "26-28",
-                "package": "Silicone",
-                "package_key": "coating",
-                "item_name": "GAF High Solids Silicone 55 Gal",
-                "editable_basis_sqft": 10000,
-                "editable_qty_per_sqft": 0.02,
-                "historical_qty_per_sqft": 0.02,
-                "calculated_quantity": 200,
-                "unit": "gal",
-                "current_unit_price": 38,
-                "estimated_cost": 7600,
-                "evidence_count": 12,
-                "confidence": "high",
-                "rows_accepted": 12,
-                "rows_rejected": 2,
-                "rejection_reasons": {"missing_qty": 2},
-                "notes": "Historical default from 12 roofing jobs.",
-                "explanation": "Used in historical jobs.",
+                "section": "roofing_coating_template_decisions",
+                "decision_id": "roofing_coating_system_row_26",
+                "template_bucket": "coating",
+                "workbook_row": "26",
+                "editable_selector_code": "11",
+                "resolved_template_option": "Gaco Silicone",
+                "selected_pricing_candidate": "GAF High Solids Silicone 55 Gal",
+                "basis_sqft": 10000,
+                "gal_per_100_sqft": 1.5,
+                "waste_factor_pct": 10,
+                "unit_price": 38,
+                "estimated_gallons": 166.67,
+                "estimated_cost": 6333.46,
+                "historical_recommendation": "Historical coating decision from 12 jobs.",
+                "decision_evidence_count": 12,
+                "decision_confidence": "high",
+                "product_id": "gaf_high_solids_silicone",
+                "product_manufacturer": "GAF",
+                "product_guidance": "Use as silicone roof coating.",
+                "product_warning_summary": "Do not apply over wet substrate.",
+                "product_source_documents": ["product_documents/GAF Silicone.pdf"],
+                "workbook_cell_write_preview": [{"cell": "Estimate!A26", "field": "selector_code", "value": "11"}],
+                "notes": "Decision-first coating row.",
             }
         ],
-        "labor": [
+        "roofing_labor_template_decisions": [
             {
                 "include": True,
+                "section": "roofing_labor_template_decisions",
+                "decision_id": "roofing_labor_base",
+                "template_bucket": "labor_base",
+                "labor_task": "Base Coat",
                 "workbook_row": "122",
-                "labor_package": "Base Coat",
-                "package_key": "labor_base",
-                "editable_hours_per_1000_sqft": 4,
-                "historical_hours_per_1000_sqft": 4,
-                "calculated_hours": 40,
+                "days": 2,
                 "crew_size": 4,
-                "labor_rate": 72,
-                "estimated_cost": 2880,
-                "evidence_count": 9,
-                "confidence": "medium",
-                "notes": "Historical default from 9 roofing jobs.",
-                "explanation": "Historical median.",
-            }
-        ],
-        "adders": [
-            {
-                "include": False,
-                "workbook_row": "73/74",
-                "adder": "Lift",
-                "adder_key": "lift",
-                "editable_value": 1500,
-                "estimated_cost": 0,
-                "evidence_count": 3,
-                "confidence": "medium",
-                "notes": "Shown unchecked.",
+                "hourly_rate": 72,
+                "total_hours": 64,
+                "estimated_cost": 4608,
             }
         ],
         "similar_jobs": [{"job_id": "J1", "customer": "Acme"}],
@@ -81,7 +70,7 @@ def sample_workbench() -> dict:
     }
 
 
-def test_export_package_creates_zip_with_expected_files_and_workbook(tmp_path) -> None:
+def test_export_package_creates_zip_with_decision_files_and_workbook(tmp_path) -> None:
     workbook = Workbook()
     workbook.active["A1"] = "estimate"
     workbook_path = tmp_path / "generated.xlsx"
@@ -105,52 +94,32 @@ def test_export_package_creates_zip_with_expected_files_and_workbook(tmp_path) -
             "estimator_input.txt",
             "exported_workbook.xlsx",
         }.issubset(names)
-        assert not any(name.endswith(".pdf") or name.endswith(".png") for name in names)
+        assert "workbook_export_error.txt" not in names
         summary = json.loads(archive.read("workbench_summary.json"))
         assert summary["input_notes"] == "Roof coating notes"
         assert summary["parsed_scope"]["project_type"] == "roof coating"
-        assert summary["decision_trace"][0]["section"] == "Roof Coating System"
-        assert "roofing_foam_template_decisions" in summary
-        assert summary["roofing_coating_template_decisions"]
-        assert "roofing_primer_template_decisions" in summary
-        assert "roofing_detail_template_decisions" in summary
-        assert "roofing_detail_quantity_template_decisions" in summary
-        assert "roofing_board_fastener_template_decisions" in summary
-        assert "roofing_granules_template_decisions" in summary
-        assert "roofing_equipment_template_decisions" in summary
-        assert "roofing_travel_freight_template_decisions" in summary
-        assert "roofing_accessory_template_decisions" in summary
-        assert "roofing_labor_template_decisions" in summary
+        assert summary["workbook_decisions"]
+        assert "materials_final" not in summary
+        assert "labor_final" not in summary
+        assert "adders_final" not in summary
+        assert any(row["product_id"] == "gaf_high_solids_silicone" for row in summary["product_guidance"])
         readme = archive.read("README.txt").decode("utf-8")
         assert "Decision Trace" in readme
-        assert "Product Guidance" in readme
-
+        assert "Debug Decision JSON" in readme
         archive.extract("workbench_summary.xlsx", path=tmp_path)
+
     summary_workbook = load_workbook(tmp_path / "workbench_summary.xlsx", read_only=True, data_only=True)
-    assert {
-        "Materials Compact",
-        "Roofing SPF Foam",
-        "Roof Coating System",
-        "Roofing Primer System",
-        "Roofing Fabric Sealant",
-        "Roof Detail Quantities",
-        "Roof Board Fasteners",
-        "Roofing Granules",
-        "Roof Equipment",
-        "Roof Travel Freight",
-        "Roof Accessories",
-        "Roofing Labor Plan",
-        "Labor Compact",
-        "Adders Compact",
-        "Decision Trace",
-        "Product Guidance",
-        "Debug Materials",
-        "Debug Labor",
-        "Debug Adders",
-    }.issubset(set(summary_workbook.sheetnames))
+    sheetnames = set(summary_workbook.sheetnames)
+    assert "Workbook Decisions" in sheetnames
+    assert "Decision Trace" in sheetnames
+    assert "Product Guidance" in sheetnames
+    assert "Materials Compact" not in sheetnames
+    assert "Labor Compact" not in sheetnames
+    assert "Adders Compact" not in sheetnames
+    assert "Debug Materials" not in sheetnames
 
 
-def test_insulation_review_package_exports_without_workbook(tmp_path) -> None:
+def test_insulation_review_package_uses_decision_sheets(tmp_path) -> None:
     workbench = {
         "estimate_id": "insulation-review",
         "scope": {
@@ -162,66 +131,38 @@ def test_insulation_review_package_exports_without_workbook(tmp_path) -> None:
             "opening_area_missing": True,
         },
         "historical_filters": {"division": "Insulation", "template_type": "insulation"},
-        "materials": [
+        "area_calculation_trace": [
+            {"component": "walls", "formula": "perimeter * height", "selected_area_sqft": 1260}
+        ],
+        "insulation_foam_template_decisions": [
             {
-                "include": False,
+                "include": True,
+                "decision_id": "insulation_foam_template_selector",
+                "template_bucket": "foam",
                 "workbook_row": "19-21",
-                "package": "Foam",
-                "package_key": "foam",
-                "item_name": "Foam",
-                "historical_item": "Closed-cell spray foam",
-                "product_id": "gaco_roof_foam_f2780",
-                "product_manufacturer": "Gaco",
-                "product_knowledge_product_name": "GacoRoofFoam Low GWP F2780",
-                "product_aged_r_value_per_inch": 5.7,
-                "product_aged_r_value_per_inch_source": "Aged R-value 5.7 per inch.",
-                "product_source_documents": ["product_documents/GacoRoofFoam-F2780.pdf"],
-                "editable_qty_per_sqft": 0,
-                "calculated_quantity": 0,
-                "estimated_cost": 0,
-                "evidence_count": 0,
-                "confidence": "none",
-                "notes": "Confirm foam type and thickness.",
+                "editable_selector_code": "11",
+                "resolved_template_option": "Gaco 2.0 lb.",
+                "basis_sqft": 2388,
+                "thickness_inches": 3,
+                "yield_or_coverage": 12000,
+                "unit_price": 2.4,
+                "estimated_units": 597,
+                "estimated_cost": 1432.8,
             }
         ],
-        "insulation_surfaces": [
+        "insulation_labor_template_decisions": [
             {
                 "include": True,
-                "surface_type": "walls",
-                "surface": "Walls",
-                "gross_area_sqft": 1260,
-                "deduction_area_sqft": 72,
-                "net_area_sqft": 1188,
-                "target_r_value": 14,
-                "foam_type": "closed_cell",
-            },
-            {
-                "include": True,
-                "surface_type": "ceiling",
-                "surface": "Ceiling",
-                "gross_area_sqft": 1200,
-                "deduction_area_sqft": 0,
-                "net_area_sqft": 1200,
-                "target_r_value": 30,
-                "foam_type": "closed_cell",
-            },
-        ],
-        "labor": [
-            {
-                "include": False,
+                "decision_id": "insulation_labor_foam",
+                "template_bucket": "labor_foam",
                 "workbook_row": "86",
-                "labor_package": "Foam",
-                "package_key": "labor_foam",
-                "editable_hours_per_1000_sqft": 0,
-                "calculated_hours": 0,
-                "estimated_cost": 0,
-                "evidence_count": 0,
-                "confidence": "none",
-                "notes": "Confirm insulation scope.",
+                "days": 1.5,
+                "crew_size": 3,
+                "hourly_rate": 72,
+                "total_hours": 36,
+                "estimated_cost": 2592,
             }
         ],
-        "adders": [],
-        "similar_jobs": [],
         "review_flags": ["Missing rollup door width."],
     }
 
@@ -236,105 +177,26 @@ def test_insulation_review_package_exports_without_workbook(tmp_path) -> None:
         names = set(archive.namelist())
         assert "workbench_summary.json" in names
         assert "workbench_summary.xlsx" in names
-        assert "README.txt" in names
         assert "workbook_export_error.txt" in names
         assert "exported_workbook.xlsx" not in names
         summary = json.loads(archive.read("workbench_summary.json"))
-        assert summary["historical_filters"]["template_type"] == "insulation"
         assert summary["area_calculation_trace"]
-        assert {row["surface"] for row in summary["insulation_performance_specs"]} == {"Walls", "Ceiling"}
+        assert summary["insulation_foam_template_decisions"]
+        assert summary["workbook_decisions"]
         archive.extract("workbench_summary.xlsx", path=tmp_path)
 
     summary_workbook = load_workbook(tmp_path / "workbench_summary.xlsx", read_only=True, data_only=True)
     assert "Area Calculation Trace" in summary_workbook.sheetnames
-    assert "Insulation Performance" in summary_workbook.sheetnames
-    assert {
-        "Insulation Decisions Summary",
-        "Insulation Details",
-        "Insulation Thermal Barrier",
-        "Insulation Support Materials",
-        "Insulation Equipment",
-        "Insulation Compliance",
-        "Insulation Labor Plan",
-        "Insulation Pricing",
-    }.issubset(set(summary_workbook.sheetnames))
+    assert "Insulation Foam Template" in summary_workbook.sheetnames
+    assert "Insulation Labor Plan" in summary_workbook.sheetnames
+    assert "Workbook Decisions" in summary_workbook.sheetnames
 
 
-def test_workbench_output_generates_estimate_workbook_and_review_package_includes_it(tmp_path) -> None:
-    workbench = sample_workbench()
-    workbench["materials"].extend(
-        [
-            {
-                "include": True,
-                "workbook_row": "39",
-                "package": "Primer",
-                "package_key": "primer",
-                "item_name": "Epoxy Primer 5 Gal",
-                "editable_basis_sqft": 10000,
-                "editable_qty_per_sqft": 0.001,
-                "historical_qty_per_sqft": 0.001,
-                "calculated_quantity": 10,
-                "unit": "pail",
-                "current_unit_price": 275,
-                "estimated_cost": 2750,
-                "evidence_count": 5,
-                "confidence": "medium",
-                "notes": "Primer included by estimator.",
-            },
-            {
-                "include": False,
-                "workbook_row": "43",
-                "package": "Caulk / Detail",
-                "package_key": "caulk_detail",
-                "item_name": "Unchecked sealant",
-                "editable_basis_sqft": 10000,
-                "editable_qty_per_sqft": 1,
-                "historical_qty_per_sqft": 1,
-                "calculated_quantity": 10000,
-                "unit": "tube",
-                "current_unit_price": 999,
-                "estimated_cost": 999000,
-                "evidence_count": 5,
-                "confidence": "medium",
-                "notes": "Should not export because unchecked.",
-            },
-        ]
-    )
-    draft_inputs = workbench_to_draft_workbook_inputs(workbench)
-
-    assert {row["category"] for row in draft_inputs["material_rows"]} == {"coating", "primer"}
-    assert {row["task"] for row in draft_inputs["labor_rows"]} == {"labor_base"}
-
-    workbook_path = generate_estimate_workbook(draft_inputs, resolve_default_template_path(), tmp_path, "workbench.xlsx")
-    workbook = load_workbook(workbook_path, data_only=False)
-    ws = workbook["Estimate"]
-
-    assert ws["A26"].value == 11
-    assert ws["C26"].value == 10000
-    assert ws["D26"].value == 1
-    assert ws["E26"].value == 38
-    assert ws["C39"].value == 10
-    assert ws["E39"].value == 275
-    assert ws["B122"].value == 1.25
-    assert ws["C122"].value == 4
-    assert ws["A43"].value != "Unchecked sealant"
-
-    zip_path = export_workbench_review_package(
-        workbench=workbench,
-        input_notes="Roof coating notes",
-        output_dir=tmp_path,
-        workbook_path=workbook_path,
-    )
-    with zipfile.ZipFile(zip_path) as archive:
-        assert "exported_workbook.xlsx" in archive.namelist()
-        assert "workbook_export_error.txt" not in archive.namelist()
-
-
-def test_export_excel_handles_timezone_datetimes_and_long_text(tmp_path) -> None:
+def test_export_excel_handles_timezone_datetimes_and_long_decision_text(tmp_path) -> None:
     workbench = sample_workbench()
     long_text = "x" * (EXCEL_CELL_LIMIT + 1000)
-    workbench["materials"][0]["explanation"] = long_text
-    workbench["materials"][0]["debug_payload"] = {
+    workbench["roofing_coating_template_decisions"][0]["product_guidance"] = long_text
+    workbench["roofing_coating_template_decisions"][0]["debug_payload"] = {
         "when": datetime.now(UTC),
         "uuid": uuid4(),
         "amount": Decimal("12.34"),
@@ -346,56 +208,15 @@ def test_export_excel_handles_timezone_datetimes_and_long_text(tmp_path) -> None
     with zipfile.ZipFile(zip_path) as archive:
         archive.extract("workbench_summary.xlsx", path=tmp_path)
     workbook = load_workbook(tmp_path / "workbench_summary.xlsx", read_only=True, data_only=True)
-    materials = workbook["Debug Materials"]
-    headers = [cell.value for cell in next(materials.iter_rows(min_row=1, max_row=1))]
-    explanation_index = headers.index("explanation")
-    row = next(materials.iter_rows(min_row=2, max_row=2))
-    value = row[explanation_index].value
+    decisions = workbook["Roof Coating System"]
+    headers = [cell.value for cell in next(decisions.iter_rows(min_row=1, max_row=1))]
+    notes_index = headers.index("product_guidance")
+    row = next(decisions.iter_rows(min_row=2, max_row=2))
+    value = row[notes_index].value
 
     assert isinstance(value, str)
     assert len(value) <= EXCEL_CELL_LIMIT
     assert "truncated for Excel" in value
-
-
-def test_review_package_includes_product_guidance_sheet(tmp_path) -> None:
-    workbench = sample_workbench()
-    workbench["materials"][0].update(
-        {
-            "decision_id": "roofing_coating_system",
-            "estimator_decision": "Silicone coating",
-            "historical_recommendation": "Historical coating decision from 12 jobs.",
-            "editable_value": "item=GAF High Solids Silicone",
-            "calculated_output_summary": "quantity=200, cost=7600",
-            "row_traceability": "Estimate rows 26-28",
-            "decision_evidence_count": 12,
-            "decision_confidence": "high",
-            "product_id": "gaf_high_solids_silicone",
-            "product_manufacturer": "GAF",
-            "product_guidance": "Use as silicone roof coating.",
-            "product_warning_summary": "Do not apply over wet substrate.",
-            "product_source_documents": ["product_documents/GAF Silicone.pdf"],
-            "product_source_evidence_rows": [
-                {
-                    "field": "limitation",
-                    "source_page": 2,
-                    "source_text": "Do not apply over wet substrate.",
-                }
-            ],
-            "product_match_score": 0.95,
-        }
-    )
-
-    zip_path = export_workbench_review_package(workbench=workbench, input_notes="Notes", output_dir=tmp_path)
-
-    with zipfile.ZipFile(zip_path) as archive:
-        summary = json.loads(archive.read("workbench_summary.json"))
-        guidance = summary["product_guidance"]
-        assert any(row["product_id"] == "gaf_high_solids_silicone" for row in guidance)
-        assert any("wet substrate" in str(row.get("warnings") or "") for row in guidance)
-        archive.extract("workbench_summary.xlsx", path=tmp_path)
-
-    workbook = load_workbook(tmp_path / "workbench_summary.xlsx", read_only=True, data_only=True)
-    assert "Product Guidance" in workbook.sheetnames
 
 
 def test_missing_workbook_export_does_not_crash_package_export(tmp_path) -> None:

@@ -174,15 +174,17 @@ def test_workbench_surfaces_decision_first_defaults() -> None:
     )
 
     workbench = build_estimating_workbench(recommendation, decision_history_data())
-    foam = next(row for row in workbench["materials"] if row["package_key"] == "foam")
-    labor = next(row for row in workbench["labor"] if row["package_key"] == "labor_foam")
+    foam = workbench["insulation_foam_template_decisions"][0]
+    labor = next(row for row in workbench["insulation_labor_template_decisions"] if row["template_bucket"] == "labor_foam")
 
-    assert foam["decision_id"] == "insulation_foam_system"
-    assert foam["decision_evidence_count"] >= 5
+    assert "materials" not in workbench
+    assert "labor" not in workbench
+    assert foam["decision_id"] == "insulation_foam_template_selector"
+    assert foam["historical_selector_evidence_count"] >= 5
     assert foam["thickness_inches"] == 2.0
-    assert foam["yield_factor"] == 13500
-    assert foam["workbook_rows_controlled"] == "19-21"
-    assert labor["decision_id"] == "insulation_labor_foam"
+    assert foam["yield_or_coverage"] == 13500
+    assert foam["workbook_row"] == "19-21"
+    assert labor["decision_id"] == "insulation_labor_foam_row_86"
     assert labor["days"] == 1.0
-    assert labor["crew_people_selection"] == 3
+    assert labor["crew_size"] == 3
     assert labor["formula_mode"] == "mixed_formula"

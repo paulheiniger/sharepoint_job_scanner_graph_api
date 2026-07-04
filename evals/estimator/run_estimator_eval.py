@@ -24,6 +24,7 @@ except Exception:
 
 from jobscan.db_connections import create_resilient_engine, database_target
 from jobscan.estimator import estimate_from_field_notes, load_estimator_data
+from jobscan.estimator.workbench import build_estimating_workbench, workbench_to_draft_workbook_inputs
 
 
 DEFAULT_CASES_PATH = Path(__file__).with_name("field_notes_cases.json")
@@ -86,17 +87,22 @@ def rows_text(rows: list[dict[str, Any]]) -> str:
 def review_text(result: dict[str, Any]) -> str:
     parts: list[str] = []
     parts.extend(clean_text(flag) for flag in result.get("review_flags") or [])
+    workbench = result.get("decision_workbench") or {}
+    parts.extend(clean_text(flag) for flag in workbench.get("review_flags") or [])
     draft = result.get("draft_workbook_inputs") or {}
-    for row in draft.get("adders_review_rows") or []:
+    for row in draft.get("workbook_decisions") or []:
         if isinstance(row, dict):
-            parts.extend(clean_text(value) for value in row.values())
-        else:
-            parts.append(clean_text(row))
-    for collection_name in ("material_plan", "labor_plan"):
-        for row in result.get(collection_name) or []:
+            parts.append(clean_text(row.get("notes")))
+            parts.append(clean_text(row.get("compatibility_warnings")))
+            parts.append(clean_text(row.get("calculated_output_summary")))
+    for section_name, section_rows in workbench.items():
+        if not section_name.endswith("_template_decisions") and section_name not in {"insulation_surfaces", "insulation_performance_specs"}:
+            continue
+        for row in section_rows or []:
             if isinstance(row, dict):
                 parts.append(clean_text(row.get("notes")))
-                parts.append(clean_text(row.get("applies_reason")))
+                parts.append(clean_text(row.get("compatibility_warnings")))
+                parts.append(clean_text(row.get("product_warning_summary")))
     return "\n".join(part for part in parts if part).lower()
 
 
@@ -179,9 +185,14 @@ def has_heavy_detail_trigger(notes: str) -> bool:
 def evaluate_case(case: dict[str, Any], estimator_data: Any = None) -> dict[str, Any]:
     result_obj = estimate_from_field_notes(case["notes"], {}, data=estimator_data)
     result = object_to_dict(result_obj)
+    workbench = build_estimating_workbench(result_obj, estimator_data)
+    draft_inputs = workbench_to_draft_workbook_inputs(workbench)
+    result["decision_workbench"] = workbench
+    result["draft_workbook_inputs"] = draft_inputs
     expected = case.get("expected") or {}
-    material_rows = [row for row in result.get("material_plan") or [] if isinstance(row, dict)]
-    labor_rows = [row for row in result.get("labor_plan") or [] if isinstance(row, dict)]
+    decision_rows = [row for row in draft_inputs.get("workbook_decisions") or [] if isinstance(row, dict)]
+    material_rows = [row for row in decision_rows if lower_text(row.get("row_type")) == "material"]
+    labor_rows = [row for row in decision_rows if lower_text(row.get("row_type")) == "labor"]
     all_review_text = review_text(result)
     failures: list[str] = []
     warnings: list[str] = []
@@ -297,8 +308,9 @@ def evaluate_case(case: dict[str, Any], estimator_data: Any = None) -> dict[str,
     actual_summary = {
         "parsed_fields": result.get("parsed_fields"),
         "header": (result.get("draft_workbook_inputs") or {}).get("header"),
-        "material_items": [row_text(row) for row in material_rows],
-        "labor_tasks": [row_text(row) for row in labor_rows],
+        "workbook_decision_count": len(decision_rows),
+        "material_decisions": [row_text(row) for row in material_rows],
+        "labor_decisions": [row_text(row) for row in labor_rows],
         "review_flags": result.get("review_flags") or [],
     }
     return {
@@ -414,8 +426,9 @@ def print_report(report: dict[str, Any], *, audit_output_dir: Path = Path("outpu
             actual = result["actual"]
             print(f"  header: {json.dumps(actual.get('header'), default=str)[:1000]}")
             print(f"  parsed: {json.dumps(actual.get('parsed_fields'), default=str)[:1000]}")
-            print(f"  materials: {actual.get('material_items')}")
-            print(f"  labor: {actual.get('labor_tasks')}")
+            print(f"  workbook_decision_count: {actual.get('workbook_decision_count')}")
+            print(f"  material decisions: {actual.get('material_decisions')}")
+            print(f"  labor decisions: {actual.get('labor_decisions')}")
             print(f"  review_flags: {actual.get('review_flags')}")
 
 

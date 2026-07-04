@@ -363,14 +363,10 @@ def test_insulation_workbench_uses_foam_sets_area_thickness_model() -> None:
     )
 
     workbench = build_estimating_workbench(recommendation, data)
-    foam = next(row for row in workbench["materials"] if row["package_key"] == "foam")
+    foam = workbench["insulation_foam_template_decisions"][0]
 
-    assert foam["quantity_model"] == "foam_sets_from_area_thickness_yield"
-    assert foam["median_units_per_sqft_per_inch"] == 0.002
-    assert foam["median_sets_per_sqft_per_inch"] == 0.000002
-    assert foam["historical_qty_per_sqft"] == 0.006
-    assert foam["calculated_quantity"] == 6
-    assert foam["estimated_units"] == 6
-    assert foam["estimated_sets"] == 0.006
-    assert foam["unit"] == "estimated_units"
-    assert foam["estimated_cost"] == 600
+    assert "materials" not in workbench
+    assert foam["formula_model"] == "foam_sets_from_area_thickness_yield"
+    assert foam["workbook_row"] == "19-21"
+    assert foam["basis_sqft"] == 1000
+    assert foam["calculated_output_summary"].startswith("units=")

@@ -1,22 +1,36 @@
-# SharePoint Job Scanner — Project Instructions
+# Spray-Tec AI Platform — Project Instructions
 
-## Project objective
+## Project Mission
 
-This repository supports a production-oriented SharePoint job indexing,
-document extraction, operational reporting, estimating, and bid-assistance
-pipeline.
+This repository supports Spray-Tec's operational AI platform across SharePoint ingestion, document intelligence, estimating, reporting, workflow automation, and future Copilot-style assistants. The mission is to capture institutional knowledge and make it available through AI-assisted workflows.
 
-Optimize for:
+## Repository Scope
 
-- low Microsoft Graph usage
-- incremental processing
-- resumability
-- auditability
-- safe reruns
-- reliable database-backed state
-- actionable operational reporting
+- SharePoint and Microsoft Graph ingestion
+- Operational PostgreSQL / Neon data platform
+- Document intelligence and extraction
+- AI-assisted estimating
+- Historical estimate mining
+- Template intelligence
+- Decision graph and knowledge graph
+- Product knowledge
+- Operational dashboards and reporting
+- Power BI semantic models
+- Workflow automation
+- Future Copilot-style conversational experiences
 
-## Architecture principles
+## Core Design Principles
+
+- Preserve institutional knowledge.
+- Treat Excel estimating workbooks as trusted calculation engines.
+- Prefer deterministic business rules over AI guesses when rules exist.
+- Use AI for ambiguity, interpretation, recommendations, and missing information.
+- Make recommendations explainable with historical evidence and product guidance.
+- Capture user corrections as future training data.
+- Build reusable knowledge layers instead of one-off features.
+- Prefer extending existing architecture over parallel implementations.
+
+## Platform Architecture Principles
 
 Treat Microsoft Graph as the source system, not as the operational state store.
 
@@ -111,6 +125,101 @@ values.
 
 Schema migrations should be backward-compatible when practical.
 
+## Knowledge Layers
+
+This repository architecture is organized into several knowledge layers that support Spray-Tec's operational AI platform.
+
+These knowledge layers should remain reusable across the entire platform. The Estimating Assistant is one consumer of these layers, but future scheduling, CRM, reporting, operations, and Copilot experiences should reuse the same underlying knowledge rather than duplicate logic.
+
+### Operational Data
+
+SharePoint serves as the source content repository. PostgreSQL/Neon stores resolved identifiers, scan state, extraction state, timestamps, errors, and delta tokens. Document extraction processes content to populate semantic models, which enable operational reporting and workflow automation.
+
+### Template Intelligence
+
+Excel templates are treated as business-rule engines. The system preserves selector maps, lookup tables, formulas, workbook dependencies, row mappings, and business assumptions to maintain deterministic business logic.
+
+### Decision Graph
+
+The Decision Graph models estimator-controlled decisions rather than spreadsheet rows. Decision nodes preserve editable inputs, workbook traceability, downstream calculations, historical evidence, and product guidance to support explainable and auditable decision-making.
+
+### Historical Decision Mining
+
+Historical estimates are mined to learn the decisions estimators made, rather than focusing on workbook outputs. This enables capturing institutional knowledge and improving recommendation quality.
+
+### Product Knowledge
+
+Product Data Sheets (PDS), Application Guides, Installation Guides, Technical Bulletins, and Safety Data Sheets (SDS) form a product knowledge layer attached to decision nodes, providing recommended uses, limitations, coverage, and application guidance.
+
+### Workbook Formula Engine
+
+Workbook formulas remain the trusted source for calculations such as gallons, units, labor, totals, and pricing, ensuring deterministic and authoritative results.
+
+## Estimator Intelligence Architecture
+
+The Estimating Assistant is an AI estimator—not an AI spreadsheet filler. Excel workbooks are the trusted calculation engines. The AI's responsibility is to infer the same decisions an experienced Spray-Tec estimator would make from field notes, emails, dictated notes, drawings, photos, and historical estimates. Every estimator edit should become future training data.
+
+### Core Estimating Flow
+
+Field Notes / Emails / Photos / Drawings  
+→ AI Scope Interpretation  
+→ Deterministic Geometry & Validation  
+→ Decision Graph  
+→ Historical Decision Evidence  
+→ Product Knowledge  
+→ Workbook Formula Engine  
+→ Estimator Review  
+→ Workbook Export  
+→ Session Capture
+
+### Decision-First Philosophy
+
+The AI predicts estimator decisions—not workbook outputs.  
+**Roofing examples:** manufacturer/system, chemistry, warranty, wet mils, primer, fabric, board stock, thermal barrier, equipment, labor plan.  
+**Insulation examples:** surface scope, target R-value, open vs closed cell, foam system, thickness, thermal barrier, primer, labor plan.  
+Gallons, sets, labor hours, costs, and totals are always workbook outputs, not direct AI predictions.
+
+### Template Intelligence
+
+Templates are business-rule engines. Preserve selector maps, lookup tables, workbook row mappings, formulas, dependencies, and business assumptions. Prefer extracting workbook logic over statistically learning existing business rules.
+
+### Decision Graph
+
+Decision nodes represent estimator-controlled inputs. Preserve template rows, selector codes, editable inputs, workbook dependencies, downstream calculations, historical evidence, product guidance, and workbook traceability.
+
+### Historical Decision Mining
+
+Historical estimates answer: "What decisions did estimators make?"  
+Mine decisions such as manufacturer, product system, warranty, wet mils, foam type, target thickness, labor planning, and equipment—not primarily workbook outputs.
+
+### Product Knowledge
+
+Product Data Sheets (PDS), Application Guides, Installation Guides, Technical Bulletins, and SDS support decision nodes. Product knowledge provides recommended uses, approved substrates, limitations, coverage, R-values, application guidance, and warnings—but never automatically overrides estimator decisions.
+
+### AI Responsibilities
+
+AI is used for interpreting notes, extracting scope, proposing decisions, explaining recommendations, summarizing evidence, and identifying missing information. AI is not used for replacing workbook formulas, authoritative pricing, deterministic geometry, identifiers, or financial calculations.
+
+### Session Learning
+
+Store raw notes, parsed scope, proposed decisions, historical evidence, product guidance, estimator edits, workbook export, and final decisions as the long-term training corpus.
+
+### Continuous Learning
+
+Every completed estimating session should become a future training example by preserving raw notes, proposed decisions, estimator edits, final decisions, workbook exports, and supporting evidence.
+
+### Evaluation Philosophy
+
+Evaluation should primarily validate estimator decisions, deterministic calculations, workbook outputs, explainability, historical evidence, product guidance, and workbook export integrity—rather than only quantity-per-square-foot metrics.
+
+### Guiding Principle
+
+Optimize for:  
+**"Given these notes, what would an experienced Spray-Tec estimator decide?"**  
+—not for predicting spreadsheet outputs.  
+AI should think like the estimator, not like the spreadsheet.
+
+
 ## Extraction behavior
 
 Prefer deterministic extraction from structured files and known templates
@@ -168,21 +277,47 @@ Commands should provide concise summaries including:
 Failures must include enough identifying context to diagnose and rerun the
 affected records without flooding logs.
 
-## Testing and completion
+## Testing and Completion
 
 After changing code:
 
-1. Run the most relevant unit tests, integration tests, linting, type checks,
-   migration checks, and smoke tests available.
-2. Report the actual commands and results.
-3. Do not claim success merely because the code imports or compiles.
-4. Verify the intended behavior where practical.
-5. State unresolved risks and assumptions.
-6. Provide the next commands as one copy-pasteable multiline shell block when
-   they belong together.
+1. Run the most relevant unit tests, integration tests, linting, type checks, migration checks, and smoke tests available.
+2. Report the actual commands executed and their results.
+3. Do not claim success simply because code imports or compiles.
+4. Verify the intended behavior whenever practical.
+5. State remaining assumptions, limitations, and risks.
+6. Provide copy-pasteable multiline shell commands for any recommended follow-up steps.
 
-Prefer commands that can be run from the repository root and return enough
-output to diagnose the result in a single response.
+Evaluation should prioritize behavior over implementation details.
+
+For estimator-related work, verify:
+- AI scope interpretation
+- deterministic geometry and calculations
+- decision graph outputs
+- historical decision recommendations
+- product guidance
+- workbook calculations
+- workbook export integrity
+- session capture when applicable
+
+For operational workflows, verify:
+- scanner behavior
+- extraction behavior
+- database writes
+- dashboard functionality
+- reporting outputs
+- resumability
+- diagnostics
+
+Prefer evaluation-driven development.
+
+When adding significant capability:
+- add or extend representative evaluation fixtures
+- prevent regressions with automated tests
+- keep smoke tests runnable from the repository root
+- avoid introducing functionality that cannot be validated
+
+Do not remove or weaken existing validation merely to satisfy new functionality.
 
 ## Security
 
@@ -201,406 +336,17 @@ Use environment variables and sanitized placeholders.
 
 The `.env` file must remain excluded from Git. Do not print its values.
 
----
-
-## Estimator, relationship mining, and bid takeoff objectives
-
-This repository now also supports Spray-Tec estimating workflows, including:
-
-1. field-notes-to-estimate assistance
-2. historical estimate line item extraction
-3. relationship mining from parsed estimate data
-4. pricing catalog integration
-5. Excel estimate workbook generation
-6. AI-assisted bid takeoff evaluation
-
-The estimating system should be built as a deterministic, auditable rules engine with AI-assisted interpretation layered around it.
-
-Do not ask an LLM to directly invent estimate quantities, prices, labor, markup, or final totals.
-
-Preferred estimator flow:
-
-field notes / bid files / historical estimates
-→ structured scope and quantities
-→ deterministic pricing and calculation
-→ historical relationship evidence
-→ estimator review flags
-→ workbook/dashboard output
-→ estimator feedback
-→ improved rules and tests
-
-Use AI for:
-
-- interpreting messy field notes
-- classifying ambiguous scope
-- summarizing supporting evidence
-- explaining estimate assumptions
-- identifying missing information
-- comparing estimator corrections to system assumptions
-
-Do not use AI as the source of truth for:
-
-- current material pricing
-- final estimate totals
-- invoice values
-- labor math
-- warranty/wet-mil calculations
-- database identifiers
-- authoritative extracted values
-
-## Estimate template handling
-
-Estimate templates vary by division and must not share row maps unless explicitly compatible.
-
-Known template types:
-
-- roofing
-- insulation
-- unknown
-
-Preserve `template_type` through:
-
-- document extraction
-- estimate_template_rows
-- line item classification
-- relationship mining
-- estimator data loading
-- workbook generation
-- dashboard displays
-
-Do not apply roofing row mappings to insulation templates.
-
-Do not mix roofing labor buckets and insulation labor buckets in relationship mining unless the relationship explicitly normalizes across template types.
-
-When adding a new estimate template:
-
-1. add template detection
-2. add a separate row map
-3. preserve formulas where possible
-4. add parser tests using a fixture
-5. add workbook writer tests if generation is supported
-6. include template_type in downstream outputs
-
-## Estimator calculation principles
-
-The estimator should be explainable and reproducible.
-
-For every priced estimate row, preserve or generate:
-
-- item/package
-- quantity
-- unit
-- unit price
-- estimated cost
-- pricing source
-- quantity source
-- historical evidence count when applicable
-- review flag
-- notes explaining the assumption
-
-Current pricing catalog is the source of truth for unit pricing.
-
-Historical extracted estimate rows are the source of truth for quantity ratios, labor rates, and package relationships.
-
-Use deterministic formulas for:
-
-- square footage
-- deductions
-- coating gallons
-- wet mil assumptions
-- waste factors
-- travel calculations
-- labor-hour math
-- cost rollups
-
-Important pricing rule:
-
-`needs_review = true` does not mean exclude from price.
-Only rows with `estimated_cost IS NULL` should be excluded from numeric totals.
-
-Review flags should identify uncertainty without silently dropping cost-bearing assumptions.
-
-## Material calibration
-
-Secondary materials such as primer, seam treatment, fastener treatment, caulk/detail materials, foam, membrane, thermal barrier, and accessories should not remain blank allowances when enough information exists to estimate them.
-
-Preferred material estimate priority:
-
-1. exact user-provided quantity
-2. historical quantity ratio from similar jobs
-3. historical cost-per-sqft ratio from similar jobs
-4. deterministic fallback rule
-5. unpriced manual review allowance
-
-Use current pricing catalog for unit cost whenever possible.
-
-Use relationship tables and job_package_summary for historical quantity/cost behavior.
-
-Do not treat cost allowances as physical quantities.
-
-Material calibration should distinguish:
-
-- physical_quantity
-- cost_allowance
-- labor_budget
-- derived_ratio
-- unknown
-
-## Labor calibration
-
-Labor should remain package-specific wherever possible.
-
-Do not collapse specific labor tasks into generic `labor` if a more specific package is available.
-
-Examples of roofing labor packages:
-
-- labor_prep
-- labor_prime
-- labor_seam_sealer
-- labor_base
-- labor_top_coat
-- labor_caulk
-- labor_details
-- labor_cleanup
-- labor_loading
-- labor_traveling
-- infrared_scan
-- labor_top_coat_granules
-
-Examples of insulation labor packages:
-
-- labor_set_up
-- labor_mask
-- labor_prime
-- labor_membrane
-- labor_foam
-- labor_dc_315
-- labor_misc
-- labor_clean_up
-- labor_loading
-- labor_traveling
-- meals_lodging
-
-Labor relationship outputs should preserve:
-
-- total_hours
-- total_days
-- crew_size
-- hours_per_sqft
-- cost_per_sqft
-- evidence_count
-- supporting job IDs
-
-Missing or malformed historical labor rows should create review flags or diagnostics, not crash the estimator.
-
-Never convert possibly missing numeric values directly with `int(...)` or `float(...)`.
-Use safe numeric helpers that treat None, NaN, empty strings, and infinity as missing.
-
-## Relationship mining architecture
-
-Relationship mining should read from database-backed extracted tables, not raw source files.
-
-Preferred inputs:
-
-- estimate_template_rows
-- estimate_line_item_classifications
-- pricing_catalog
-- jobs / estimate_jobs
-- documents / source_documents where traceability is needed
-
-Preferred intermediate/output tables:
-
-- source_documents
-- estimate_line_items_raw
-- estimate_line_items_normalized
-- estimate_jobs
-- job_package_summary
-- relationship_material_qty_ratios
-- relationship_labor_rates
-- relationship_package_cooccurrence
-- relationship_warranty_coating
-- relationship_anomalies
-- estimator_rule_suggestions
-
-job_package_summary should be the main input for relationship profiling.
-
-It should preserve:
-
-- job_id
-- source_year
-- division
-- pipeline_status
-- status
-- template_type
-- project_type
-- substrate
-- area_sqft
-- warranty_years
-- wet_mils
-- coating_type
-- roof_condition
-- access_complexity
-- package
-- total_quantity
-- unit
-- total_cost
-- total_hours
-- qty_per_sqft
-- cost_per_sqft
-- hours_per_sqft
-- has_physical_quantity
-- has_allowance
-- review_required
-- evidence_line_item_ids
-
-Relationship mining must preserve traceability back to source documents and raw line items.
-
-Missing optional context columns such as warranty_years or wet_mils should not crash profiling.
-Instead, generate diagnostics that explain what is missing.
-
-Required diagnostics where practical:
-
-- relationship_input_diagnostics.csv
-- package_normalization_diagnostics.csv
-- missing_job_context.csv
-- labor_rate_diagnostics.csv
-
-## Bid takeoff principles
-
-AI-assisted bid takeoff should be evaluated against completed takeoff examples.
-
-Do not optimize only for visually plausible output.
-
-For bid takeoff, preserve:
-
-- source file
-- sheet/page
-- detected scope region
-- candidate quantity
-- confidence
-- reason
-- link to completed takeoff prior when available
-- human review status
-
-Preferred bid takeoff flow:
-
-bid files / plan set
-→ document indexing
-→ sheet detection
-→ scope and quantity candidates
-→ estimator review
-→ comparison to completed takeoff
-→ evaluation metrics
-→ improved selector/extractor rules
-
-Codex should not make broad bid takeoff changes without an evaluation fixture or expected output.
-
-## Evaluation-driven development
-
-When improving estimator, relationship mining, dashboarding, or bid takeoff behavior, prefer adding evals before broad refactors.
-
-Recommended eval structure:
-
-- evals/estimator/field_notes_cases.json
-- evals/estimator/run_estimator_eval.py
-- evals/relationship_mining/run_relationship_eval.py
-- evals/template_parsing/run_template_eval.py
-- evals/bid_takeoff/run_takeoff_eval.py
-
-Each eval should:
-
-1. use representative fixtures or database-backed test data
-2. assert expected outputs
-3. print a concise pass/fail report
-4. exit nonzero on failed required checks
-5. avoid secrets in fixtures or logs
-
-For field notes estimator evals, check:
-
-- estimated sqft
-- gross/deduction/net area
-- project type
-- substrate
-- coating or foam system
-- warranty years
-- required material packages
-- excluded material/labor packages
-- travel reasonableness
-- review flags
-
-For relationship mining evals, check:
-
-- job_package_summary has specific packages, not only generic labor/materials
-- area_sqft and hours_per_sqft are populated when possible
-- material ratios exist for known packages when evidence exists
-- labor rates exist when labor hours and area exist
-- diagnostics exist and are useful
-
-For bid takeoff evals, check:
-
-- expected sheets found
-- expected scope categories found
-- quantities compared to completed takeoff within tolerance
-- uncertain cases flagged instead of guessed
-
-## Dashboard and operations
-
-The dashboard should support both business use and operational support.
-
-Add or preserve an Admin / Health view where practical, showing:
-
-- database connection status
-- jobs count
-- documents count
-- extraction status counts
-- document_content count
-- estimate_template_rows count
-- template_type counts
-- pricing_catalog current rows
-- line item classification counts
-- job_package_summary count
-- relationship table counts
-- recent failed documents or parser errors
-- last scan/extraction/parser/profiler timestamps
-
-Dashboard pages must fail gracefully when optional tables are missing.
-
-Do not expose secrets or raw connection strings in the dashboard.
-
-## Support and production handoff
-
-Assume an outside IT provider may host infrastructure but application-level support remains with this project.
-
-Build features that help diagnose issues quickly:
-
-- clear error messages
-- run summaries
-- row counts
-- diagnostics files
-- rerunnable commands
-- health checks
-- failed-record IDs
-- parser version fields
-- timestamps
-
-Application-level issues include:
-
-- scanner failures
-- extraction failures
-- parser bugs
-- estimator logic issues
-- dashboard errors
-- relationship mining problems
-- workbook generation problems
-- integration changes
-
-Infrastructure-level issues include:
-
-- server availability
-- network access
-- Microsoft tenant/app permissions
-- backups
-- environment variables
-- SSL/domains
-
-Keep this distinction clear in documentation and runbooks.
+## Long-Term Platform Vision
+
+This repository is evolving into an operational AI platform for Spray-Tec, combining document intelligence, historical knowledge, product knowledge, decision support, reporting, and workflow automation. The Estimating Assistant is the first major AI application built on these shared knowledge layers. Future operational assistants should reuse the same Template Intelligence, Decision Graph, Historical Decisions, Product Knowledge, and Operational Data layers rather than building separate logic.
+
+## Development Philosophy
+
+- Optimize for preserving Spray-Tec institutional knowledge.
+- Build reusable knowledge layers before building application-specific features.
+- Prefer explainable recommendations over opaque predictions.
+- Preserve workbook logic whenever it already captures company expertise.
+- Capture user corrections as future training data.
+- AI should recommend decisions, not replace experienced estimators.
+- Favor thin, end-to-end vertical slices over broad unfinished architecture.
+- Every major feature should improve the long-term learning capability of the platform.

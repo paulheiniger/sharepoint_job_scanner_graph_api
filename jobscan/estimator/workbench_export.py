@@ -10,7 +10,7 @@ from typing import Any
 import pandas as pd
 
 from .evidence_export import sanitize_for_export
-from .workbench import recalculate_workbench_tables, summarize_workbench_totals
+from .workbench import recalculate_workbench_tables, summarize_workbench_totals, workbench_to_draft_workbook_inputs
 
 DEFAULT_WORKBENCH_EXPORT_DIR = Path("output/estimator_workbench_exports")
 EXCEL_CELL_LIMIT = 32000
@@ -86,9 +86,6 @@ def _compact_rows(rows: list[dict[str, Any]], columns: list[str]) -> list[dict[s
 
 
 def _decision_trace_rows(
-    materials: list[dict[str, Any]],
-    labor: list[dict[str, Any]],
-    adders: list[dict[str, Any]],
     performance_specs: list[dict[str, Any]] | None = None,
     foam_template_decisions: list[dict[str, Any]] | None = None,
     roofing_foam_template_decisions: list[dict[str, Any]] | None = None,
@@ -118,9 +115,6 @@ def _decision_trace_rows(
         ("Roofing Labor Planning", roofing_labor_template_decisions or []),
         ("Insulation Foam Template", foam_template_decisions or []),
         ("Insulation Performance", performance_specs or []),
-        ("Material", materials),
-        ("Labor", labor),
-        ("Adder", adders),
     ):
         for row in section_rows or []:
             rows.append(
@@ -145,7 +139,6 @@ def _decision_trace_rows(
 
 
 def _product_guidance_rows(
-    materials: list[dict[str, Any]],
     performance_specs: list[dict[str, Any]] | None = None,
     foam_template_decisions: list[dict[str, Any]] | None = None,
     roofing_foam_template_decisions: list[dict[str, Any]] | None = None,
@@ -175,7 +168,6 @@ def _product_guidance_rows(
         *(roofing_labor_template_decisions or []),
         *(foam_template_decisions or []),
         *(performance_specs or []),
-        *(materials or []),
     ]:
         if not any(
             row.get(key)
@@ -233,7 +225,7 @@ def _readme_text(summary: dict[str, Any], *, workbook_path: str | Path | None = 
             "- Start with workbench_summary.xlsx.",
             "- Use Decision Trace to see each editable estimator decision, historical recommendation, calculated output, evidence, and workbook row.",
             "- Use Product Guidance for manufacturer guidance and warnings. Product sheets are advisory only and do not override estimator decisions.",
-            "- Use Debug Materials/Labor/Adders only when troubleshooting evidence, filters, or rejected rows.",
+            "- Use Debug Decision JSON only when troubleshooting evidence, filters, or workbook writes.",
             "",
             "Review Flags",
             *(f"- {flag}" for flag in review_flags),
@@ -256,9 +248,8 @@ def build_workbench_review_payloads(
     resolved_run_id = run_id or str(recalculated.get("estimate_id") or "workbench")
     resolved_timestamp = timestamp or datetime.now(UTC).isoformat()
     totals = summarize_workbench_totals(recalculated)
-    materials = list(recalculated.get("materials") or [])
-    labor = list(recalculated.get("labor") or [])
-    adders = list(recalculated.get("adders") or [])
+    draft_inputs = workbench_to_draft_workbook_inputs(recalculated)
+    workbook_decisions = list(draft_inputs.get("workbook_decisions") or [])
     performance_specs = list(recalculated.get("insulation_performance_specs") or [])
     foam_template_decisions = list(recalculated.get("insulation_foam_template_decisions") or [])
     insulation_decision_sections = {
@@ -284,9 +275,6 @@ def build_workbench_review_payloads(
     area_trace = list(recalculated.get("area_calculation_trace") or [])
     area_explanation = recalculated.get("area_calculation_explanation") or ""
     decision_trace = _decision_trace_rows(
-        materials,
-        labor,
-        adders,
         performance_specs,
         foam_template_decisions,
         roofing_foam_template_decisions,
@@ -302,7 +290,6 @@ def build_workbench_review_payloads(
         roofing_labor_template_decisions,
     )
     product_guidance = _product_guidance_rows(
-        materials,
         performance_specs,
         foam_template_decisions,
         roofing_foam_template_decisions,
@@ -702,71 +689,7 @@ def build_workbench_review_payloads(
             ],
         ),
         "historical_filters": recalculated.get("historical_filters") or {},
-        "materials_final": _compact_rows(
-            materials,
-            [
-                "include",
-                "workbook_row",
-                "package",
-                "estimator_decision",
-                "historical_recommendation",
-                "editable_value",
-                "calculated_output_summary",
-                "item_name",
-                "suggested_by_notes_rules",
-                "editable_basis_sqft",
-                "editable_qty_per_sqft",
-                "calculated_quantity",
-                "unit",
-                "current_unit_price",
-                "estimated_cost",
-                "decision_evidence_count",
-                "decision_confidence",
-                "product_guidance",
-                "product_warning_summary",
-                "row_traceability",
-                "notes",
-            ],
-        ),
-        "labor_final": _compact_rows(
-            labor,
-            [
-                "include",
-                "workbook_row",
-                "labor_package",
-                "estimator_decision",
-                "historical_recommendation",
-                "editable_value",
-                "calculated_output_summary",
-                "suggested_by_notes_rules",
-                "days",
-                "crew_people_selection",
-                "daily_rate",
-                "formula_mode",
-                "editable_hours_per_1000_sqft",
-                "calculated_hours",
-                "crew_size",
-                "labor_rate",
-                "estimated_cost",
-                "decision_evidence_count",
-                "decision_confidence",
-                "row_traceability",
-                "notes",
-            ],
-        ),
-        "adders_final": _compact_rows(
-            adders,
-            [
-                "include",
-                "workbook_row",
-                "adder",
-                "editable_value",
-                "estimated_cost",
-                "evidence_count",
-                "confidence",
-                "notes",
-            ],
-        ),
+        "workbook_decisions": workbook_decisions,
         "decision_trace": decision_trace,
         "product_guidance": product_guidance,
         "totals": totals,
@@ -794,9 +717,7 @@ def build_workbench_review_payloads(
         "insulation_foam_template_decisions": foam_template_decisions,
         "insulation_performance_specs": performance_specs,
         **insulation_decision_sections,
-        "materials_diagnostics": materials,
-        "labor_diagnostics": labor,
-        "adders_diagnostics": adders,
+        "workbook_decisions": workbook_decisions,
         "decision_trace": decision_trace,
         "product_guidance": product_guidance,
         "totals": totals,
@@ -829,17 +750,12 @@ def build_workbench_review_payloads(
         "Insulation Labor Plan": summary["insulation_labor_template_decisions"],
         "Insulation Pricing": summary["insulation_pricing_template_decisions"],
         "Historical Filters": summary["historical_filters"],
-        "Materials Compact": summary["materials_final"],
-        "Labor Compact": summary["labor_final"],
-        "Adders Compact": summary["adders_final"],
+        "Workbook Decisions": summary["workbook_decisions"],
         "Decision Trace": decision_trace,
         "Product Guidance": product_guidance or [{"message": "No matched product guidance in this workbench."}],
         "Totals": summary["totals"],
         "Review Flags": [{"review_flag": flag} for flag in summary["review_flags"]] or [{"review_flag": ""}],
         "Similar Jobs": recalculated.get("similar_jobs") or [],
-        "Debug Materials": materials,
-        "Debug Labor": labor,
-        "Debug Adders": adders,
     }
 
     return _json_payload(summary), _json_payload(debug), workbook_sheets

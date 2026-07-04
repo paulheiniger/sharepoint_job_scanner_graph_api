@@ -2913,17 +2913,20 @@ def _selected_foam_candidate(candidates: list[dict[str, Any]], selected_name: An
 def _build_insulation_foam_template_decisions(
     *,
     scope: dict[str, Any],
-    foam_row: dict[str, Any] | None,
+    foam_row: dict[str, Any] | None = None,
     existing_rows: list[dict[str, Any]] | None = None,
     data: Any = None,
 ) -> list[dict[str, Any]]:
-    if not foam_row:
-        return []
+    foam_row = foam_row or {}
     existing = (existing_rows or [{}])[0] if existing_rows else {}
+    filters = historical_filters_from_scope(scope)
+    defaults = _insulation_foam_decision_defaults(data, filters)
+    meta = defaults.get("meta") if isinstance(defaults.get("meta"), dict) else {}
     historical_option = first_nonblank(
         existing.get("historical_selector_recommendation"),
         foam_row.get("recommended_decision_value"),
         (foam_row.get("decision_values") or {}).get("selected_option") if isinstance(foam_row.get("decision_values"), dict) else "",
+        defaults.get("resolved_item_name"),
         _resolved_selector_option(foam_row.get("selector_code")),
         "Gaco 2.0 lb.",
     )
@@ -2931,11 +2934,22 @@ def _build_insulation_foam_template_decisions(
         existing.get("editable_selector_code"),
         existing.get("selector_code"),
         foam_row.get("selector_code"),
+        defaults.get("selector_code"),
         _selector_code_for_option(historical_option),
         "11",
     )
     resolved_option = _resolved_selector_option(selector_code, historical_option)
-    basis_sqft = safe_number(first_nonblank(existing.get("basis_sqft"), foam_row.get("editable_basis_sqft"), foam_row.get("default_basis_sqft")), 0.0)
+    basis_sqft = safe_number(
+        first_nonblank(
+            existing.get("basis_sqft"),
+            foam_row.get("editable_basis_sqft"),
+            foam_row.get("default_basis_sqft"),
+            scope.get("net_insulation_area_sqft"),
+            scope.get("net_sqft"),
+            scope.get("gross_insulation_area_sqft"),
+        ),
+        0.0,
+    )
     material_thickness = safe_number(foam_row.get("thickness_inches"), 0.0)
     material_synced_thickness = safe_number(foam_row.get("foam_thickness_inches"), 0.0)
     direct_material_thickness_edit = material_thickness > 0 and material_synced_thickness > 0 and abs(material_thickness - material_synced_thickness) > 1e-9
@@ -2945,10 +2959,14 @@ def _build_insulation_foam_template_decisions(
             existing.get("thickness_inches"),
             foam_row.get("thickness_inches"),
             foam_row.get("foam_thickness_inches"),
+            defaults.get("thickness_inches"),
         ),
         0.0,
     )
-    yield_or_coverage = safe_number(first_nonblank(existing.get("yield_or_coverage"), foam_row.get("yield_factor"), foam_row.get("median_foam_yield")), 0.0)
+    yield_or_coverage = safe_number(
+        first_nonblank(existing.get("yield_or_coverage"), foam_row.get("yield_factor"), foam_row.get("median_foam_yield"), defaults.get("yield_or_coverage")),
+        0.0,
+    )
     selected_candidate_name = first_nonblank(existing.get("selected_pricing_candidate"), foam_row.get("item_name"), foam_row.get("current_item"))
     stored_candidates = existing.get("pricing_candidates") if isinstance(existing.get("pricing_candidates"), list) else []
     if not stored_candidates:
@@ -2963,8 +2981,17 @@ def _build_insulation_foam_template_decisions(
         selected_candidate_name,
         preserve_bad_selection=bool(first_nonblank(existing.get("selected_pricing_candidate"))),
     )
-    unit_price = safe_number(first_nonblank(existing.get("unit_price"), selected_candidate.get("unit_price"), foam_row.get("current_unit_price")), 0.0)
-    include = bool(existing["include"]) if "include" in existing else bool(foam_row.get("include"))
+    unit_price = safe_number(first_nonblank(existing.get("unit_price"), selected_candidate.get("unit_price"), foam_row.get("current_unit_price"), defaults.get("unit_price")), 0.0)
+    notes_text = _normalized(" ".join(str(scope.get(key) or "") for key in ("notes", "raw_input_notes", "project_type", "scope_of_work")))
+    foam_scope = bool(
+        foam_row.get("include")
+        or scope.get("foam_requested")
+        or scope.get("foam_type")
+        or "foam" in notes_text
+        or "spray foam" in notes_text
+        or "insulation" in notes_text
+    )
+    include = bool(existing["include"]) if "include" in existing else bool(foam_scope and basis_sqft > 0)
     formula = calculate_insulation_foam(
         area_sqft=basis_sqft,
         thickness_inches=thickness,
@@ -2992,8 +3019,37 @@ def _build_insulation_foam_template_decisions(
             "selector_options_json": json.dumps(_foam_selector_options(), default=str),
             "historical_selector_recommendation": historical_option,
             "historical_selector_code": _selector_code_for_option(historical_option),
-            "historical_selector_evidence_count": int(safe_number(foam_row.get("decision_evidence_count") or foam_row.get("evidence_count"), 0)),
-            "historical_selector_confidence": foam_row.get("decision_confidence") or foam_row.get("confidence") or "",
+            "historical_selector_evidence_count": int(
+                safe_number(
+                    existing.get("historical_selector_evidence_count")
+                    or existing.get("decision_evidence_count")
+                    or foam_row.get("decision_evidence_count")
+                    or foam_row.get("evidence_count")
+                    or meta.get("decision_evidence_count"),
+                    0,
+                )
+            ),
+            "historical_selector_confidence": existing.get("historical_selector_confidence")
+            or existing.get("decision_confidence")
+            or foam_row.get("decision_confidence")
+            or foam_row.get("confidence")
+            or meta.get("decision_confidence")
+            or "",
+            "decision_evidence_count": int(
+                safe_number(
+                    existing.get("decision_evidence_count")
+                    or existing.get("historical_selector_evidence_count")
+                    or foam_row.get("decision_evidence_count")
+                    or foam_row.get("evidence_count")
+                    or meta.get("decision_evidence_count"),
+                    0,
+                )
+            ),
+            "decision_confidence": existing.get("decision_confidence") or foam_row.get("decision_confidence") or foam_row.get("confidence") or meta.get("decision_confidence") or "",
+            "decision_source_tables": existing.get("decision_source_tables") or foam_row.get("decision_source_tables") or meta.get("decision_source_tables"),
+            "decision_filters_applied": existing.get("decision_filters_applied") or foam_row.get("decision_filters_applied") or meta.get("decision_filters_applied"),
+            "decision_filters_relaxed": existing.get("decision_filters_relaxed") or foam_row.get("decision_filters_relaxed") or meta.get("decision_filters_relaxed"),
+            "evidence_summary": existing.get("evidence_summary") or foam_row.get("evidence_summary"),
             "basis_sqft": round(basis_sqft, 2),
             "thickness_inches": round(thickness, 4),
             "yield_or_coverage": round(yield_or_coverage, 4),
@@ -3466,19 +3522,42 @@ def _build_insulation_labor_template_decisions(
     scope: dict[str, Any],
     labor_rows: list[dict[str, Any]] | None = None,
     existing_rows: list[dict[str, Any]] | None = None,
+    data: Any = None,
 ) -> list[dict[str, Any]]:
     if not _is_insulation_scope(scope):
         return []
     existing_by_key = _existing_decision_rows(existing_rows)
     crew_options = _insulation_labor_crew_options()
     area = _estimate_area(scope)
+    decision_defaults = _decision_recommendation_lookup(data, historical_filters_from_scope(scope)) if data is not None else {}
     baseline = {"labor_set_up", "labor_foam", "labor_clean_up", "labor_loading"}
     notes = _normalized(" ".join(str(scope.get(key) or "") for key in ("notes", "raw_input_notes", "site_address", "address")))
     decisions: list[dict[str, Any]] = []
     for spec in INSULATION_LABOR_PACKAGES:
         package = str(spec["package"])
         workbook_row = str(spec["workbook_row"])
-        labor = _row_for_bucket(labor_rows, package) or {}
+        decision_id = f"insulation_{package}"
+        meta = _decision_meta(
+            decision_defaults,
+            decision_id,
+            ["days", "crew_size", "crew_selector_code", "daily_rate", "hourly_rate", "formula_mode"],
+        )
+        historical_labor = {
+            "days": _decision_value(decision_defaults, decision_id, "days", ""),
+            "crew_size": _decision_value(decision_defaults, decision_id, "crew_size", ""),
+            "crew_selector_code": _decision_value(decision_defaults, decision_id, "crew_selector_code", ""),
+            "daily_rate": _decision_value(decision_defaults, decision_id, "daily_rate", ""),
+            "hourly_rate": _decision_value(decision_defaults, decision_id, "hourly_rate", ""),
+            "formula_mode": _decision_value(decision_defaults, decision_id, "formula_mode", ""),
+            "decision_evidence_count": meta.get("decision_evidence_count"),
+            "decision_source_jobs_count": meta.get("decision_source_jobs_count"),
+            "decision_confidence": meta.get("decision_confidence"),
+            "decision_source_tables": meta.get("decision_source_tables"),
+            "decision_filters_applied": meta.get("decision_filters_applied"),
+            "decision_filters_relaxed": meta.get("decision_filters_relaxed"),
+            "decision_recommendation_json": meta.get("decision_recommendation_json"),
+        }
+        labor = _row_for_bucket(labor_rows, package) or historical_labor
         existing = existing_by_key.get(package) or existing_by_key.get(workbook_row) or {}
         include_default = bool(labor.get("include")) or package in baseline or (package == "labor_traveling" and bool(notes))
         include = bool(existing["include"]) if "include" in existing else include_default
@@ -3548,7 +3627,11 @@ def _build_insulation_labor_template_decisions(
                 "historical_selector_evidence_count": int(safe_number(labor.get("decision_evidence_count") or labor.get("evidence_count"), 0)),
                 "historical_selector_confidence": labor.get("decision_confidence") or labor.get("confidence") or "",
                 "decision_evidence_count": int(safe_number(labor.get("decision_evidence_count") or labor.get("evidence_count"), 0)),
+                "decision_source_jobs_count": int(safe_number(labor.get("decision_source_jobs_count"), 0)),
                 "decision_confidence": labor.get("decision_confidence") or labor.get("confidence") or "",
+                "decision_source_tables": labor.get("decision_source_tables"),
+                "decision_filters_applied": labor.get("decision_filters_applied"),
+                "decision_filters_relaxed": labor.get("decision_filters_relaxed"),
                 "confidence": labor.get("confidence") or "",
                 "compatibility_status": "review" if warnings else ("compatible" if include else "not_included"),
                 "compatibility_warnings": warnings,
@@ -3604,43 +3687,6 @@ def _insulation_dependency_totals(workbench: dict[str, Any] | None = None, *, ro
                 deps["pre_pricing_total"] += safe_number(row.get("estimated_cost"), 0.0)
     deps["pre_pricing_total"] += sum(safe_number(row.get("estimated_cost"), 0.0) for row in foam_rows if isinstance(row, dict) and row.get("include"))
     return deps
-
-
-def _apply_foam_template_decision_to_materials(workbench: dict[str, Any]) -> None:
-    foam_row = _foam_material_row(workbench.get("materials"))
-    decisions = workbench.get("insulation_foam_template_decisions") or []
-    decision = decisions[0] if decisions else {}
-    if not foam_row or not decision:
-        return
-    previous_basis = safe_number(foam_row.get("editable_basis_sqft"), 0.0)
-    foam_row["selector_code"] = decision.get("editable_selector_code") or decision.get("selector_code")
-    foam_row["resolved_template_option"] = decision.get("resolved_template_option")
-    foam_row["template_selector_option"] = decision.get("resolved_template_option")
-    if decision.get("selected_pricing_candidate"):
-        foam_row["item_name"] = decision.get("selected_pricing_candidate")
-    for source_field, target_field in (
-        ("basis_sqft", "editable_basis_sqft"),
-        ("basis_sqft", "default_basis_sqft"),
-        ("thickness_inches", "thickness_inches"),
-        ("thickness_inches", "foam_thickness_inches"),
-        ("yield_or_coverage", "yield_factor"),
-        ("yield_or_coverage", "median_foam_yield"),
-        ("unit_price", "current_unit_price"),
-    ):
-        value = decision.get(source_field)
-        if value not in (None, ""):
-            foam_row[target_field] = value
-    decision_basis = safe_number(decision.get("basis_sqft"), 0.0)
-    foam_row["_foam_template_basis_override"] = bool(decision_basis > 0 and previous_basis > 0 and abs(decision_basis - previous_basis) > 1e-9)
-    foam_row["editable_decision_value"] = {
-        "selector_code": decision.get("editable_selector_code") or decision.get("selector_code"),
-        "resolved_template_option": decision.get("resolved_template_option"),
-        "selected_pricing_candidate": decision.get("selected_pricing_candidate"),
-        "thickness_inches": decision.get("thickness_inches"),
-        "yield_or_coverage": decision.get("yield_or_coverage"),
-    }
-
-
 def _roofing_foam_source_row(scope: dict[str, Any], data: Any = None, filters: dict[str, Any] | None = None) -> dict[str, Any]:
     package_spec = {
         "package": "foam",
@@ -3683,6 +3729,19 @@ def _roofing_foam_decision_defaults(data: Any, filters: dict[str, Any] | None) -
         "unit_price": _decision_value(decisions, decision_id, "unit_price", ""),
         "yield_or_coverage": _decision_value(decisions, decision_id, "yield_or_coverage", ""),
         "meta": _decision_meta(decisions, decision_id, ["selector_code", "resolved_item_name", "area_sqft", "thickness_inches", "unit_price", "yield_or_coverage"]),
+    }
+
+
+def _insulation_foam_decision_defaults(data: Any, filters: dict[str, Any] | None) -> dict[str, Any]:
+    decisions = _decision_recommendation_lookup(data, filters) if data is not None else {}
+    decision_id = "insulation_foam_system"
+    return {
+        "selector_code": _decision_value(decisions, decision_id, "selector_code", ""),
+        "resolved_item_name": _decision_value(decisions, decision_id, "resolved_item_name", ""),
+        "thickness_inches": _decision_value(decisions, decision_id, "thickness_inches", ""),
+        "yield_or_coverage": _decision_value(decisions, decision_id, "yield_or_coverage", ""),
+        "unit_price": _decision_value(decisions, decision_id, "unit_price", ""),
+        "meta": _decision_meta(decisions, decision_id, ["selector_code", "resolved_item_name", "thickness_inches", "yield_or_coverage", "unit_price"]),
     }
 
 
@@ -3874,55 +3933,6 @@ def _build_roofing_foam_template_decisions(
             }
         )
     return rows
-
-
-def _apply_roofing_foam_template_decisions_to_materials(workbench: dict[str, Any]) -> None:
-    decisions = [
-        row
-        for row in workbench.get("roofing_foam_template_decisions") or []
-        if isinstance(row, dict)
-    ]
-    if not decisions:
-        return
-    materials = workbench.setdefault("materials", [])
-    materials[:] = [
-        row
-        for row in materials
-        if str(row.get("package_key") or row.get("template_bucket") or "").lower() not in {"roofing_foam", "foam"}
-    ]
-    for decision in decisions:
-        if not decision.get("include"):
-            continue
-        materials.append(
-            {
-                "include": True,
-                "package": "Roofing SPF Foam",
-                "package_key": "roofing_foam",
-                "template_bucket": "roofing_foam",
-                "workbook_row": decision.get("workbook_row"),
-                "item_name": first_nonblank(decision.get("selected_pricing_candidate"), decision.get("resolved_template_option"), "Roofing SPF foam"),
-                "selector_code": decision.get("editable_selector_code") or decision.get("selector_code"),
-                "resolved_template_option": decision.get("resolved_template_option"),
-                "editable_basis_sqft": decision.get("basis_sqft"),
-                "default_basis_sqft": decision.get("basis_sqft"),
-                "thickness_inches": decision.get("thickness_inches"),
-                "yield_factor": decision.get("yield_or_coverage"),
-                "current_unit_price": decision.get("unit_price"),
-                "calculated_quantity": decision.get("estimated_units"),
-                "estimated_units": decision.get("estimated_units"),
-                "estimated_sets": decision.get("estimated_sets"),
-                "estimated_cost": decision.get("estimated_cost"),
-                "formula_model": decision.get("formula_model"),
-                "formula_source": "roofing_foam_template_decisions",
-                "calculated_output_summary": decision.get("calculated_output_summary"),
-                "workbook_cell_write_preview": decision.get("workbook_cell_write_preview") or [],
-                "evidence_count": decision.get("historical_selector_evidence_count") or 0,
-                "confidence": decision.get("historical_selector_confidence") or "none",
-                "notes": decision.get("notes") or "Roofing SPF foam template decision.",
-            }
-        )
-
-
 def _coating_historical_option(coating_row: dict[str, Any] | None, scope: dict[str, Any], existing: dict[str, Any] | None = None) -> str:
     coating_row = coating_row or {}
     existing = existing or {}
@@ -3969,8 +3979,9 @@ def _build_roofing_coating_template_decisions(
     existing_rows: list[dict[str, Any]] | None = None,
     data: Any = None,
 ) -> list[dict[str, Any]]:
-    if not coating_row or _is_insulation_scope(scope):
+    if _is_insulation_scope(scope):
         return []
+    coating_row = coating_row or {}
 
     existing_by_row = {str(row.get("workbook_row") or ""): row for row in existing_rows or [] if isinstance(row, dict)}
     coating_scope = bool(coating_row.get("include")) or bool(scope.get("coating_type")) or "coating" in _normalized(scope.get("project_type"))
@@ -4076,7 +4087,13 @@ def _build_roofing_coating_template_decisions(
         )
         if gal_per_100 <= 0:
             warnings.append("Gallons per 100 sqft is missing; formula output requires estimator review.")
-        product_context_status = "matched" if selected_candidate.get("product_id") else "missing"
+        product_id = selected_candidate.get("product_id") or existing.get("product_id") or ""
+        product_name = selected_candidate.get("product_name") or existing.get("product_name") or existing.get("product_knowledge_product_name") or ""
+        product_manufacturer = selected_candidate.get("manufacturer") or existing.get("product_manufacturer") or ""
+        product_guidance = selected_candidate.get("product_guidance") or existing.get("product_guidance") or ""
+        product_warning_summary = existing.get("product_warning_summary") or selected_candidate.get("product_warning_summary") or ""
+        product_source_documents = selected_candidate.get("product_source_documents") or existing.get("product_source_documents") or []
+        product_context_status = "matched" if product_id else "missing"
         rows.append(
             {
                 "include": include,
@@ -4092,8 +4109,34 @@ def _build_roofing_coating_template_decisions(
                 "selector_options_json": json.dumps(_roofing_coating_selector_options(row_number), default=str),
                 "historical_selector_recommendation": historical_option,
                 "historical_selector_code": _roofing_selector_code_for_option(historical_option),
-                "historical_selector_evidence_count": int(safe_number(coating_row.get("decision_evidence_count") or coating_row.get("evidence_count"), 0)),
-                "historical_selector_confidence": coating_row.get("decision_confidence") or coating_row.get("confidence") or "",
+                "historical_selector_evidence_count": int(
+                    safe_number(
+                        existing.get("historical_selector_evidence_count")
+                        or existing.get("decision_evidence_count")
+                        or coating_row.get("decision_evidence_count")
+                        or coating_row.get("evidence_count"),
+                        0,
+                    )
+                ),
+                "historical_selector_confidence": existing.get("historical_selector_confidence")
+                or existing.get("decision_confidence")
+                or coating_row.get("decision_confidence")
+                or coating_row.get("confidence")
+                or "",
+                "decision_evidence_count": int(
+                    safe_number(
+                        existing.get("decision_evidence_count")
+                        or existing.get("historical_selector_evidence_count")
+                        or coating_row.get("decision_evidence_count")
+                        or coating_row.get("evidence_count"),
+                        0,
+                    )
+                ),
+                "decision_confidence": existing.get("decision_confidence") or coating_row.get("decision_confidence") or coating_row.get("confidence") or "",
+                "decision_source_tables": existing.get("decision_source_tables") or coating_row.get("decision_source_tables"),
+                "decision_filters_applied": existing.get("decision_filters_applied") or coating_row.get("decision_filters_applied"),
+                "decision_filters_relaxed": existing.get("decision_filters_relaxed") or coating_row.get("decision_filters_relaxed"),
+                "evidence_summary": existing.get("evidence_summary") or coating_row.get("evidence_summary"),
                 "basis_sqft": round(basis_sqft, 2),
                 "gal_per_100_sqft": round(gal_per_100, 6),
                 "gal_per_sqft": round(safe_number(formula.get("gal_per_sqft"), 0.0), 8),
@@ -4111,11 +4154,12 @@ def _build_roofing_coating_template_decisions(
                 "compatibility_status": "review" if warnings and compatibility.get("compatibility_status") == "compatible" else compatibility.get("compatibility_status"),
                 "compatibility_warnings": warnings,
                 "product_guidance_status": product_context_status,
-                "product_id": selected_candidate.get("product_id") or "",
-                "product_name": selected_candidate.get("product_name") or "",
-                "product_manufacturer": selected_candidate.get("manufacturer") or "",
-                "product_guidance": selected_candidate.get("product_guidance") or "",
-                "product_source_documents": selected_candidate.get("product_source_documents") or [],
+                "product_id": product_id,
+                "product_name": product_name,
+                "product_manufacturer": product_manufacturer,
+                "product_guidance": product_guidance,
+                "product_warning_summary": product_warning_summary,
+                "product_source_documents": product_source_documents,
                 "notes": (
                     "Template selector is the estimator decision. Pricing/product candidate is supporting context. "
                     + (" ".join(warnings) if warnings else "Current coating candidate fits the selected template option.")
@@ -4162,65 +4206,6 @@ def _build_roofing_coating_template_decisions(
             }
         )
     return rows
-
-
-def _apply_roofing_coating_template_decisions_to_materials(workbench: dict[str, Any]) -> None:
-    coating_row = _coating_material_row(workbench.get("materials"))
-    decisions = [row for row in workbench.get("roofing_coating_template_decisions") or [] if isinstance(row, dict)]
-    if not coating_row or not decisions:
-        return
-    included = [row for row in decisions if row.get("include")]
-    primary = included[0] if included else decisions[0]
-    total_gallons = sum(safe_number(row.get("estimated_gallons"), 0.0) for row in included)
-    total_cost = sum(safe_number(row.get("estimated_cost"), 0.0) for row in included)
-    basis = safe_number(primary.get("basis_sqft"), safe_number(coating_row.get("editable_basis_sqft"), 0.0))
-    coating_row["include"] = bool(included)
-    coating_row["selector_code"] = primary.get("editable_selector_code") or primary.get("selector_code")
-    coating_row["resolved_template_option"] = primary.get("resolved_template_option")
-    coating_row["template_selector_option"] = primary.get("resolved_template_option")
-    if primary.get("selected_pricing_candidate"):
-        coating_row["item_name"] = primary.get("selected_pricing_candidate")
-        coating_row["current_item"] = primary.get("selected_pricing_candidate")
-    coating_row["editable_basis_sqft"] = round(basis, 2)
-    coating_row["default_basis_sqft"] = round(basis, 2)
-    coating_row["estimated_gallons"] = round(total_gallons, 2)
-    coating_row["calculated_quantity"] = round(total_gallons, 2)
-    coating_row["estimated_cost"] = round(total_cost, 2)
-    coating_row["current_unit_price"] = safe_number(primary.get("unit_price"), 0.0)
-    coating_row["current_price"] = coating_row["current_unit_price"]
-    coating_row["gal_per_100_sqft"] = safe_number(primary.get("gal_per_100_sqft"), 0.0)
-    coating_row["gal_per_sqft"] = safe_number(primary.get("gal_per_sqft"), 0.0)
-    coating_row["editable_qty_per_sqft"] = round(total_gallons / basis, 8) if basis > 0 and total_gallons > 0 else safe_number(primary.get("gal_per_sqft"), 0.0)
-    coating_row["editable_default"] = coating_row["editable_qty_per_sqft"]
-    coating_row["waste_factor_pct"] = safe_number(primary.get("waste_factor_pct"), 0.0)
-    coating_row["wet_mils_estimate"] = safe_number(primary.get("wet_mils_estimate"), 0.0)
-    coating_row["formula_model"] = primary.get("formula_model")
-    coating_row["formula_source"] = "roofing_coating_template_decisions"
-    coating_row["price_source"] = "current_pricing" if coating_row["current_unit_price"] > 0 else "current_pricing_missing"
-    coating_row["decision_values"] = {
-        "selector_code": coating_row["selector_code"],
-        "resolved_template_option": coating_row.get("resolved_template_option"),
-        "selected_pricing_candidate": coating_row.get("item_name"),
-        "basis_sqft": round(basis, 2),
-        "gal_per_100_sqft": coating_row["gal_per_100_sqft"],
-        "waste_factor_pct": coating_row["waste_factor_pct"],
-        "estimated_gallons": round(total_gallons, 2),
-        "estimated_cost": round(total_cost, 2),
-    }
-    coating_row["editable_decision_value"] = dict(coating_row["decision_values"])
-    coating_row["calculated_output"] = coating_row["estimated_cost"]
-    coating_row["calculated_output_summary"] = _value_summary(
-        {"gallons": round(total_gallons, 2), "cost": round(total_cost, 2), "rows": len(included)}
-    )
-    coating_row["workbook_cell_write_preview"] = [
-        write for decision in included for write in (decision.get("workbook_cell_write_preview") or [])
-    ]
-    coating_row["notes"] = (
-        f"Synced from {len(included)} included roof coating template decision row(s). "
-        "Template selector rows are the primary estimator-facing controls."
-    )
-
-
 def _primer_historical_option(primer_row: dict[str, Any] | None, scope: dict[str, Any], existing: dict[str, Any] | None = None) -> str:
     primer_row = primer_row or {}
     existing = existing or {}
@@ -4257,8 +4242,9 @@ def _build_roofing_primer_template_decisions(
     existing_rows: list[dict[str, Any]] | None = None,
     data: Any = None,
 ) -> list[dict[str, Any]]:
-    if not primer_row or _is_insulation_scope(scope):
+    if _is_insulation_scope(scope):
         return []
+    primer_row = primer_row or {}
     existing = (existing_rows or [{}])[0] if existing_rows else {}
     historical_option = _primer_historical_option(primer_row, scope, existing)
     selector_code = str(
@@ -4412,62 +4398,6 @@ def _build_roofing_primer_template_decisions(
             ],
         }
     ]
-
-
-def _apply_roofing_primer_template_decisions_to_materials(workbench: dict[str, Any]) -> None:
-    primer_row = _primer_material_row(workbench.get("materials"))
-    decisions = [row for row in workbench.get("roofing_primer_template_decisions") or [] if isinstance(row, dict)]
-    if not primer_row or not decisions:
-        return
-    included = [row for row in decisions if row.get("include")]
-    if not included:
-        return
-    primary = included[0] if included else decisions[0]
-    basis = safe_number(primary.get("basis_sqft"), safe_number(primer_row.get("editable_basis_sqft"), 0.0))
-    units = sum(safe_number(row.get("estimated_units"), 0.0) for row in included)
-    cost = sum(safe_number(row.get("estimated_cost"), 0.0) for row in included)
-    primer_row["include"] = bool(included)
-    primer_row["selector_code"] = primary.get("editable_selector_code") or primary.get("selector_code")
-    primer_row["resolved_template_option"] = primary.get("resolved_template_option")
-    primer_row["template_selector_option"] = primary.get("resolved_template_option")
-    if primary.get("selected_pricing_candidate"):
-        primer_row["item_name"] = primary.get("selected_pricing_candidate")
-        primer_row["current_item"] = primary.get("selected_pricing_candidate")
-    primer_row["editable_basis_sqft"] = round(basis, 2)
-    primer_row["default_basis_sqft"] = round(basis, 2)
-    primer_row["coverage_sqft_per_unit"] = safe_number(primary.get("coverage_sqft_per_unit"), ROOFING_PRIMER_DEFAULT_COVERAGE_SQFT_PER_UNIT)
-    primer_row["estimated_units"] = round(units, 2)
-    primer_row["calculated_quantity"] = round(units, 2)
-    primer_row["estimated_cost"] = round(cost, 2)
-    primer_row["current_unit_price"] = safe_number(primary.get("unit_price"), 0.0)
-    primer_row["current_price"] = primer_row["current_unit_price"]
-    primer_row["editable_qty_per_sqft"] = round(units / basis, 8) if basis > 0 and units > 0 else 0.0
-    primer_row["editable_default"] = primer_row["editable_qty_per_sqft"]
-    primer_row["unit"] = "unit"
-    primer_row["formula_model"] = primary.get("formula_model")
-    primer_row["formula_source"] = "roofing_primer_template_decisions"
-    primer_row["price_source"] = "current_pricing" if primer_row["current_unit_price"] > 0 else "current_pricing_missing"
-    primer_row["decision_values"] = {
-        "selector_code": primer_row["selector_code"],
-        "resolved_template_option": primer_row.get("resolved_template_option"),
-        "selected_pricing_candidate": primer_row.get("item_name"),
-        "basis_sqft": round(basis, 2),
-        "coverage_sqft_per_unit": primer_row["coverage_sqft_per_unit"],
-        "estimated_units": round(units, 2),
-        "estimated_cost": round(cost, 2),
-    }
-    primer_row["editable_decision_value"] = dict(primer_row["decision_values"])
-    primer_row["calculated_output"] = primer_row["estimated_cost"]
-    primer_row["calculated_output_summary"] = _value_summary({"units": round(units, 2), "cost": round(cost, 2), "rows": len(included)})
-    primer_row["workbook_cell_write_preview"] = [
-        write for decision in included for write in (decision.get("workbook_cell_write_preview") or [])
-    ]
-    primer_row["notes"] = (
-        f"Synced from {len(included)} included roofing primer template decision row(s). "
-        "Template selector row is the primary estimator-facing control."
-    )
-
-
 def _build_roofing_detail_template_decisions(
     *,
     scope: dict[str, Any],
@@ -4744,89 +4674,6 @@ def _build_roofing_detail_template_decisions(
         }
     )
     return rows
-
-
-def _apply_roofing_detail_template_decisions_to_materials(workbench: dict[str, Any]) -> None:
-    decisions = [row for row in workbench.get("roofing_detail_template_decisions") or [] if isinstance(row, dict) and row.get("include")]
-    if not decisions:
-        return
-    caulk_rows = [row for row in decisions if str(row.get("template_bucket") or "") in {"caulk_detail", "caulk_sealant"}]
-    fabric_rows = [row for row in decisions if str(row.get("template_bucket") or "") == "fabric"]
-    caulk_material = _caulk_detail_material_row(workbench.get("materials"))
-    if caulk_material and caulk_rows:
-        primary = caulk_rows[0]
-        units = sum(safe_number(row.get("estimated_units") or row.get("units"), 0.0) for row in caulk_rows)
-        cost = sum(safe_number(row.get("estimated_cost"), 0.0) for row in caulk_rows)
-        area = _estimate_area(workbench.get("scope") or {})
-        caulk_material["include"] = True
-        caulk_material["selector_code"] = primary.get("editable_selector_code") or primary.get("selector_code")
-        caulk_material["resolved_template_option"] = primary.get("resolved_template_option")
-        caulk_material["template_selector_option"] = primary.get("resolved_template_option")
-        caulk_material["item_name"] = first_nonblank(primary.get("selected_pricing_candidate"), caulk_material.get("item_name"), caulk_material.get("current_item"))
-        caulk_material["current_item"] = caulk_material["item_name"]
-        caulk_material["estimated_units"] = round(units, 2)
-        caulk_material["calculated_quantity"] = round(units, 2)
-        caulk_material["estimated_cost"] = round(cost, 2)
-        caulk_material["current_unit_price"] = safe_number(primary.get("unit_price"), 0.0)
-        caulk_material["current_price"] = caulk_material["current_unit_price"]
-        caulk_material["editable_basis_sqft"] = round(area, 2) if area else safe_number(caulk_material.get("editable_basis_sqft"), 0.0)
-        caulk_material["editable_qty_per_sqft"] = round(units / area, 8) if area > 0 and units > 0 else 0.0
-        caulk_material["editable_default"] = caulk_material["editable_qty_per_sqft"]
-        caulk_material["unit"] = primary.get("unit") or "unit"
-        caulk_material["formula_model"] = primary.get("formula_model")
-        caulk_material["formula_source"] = "roofing_detail_template_decisions"
-        caulk_material["price_source"] = "current_pricing" if caulk_material["current_unit_price"] > 0 else "current_pricing_missing"
-        caulk_material["decision_values"] = {
-            "selector_code": caulk_material["selector_code"],
-            "resolved_template_option": caulk_material.get("resolved_template_option"),
-            "selected_pricing_candidate": caulk_material.get("item_name"),
-            "units": round(units, 2),
-            "estimated_cost": round(cost, 2),
-        }
-        caulk_material["editable_decision_value"] = dict(caulk_material["decision_values"])
-        caulk_material["calculated_output"] = caulk_material["estimated_cost"]
-        caulk_material["calculated_output_summary"] = _value_summary({"units": round(units, 2), "cost": round(cost, 2), "rows": len(caulk_rows)})
-        caulk_material["workbook_cell_write_preview"] = [
-            write for decision in caulk_rows for write in (decision.get("workbook_cell_write_preview") or [])
-        ]
-        caulk_material["notes"] = "Synced from included roofing caulk/sealant template decision row(s)."
-
-    fabric_material = _fabric_material_row(workbench.get("materials"))
-    if fabric_material and fabric_rows:
-        primary = fabric_rows[0]
-        linear_ft = sum(safe_number(row.get("linear_ft") or row.get("estimated_units") or row.get("units"), 0.0) for row in fabric_rows)
-        cost = sum(safe_number(row.get("estimated_cost"), 0.0) for row in fabric_rows)
-        area = _estimate_area(workbench.get("scope") or {})
-        fabric_material["include"] = True
-        fabric_material["item_name"] = first_nonblank(primary.get("selected_pricing_candidate"), fabric_material.get("item_name"), fabric_material.get("current_item"))
-        fabric_material["current_item"] = fabric_material["item_name"]
-        fabric_material["linear_ft"] = round(linear_ft, 2)
-        fabric_material["estimated_units"] = round(linear_ft, 2)
-        fabric_material["calculated_quantity"] = round(linear_ft, 2)
-        fabric_material["estimated_cost"] = round(cost, 2)
-        fabric_material["current_unit_price"] = safe_number(primary.get("unit_price"), 0.0)
-        fabric_material["current_price"] = fabric_material["current_unit_price"]
-        fabric_material["editable_basis_sqft"] = round(area, 2) if area else safe_number(fabric_material.get("editable_basis_sqft"), 0.0)
-        fabric_material["editable_qty_per_sqft"] = round(linear_ft / area, 8) if area > 0 and linear_ft > 0 else 0.0
-        fabric_material["editable_default"] = fabric_material["editable_qty_per_sqft"]
-        fabric_material["unit"] = primary.get("unit") or "lf"
-        fabric_material["formula_model"] = primary.get("formula_model")
-        fabric_material["formula_source"] = "roofing_detail_template_decisions"
-        fabric_material["price_source"] = "current_pricing" if fabric_material["current_unit_price"] > 0 else "current_pricing_missing"
-        fabric_material["decision_values"] = {
-            "selected_pricing_candidate": fabric_material.get("item_name"),
-            "linear_ft": round(linear_ft, 2),
-            "estimated_cost": round(cost, 2),
-        }
-        fabric_material["editable_decision_value"] = dict(fabric_material["decision_values"])
-        fabric_material["calculated_output"] = fabric_material["estimated_cost"]
-        fabric_material["calculated_output_summary"] = _value_summary({"linear_ft": round(linear_ft, 2), "cost": round(cost, 2), "rows": len(fabric_rows)})
-        fabric_material["workbook_cell_write_preview"] = [
-            write for decision in fabric_rows for write in (decision.get("workbook_cell_write_preview") or [])
-        ]
-        fabric_material["notes"] = "Synced from included roofing fabric template decision row(s)."
-
-
 def _build_roofing_detail_quantity_template_decisions(
     *,
     scope: dict[str, Any],
@@ -4932,57 +4779,6 @@ def _build_roofing_detail_quantity_template_decisions(
             }
         )
     return rows
-
-
-def _apply_roofing_detail_quantity_template_decisions_to_materials(workbench: dict[str, Any]) -> None:
-    decisions = [
-        row
-        for row in workbench.get("roofing_detail_quantity_template_decisions") or []
-        if isinstance(row, dict) and row.get("include")
-    ]
-    if not decisions:
-        return
-    materials = workbench.setdefault("materials", [])
-    by_key = {str(row.get("package_key") or row.get("template_bucket") or "").lower(): row for row in materials if isinstance(row, dict)}
-    for decision in decisions:
-        key = str(decision.get("template_bucket") or "").lower()
-        material = by_key.get(key)
-        if not material:
-            material = {
-                "package": decision.get("resolved_template_option") or key,
-                "package_key": key,
-                "template_bucket": key,
-                "workbook_row": decision.get("workbook_row"),
-                "historical_qty_per_sqft": 0.0,
-                "editable_qty_per_sqft": 0.0,
-                "historical_cost_per_sqft": 0.0,
-                "evidence_count": 0,
-                "confidence": "review",
-                "source": "roofing_detail_quantity_template_decisions",
-            }
-            materials.append(material)
-            by_key[key] = material
-        quantity = safe_number(first_nonblank(decision.get("linear_ft"), decision.get("units"), decision.get("estimated_units")), 0.0)
-        material["include"] = True
-        material["item_name"] = decision.get("resolved_template_option")
-        material["current_item"] = decision.get("resolved_template_option")
-        material["workbook_row"] = decision.get("workbook_row")
-        material["calculated_quantity"] = quantity
-        material["estimated_units"] = quantity
-        material["linear_ft"] = safe_number(decision.get("linear_ft"), 0.0)
-        material["amount"] = safe_number(decision.get("amount"), 0.0)
-        material["estimated_cost"] = safe_number(decision.get("estimated_cost"), 0.0)
-        material["formula_model"] = decision.get("formula_model")
-        material["formula_source"] = "roofing_detail_quantity_template_decisions"
-        material["unit"] = "lf" if material["linear_ft"] else "unit"
-        material["decision_values"] = decision.get("decision_values")
-        material["editable_decision_value"] = decision.get("editable_decision_value")
-        material["calculated_output"] = material["estimated_cost"]
-        material["calculated_output_summary"] = decision.get("calculated_output_summary")
-        material["workbook_cell_write_preview"] = decision.get("workbook_cell_write_preview") or []
-        material["notes"] = f"Synced from roofing detail quantity template decision row {decision.get('workbook_row')}."
-
-
 def _build_roofing_board_fastener_template_decisions(
     *,
     scope: dict[str, Any],
@@ -5291,119 +5087,6 @@ def _build_roofing_board_fastener_template_decisions(
             }
         )
     return rows
-
-
-def _apply_roofing_board_fastener_template_decisions_to_materials(workbench: dict[str, Any]) -> None:
-    decisions = [
-        row
-        for row in workbench.get("roofing_board_fastener_template_decisions") or []
-        if isinstance(row, dict) and row.get("include")
-    ]
-    if not decisions:
-        return
-    board_rows = [row for row in decisions if str(row.get("template_bucket") or "") == "board_stock"]
-    fastener_rows = [row for row in decisions if str(row.get("template_bucket") or "") == "fasteners"]
-    plate_rows = [row for row in decisions if str(row.get("template_bucket") or "") == "plates"]
-
-    board_material = _board_stock_material_row(workbench.get("materials"))
-    if board_material and board_rows:
-        primary = board_rows[0]
-        total_area = sum(safe_number(row.get("basis_sqft"), 0.0) for row in board_rows)
-        total_squares = sum(safe_number(row.get("estimated_squares"), 0.0) for row in board_rows)
-        total_cost = sum(safe_number(row.get("estimated_cost"), 0.0) for row in board_rows)
-        board_material["include"] = True
-        board_material["selector_code"] = primary.get("editable_selector_code") or primary.get("selector_code")
-        board_material["resolved_template_option"] = primary.get("resolved_template_option")
-        board_material["template_selector_option"] = primary.get("resolved_template_option")
-        board_material["item_name"] = first_nonblank(primary.get("selected_pricing_candidate"), board_material.get("item_name"), board_material.get("current_item"))
-        board_material["current_item"] = board_material["item_name"]
-        board_material["editable_basis_sqft"] = round(total_area, 2)
-        board_material["default_basis_sqft"] = round(total_area, 2)
-        board_material["thickness_inches"] = safe_number(primary.get("thickness_inches"), 0.0)
-        board_material["estimated_squares"] = round(total_squares, 4)
-        board_material["calculated_quantity"] = round(total_squares, 4)
-        board_material["estimated_units"] = round(total_squares, 4)
-        board_material["estimated_cost"] = round(total_cost, 2)
-        board_material["current_unit_price"] = safe_number(primary.get("price_per_square") or primary.get("unit_price"), 0.0)
-        board_material["current_price"] = board_material["current_unit_price"]
-        board_material["editable_qty_per_sqft"] = round(total_squares / total_area, 8) if total_area > 0 and total_squares > 0 else 0.0
-        board_material["editable_default"] = board_material["editable_qty_per_sqft"]
-        board_material["unit"] = primary.get("unit") or "square"
-        board_material["formula_model"] = primary.get("formula_model")
-        board_material["formula_source"] = "roofing_board_fastener_template_decisions"
-        board_material["decision_values"] = {
-            "selector_code": board_material["selector_code"],
-            "resolved_template_option": board_material.get("resolved_template_option"),
-            "selected_pricing_candidate": board_material.get("item_name"),
-            "basis_sqft": round(total_area, 2),
-            "estimated_squares": round(total_squares, 4),
-            "estimated_cost": round(total_cost, 2),
-        }
-        board_material["editable_decision_value"] = dict(board_material["decision_values"])
-        board_material["calculated_output"] = board_material["estimated_cost"]
-        board_material["calculated_output_summary"] = _value_summary({"squares": round(total_squares, 4), "cost": round(total_cost, 2), "rows": len(board_rows)})
-        board_material["workbook_cell_write_preview"] = [write for decision in board_rows for write in (decision.get("workbook_cell_write_preview") or [])]
-        board_material["notes"] = "Synced from included roofing board stock template decision row(s)."
-
-    fastener_material = _fastener_material_row(workbench.get("materials"))
-    if fastener_material and fastener_rows:
-        primary = fastener_rows[0]
-        units = sum(safe_number(row.get("estimated_units"), 0.0) for row in fastener_rows)
-        cost = sum(safe_number(row.get("estimated_cost"), 0.0) for row in fastener_rows)
-        fastener_material["include"] = True
-        fastener_material["template_bucket"] = "fasteners"
-        fastener_material["package_key"] = "fasteners"
-        fastener_material["item_name"] = first_nonblank(primary.get("selected_pricing_candidate"), fastener_material.get("item_name"), fastener_material.get("current_item"))
-        fastener_material["current_item"] = fastener_material["item_name"]
-        fastener_material["calculated_quantity"] = round(units, 2)
-        fastener_material["estimated_units"] = round(units, 2)
-        fastener_material["estimated_cost"] = round(cost, 2)
-        fastener_material["current_unit_price"] = safe_number(primary.get("unit_price_per_thousand") or primary.get("unit_price"), 0.0)
-        fastener_material["current_price"] = fastener_material["current_unit_price"]
-        fastener_material["unit"] = primary.get("unit") or "m"
-        fastener_material["formula_model"] = primary.get("formula_model")
-        fastener_material["formula_source"] = "roofing_board_fastener_template_decisions"
-        fastener_material["decision_values"] = {
-            "selected_pricing_candidate": fastener_material.get("item_name"),
-            "board_area_sqft": primary.get("board_area_sqft"),
-            "estimated_units": round(units, 2),
-            "estimated_cost": round(cost, 2),
-        }
-        fastener_material["editable_decision_value"] = dict(fastener_material["decision_values"])
-        fastener_material["calculated_output"] = fastener_material["estimated_cost"]
-        fastener_material["calculated_output_summary"] = _value_summary({"units": round(units, 2), "cost": round(cost, 2)})
-        fastener_material["workbook_cell_write_preview"] = [write for decision in fastener_rows for write in (decision.get("workbook_cell_write_preview") or [])]
-        fastener_material["notes"] = "Synced from included roofing fastener template decision row(s)."
-
-    plates_material = _plates_material_row(workbench.get("materials"))
-    if plates_material and plate_rows:
-        primary = plate_rows[0]
-        units = sum(safe_number(row.get("estimated_units"), 0.0) for row in plate_rows)
-        cost = sum(safe_number(row.get("estimated_cost"), 0.0) for row in plate_rows)
-        plates_material["include"] = True
-        plates_material["item_name"] = first_nonblank(primary.get("selected_pricing_candidate"), plates_material.get("item_name"), plates_material.get("current_item"))
-        plates_material["current_item"] = plates_material["item_name"]
-        plates_material["calculated_quantity"] = round(units, 2)
-        plates_material["estimated_units"] = round(units, 2)
-        plates_material["estimated_cost"] = round(cost, 2)
-        plates_material["current_unit_price"] = safe_number(primary.get("unit_price_per_thousand") or primary.get("unit_price"), 0.0)
-        plates_material["current_price"] = plates_material["current_unit_price"]
-        plates_material["unit"] = primary.get("unit") or "m"
-        plates_material["formula_model"] = primary.get("formula_model")
-        plates_material["formula_source"] = "roofing_board_fastener_template_decisions"
-        plates_material["decision_values"] = {
-            "selected_pricing_candidate": plates_material.get("item_name"),
-            "board_area_sqft": primary.get("board_area_sqft"),
-            "estimated_units": round(units, 2),
-            "estimated_cost": round(cost, 2),
-        }
-        plates_material["editable_decision_value"] = dict(plates_material["decision_values"])
-        plates_material["calculated_output"] = plates_material["estimated_cost"]
-        plates_material["calculated_output_summary"] = _value_summary({"units": round(units, 2), "cost": round(cost, 2)})
-        plates_material["workbook_cell_write_preview"] = [write for decision in plate_rows for write in (decision.get("workbook_cell_write_preview") or [])]
-        plates_material["notes"] = "Synced from included roofing plate template decision row(s)."
-
-
 def _build_roofing_granules_template_decisions(
     *,
     scope: dict[str, Any],
@@ -5577,60 +5260,6 @@ def _build_roofing_granules_template_decisions(
         ],
     }
     return [row]
-
-
-def _apply_roofing_granules_template_decisions_to_materials(workbench: dict[str, Any]) -> None:
-    decisions = [
-        row
-        for row in workbench.get("roofing_granules_template_decisions") or []
-        if isinstance(row, dict) and row.get("include")
-    ]
-    if not decisions:
-        return
-    material = _granules_material_row(workbench.get("materials"))
-    if not material:
-        return
-    primary = decisions[0]
-    area = safe_number(primary.get("basis_sqft"), 0.0)
-    units = sum(safe_number(row.get("estimated_units"), 0.0) for row in decisions)
-    cost = sum(safe_number(row.get("estimated_cost"), 0.0) for row in decisions)
-    material["include"] = True
-    material["selector_code"] = primary.get("editable_selector_code") or primary.get("selector_code")
-    material["resolved_template_option"] = primary.get("resolved_template_option")
-    material["template_selector_option"] = primary.get("resolved_template_option")
-    material["item_name"] = first_nonblank(primary.get("selected_pricing_candidate"), material.get("item_name"), material.get("current_item"))
-    material["current_item"] = material["item_name"]
-    material["editable_basis_sqft"] = round(area, 2)
-    material["default_basis_sqft"] = round(area, 2)
-    material["coverage_lbs_per_100_sqft"] = safe_number(primary.get("coverage_lbs_per_100_sqft"), ROOFING_GRANULES_DEFAULT_COVERAGE_LBS_PER_100_SQFT)
-    material["bag_weight_lbs"] = safe_number(primary.get("bag_weight_lbs"), ROOFING_GRANULES_DEFAULT_BAG_WEIGHT_LBS)
-    material["calculated_quantity"] = round(units, 4)
-    material["estimated_units"] = round(units, 4)
-    material["estimated_cost"] = round(cost, 2)
-    material["current_unit_price"] = safe_number(primary.get("unit_price"), 0.0)
-    material["current_price"] = material["current_unit_price"]
-    material["editable_qty_per_sqft"] = round(units / area, 8) if area > 0 and units > 0 else 0.0
-    material["editable_default"] = material["editable_qty_per_sqft"]
-    material["unit"] = primary.get("unit") or "bag"
-    material["formula_model"] = primary.get("formula_model")
-    material["formula_source"] = "roofing_granules_template_decisions"
-    material["decision_values"] = {
-        "selector_code": material["selector_code"],
-        "resolved_template_option": material.get("resolved_template_option"),
-        "selected_pricing_candidate": material.get("item_name"),
-        "basis_sqft": round(area, 2),
-        "coverage_lbs_per_100_sqft": material["coverage_lbs_per_100_sqft"],
-        "bag_weight_lbs": material["bag_weight_lbs"],
-        "estimated_units": round(units, 4),
-        "estimated_cost": round(cost, 2),
-    }
-    material["editable_decision_value"] = dict(material["decision_values"])
-    material["calculated_output"] = material["estimated_cost"]
-    material["calculated_output_summary"] = _value_summary({"bags": round(units, 4), "cost": round(cost, 2)})
-    material["workbook_cell_write_preview"] = [write for decision in decisions for write in (decision.get("workbook_cell_write_preview") or [])]
-    material["notes"] = "Synced from included roofing granules template decision row(s)."
-
-
 def _build_roofing_equipment_template_decisions(
     *,
     scope: dict[str, Any],
@@ -5906,52 +5535,6 @@ def _build_roofing_equipment_template_decisions(
         }
     )
     return rows
-
-
-def _apply_roofing_equipment_template_decisions_to_adders(workbench: dict[str, Any]) -> None:
-    decisions = [
-        row
-        for row in workbench.get("roofing_equipment_template_decisions") or []
-        if isinstance(row, dict) and row.get("include")
-    ]
-    if not decisions:
-        return
-    adders = workbench.setdefault("adders", [])
-    by_key = {str(row.get("adder_key") or row.get("template_bucket") or "").lower(): row for row in adders if isinstance(row, dict)}
-    label_by_key = {"dumpster": "Dumpster", "lift": "Lift", "generator": "Generator"}
-    row_by_key = {"dumpster": "69", "lift": "73/74", "generator": "99"}
-    for key in ("dumpster", "lift", "generator"):
-        selected = [row for row in decisions if str(row.get("template_bucket") or "").lower() == key]
-        if not selected:
-            continue
-        total = round(sum(safe_number(row.get("estimated_cost"), 0.0) for row in selected), 2)
-        adder = by_key.get(key)
-        if not adder:
-            adder = {
-                "adder": label_by_key[key],
-                "adder_key": key,
-                "template_bucket": key,
-                "workbook_row": row_by_key[key],
-                "historical_default_value": 0.0,
-                "median_cost_when_used": 0.0,
-                "evidence_count": 0,
-                "confidence": "review",
-            }
-            adders.append(adder)
-            by_key[key] = adder
-        adder["include"] = True
-        adder["editable_value"] = total
-        adder["editable_default"] = total
-        adder["estimated_cost"] = total
-        adder["manual_override"] = True
-        adder["source"] = "roofing_equipment_template_decisions"
-        adder["confidence"] = "review"
-        adder["notes"] = f"Synced from included roofing equipment template decision row(s): {', '.join(str(row.get('workbook_row')) for row in selected)}."
-        adder["decision_values"] = [row.get("decision_values") for row in selected]
-        adder["calculated_output_summary"] = _value_summary({"cost": total})
-        adder["workbook_cell_write_preview"] = [write for row in selected for write in (row.get("workbook_cell_write_preview") or [])]
-
-
 def _build_roofing_travel_freight_template_decisions(
     *,
     scope: dict[str, Any],
@@ -6162,57 +5745,6 @@ def _build_roofing_travel_freight_template_decisions(
             }
         )
     return rows
-
-
-def _apply_roofing_travel_freight_template_decisions_to_adders(workbench: dict[str, Any]) -> None:
-    decisions = [
-        row
-        for row in workbench.get("roofing_travel_freight_template_decisions") or []
-        if isinstance(row, dict) and row.get("include")
-    ]
-    if not decisions:
-        return
-    adders = workbench.setdefault("adders", [])
-    by_key = {str(row.get("adder_key") or row.get("template_bucket") or "").lower(): row for row in adders if isinstance(row, dict)}
-    label_by_key = {
-        "delivery_fee": "Delivery Fee",
-        "freight": "Freight",
-        "sales_trips": "Sales Trips",
-        "truck_expense": "Truck Expense",
-    }
-    row_by_key = {"delivery_fee": "76", "freight": "103", "sales_trips": "106", "truck_expense": "108"}
-    for key in ("delivery_fee", "freight", "sales_trips", "truck_expense"):
-        selected = [row for row in decisions if str(row.get("template_bucket") or "").lower() == key]
-        if not selected:
-            continue
-        total = round(sum(safe_number(row.get("estimated_cost"), 0.0) for row in selected), 2)
-        adder = by_key.get(key)
-        if not adder:
-            adder = {
-                "adder": label_by_key[key],
-                "adder_key": key,
-                "template_bucket": key,
-                "workbook_row": row_by_key[key],
-                "historical_default_value": 0.0,
-                "median_cost_when_used": 0.0,
-                "evidence_count": 0,
-                "confidence": "review",
-            }
-            adders.append(adder)
-            by_key[key] = adder
-        adder["include"] = True
-        adder["editable_value"] = total
-        adder["editable_default"] = total
-        adder["estimated_cost"] = total
-        adder["manual_override"] = True
-        adder["source"] = "roofing_travel_freight_template_decisions"
-        adder["confidence"] = "review"
-        adder["notes"] = f"Synced from included roofing travel/freight template decision row(s): {', '.join(str(row.get('workbook_row')) for row in selected)}."
-        adder["decision_values"] = [row.get("decision_values") for row in selected]
-        adder["calculated_output_summary"] = _value_summary({"cost": total})
-        adder["workbook_cell_write_preview"] = [write for row in selected for write in (row.get("workbook_cell_write_preview") or [])]
-
-
 def _roofing_thinner_selector_options(row_number: int = ROOFING_THINNER_TEMPLATE_ROW) -> list[dict[str, Any]]:
     return [
         {
@@ -6441,64 +5973,6 @@ def _accessory_cell_preview(
         {"cell": f"Estimate!G{row_number}", "field": "units", "value": decision_values.get("units")},
         {"cell": f"Estimate!H{row_number}", "field": "estimated_cost_formula_output", "value": formula.get("estimated_cost")},
     ]
-
-
-def _apply_roofing_accessory_template_decisions_to_materials(workbench: dict[str, Any]) -> None:
-    decisions = [
-        row
-        for row in workbench.get("roofing_accessory_template_decisions") or []
-        if isinstance(row, dict) and row.get("include")
-    ]
-    if not decisions:
-        return
-    materials = workbench.setdefault("materials", [])
-    by_key = {str(row.get("package_key") or row.get("template_bucket") or "").lower(): row for row in materials if isinstance(row, dict)}
-    for decision in decisions:
-        key = str(decision.get("template_bucket") or "").lower()
-        material = by_key.get(key)
-        if not material:
-            material = {
-                "package": decision.get("resolved_template_option") or key,
-                "package_key": key,
-                "template_bucket": key,
-                "workbook_row": decision.get("workbook_row"),
-                "historical_qty_per_sqft": 0.0,
-                "editable_qty_per_sqft": 0.0,
-                "historical_cost_per_sqft": 0.0,
-                "evidence_count": 0,
-                "confidence": "review",
-                "source": "roofing_accessory_template_decisions",
-            }
-            materials.append(material)
-            by_key[key] = material
-        quantity = safe_number(
-            first_nonblank(decision.get("estimated_units"), decision.get("units"), decision.get("linear_ft")),
-            0.0,
-        )
-        material["include"] = True
-        material["item_name"] = decision.get("resolved_template_option")
-        material["current_item"] = decision.get("resolved_template_option")
-        material["workbook_row"] = decision.get("workbook_row")
-        material["calculated_quantity"] = quantity
-        material["estimated_units"] = quantity
-        material["linear_ft"] = safe_number(decision.get("linear_ft"), 0.0)
-        material["amount"] = safe_number(decision.get("amount"), 0.0)
-        material["current_unit_price"] = safe_number(decision.get("unit_price"), 0.0)
-        material["current_price"] = material["current_unit_price"]
-        material["estimated_cost"] = safe_number(decision.get("estimated_cost"), 0.0)
-        material["formula_model"] = decision.get("formula_model")
-        material["formula_source"] = "roofing_accessory_template_decisions"
-        material["selector_code"] = decision.get("editable_selector_code") or decision.get("selector_code")
-        material["resolved_template_option"] = decision.get("resolved_template_option")
-        material["unit"] = "lf" if material["linear_ft"] else "unit"
-        material["decision_values"] = decision.get("decision_values")
-        material["editable_decision_value"] = decision.get("editable_decision_value")
-        material["calculated_output"] = material["estimated_cost"]
-        material["calculated_output_summary"] = decision.get("calculated_output_summary")
-        material["workbook_cell_write_preview"] = decision.get("workbook_cell_write_preview") or []
-        material["notes"] = f"Synced from roofing accessory template decision row {decision.get('workbook_row')}."
-
-
 def _roofing_labor_crew_options() -> list[dict[str, Any]]:
     options: list[dict[str, Any]] = []
     graph_path = Path("output/template_decision_graph_roofing.json")
@@ -6563,10 +6037,71 @@ def _build_roofing_labor_template_decisions(
     scope: dict[str, Any],
     labor_rows: list[dict[str, Any]] | None = None,
     existing_rows: list[dict[str, Any]] | None = None,
+    data: Any = None,
 ) -> list[dict[str, Any]]:
     if _is_insulation_scope(scope):
         return []
-    labor_rows = labor_rows or []
+    decision_defaults = _decision_recommendation_lookup(data, historical_filters_from_scope(scope)) if data is not None else {}
+    if not labor_rows and not existing_rows:
+        note_text = _normalized(
+            " ".join(
+                str(scope.get(key) or "")
+                for key in ("notes", "raw_input_notes", "project_type", "scope_of_work", "roof_condition")
+            )
+        )
+        penetration_count = safe_number(scope.get("penetration_count"), 0.0)
+        penetration_complexity = _normalized(scope.get("penetrations_complexity"))
+        heavy_detail = (
+            penetration_complexity in {"high", "heavy", "difficult"}
+            or penetration_count >= 10
+            or any(term in note_text for term in ("many penetration", "lots of penetration", "heavy detail", "heavy penetration", "difficult access", "poor condition", "severe rust"))
+        )
+        baseline = {"labor_prep", "labor_base", "labor_top_coat", "labor_cleanup", "labor_loading"}
+        labor_rows = []
+        for spec in LABOR_PACKAGES:
+            package = str(spec["package"])
+            decision_id = f"roofing_{package}"
+            meta = _decision_meta(
+                decision_defaults,
+                decision_id,
+                ["days", "crew_size", "crew_selector_code", "daily_rate", "hourly_rate", "formula_mode"],
+            )
+            include = package in baseline
+            if package == "labor_seam_sealer" and any(term in note_text for term in ("open seam", "seam treatment", "seams")):
+                include = True
+            if package in {"labor_caulk", "labor_details"} and heavy_detail:
+                include = True
+            if package == "labor_prime" and any(term in note_text for term in ("rust", "primer", "prime")):
+                include = True
+            labor_rows.append(
+                {
+                    "package_key": package,
+                    "template_bucket": package,
+                    "labor_package": spec["label"],
+                    "workbook_row": spec["workbook_row"],
+                    "include": include,
+                    "days": _decision_value(decision_defaults, decision_id, "days", ""),
+                    "crew_size": _decision_value(decision_defaults, decision_id, "crew_size", ""),
+                    "crew_selector_code": _decision_value(decision_defaults, decision_id, "crew_selector_code", ""),
+                    "daily_rate": _decision_value(decision_defaults, decision_id, "daily_rate", ""),
+                    "hourly_rate": _decision_value(decision_defaults, decision_id, "hourly_rate", ""),
+                    "formula_mode": _decision_value(decision_defaults, decision_id, "formula_mode", "mixed_formula"),
+                    "decision_evidence_count": meta.get("decision_evidence_count"),
+                    "decision_source_jobs_count": meta.get("decision_source_jobs_count"),
+                    "decision_confidence": meta.get("decision_confidence"),
+                    "decision_source_tables": meta.get("decision_source_tables"),
+                    "decision_filters_applied": meta.get("decision_filters_applied"),
+                    "decision_filters_relaxed": meta.get("decision_filters_relaxed"),
+                    "decision_recommendation_json": meta.get("decision_recommendation_json"),
+                    "recommended_decision_value": {
+                        "days": _decision_value(decision_defaults, decision_id, "days", ""),
+                        "crew_size": _decision_value(decision_defaults, decision_id, "crew_size", ""),
+                        "formula_mode": _decision_value(decision_defaults, decision_id, "formula_mode", ""),
+                        "evidence_count": meta.get("decision_evidence_count"),
+                    },
+                }
+            )
+    labor_rows = labor_rows or list(existing_rows or [])
     existing_by_key = {
         str(first_nonblank(row.get("template_bucket"), row.get("package_key"), row.get("workbook_row"))): row
         for row in existing_rows or []
@@ -6729,48 +6264,6 @@ def _build_roofing_labor_template_decisions(
             }
         )
     return decisions
-
-
-def _apply_roofing_labor_template_decisions_to_labor(workbench: dict[str, Any]) -> None:
-    decisions = {
-        str(first_nonblank(row.get("template_bucket"), row.get("package_key"))): row
-        for row in workbench.get("roofing_labor_template_decisions") or []
-        if isinstance(row, dict)
-    }
-    if not decisions:
-        return
-    for labor in workbench.get("labor") or []:
-        if not isinstance(labor, dict):
-            continue
-        key = str(first_nonblank(labor.get("template_bucket"), labor.get("package_key")))
-        decision = decisions.get(key)
-        if not decision:
-            continue
-        labor["include"] = bool(decision.get("include"))
-        labor["days"] = safe_number(decision.get("days"), 0.0)
-        labor["editable_days"] = labor["days"]
-        labor["crew_size"] = int(safe_number(decision.get("crew_size"), 0) or 0)
-        labor["crew_people_selection"] = labor["crew_size"]
-        labor["daily_rate"] = safe_number(decision.get("daily_rate"), 0.0)
-        labor["hourly_rate"] = safe_number(decision.get("hourly_rate"), 0.0)
-        labor["labor_rate"] = labor["hourly_rate"]
-        labor["editable_hours_per_1000_sqft"] = safe_number(decision.get("editable_hours_per_1000_sqft"), labor.get("editable_hours_per_1000_sqft"))
-        labor["calculated_hours"] = safe_number(decision.get("calculated_hours"), 0.0)
-        labor["total_hours"] = labor["calculated_hours"]
-        labor["editable_total_hours"] = labor["calculated_hours"]
-        labor["formula_mode"] = str(decision.get("formula_mode") or labor.get("formula_mode") or "mixed_formula")
-        labor["formula_model"] = str(decision.get("formula_model") or "labor_cost_from_days_crew_rate")
-        labor["formula_source"] = str(decision.get("formula_source") or "")
-        labor["days_was_explicit"] = bool(decision.get("days_was_explicit"))
-        labor["estimated_cost"] = safe_number(decision.get("estimated_cost"), 0.0) if labor["include"] else 0.0
-        labor["calculated_output"] = labor["estimated_cost"]
-        labor["decision_values"] = dict(decision.get("decision_values") or {})
-        labor["editable_decision_value"] = dict(decision.get("editable_decision_value") or {})
-        labor["calculated_output_summary"] = decision.get("calculated_output_summary")
-        labor["workbook_cell_write_preview"] = decision.get("workbook_cell_write_preview") or []
-        labor["notes"] = "Synced from roofing labor template decision row."
-
-
 def _ai_scope_debug_context(recommendation: Any | None) -> dict[str, Any]:
     debug = _rec_value(recommendation, "debug", {}) or {}
     if not isinstance(debug, dict):
@@ -8432,551 +7925,10 @@ def _short_labor_note(
     return " ".join(part for part in notes if part)
 
 
-def material_workbench_rows(
-    recommendation: Any,
-    data: Any,
-    scope: dict[str, Any],
-    historical_filters: dict[str, Any] | None = None,
-) -> list[dict[str, Any]]:
-    area = _estimate_area(scope)
-    notes = _scope_note_text(recommendation, scope)
-    pricing = _frame(data, "pricing_catalog")
-    if pricing.empty:
-        pricing = _frame(data, "pricing")
-    decisions = _decision_recommendation_lookup(data, historical_filters)
-    rows: list[dict[str, Any]] = []
-    for spec in _material_specs_for_scope(scope):
-        package = spec["package"]
-        decision_id = _material_decision_id(package, scope)
-        decision_fields = [
-            "resolved_item_name",
-            "thickness_inches",
-            "yield_or_coverage",
-            "foam_density_lb",
-            "gal_per_100_sqft",
-            "gal_per_sqft",
-            "wet_mils_estimate",
-            "waste_factor_pct",
-        ]
-        decision_meta = _decision_meta(decisions, decision_id, decision_fields)
-        default_unit = str(spec.get("default_unit") or "unit")
-        sizing = material_sizing_distribution(data, package, str(spec.get("default_unit") or "unit"), historical_filters)
-        pricing_options = _pricing_options_for_package(pricing, spec, scope)
-        historical_options = _historical_item_options(data, package, historical_filters, default_unit)
-        selected_item = _select_material_item(package, pricing_options, historical_options, scope, str(spec.get("label") or package), default_unit)
-        item_qty_per_sqft = safe_number(selected_item.get("item_median_qty_per_sqft"), 0.0)
-        item_evidence_count = int(safe_number(selected_item.get("item_evidence_count"), 0))
-        min_evidence = int(safe_number(sizing.get("minimum_evidence_count"), DEFAULT_MIN_EVIDENCE_COUNT))
-        qty_per_sqft = item_qty_per_sqft if item_qty_per_sqft > 0 and item_evidence_count >= min_evidence else safe_number(sizing.get("median"), 0.0)
-        historical_cost_per_sqft = safe_number(sizing.get("median_cost_per_sqft"), 0.0)
-        foam_quantity_model = first_nonblank(sizing.get("foam_quantity_model"))
-        foam_units_per_sqft_per_inch = safe_number(sizing.get("median_units_per_sqft_per_inch"), 0.0)
-        foam_sets_per_sqft_per_inch = safe_number(sizing.get("median_sets_per_sqft_per_inch"), 0.0)
-        foam_cost_per_sqft_per_inch = safe_number(sizing.get("median_cost_per_sqft_per_inch"), 0.0)
-        foam_thickness_inches = safe_number(
-            first_nonblank(
-                scope.get("foam_thickness_inches"),
-                scope.get("thickness_inches"),
-                _decision_value(decisions, decision_id, "thickness_inches"),
-                sizing.get("median_foam_thickness_inches"),
-            ),
-            0.0,
-        )
-        foam_yield_factor = safe_number(
-            first_nonblank(
-                scope.get("foam_yield_factor"),
-                _decision_value(decisions, decision_id, "yield_or_coverage"),
-                sizing.get("median_foam_yield"),
-            ),
-            0.0,
-        )
-        decision_gal_per_100 = safe_number(_decision_value(decisions, decision_id, "gal_per_100_sqft"), 0.0)
-        if decision_gal_per_100 > 0 and package in {"coating", "thermal_barrier_coating"}:
-            qty_per_sqft = decision_gal_per_100 / 100
-        if package == "foam" and _is_insulation_scope(scope) and foam_units_per_sqft_per_inch <= 0 and foam_yield_factor > 0:
-            foam_units_per_sqft_per_inch = 1000 / foam_yield_factor
-            foam_sets_per_sqft_per_inch = foam_units_per_sqft_per_inch / 1000
-        if package == "foam" and _is_insulation_scope(scope) and foam_units_per_sqft_per_inch > 0 and foam_thickness_inches > 0:
-            qty_per_sqft = foam_units_per_sqft_per_inch * foam_thickness_inches
-            historical_cost_per_sqft = historical_cost_per_sqft or (foam_cost_per_sqft_per_inch * foam_thickness_inches)
-        if historical_cost_per_sqft <= 0:
-            historical_cost_per_sqft = safe_number(selected_item.get("item_median_cost_per_sqft"), 0.0)
-        historical_cost_evidence_count = int(safe_number(sizing.get("historical_cost_evidence_count"), 0))
-        evidence_count = int(safe_number(sizing.get("evidence_count"), 0))
-        if package == "foam" and _is_insulation_scope(scope):
-            evidence_count = max(evidence_count, int(safe_number(sizing.get("foam_template_model_evidence_count"), 0)))
-        unit_price = safe_number(selected_item.get("unit_price"), 0.0)
-        if package == "foam" and _is_insulation_scope(scope) and unit_price <= 0:
-            unit_price = safe_number(sizing.get("median_foam_unit_price"), 0.0)
-        price_source = str(selected_item.get("item_name") or "")
-        status = _package_suggestion_status(recommendation, package, scope)
-        include = status == "yes"
-        if package == "coating" and scope.get("coating_type"):
-            status = "yes"
-            include = True
-        editable_qty_per_sqft = qty_per_sqft
-        scope_partial = scope.get("partial_scope") if isinstance(scope.get("partial_scope"), dict) else {}
-        partial_basis_sqft = 0.0
-        if package == "primer":
-            partial_basis_sqft = safe_number(scope_partial.get("primer_basis_sqft"), 0.0) or _partial_primer_basis_sqft(notes, area)
-        if include:
-            editable_basis_sqft = partial_basis_sqft if partial_basis_sqft > 0 else area
-        elif package == "coating":
-            editable_basis_sqft = area
-        elif partial_basis_sqft > 0:
-            editable_basis_sqft = partial_basis_sqft
-        else:
-            editable_basis_sqft = 0.0
-        calculated_quantity = editable_qty_per_sqft * editable_basis_sqft if include and editable_basis_sqft else 0.0
-        foam_estimated_units = calculated_quantity if package == "foam" and _is_insulation_scope(scope) else 0.0
-        foam_estimated_sets = foam_estimated_units / 1000 if foam_estimated_units else 0.0
-        if include and unit_price > 0:
-            estimated_cost = calculated_quantity * unit_price
-            selected_price_source = "current_pricing"
-        elif include and historical_cost_per_sqft > 0 and editable_basis_sqft:
-            estimated_cost = historical_cost_per_sqft * editable_basis_sqft
-            selected_price_source = "historical_cost_default"
-        else:
-            estimated_cost = 0.0
-            selected_price_source = "current_pricing_missing" if historical_cost_per_sqft <= 0 and unit_price <= 0 else "not_included"
-        needs_review = bool(unit_price <= 0 and historical_cost_per_sqft > 0)
-        item_source = str(selected_item.get("item_source") or "manual")
-        item_name = str(
-            first_nonblank(
-                selected_item.get("item_name"),
-                sizing.get("default_foam_product") if package == "foam" and _is_insulation_scope(scope) else "",
-                _decision_value(decisions, decision_id, "resolved_item_name"),
-                spec["label"],
-            )
-        )
-        product_context = _product_context(data, item_name=item_name, decision_id=decision_id, package=package)
-        decision_output = {
-            "selected_option": _decision_value(decisions, decision_id, "resolved_item_name", item_name),
-            "thickness_inches": foam_thickness_inches if package == "foam" else None,
-            "yield_or_coverage": foam_yield_factor if package == "foam" else None,
-            "gal_per_100_sqft": decision_gal_per_100 if package in {"coating", "thermal_barrier_coating"} else None,
-            "wet_mils_estimate": _decision_value(decisions, decision_id, "wet_mils_estimate"),
-            "waste_factor_pct": _decision_value(decisions, decision_id, "waste_factor_pct"),
-        }
-        explanation = _material_explanation(
-            package=package,
-            sizing=sizing,
-            evidence_count=evidence_count,
-            qty_per_sqft=qty_per_sqft,
-            status=status,
-            scope=scope,
-            unit_price=unit_price,
-            historical_cost_per_sqft=historical_cost_per_sqft,
-        )
-        if item_source == "current_pricing_plus_historical_usage":
-            explanation += f" Default item selected from current pricing and historical usage: {item_name}."
-        elif item_source == "current_pricing":
-            explanation += f" Default item selected from current pricing: {item_name}."
-        elif item_source.startswith("historical"):
-            explanation += f" Default item selected from historical usage/cost evidence: {item_name}."
-        else:
-            explanation += " Item can be entered manually if the estimator wants a different product."
-        short_note = _short_material_note(
-            package=package,
-            evidence_count=evidence_count,
-            qty_per_sqft=qty_per_sqft,
-            status=status,
-            scope=scope,
-            unit_price=unit_price,
-            historical_cost_per_sqft=historical_cost_per_sqft,
-            sizing=sizing,
-        )
-        if product_context:
-            context_note_parts = []
-            if product_context.get("recommended_use"):
-                context_note_parts.append(f"Product guidance: {product_context.get('recommended_use')}")
-            if product_context.get("coverage"):
-                context_note_parts.append(f"Coverage: {product_context.get('coverage')}")
-            if product_context.get("warnings"):
-                context_note_parts.append("Manufacturer warning available.")
-            if context_note_parts:
-                short_note = f"{short_note} {' '.join(context_note_parts)}"
-            if product_context.get("important_limitations"):
-                explanation += f" Manufacturer limitations: {product_context.get('important_limitations')}."
-        historical_recommendation = _material_decision_recommendation_summary(
-            decision_output=decision_output,
-            item_name=item_name,
-            evidence_count=int(decision_meta.get("decision_evidence_count") or evidence_count),
-            confidence=str(decision_meta.get("decision_confidence") or sizing.get("confidence") or _confidence(evidence_count)),
-            package=package,
-            unit=str(selected_item.get("unit") or sizing.get("unit") or spec.get("default_unit") or ""),
-        )
-        editable_value_summary = _value_summary(
-            {
-                "item": item_name,
-                "basis_sqft": round(editable_basis_sqft, 2),
-                "qty_per_sqft": round(editable_qty_per_sqft, 6),
-                "thickness_inches": round(foam_thickness_inches, 4) if package == "foam" and _is_insulation_scope(scope) and foam_thickness_inches else None,
-                "yield": round(foam_yield_factor, 4) if package == "foam" and _is_insulation_scope(scope) and foam_yield_factor else None,
-                "gal_per_100_sqft": round(decision_gal_per_100, 4) if package in {"coating", "thermal_barrier_coating"} and decision_gal_per_100 else None,
-            }
-        )
-        calculated_output_summary = _value_summary(
-            {
-                "quantity": round(calculated_quantity, 2),
-                "sets": round(foam_estimated_sets, 4) if package == "foam" and _is_insulation_scope(scope) and foam_estimated_sets else None,
-                "cost": round(estimated_cost, 2),
-            }
-        )
-        product_guidance = _product_guidance_summary(product_context)
-        rows.append(
-            {
-                "include": bool(include),
-                "package": spec["label"],
-                "package_key": package,
-                "template_bucket": package,
-                "workbook_row": str(spec.get("workbook_row") or ""),
-                **decision_meta,
-                "recommended_decision_value": first_nonblank(
-                    decision_output.get("selected_option"),
-                    decision_output.get("thickness_inches"),
-                    decision_output.get("gal_per_100_sqft"),
-                    "",
-                ),
-                "editable_decision_value": first_nonblank(
-                    decision_output.get("selected_option"),
-                    decision_output.get("thickness_inches"),
-                    decision_output.get("gal_per_100_sqft"),
-                    "",
-                ),
-                "decision_values": decision_output,
-                "workbook_rows_controlled": str(spec.get("workbook_row") or ""),
-                "row_traceability": f"Estimate rows {spec.get('workbook_row') or ''}",
-                "calculated_output": round(estimated_cost, 2),
-                "estimator_decision": f"{spec['label']} ({package})",
-                "historical_recommendation": historical_recommendation,
-                "editable_value": editable_value_summary,
-                "calculated_output_summary": calculated_output_summary,
-                "evidence_summary": f"{decision_meta.get('decision_evidence_count') or evidence_count} decision rows; {decision_meta.get('decision_source_jobs_count') or evidence_count} jobs",
-                "product_guidance": product_guidance,
-                "product_warning_summary": _value_summary(product_context.get("warnings") or product_context.get("important_limitations") or ""),
-                "product_source_evidence": _value_summary(product_context.get("source_documents") or product_context.get("source_evidence") or []),
-                "item_name": item_name,
-                "product_id": product_context.get("product_id") or "",
-                "product_manufacturer": product_context.get("manufacturer") or "",
-                "product_knowledge_product_name": product_context.get("product_name") or "",
-                "product_knowledge_product_family": product_context.get("product_family") or "",
-                "product_knowledge_category": product_context.get("category") or "",
-                "product_recommended_use": product_context.get("recommended_use") or "",
-                "product_manufacturer_guidance": product_context.get("manufacturer_guidance") or "",
-                "product_coverage": product_context.get("coverage") or "",
-                "product_limitations": product_context.get("important_limitations") or "",
-                "product_warnings": product_context.get("warnings") or [],
-                "product_source_documents": product_context.get("source_documents") or [],
-                "product_source_evidence_rows": product_context.get("source_evidence") or [],
-                "product_linked_decision_nodes": product_context.get("linked_decision_nodes") or [],
-                "product_context_confidence": product_context.get("confidence") or "",
-                "product_match_score": product_context.get("match_score") or 0.0,
-                "product_r_value_per_inch": product_context.get("r_value_per_inch") or 0.0,
-                "product_r_value_per_inch_source": product_context.get("r_value_per_inch_source") or "",
-                "product_aged_r_value_per_inch": product_context.get("aged_r_value_per_inch") or 0.0,
-                "product_aged_r_value_per_inch_source": product_context.get("aged_r_value_per_inch_source") or "",
-                "product_initial_r_value_per_inch": product_context.get("initial_r_value_per_inch") or 0.0,
-                "product_initial_r_value_per_inch_source": product_context.get("initial_r_value_per_inch_source") or "",
-                "current_item": item_name,
-                "historical_item": item_name if item_source.startswith("historical") else first_nonblank(selected_item.get("historical_item"), ""),
-                "selected_item_reason": selected_item.get("selected_item_reason") or "",
-                "selected_item_score": selected_item.get("selected_item_score") or 0.0,
-                "top_rejected_item_reasons": selected_item.get("top_rejected_item_reasons") or [],
-                "item_source": item_source,
-                "item_options": " | ".join(option.get("item_name") for option in [*pricing_options, *historical_options] if option.get("item_name")),
-                "item_options_json": _item_options_payload(pricing_options, historical_options, selected_item),
-                "suggested_by_notes_rules": status,
-                "historical_usage_rate": _historical_usage_rate(data, package, scope, evidence_count),
-                "historical_qty_per_basis_sqft": round(qty_per_sqft, 6),
-                "historical_qty_per_sqft": round(qty_per_sqft, 6),
-                "historical_median": round(qty_per_sqft, 6),
-                "quantity_model": foam_quantity_model if package == "foam" and foam_quantity_model else "qty_per_sqft",
-                "decision_model": "workbook_formula_inputs" if package == "foam" and _is_insulation_scope(scope) else "historical_rate_default",
-                "decision_fields": (
-                    "foam_product,foam_density_lb,editable_basis_sqft,thickness_inches,yield_factor,current_unit_price"
-                    if package == "foam" and _is_insulation_scope(scope)
-                    else "item_name,editable_basis_sqft,editable_qty_per_sqft,current_unit_price"
-                ),
-                "calculated_output_fields": (
-                    "estimated_units,estimated_sets,estimated_cost"
-                    if package == "foam" and _is_insulation_scope(scope)
-                    else "calculated_quantity,estimated_cost"
-                ),
-                "foam_product": item_name if package == "foam" and _is_insulation_scope(scope) else "",
-                "foam_density_lb": safe_number(sizing.get("default_foam_density_lb"), 0.0),
-                "median_sets_per_sqft_per_inch": round(foam_sets_per_sqft_per_inch, 8),
-                "median_units_per_sqft_per_inch": round(foam_units_per_sqft_per_inch, 6),
-                "foam_thickness_inches": round(foam_thickness_inches, 4) if foam_thickness_inches else 0.0,
-                "thickness_inches": round(foam_thickness_inches, 4) if package == "foam" and _is_insulation_scope(scope) else 0.0,
-                "yield_factor": round(foam_yield_factor, 4) if package == "foam" and _is_insulation_scope(scope) else 0.0,
-                "median_foam_yield": round(safe_number(sizing.get("median_foam_yield"), 0.0), 4),
-                "item_level_qty_per_sqft": round(item_qty_per_sqft, 6),
-                "item_level_evidence_count": item_evidence_count,
-                "editable_basis_sqft": round(editable_basis_sqft, 2),
-                "default_basis_sqft": round(editable_basis_sqft, 2),
-                "p25_qty_per_sqft": round(safe_number(sizing.get("p25"), 0.0), 6),
-                "p75_qty_per_sqft": round(safe_number(sizing.get("p75"), 0.0), 6),
-                "editable_qty_per_sqft": round(editable_qty_per_sqft, 6),
-                "editable_default": round(editable_qty_per_sqft, 6),
-                "calculated_quantity": round(calculated_quantity, 2),
-                "estimated_units": round(foam_estimated_units, 2) if package == "foam" and _is_insulation_scope(scope) else round(calculated_quantity, 2),
-                "estimated_sets": round(foam_estimated_sets, 4) if package == "foam" and _is_insulation_scope(scope) else 0.0,
-                "unit": sizing.get("unit") if package == "foam" and foam_quantity_model else selected_item.get("unit") or sizing.get("unit") or spec.get("default_unit"),
-                "current_unit_price": round(unit_price, 4) if unit_price else 0.0,
-                "current_price": round(unit_price, 4) if unit_price else 0.0,
-                "historical_cost_per_sqft": round(historical_cost_per_sqft, 4),
-                "historical_cost_default": round(historical_cost_per_sqft, 4),
-                "estimated_cost": round(estimated_cost, 2),
-                "evidence_count": evidence_count,
-                "historical_cost_evidence_count": historical_cost_evidence_count,
-                "historical_jobs_found": int(safe_number(sizing.get("historical_jobs_found"), 0)),
-                "rows_accepted": int(safe_number(sizing.get("rows_accepted"), 0)),
-                "rows_rejected": int(safe_number(sizing.get("rows_rejected"), 0)),
-                "total_insulation_rows_for_bucket": int(safe_number(sizing.get("total_insulation_rows_for_bucket"), 0)),
-                "distinct_insulation_files_for_bucket": int(safe_number(sizing.get("distinct_insulation_files_for_bucket"), 0)),
-                "rows_with_quantity": int(safe_number(sizing.get("rows_with_quantity"), 0)),
-                "rows_with_cost": int(safe_number(sizing.get("rows_with_cost"), 0)),
-                "rows_with_area": int(safe_number(sizing.get("rows_with_area"), 0)),
-                "accepted_qty_per_sqft_rows": int(safe_number(sizing.get("accepted_qty_per_sqft_rows"), 0)),
-                "rejected_missing_area": int(safe_number(sizing.get("rejected_missing_area"), 0)),
-                "rejected_missing_quantity": int(safe_number(sizing.get("rejected_missing_quantity"), 0)),
-                "rejected_missing_cost": int(safe_number(sizing.get("rejected_missing_cost"), 0)),
-                "rejected_filter_mismatch": int(safe_number(sizing.get("rejected_filter_mismatch"), 0)),
-                "rejection_reasons": sizing.get("rejection_reasons") or "",
-                "range_width": round(safe_number(sizing.get("range_width"), 0.0), 6),
-                "relative_range_width": round(safe_number(sizing.get("relative_range_width"), 0.0), 4),
-                "variability_warning": sizing.get("variability_warning") or "",
-                "filters_applied": sizing.get("filters_applied") or "",
-                "filters_relaxed": sizing.get("filters_relaxed") or "",
-                "minimum_evidence_count": int(safe_number(sizing.get("minimum_evidence_count"), DEFAULT_MIN_EVIDENCE_COUNT)),
-                "filter_hash": sizing.get("filter_hash") or historical_filter_hash(historical_filters),
-                "manual_override": False,
-                "reset_to_historical_default": False,
-                "confidence": sizing.get("confidence") or _confidence(evidence_count),
-                "source": sizing.get("source") or "no_sufficient_evidence",
-                "pricing_source": price_source or selected_price_source,
-                "price_source": selected_price_source,
-                "needs_review": needs_review,
-                "notes": short_note,
-                "explanation": explanation,
-            }
-        )
-    return rows
-
-
-def labor_workbench_rows(
-    recommendation: Any,
-    data: Any,
-    scope: dict[str, Any],
-    hourly_rate: float = DEFAULT_HOURLY_RATE,
-    historical_filters: dict[str, Any] | None = None,
-) -> list[dict[str, Any]]:
-    area = _estimate_area(scope)
-    decisions = _decision_recommendation_lookup(data, historical_filters)
-    rows: list[dict[str, Any]] = []
-    for spec in _labor_specs_for_scope(scope):
-        package = spec["package"]
-        decision_id = _labor_decision_id(package, scope)
-        decision_fields = ["days", "crew_size", "crew_selector_code", "daily_rate", "hourly_rate", "formula_mode"]
-        decision_meta = _decision_meta(decisions, decision_id, decision_fields)
-        sizing = labor_sizing_distribution(data, package, historical_filters)
-        hours_per_1000 = safe_number(sizing.get("median"), 0.0)
-        evidence_count = int(safe_number(sizing.get("evidence_count"), 0))
-        status = _labor_suggestion_status(recommendation, package, scope)
-        include = status == "yes"
-        editable_hours_per_1000 = hours_per_1000
-        calculated_hours = editable_hours_per_1000 * area / 1000 if include and area else 0.0
-        crew_size = int(safe_number(_decision_value(decisions, decision_id, "crew_size", sizing.get("median_crew_size")), 4) or 4)
-        hours_per_day = 10.0
-        default_days = safe_number(_decision_value(decisions, decision_id, "days", sizing.get("median_days")), 0.0)
-        if default_days <= 0 and calculated_hours > 0 and crew_size > 0:
-            default_days = calculated_hours / (crew_size * hours_per_day)
-        hourly_rate = safe_number(_decision_value(decisions, decision_id, "hourly_rate", sizing.get("median_hourly_rate")), 0.0) or hourly_rate
-        daily_rate = safe_number(_decision_value(decisions, decision_id, "daily_rate", sizing.get("median_daily_rate")), 0.0)
-        if daily_rate <= 0 and crew_size > 0:
-            daily_rate = hourly_rate * crew_size * hours_per_day
-        formula_mode = str(_decision_value(decisions, decision_id, "formula_mode", sizing.get("formula_mode")) or ("mixed_formula" if package.startswith("labor_") else "hours_based"))
-        labor_decision_value = {
-            "days": round(default_days, 4),
-            "crew_size": crew_size,
-            "daily_rate": round(daily_rate, 4),
-            "hourly_rate": round(hourly_rate, 4),
-            "formula_mode": formula_mode,
-        }
-        labor_calculated_value = {
-            "days": round(default_days, 4),
-            "crew_size": crew_size,
-            "total_hours": round(calculated_hours, 2),
-            "daily_rate": round(daily_rate, 4),
-            "hourly_rate": round(hourly_rate, 4),
-            "formula_mode": formula_mode,
-        }
-        explanation = _labor_explanation(
-            package=package,
-            sizing=sizing,
-            evidence_count=evidence_count,
-            hours_per_1000=hours_per_1000,
-            status=status,
-            scope=scope,
-        )
-        rows.append(
-            {
-                "include": bool(include),
-                "labor_package": spec["label"],
-                "package_key": package,
-                "template_bucket": package,
-                "workbook_row": str(spec.get("workbook_row") or ""),
-                **decision_meta,
-                "recommended_decision_value": labor_decision_value,
-                "editable_decision_value": labor_decision_value,
-                "decision_values": labor_calculated_value,
-                "workbook_rows_controlled": str(spec.get("workbook_row") or ""),
-                "row_traceability": f"Estimate row {spec.get('workbook_row') or ''}",
-                "calculated_output": round(calculated_hours * hourly_rate, 2),
-                "estimator_decision": f"{spec['label']} ({package})",
-                "historical_recommendation": _labor_decision_recommendation_summary(
-                    labor_decision_value,
-                    int(decision_meta.get("decision_evidence_count") or evidence_count),
-                    str(decision_meta.get("decision_confidence") or sizing.get("confidence") or _confidence(evidence_count)),
-                    package,
-                ),
-                "editable_value": _value_summary(labor_decision_value),
-                "calculated_output_summary": _value_summary(
-                    {
-                        "hours": round(calculated_hours, 2),
-                        "cost": round(calculated_hours * hourly_rate, 2),
-                        "formula_mode": formula_mode,
-                    }
-                ),
-                "evidence_summary": f"{decision_meta.get('decision_evidence_count') or evidence_count} decision rows; {decision_meta.get('decision_source_jobs_count') or evidence_count} jobs",
-                "product_guidance": "",
-                "product_warning_summary": "",
-                "product_source_evidence": "",
-                "suggested_by_notes_rules": status,
-                "historical_hours_per_1000_sqft": round(hours_per_1000, 4),
-                "historical_median": round(hours_per_1000, 4),
-                "days": round(default_days, 4),
-                "editable_days": round(default_days, 4),
-                "crew_people_selection": crew_size,
-                "daily_rate": round(daily_rate, 4),
-                "total_hours": round(calculated_hours, 2),
-                "hourly_rate": round(hourly_rate, 4),
-                "formula_mode": formula_mode,
-                "p25_hours_per_1000_sqft": round(safe_number(sizing.get("p25"), 0.0), 4),
-                "p75_hours_per_1000_sqft": round(safe_number(sizing.get("p75"), 0.0), 4),
-                "editable_hours_per_1000_sqft": round(editable_hours_per_1000, 4),
-                "editable_default": round(editable_hours_per_1000, 4),
-                "calculated_hours": round(calculated_hours, 2),
-                "crew_size": crew_size,
-                "labor_rate": hourly_rate,
-                "estimated_cost": round(calculated_hours * hourly_rate, 2),
-                "evidence_count": evidence_count,
-                "historical_jobs_found": int(safe_number(sizing.get("historical_jobs_found"), 0)),
-                "rows_accepted": int(safe_number(sizing.get("rows_accepted"), 0)),
-                "rows_rejected": int(safe_number(sizing.get("rows_rejected"), 0)),
-                "total_insulation_rows_for_bucket": int(safe_number(sizing.get("total_insulation_rows_for_bucket"), 0)),
-                "distinct_insulation_files_for_bucket": int(safe_number(sizing.get("distinct_insulation_files_for_bucket"), 0)),
-                "rows_with_quantity": int(safe_number(sizing.get("rows_with_quantity"), 0)),
-                "rows_with_cost": int(safe_number(sizing.get("rows_with_cost"), 0)),
-                "rows_with_area": int(safe_number(sizing.get("rows_with_area"), 0)),
-                "accepted_qty_per_sqft_rows": int(safe_number(sizing.get("accepted_qty_per_sqft_rows"), 0)),
-                "rejected_missing_area": int(safe_number(sizing.get("rejected_missing_area"), 0)),
-                "rejected_missing_quantity": int(safe_number(sizing.get("rejected_missing_quantity"), 0)),
-                "rejected_missing_cost": int(safe_number(sizing.get("rejected_missing_cost"), 0)),
-                "rejected_filter_mismatch": int(safe_number(sizing.get("rejected_filter_mismatch"), 0)),
-                "rejection_reasons": sizing.get("rejection_reasons") or "",
-                "range_width": round(safe_number(sizing.get("range_width"), 0.0), 4),
-                "relative_range_width": round(safe_number(sizing.get("relative_range_width"), 0.0), 4),
-                "variability_warning": sizing.get("variability_warning") or "",
-                "filters_applied": sizing.get("filters_applied") or "",
-                "filters_relaxed": sizing.get("filters_relaxed") or "",
-                "minimum_evidence_count": int(safe_number(sizing.get("minimum_evidence_count"), DEFAULT_MIN_EVIDENCE_COUNT)),
-                "filter_hash": sizing.get("filter_hash") or historical_filter_hash(historical_filters),
-                "manual_override": False,
-                "reset_to_historical_default": False,
-                "confidence": sizing.get("confidence") or _confidence(evidence_count),
-                "source": sizing.get("source") or "no_sufficient_evidence",
-                "notes": _short_labor_note(
-                    package=package,
-                    sizing=sizing,
-                    evidence_count=evidence_count,
-                    hours_per_1000=hours_per_1000,
-                    status=status,
-                    scope=scope,
-                ),
-                "explanation": explanation,
-            }
-        )
-    return rows
-
-
-def adder_workbench_rows(
-    recommendation: Any,
-    data: Any = None,
-    scope: dict[str, Any] | None = None,
-    historical_filters: dict[str, Any] | None = None,
-) -> list[dict[str, Any]]:
-    scope = scope or {}
-    area = _estimate_area(scope)
-    travel = _rec_value(recommendation, "travel_plan", {}) or {}
-    travel_cost = safe_number(travel.get("travel_vehicle_cost"), 0.0) + safe_number(travel.get("travel_labor_cost"), 0.0)
-    rows = []
-    history_label = _history_label(scope)
-    for spec in ADDER_ROWS:
-        is_travel = spec["adder"] == "travel"
-        sizing = adder_sizing_distribution(data, spec["adder"], area, historical_filters)
-        reliable_default = _is_reliable_adder_default(sizing)
-        raw_historical_default = safe_number(sizing.get("editable_default"), 0.0)
-        historical_default = raw_historical_default if reliable_default else 0.0
-        editable_value = travel_cost if is_travel and travel_cost > 0 else historical_default
-        include = bool(is_travel and travel_cost > 0)
-        estimated_cost = editable_value if include else 0.0
-        notes = first_nonblank(travel.get("travel_notes"), "") if is_travel else ""
-        if not notes and historical_default > 0:
-            notes = (
-                f"Shown unchecked. Historical default is prefilled so estimator can include it if needed. "
-                f"Median when used: ${historical_default:,.2f} from {int(safe_number(sizing.get('evidence_count'), 0))} historical {history_label} jobs."
-            )
-        elif not notes and raw_historical_default > 0 and not reliable_default:
-            notes = "Insufficient reliable history; estimator review required."
-        rows.append(
-            {
-                "include": include,
-                "adder": spec["label"],
-                "adder_key": spec["adder"],
-                "template_bucket": spec["adder"],
-                "workbook_row": str(spec.get("workbook_row") or ""),
-                "historical_usage_rate": safe_number(sizing.get("historical_usage_rate"), 0.0),
-                "median_cost_when_used": round(safe_number(sizing.get("median_cost_when_used"), 0.0), 2),
-                "median_cost_per_sqft": round(safe_number(sizing.get("median_cost_per_sqft"), 0.0), 4),
-                "historical_median": round(safe_number(sizing.get("median_cost_when_used"), 0.0), 2),
-                "historical_default_value": round(historical_default, 2),
-                "editable_value": round(editable_value, 2),
-                "editable_default": round(editable_value, 2),
-                "estimated_cost": round(estimated_cost, 2),
-                "evidence_count": int(safe_number(sizing.get("evidence_count"), 0)),
-                "range_width": round(safe_number(sizing.get("range_width"), 0.0), 2),
-                "relative_range_width": round(safe_number(sizing.get("relative_range_width"), 0.0), 4),
-                "variability_warning": sizing.get("variability_warning") or "",
-                "filters_applied": sizing.get("filters_applied") or "",
-                "filters_relaxed": sizing.get("filters_relaxed") or "",
-                "minimum_evidence_count": int(safe_number(sizing.get("minimum_evidence_count"), DEFAULT_MIN_EVIDENCE_COUNT)),
-                "filter_hash": sizing.get("filter_hash") or historical_filter_hash(historical_filters),
-                "manual_override": False,
-                "reset_to_historical_default": False,
-                "confidence": "review" if is_travel and travel_cost > 0 else (sizing.get("confidence") if reliable_default else ("low" if int(safe_number(sizing.get("evidence_count"), 0)) else "none")),
-                "source": "travel_plan" if is_travel and travel_cost > 0 else sizing.get("source") or "manual",
-                "needs_review": bool(editable_value > 0 or not reliable_default),
-                "notes": notes,
-            }
-        )
-    return rows
-
-
 def build_estimating_workbench(
     recommendation: Any,
     data: Any = None,
+    *,
     scope_override: dict[str, Any] | None = None,
     historical_filters: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -8988,9 +7940,8 @@ def build_estimating_workbench(
         placeholder_warning = "Insulation workbench: verify foam type, thickness/R-value, opening deductions, and thermal barrier requirements before quoting."
         if placeholder_warning not in review_flags:
             review_flags.append(placeholder_warning)
-    materials = material_workbench_rows(recommendation, data, scope, filters)
     foam_template_decisions = (
-        _build_insulation_foam_template_decisions(scope=scope, foam_row=_foam_material_row(materials), data=data)
+        _build_insulation_foam_template_decisions(scope=scope, data=data)
         if _is_insulation_scope(scope)
         else []
     )
@@ -8999,25 +7950,21 @@ def build_estimating_workbench(
         if not _is_insulation_scope(scope)
         else []
     )
-    if roofing_foam_template_decisions:
-        _apply_roofing_foam_template_decisions_to_materials(
-            {"materials": materials, "roofing_foam_template_decisions": roofing_foam_template_decisions}
-        )
     roofing_coating_template_decisions = (
-        _build_roofing_coating_template_decisions(scope=scope, coating_row=_coating_material_row(materials), data=data)
+        _build_roofing_coating_template_decisions(scope=scope, coating_row=None, data=data)
         if not _is_insulation_scope(scope)
         else []
     )
     roofing_primer_template_decisions = (
-        _build_roofing_primer_template_decisions(scope=scope, primer_row=_primer_material_row(materials), data=data)
+        _build_roofing_primer_template_decisions(scope=scope, primer_row=None, data=data)
         if not _is_insulation_scope(scope)
         else []
     )
     roofing_detail_template_decisions = (
         _build_roofing_detail_template_decisions(
             scope=scope,
-            caulk_row=_caulk_detail_material_row(materials),
-            fabric_row=_fabric_material_row(materials),
+            caulk_row=None,
+            fabric_row=None,
             data=data,
         )
         if not _is_insulation_scope(scope)
@@ -9026,7 +7973,6 @@ def build_estimating_workbench(
     roofing_detail_quantity_template_decisions = (
         _build_roofing_detail_quantity_template_decisions(
             scope=scope,
-            materials=materials,
         )
         if not _is_insulation_scope(scope)
         else []
@@ -9034,9 +7980,9 @@ def build_estimating_workbench(
     roofing_board_fastener_template_decisions = (
         _build_roofing_board_fastener_template_decisions(
             scope=scope,
-            board_row=_board_stock_material_row(materials),
-            fastener_row=_fastener_material_row(materials),
-            plates_row=_plates_material_row(materials),
+            board_row=None,
+            fastener_row=None,
+            plates_row=None,
             data=data,
         )
         if not _is_insulation_scope(scope)
@@ -9045,14 +7991,12 @@ def build_estimating_workbench(
     roofing_granules_template_decisions = (
         _build_roofing_granules_template_decisions(
             scope=scope,
-            granules_row=_granules_material_row(materials),
+            granules_row=None,
             data=data,
         )
         if not _is_insulation_scope(scope)
         else []
     )
-    labor_rows = labor_workbench_rows(recommendation, data, scope, historical_filters=filters)
-    adder_rows = adder_workbench_rows(recommendation, data, scope, filters)
     insulation_detail_material_template_decisions = []
     insulation_thermal_barrier_template_decisions = []
     insulation_support_material_template_decisions = []
@@ -9065,16 +8009,12 @@ def build_estimating_workbench(
             section="insulation_detail_material_template_decisions",
             specs=INSULATION_DETAIL_DECISION_SPECS,
             scope=scope,
-            materials=materials,
-            adders=adder_rows,
             data=data,
         )
         insulation_thermal_barrier_template_decisions = _build_insulation_decision_rows(
             section="insulation_thermal_barrier_template_decisions",
             specs=INSULATION_THERMAL_DECISION_SPECS,
             scope=scope,
-            materials=materials,
-            adders=adder_rows,
             data=data,
         )
         insulation_dependencies = _insulation_dependency_totals(
@@ -9090,8 +8030,6 @@ def build_estimating_workbench(
             section="insulation_support_material_template_decisions",
             specs=INSULATION_SUPPORT_DECISION_SPECS,
             scope=scope,
-            materials=materials,
-            adders=adder_rows,
             data=data,
             dependencies=insulation_dependencies,
         )
@@ -9109,8 +8047,6 @@ def build_estimating_workbench(
             section="insulation_equipment_logistics_template_decisions",
             specs=INSULATION_EQUIPMENT_LOGISTICS_DECISION_SPECS,
             scope=scope,
-            materials=materials,
-            adders=adder_rows,
             data=data,
             dependencies=insulation_dependencies,
         )
@@ -9118,14 +8054,12 @@ def build_estimating_workbench(
             section="insulation_compliance_template_decisions",
             specs=INSULATION_COMPLIANCE_DECISION_SPECS,
             scope=scope,
-            materials=materials,
-            adders=adder_rows,
             data=data,
             dependencies=insulation_dependencies,
         )
         insulation_labor_template_decisions = _build_insulation_labor_template_decisions(
             scope=scope,
-            labor_rows=labor_rows,
+            data=data,
         )
         insulation_dependencies = _insulation_dependency_totals(
             {
@@ -9144,15 +8078,12 @@ def build_estimating_workbench(
             section="insulation_pricing_template_decisions",
             specs=INSULATION_PRICING_DECISION_SPECS,
             scope=scope,
-            materials=materials,
-            adders=adder_rows,
             data=data,
             dependencies=insulation_dependencies,
         )
     roofing_equipment_template_decisions = (
         _build_roofing_equipment_template_decisions(
             scope=scope,
-            adders=adder_rows,
         )
         if not _is_insulation_scope(scope)
         else []
@@ -9160,7 +8091,6 @@ def build_estimating_workbench(
     roofing_travel_freight_template_decisions = (
         _build_roofing_travel_freight_template_decisions(
             scope=scope,
-            adders=adder_rows,
         )
         if not _is_insulation_scope(scope)
         else []
@@ -9168,7 +8098,6 @@ def build_estimating_workbench(
     roofing_accessory_template_decisions = (
         _build_roofing_accessory_template_decisions(
             scope=scope,
-            materials=materials,
             coating_decisions=roofing_coating_template_decisions,
         )
         if not _is_insulation_scope(scope)
@@ -9177,7 +8106,7 @@ def build_estimating_workbench(
     roofing_labor_template_decisions = (
         _build_roofing_labor_template_decisions(
             scope=scope,
-            labor_rows=labor_rows,
+            data=data,
         )
         if not _is_insulation_scope(scope)
         else []
@@ -9185,7 +8114,6 @@ def build_estimating_workbench(
     surface_rows = _build_insulation_surface_rows_for_workbench(
         scope,
         notes=_scope_note_text(recommendation, scope),
-        foam_row=_foam_material_row(materials),
     )
     ai_context = _ai_scope_debug_context(recommendation)
     area_trace = (
@@ -9229,9 +8157,6 @@ def build_estimating_workbench(
         "insulation_performance_specs": [],
         "insulation_deductions": build_insulation_deductions(scope) if _is_insulation_scope(scope) else [],
         "insulation_r_value_targets": parse_r_value_targets(_scope_note_text(recommendation, scope)) if _is_insulation_scope(scope) else [],
-        "materials": materials,
-        "labor": labor_rows,
-        "adders": adder_rows,
         "similar_jobs": _records(_rec_value(recommendation, "similar_examples", [])),
         "review_flags": review_flags,
         "suggested_rules": [
@@ -9254,12 +8179,10 @@ def _records_from_editor(value: Any) -> list[dict[str, Any]]:
 def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float = DEFAULT_HOURLY_RATE) -> dict[str, Any]:
     updated = deepcopy(workbench)
     scope = updated.setdefault("scope", {})
-    area = _estimate_area(scope)
     if _is_insulation_scope(scope):
         updated["insulation_surfaces"] = _build_insulation_surface_rows_for_workbench(
             scope,
             notes=str(first_nonblank(scope.get("notes"), scope.get("raw_input_notes"), "")),
-            foam_row=_foam_material_row(updated.get("materials")),
             existing_rows=updated.get("insulation_surfaces") or None,
         )
         updated["insulation_deductions"] = build_insulation_deductions(scope)
@@ -9267,314 +8190,72 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
             updated["insulation_r_value_targets"] = parse_r_value_targets(str(first_nonblank(scope.get("notes"), scope.get("raw_input_notes"), "")))
         updated["insulation_foam_template_decisions"] = _build_insulation_foam_template_decisions(
             scope=scope,
-            foam_row=_foam_material_row(updated.get("materials")),
             existing_rows=updated.get("insulation_foam_template_decisions") or None,
         )
-        _apply_foam_template_decision_to_materials(updated)
-    for row in updated.get("materials") or []:
-        if row.get("reset_to_historical_default"):
-            row["editable_qty_per_sqft"] = row.get("historical_qty_per_sqft", 0.0)
-            row["editable_basis_sqft"] = row.get("default_basis_sqft", row.get("editable_basis_sqft", 0.0))
-            row["reset_to_historical_default"] = False
-        matched_item = _pricing_option_for_item(row)
-        if matched_item:
-            row["unit"] = matched_item.get("unit") or row.get("unit")
-            row["current_unit_price"] = round(safe_number(matched_item.get("unit_price"), 0.0), 4)
-            row["item_source"] = matched_item.get("item_source") or row.get("item_source") or "manual"
-        row["current_item"] = first_nonblank(row.get("item_name"), row.get("current_item"), row.get("package"))
-        include = bool(row.get("include"))
-        qty_per_sqft = safe_number(row.get("editable_qty_per_sqft"), 0.0)
-        historical_qty = safe_number(row.get("historical_qty_per_sqft"), 0.0)
-        basis_sqft = safe_number(row.get("editable_basis_sqft"), 0.0)
-        if include and basis_sqft <= 0 and row.get("package_key") != "primer":
-            basis_sqft = area
-            row["editable_basis_sqft"] = round(basis_sqft, 2)
-        default_basis_sqft = safe_number(row.get("default_basis_sqft"), 0.0)
-        row["manual_override"] = abs(qty_per_sqft - historical_qty) > 1e-9 or abs(basis_sqft - default_basis_sqft) > 1e-9
-        unit_price = safe_number(row.get("current_unit_price"), 0.0)
-        if unit_price <= 0:
-            unit_price = safe_number(row.get("current_price"), 0.0)
-            row["current_unit_price"] = round(unit_price, 4) if unit_price else 0.0
-        row["current_price"] = round(unit_price, 4) if unit_price else 0.0
-        historical_cost_per_sqft = safe_number(row.get("historical_cost_per_sqft"), 0.0)
-        row["historical_median"] = round(historical_qty, 6)
-        row["editable_default"] = round(qty_per_sqft, 6)
-        package_key = str(row.get("package_key") or row.get("template_bucket") or "").lower()
-        existing_decisions = row.get("decision_values") if isinstance(row.get("decision_values"), dict) else {}
-        editable_decisions = decision_dict(row.get("editable_decision_value"))
-        formula_inputs = {**existing_decisions, **editable_decisions}
-        formula_result: dict[str, Any] | None = None
-        if package_key == "foam" and _is_insulation_scope(scope):
-            thickness = positive_number(
-                row.get("thickness_inches"),
-                row.get("foam_thickness_inches"),
-                editable_decisions.get("thickness_inches"),
-                existing_decisions.get("thickness_inches"),
-                default=0.0,
-            )
-            yield_factor = positive_number(
-                row.get("yield_factor"),
-                row.get("median_foam_yield"),
-                row.get("yield_or_coverage"),
-                editable_decisions.get("yield_or_coverage"),
-                editable_decisions.get("yield_factor"),
-                existing_decisions.get("yield_or_coverage"),
-                existing_decisions.get("yield_factor"),
-                default=0.0,
-            )
-            formula_result = calculate_insulation_foam(
-                area_sqft=basis_sqft,
-                thickness_inches=thickness,
-                yield_or_coverage=yield_factor,
-                unit_price=unit_price,
-                units_per_sqft_per_inch=row.get("median_units_per_sqft_per_inch"),
-                cost_per_sqft=historical_cost_per_sqft,
-                include=include,
-            )
-            surface_rows = _records(updated.get("insulation_surfaces"))
-            has_surface_decisions = any(
-                str(surface.get("surface_type") or "").lower() != "general" or safe_number(surface.get("target_r_value"), 0.0) > 0
-                for surface in surface_rows
-            )
-            if has_surface_decisions and not row.get("_foam_template_basis_override"):
-                surface_aggregate = aggregate_surface_foam_outputs(
-                    surface_rows,
-                    yield_or_coverage=yield_factor,
-                    unit_price=unit_price,
-                    units_per_sqft_per_inch=row.get("median_units_per_sqft_per_inch"),
-                    cost_per_sqft=historical_cost_per_sqft,
-                    include=include,
-                )
-                if safe_number(surface_aggregate.get("area_sqft"), 0.0) > 0:
-                    formula_result = {
-                        **formula_result,
-                        **surface_aggregate,
-                        "thickness_inches": surface_aggregate.get("weighted_thickness_inches"),
-                        "yield_or_coverage": yield_factor,
-                        "formula_source": "insulation_surface_decisions",
-                    }
-                    basis_sqft = safe_number(surface_aggregate.get("area_sqft"), basis_sqft)
-                    row["editable_basis_sqft"] = round(basis_sqft, 2)
-                    row["default_basis_sqft"] = round(basis_sqft, 2)
-                    row["surface_formula_outputs"] = surface_aggregate.get("surface_outputs") or []
-                    row["surface_weighted_thickness_inches"] = surface_aggregate.get("weighted_thickness_inches")
-            if include and safe_number(formula_result.get("estimated_units"), 0.0) <= 0 and qty_per_sqft > 0 and basis_sqft > 0:
-                fallback_units = qty_per_sqft * basis_sqft
-                if unit_price > 0:
-                    fallback_cost = fallback_units * unit_price
-                    fallback_cost_source = "current_pricing"
-                elif historical_cost_per_sqft > 0:
-                    fallback_cost = historical_cost_per_sqft * basis_sqft
-                    fallback_cost_source = "historical_cost_default"
-                else:
-                    fallback_cost = 0.0
-                    fallback_cost_source = "current_pricing_missing"
-                formula_result = {
-                    **formula_result,
-                    "formula_model": "historical_qty_per_sqft_fallback",
-                    "formula_source": "historical_qty_per_sqft",
-                    "area_sqft": round(basis_sqft, 4),
-                    "estimated_units": round(fallback_units, 6),
-                    "estimated_sets": round(fallback_units / 1000.0, 6),
-                    "estimated_cost": round(fallback_cost, 2),
-                    "cost_source": fallback_cost_source,
-                }
-            row["quantity_model"] = formula_result["formula_model"]
-            row["formula_model"] = formula_result["formula_model"]
-            row["formula_source"] = formula_result["formula_source"]
-            row["thickness_inches"] = formula_result["thickness_inches"]
-            row["foam_thickness_inches"] = formula_result["thickness_inches"]
-            row["yield_factor"] = formula_result["yield_or_coverage"]
-            row["estimated_units"] = round(safe_number(formula_result.get("estimated_units"), 0.0), 2)
-            row["estimated_sets"] = round(safe_number(formula_result.get("estimated_sets"), 0.0), 6)
-            row["calculated_quantity"] = row["estimated_units"]
-            row["estimated_cost"] = formula_result["estimated_cost"]
-            row["price_source"] = formula_result["cost_source"]
-            row["unit"] = "estimated_units"
-        elif package_key in {"coating", "thermal_barrier_coating"}:
-            gal_per_100 = positive_number(
-                qty_per_sqft * 100 if qty_per_sqft else None,
-                row.get("gal_per_100_sqft"),
-                editable_decisions.get("gal_per_100_sqft"),
-                existing_decisions.get("gal_per_100_sqft"),
-                default=0.0,
-            )
-            waste_pct = safe_number(
-                first_nonblank(
-                    formula_inputs.get("waste_factor_pct"),
-                    row.get("waste_factor_pct"),
-                    row.get("margin_pct"),
-                ),
-                0.0,
-            )
-            calculator = calculate_insulation_thermal_barrier if package_key == "thermal_barrier_coating" else calculate_roofing_coating
-            formula_result = calculator(
-                area_sqft=basis_sqft,
-                gal_per_100_sqft=gal_per_100,
-                unit_price=unit_price,
-                waste_factor_pct=waste_pct,
-                cost_per_sqft=historical_cost_per_sqft,
-                include=include,
-            )
-            row["quantity_model"] = formula_result["formula_model"]
-            row["formula_model"] = formula_result["formula_model"]
-            row["formula_source"] = formula_result["formula_source"]
-            row["gal_per_100_sqft"] = formula_result["gal_per_100_sqft"]
-            row["gal_per_sqft"] = formula_result["gal_per_sqft"]
-            row["wet_mils_estimate"] = formula_result["wet_mils_estimate"]
-            row["waste_factor_pct"] = formula_result["waste_factor_pct"]
-            row["estimated_gallons"] = round(safe_number(formula_result.get("estimated_gallons"), 0.0), 2)
-            row["calculated_quantity"] = row["estimated_gallons"]
-            row["estimated_cost"] = formula_result["estimated_cost"]
-            row["price_source"] = formula_result["cost_source"]
-            row["editable_qty_per_sqft"] = round(safe_number(formula_result.get("gal_per_sqft"), qty_per_sqft), 8)
-            row["editable_default"] = row["editable_qty_per_sqft"]
-        else:
-            quantity = qty_per_sqft * basis_sqft if include and basis_sqft else 0.0
-            row["calculated_quantity"] = round(quantity, 2)
-            if include and unit_price > 0:
-                row["estimated_cost"] = round(quantity * unit_price, 2)
-                row["price_source"] = "current_pricing"
-            elif include and historical_cost_per_sqft > 0 and basis_sqft:
-                row["estimated_cost"] = round(historical_cost_per_sqft * basis_sqft, 2)
-                row["price_source"] = "historical_cost_default"
-                row["needs_review"] = True
-            else:
-                row["estimated_cost"] = 0.0
-                row["price_source"] = "not_included" if not include else "current_pricing_missing"
-        if include and row.get("price_source") in {"historical_cost_default", "historical_cost_per_sqft_per_inch"}:
-            row["needs_review"] = True
-        row["calculated_output"] = row["estimated_cost"]
-        row["decision_values"] = {
-            **(row.get("decision_values") if isinstance(row.get("decision_values"), dict) else {}),
-            "selected_option": row.get("item_name") or row.get("current_item"),
-            "basis_sqft": round(basis_sqft, 2),
-            "qty_per_sqft": round(safe_number(row.get("editable_qty_per_sqft"), qty_per_sqft), 6),
-            "calculated_quantity": row["calculated_quantity"],
-            "estimated_cost": row["estimated_cost"],
-        }
-        if formula_result:
-            row["decision_values"].update(
-                {
-                    key: value
-                    for key, value in formula_result.items()
-                    if key
-                    in {
-                        "formula_model",
-                        "formula_source",
-                        "thickness_inches",
-                        "yield_or_coverage",
-                        "estimated_units",
-                        "estimated_sets",
-                        "gal_per_100_sqft",
-                        "gal_per_sqft",
-                        "estimated_gallons",
-                        "wet_mils_estimate",
-                        "waste_factor_pct",
-                        "cost_source",
-                    }
-                }
-            )
-        row["editable_decision_value"] = first_nonblank(row.get("item_name"), row.get("current_item"), row.get("editable_decision_value"))
-        row["editable_value"] = _value_summary(
-            {
-                "item": row.get("item_name") or row.get("current_item"),
-                "basis_sqft": round(basis_sqft, 2),
-                "qty_per_sqft": round(safe_number(row.get("editable_qty_per_sqft"), qty_per_sqft), 6),
-                "thickness_inches": row.get("thickness_inches") if package_key == "foam" else None,
-                "yield": row.get("yield_factor") if package_key == "foam" else None,
-                "gal_per_100_sqft": row.get("gal_per_100_sqft") if package_key in {"coating", "thermal_barrier_coating"} else None,
-            }
-        )
-        row["calculated_output_summary"] = _value_summary(
-            {
-                "quantity": row["calculated_quantity"],
-                "sets": row.get("estimated_sets") if package_key == "foam" else None,
-                "gallons": row.get("estimated_gallons") if package_key in {"coating", "thermal_barrier_coating"} else None,
-                "cost": row["estimated_cost"],
-            }
-        )
-        row["workbook_cell_write_preview"] = cell_preview_for_material(row)
     if not _is_insulation_scope(scope):
         if "roofing_foam_template_decisions" in updated:
             updated["roofing_foam_template_decisions"] = _build_roofing_foam_template_decisions(
                 scope=scope,
                 existing_rows=updated.get("roofing_foam_template_decisions") or None,
             )
-            _apply_roofing_foam_template_decisions_to_materials(updated)
         updated["roofing_coating_template_decisions"] = _build_roofing_coating_template_decisions(
             scope=scope,
-            coating_row=_coating_material_row(updated.get("materials")),
+            coating_row=None,
             existing_rows=updated.get("roofing_coating_template_decisions") or None,
         )
-        _apply_roofing_coating_template_decisions_to_materials(updated)
         if "roofing_primer_template_decisions" in updated:
             updated["roofing_primer_template_decisions"] = _build_roofing_primer_template_decisions(
                 scope=scope,
-                primer_row=_primer_material_row(updated.get("materials")),
+                primer_row=None,
                 existing_rows=updated.get("roofing_primer_template_decisions") or None,
             )
-            _apply_roofing_primer_template_decisions_to_materials(updated)
         if "roofing_detail_template_decisions" in updated:
             updated["roofing_detail_template_decisions"] = _build_roofing_detail_template_decisions(
                 scope=scope,
-                caulk_row=_caulk_detail_material_row(updated.get("materials")),
-                fabric_row=_fabric_material_row(updated.get("materials")),
+                caulk_row=None,
+                fabric_row=None,
                 existing_rows=updated.get("roofing_detail_template_decisions") or None,
             )
-            _apply_roofing_detail_template_decisions_to_materials(updated)
         if "roofing_detail_quantity_template_decisions" in updated:
             updated["roofing_detail_quantity_template_decisions"] = _build_roofing_detail_quantity_template_decisions(
                 scope=scope,
-                materials=updated.get("materials") or [],
                 existing_rows=updated.get("roofing_detail_quantity_template_decisions") or None,
             )
-            _apply_roofing_detail_quantity_template_decisions_to_materials(updated)
         if "roofing_board_fastener_template_decisions" in updated:
             updated["roofing_board_fastener_template_decisions"] = _build_roofing_board_fastener_template_decisions(
                 scope=scope,
-                board_row=_board_stock_material_row(updated.get("materials")),
-                fastener_row=_fastener_material_row(updated.get("materials")),
-                plates_row=_plates_material_row(updated.get("materials")),
+                board_row=None,
+                fastener_row=None,
+                plates_row=None,
                 existing_rows=updated.get("roofing_board_fastener_template_decisions") or None,
             )
-            _apply_roofing_board_fastener_template_decisions_to_materials(updated)
         if "roofing_granules_template_decisions" in updated:
             updated["roofing_granules_template_decisions"] = _build_roofing_granules_template_decisions(
                 scope=scope,
-                granules_row=_granules_material_row(updated.get("materials")),
+                granules_row=None,
                 existing_rows=updated.get("roofing_granules_template_decisions") or None,
             )
-            _apply_roofing_granules_template_decisions_to_materials(updated)
         if "roofing_equipment_template_decisions" in updated:
             updated["roofing_equipment_template_decisions"] = _build_roofing_equipment_template_decisions(
                 scope=scope,
-                adders=updated.get("adders") or [],
                 existing_rows=updated.get("roofing_equipment_template_decisions") or None,
             )
-            _apply_roofing_equipment_template_decisions_to_adders(updated)
         if "roofing_travel_freight_template_decisions" in updated:
             updated["roofing_travel_freight_template_decisions"] = _build_roofing_travel_freight_template_decisions(
                 scope=scope,
-                adders=updated.get("adders") or [],
                 existing_rows=updated.get("roofing_travel_freight_template_decisions") or None,
             )
-            _apply_roofing_travel_freight_template_decisions_to_adders(updated)
         if "roofing_accessory_template_decisions" in updated:
             updated["roofing_accessory_template_decisions"] = _build_roofing_accessory_template_decisions(
                 scope=scope,
-                materials=updated.get("materials") or [],
                 coating_decisions=updated.get("roofing_coating_template_decisions") or [],
                 existing_rows=updated.get("roofing_accessory_template_decisions") or None,
             )
-            _apply_roofing_accessory_template_decisions_to_materials(updated)
         if "roofing_labor_template_decisions" in updated:
             updated["roofing_labor_template_decisions"] = _build_roofing_labor_template_decisions(
                 scope=scope,
-                labor_rows=updated.get("labor") or [],
                 existing_rows=updated.get("roofing_labor_template_decisions") or None,
             )
-            _apply_roofing_labor_template_decisions_to_labor(updated)
     if _is_insulation_scope(scope):
         if not updated.get("area_calculation_trace"):
             updated["area_calculation_trace"] = build_area_calculation_trace(scope)
@@ -9584,23 +8265,18 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
         )
         updated["insulation_foam_template_decisions"] = _build_insulation_foam_template_decisions(
             scope=scope,
-            foam_row=_foam_material_row(updated.get("materials")),
             existing_rows=updated.get("insulation_foam_template_decisions") or None,
         )
         updated["insulation_detail_material_template_decisions"] = _build_insulation_decision_rows(
             section="insulation_detail_material_template_decisions",
             specs=INSULATION_DETAIL_DECISION_SPECS,
             scope=scope,
-            materials=updated.get("materials") or [],
-            adders=updated.get("adders") or [],
             existing_rows=updated.get("insulation_detail_material_template_decisions") or None,
         )
         updated["insulation_thermal_barrier_template_decisions"] = _build_insulation_decision_rows(
             section="insulation_thermal_barrier_template_decisions",
             specs=INSULATION_THERMAL_DECISION_SPECS,
             scope=scope,
-            materials=updated.get("materials") or [],
-            adders=updated.get("adders") or [],
             existing_rows=updated.get("insulation_thermal_barrier_template_decisions") or None,
         )
         insulation_dependencies = _insulation_dependency_totals(
@@ -9614,8 +8290,6 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
             section="insulation_support_material_template_decisions",
             specs=INSULATION_SUPPORT_DECISION_SPECS,
             scope=scope,
-            materials=updated.get("materials") or [],
-            adders=updated.get("adders") or [],
             existing_rows=updated.get("insulation_support_material_template_decisions") or None,
             dependencies=insulation_dependencies,
         )
@@ -9631,8 +8305,6 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
             section="insulation_equipment_logistics_template_decisions",
             specs=INSULATION_EQUIPMENT_LOGISTICS_DECISION_SPECS,
             scope=scope,
-            materials=updated.get("materials") or [],
-            adders=updated.get("adders") or [],
             existing_rows=updated.get("insulation_equipment_logistics_template_decisions") or None,
             dependencies=insulation_dependencies,
         )
@@ -9640,14 +8312,11 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
             section="insulation_compliance_template_decisions",
             specs=INSULATION_COMPLIANCE_DECISION_SPECS,
             scope=scope,
-            materials=updated.get("materials") or [],
-            adders=updated.get("adders") or [],
             existing_rows=updated.get("insulation_compliance_template_decisions") or None,
             dependencies=insulation_dependencies,
         )
         updated["insulation_labor_template_decisions"] = _build_insulation_labor_template_decisions(
             scope=scope,
-            labor_rows=updated.get("labor") or [],
             existing_rows=updated.get("insulation_labor_template_decisions") or None,
         )
         insulation_dependencies = _insulation_dependency_totals(
@@ -9665,111 +8334,16 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
             section="insulation_pricing_template_decisions",
             specs=INSULATION_PRICING_DECISION_SPECS,
             scope=scope,
-            materials=updated.get("materials") or [],
-            adders=updated.get("adders") or [],
             existing_rows=updated.get("insulation_pricing_template_decisions") or None,
             dependencies=insulation_dependencies,
         )
         updated["insulation_performance_specs"] = build_insulation_performance_specs(
             scope=scope,
             surface_rows=_records(updated.get("insulation_surfaces")),
-            foam_row=_foam_material_row(updated.get("materials")),
         )
-    for row in updated.get("labor") or []:
-        if row.get("reset_to_historical_default"):
-            row["editable_hours_per_1000_sqft"] = row.get("historical_hours_per_1000_sqft", 0.0)
-            row["reset_to_historical_default"] = False
-        include = bool(row.get("include"))
-        hours_per_1000 = safe_number(row.get("editable_hours_per_1000_sqft"), 0.0)
-        historical_hours = safe_number(row.get("historical_hours_per_1000_sqft"), 0.0)
-        row["manual_override"] = abs(hours_per_1000 - historical_hours) > 1e-9
-        existing_decisions = row.get("decision_values") if isinstance(row.get("decision_values"), dict) else {}
-        editable_decisions = decision_dict(row.get("editable_decision_value"))
-        formula_inputs = {**existing_decisions, **editable_decisions}
-        labor_rate = safe_number(
-            first_nonblank(
-                formula_inputs.get("hourly_rate"),
-                row.get("hourly_rate"),
-                row.get("labor_rate"),
-                hourly_rate,
-            ),
-            hourly_rate,
-        )
-        days = safe_number(first_nonblank(formula_inputs.get("days"), row.get("editable_days"), row.get("days")), 0.0)
-        crew_size = safe_number(first_nonblank(formula_inputs.get("crew_size"), row.get("crew_size")), 0.0)
-        daily_rate = safe_number(first_nonblank(formula_inputs.get("daily_rate"), row.get("daily_rate")), 0.0)
-        explicit_total_hours = safe_number(
-            first_nonblank(editable_decisions.get("total_hours"), row.get("editable_total_hours")),
-            0.0,
-        )
-        formula_mode = str(first_nonblank(formula_inputs.get("formula_mode"), row.get("formula_mode"), "mixed_formula"))
-        labor_formula = calculate_mixed_labor(
-            days=days,
-            crew_size=crew_size,
-            total_hours=explicit_total_hours,
-            hours_per_1000_sqft=hours_per_1000,
-            area_sqft=area,
-            daily_rate=daily_rate,
-            hourly_rate=labor_rate,
-            formula_mode=formula_mode,
-            include=include,
-        )
-        hours = safe_number(labor_formula.get("total_hours"), 0.0)
-        row["historical_median"] = round(historical_hours, 4)
-        row["editable_default"] = round(hours_per_1000, 4)
-        row["calculated_hours"] = round(hours, 2)
-        row["estimated_cost"] = round(safe_number(labor_formula.get("estimated_cost"), 0.0), 2)
-        row["total_hours"] = row["calculated_hours"]
-        row["calculated_output"] = row["estimated_cost"]
-        row["days"] = round(safe_number(labor_formula.get("days"), days), 4)
-        row["editable_days"] = row["days"]
-        row["crew_size"] = int(safe_number(labor_formula.get("crew_size"), crew_size) or 0)
-        row["crew_people_selection"] = row["crew_size"]
-        row["daily_rate"] = round(safe_number(labor_formula.get("daily_rate"), daily_rate), 4)
-        row["hourly_rate"] = round(safe_number(labor_formula.get("hourly_rate"), labor_rate), 4)
-        row["labor_rate"] = row["hourly_rate"]
-        row["formula_mode"] = str(labor_formula.get("formula_mode") or formula_mode)
-        row["formula_model"] = str(labor_formula.get("formula_model") or "labor_cost_from_days_crew_rate")
-        row["formula_source"] = str(labor_formula.get("formula_source") or "")
-        row["decision_values"] = {
-            **(row.get("decision_values") if isinstance(row.get("decision_values"), dict) else {}),
-            "days": row["days"],
-            "crew_size": row["crew_size"],
-            "total_hours": row["calculated_hours"],
-            "daily_rate": row["daily_rate"],
-            "hourly_rate": row["hourly_rate"],
-            "formula_mode": row.get("formula_mode") or "",
-            "formula_model": row.get("formula_model") or "",
-            "formula_source": row.get("formula_source") or "",
-            "estimated_cost": row["estimated_cost"],
-        }
-        row["editable_decision_value"] = {
-            "days": row["days"],
-            "crew_size": row["crew_size"],
-            "daily_rate": row["daily_rate"],
-            "hourly_rate": row["hourly_rate"],
-            "formula_mode": row.get("formula_mode") or "",
-        }
-        row["editable_value"] = _value_summary(row["editable_decision_value"])
-        row["calculated_output_summary"] = _value_summary(
-            {
-                "hours": row["calculated_hours"],
-                "cost": row["estimated_cost"],
-                "formula_mode": row.get("formula_mode") or "",
-                "formula_source": row.get("formula_source") or "",
-            }
-        )
-        row["workbook_cell_write_preview"] = cell_preview_for_labor(row)
-    for row in updated.get("adders") or []:
-        if row.get("reset_to_historical_default"):
-            row["editable_value"] = row.get("historical_default_value", row.get("median_cost_when_used", 0.0))
-            row["reset_to_historical_default"] = False
-        historical_default = safe_number(row.get("historical_default_value"), 0.0)
-        editable_value = safe_number(row.get("editable_value"), 0.0)
-        row["historical_median"] = round(safe_number(row.get("median_cost_when_used"), historical_default), 2)
-        row["editable_default"] = round(editable_value, 2)
-        row["manual_override"] = abs(editable_value - historical_default) > 1e-9
-        row["estimated_cost"] = round(safe_number(row.get("editable_value"), 0.0), 2) if row.get("include") else 0.0
+    updated.pop("materials", None)
+    updated.pop("labor", None)
+    updated.pop("adders", None)
     return updated
 
 
@@ -9799,48 +8373,68 @@ def apply_historical_filter_update(previous_workbench: dict[str, Any] | None, fi
         return filtered_workbench
     updated = deepcopy(filtered_workbench)
 
-    previous_materials = {row.get("package_key"): row for row in previous_workbench.get("materials") or []}
-    for row in updated.get("materials") or []:
-        previous = previous_materials.get(row.get("package_key"))
-        if not previous:
-            continue
-        row["include"] = previous.get("include", row.get("include"))
-        row["current_unit_price"] = previous.get("current_unit_price", row.get("current_unit_price"))
-        row["item_name"] = previous.get("item_name", row.get("item_name"))
-        row["unit"] = previous.get("unit", row.get("unit"))
-        if previous.get("reset_to_historical_default"):
-            row["editable_qty_per_sqft"] = row.get("historical_qty_per_sqft", 0.0)
-            row["editable_basis_sqft"] = row.get("default_basis_sqft", row.get("editable_basis_sqft", 0.0))
-        elif _material_row_is_edited(previous):
-            row["editable_qty_per_sqft"] = previous.get("editable_qty_per_sqft", row.get("editable_qty_per_sqft"))
-            row["editable_basis_sqft"] = previous.get("editable_basis_sqft", row.get("editable_basis_sqft"))
-            row["manual_override"] = True
-
-    previous_labor = {row.get("package_key"): row for row in previous_workbench.get("labor") or []}
-    for row in updated.get("labor") or []:
-        previous = previous_labor.get(row.get("package_key"))
-        if not previous:
-            continue
-        row["include"] = previous.get("include", row.get("include"))
-        row["crew_size"] = previous.get("crew_size", row.get("crew_size"))
-        row["labor_rate"] = previous.get("labor_rate", row.get("labor_rate"))
-        if previous.get("reset_to_historical_default"):
-            row["editable_hours_per_1000_sqft"] = row.get("historical_hours_per_1000_sqft", 0.0)
-        elif _labor_row_is_edited(previous):
-            row["editable_hours_per_1000_sqft"] = previous.get("editable_hours_per_1000_sqft", row.get("editable_hours_per_1000_sqft"))
-            row["manual_override"] = True
-
-    previous_adders = {row.get("adder_key"): row for row in previous_workbench.get("adders") or []}
-    for row in updated.get("adders") or []:
-        previous = previous_adders.get(row.get("adder_key"))
-        if not previous:
-            continue
-        row["include"] = previous.get("include", row.get("include"))
-        if previous.get("reset_to_historical_default"):
-            row["editable_value"] = row.get("historical_default_value", row.get("editable_value"))
-        elif _adder_row_is_edited(previous):
-            row["editable_value"] = previous.get("editable_value", row.get("editable_value"))
-            row["manual_override"] = True
+    decision_sections = (
+        "insulation_foam_template_decisions",
+        "insulation_detail_material_template_decisions",
+        "insulation_thermal_barrier_template_decisions",
+        "insulation_support_material_template_decisions",
+        "insulation_equipment_logistics_template_decisions",
+        "insulation_compliance_template_decisions",
+        "insulation_labor_template_decisions",
+        "insulation_pricing_template_decisions",
+        "roofing_foam_template_decisions",
+        "roofing_coating_template_decisions",
+        "roofing_primer_template_decisions",
+        "roofing_detail_template_decisions",
+        "roofing_detail_quantity_template_decisions",
+        "roofing_board_fastener_template_decisions",
+        "roofing_granules_template_decisions",
+        "roofing_equipment_template_decisions",
+        "roofing_travel_freight_template_decisions",
+        "roofing_accessory_template_decisions",
+        "roofing_labor_template_decisions",
+    )
+    for section in decision_sections:
+        previous_rows = {
+            str(first_nonblank(row.get("decision_id"), row.get("workbook_row"), row.get("template_bucket"))): row
+            for row in previous_workbench.get(section) or []
+            if isinstance(row, dict)
+        }
+        for row in updated.get(section) or []:
+            if not isinstance(row, dict):
+                continue
+            key = str(first_nonblank(row.get("decision_id"), row.get("workbook_row"), row.get("template_bucket")))
+            previous = previous_rows.get(key)
+            if not previous:
+                continue
+            for field in (
+                "include",
+                "editable_selector_code",
+                "selector_code",
+                "selected_pricing_candidate",
+                "basis_sqft",
+                "unit_price",
+                "gal_per_100_sqft",
+                "coverage_sqft_per_unit",
+                "waste_factor_pct",
+                "thickness_inches",
+                "yield_or_coverage",
+                "linear_ft",
+                "feet_per_unit",
+                "days",
+                "crew_size",
+                "daily_rate",
+                "hourly_rate",
+                "total_hours",
+                "formula_mode",
+                "amount",
+                "period",
+                "margin_pct",
+                "trip_count",
+                "round_trip_miles",
+            ):
+                if field in previous:
+                    row[field] = previous.get(field)
 
     previous_surfaces = {row.get("surface_type"): row for row in previous_workbench.get("insulation_surfaces") or []}
     for row in updated.get("insulation_surfaces") or []:
@@ -9855,67 +8449,6 @@ def apply_historical_filter_update(previous_workbench: dict[str, Any] | None, fi
             row["manual_override"] = True
 
     return recalculate_workbench_tables(updated)
-
-
-def manual_material_workbench_row(scope: dict[str, Any] | None = None, *, item_name: str = "Manual custom item") -> dict[str, Any]:
-    scope = scope or {}
-    return {
-        "include": False,
-        "package": "Manual",
-        "package_key": "manual",
-        "template_bucket": "manual",
-        "workbook_row": "",
-        "item_name": item_name,
-        "current_item": item_name,
-        "historical_item": "",
-        "item_source": "manual",
-        "item_options": item_name,
-        "item_options_json": _item_options_payload([], [], {"item_name": item_name, "unit": "unit", "unit_price": 0, "item_source": "manual"}),
-        "suggested_by_notes_rules": "review",
-        "historical_usage_rate": 0.0,
-        "historical_qty_per_basis_sqft": 0.0,
-        "historical_qty_per_sqft": 0.0,
-        "historical_median": 0.0,
-        "item_level_qty_per_sqft": 0.0,
-        "item_level_evidence_count": 0,
-        "editable_basis_sqft": 0.0,
-        "default_basis_sqft": 0.0,
-        "p25_qty_per_sqft": 0.0,
-        "p75_qty_per_sqft": 0.0,
-        "editable_qty_per_sqft": 0.0,
-        "editable_default": 0.0,
-        "calculated_quantity": 0.0,
-        "unit": "unit",
-        "current_unit_price": 0.0,
-        "current_price": 0.0,
-        "historical_cost_per_sqft": 0.0,
-        "historical_cost_default": 0.0,
-        "estimated_cost": 0.0,
-        "evidence_count": 0,
-        "historical_cost_evidence_count": 0,
-        "historical_jobs_found": 0,
-        "rows_accepted": 0,
-        "rows_rejected": 0,
-        "rejection_reasons": "",
-        "range_width": 0.0,
-        "relative_range_width": 0.0,
-        "variability_warning": "",
-        "filters_applied": "",
-        "filters_relaxed": "",
-        "minimum_evidence_count": DEFAULT_MIN_EVIDENCE_COUNT,
-        "filter_hash": "",
-        "manual_override": False,
-        "reset_to_historical_default": False,
-        "confidence": "manual",
-        "source": "manual",
-        "pricing_source": "manual",
-        "price_source": "manual",
-        "needs_review": True,
-        "notes": "Manual material line. Enter item, basis, quantity rate, unit, and unit price.",
-        "explanation": "Manual material line. Enter item, basis, quantity rate, unit, and unit price.",
-    }
-
-
 def workbench_to_draft_workbook_inputs(workbench: dict[str, Any]) -> dict[str, Any]:
     workbench = recalculate_workbench_tables(workbench)
     scope = workbench.get("scope") or {}
@@ -9983,6 +8516,11 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any]) -> dict[str, A
     insulation_labor_decision_rows = [
         row
         for row in workbench.get("insulation_labor_template_decisions") or []
+        if isinstance(row, dict) and row.get("include")
+    ]
+    roofing_labor_decision_rows = [
+        row
+        for row in workbench.get("roofing_labor_template_decisions") or []
         if isinstance(row, dict) and row.get("include")
     ]
     for row in insulation_foam_decision_rows:
@@ -10347,74 +8885,6 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any]) -> dict[str, A
             "notes": f"Roofing accessory/support template decision; template_option={row.get('resolved_template_option')}.",
         }
         material_rows.append(payload)
-    for row in workbench.get("materials") or []:
-        if not row.get("include"):
-            continue
-        if _is_insulation_scope(scope) and (insulation_foam_decision_rows or insulation_material_decision_rows):
-            continue
-        if roofing_foam_decision_rows and str(row.get("package_key") or row.get("template_bucket") or "").lower() in {"roofing_foam", "foam"}:
-            continue
-        if roofing_coating_decision_rows and str(row.get("package_key") or row.get("template_bucket") or "").lower() == "coating":
-            continue
-        if roofing_primer_decision_rows and str(row.get("package_key") or row.get("template_bucket") or "").lower() == "primer":
-            continue
-        if roofing_detail_decision_rows and str(row.get("package_key") or row.get("template_bucket") or "").lower() in {"caulk_detail", "caulk_sealant", "fabric"}:
-            continue
-        if roofing_detail_quantity_decision_rows and str(row.get("package_key") or row.get("template_bucket") or "").lower() in {
-            str(decision.get("template_bucket") or "").lower() for decision in roofing_detail_quantity_decision_rows
-        }:
-            continue
-        if roofing_board_fastener_decision_rows and str(row.get("package_key") or row.get("template_bucket") or "").lower() in {
-            "board_stock",
-            "fastener_treatment",
-            "fasteners",
-            "plates",
-        }:
-            continue
-        if roofing_granules_decision_rows and str(row.get("package_key") or row.get("template_bucket") or "").lower() == "granules":
-            continue
-        if roofing_accessory_decision_rows and str(row.get("package_key") or row.get("template_bucket") or "").lower() in {
-            str(decision.get("template_bucket") or "").lower() for decision in roofing_accessory_decision_rows
-        }:
-            continue
-        material_rows.append(
-            {
-                "decision_id": row.get("decision_id"),
-                "template_bucket": row.get("template_bucket") or row.get("package_key"),
-                "workbook_row": row.get("workbook_row"),
-                "row_traceability": row.get("row_traceability"),
-                "item": first_nonblank(row.get("item_name"), row.get("package")),
-                "category": row.get("package_key"),
-                "quantity": safe_number(row.get("calculated_quantity"), 0.0),
-                "basis_sqft": safe_number(row.get("editable_basis_sqft"), 0.0),
-                "area_sqft": safe_number(row.get("editable_basis_sqft"), 0.0),
-                "thickness_inches": safe_number(row.get("thickness_inches"), 0.0),
-                "yield_factor": safe_number(row.get("yield_factor"), 0.0),
-                "yield_or_coverage": safe_number(row.get("yield_factor"), 0.0),
-                "gal_per_100_sqft": safe_number(row.get("gal_per_100_sqft"), 0.0),
-                "gal_per_sqft": safe_number(row.get("gal_per_sqft"), 0.0),
-                "waste_factor_pct": safe_number(row.get("waste_factor_pct"), 0.0),
-                "wet_mils_estimate": safe_number(row.get("wet_mils_estimate"), 0.0),
-                "estimated_units": safe_number(row.get("estimated_units"), 0.0),
-                "estimated_sets": safe_number(row.get("estimated_sets"), 0.0),
-                "estimated_gallons": safe_number(row.get("estimated_gallons"), 0.0),
-                "selector_code": row.get("selector_code"),
-                "unit": row.get("unit"),
-                "unit_price": safe_number(row.get("current_unit_price"), 0.0),
-                "estimated_cost": safe_number(row.get("estimated_cost"), 0.0),
-                "formula_model": row.get("formula_model"),
-                "formula_source": row.get("formula_source"),
-                "calculated_output_summary": row.get("calculated_output_summary"),
-                "surface_formula_outputs": row.get("surface_formula_outputs") or [],
-                "surface_weighted_thickness_inches": safe_number(row.get("surface_weighted_thickness_inches"), 0.0),
-                "workbook_cell_write_preview": row.get("workbook_cell_write_preview") or [],
-                "notes": (
-                    f"Workbench edited value; item_source={row.get('item_source')}; "
-                    f"source={row.get('source')}; evidence_count={row.get('evidence_count')}; "
-                    f"basis_sqft={row.get('editable_basis_sqft')}"
-                ),
-            }
-        )
     labor_rows = []
     if _is_insulation_scope(scope) and insulation_labor_decision_rows:
         for row in insulation_labor_decision_rows:
@@ -10442,74 +8912,51 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any]) -> dict[str, A
                     "notes": f"Insulation labor template decision; evidence_count={row.get('decision_evidence_count')}",
                 }
             )
-    for row in workbench.get("labor") or []:
-        if not row.get("include"):
-            continue
-        if _is_insulation_scope(scope) and insulation_labor_decision_rows:
-            continue
-        crew_size = max(1, int(safe_number(row.get("crew_size"), 1)))
-        hours = safe_number(row.get("calculated_hours"), 0.0)
-        decision_based_labor = str(row.get("formula_model") or "") == "labor_cost_from_days_crew_rate"
-        base_days = safe_number(row.get("days"), 0.0)
-        labor_rows.append(
+    if not _is_insulation_scope(scope) and roofing_labor_decision_rows:
+        for row in roofing_labor_decision_rows:
+            crew_size = max(1, int(safe_number(row.get("crew_size"), 1)))
+            hours = safe_number(row.get("calculated_hours") or row.get("total_hours"), 0.0)
+            labor_rows.append(
+                {
+                    "decision_id": row.get("decision_id"),
+                    "template_bucket": row.get("template_bucket") or row.get("package_key"),
+                    "workbook_row": row.get("workbook_row"),
+                    "row_traceability": row.get("row_traceability"),
+                    "task": row.get("template_bucket") or row.get("package_key"),
+                    "crew_size": crew_size,
+                    "total_hours": hours,
+                    "adjusted_days": safe_number(row.get("days"), 0.0),
+                    "base_days": safe_number(row.get("days"), 0.0),
+                    "daily_rate": safe_number(row.get("daily_rate"), 0.0),
+                    "hourly_rate": safe_number(row.get("hourly_rate"), safe_number(row.get("labor_rate"), 0.0)),
+                    "formula_mode": row.get("formula_mode"),
+                    "formula_model": row.get("formula_model"),
+                    "formula_source": row.get("formula_source"),
+                    "estimated_cost": safe_number(row.get("estimated_cost"), 0.0),
+                    "calculated_output_summary": row.get("calculated_output_summary"),
+                    "workbook_cell_write_preview": row.get("workbook_cell_write_preview") or [],
+                    "notes": f"Roofing labor template decision; evidence_count={row.get('decision_evidence_count')}",
+                }
+            )
+    workbook_decisions: list[dict[str, Any]] = []
+    for row in material_rows:
+        workbook_decisions.append(
             {
-                "decision_id": row.get("decision_id"),
-                "template_bucket": row.get("template_bucket") or row.get("package_key"),
-                "workbook_row": row.get("workbook_row"),
-                "row_traceability": row.get("row_traceability"),
-                "task": row.get("package_key"),
-                "crew_size": crew_size,
-                "total_hours": hours,
-                "adjusted_days": round(base_days, 3)
-                if decision_based_labor and row.get("days_was_explicit")
-                else (round(hours / (crew_size * 8), 3) if crew_size else 0),
-                "base_days": base_days,
-                "daily_rate": safe_number(row.get("daily_rate"), 0.0),
-                "hourly_rate": safe_number(row.get("hourly_rate"), safe_number(row.get("labor_rate"), 0.0)),
-                "formula_mode": row.get("formula_mode"),
-                "formula_model": row.get("formula_model"),
-                "formula_source": row.get("formula_source"),
-                "estimated_cost": safe_number(row.get("estimated_cost"), 0.0),
-                "calculated_output_summary": row.get("calculated_output_summary"),
-                "workbook_cell_write_preview": row.get("workbook_cell_write_preview") or [],
-                "notes": f"Workbench edited value; source={row.get('source')}; evidence_count={row.get('evidence_count')}",
+                **row,
+                "row_type": "material",
+                "section": row.get("section") or "template_decisions",
+                "source_section": row.get("section") or "template_decisions",
             }
         )
-    covered_equipment_adders = {
-        str(row.get("template_bucket") or "").lower()
-        for row in roofing_equipment_decision_rows
-        if str(row.get("template_bucket") or "").lower() in {"dumpster", "lift", "generator"}
-    }
-    covered_travel_freight_adders = {
-        str(row.get("template_bucket") or "").lower()
-        for row in roofing_travel_freight_decision_rows
-        if str(row.get("template_bucket") or "").lower() in {"delivery_fee", "freight", "sales_trips", "truck_expense"}
-    }
-    if "sales_trips" in covered_travel_freight_adders:
-        covered_travel_freight_adders.add("inspection")
-    if "truck_expense" in covered_travel_freight_adders:
-        covered_travel_freight_adders.add("travel")
-    adders = [
-        row
-        for row in workbench.get("adders") or []
-        if row.get("include")
-        and not (_is_insulation_scope(scope) and insulation_material_decision_rows)
-        and str(row.get("adder_key") or row.get("template_bucket") or "").lower()
-        not in (covered_equipment_adders | covered_travel_freight_adders)
-    ]
-    travel_rows = []
-    adders_review_rows = []
-    for row in adders:
-        payload = {
-            "item": row.get("adder"),
-            "category": row.get("adder_key"),
-            "estimated_cost": safe_number(row.get("estimated_cost"), 0.0),
-            "notes": row.get("notes"),
-        }
-        if row.get("adder_key") == "travel":
-            travel_rows.append({"travel_vehicle_cost": payload["estimated_cost"], "travel_notes": payload.get("notes")})
-        else:
-            adders_review_rows.append(payload)
+    for row in labor_rows:
+        workbook_decisions.append(
+            {
+                **row,
+                "row_type": "labor",
+                "section": row.get("section") or "labor_template_decisions",
+                "source_section": row.get("section") or "labor_template_decisions",
+            }
+        )
     return {
         "template_type": "insulation" if _is_insulation_scope(scope) else "roofing",
         "header": {
@@ -10523,10 +8970,7 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any]) -> dict[str, A
             "net_area_sqft": _estimate_area(scope),
             "dimension_notes": [],
         },
-        "material_rows": material_rows,
-        "labor_rows": labor_rows,
-        "travel_rows": travel_rows,
-        "adders_review_rows": adders_review_rows,
+        "workbook_decisions": workbook_decisions,
     }
 
 
@@ -10561,6 +9005,15 @@ INSULATION_MATERIAL_TOTAL_DECISION_SECTIONS = (
 INSULATION_ADDER_TOTAL_DECISION_SECTIONS = ("insulation_equipment_logistics_template_decisions",)
 
 INSULATION_LABOR_TOTAL_DECISION_SECTIONS = ("insulation_labor_template_decisions",)
+
+WORKBENCH_DECISION_SECTIONS = (
+    *INSULATION_MATERIAL_TOTAL_DECISION_SECTIONS,
+    *INSULATION_ADDER_TOTAL_DECISION_SECTIONS,
+    *INSULATION_LABOR_TOTAL_DECISION_SECTIONS,
+    *ROOFING_MATERIAL_TOTAL_DECISION_SECTIONS,
+    *ROOFING_ADDER_TOTAL_DECISION_SECTIONS,
+    *ROOFING_LABOR_TOTAL_DECISION_SECTIONS,
+)
 
 
 def _decision_total_rows(workbench: dict[str, Any], section_names: Iterable[str]) -> list[dict[str, Any]]:
@@ -10634,34 +9087,17 @@ def _insulation_material_total_rows(workbench: dict[str, Any]) -> tuple[list[dic
 def summarize_workbench_totals(workbench: dict[str, Any]) -> dict[str, float]:
     workbench = recalculate_workbench_tables(workbench)
     if _is_insulation_scope(workbench.get("scope") or {}):
-        material_decision_rows, material_covered_keys, material_covered_workbook_rows = _insulation_material_total_rows(workbench)
+        material_decision_rows, _, _ = _insulation_material_total_rows(workbench)
         labor_decision_rows = _decision_total_rows(workbench, INSULATION_LABOR_TOTAL_DECISION_SECTIONS)
-        labor_covered_keys, labor_covered_workbook_rows = _coverage_from_decision_rows(labor_decision_rows)
         adder_decision_rows = _decision_total_rows(workbench, INSULATION_ADDER_TOTAL_DECISION_SECTIONS)
-        adder_covered_keys, adder_covered_workbook_rows = _coverage_from_decision_rows(adder_decision_rows)
     else:
         material_decision_rows = _decision_total_rows(workbench, ROOFING_MATERIAL_TOTAL_DECISION_SECTIONS)
-        material_covered_keys, material_covered_workbook_rows = _coverage_from_decision_rows(material_decision_rows)
         labor_decision_rows = _decision_total_rows(workbench, ROOFING_LABOR_TOTAL_DECISION_SECTIONS)
-        labor_covered_keys, labor_covered_workbook_rows = _coverage_from_decision_rows(labor_decision_rows)
         adder_decision_rows = _decision_total_rows(workbench, ROOFING_ADDER_TOTAL_DECISION_SECTIONS)
-        adder_covered_keys, adder_covered_workbook_rows = _coverage_from_decision_rows(adder_decision_rows)
 
-    material_total = _included_cost_total(material_decision_rows) + _flat_fallback_total(
-        workbench.get("materials") or [],
-        material_covered_keys,
-        material_covered_workbook_rows,
-    )
-    labor_total = _included_cost_total(labor_decision_rows) + _flat_fallback_total(
-        workbench.get("labor") or [],
-        labor_covered_keys,
-        labor_covered_workbook_rows,
-    )
-    adder_total = _included_cost_total(adder_decision_rows) + _flat_fallback_total(
-        workbench.get("adders") or [],
-        adder_covered_keys,
-        adder_covered_workbook_rows,
-    )
+    material_total = _included_cost_total(material_decision_rows)
+    labor_total = _included_cost_total(labor_decision_rows)
+    adder_total = _included_cost_total(adder_decision_rows)
     return {
         "material_total": round(material_total, 2),
         "labor_total": round(labor_total, 2),
@@ -10721,24 +9157,46 @@ def build_edit_history_rows(
 
     for key, default in (original_workbench.get("scope") or {}).items():
         add_row("scope", key, default, (edited_workbench.get("scope") or {}).get(key))
-    original_materials = {row.get("package_key"): row for row in original_workbench.get("materials") or []}
-    for row in edited_workbench.get("materials") or []:
-        package = row.get("package_key")
-        original = original_materials.get(package, {})
-        add_row(f"materials.{package}", "include", original.get("include"), row.get("include"), require_when_changed=True)
-        add_row(f"materials.{package}", "editable_qty_per_sqft", original.get("editable_qty_per_sqft"), row.get("editable_qty_per_sqft"), 0.5)
-    original_labor = {row.get("package_key"): row for row in original_workbench.get("labor") or []}
-    for row in edited_workbench.get("labor") or []:
-        package = row.get("package_key")
-        original = original_labor.get(package, {})
-        add_row(f"labor.{package}", "include", original.get("include"), row.get("include"), require_when_changed=True)
-        add_row(f"labor.{package}", "editable_hours_per_1000_sqft", original.get("editable_hours_per_1000_sqft"), row.get("editable_hours_per_1000_sqft"), 0.3)
-    original_adders = {row.get("adder_key"): row for row in original_workbench.get("adders") or []}
-    for row in edited_workbench.get("adders") or []:
-        adder = row.get("adder_key")
-        original = original_adders.get(adder, {})
-        add_row(f"adders.{adder}", "include", original.get("include"), row.get("include"), require_when_changed=True)
-        add_row(f"adders.{adder}", "editable_value", original.get("editable_value"), row.get("editable_value"), 0.5)
+    tracked_fields = (
+        "include",
+        "editable_selector_code",
+        "selected_pricing_candidate",
+        "basis_sqft",
+        "unit_price",
+        "gal_per_100_sqft",
+        "coverage_sqft_per_unit",
+        "waste_factor_pct",
+        "thickness_inches",
+        "yield_or_coverage",
+        "linear_ft",
+        "feet_per_unit",
+        "days",
+        "crew_size",
+        "daily_rate",
+        "hourly_rate",
+        "total_hours",
+        "formula_mode",
+        "amount",
+        "period",
+        "margin_pct",
+        "trip_count",
+        "round_trip_miles",
+    )
+    for section in WORKBENCH_DECISION_SECTIONS:
+        original_rows = {
+            str(first_nonblank(row.get("decision_id"), row.get("workbook_row"), row.get("template_bucket"))): row
+            for row in original_workbench.get(section) or []
+            if isinstance(row, dict)
+        }
+        for row in edited_workbench.get(section) or []:
+            if not isinstance(row, dict):
+                continue
+            key = str(first_nonblank(row.get("decision_id"), row.get("workbook_row"), row.get("template_bucket")))
+            original = original_rows.get(key, {})
+            row_section = f"{section}.{key}"
+            for field in tracked_fields:
+                if field in row or field in original:
+                    add_row(row_section, field, original.get(field), row.get(field), 0.3, require_when_changed=(field == "include"))
     return rows
 
 

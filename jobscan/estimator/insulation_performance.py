@@ -348,7 +348,7 @@ def build_insulation_performance_specs(
     *,
     scope: dict[str, Any],
     surface_rows: list[dict[str, Any]],
-    foam_row: dict[str, Any] | None,
+    foam_row: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     foam_row = foam_row or {}
     alignment = product_alignment_for_foam_row(foam_row)

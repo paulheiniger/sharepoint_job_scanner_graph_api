@@ -34,80 +34,47 @@ def sample_workbench() -> dict:
             "job_name": "Session Test Roof",
         },
         "historical_filters": {"division": "Roofing", "template_type": "roofing"},
-        "materials": [
+        "roofing_coating_template_decisions": [
             {
                 "include": True,
-                "decision_id": "roofing_coating_system",
+                "section": "roofing_coating_template_decisions",
+                "decision_id": "roofing_coating_system_row_26",
                 "template_bucket": "coating",
-                "package_key": "coating",
-                "package": "Silicone",
                 "workbook_row": "26",
-                "item_name": "GAF High Solids Silicone 55 Gal",
-                "historical_recommendation": "Historical coating decision from 11 jobs. GAF High Solids Silicone 55 Gal.",
-                "calculated_output_summary": "quantity=150, cost=6300",
-                "row_traceability": "Estimate rows 26-28",
-                "decision_source_tables": "roofing_coating_decision_history",
-                "decision_filters_applied": "division, template_type",
-                "decision_filters_relaxed": "",
-                "recommended_decision_value": "GAF High Solids Silicone 55 Gal",
-                "editable_decision_value": "GAF High Solids Silicone 55 Gal",
-                "decision_values": {"gal_per_100_sqft": 1.5},
-                "editable_basis_sqft": 10000,
-                "default_basis_sqft": 10000,
-                "historical_qty_per_sqft": 0.015,
-                "editable_qty_per_sqft": 0.015,
-                "unit": "gal",
-                "current_unit_price": 42,
-                "evidence_count": 11,
+                "editable_selector_code": "11",
+                "resolved_template_option": "Gaco Silicone",
+                "selected_pricing_candidate": "GAF High Solids Silicone 55 Gal",
+                "basis_sqft": 10000,
+                "gal_per_100_sqft": 1.5,
+                "waste_factor_pct": 10,
+                "unit_price": 42,
+                "estimated_gallons": 166.67,
+                "estimated_cost": 7000.14,
+                "historical_recommendation": "Historical coating decision from 11 jobs.",
                 "decision_evidence_count": 11,
                 "decision_source_jobs_count": 9,
                 "decision_confidence": "high",
-                "confidence": "high",
+                "decision_source_tables": "roofing_coating_decision_history",
                 "product_id": "prod-gaf-silicone",
                 "product_manufacturer": "GAF",
                 "product_guidance": "Use as silicone roof coating.",
                 "product_warnings": ["Do not apply over wet substrate."],
                 "product_source_documents": ["gaf_silicone_pds.pdf"],
-                "notes": "Historical default from 11 roofing jobs.",
+                "workbook_cell_write_preview": [{"cell": "Estimate!A26", "field": "selector_code", "value": "11"}],
             }
         ],
-        "labor": [
+        "roofing_labor_template_decisions": [
             {
                 "include": True,
+                "section": "roofing_labor_template_decisions",
                 "decision_id": "roofing_labor_base",
                 "template_bucket": "labor_base",
-                "package_key": "labor_base",
-                "labor_package": "Base Coat",
                 "workbook_row": "122",
-                "historical_recommendation": "Historical labor_base decision from 8 jobs. days=2, crew_size=4",
-                "calculated_output_summary": "hours=60, cost=4320",
-                "row_traceability": "Estimate row 122",
-                "recommended_decision_value": "mixed_formula",
-                "editable_decision_value": "mixed_formula",
-                "decision_values": {"days": 2, "crew_size": 4},
-                "historical_hours_per_1000_sqft": 5,
-                "editable_hours_per_1000_sqft": 6,
+                "days": 2,
                 "crew_size": 4,
-                "labor_rate": 72,
-                "evidence_count": 8,
-                "decision_evidence_count": 8,
-                "decision_source_jobs_count": 8,
-                "decision_confidence": "medium",
-                "confidence": "medium",
-                "notes": "Historical labor default.",
-            }
-        ],
-        "adders": [
-            {
-                "include": False,
-                "adder_key": "lift",
-                "template_bucket": "lift",
-                "workbook_row": "47",
-                "adder": "Lift",
-                "historical_default_value": 1200,
-                "editable_value": 1200,
-                "evidence_count": 4,
-                "confidence": "medium",
+                "hourly_rate": 72,
+                "total_hours": 64,
+                "estimated_cost": 4608,
             }
         ],
         "review_flags": ["Estimator review required."],
@@ -122,66 +89,69 @@ def sample_workbook_inputs() -> dict:
             "C3_job_type": "roof coating",
             "C12_estimated_sqft": 10000,
         },
-        "material_rows": [
+        "workbook_decisions": [
             {
-                "decision_id": "roofing_coating_system",
+                "row_type": "material",
+                "section": "roofing_coating_template_decisions",
+                "decision_id": "roofing_coating_system_row_26",
                 "template_bucket": "coating",
                 "workbook_row": "26",
-                "row_traceability": "Estimate rows 26-28",
-                "item": "GAF High Solids Silicone 55 Gal",
+                "row_traceability": "Estimate row 26",
+                "item": "Gaco Silicone",
                 "category": "coating",
-                "quantity": 150,
-                "unit": "gal",
+                "quantity": 166.67,
                 "unit_price": 42,
-                "estimated_cost": 6300,
-            }
-        ],
-        "labor_rows": [
-            {"task": "labor_base", "crew_size": 4, "total_hours": 60, "adjusted_days": 1.875, "estimated_cost": 4320}
-        ],
-        "travel_rows": [],
-        "adders_review_rows": [],
-    }
-
-
-def test_session_decision_helpers_include_insulation_surface_decisions() -> None:
-    workbench = {
-        "scope": {"division": "Insulation", "template_type": "insulation", "foam_type": "closed_cell"},
-        "insulation_surfaces": [
+                "estimated_cost": 7000.14,
+                "workbook_cell_write_preview": [{"cell": "Estimate!A26", "field": "selector_code", "value": "11"}],
+            },
             {
-                "include": True,
-                "section": "insulation_surfaces",
-                "decision_id": "insulation_surface_walls",
-                "template_bucket": "insulation_surface_areas",
-                "surface": "Walls",
-                "surface_type": "walls",
-                "net_area_sqft": 1188,
-                "target_r_value": 14,
-                "product_r_value_per_inch": 5.7,
-                "required_thickness_inches": 2.4561,
-                "edited_thickness_inches": 2.5,
-                "notes": "R14 target using 5.7 R/in gives 2.4561 in; rounded to 2.5 in.",
-            }
+                "row_type": "labor",
+                "section": "roofing_labor_template_decisions",
+                "decision_id": "roofing_labor_base",
+                "template_bucket": "labor_base",
+                "workbook_row": "122",
+                "task": "labor_base",
+                "crew_size": 4,
+                "total_hours": 64,
+                "adjusted_days": 2,
+                "estimated_cost": 4608,
+            },
         ],
-        "materials": [],
-        "labor": [],
-        "adders": [],
     }
+
+
+def test_session_decision_helpers_are_decision_only() -> None:
+    workbench = sample_workbench()
 
     proposed = proposed_decisions_from_workbench(workbench)
     final = final_decisions_from_workbench(workbench)
 
-    assert any(row["section"] == "area_calculation_trace" for row in proposed["decisions"])
-    assert any(row["section"] == "insulation_surfaces" for row in proposed["decisions"])
-    assert any(row["section"] == "insulation_performance_specs" for row in proposed["decisions"])
-    surface = next(row for row in final["decisions"] if row["section"] == "insulation_surfaces")
-    assert surface["decision_id"] == "insulation_surface_walls"
-    assert surface["item_or_task"] == "Walls"
-    assert surface["final_decision_value"]["edited_thickness_inches"] == 2.5
-    performance = next(row for row in final["decisions"] if row["section"] == "insulation_performance_specs")
-    assert performance["decision_id"] == "insulation_performance_walls"
-    assert performance["item_or_task"] == "Walls"
-    assert performance["final_decision_value"]["edited_thickness_inches"] == 2.5
+    proposed_sections = {row["section"] for row in proposed["decisions"]}
+    final_sections = {row["section"] for row in final["decisions"]}
+    assert "roofing_coating_template_decisions" in proposed_sections
+    assert "roofing_labor_template_decisions" in proposed_sections
+    assert "roofing_coating_template_decisions" in final_sections
+    assert "materials" not in proposed_sections
+    assert "labor" not in proposed_sections
+    assert "adders" not in proposed_sections
+
+    coating = next(row for row in final["decisions"] if row["decision_id"] == "roofing_coating_system_row_26")
+    assert coating["template_bucket"] == "coating"
+    assert coating["product_guidance_snapshot"]["source_documents"] == ["gaf_silicone_pds.pdf"]
+    assert coating["source_evidence"]["decision_source_tables"] == "roofing_coating_decision_history"
+
+
+def test_workbook_cell_writes_use_decision_native_payload() -> None:
+    writes = workbook_cell_writes_from_inputs(sample_workbook_inputs())
+
+    assert any(row["section"] == "header" and row["cell"] == "Estimate!C2" for row in writes)
+    decision_writes = [row for row in writes if row.get("section") != "header"]
+    assert {row["section"] for row in decision_writes} == {
+        "roofing_coating_template_decisions",
+        "roofing_labor_template_decisions",
+    }
+    assert any(row["decision_id"] == "roofing_coating_system_row_26" for row in decision_writes)
+    assert not any(row.get("section") == "materials" for row in decision_writes)
 
 
 def test_estimator_session_lifecycle_and_exports(tmp_path) -> None:
@@ -219,11 +189,11 @@ def test_estimator_session_lifecycle_and_exports(tmp_path) -> None:
     )
     edits = [
         {
-            "section": "labor.labor_base",
-            "field_name": "editable_hours_per_1000_sqft",
+            "section": "roofing_labor_template_decisions.roofing_labor_base",
+            "field_name": "total_hours",
             "package_or_labor_task": "labor_base",
-            "suggested_value": 5,
-            "final_value": 6,
+            "suggested_value": 60,
+            "final_value": 64,
             "reason": "Estimator adjusted production.",
         }
     ]
@@ -234,7 +204,7 @@ def test_estimator_session_lifecycle_and_exports(tmp_path) -> None:
         engine,
         session_id,
         final_decisions=final_decisions_from_workbench(sample_workbench()),
-        calculated_outputs={"totals": {"draft_total": 10620}, "draft_workbook_inputs": workbook_inputs},
+        calculated_outputs={"totals": {"draft_total": 11608.14}, "draft_workbook_inputs": workbook_inputs},
         workbook_cell_writes=writes,
         workbook_export_path="output/estimates/session_test.xlsx",
     )
@@ -259,17 +229,14 @@ def test_estimator_session_lifecycle_and_exports(tmp_path) -> None:
 
     payload = load_estimator_session_payload(engine, session_id)
     assert payload["review"]["parsed_scope"]["estimated_sqft"] == 10000
-    first_decision = payload["review"]["final_decisions"]["decisions"][0]
-    assert first_decision["decision_id"].startswith("roofing_coating_system_row_")
-    assert first_decision["final_value"]["selected_pricing_candidate"] == "GAF High Solids Silicone 55 Gal"
-    coating_material_decision = next(
-        row for row in payload["review"]["final_decisions"]["decisions"] if row["decision_id"] == "roofing_coating_system"
+    assert payload["review"]["calculated_outputs"]["totals"]["draft_total"] == 11608.14
+    assert not any(row.get("section") == "materials" for row in payload["review"]["workbook_cell_writes"])
+    coating_write = next(
+        row
+        for row in payload["review"]["workbook_cell_writes"]
+        if row.get("decision_id") == "roofing_coating_system_row_26"
     )
-    assert coating_material_decision["source_evidence"]["decision_source_tables"] == "roofing_coating_decision_history"
-    assert coating_material_decision["product_guidance_snapshot"]["source_documents"] == ["gaf_silicone_pds.pdf"]
-    assert payload["review"]["calculated_outputs"]["totals"]["draft_total"] == 10620
-    material_write = next(row for row in payload["review"]["workbook_cell_writes"] if row.get("section") == "materials")
-    assert material_write["decision_id"] == "roofing_coating_system"
+    assert coating_write["row_traceability"] == "Estimate row 26"
 
     zip_path = export_estimator_session_package(engine, session_id, tmp_path / "session_review.zip")
     assert zip_path.exists()
@@ -296,7 +263,6 @@ def test_estimator_session_lifecycle_and_exports(tmp_path) -> None:
     assert rows[0]["raw_input_notes"] == "Roof coating notes from email."
     assert rows[0]["template_type"] == "roofing"
     assert rows[0]["division"] == "Roofing"
-    assert rows[0]["estimator_edits"][0]["field_name"] == "editable_hours_per_1000_sqft"
+    assert rows[0]["estimator_edits"][0]["field_name"] == "total_hours"
     assert rows[0]["proposed_decisions"][0]["decisions"][0]["decision_id"].startswith("roofing_coating_system_row_")
-    training_material_write = next(row for row in rows[0]["workbook_cell_writes"] if row.get("section") == "materials")
-    assert training_material_write["row_traceability"] == "Estimate rows 26-28"
+    assert not any(row.get("section") == "materials" for row in rows[0]["workbook_cell_writes"])

@@ -764,6 +764,25 @@ def _output_filename(draft_workbook_inputs: dict[str, Any], output_filename: str
     return f"estimate_draft_{safe_filename(job_name)}{suffix}.xlsx"
 
 
+def _decision_rows_by_type(draft_workbook_inputs: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    """Return workbook decision rows grouped for the existing cell writers.
+
+    The Estimating Assistant now emits decision-native workbook inputs. The
+    writer still routes those records through the same low-level cell writers so
+    Excel remains the authoritative calculation engine.
+    """
+    grouped = {"material": [], "labor": [], "travel": [], "adder": []}
+    decisions = draft_workbook_inputs.get("workbook_decisions") or []
+    for row in decisions:
+        if not isinstance(row, dict):
+            continue
+        row_type = str(row.get("row_type") or "material").lower()
+        if row_type not in grouped:
+            row_type = "adder" if row_type in {"manual_adder", "review"} else "material"
+        grouped[row_type].append(row)
+    return grouped
+
+
 def generate_estimate_workbook(
     draft_workbook_inputs: dict,
     template_path: Path,
@@ -807,7 +826,8 @@ def generate_estimate_workbook(
     coating_row_index = 0
     insulation_indexes = {"foam": 0, "thermal": 0, "caulk": 0, "lift": 0}
     manual_adders: list[dict[str, Any]] = []
-    for row in draft_workbook_inputs.get("material_rows") or []:
+    decision_rows = _decision_rows_by_type(draft_workbook_inputs)
+    for row in decision_rows["material"]:
         if not isinstance(row, dict):
             continue
         if template_type == "insulation":
@@ -817,20 +837,20 @@ def generate_estimate_workbook(
         if not placed:
             manual_adders.append(row)
 
-    for row in draft_workbook_inputs.get("labor_rows") or []:
+    for row in decision_rows["labor"]:
         if not isinstance(row, dict):
             continue
         placed = _write_insulation_labor_row(ws, row) if template_type == "insulation" else _write_labor_row(ws, row)
         if not placed:
             manual_adders.append(row)
 
-    for row in draft_workbook_inputs.get("travel_rows") or []:
+    for row in decision_rows["travel"]:
         if isinstance(row, dict):
             vehicle_row = _write_travel_row(ws, row)
             if vehicle_row:
                 manual_adders.append(vehicle_row)
 
-    for row in draft_workbook_inputs.get("adders_review_rows") or []:
+    for row in decision_rows["adder"]:
         if isinstance(row, dict):
             manual_adders.append(row)
 
