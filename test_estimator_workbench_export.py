@@ -248,6 +248,16 @@ def test_insulation_review_package_exports_without_workbook(tmp_path) -> None:
     summary_workbook = load_workbook(tmp_path / "workbench_summary.xlsx", read_only=True, data_only=True)
     assert "Area Calculation Trace" in summary_workbook.sheetnames
     assert "Insulation Performance" in summary_workbook.sheetnames
+    assert {
+        "Insulation Decisions Summary",
+        "Insulation Details",
+        "Insulation Thermal Barrier",
+        "Insulation Support Materials",
+        "Insulation Equipment",
+        "Insulation Compliance",
+        "Insulation Labor Plan",
+        "Insulation Pricing",
+    }.issubset(set(summary_workbook.sheetnames))
 
 
 def test_workbench_output_generates_estimate_workbook_and_review_package_includes_it(tmp_path) -> None:

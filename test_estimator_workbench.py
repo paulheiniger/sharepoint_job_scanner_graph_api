@@ -1220,6 +1220,118 @@ def test_insulation_foam_template_decision_feeds_draft_workbook_selector_inputs(
     assert any(cell["cell"] == "Estimate!A19" and cell["value"] == "21" for cell in foam["workbook_cell_write_preview"])
 
 
+def test_insulation_decision_sections_are_created_from_template_graph() -> None:
+    workbench = build_estimating_workbench(sample_insulation_recommendation(), sample_insulation_template_option_data())
+
+    assert len(workbench["insulation_detail_material_template_decisions"]) == 4
+    assert len(workbench["insulation_thermal_barrier_template_decisions"]) == 3
+    assert len(workbench["insulation_support_material_template_decisions"]) == 3
+    assert len(workbench["insulation_equipment_logistics_template_decisions"]) == 8
+    assert len(workbench["insulation_compliance_template_decisions"]) == 2
+    assert len(workbench["insulation_labor_template_decisions"]) == 11
+    assert len(workbench["insulation_pricing_template_decisions"]) == 5
+
+    thermal = workbench["insulation_thermal_barrier_template_decisions"][0]
+    thermal_options = {option["resolved_template_option"] for option in thermal["selector_options"]}
+    assert {"DC 315 TB", "Acrylic", "NoBurn TB"}.issubset(thermal_options)
+
+    caulk = next(row for row in workbench["insulation_detail_material_template_decisions"] if row["workbook_row"] == "41")
+    caulk_options = {option["resolved_template_option"] for option in caulk["selector_options"]}
+    assert {"Can Foam", "Liquid Flashing", "Pointing Mastic"}.issubset(caulk_options)
+
+    lift = next(row for row in workbench["insulation_equipment_logistics_template_decisions"] if row["workbook_row"] == "47")
+    lift_options = {option["resolved_template_option"] for option in lift["selector_options"]}
+    assert {"Forklift", "Boom", "Scissor", "Articulating"}.issubset(lift_options)
+
+    labor = next(row for row in workbench["insulation_labor_template_decisions"] if row["template_bucket"] == "labor_foam")
+    assert labor["include"] is True
+    assert "Estimate!G86" in {cell["cell"] for cell in labor["workbook_cell_write_preview"]}
+
+
+def test_insulation_decision_sections_recalculate_dependent_outputs_and_totals() -> None:
+    workbench = build_estimating_workbench(sample_insulation_recommendation(), sample_insulation_data())
+    workbench["insulation_thermal_barrier_template_decisions"][0].update(
+        {
+            "include": True,
+            "basis_sqft": 1000,
+            "gal_per_100_sqft": 1.5,
+            "waste_factor_pct": 10,
+            "unit_price": 20,
+        }
+    )
+    primer = next(row for row in workbench["insulation_detail_material_template_decisions"] if row["template_bucket"] == "primer")
+    primer.update({"include": True, "basis_sqft": 1000, "unit_price": 100})
+    thinner = next(row for row in workbench["insulation_support_material_template_decisions"] if row["template_bucket"] == "thinner")
+    thinner.update({"include": True, "unit_price": 5})
+    drum = next(row for row in workbench["insulation_support_material_template_decisions"] if row["template_bucket"] == "drum_disposal")
+    drum.update({"include": True, "unit_price": 25})
+
+    recalculated = recalculate_workbench_tables(workbench)
+
+    thermal = recalculated["insulation_thermal_barrier_template_decisions"][0]
+    assert thermal["estimated_gallons"] == 16.666667
+    assert thermal["estimated_cost"] == 333.33
+    primer = next(row for row in recalculated["insulation_detail_material_template_decisions"] if row["template_bucket"] == "primer")
+    assert primer["estimated_units"] == 4
+    assert primer["estimated_cost"] == 400
+    thinner = next(row for row in recalculated["insulation_support_material_template_decisions"] if row["template_bucket"] == "thinner")
+    assert thinner["estimated_units"] == round((16.666667 / 55) * 4, 6)
+    drum = next(row for row in recalculated["insulation_support_material_template_decisions"] if row["template_bucket"] == "drum_disposal")
+    assert drum["estimated_drums"] > 1
+
+    totals = summarize_workbench_totals(recalculated)
+    assert totals["material_total"] >= thermal["estimated_cost"] + primer["estimated_cost"] + thinner["estimated_cost"] + drum["estimated_cost"]
+    assert totals["labor_total"] > 0
+
+
+def test_insulation_decision_sections_feed_draft_workbook_inputs() -> None:
+    workbench = build_estimating_workbench(sample_insulation_recommendation(), sample_insulation_template_option_data())
+    workbench["insulation_thermal_barrier_template_decisions"][0].update(
+        {
+            "include": True,
+            "editable_selector_code": "1",
+            "basis_sqft": 1200,
+            "gal_per_100_sqft": 1.25,
+            "unit_price": 42,
+        }
+    )
+    caulk = next(row for row in workbench["insulation_detail_material_template_decisions"] if row["workbook_row"] == "41")
+    caulk.update(
+        {
+            "include": True,
+            "editable_selector_code": "2",
+            "linear_ft": 250,
+            "feet_per_unit": 25,
+            "unit_price": 18,
+        }
+    )
+    lift = next(row for row in workbench["insulation_equipment_logistics_template_decisions"] if row["workbook_row"] == "47")
+    lift.update({"include": True, "editable_selector_code": "3", "quantity": 26, "period": 3, "unit_price": 450, "margin_pct": 10})
+
+    draft = workbench_to_draft_workbook_inputs(workbench)
+
+    thermal = next(row for row in draft["material_rows"] if row["category"] == "thermal_barrier_coating")
+    assert thermal["selector_code"] == "1"
+    assert thermal["basis_sqft"] == 1200
+    assert thermal["gal_per_100_sqft"] == 1.25
+    assert any(cell["cell"] == "Estimate!A30" and cell["value"] == "1" for cell in thermal["workbook_cell_write_preview"])
+
+    caulk_row = next(row for row in draft["material_rows"] if row["category"] == "caulk_sealant")
+    assert caulk_row["selector_code"] == "2"
+    assert caulk_row["linear_ft"] == 250
+    assert caulk_row["feet_per_unit"] == 25
+    assert caulk_row["estimated_units"] == 10
+
+    lift_row = next(row for row in draft["material_rows"] if row["category"] == "lift")
+    assert lift_row["selector_code"] == "3"
+    assert lift_row["period"] == 3
+    assert lift_row["margin_pct"] == 10
+
+    labor = next(row for row in draft["labor_rows"] if row["task"] == "labor_foam")
+    assert labor["workbook_row"] == "86"
+    assert labor["formula_model"] == "labor_cost_from_days_crew_rate"
+
+
 def test_roofing_detail_template_decisions_preserve_caulk_selector_and_fabric_rows() -> None:
     data = sample_data()
     data.pricing_catalog = pd.concat(

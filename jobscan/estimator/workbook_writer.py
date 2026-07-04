@@ -608,8 +608,12 @@ def _write_insulation_material(ws: Any, row: dict[str, Any], indexes: dict[str, 
         if yield_factor is not None:
             _write_cell(ws, f"F{target_row}", round(yield_factor, 4))
     elif category in {"coating", "thermal_barrier_coating"} or any(term in text for term in ("thermal", "dc 315", "noburn", "coating")):
+        selector_code = _number(row.get("selector_code"))
         area_sqft = _number(row.get("area_sqft") or row.get("basis_sqft"))
         gal_per_100 = _number(row.get("gal_per_100_sqft"))
+        waste_pct = _number(row.get("waste_factor_pct") or row.get("margin_pct"))
+        if selector_code is not None:
+            _write_cell(ws, f"A{target_row}", int(selector_code))
         if area_sqft is not None:
             _write_cell(ws, f"C{target_row}", round(area_sqft, 2))
         elif quantity is not None:
@@ -618,7 +622,45 @@ def _write_insulation_material(ws: Any, row: dict[str, Any], indexes: dict[str, 
             _write_cell(ws, f"D{target_row}", round(gal_per_100, 4))
         if unit_price is not None:
             _write_cell(ws, f"E{target_row}", round(unit_price, 4))
+        if waste_pct is not None:
+            _write_cell(ws, "A34", round(waste_pct, 4))
+    elif "lift" in text:
+        selector_code = _number(row.get("selector_code"))
+        size = _number(row.get("size") or row.get("quantity"))
+        period = _number(row.get("period") or row.get("days"))
+        margin_pct = _number(row.get("margin_pct"))
+        if selector_code is not None:
+            _write_cell(ws, f"A{target_row}", int(selector_code))
+        if size is not None:
+            _write_cell(ws, f"C{target_row}", round(size, 2))
+        if period is not None:
+            _write_cell(ws, f"D{target_row}", round(period, 2))
+        if unit_price is not None:
+            _write_cell(ws, f"E{target_row}", round(unit_price, 4))
+        if margin_pct is not None:
+            _write_cell(ws, f"F{target_row}", round(margin_pct, 4))
+    elif any(term in text for term in ("generator", "space heater")):
+        days = _number(row.get("days") or row.get("period") or row.get("quantity"))
+        if days is not None:
+            _write_cell(ws, f"C{target_row}", round(days, 2))
+        if unit_price is not None:
+            _write_cell(ws, f"E{target_row}", round(unit_price, 4))
+    elif "sales" in text or "inspection" in text or "truck" in text:
+        trips = _number(row.get("trip_count"))
+        miles = _number(row.get("round_trip_miles"))
+        if trips is not None:
+            _write_cell(ws, f"B{target_row}", round(trips, 2))
+        if miles is not None:
+            _write_cell(ws, f"C{target_row}", round(miles, 2))
+        if unit_price is not None:
+            _write_cell(ws, f"E{target_row}", round(unit_price, 4))
     else:
+        selector_code = _number(row.get("selector_code"))
+        if selector_code is not None:
+            _write_cell(ws, f"A{target_row}", int(selector_code))
+        feet_per_unit = _number(row.get("feet_per_unit"))
+        if feet_per_unit is not None:
+            _write_cell(ws, f"D{target_row}", round(feet_per_unit, 4))
         if quantity is not None:
             _write_cell(ws, f"C{target_row}", quantity)
         if unit_price is not None:
@@ -666,6 +708,7 @@ def _write_insulation_labor_row(ws: Any, row: dict[str, Any]) -> bool:
     days = _number(row.get("adjusted_days") or row.get("base_days") or row.get("crew_days"))
     crew_size = _number(row.get("crew_size"))
     total_hours = _number(row.get("total_hours") or row.get("labor_hours"))
+    hourly_rate = _number(row.get("hourly_rate"))
     estimated_cost = _number(row.get("estimated_cost"))
     if row_number in {95, 97}:
         if total_hours is not None and crew_size:
@@ -682,6 +725,10 @@ def _write_insulation_labor_row(ws: Any, row: dict[str, Any]) -> bool:
             _write_cell(ws, f"B{row_number}", round(days, 2))
         if crew_size is not None:
             _write_cell(ws, f"C{row_number}", int(crew_size))
+    if hourly_rate is not None:
+        _write_cell(ws, f"D{row_number}", round(hourly_rate, 4))
+    if total_hours is not None:
+        _write_cell(ws, f"G{row_number}", round(total_hours, 4))
     if estimated_cost is not None:
         _add_comment(ws, f"A{row_number}", f"Estimator estimated cost: ${estimated_cost:,.2f}")
     return True

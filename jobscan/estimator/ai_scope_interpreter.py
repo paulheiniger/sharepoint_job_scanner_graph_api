@@ -1060,6 +1060,44 @@ def _dimension_math_is_high_confidence(deterministic_scope: dict[str, Any]) -> b
     return bool(net and not warnings and (summary.get("included_areas") or summary.get("deducted_areas")))
 
 
+def _apply_high_confidence_dimension_totals(
+    scope: dict[str, Any],
+    deterministic_scope: dict[str, Any],
+) -> dict[str, Any]:
+    """Keep explicit component/deduction math as the controlling area source."""
+
+    if not _dimension_math_is_high_confidence(deterministic_scope):
+        return scope
+    summary = deterministic_scope.get("dimension_summary") or {}
+    if not isinstance(summary, dict):
+        return scope
+
+    gross = _round_area(_as_number(summary.get("gross_area_sqft")))
+    deduction = _round_area(_as_number(summary.get("deduction_area_sqft")))
+    net = _round_area(_as_number(summary.get("net_area_sqft")))
+    out = dict(scope)
+
+    if gross is not None:
+        out["gross_area_sqft"] = gross
+        out["gross_sqft"] = gross
+        if _is_insulation_scope(out):
+            out["gross_insulation_area_sqft"] = gross
+    if deduction is not None:
+        out["deduction_area_sqft"] = deduction
+        out["deduction_sqft"] = deduction
+        if _is_insulation_scope(out):
+            out["opening_area_known_sqft"] = deduction
+    if net is not None:
+        out["net_area_sqft"] = net
+        out["net_sqft"] = net
+        out["estimated_sqft"] = net
+        out["surface_area_sqft"] = net
+        if _is_insulation_scope(out):
+            out["net_insulation_area_sqft"] = net
+
+    return out
+
+
 def _notes_have_area_or_dimensions(notes: str) -> bool:
     summary = parse_dimensions(notes).to_dict()
     return bool(
@@ -1294,6 +1332,7 @@ def merge_ai_scope_with_deterministic(
             merge_decisions.append({"field": field, "to": value, "decision": "accepted", "reason": "AI insulation structured field validated by deterministic math."})
     if _is_insulation_scope(final_scope):
         final_scope = apply_insulation_geometry_validation(final_scope, notes=notes)
+        final_scope = _apply_high_confidence_dimension_totals(final_scope, deterministic_scope)
         if final_scope.get("net_insulation_area_sqft"):
             final_scope["estimated_sqft"] = final_scope.get("net_insulation_area_sqft")
             final_scope["surface_area_sqft"] = final_scope.get("net_insulation_area_sqft")

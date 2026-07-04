@@ -160,6 +160,9 @@ def frame_records(data: EstimatorData | None, attr: str, *, source: str | None =
 
 
 def row_text(row: dict[str, Any]) -> str:
+    cached = row.get("_audit_row_text")
+    if isinstance(cached, str):
+        return cached
     fields = (
         "template_bucket",
         "package",
@@ -518,6 +521,7 @@ def material_evidence_rows(data: EstimatorData | None, packages: set[str], *, sc
     )
     for source in sources:
         for row in frame_records(data, source, limit=100000):
+            row["_audit_row_text"] = row_text(row)
             matched_packages = [package for package in packages if package != "unknown" and row_matches_package(row, package)]
             if not matched_packages and not packages:
                 matched_packages = [package_for_material_row(row)]
@@ -757,6 +761,7 @@ def labor_evidence_rows(data: EstimatorData | None, tasks: set[str], *, scope_te
     rows: list[dict[str, Any]] = []
     for source in ("relationship_labor_rates", "job_package_summary", "template_rows"):
         for row in frame_records(data, source, limit=100000):
+            row["_audit_row_text"] = row_text(row)
             matched_tasks = [task for task in tasks if row_matches_labor_task(row, task)]
             if not matched_tasks:
                 continue

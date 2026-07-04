@@ -181,6 +181,51 @@ INSULATION_FOAM_TEMPLATE_COMPACT_COLUMNS = [
     "notes",
 ]
 
+INSULATION_DECISION_TEMPLATE_COMPACT_COLUMNS = [
+    "include",
+    "workbook_row",
+    "template_line",
+    "labor_task",
+    "editable_selector_code",
+    "resolved_template_option",
+    "basis_sqft",
+    "linear_ft",
+    "quantity",
+    "days",
+    "period",
+    "trip_count",
+    "round_trip_miles",
+    "gal_per_100_sqft",
+    "waste_factor_pct",
+    "feet_per_unit",
+    "unit_price",
+    "margin_pct",
+    "estimated_units",
+    "estimated_gallons",
+    "estimated_drums",
+    "total_hours",
+    "crew_size",
+    "daily_rate",
+    "hourly_rate",
+    "formula_mode",
+    "estimated_cost",
+    "selected_pricing_candidate",
+    "compatibility_status",
+    "compatibility_warnings",
+    "product_guidance",
+    "notes",
+]
+
+INSULATION_DECISION_SECTIONS = [
+    ("insulation_detail_material_template_decisions", "Insulation Detail Materials"),
+    ("insulation_thermal_barrier_template_decisions", "Insulation Thermal Barrier / Coating"),
+    ("insulation_support_material_template_decisions", "Insulation Support Materials"),
+    ("insulation_equipment_logistics_template_decisions", "Insulation Equipment / Logistics"),
+    ("insulation_compliance_template_decisions", "Insulation Compliance"),
+    ("insulation_labor_template_decisions", "Insulation Labor Planning"),
+    ("insulation_pricing_template_decisions", "Insulation Pricing"),
+]
+
 ROOFING_FOAM_TEMPLATE_COMPACT_COLUMNS = [
     "include",
     "workbook_row",
@@ -5094,6 +5139,88 @@ def estimator_prototype_page() -> None:
                 foam_template_editable_fields,
             )
 
+        insulation_template_editable_fields = {
+            "include",
+            "editable_selector_code",
+            "basis_sqft",
+            "linear_ft",
+            "quantity",
+            "days",
+            "period",
+            "trip_count",
+            "round_trip_miles",
+            "gal_per_100_sqft",
+            "waste_factor_pct",
+            "feet_per_unit",
+            "unit_price",
+            "margin_pct",
+            "selected_pricing_candidate",
+            "crew_size",
+            "daily_rate",
+            "hourly_rate",
+            "total_hours",
+            "formula_mode",
+        }
+        for section_key, section_label in INSULATION_DECISION_SECTIONS:
+            if not original_workbench.get(section_key):
+                continue
+            st.markdown(f"#### {section_label}")
+            section_rows = original_workbench.get(section_key) or []
+            section_df = pd.DataFrame(display_safe_records(section_rows, editable_fields=insulation_template_editable_fields))
+            section_column_order = (
+                list(section_df.columns)
+                if show_row_details
+                else [column for column in INSULATION_DECISION_TEMPLATE_COMPACT_COLUMNS if column in section_df.columns]
+            )
+            edited_section_df = st.data_editor(
+                section_df,
+                use_container_width=True,
+                hide_index=True,
+                num_rows="fixed",
+                key=f"wb_{section_key}_{workbench_key}_{scope_key}_{historical_filters_key}",
+                column_order=section_column_order,
+                column_config={
+                    "include": "Include",
+                    "workbook_row": "Row",
+                    "template_line": "Template Line",
+                    "labor_task": "Labor Task",
+                    "editable_selector_code": "Selector",
+                    "resolved_template_option": "Template Option",
+                    "basis_sqft": "Basis Sq Ft",
+                    "linear_ft": "Linear Ft",
+                    "quantity": "Quantity",
+                    "days": "Days",
+                    "period": "Period",
+                    "trip_count": "Trips",
+                    "round_trip_miles": "Round Trip Miles",
+                    "gal_per_100_sqft": "Gal / 100 Sq Ft",
+                    "waste_factor_pct": "Waste %",
+                    "feet_per_unit": "Ft / Unit",
+                    "unit_price": "Unit Price",
+                    "margin_pct": "Margin %",
+                    "estimated_units": "Units",
+                    "estimated_gallons": "Gallons",
+                    "estimated_drums": "Drums",
+                    "total_hours": "Hours",
+                    "crew_size": "Crew",
+                    "daily_rate": "Daily Rate",
+                    "hourly_rate": "Hourly Rate",
+                    "formula_mode": "Formula Mode",
+                    "estimated_cost": "Cost",
+                    "selected_pricing_candidate": "Pricing Candidate",
+                    "compatibility_status": "Status",
+                    "compatibility_warnings": "Warnings",
+                    "product_guidance": "Product Guidance",
+                    "notes": "Notes",
+                },
+                disabled=[column for column in section_column_order if column not in insulation_template_editable_fields],
+            )
+            edited_workbench[section_key] = merge_editable_rows(
+                section_rows,
+                edited_section_df.to_dict(orient="records"),
+                insulation_template_editable_fields,
+            )
+
         if original_workbench.get("roofing_foam_template_decisions"):
             st.markdown("#### Roofing SPF Foam Decision")
             roofing_foam_template_editable_fields = {
@@ -5714,9 +5841,15 @@ def estimator_prototype_page() -> None:
         edited_workbench = recalculate_workbench_tables(edited_workbench)
         st.session_state[previous_workbench_key] = edited_workbench
         totals = summarize_workbench_totals(edited_workbench)
+        labor_metric_rows = (
+            edited_workbench.get("insulation_labor_template_decisions")
+            or edited_workbench.get("roofing_labor_template_decisions")
+            or edited_workbench.get("labor")
+            or []
+        )
         selected_labor_hours = sum(
-            float(row.get("calculated_hours") or 0)
-            for row in edited_workbench.get("labor", [])
+            float(row.get("calculated_hours") or row.get("total_hours") or 0)
+            for row in labor_metric_rows
             if row.get("include")
         )
         selected_area = float(edited_scope.get("net_sqft") or 0)

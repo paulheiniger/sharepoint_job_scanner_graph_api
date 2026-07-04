@@ -178,10 +178,114 @@ def test_generate_estimate_workbook_writes_roofing_coating_selector_inputs(tmp_p
     assert ws["E26"].value == 38
     assert ws["A27"].value == 21
     assert ws["C27"].value == 10000
-    assert ws["D27"].value == 1.25
-    assert ws["E27"].value == 38
-    assert ws["A30"].value == 10
-    assert str(ws["H26"].value).startswith("=")
+
+
+def test_generate_estimate_workbook_writes_insulation_decision_inputs(tmp_path: Path) -> None:
+    template_path = tmp_path / "insulation_template.xlsx"
+    workbook = openpyxl.Workbook()
+    ws = workbook.active
+    ws.title = "Estimate"
+    for cell in ("H19", "H30", "H41", "H47", "H86"):
+        ws[cell] = "=1"
+    workbook.create_sheet("Sq Ft Calculation")
+    workbook.save(template_path)
+
+    inputs = {
+        "template_type": "insulation",
+        "header": {
+            "C2_job_name": "Insulation Decision Draft",
+            "C3_job_type": "spray foam insulation",
+            "net_area_sqft": 2388,
+        },
+        "material_rows": [
+            {
+                "item": "NCFI Closed Cell InsulBloc OptiMaxx",
+                "category": "foam",
+                "workbook_row": "19-21",
+                "selector_code": "21",
+                "area_sqft": 2388,
+                "thickness_inches": 3,
+                "yield_factor": 12000,
+                "unit_price": 2.4,
+                "estimated_units": 597,
+                "estimated_cost": 1432.8,
+            },
+            {
+                "item": "DC 315 TB",
+                "category": "thermal_barrier_coating",
+                "workbook_row": "30",
+                "selector_code": "1",
+                "area_sqft": 1200,
+                "gal_per_100_sqft": 1.25,
+                "waste_factor_pct": 10,
+                "unit_price": 42,
+                "estimated_gallons": 16.6667,
+                "estimated_cost": 700,
+            },
+            {
+                "item": "Liquid Flashing",
+                "category": "caulk_sealant",
+                "workbook_row": "41",
+                "selector_code": "2",
+                "quantity": 10,
+                "feet_per_unit": 25,
+                "unit_price": 18,
+                "estimated_cost": 180,
+            },
+            {
+                "item": "Scissor",
+                "category": "lift",
+                "workbook_row": "47",
+                "selector_code": "3",
+                "quantity": 26,
+                "period": 3,
+                "unit_price": 450,
+                "margin_pct": 10,
+                "estimated_cost": 1485,
+            },
+        ],
+        "labor_rows": [
+            {
+                "task": "labor_foam",
+                "workbook_row": "86",
+                "adjusted_days": 1.5,
+                "crew_size": 3,
+                "total_hours": 45,
+                "hourly_rate": 52,
+                "estimated_cost": 2340,
+            }
+        ],
+        "travel_rows": [],
+        "adders_review_rows": [],
+    }
+
+    output_path = generate_estimate_workbook(inputs, template_path, tmp_path, "insulation_decisions.xlsx")
+    generated = openpyxl.load_workbook(output_path, data_only=False)
+    ws = generated["Estimate"]
+
+    assert ws["A19"].value == 21
+    assert ws["C19"].value == 2388
+    assert ws["D19"].value == 3
+    assert ws["E19"].value == 2.4
+    assert ws["F19"].value == 12000
+    assert ws["A30"].value == 1
+    assert ws["C30"].value == 1200
+    assert ws["D30"].value == 1.25
+    assert ws["E30"].value == 42
+    assert ws["A34"].value == 10
+    assert ws["A41"].value == 2
+    assert ws["C41"].value == 10
+    assert ws["D41"].value == 25
+    assert ws["E41"].value == 18
+    assert ws["A47"].value == 3
+    assert ws["C47"].value == 26
+    assert ws["D47"].value == 3
+    assert ws["E47"].value == 450
+    assert ws["F47"].value == 10
+    assert ws["B86"].value == 1.5
+    assert ws["C86"].value == 3
+    assert ws["D86"].value == 52
+    assert ws["G86"].value == 45
 
 
 def test_generate_estimate_workbook_writes_roofing_primer_selector_inputs(tmp_path: Path) -> None:

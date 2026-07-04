@@ -576,6 +576,9 @@ def test_insulation_wall_note_parses_opening_deductions_foam_type_and_thickness(
     )
 
     assert recommendation.parsed_fields["estimated_sqft"] == 5656
+    assert recommendation.parsed_fields["gross_area_sqft"] == 7200
+    assert recommendation.parsed_fields["deduction_area_sqft"] == 1544
+    assert recommendation.parsed_fields["net_area_sqft"] == 5656
     assert recommendation.parsed_fields["dimension_summary"]["gross_area_sqft"] == 7200
     assert recommendation.parsed_fields["dimension_summary"]["deduction_area_sqft"] == 1544
     assert recommendation.parsed_fields["dimension_summary"]["net_area_sqft"] == 5656

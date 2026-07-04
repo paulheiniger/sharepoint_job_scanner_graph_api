@@ -410,6 +410,255 @@ def calculate_roofing_direct_cost(
     }
 
 
+def calculate_insulation_membrane(*, linear_ft: Any, unit_price: Any = None, include: bool = True) -> dict[str, Any]:
+    """Mirror insulation membrane row 24: cost = linear feet * unit price."""
+
+    return calculate_roofing_linear_feet_cost(
+        linear_ft=linear_ft,
+        unit_price=unit_price,
+        include=include,
+        formula_model="insulation_membrane_cost_from_linear_feet",
+    )
+
+
+def calculate_insulation_primer(
+    *,
+    area_sqft: Any,
+    coverage_sqft_per_unit: Any = 250,
+    unit_price: Any = None,
+    cost_per_sqft: Any = None,
+    include: bool = True,
+) -> dict[str, Any]:
+    """Mirror insulation primer row 26: estimated units = area / 250."""
+
+    result = calculate_roofing_primer(
+        area_sqft=area_sqft,
+        coverage_sqft_per_unit=coverage_sqft_per_unit,
+        unit_price=unit_price,
+        cost_per_sqft=cost_per_sqft,
+        include=include,
+    )
+    result["formula_model"] = "insulation_primer_units_from_area_coverage"
+    return result
+
+
+def calculate_insulation_thinner(*, total_coating_gallons: Any, unit_price: Any = None, include: bool = True) -> dict[str, Any]:
+    """Mirror insulation thinner row 37: units = ((G30+G31+G32)/55)*4."""
+
+    result = calculate_roofing_thinner(
+        total_coating_gallons=total_coating_gallons,
+        unit_price=unit_price,
+        include=include,
+    )
+    result["formula_model"] = "insulation_thinner_units_from_thermal_barrier_gallons"
+    return result
+
+
+def calculate_insulation_caulk_sealant(
+    *,
+    linear_ft: Any,
+    feet_per_unit: Any,
+    unit_price: Any = None,
+    include: bool = True,
+) -> dict[str, Any]:
+    """Mirror insulation sealant rows 41/43: units = linear feet / feet per unit."""
+
+    lf = safe_number(linear_ft, 0.0)
+    coverage = safe_number(feet_per_unit, 0.0)
+    price = safe_number(unit_price, 0.0)
+    if include and lf > 0 and coverage > 0:
+        units = lf / coverage
+        formula_source = "linear_feet_feet_per_unit"
+    else:
+        units = 0.0
+        formula_source = "insufficient_formula_inputs" if include else "not_included"
+    if include and units > 0 and price > 0:
+        cost = units * price
+        cost_source = "current_pricing"
+    elif include and units > 0:
+        cost = 0.0
+        cost_source = "current_pricing_missing"
+    else:
+        cost = 0.0
+        cost_source = "not_included" if not include else "current_pricing_missing"
+    return {
+        "formula_model": "insulation_sealant_units_from_linear_feet",
+        "formula_source": formula_source,
+        "linear_ft": round(lf, 6),
+        "feet_per_unit": round(coverage, 6) if coverage else 0.0,
+        "estimated_units": round(units, 6),
+        "calculated_quantity": round(units, 6),
+        "unit_price": round(price, 6) if price else 0.0,
+        "estimated_cost": round(cost, 2),
+        "cost_source": cost_source,
+        "calculated_output": round(cost, 2),
+    }
+
+
+def calculate_insulation_equipment_cost(
+    *,
+    period: Any,
+    unit_price: Any = None,
+    margin_pct: Any = 0,
+    include: bool = True,
+) -> dict[str, Any]:
+    """Mirror insulation lift rows 47/48: period * unit price * margin."""
+
+    result = calculate_roofing_equipment_cost(
+        period=period,
+        unit_price=unit_price,
+        margin_pct=margin_pct,
+        include=include,
+    )
+    result["formula_model"] = "insulation_equipment_cost_with_margin"
+    return result
+
+
+def calculate_insulation_days_rate_cost(*, days: Any, unit_price: Any = None, include: bool = True) -> dict[str, Any]:
+    """Mirror insulation generator/space heater day-rate rows."""
+
+    result = calculate_roofing_days_rate_cost(days=days, unit_price=unit_price, include=include)
+    result["formula_model"] = "insulation_days_rate_cost"
+    return result
+
+
+def calculate_insulation_travel_cost(
+    *,
+    trip_count: Any,
+    round_trip_miles: Any,
+    unit_price: Any = None,
+    include: bool = True,
+) -> dict[str, Any]:
+    """Mirror insulation sales/truck trip rows: trips * miles * rate."""
+
+    result = calculate_roofing_travel_cost(
+        trip_count=trip_count,
+        round_trip_miles=round_trip_miles,
+        unit_price=unit_price,
+        include=include,
+    )
+    result["formula_model"] = "insulation_travel_cost_from_trips_miles_rate"
+    return result
+
+
+def calculate_insulation_direct_cost(*, amount: Any, include: bool = True) -> dict[str, Any]:
+    """Mirror direct insulation adders such as freight/misc/manual fees."""
+
+    result = calculate_roofing_direct_cost(amount=amount, include=include)
+    result["formula_model"] = "insulation_direct_cost"
+    return result
+
+
+def calculate_insulation_abaa_fee(
+    *,
+    area_sqft: Any,
+    unit_price: Any = None,
+    include: bool = True,
+) -> dict[str, Any]:
+    """Mirror area-based ABAA fee style rows where the workbook uses sqft basis."""
+
+    area = safe_number(area_sqft, 0.0)
+    price = safe_number(unit_price, 0.0)
+    if include and area > 0 and price > 0:
+        cost = area * price
+        formula_source = "area_unit_price"
+        cost_source = "current_pricing"
+    else:
+        cost = 0.0
+        formula_source = "insufficient_formula_inputs" if include else "not_included"
+        cost_source = "not_included" if not include else "current_pricing_missing"
+    return {
+        "formula_model": "insulation_abaa_fee_from_area_rate",
+        "formula_source": formula_source,
+        "area_sqft": round(area, 4),
+        "unit_price": round(price, 6) if price else 0.0,
+        "estimated_cost": round(cost, 2),
+        "cost_source": cost_source,
+        "calculated_output": round(cost, 2),
+    }
+
+
+def calculate_insulation_drum_disposal(
+    *,
+    primer_units: Any = 0,
+    coating_gallons: Any = 0,
+    thinner_units: Any = 0,
+    foam_units: Any = 0,
+    unit_price: Any = None,
+    include: bool = True,
+) -> dict[str, Any]:
+    """Mirror insulation drum disposal row 65.
+
+    Formula: (((primer + coating + thinner) / 50) + (foam_units / 500)) + 1.
+    """
+
+    primer = safe_number(primer_units, 0.0)
+    coating = safe_number(coating_gallons, 0.0)
+    thinner = safe_number(thinner_units, 0.0)
+    foam = safe_number(foam_units, 0.0)
+    price = safe_number(unit_price, 0.0)
+    if include and (primer > 0 or coating > 0 or thinner > 0 or foam > 0):
+        drums = (((primer + coating + thinner) / 50.0) + (foam / 500.0)) + 1.0
+        formula_source = "dependent_material_quantities"
+    else:
+        drums = 0.0
+        formula_source = "insufficient_formula_inputs" if include else "not_included"
+    if include and drums > 0 and price > 0:
+        cost = drums * price
+        cost_source = "current_pricing"
+    elif include and drums > 0:
+        cost = 0.0
+        cost_source = "current_pricing_missing"
+    else:
+        cost = 0.0
+        cost_source = "not_included" if not include else "current_pricing_missing"
+    return {
+        "formula_model": "insulation_drum_disposal_from_material_quantities",
+        "formula_source": formula_source,
+        "primer_units": round(primer, 6),
+        "coating_gallons": round(coating, 6),
+        "thinner_units": round(thinner, 6),
+        "foam_units": round(foam, 6),
+        "estimated_drums": round(drums, 6),
+        "estimated_units": round(drums, 6),
+        "calculated_quantity": round(drums, 6),
+        "unit_price": round(price, 6) if price else 0.0,
+        "estimated_cost": round(cost, 2),
+        "cost_source": cost_source,
+        "calculated_output": round(cost, 2),
+    }
+
+
+def calculate_insulation_bond(
+    *,
+    project_total: Any,
+    include: bool = True,
+) -> dict[str, Any]:
+    """Mirror the insulation performance/payment bond tier formula."""
+
+    total = safe_number(project_total, 0.0)
+    if not include or total <= 0:
+        cost = 0.0
+        source = "not_included" if not include else "insufficient_formula_inputs"
+    elif total <= 100000:
+        cost = total * 0.0225
+        source = "tier_le_100k"
+    elif total <= 500000:
+        cost = ((total - 100000) * 0.015) + 2250
+        source = "tier_100k_500k"
+    else:
+        cost = ((total - 500000) * 0.0105) + 8250
+        source = "tier_500k_2_5m"
+    return {
+        "formula_model": "insulation_bond_tier_formula",
+        "formula_source": source,
+        "project_total": round(total, 2),
+        "estimated_cost": round(cost, 2),
+        "cost_source": "bond_formula" if cost > 0 else source,
+        "calculated_output": round(cost, 2),
+    }
+
+
 def calculate_roofing_thinner(
     *,
     total_coating_gallons: Any,

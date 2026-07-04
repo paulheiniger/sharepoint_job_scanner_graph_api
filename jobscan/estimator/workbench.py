@@ -15,7 +15,18 @@ import pandas as pd
 from .decision_history import build_decision_recommendations, recommendation_lookup
 from .formula_mirror import (
     calculate_insulation_foam,
+    calculate_insulation_abaa_fee,
+    calculate_insulation_bond,
+    calculate_insulation_caulk_sealant,
+    calculate_insulation_days_rate_cost,
+    calculate_insulation_direct_cost,
+    calculate_insulation_drum_disposal,
+    calculate_insulation_equipment_cost,
+    calculate_insulation_membrane,
+    calculate_insulation_primer,
     calculate_insulation_thermal_barrier,
+    calculate_insulation_thinner,
+    calculate_insulation_travel_cost,
     calculate_mixed_labor,
     calculate_roofing_board_fasteners,
     calculate_roofing_board_stock,
@@ -134,6 +145,149 @@ INSULATION_LABOR_PACKAGES: list[dict[str, Any]] = [
     {"package": "labor_loading", "label": "Loading", "workbook_row": "95"},
     {"package": "labor_traveling", "label": "Traveling", "workbook_row": "97"},
     {"package": "meals_lodging", "label": "Meals / Lodging", "workbook_row": "100"},
+]
+
+INSULATION_DECISION_SECTION_KEYS = (
+    "insulation_detail_material_template_decisions",
+    "insulation_thermal_barrier_template_decisions",
+    "insulation_support_material_template_decisions",
+    "insulation_equipment_logistics_template_decisions",
+    "insulation_compliance_template_decisions",
+    "insulation_labor_template_decisions",
+    "insulation_pricing_template_decisions",
+)
+
+INSULATION_DETAIL_DECISION_SPECS: list[dict[str, Any]] = [
+    {
+        "decision_id": "insulation_membrane",
+        "template_bucket": "membrane",
+        "label": "Membrane",
+        "workbook_row": "24",
+        "formula": "membrane",
+        "quantity_field": "linear_ft",
+        "default_quantity": 0.0,
+        "notes": "Membrane/detailing decision from Estimate row 24.",
+    },
+    {
+        "decision_id": "insulation_primer",
+        "template_bucket": "primer",
+        "label": "Primer",
+        "workbook_row": "26",
+        "formula": "primer",
+        "quantity_field": "basis_sqft",
+        "default_coverage": 250.0,
+        "notes": "Primer formula uses the workbook 250 sqft/unit assumption.",
+    },
+    {
+        "decision_id": "insulation_caulk_sealant",
+        "template_bucket": "caulk_sealant",
+        "label": "Caulk / Sealant",
+        "workbook_row": "41",
+        "formula": "caulk_sealant",
+        "quantity_field": "linear_ft",
+        "default_feet_per_unit": 10.0,
+        "selector_decision_id": "insulation_caulk_sealant",
+        "notes": "Sealant units come from linear feet divided by feet per unit.",
+    },
+    {
+        "decision_id": "insulation_caulk_sealant",
+        "template_bucket": "caulk_sealant",
+        "label": "Caulk / Sealant 2",
+        "workbook_row": "43",
+        "formula": "caulk_sealant",
+        "quantity_field": "linear_ft",
+        "default_feet_per_unit": 10.0,
+        "selector_decision_id": "insulation_caulk_sealant",
+        "notes": "Second sealant/detail row from Estimate row 43.",
+    },
+]
+
+INSULATION_THERMAL_DECISION_SPECS: list[dict[str, Any]] = [
+    {
+        "decision_id": "insulation_thermal_barrier",
+        "template_bucket": "thermal_barrier_coating",
+        "label": "Thermal Barrier / DC315",
+        "workbook_row": str(row),
+        "selector_decision_id": "insulation_thermal_barrier",
+        "formula": "thermal_barrier",
+        "default_gal_per_100": 1.0,
+        "default_waste_pct": 0.0,
+    }
+    for row in (30, 31, 32)
+]
+
+INSULATION_SUPPORT_DECISION_SPECS: list[dict[str, Any]] = [
+    {
+        "decision_id": "insulation_thinner",
+        "template_bucket": "thinner",
+        "label": "Thinner / Solvent",
+        "workbook_row": "37",
+        "formula": "thinner",
+        "selector_decision_id": "insulation_thinner",
+        "notes": "Thinner depends on thermal barrier/coating gallons.",
+    },
+    {
+        "decision_id": "insulation_misc",
+        "template_bucket": "misc_materials",
+        "label": "Materials / Misc.",
+        "workbook_row": "57",
+        "formula": "direct",
+        "notes": "Manual miscellaneous material allowance.",
+    },
+    {
+        "decision_id": "insulation_drum_disposal",
+        "template_bucket": "drum_disposal",
+        "label": "Drum Disposal",
+        "workbook_row": "65",
+        "formula": "drum_disposal",
+        "notes": "Drum disposal is calculated from primer, coating, thinner, and foam quantities.",
+    },
+]
+
+INSULATION_EQUIPMENT_LOGISTICS_DECISION_SPECS: list[dict[str, Any]] = [
+    {
+        "decision_id": "insulation_lift_equipment",
+        "template_bucket": "lift",
+        "label": "Lift / Access Equipment",
+        "workbook_row": "47",
+        "formula": "equipment",
+        "selector_decision_id": "insulation_lift_equipment",
+        "default_margin_pct": 0.0,
+    },
+    {
+        "decision_id": "insulation_lift_equipment",
+        "template_bucket": "lift",
+        "label": "Lift / Access Equipment 2",
+        "workbook_row": "48",
+        "formula": "equipment",
+        "selector_decision_id": "insulation_lift_equipment",
+        "default_margin_pct": 0.0,
+    },
+    {"decision_id": "insulation_delivery_fee", "template_bucket": "delivery_fee", "label": "Delivery Fee", "workbook_row": "50", "formula": "direct"},
+    {"decision_id": "insulation_generator", "template_bucket": "generator", "label": "Generator", "workbook_row": "53", "formula": "days_rate"},
+    {"decision_id": "insulation_space_heater", "template_bucket": "space_heater", "label": "Space Heater", "workbook_row": "55", "formula": "days_rate"},
+    {"decision_id": "insulation_freight", "template_bucket": "freight", "label": "Freight", "workbook_row": "59", "formula": "direct"},
+    {
+        "decision_id": "insulation_sales_inspection_trips",
+        "template_bucket": "sales_inspection_trips",
+        "label": "Sales / Inspection Trips",
+        "workbook_row": "68",
+        "formula": "travel",
+    },
+    {"decision_id": "insulation_truck_expense", "template_bucket": "truck_expense", "label": "Truck Expense", "workbook_row": "70", "formula": "travel"},
+]
+
+INSULATION_COMPLIANCE_DECISION_SPECS: list[dict[str, Any]] = [
+    {"decision_id": "insulation_abaa_audit", "template_bucket": "abaa_audit", "label": "ABAA Audit", "workbook_row": "61", "formula": "units_cost"},
+    {"decision_id": "insulation_abaa_fee", "template_bucket": "abaa_fee", "label": "ABAA Fee", "workbook_row": "63", "formula": "abaa_fee"},
+]
+
+INSULATION_PRICING_DECISION_SPECS: list[dict[str, Any]] = [
+    {"decision_id": "insulation_misc_insurance", "template_bucket": "misc_insurance", "label": "Miscellaneous Insurance", "workbook_row": "109", "formula": "direct"},
+    {"decision_id": "insulation_permits", "template_bucket": "permits", "label": "Permits", "workbook_row": "111", "formula": "direct"},
+    {"decision_id": "performance_payment_bonds", "template_bucket": "performance_payment_bonds", "label": "Performance / Payment Bonds", "workbook_row": "bond", "formula": "bond"},
+    {"decision_id": "insulation_overhead", "template_bucket": "overhead", "label": "Overhead", "workbook_row": "118", "formula": "markup"},
+    {"decision_id": "insulation_profit", "template_bucket": "profit", "label": "Profit", "workbook_row": "120", "formula": "markup"},
 ]
 
 ADDER_ROWS: list[dict[str, Any]] = [
@@ -2902,6 +3056,554 @@ def _build_insulation_foam_template_decisions(
             ],
         }
     ]
+
+
+def _insulation_graph_selector_options(decision_id: str, *, workbook_row: Any = None) -> list[dict[str, Any]]:
+    graph_path = Path("output/template_decision_graph_insulation.json")
+    options: list[dict[str, Any]] = []
+    if graph_path.exists():
+        try:
+            payload = json.loads(graph_path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+        row_text = str(workbook_row or "").strip()
+        for row in payload.get("selector_options") or []:
+            if row.get("decision_id") != decision_id:
+                continue
+            if row_text and str(row.get("resolved_cell") or "").strip():
+                resolved_cell = str(row.get("resolved_cell") or "")
+                if not resolved_cell.endswith(row_text):
+                    continue
+            code = str(row.get("selector_code") or "").strip()
+            label = str(row.get("resolved_item_name") or "").strip()
+            if not code or not label:
+                continue
+            options.append(
+                {
+                    "selector_code": code,
+                    "resolved_template_option": label,
+                    "resolved_cell": row.get("resolved_cell") or "",
+                    "source_type": row.get("source_type") or "template_selector",
+                }
+            )
+    deduped: dict[str, dict[str, Any]] = {}
+    for option in options:
+        deduped.setdefault(str(option.get("selector_code") or ""), option)
+    return sorted(deduped.values(), key=lambda item: (int(safe_number(item.get("selector_code"), 999)), item.get("resolved_template_option") or ""))
+
+
+def _selector_choice(
+    *,
+    decision_id: str | None,
+    workbook_row: Any,
+    existing: dict[str, Any],
+    source_row: dict[str, Any] | None = None,
+    default_code: str = "1",
+) -> tuple[str, str, list[dict[str, Any]]]:
+    if not decision_id:
+        return "", "", []
+    options = _insulation_graph_selector_options(decision_id, workbook_row=workbook_row)
+    code = str(
+        first_nonblank(
+            existing.get("editable_selector_code"),
+            existing.get("selector_code"),
+            source_row.get("selector_code") if source_row else "",
+            default_code,
+        )
+    ).strip()
+    if code.endswith(".0"):
+        code = code[:-2]
+    label = str(
+        first_nonblank(
+            existing.get("resolved_template_option"),
+            source_row.get("resolved_template_option") if source_row else "",
+            source_row.get("template_selector_option") if source_row else "",
+            "",
+        )
+    ).strip()
+    for option in options:
+        if str(option.get("selector_code") or "") == code:
+            label = str(option.get("resolved_template_option") or label)
+            break
+    if not label and options:
+        code = str(options[0].get("selector_code") or code or default_code)
+        label = str(options[0].get("resolved_template_option") or "")
+    return code, label, options
+
+
+def _row_for_bucket(rows: list[dict[str, Any]] | None, bucket: str) -> dict[str, Any] | None:
+    bucket_key = _normalized(bucket)
+    aliases = _package_aliases(bucket)
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        values = {
+            _normalized(row.get("template_bucket")),
+            _normalized(row.get("package_key")),
+            _normalized(row.get("package")),
+            _normalized(row.get("adder_key")),
+            _normalized(row.get("adder")),
+            _normalized(row.get("labor_package")),
+        }
+        if bucket_key in values or values.intersection(aliases):
+            return row
+    return None
+
+
+def _existing_decision_rows(existing_rows: list[dict[str, Any]] | None) -> dict[str, dict[str, Any]]:
+    index: dict[str, dict[str, Any]] = {}
+    for row in existing_rows or []:
+        if not isinstance(row, dict):
+            continue
+        for key in (
+            row.get("decision_id"),
+            row.get("template_bucket"),
+            row.get("package_key"),
+            row.get("workbook_row"),
+        ):
+            if key not in (None, ""):
+                index[str(key)] = row
+    return index
+
+
+def _source_for_insulation_decision(
+    spec: dict[str, Any],
+    *,
+    materials: list[dict[str, Any]] | None,
+    adders: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    bucket = str(spec.get("template_bucket") or "")
+    return _row_for_bucket(materials, bucket) or _row_for_bucket(adders, bucket) or {}
+
+
+def _insulation_product_context_for_row(
+    *,
+    data: Any,
+    decision_id: str,
+    bucket: str,
+    item_name: Any,
+) -> dict[str, Any]:
+    return _product_context(data, item_name=str(item_name or ""), decision_id=decision_id, package=bucket) if data is not None else {}
+
+
+def _insulation_product_guidance_fields(context: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "product_id": context.get("product_id") or "",
+        "product_name": context.get("product_name") or "",
+        "product_manufacturer": context.get("manufacturer") or "",
+        "product_guidance": _candidate_guidance_summary(context) or _product_guidance_summary(context),
+        "product_guidance_status": "matched" if context.get("product_id") else "missing",
+        "product_warning_summary": _value_summary(context.get("warnings") or []),
+        "product_source_documents": context.get("source_documents") or [],
+        "product_match_score": context.get("match_score") or 0.0,
+    }
+
+
+def _decision_output_summary(formula: dict[str, Any]) -> str:
+    return _value_summary(
+        {
+            "quantity": first_nonblank(
+                formula.get("estimated_units"),
+                formula.get("estimated_gallons"),
+                formula.get("estimated_drums"),
+                formula.get("calculated_quantity"),
+            ),
+            "hours": formula.get("total_hours"),
+            "cost": formula.get("estimated_cost"),
+            "source": formula.get("formula_source"),
+        }
+    )
+
+
+def _insulation_material_preview(row: dict[str, Any]) -> list[dict[str, Any]]:
+    workbook_row = str(row.get("workbook_row") or "")
+    first_row = int(safe_number(workbook_row.split("-")[0].split("/")[0], 0)) if workbook_row and workbook_row[0].isdigit() else 0
+    if first_row <= 0:
+        return []
+    preview: list[dict[str, Any]] = []
+    if row.get("editable_selector_code"):
+        preview.append({"cell": f"Estimate!A{first_row}", "field": "selector_code", "value": row.get("editable_selector_code")})
+    field_to_cell = {
+        "basis_sqft": "C",
+        "linear_ft": "C",
+        "quantity": "C",
+        "days": "C",
+        "period": "D" if row.get("template_bucket") == "lift" else "C",
+        "gal_per_100_sqft": "D",
+        "feet_per_unit": "D",
+        "unit_price": "E",
+        "margin_pct": "F",
+        "estimated_units": "G",
+        "estimated_gallons": "G",
+        "estimated_cost": "H",
+    }
+    for field, column in field_to_cell.items():
+        if row.get(field) not in (None, ""):
+            preview.append({"cell": f"Estimate!{column}{first_row}", "field": field, "value": row.get(field)})
+    return preview
+
+
+def _calculate_insulation_decision_formula(
+    spec: dict[str, Any],
+    *,
+    include: bool,
+    source_row: dict[str, Any],
+    existing: dict[str, Any],
+    area: float,
+    dependencies: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    formula_kind = str(spec.get("formula") or "direct")
+    unit_price = safe_number(first_nonblank(existing.get("unit_price"), source_row.get("current_unit_price"), source_row.get("current_price"), source_row.get("unit_price")), 0.0)
+    amount = safe_number(first_nonblank(existing.get("amount"), existing.get("editable_value"), source_row.get("editable_value"), source_row.get("estimated_cost")), 0.0)
+    basis_sqft = safe_number(first_nonblank(existing.get("basis_sqft"), source_row.get("editable_basis_sqft"), source_row.get("default_basis_sqft"), area), 0.0)
+    linear_ft = safe_number(first_nonblank(existing.get("linear_ft"), source_row.get("linear_ft"), source_row.get("calculated_quantity")), 0.0)
+    quantity = safe_number(first_nonblank(existing.get("quantity"), source_row.get("quantity"), source_row.get("calculated_quantity"), amount), 0.0)
+    days = safe_number(first_nonblank(existing.get("days"), source_row.get("days"), source_row.get("editable_days"), 0), 0.0)
+    period = safe_number(first_nonblank(existing.get("period"), existing.get("rental_period"), source_row.get("period"), source_row.get("rental_period"), days), 0.0)
+    margin_pct = safe_number(first_nonblank(existing.get("margin_pct"), source_row.get("margin_pct"), spec.get("default_margin_pct"), 0), 0.0)
+    gal_per_100 = safe_number(first_nonblank(existing.get("gal_per_100_sqft"), source_row.get("gal_per_100_sqft"), spec.get("default_gal_per_100"), 0), 0.0)
+    waste_pct = safe_number(first_nonblank(existing.get("waste_factor_pct"), source_row.get("waste_factor_pct"), source_row.get("margin_pct"), spec.get("default_waste_pct"), 0), 0.0)
+    feet_per_unit = safe_number(first_nonblank(existing.get("feet_per_unit"), source_row.get("feet_per_unit"), spec.get("default_feet_per_unit"), 0), 0.0)
+    trip_count = safe_number(first_nonblank(existing.get("trip_count"), source_row.get("trip_count"), 0), 0.0)
+    round_trip_miles = safe_number(first_nonblank(existing.get("round_trip_miles"), source_row.get("round_trip_miles"), 0), 0.0)
+    coverage = safe_number(first_nonblank(existing.get("coverage_sqft_per_unit"), source_row.get("coverage_sqft_per_unit"), spec.get("default_coverage"), 250), 250.0)
+
+    if formula_kind == "membrane":
+        formula = calculate_insulation_membrane(linear_ft=linear_ft, unit_price=unit_price, include=include)
+    elif formula_kind == "primer":
+        formula = calculate_insulation_primer(area_sqft=basis_sqft, coverage_sqft_per_unit=coverage, unit_price=unit_price, include=include)
+    elif formula_kind == "caulk_sealant":
+        formula = calculate_insulation_caulk_sealant(linear_ft=linear_ft, feet_per_unit=feet_per_unit, unit_price=unit_price, include=include)
+    elif formula_kind == "thermal_barrier":
+        formula = calculate_insulation_thermal_barrier(area_sqft=basis_sqft, gal_per_100_sqft=gal_per_100, waste_factor_pct=waste_pct, unit_price=unit_price, include=include)
+    elif formula_kind == "thinner":
+        formula = calculate_insulation_thinner(total_coating_gallons=dependencies.get("thermal_gallons"), unit_price=unit_price, include=include)
+    elif formula_kind == "drum_disposal":
+        formula = calculate_insulation_drum_disposal(
+            primer_units=dependencies.get("primer_units"),
+            coating_gallons=dependencies.get("thermal_gallons"),
+            thinner_units=dependencies.get("thinner_units"),
+            foam_units=dependencies.get("foam_units"),
+            unit_price=unit_price,
+            include=include,
+        )
+    elif formula_kind == "equipment":
+        formula = calculate_insulation_equipment_cost(period=period, unit_price=unit_price, margin_pct=margin_pct, include=include)
+    elif formula_kind == "days_rate":
+        formula = calculate_insulation_days_rate_cost(days=days or period, unit_price=unit_price, include=include)
+    elif formula_kind == "travel":
+        formula = calculate_insulation_travel_cost(trip_count=trip_count, round_trip_miles=round_trip_miles, unit_price=unit_price, include=include)
+    elif formula_kind == "units_cost":
+        formula = calculate_roofing_units_cost(units=quantity, unit_price=unit_price, include=include, formula_model="insulation_units_cost")
+    elif formula_kind == "abaa_fee":
+        formula = calculate_insulation_abaa_fee(area_sqft=basis_sqft, unit_price=unit_price, include=include)
+    elif formula_kind == "bond":
+        formula = calculate_insulation_bond(project_total=dependencies.get("pre_pricing_total"), include=include)
+    elif formula_kind == "markup":
+        pct = safe_number(first_nonblank(existing.get("percentage"), existing.get("markup_pct"), source_row.get("percentage"), amount), 0.0)
+        base = safe_number(dependencies.get("pre_pricing_total"), 0.0)
+        formula = calculate_insulation_direct_cost(amount=base * pct / 100.0, include=include)
+        formula["formula_model"] = "insulation_markup_from_total_pct"
+        formula["percentage"] = round(pct, 6)
+    else:
+        formula = calculate_insulation_direct_cost(amount=amount, include=include)
+
+    inputs = {
+        "basis_sqft": round(basis_sqft, 4),
+        "linear_ft": round(linear_ft, 4),
+        "quantity": round(quantity, 4),
+        "days": round(days, 4),
+        "period": round(period, 4),
+        "unit_price": round(unit_price, 4),
+        "margin_pct": round(margin_pct, 4),
+        "gal_per_100_sqft": round(gal_per_100, 4),
+        "waste_factor_pct": round(waste_pct, 4),
+        "feet_per_unit": round(feet_per_unit, 4),
+        "trip_count": round(trip_count, 4),
+        "round_trip_miles": round(round_trip_miles, 4),
+        "coverage_sqft_per_unit": round(coverage, 4),
+        "amount": round(amount, 2),
+    }
+    return formula, inputs
+
+
+def _build_insulation_decision_rows(
+    *,
+    section: str,
+    specs: list[dict[str, Any]],
+    scope: dict[str, Any],
+    materials: list[dict[str, Any]] | None = None,
+    adders: list[dict[str, Any]] | None = None,
+    existing_rows: list[dict[str, Any]] | None = None,
+    data: Any = None,
+    dependencies: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    existing_index = _existing_decision_rows(existing_rows)
+    area = _estimate_area(scope)
+    notes_text = _normalized(" ".join(str(scope.get(key) or "") for key in ("notes", "raw_input_notes", "project_type", "building_type")))
+    rows: list[dict[str, Any]] = []
+    deps = dict(dependencies or {})
+    for spec in specs:
+        source = _source_for_insulation_decision(spec, materials=materials, adders=adders)
+        existing = existing_index.get(str(spec.get("workbook_row"))) or existing_index.get(str(spec.get("template_bucket"))) or existing_index.get(str(spec.get("decision_id"))) or {}
+        bucket = str(spec.get("template_bucket") or "")
+        workbook_row = str(spec.get("workbook_row") or "")
+        include_default = bool(source.get("include"))
+        trigger_terms = _package_aliases(bucket)
+        if any(term and term in notes_text for term in trigger_terms):
+            include_default = True
+        if bucket in {"drum_disposal"} and any(safe_number(deps.get(key), 0.0) > 0 for key in ("foam_units", "thermal_gallons", "primer_units", "thinner_units")):
+            include_default = True
+        include = bool(existing["include"]) if "include" in existing else include_default
+        selector_code, resolved_option, selector_options = _selector_choice(
+            decision_id=spec.get("selector_decision_id"),
+            workbook_row=workbook_row,
+            existing=existing,
+            source_row=source,
+        )
+        formula, inputs = _calculate_insulation_decision_formula(spec, include=include, source_row=source, existing=existing, area=area, dependencies=deps)
+        item_name = first_nonblank(
+            existing.get("selected_pricing_candidate"),
+            source.get("item_name"),
+            source.get("current_item"),
+            resolved_option,
+            spec.get("label"),
+        )
+        product_context = _insulation_product_context_for_row(data=data, decision_id=str(spec.get("decision_id")), bucket=bucket, item_name=item_name)
+        guidance = _insulation_product_guidance_fields(product_context)
+        warnings: list[str] = []
+        if include and safe_number(formula.get("estimated_cost"), 0.0) <= 0 and str(formula.get("formula_source")) != "not_included":
+            warnings.append("Formula preview needs estimator input before it can calculate cost.")
+        if bucket in {"thermal_barrier_coating", "primer", "caulk_sealant"} and not guidance.get("product_id"):
+            warnings.append("No product data sheet match is available for this decision.")
+        row = {
+            "include": include,
+            "section": section,
+            "decision_id": f"{spec.get('decision_id')}_row_{workbook_row}",
+            "source_decision_id": spec.get("decision_id"),
+            "template_bucket": bucket,
+            "package_key": bucket,
+            "workbook_row": workbook_row,
+            "template_line": spec.get("label"),
+            "editable_selector_code": selector_code,
+            "selector_code": selector_code,
+            "resolved_template_option": resolved_option,
+            "selector_options": selector_options,
+            "selector_options_json": json.dumps(selector_options, default=str),
+            "selected_pricing_candidate": item_name,
+            "unit_price": inputs.get("unit_price"),
+            "basis_sqft": inputs.get("basis_sqft"),
+            "linear_ft": inputs.get("linear_ft"),
+            "quantity": inputs.get("quantity"),
+            "days": inputs.get("days"),
+            "period": inputs.get("period"),
+            "margin_pct": inputs.get("margin_pct"),
+            "gal_per_100_sqft": inputs.get("gal_per_100_sqft"),
+            "waste_factor_pct": inputs.get("waste_factor_pct"),
+            "feet_per_unit": inputs.get("feet_per_unit"),
+            "trip_count": inputs.get("trip_count"),
+            "round_trip_miles": inputs.get("round_trip_miles"),
+            "amount": inputs.get("amount"),
+            "formula_model": formula.get("formula_model"),
+            "formula_source": formula.get("formula_source"),
+            "estimated_units": safe_number(first_nonblank(formula.get("estimated_units"), formula.get("estimated_drums"), formula.get("calculated_quantity")), 0.0),
+            "estimated_gallons": safe_number(formula.get("estimated_gallons"), 0.0),
+            "estimated_drums": safe_number(formula.get("estimated_drums"), 0.0),
+            "estimated_cost": safe_number(formula.get("estimated_cost"), 0.0),
+            "calculated_output": safe_number(formula.get("calculated_output"), 0.0),
+            "calculated_output_summary": _decision_output_summary(formula),
+            "historical_recommendation": source.get("historical_recommendation") or "",
+            "historical_selector_recommendation": first_nonblank(source.get("historical_selector_recommendation"), resolved_option),
+            "historical_selector_evidence_count": int(safe_number(source.get("decision_evidence_count") or source.get("evidence_count"), 0)),
+            "historical_selector_confidence": source.get("decision_confidence") or source.get("confidence") or "",
+            "decision_evidence_count": int(safe_number(source.get("decision_evidence_count") or source.get("evidence_count"), 0)),
+            "decision_confidence": source.get("decision_confidence") or source.get("confidence") or "",
+            "confidence": source.get("confidence") or "",
+            "compatibility_status": "review" if warnings else ("compatible" if include else "not_included"),
+            "compatibility_warnings": warnings,
+            **guidance,
+            "notes": f"{spec.get('notes') or spec.get('label')} Workbook row {workbook_row}. "
+            + (" ".join(warnings) if warnings else "Template formula preview is available for estimator review."),
+            "decision_values": {**inputs, "selector_code": selector_code, "resolved_template_option": resolved_option},
+            "editable_decision_value": {**inputs, "selector_code": selector_code, "resolved_template_option": resolved_option},
+            "recommended_decision_value": {
+                "resolved_template_option": first_nonblank(source.get("historical_selector_recommendation"), resolved_option),
+                "evidence_count": int(safe_number(source.get("decision_evidence_count") or source.get("evidence_count"), 0)),
+            },
+            "row_traceability": f"Estimate row {workbook_row}",
+        }
+        row["workbook_cell_write_preview"] = _insulation_material_preview(row)
+        rows.append(row)
+    return rows
+
+
+def _insulation_labor_crew_options() -> list[dict[str, Any]]:
+    options = _insulation_graph_selector_options("insulation_crew_rate_selection")
+    if not options:
+        for code in range(1, 9):
+            column_letter = chr(ord("C") + code)
+            options.append(
+                {
+                    "selector_code": str(code),
+                    "resolved_template_option": f"{code} person crew daily rate",
+                    "resolved_cell": f"People!{column_letter}12",
+                    "source_type": "fallback_people_daily_rate_selector",
+                }
+            )
+    return options
+
+
+def _insulation_labor_daily_rate_cell(crew_size: Any) -> str:
+    key = str(int(safe_number(crew_size, 0))) if safe_number(crew_size, 0) > 0 else ""
+    for option in _insulation_labor_crew_options():
+        if str(option.get("selector_code") or "") == key:
+            return str(option.get("resolved_cell") or "")
+    return f"People!{chr(ord('C') + int(key))}12" if key else ""
+
+
+def _build_insulation_labor_template_decisions(
+    *,
+    scope: dict[str, Any],
+    labor_rows: list[dict[str, Any]] | None = None,
+    existing_rows: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    if not _is_insulation_scope(scope):
+        return []
+    existing_by_key = _existing_decision_rows(existing_rows)
+    crew_options = _insulation_labor_crew_options()
+    area = _estimate_area(scope)
+    baseline = {"labor_set_up", "labor_foam", "labor_clean_up", "labor_loading"}
+    notes = _normalized(" ".join(str(scope.get(key) or "") for key in ("notes", "raw_input_notes", "site_address", "address")))
+    decisions: list[dict[str, Any]] = []
+    for spec in INSULATION_LABOR_PACKAGES:
+        package = str(spec["package"])
+        workbook_row = str(spec["workbook_row"])
+        labor = _row_for_bucket(labor_rows, package) or {}
+        existing = existing_by_key.get(package) or existing_by_key.get(workbook_row) or {}
+        include_default = bool(labor.get("include")) or package in baseline or (package == "labor_traveling" and bool(notes))
+        include = bool(existing["include"]) if "include" in existing else include_default
+        crew_size = int(safe_number(first_nonblank(existing.get("crew_size"), labor.get("crew_size"), 3), 3) or 3)
+        days = safe_number(first_nonblank(existing.get("days"), existing.get("editable_days"), labor.get("days"), labor.get("editable_days"), 0), 0.0)
+        hours_per_1000 = safe_number(first_nonblank(existing.get("editable_hours_per_1000_sqft"), labor.get("editable_hours_per_1000_sqft"), 0), 0.0)
+        total_hours = safe_number(first_nonblank(existing.get("total_hours"), existing.get("editable_total_hours"), labor.get("calculated_hours"), labor.get("total_hours"), 0), 0.0)
+        hourly_rate = safe_number(first_nonblank(existing.get("hourly_rate"), existing.get("labor_rate"), labor.get("hourly_rate"), labor.get("labor_rate"), DEFAULT_HOURLY_RATE), DEFAULT_HOURLY_RATE)
+        daily_rate = safe_number(first_nonblank(existing.get("daily_rate"), labor.get("daily_rate"), 0), 0.0)
+        formula_mode = str(first_nonblank(existing.get("formula_mode"), labor.get("formula_mode"), "mixed_formula"))
+        formula = calculate_mixed_labor(
+            days=days,
+            crew_size=crew_size,
+            total_hours=total_hours,
+            hours_per_1000_sqft=hours_per_1000,
+            area_sqft=area,
+            daily_rate=daily_rate,
+            hourly_rate=hourly_rate,
+            formula_mode=formula_mode,
+            include=include,
+        )
+        row_number = int(safe_number(workbook_row, 0))
+        selected_cell = _insulation_labor_daily_rate_cell(crew_size)
+        preview = [
+            {"cell": f"Estimate!B{row_number}", "field": "days", "value": formula.get("days")},
+            {"cell": f"Estimate!C{row_number}", "field": "crew_selector_code", "value": crew_size},
+            {"cell": f"Estimate!D{row_number}", "field": "hourly_rate", "value": formula.get("hourly_rate")},
+            {"cell": f"Estimate!G{row_number}", "field": "total_hours", "value": formula.get("total_hours")},
+            {"cell": f"Estimate!J{row_number}", "field": "daily_rate_formula_output", "value": formula.get("daily_rate")},
+        ]
+        warnings = []
+        if include and safe_number(formula.get("estimated_cost"), 0.0) <= 0:
+            warnings.append("Labor formula preview needs days, hours, or rate input.")
+        decisions.append(
+            {
+                "include": include,
+                "section": "insulation_labor_template_decisions",
+                "decision_id": f"insulation_{package}_row_{workbook_row}",
+                "source_decision_id": f"insulation_{package}",
+                "template_bucket": package,
+                "package_key": package,
+                "workbook_row": workbook_row,
+                "labor_task": spec["label"],
+                "labor_package": spec["label"],
+                "days": formula.get("days"),
+                "editable_days": formula.get("days"),
+                "crew_size": crew_size,
+                "crew_people_selection": crew_size,
+                "crew_selector_code": crew_size,
+                "crew_selector_options": crew_options,
+                "crew_selector_options_json": json.dumps(crew_options, default=str),
+                "selected_daily_rate_cell": selected_cell,
+                "daily_rate": formula.get("daily_rate"),
+                "hourly_rate": formula.get("hourly_rate"),
+                "labor_rate": formula.get("hourly_rate"),
+                "editable_hours_per_1000_sqft": round(hours_per_1000, 4),
+                "total_hours": formula.get("total_hours"),
+                "calculated_hours": formula.get("total_hours"),
+                "editable_total_hours": formula.get("total_hours"),
+                "formula_mode": formula.get("formula_mode"),
+                "formula_model": formula.get("formula_model"),
+                "formula_source": formula.get("formula_source"),
+                "estimated_cost": formula.get("estimated_cost"),
+                "calculated_output": formula.get("calculated_output"),
+                "calculated_output_summary": _decision_output_summary(formula),
+                "historical_recommendation": labor.get("historical_recommendation") or "",
+                "historical_selector_evidence_count": int(safe_number(labor.get("decision_evidence_count") or labor.get("evidence_count"), 0)),
+                "historical_selector_confidence": labor.get("decision_confidence") or labor.get("confidence") or "",
+                "decision_evidence_count": int(safe_number(labor.get("decision_evidence_count") or labor.get("evidence_count"), 0)),
+                "decision_confidence": labor.get("decision_confidence") or labor.get("confidence") or "",
+                "confidence": labor.get("confidence") or "",
+                "compatibility_status": "review" if warnings else ("compatible" if include else "not_included"),
+                "compatibility_warnings": warnings,
+                "notes": "Labor decision mirrors the insulation workbook mixed formula. "
+                + (" ".join(warnings) if warnings else "Template formula preview is available for estimator review."),
+                "decision_values": {
+                    "days": formula.get("days"),
+                    "crew_size": crew_size,
+                    "daily_rate": formula.get("daily_rate"),
+                    "hourly_rate": formula.get("hourly_rate"),
+                    "total_hours": formula.get("total_hours"),
+                    "formula_mode": formula.get("formula_mode"),
+                },
+                "editable_decision_value": {
+                    "days": formula.get("days"),
+                    "crew_size": crew_size,
+                    "daily_rate": formula.get("daily_rate"),
+                    "hourly_rate": formula.get("hourly_rate"),
+                    "total_hours": formula.get("total_hours"),
+                    "formula_mode": formula.get("formula_mode"),
+                },
+                "recommended_decision_value": labor.get("recommended_decision_value") or {},
+                "row_traceability": f"Estimate row {workbook_row}; daily rate from {selected_cell or 'People sheet selector'}",
+                "workbook_cell_write_preview": preview,
+            }
+        )
+    return decisions
+
+
+def _insulation_dependency_totals(workbench: dict[str, Any] | None = None, *, rows: dict[str, list[dict[str, Any]]] | None = None) -> dict[str, Any]:
+    workbench = workbench or {}
+    section_rows = rows or {key: workbench.get(key) or [] for key in INSULATION_DECISION_SECTION_KEYS}
+    foam_rows = workbench.get("insulation_foam_template_decisions") or []
+    deps = {
+        "foam_units": sum(safe_number(row.get("estimated_units"), 0.0) for row in foam_rows if isinstance(row, dict) and row.get("include")),
+        "thermal_gallons": 0.0,
+        "primer_units": 0.0,
+        "thinner_units": 0.0,
+        "pre_pricing_total": 0.0,
+    }
+    for section, section_list in section_rows.items():
+        for row in section_list or []:
+            if not isinstance(row, dict) or not row.get("include"):
+                continue
+            bucket = str(row.get("template_bucket") or "")
+            if bucket == "thermal_barrier_coating":
+                deps["thermal_gallons"] += safe_number(row.get("estimated_gallons"), 0.0)
+            elif bucket == "primer":
+                deps["primer_units"] += safe_number(row.get("estimated_units"), 0.0)
+            elif bucket == "thinner":
+                deps["thinner_units"] += safe_number(row.get("estimated_units"), 0.0)
+            if section != "insulation_pricing_template_decisions":
+                deps["pre_pricing_total"] += safe_number(row.get("estimated_cost"), 0.0)
+    deps["pre_pricing_total"] += sum(safe_number(row.get("estimated_cost"), 0.0) for row in foam_rows if isinstance(row, dict) and row.get("include"))
+    return deps
 
 
 def _apply_foam_template_decision_to_materials(workbench: dict[str, Any]) -> None:
@@ -8351,6 +9053,102 @@ def build_estimating_workbench(
     )
     labor_rows = labor_workbench_rows(recommendation, data, scope, historical_filters=filters)
     adder_rows = adder_workbench_rows(recommendation, data, scope, filters)
+    insulation_detail_material_template_decisions = []
+    insulation_thermal_barrier_template_decisions = []
+    insulation_support_material_template_decisions = []
+    insulation_equipment_logistics_template_decisions = []
+    insulation_compliance_template_decisions = []
+    insulation_labor_template_decisions = []
+    insulation_pricing_template_decisions = []
+    if _is_insulation_scope(scope):
+        insulation_detail_material_template_decisions = _build_insulation_decision_rows(
+            section="insulation_detail_material_template_decisions",
+            specs=INSULATION_DETAIL_DECISION_SPECS,
+            scope=scope,
+            materials=materials,
+            adders=adder_rows,
+            data=data,
+        )
+        insulation_thermal_barrier_template_decisions = _build_insulation_decision_rows(
+            section="insulation_thermal_barrier_template_decisions",
+            specs=INSULATION_THERMAL_DECISION_SPECS,
+            scope=scope,
+            materials=materials,
+            adders=adder_rows,
+            data=data,
+        )
+        insulation_dependencies = _insulation_dependency_totals(
+            {
+                "insulation_foam_template_decisions": foam_template_decisions,
+            },
+            rows={
+                "insulation_detail_material_template_decisions": insulation_detail_material_template_decisions,
+                "insulation_thermal_barrier_template_decisions": insulation_thermal_barrier_template_decisions,
+            },
+        )
+        insulation_support_material_template_decisions = _build_insulation_decision_rows(
+            section="insulation_support_material_template_decisions",
+            specs=INSULATION_SUPPORT_DECISION_SPECS,
+            scope=scope,
+            materials=materials,
+            adders=adder_rows,
+            data=data,
+            dependencies=insulation_dependencies,
+        )
+        insulation_dependencies = _insulation_dependency_totals(
+            {
+                "insulation_foam_template_decisions": foam_template_decisions,
+            },
+            rows={
+                "insulation_detail_material_template_decisions": insulation_detail_material_template_decisions,
+                "insulation_thermal_barrier_template_decisions": insulation_thermal_barrier_template_decisions,
+                "insulation_support_material_template_decisions": insulation_support_material_template_decisions,
+            },
+        )
+        insulation_equipment_logistics_template_decisions = _build_insulation_decision_rows(
+            section="insulation_equipment_logistics_template_decisions",
+            specs=INSULATION_EQUIPMENT_LOGISTICS_DECISION_SPECS,
+            scope=scope,
+            materials=materials,
+            adders=adder_rows,
+            data=data,
+            dependencies=insulation_dependencies,
+        )
+        insulation_compliance_template_decisions = _build_insulation_decision_rows(
+            section="insulation_compliance_template_decisions",
+            specs=INSULATION_COMPLIANCE_DECISION_SPECS,
+            scope=scope,
+            materials=materials,
+            adders=adder_rows,
+            data=data,
+            dependencies=insulation_dependencies,
+        )
+        insulation_labor_template_decisions = _build_insulation_labor_template_decisions(
+            scope=scope,
+            labor_rows=labor_rows,
+        )
+        insulation_dependencies = _insulation_dependency_totals(
+            {
+                "insulation_foam_template_decisions": foam_template_decisions,
+            },
+            rows={
+                "insulation_detail_material_template_decisions": insulation_detail_material_template_decisions,
+                "insulation_thermal_barrier_template_decisions": insulation_thermal_barrier_template_decisions,
+                "insulation_support_material_template_decisions": insulation_support_material_template_decisions,
+                "insulation_equipment_logistics_template_decisions": insulation_equipment_logistics_template_decisions,
+                "insulation_compliance_template_decisions": insulation_compliance_template_decisions,
+                "insulation_labor_template_decisions": insulation_labor_template_decisions,
+            },
+        )
+        insulation_pricing_template_decisions = _build_insulation_decision_rows(
+            section="insulation_pricing_template_decisions",
+            specs=INSULATION_PRICING_DECISION_SPECS,
+            scope=scope,
+            materials=materials,
+            adders=adder_rows,
+            data=data,
+            dependencies=insulation_dependencies,
+        )
     roofing_equipment_template_decisions = (
         _build_roofing_equipment_template_decisions(
             scope=scope,
@@ -8410,6 +9208,13 @@ def build_estimating_workbench(
         "area_calculation_explanation": area_explanation,
         "insulation_surfaces": surface_rows,
         "insulation_foam_template_decisions": foam_template_decisions,
+        "insulation_detail_material_template_decisions": insulation_detail_material_template_decisions,
+        "insulation_thermal_barrier_template_decisions": insulation_thermal_barrier_template_decisions,
+        "insulation_support_material_template_decisions": insulation_support_material_template_decisions,
+        "insulation_equipment_logistics_template_decisions": insulation_equipment_logistics_template_decisions,
+        "insulation_compliance_template_decisions": insulation_compliance_template_decisions,
+        "insulation_labor_template_decisions": insulation_labor_template_decisions,
+        "insulation_pricing_template_decisions": insulation_pricing_template_decisions,
         "roofing_foam_template_decisions": roofing_foam_template_decisions,
         "roofing_coating_template_decisions": roofing_coating_template_decisions,
         "roofing_primer_template_decisions": roofing_primer_template_decisions,
@@ -8782,6 +9587,89 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
             foam_row=_foam_material_row(updated.get("materials")),
             existing_rows=updated.get("insulation_foam_template_decisions") or None,
         )
+        updated["insulation_detail_material_template_decisions"] = _build_insulation_decision_rows(
+            section="insulation_detail_material_template_decisions",
+            specs=INSULATION_DETAIL_DECISION_SPECS,
+            scope=scope,
+            materials=updated.get("materials") or [],
+            adders=updated.get("adders") or [],
+            existing_rows=updated.get("insulation_detail_material_template_decisions") or None,
+        )
+        updated["insulation_thermal_barrier_template_decisions"] = _build_insulation_decision_rows(
+            section="insulation_thermal_barrier_template_decisions",
+            specs=INSULATION_THERMAL_DECISION_SPECS,
+            scope=scope,
+            materials=updated.get("materials") or [],
+            adders=updated.get("adders") or [],
+            existing_rows=updated.get("insulation_thermal_barrier_template_decisions") or None,
+        )
+        insulation_dependencies = _insulation_dependency_totals(
+            updated,
+            rows={
+                "insulation_detail_material_template_decisions": updated.get("insulation_detail_material_template_decisions") or [],
+                "insulation_thermal_barrier_template_decisions": updated.get("insulation_thermal_barrier_template_decisions") or [],
+            },
+        )
+        updated["insulation_support_material_template_decisions"] = _build_insulation_decision_rows(
+            section="insulation_support_material_template_decisions",
+            specs=INSULATION_SUPPORT_DECISION_SPECS,
+            scope=scope,
+            materials=updated.get("materials") or [],
+            adders=updated.get("adders") or [],
+            existing_rows=updated.get("insulation_support_material_template_decisions") or None,
+            dependencies=insulation_dependencies,
+        )
+        insulation_dependencies = _insulation_dependency_totals(
+            updated,
+            rows={
+                "insulation_detail_material_template_decisions": updated.get("insulation_detail_material_template_decisions") or [],
+                "insulation_thermal_barrier_template_decisions": updated.get("insulation_thermal_barrier_template_decisions") or [],
+                "insulation_support_material_template_decisions": updated.get("insulation_support_material_template_decisions") or [],
+            },
+        )
+        updated["insulation_equipment_logistics_template_decisions"] = _build_insulation_decision_rows(
+            section="insulation_equipment_logistics_template_decisions",
+            specs=INSULATION_EQUIPMENT_LOGISTICS_DECISION_SPECS,
+            scope=scope,
+            materials=updated.get("materials") or [],
+            adders=updated.get("adders") or [],
+            existing_rows=updated.get("insulation_equipment_logistics_template_decisions") or None,
+            dependencies=insulation_dependencies,
+        )
+        updated["insulation_compliance_template_decisions"] = _build_insulation_decision_rows(
+            section="insulation_compliance_template_decisions",
+            specs=INSULATION_COMPLIANCE_DECISION_SPECS,
+            scope=scope,
+            materials=updated.get("materials") or [],
+            adders=updated.get("adders") or [],
+            existing_rows=updated.get("insulation_compliance_template_decisions") or None,
+            dependencies=insulation_dependencies,
+        )
+        updated["insulation_labor_template_decisions"] = _build_insulation_labor_template_decisions(
+            scope=scope,
+            labor_rows=updated.get("labor") or [],
+            existing_rows=updated.get("insulation_labor_template_decisions") or None,
+        )
+        insulation_dependencies = _insulation_dependency_totals(
+            updated,
+            rows={
+                "insulation_detail_material_template_decisions": updated.get("insulation_detail_material_template_decisions") or [],
+                "insulation_thermal_barrier_template_decisions": updated.get("insulation_thermal_barrier_template_decisions") or [],
+                "insulation_support_material_template_decisions": updated.get("insulation_support_material_template_decisions") or [],
+                "insulation_equipment_logistics_template_decisions": updated.get("insulation_equipment_logistics_template_decisions") or [],
+                "insulation_compliance_template_decisions": updated.get("insulation_compliance_template_decisions") or [],
+                "insulation_labor_template_decisions": updated.get("insulation_labor_template_decisions") or [],
+            },
+        )
+        updated["insulation_pricing_template_decisions"] = _build_insulation_decision_rows(
+            section="insulation_pricing_template_decisions",
+            specs=INSULATION_PRICING_DECISION_SPECS,
+            scope=scope,
+            materials=updated.get("materials") or [],
+            adders=updated.get("adders") or [],
+            existing_rows=updated.get("insulation_pricing_template_decisions") or None,
+            dependencies=insulation_dependencies,
+        )
         updated["insulation_performance_specs"] = build_insulation_performance_specs(
             scope=scope,
             surface_rows=_records(updated.get("insulation_surfaces")),
@@ -9074,6 +9962,100 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any]) -> dict[str, A
         for row in workbench.get("roofing_accessory_template_decisions") or []
         if isinstance(row, dict) and row.get("include")
     ]
+    insulation_foam_decision_rows = [
+        row
+        for row in workbench.get("insulation_foam_template_decisions") or []
+        if isinstance(row, dict) and row.get("include")
+    ]
+    insulation_material_decision_rows = [
+        row
+        for section in (
+            "insulation_detail_material_template_decisions",
+            "insulation_thermal_barrier_template_decisions",
+            "insulation_support_material_template_decisions",
+            "insulation_equipment_logistics_template_decisions",
+            "insulation_compliance_template_decisions",
+            "insulation_pricing_template_decisions",
+        )
+        for row in workbench.get(section) or []
+        if isinstance(row, dict) and row.get("include")
+    ]
+    insulation_labor_decision_rows = [
+        row
+        for row in workbench.get("insulation_labor_template_decisions") or []
+        if isinstance(row, dict) and row.get("include")
+    ]
+    for row in insulation_foam_decision_rows:
+        material_rows.append(
+            {
+                "decision_id": row.get("decision_id"),
+                "template_bucket": "foam",
+                "workbook_row": row.get("workbook_row"),
+                "row_traceability": f"Estimate row {row.get('workbook_row')}",
+                "item": first_nonblank(row.get("selected_pricing_candidate"), row.get("resolved_template_option"), "Insulation foam"),
+                "category": "foam",
+                "quantity": safe_number(row.get("estimated_units"), 0.0),
+                "basis_sqft": safe_number(row.get("basis_sqft"), 0.0),
+                "area_sqft": safe_number(row.get("basis_sqft"), 0.0),
+                "thickness_inches": safe_number(row.get("thickness_inches"), 0.0),
+                "yield_factor": safe_number(row.get("yield_or_coverage"), 0.0),
+                "yield_or_coverage": safe_number(row.get("yield_or_coverage"), 0.0),
+                "estimated_units": safe_number(row.get("estimated_units"), 0.0),
+                "estimated_sets": safe_number(row.get("estimated_sets"), 0.0),
+                "selector_code": row.get("editable_selector_code") or row.get("selector_code"),
+                "unit": "estimated_units",
+                "unit_price": safe_number(row.get("unit_price"), 0.0),
+                "estimated_cost": safe_number(row.get("estimated_cost"), 0.0),
+                "formula_model": row.get("formula_model"),
+                "formula_source": row.get("formula_source"),
+                "calculated_output_summary": row.get("calculated_output_summary"),
+                "surface_formula_outputs": row.get("surface_formula_outputs") or [],
+                "workbook_cell_write_preview": row.get("workbook_cell_write_preview") or [],
+                "notes": (
+                    f"Insulation foam template decision; selector={row.get('editable_selector_code') or row.get('selector_code')}; "
+                    f"template_option={row.get('resolved_template_option')}; evidence_count={row.get('historical_selector_evidence_count')}"
+                ),
+            }
+        )
+    for row in insulation_material_decision_rows:
+        bucket = str(row.get("template_bucket") or "").lower()
+        material_rows.append(
+            {
+                "decision_id": row.get("decision_id"),
+                "template_bucket": bucket,
+                "workbook_row": row.get("workbook_row"),
+                "row_traceability": f"Estimate row {row.get('workbook_row')}",
+                "item": first_nonblank(row.get("selected_pricing_candidate"), row.get("resolved_template_option"), row.get("template_line"), bucket),
+                "category": bucket,
+                "quantity": safe_number(
+                    first_nonblank(row.get("estimated_gallons"), row.get("estimated_units"), row.get("estimated_drums"), row.get("quantity")),
+                    0.0,
+                ),
+                "basis_sqft": safe_number(row.get("basis_sqft"), 0.0),
+                "area_sqft": safe_number(row.get("basis_sqft"), 0.0),
+                "linear_ft": safe_number(row.get("linear_ft"), 0.0),
+                "estimated_units": safe_number(first_nonblank(row.get("estimated_units"), row.get("estimated_drums")), 0.0),
+                "estimated_gallons": safe_number(row.get("estimated_gallons"), 0.0),
+                "selector_code": row.get("editable_selector_code") or row.get("selector_code"),
+                "unit": "gal" if bucket == "thermal_barrier_coating" else "unit",
+                "unit_price": safe_number(row.get("unit_price"), 0.0),
+                "gal_per_100_sqft": safe_number(row.get("gal_per_100_sqft"), 0.0),
+                "waste_factor_pct": safe_number(row.get("waste_factor_pct"), 0.0),
+                "feet_per_unit": safe_number(row.get("feet_per_unit"), 0.0),
+                "period": safe_number(row.get("period"), 0.0),
+                "days": safe_number(row.get("days"), 0.0),
+                "margin_pct": safe_number(row.get("margin_pct"), 0.0),
+                "trip_count": safe_number(row.get("trip_count"), 0.0),
+                "round_trip_miles": safe_number(row.get("round_trip_miles"), 0.0),
+                "amount": safe_number(row.get("amount"), 0.0),
+                "estimated_cost": safe_number(row.get("estimated_cost"), 0.0),
+                "formula_model": row.get("formula_model"),
+                "formula_source": row.get("formula_source"),
+                "calculated_output_summary": row.get("calculated_output_summary"),
+                "workbook_cell_write_preview": row.get("workbook_cell_write_preview") or [],
+                "notes": f"Insulation template decision; template_option={row.get('resolved_template_option')}; section={row.get('section')}.",
+            }
+        )
     for row in roofing_foam_decision_rows:
         material_rows.append(
             {
@@ -9368,6 +10350,8 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any]) -> dict[str, A
     for row in workbench.get("materials") or []:
         if not row.get("include"):
             continue
+        if _is_insulation_scope(scope) and (insulation_foam_decision_rows or insulation_material_decision_rows):
+            continue
         if roofing_foam_decision_rows and str(row.get("package_key") or row.get("template_bucket") or "").lower() in {"roofing_foam", "foam"}:
             continue
         if roofing_coating_decision_rows and str(row.get("package_key") or row.get("template_bucket") or "").lower() == "coating":
@@ -9432,8 +10416,36 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any]) -> dict[str, A
             }
         )
     labor_rows = []
+    if _is_insulation_scope(scope) and insulation_labor_decision_rows:
+        for row in insulation_labor_decision_rows:
+            crew_size = max(1, int(safe_number(row.get("crew_size"), 1)))
+            hours = safe_number(row.get("calculated_hours") or row.get("total_hours"), 0.0)
+            labor_rows.append(
+                {
+                    "decision_id": row.get("decision_id"),
+                    "template_bucket": row.get("template_bucket") or row.get("package_key"),
+                    "workbook_row": row.get("workbook_row"),
+                    "row_traceability": row.get("row_traceability"),
+                    "task": row.get("template_bucket") or row.get("package_key"),
+                    "crew_size": crew_size,
+                    "total_hours": hours,
+                    "adjusted_days": safe_number(row.get("days"), 0.0),
+                    "base_days": safe_number(row.get("days"), 0.0),
+                    "daily_rate": safe_number(row.get("daily_rate"), 0.0),
+                    "hourly_rate": safe_number(row.get("hourly_rate"), safe_number(row.get("labor_rate"), 0.0)),
+                    "formula_mode": row.get("formula_mode"),
+                    "formula_model": row.get("formula_model"),
+                    "formula_source": row.get("formula_source"),
+                    "estimated_cost": safe_number(row.get("estimated_cost"), 0.0),
+                    "calculated_output_summary": row.get("calculated_output_summary"),
+                    "workbook_cell_write_preview": row.get("workbook_cell_write_preview") or [],
+                    "notes": f"Insulation labor template decision; evidence_count={row.get('decision_evidence_count')}",
+                }
+            )
     for row in workbench.get("labor") or []:
         if not row.get("include"):
+            continue
+        if _is_insulation_scope(scope) and insulation_labor_decision_rows:
             continue
         crew_size = max(1, int(safe_number(row.get("crew_size"), 1)))
         hours = safe_number(row.get("calculated_hours"), 0.0)
@@ -9481,6 +10493,7 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any]) -> dict[str, A
         row
         for row in workbench.get("adders") or []
         if row.get("include")
+        and not (_is_insulation_scope(scope) and insulation_material_decision_rows)
         and str(row.get("adder_key") or row.get("template_bucket") or "").lower()
         not in (covered_equipment_adders | covered_travel_freight_adders)
     ]
@@ -9535,7 +10548,19 @@ ROOFING_ADDER_TOTAL_DECISION_SECTIONS = (
 
 ROOFING_LABOR_TOTAL_DECISION_SECTIONS = ("roofing_labor_template_decisions",)
 
-INSULATION_MATERIAL_TOTAL_DECISION_SECTIONS = ("insulation_performance_specs", "insulation_foam_template_decisions")
+INSULATION_MATERIAL_TOTAL_DECISION_SECTIONS = (
+    "insulation_performance_specs",
+    "insulation_foam_template_decisions",
+    "insulation_detail_material_template_decisions",
+    "insulation_thermal_barrier_template_decisions",
+    "insulation_support_material_template_decisions",
+    "insulation_compliance_template_decisions",
+    "insulation_pricing_template_decisions",
+)
+
+INSULATION_ADDER_TOTAL_DECISION_SECTIONS = ("insulation_equipment_logistics_template_decisions",)
+
+INSULATION_LABOR_TOTAL_DECISION_SECTIONS = ("insulation_labor_template_decisions",)
 
 
 def _decision_total_rows(workbench: dict[str, Any], section_names: Iterable[str]) -> list[dict[str, Any]]:
@@ -9595,23 +10620,25 @@ def _flat_fallback_total(rows: Iterable[dict[str, Any]], covered_keys: set[str],
 def _insulation_material_total_rows(workbench: dict[str, Any]) -> tuple[list[dict[str, Any]], set[str], set[str]]:
     performance_rows = [row for row in workbench.get("insulation_performance_specs") or [] if isinstance(row, dict)]
     if any(row.get("include") and safe_number(row.get("estimated_cost"), 0.0) > 0 for row in performance_rows):
-        covered_keys, covered_rows = _coverage_from_decision_rows(performance_rows, extra_keys={"foam"})
-        return performance_rows, covered_keys, covered_rows
-    foam_rows = [row for row in workbench.get("insulation_foam_template_decisions") or [] if isinstance(row, dict)]
-    covered_keys, covered_rows = _coverage_from_decision_rows(foam_rows, extra_keys={"foam"} if foam_rows else set())
-    return foam_rows, covered_keys, covered_rows
+        decision_rows = performance_rows + _decision_total_rows(
+            workbench,
+            tuple(section for section in INSULATION_MATERIAL_TOTAL_DECISION_SECTIONS if section != "insulation_performance_specs"),
+        )
+        covered_keys, covered_rows = _coverage_from_decision_rows(decision_rows, extra_keys={"foam"})
+        return decision_rows, covered_keys, covered_rows
+    decision_rows = _decision_total_rows(workbench, tuple(section for section in INSULATION_MATERIAL_TOTAL_DECISION_SECTIONS if section != "insulation_performance_specs"))
+    covered_keys, covered_rows = _coverage_from_decision_rows(decision_rows, extra_keys={"foam"} if decision_rows else set())
+    return decision_rows, covered_keys, covered_rows
 
 
 def summarize_workbench_totals(workbench: dict[str, Any]) -> dict[str, float]:
     workbench = recalculate_workbench_tables(workbench)
     if _is_insulation_scope(workbench.get("scope") or {}):
         material_decision_rows, material_covered_keys, material_covered_workbook_rows = _insulation_material_total_rows(workbench)
-        labor_decision_rows: list[dict[str, Any]] = []
-        labor_covered_keys: set[str] = set()
-        labor_covered_workbook_rows: set[str] = set()
-        adder_decision_rows: list[dict[str, Any]] = []
-        adder_covered_keys: set[str] = set()
-        adder_covered_workbook_rows: set[str] = set()
+        labor_decision_rows = _decision_total_rows(workbench, INSULATION_LABOR_TOTAL_DECISION_SECTIONS)
+        labor_covered_keys, labor_covered_workbook_rows = _coverage_from_decision_rows(labor_decision_rows)
+        adder_decision_rows = _decision_total_rows(workbench, INSULATION_ADDER_TOTAL_DECISION_SECTIONS)
+        adder_covered_keys, adder_covered_workbook_rows = _coverage_from_decision_rows(adder_decision_rows)
     else:
         material_decision_rows = _decision_total_rows(workbench, ROOFING_MATERIAL_TOTAL_DECISION_SECTIONS)
         material_covered_keys, material_covered_workbook_rows = _coverage_from_decision_rows(material_decision_rows)

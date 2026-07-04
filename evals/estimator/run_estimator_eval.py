@@ -368,7 +368,7 @@ def load_data_for_eval(database_url: str | None) -> Any:
         raise RuntimeError(message) from exc
 
 
-def run_eval(args: argparse.Namespace) -> dict[str, Any]:
+def run_eval_with_data(args: argparse.Namespace) -> tuple[dict[str, Any], Any]:
     cases = load_cases(args.cases)
     if args.case_id:
         cases = [case for case in cases if case.get("case_id") == args.case_id]
@@ -381,7 +381,12 @@ def run_eval(args: argparse.Namespace) -> dict[str, Any]:
         "passed_cases": sum(1 for result in results if result["passed"]),
         "failed_cases": sum(1 for result in results if not result["passed"]),
         "results": results,
-    }
+    }, data
+
+
+def run_eval(args: argparse.Namespace) -> dict[str, Any]:
+    report, _data = run_eval_with_data(args)
+    return report
 
 
 def audit_command(case_id: str, audit_output_dir: Path) -> str:
@@ -431,7 +436,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
-        report = run_eval(args)
+        report, data = run_eval_with_data(args)
     except Exception as exc:
         print(f"Estimator eval failed to run: {type(exc).__name__}: {exc}")
         return 1
@@ -450,6 +455,7 @@ def main(argv: list[str] | None = None) -> int:
                     database_url=args.database_url,
                     out_dir=args.audit_output_dir,
                     cases_path=args.cases,
+                    data=data,
                     evidence_limit=args.evidence_limit,
                     fast=args.fast,
                     debug_evidence=args.debug_evidence,

@@ -261,6 +261,15 @@ def build_workbench_review_payloads(
     adders = list(recalculated.get("adders") or [])
     performance_specs = list(recalculated.get("insulation_performance_specs") or [])
     foam_template_decisions = list(recalculated.get("insulation_foam_template_decisions") or [])
+    insulation_decision_sections = {
+        "insulation_detail_material_template_decisions": list(recalculated.get("insulation_detail_material_template_decisions") or []),
+        "insulation_thermal_barrier_template_decisions": list(recalculated.get("insulation_thermal_barrier_template_decisions") or []),
+        "insulation_support_material_template_decisions": list(recalculated.get("insulation_support_material_template_decisions") or []),
+        "insulation_equipment_logistics_template_decisions": list(recalculated.get("insulation_equipment_logistics_template_decisions") or []),
+        "insulation_compliance_template_decisions": list(recalculated.get("insulation_compliance_template_decisions") or []),
+        "insulation_labor_template_decisions": list(recalculated.get("insulation_labor_template_decisions") or []),
+        "insulation_pricing_template_decisions": list(recalculated.get("insulation_pricing_template_decisions") or []),
+    }
     roofing_foam_template_decisions = list(recalculated.get("roofing_foam_template_decisions") or [])
     roofing_coating_template_decisions = list(recalculated.get("roofing_coating_template_decisions") or [])
     roofing_primer_template_decisions = list(recalculated.get("roofing_primer_template_decisions") or [])
@@ -308,6 +317,81 @@ def build_workbench_review_payloads(
         roofing_accessory_template_decisions,
         roofing_labor_template_decisions,
     )
+    insulation_decision_trace: list[dict[str, Any]] = []
+    insulation_product_guidance: list[dict[str, Any]] = []
+    for section_name, section_rows in insulation_decision_sections.items():
+        readable_section = section_name.replace("_template_decisions", "").replace("insulation_", "Insulation ").replace("_", " ").title()
+        for row in section_rows:
+            insulation_decision_trace.append(
+                {
+                    "section": readable_section,
+                    "include": row.get("include"),
+                    "decision_id": row.get("decision_id"),
+                    "template_bucket": row.get("template_bucket"),
+                    "workbook_row": row.get("workbook_row"),
+                    "item_or_task": row.get("resolved_template_option") or row.get("template_line") or row.get("labor_task"),
+                    "historical_recommendation": row.get("historical_recommendation"),
+                    "editable_value": row.get("editable_decision_value"),
+                    "calculated_output": row.get("calculated_output_summary") or row.get("calculated_output"),
+                    "estimated_cost": row.get("estimated_cost"),
+                    "evidence_count": row.get("decision_evidence_count") or row.get("evidence_count"),
+                    "confidence": row.get("decision_confidence") or row.get("confidence"),
+                    "row_traceability": row.get("row_traceability"),
+                    "notes": row.get("notes"),
+                }
+            )
+            if any(row.get(key) for key in ("product_id", "product_guidance", "product_warning_summary", "compatibility_warnings", "product_source_documents")):
+                insulation_product_guidance.append(
+                    {
+                        "include": row.get("include"),
+                        "decision_id": row.get("decision_id"),
+                        "workbook_row": row.get("workbook_row"),
+                        "package": row.get("template_bucket"),
+                        "item_name": row.get("selected_pricing_candidate") or row.get("resolved_template_option"),
+                        "product_id": row.get("product_id"),
+                        "manufacturer": row.get("product_manufacturer"),
+                        "guidance": row.get("product_guidance"),
+                        "warnings": row.get("product_warning_summary") or row.get("compatibility_warnings"),
+                        "source_documents": row.get("product_source_documents"),
+                        "match_score": row.get("product_match_score"),
+                    }
+                )
+    decision_trace.extend(insulation_decision_trace)
+    product_guidance.extend(insulation_product_guidance)
+    insulation_compact_columns = [
+        "include",
+        "workbook_row",
+        "template_line",
+        "labor_task",
+        "editable_selector_code",
+        "resolved_template_option",
+        "selected_pricing_candidate",
+        "basis_sqft",
+        "linear_ft",
+        "quantity",
+        "days",
+        "period",
+        "trip_count",
+        "round_trip_miles",
+        "gal_per_100_sqft",
+        "waste_factor_pct",
+        "feet_per_unit",
+        "unit_price",
+        "margin_pct",
+        "estimated_units",
+        "estimated_gallons",
+        "estimated_drums",
+        "total_hours",
+        "crew_size",
+        "daily_rate",
+        "hourly_rate",
+        "formula_mode",
+        "estimated_cost",
+        "compatibility_status",
+        "compatibility_warnings",
+        "product_guidance",
+        "notes",
+    ]
 
     summary = {
         "run_id": resolved_run_id,
@@ -597,6 +681,26 @@ def build_workbench_review_payloads(
                 "notes",
             ],
         ),
+        **{
+            section_name: _compact_rows(section_rows, insulation_compact_columns)
+            for section_name, section_rows in insulation_decision_sections.items()
+        },
+        "insulation_decisions_summary": _compact_rows(
+            [row for section_rows in insulation_decision_sections.values() for row in section_rows],
+            [
+                "include",
+                "section",
+                "workbook_row",
+                "template_bucket",
+                "template_line",
+                "labor_task",
+                "resolved_template_option",
+                "calculated_output_summary",
+                "estimated_cost",
+                "compatibility_status",
+                "notes",
+            ],
+        ),
         "historical_filters": recalculated.get("historical_filters") or {},
         "materials_final": _compact_rows(
             materials,
@@ -689,6 +793,7 @@ def build_workbench_review_payloads(
         "roofing_labor_template_decisions": roofing_labor_template_decisions,
         "insulation_foam_template_decisions": foam_template_decisions,
         "insulation_performance_specs": performance_specs,
+        **insulation_decision_sections,
         "materials_diagnostics": materials,
         "labor_diagnostics": labor,
         "adders_diagnostics": adders,
@@ -715,6 +820,14 @@ def build_workbench_review_payloads(
         "Roofing Labor Plan": summary["roofing_labor_template_decisions"],
         "Insulation Foam Template": summary["insulation_foam_template_decisions"],
         "Insulation Performance": summary["insulation_performance_specs"],
+        "Insulation Decisions Summary": summary["insulation_decisions_summary"],
+        "Insulation Details": summary["insulation_detail_material_template_decisions"],
+        "Insulation Thermal Barrier": summary["insulation_thermal_barrier_template_decisions"],
+        "Insulation Support Materials": summary["insulation_support_material_template_decisions"],
+        "Insulation Equipment": summary["insulation_equipment_logistics_template_decisions"],
+        "Insulation Compliance": summary["insulation_compliance_template_decisions"],
+        "Insulation Labor Plan": summary["insulation_labor_template_decisions"],
+        "Insulation Pricing": summary["insulation_pricing_template_decisions"],
         "Historical Filters": summary["historical_filters"],
         "Materials Compact": summary["materials_final"],
         "Labor Compact": summary["labor_final"],
