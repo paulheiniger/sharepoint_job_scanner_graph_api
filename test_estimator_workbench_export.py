@@ -150,17 +150,37 @@ def test_insulation_review_package_uses_decision_sheets(tmp_path) -> None:
                 "estimated_cost": 1432.8,
             }
         ],
+        "insulation_detail_material_template_decisions": [
+            {
+                "include": True,
+                "decision_id": "insulation_caulk_sealant",
+                "template_bucket": "caulk_sealant",
+                "template_line": "Caulk / Sealant",
+                "workbook_row": "41",
+                "editable_selector_code": "1",
+                "linear_ft": 120,
+                "feet_per_unit": 10,
+                "unit_price": 6.05,
+                "estimated_units": 12,
+                "estimated_cost": 72.6,
+                "total_hours": 99,
+                "daily_rate": 123,
+            }
+        ],
         "insulation_labor_template_decisions": [
             {
                 "include": True,
                 "decision_id": "insulation_labor_foam",
                 "template_bucket": "labor_foam",
                 "workbook_row": "86",
+                "labor_task": "Foam",
                 "days": 1.5,
                 "crew_size": 3,
                 "hourly_rate": 72,
                 "total_hours": 36,
                 "estimated_cost": 2592,
+                "gal_per_100_sqft": 1.5,
+                "feet_per_unit": 10,
             }
         ],
         "review_flags": ["Missing rollup door width."],
@@ -188,7 +208,17 @@ def test_insulation_review_package_uses_decision_sheets(tmp_path) -> None:
     summary_workbook = load_workbook(tmp_path / "workbench_summary.xlsx", read_only=True, data_only=True)
     assert "Area Calculation Trace" in summary_workbook.sheetnames
     assert "Insulation Foam Template" in summary_workbook.sheetnames
+    detail_headers = [cell.value for cell in next(summary_workbook["Insulation Details"].iter_rows(min_row=1, max_row=1))]
+    assert "linear_ft" in detail_headers
+    assert "feet_per_unit" in detail_headers
+    assert "total_hours" not in detail_headers
+    assert "daily_rate" not in detail_headers
     assert "Insulation Labor Plan" in summary_workbook.sheetnames
+    labor_headers = [cell.value for cell in next(summary_workbook["Insulation Labor Plan"].iter_rows(min_row=1, max_row=1))]
+    assert "labor_task" in labor_headers
+    assert "total_hours" in labor_headers
+    assert "gal_per_100_sqft" not in labor_headers
+    assert "feet_per_unit" not in labor_headers
     assert "Workbook Decisions" in summary_workbook.sheetnames
 
 

@@ -214,6 +214,123 @@ INSULATION_DECISION_TEMPLATE_COMPACT_COLUMNS = [
     "notes",
 ]
 
+INSULATION_DECISION_SECTION_COLUMNS = {
+    "insulation_detail_material_template_decisions": [
+        "include",
+        "workbook_row",
+        "template_line",
+        "editable_selector_code",
+        "resolved_template_option",
+        "basis_sqft",
+        "linear_ft",
+        "quantity",
+        "feet_per_unit",
+        "unit_price",
+        "estimated_units",
+        "estimated_cost",
+        "selected_pricing_candidate",
+        "compatibility_status",
+        "compatibility_warnings",
+        "product_guidance",
+        "notes",
+    ],
+    "insulation_thermal_barrier_template_decisions": [
+        "include",
+        "workbook_row",
+        "template_line",
+        "editable_selector_code",
+        "resolved_template_option",
+        "basis_sqft",
+        "gal_per_100_sqft",
+        "waste_factor_pct",
+        "unit_price",
+        "estimated_gallons",
+        "estimated_cost",
+        "selected_pricing_candidate",
+        "compatibility_status",
+        "compatibility_warnings",
+        "product_guidance",
+        "notes",
+    ],
+    "insulation_support_material_template_decisions": [
+        "include",
+        "workbook_row",
+        "template_line",
+        "editable_selector_code",
+        "resolved_template_option",
+        "quantity",
+        "estimated_drums",
+        "unit_price",
+        "estimated_units",
+        "estimated_cost",
+        "selected_pricing_candidate",
+        "compatibility_status",
+        "compatibility_warnings",
+        "product_guidance",
+        "notes",
+    ],
+    "insulation_equipment_logistics_template_decisions": [
+        "include",
+        "workbook_row",
+        "template_line",
+        "editable_selector_code",
+        "resolved_template_option",
+        "days",
+        "period",
+        "trip_count",
+        "round_trip_miles",
+        "unit_price",
+        "margin_pct",
+        "estimated_units",
+        "estimated_cost",
+        "selected_pricing_candidate",
+        "compatibility_status",
+        "compatibility_warnings",
+        "notes",
+    ],
+    "insulation_compliance_template_decisions": [
+        "include",
+        "workbook_row",
+        "template_line",
+        "resolved_template_option",
+        "quantity",
+        "unit_price",
+        "estimated_units",
+        "estimated_cost",
+        "compatibility_status",
+        "compatibility_warnings",
+        "notes",
+    ],
+    "insulation_labor_template_decisions": [
+        "include",
+        "workbook_row",
+        "labor_task",
+        "days",
+        "crew_size",
+        "daily_rate",
+        "hourly_rate",
+        "total_hours",
+        "formula_mode",
+        "estimated_cost",
+        "compatibility_status",
+        "compatibility_warnings",
+        "notes",
+    ],
+    "insulation_pricing_template_decisions": [
+        "include",
+        "workbook_row",
+        "template_line",
+        "resolved_template_option",
+        "quantity",
+        "unit_price",
+        "margin_pct",
+        "estimated_cost",
+        "compatibility_status",
+        "compatibility_warnings",
+        "notes",
+    ],
+}
+
 INSULATION_DECISION_SECTIONS = [
     ("insulation_detail_material_template_decisions", "Insulation Detail Materials"),
     ("insulation_thermal_barrier_template_decisions", "Insulation Thermal Barrier / Coating"),
@@ -4383,6 +4500,11 @@ def display_safe_records(records: list[dict[str, Any]], *, editable_fields: set[
     return rows
 
 
+def project_display_frame(frame: pd.DataFrame, columns: Iterable[str]) -> pd.DataFrame:
+    available = [column for column in columns if column in frame.columns]
+    return frame[available].copy() if available else frame.copy()
+
+
 def merge_editable_rows(
     original_rows: list[dict[str, Any]],
     edited_rows: list[dict[str, Any]],
@@ -4964,8 +5086,11 @@ def estimator_prototype_page() -> None:
                 if show_row_details
                 else [column for column in SURFACE_AREA_REVIEW_COLUMNS if column in surface_area_df.columns]
             )
+            surface_area_display_df = (
+                surface_area_df if show_row_details else project_display_frame(surface_area_df, surface_area_column_order)
+            )
             edited_surface_area_df = st.data_editor(
-                surface_area_df,
+                surface_area_display_df,
                 use_container_width=True,
                 hide_index=True,
                 num_rows="fixed",
@@ -5034,8 +5159,11 @@ def estimator_prototype_page() -> None:
                 if show_row_details
                 else [column for column in INSULATION_FOAM_TEMPLATE_COMPACT_COLUMNS if column in foam_template_df.columns]
             )
+            foam_template_display_df = (
+                foam_template_df if show_row_details else project_display_frame(foam_template_df, foam_template_column_order)
+            )
             edited_foam_template_df = st.data_editor(
-                foam_template_df,
+                foam_template_display_df,
                 use_container_width=True,
                 hide_index=True,
                 num_rows="fixed",
@@ -5097,13 +5225,18 @@ def estimator_prototype_page() -> None:
             st.markdown(f"#### {section_label}")
             section_rows = original_workbench.get(section_key) or []
             section_df = pd.DataFrame(display_safe_records(section_rows, editable_fields=insulation_template_editable_fields))
+            section_compact_columns = INSULATION_DECISION_SECTION_COLUMNS.get(
+                section_key,
+                INSULATION_DECISION_TEMPLATE_COMPACT_COLUMNS,
+            )
             section_column_order = (
                 list(section_df.columns)
                 if show_row_details
-                else [column for column in INSULATION_DECISION_TEMPLATE_COMPACT_COLUMNS if column in section_df.columns]
+                else [column for column in section_compact_columns if column in section_df.columns]
             )
+            section_display_df = section_df if show_row_details else project_display_frame(section_df, section_column_order)
             edited_section_df = st.data_editor(
-                section_df,
+                section_display_df,
                 use_container_width=True,
                 hide_index=True,
                 num_rows="fixed",
@@ -5171,8 +5304,13 @@ def estimator_prototype_page() -> None:
                 if show_row_details
                 else [column for column in ROOFING_FOAM_TEMPLATE_COMPACT_COLUMNS if column in roofing_foam_template_df.columns]
             )
+            roofing_foam_template_display_df = (
+                roofing_foam_template_df
+                if show_row_details
+                else project_display_frame(roofing_foam_template_df, roofing_foam_template_column_order)
+            )
             edited_roofing_foam_template_df = st.data_editor(
-                roofing_foam_template_df,
+                roofing_foam_template_display_df,
                 use_container_width=True,
                 hide_index=True,
                 num_rows="fixed",
@@ -5226,8 +5364,11 @@ def estimator_prototype_page() -> None:
                 if show_row_details
                 else [column for column in ROOFING_COATING_TEMPLATE_COMPACT_COLUMNS if column in coating_template_df.columns]
             )
+            coating_template_display_df = (
+                coating_template_df if show_row_details else project_display_frame(coating_template_df, coating_template_column_order)
+            )
             edited_coating_template_df = st.data_editor(
-                coating_template_df,
+                coating_template_display_df,
                 use_container_width=True,
                 hide_index=True,
                 num_rows="fixed",
@@ -5278,8 +5419,11 @@ def estimator_prototype_page() -> None:
                 if show_row_details
                 else [column for column in ROOFING_PRIMER_TEMPLATE_COMPACT_COLUMNS if column in primer_template_df.columns]
             )
+            primer_template_display_df = (
+                primer_template_df if show_row_details else project_display_frame(primer_template_df, primer_template_column_order)
+            )
             edited_primer_template_df = st.data_editor(
-                primer_template_df,
+                primer_template_display_df,
                 use_container_width=True,
                 hide_index=True,
                 num_rows="fixed",
@@ -5328,8 +5472,11 @@ def estimator_prototype_page() -> None:
                 if show_row_details
                 else [column for column in ROOFING_DETAIL_TEMPLATE_COMPACT_COLUMNS if column in detail_template_df.columns]
             )
+            detail_template_display_df = (
+                detail_template_df if show_row_details else project_display_frame(detail_template_df, detail_template_column_order)
+            )
             edited_detail_template_df = st.data_editor(
-                detail_template_df,
+                detail_template_display_df,
                 use_container_width=True,
                 hide_index=True,
                 num_rows="fixed",
@@ -5379,8 +5526,13 @@ def estimator_prototype_page() -> None:
                 if show_row_details
                 else [column for column in ROOFING_DETAIL_QUANTITY_TEMPLATE_COMPACT_COLUMNS if column in detail_quantity_template_df.columns]
             )
+            detail_quantity_template_display_df = (
+                detail_quantity_template_df
+                if show_row_details
+                else project_display_frame(detail_quantity_template_df, detail_quantity_template_column_order)
+            )
             edited_detail_quantity_template_df = st.data_editor(
-                detail_quantity_template_df,
+                detail_quantity_template_display_df,
                 use_container_width=True,
                 hide_index=True,
                 num_rows="fixed",
@@ -5431,8 +5583,11 @@ def estimator_prototype_page() -> None:
                 if show_row_details
                 else [column for column in ROOFING_BOARD_FASTENER_TEMPLATE_COMPACT_COLUMNS if column in board_template_df.columns]
             )
+            board_template_display_df = (
+                board_template_df if show_row_details else project_display_frame(board_template_df, board_template_column_order)
+            )
             edited_board_template_df = st.data_editor(
-                board_template_df,
+                board_template_display_df,
                 use_container_width=True,
                 hide_index=True,
                 num_rows="fixed",
@@ -5486,8 +5641,11 @@ def estimator_prototype_page() -> None:
                 if show_row_details
                 else [column for column in ROOFING_GRANULES_TEMPLATE_COMPACT_COLUMNS if column in granules_template_df.columns]
             )
+            granules_template_display_df = (
+                granules_template_df if show_row_details else project_display_frame(granules_template_df, granules_template_column_order)
+            )
             edited_granules_template_df = st.data_editor(
-                granules_template_df,
+                granules_template_display_df,
                 use_container_width=True,
                 hide_index=True,
                 num_rows="fixed",
@@ -5540,8 +5698,11 @@ def estimator_prototype_page() -> None:
                 if show_row_details
                 else [column for column in ROOFING_EQUIPMENT_TEMPLATE_COMPACT_COLUMNS if column in equipment_template_df.columns]
             )
+            equipment_template_display_df = (
+                equipment_template_df if show_row_details else project_display_frame(equipment_template_df, equipment_template_column_order)
+            )
             edited_equipment_template_df = st.data_editor(
-                equipment_template_df,
+                equipment_template_display_df,
                 use_container_width=True,
                 hide_index=True,
                 num_rows="fixed",
@@ -5595,8 +5756,13 @@ def estimator_prototype_page() -> None:
                 if show_row_details
                 else [column for column in ROOFING_TRAVEL_FREIGHT_TEMPLATE_COMPACT_COLUMNS if column in travel_freight_template_df.columns]
             )
+            travel_freight_template_display_df = (
+                travel_freight_template_df
+                if show_row_details
+                else project_display_frame(travel_freight_template_df, travel_freight_template_column_order)
+            )
             edited_travel_freight_template_df = st.data_editor(
-                travel_freight_template_df,
+                travel_freight_template_display_df,
                 use_container_width=True,
                 hide_index=True,
                 num_rows="fixed",
@@ -5648,8 +5814,11 @@ def estimator_prototype_page() -> None:
                 if show_row_details
                 else [column for column in ROOFING_ACCESSORY_TEMPLATE_COMPACT_COLUMNS if column in accessory_template_df.columns]
             )
+            accessory_template_display_df = (
+                accessory_template_df if show_row_details else project_display_frame(accessory_template_df, accessory_template_column_order)
+            )
             edited_accessory_template_df = st.data_editor(
-                accessory_template_df,
+                accessory_template_display_df,
                 use_container_width=True,
                 hide_index=True,
                 num_rows="fixed",
@@ -5701,8 +5870,11 @@ def estimator_prototype_page() -> None:
                 if show_row_details
                 else [column for column in ROOFING_LABOR_TEMPLATE_COMPACT_COLUMNS if column in labor_template_df.columns]
             )
+            labor_template_display_df = (
+                labor_template_df if show_row_details else project_display_frame(labor_template_df, labor_template_column_order)
+            )
             edited_labor_template_df = st.data_editor(
-                labor_template_df,
+                labor_template_display_df,
                 use_container_width=True,
                 hide_index=True,
                 num_rows="fixed",

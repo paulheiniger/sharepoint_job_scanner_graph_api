@@ -154,8 +154,49 @@ def test_estimator_workbench_uses_compact_columns_by_default() -> None:
     ]
     source = inspect.getsource(app.estimator_prototype_page)
     assert "Show detailed row diagnostics" in source
-    assert "rows_accepted" in source
-    assert "filters_relaxed" in source
+    assert "project_display_frame" in source
+    assert app.INSULATION_DECISION_SECTION_COLUMNS["insulation_labor_template_decisions"] == [
+        "include",
+        "workbook_row",
+        "labor_task",
+        "days",
+        "crew_size",
+        "daily_rate",
+        "hourly_rate",
+        "total_hours",
+        "formula_mode",
+        "estimated_cost",
+        "compatibility_status",
+        "compatibility_warnings",
+        "notes",
+    ]
+    assert "gal_per_100_sqft" not in app.INSULATION_DECISION_SECTION_COLUMNS["insulation_labor_template_decisions"]
+    assert "total_hours" not in app.INSULATION_DECISION_SECTION_COLUMNS["insulation_detail_material_template_decisions"]
+
+
+def test_project_display_frame_removes_hidden_compact_columns() -> None:
+    app = importlib.import_module("dashboard.app")
+    frame = pd.DataFrame(
+        [
+            {
+                "include": True,
+                "workbook_row": "86",
+                "labor_task": "Foam",
+                "total_hours": 12,
+                "gal_per_100_sqft": 1.5,
+                "feet_per_unit": 10,
+            }
+        ]
+    )
+
+    projected = app.project_display_frame(
+        frame,
+        app.INSULATION_DECISION_SECTION_COLUMNS["insulation_labor_template_decisions"],
+    )
+
+    assert list(projected.columns) == ["include", "workbook_row", "labor_task", "total_hours"]
+    assert "gal_per_100_sqft" not in projected.columns
+    assert "feet_per_unit" not in projected.columns
 
 
 def test_auto_detect_classifies_pipe_boot_leak_as_repair() -> None:
