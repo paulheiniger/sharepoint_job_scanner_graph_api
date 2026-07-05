@@ -62,6 +62,31 @@ def test_deterministic_ai_fallback_handles_clean_notes() -> None:
     assert result["evidence_by_field"]["dimensions"]
 
 
+def test_deterministic_ai_fallback_handles_conditional_coating_restoration_review() -> None:
+    notes = (
+        "Pegasus, 39 Pearce Industrial Rd. Various roof repairs/restoration review. "
+        "Use working roof area 260 ft x 175.27 ft, about 45,570 sq ft. Notes mention ponding, "
+        "penetrations, seams, and multiple repair/detail conditions, so this should not be treated "
+        "as a clean simple coating. Metal roof/coating restoration seems possible, but estimator "
+        "should review primer, rust/fasteners, seam treatment, caulk/detail, fabric/reinforcement, "
+        "and any ponding/wet areas before committing to warranty. Customer likely wants practical "
+        "repairs plus a coating path if the roof can qualify."
+    )
+
+    result = ai_scope_interpreter.interpret_field_notes_with_ai(notes, deterministic_scope={})
+
+    assert result["estimate_mode"] == "restoration"
+    assert result["project_type"] == "roof coating"
+    assert result["coating_required"] is True
+    assert result["coating_path_review"] is True
+    assert result.get("warranty_years") is None
+    assert result["net_sqft"] == 45570.2
+    assert result["defects"]["ponding"] is True
+    assert result["defects"]["open_seams"] is True
+    assert result["defects"]["rusted_fasteners"] is True
+    assert result["scope_triggers"]["coating"] is True
+
+
 def test_deterministic_ai_fallback_handles_rambling_correction_notes() -> None:
     notes = (
         "Hey this is for that metal roof, I first thought it was 100 by 80. "

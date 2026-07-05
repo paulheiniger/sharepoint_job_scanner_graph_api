@@ -2925,7 +2925,10 @@ def apply_scope_to_parsed(parsed: Any, scope: dict[str, Any]) -> None:
             (item == "estimated_sqft" and sqft is not None)
             or (item == "substrate" and first_nonblank(scope.get("substrate")))
             or (item == "roof_condition" and first_nonblank(scope.get("roof_condition")))
-            or (item == "coating/warranty target" and (first_nonblank(scope.get("coating_type")) or warranty is not None))
+            or (
+                item == "coating/warranty target"
+                and (first_nonblank(scope.get("coating_type")) or warranty is not None or scope.get("coating_required"))
+            )
         )
     ]
 
@@ -3041,6 +3044,8 @@ def parsed_fields_for_result(
         "penetrations_complexity_reason",
         "access_complexity_reason",
         "ai_scope_packages",
+        "coating_required",
+        "coating_path_review",
     ):
         if extra_field in scope:
             parsed_fields[extra_field] = scope.get(extra_field)

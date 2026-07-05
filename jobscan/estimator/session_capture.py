@@ -731,6 +731,11 @@ def _source_evidence_snapshot(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "row_traceability": row.get("row_traceability"),
         "workbook_rows_controlled": row.get("workbook_rows_controlled") or row.get("workbook_row"),
+        "decision_proposal": row.get("decision_proposal"),
+        "proposal_source": row.get("proposal_source"),
+        "proposal_confidence": row.get("proposal_confidence"),
+        "proposal_evidence": row.get("proposal_evidence") or {},
+        "proposal_review_reasons": row.get("proposal_review_reasons") or [],
         "decision_recommendation": _maybe_json(row.get("decision_recommendation_json")),
         "decision_source_tables": row.get("decision_source_tables"),
         "decision_filters_applied": row.get("decision_filters_applied"),
@@ -770,6 +775,11 @@ def _decision_record_from_workbench_row(row: dict[str, Any], section: str, *, fi
         "decision_source_jobs_count": row.get("decision_source_jobs_count"),
         "confidence": row.get("confidence"),
         "decision_confidence": row.get("decision_confidence"),
+        "proposal_source": row.get("proposal_source"),
+        "proposal_confidence": row.get("proposal_confidence"),
+        "proposal_review_required": row.get("proposal_review_required"),
+        "proposal_review_reasons": row.get("proposal_review_reasons") or [],
+        "decision_evidence_summary": row.get("decision_evidence_summary"),
         "source_evidence": _source_evidence_snapshot(row),
         "product_guidance_snapshot": _product_guidance_snapshot(row),
     }

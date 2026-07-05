@@ -74,6 +74,13 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 DEFAULT_DATABASE_URL = "postgresql+psycopg2://spraytec:spraytec_dev_password@127.0.0.1:5433/spraytec_ops"
+DECISION_EVIDENCE_DISPLAY_COLUMNS = [
+    "decision_evidence_summary",
+    "proposal_source",
+    "proposal_confidence",
+    "proposal_review_required",
+    "proposal_review_reasons",
+]
 
 MATERIAL_WORKBENCH_COMPACT_COLUMNS = [
     "include",
@@ -93,6 +100,7 @@ MATERIAL_WORKBENCH_COMPACT_COLUMNS = [
     "estimated_cost",
     "decision_evidence_count",
     "decision_confidence",
+    *DECISION_EVIDENCE_DISPLAY_COLUMNS,
     "product_guidance",
     "product_warning_summary",
     "row_traceability",
@@ -165,6 +173,7 @@ INSULATION_FOAM_TEMPLATE_COMPACT_COLUMNS = [
     "resolved_template_option",
     "historical_selector_recommendation",
     "historical_selector_evidence_count",
+    *DECISION_EVIDENCE_DISPLAY_COLUMNS,
     "basis_sqft",
     "thickness_inches",
     "yield_or_coverage",
@@ -175,6 +184,7 @@ INSULATION_FOAM_TEMPLATE_COMPACT_COLUMNS = [
     "selected_pricing_candidate",
     "compatibility_status",
     "compatibility_warnings",
+    *DECISION_EVIDENCE_DISPLAY_COLUMNS,
     "product_guidance",
     "notes",
 ]
@@ -348,6 +358,7 @@ ROOFING_FOAM_TEMPLATE_COMPACT_COLUMNS = [
     "resolved_template_option",
     "historical_selector_recommendation",
     "historical_selector_evidence_count",
+    *DECISION_EVIDENCE_DISPLAY_COLUMNS,
     "basis_sqft",
     "thickness_inches",
     "yield_or_coverage",
@@ -369,6 +380,7 @@ ROOFING_COATING_TEMPLATE_COMPACT_COLUMNS = [
     "resolved_template_option",
     "historical_selector_recommendation",
     "historical_selector_evidence_count",
+    *DECISION_EVIDENCE_DISPLAY_COLUMNS,
     "basis_sqft",
     "gal_per_100_sqft",
     "waste_factor_pct",
@@ -390,6 +402,7 @@ ROOFING_PRIMER_TEMPLATE_COMPACT_COLUMNS = [
     "resolved_template_option",
     "historical_selector_recommendation",
     "historical_selector_evidence_count",
+    *DECISION_EVIDENCE_DISPLAY_COLUMNS,
     "basis_sqft",
     "coverage_sqft_per_unit",
     "unit_price",
@@ -409,6 +422,7 @@ ROOFING_DETAIL_TEMPLATE_COMPACT_COLUMNS = [
     "resolved_template_option",
     "historical_selector_recommendation",
     "historical_selector_evidence_count",
+    *DECISION_EVIDENCE_DISPLAY_COLUMNS,
     "units",
     "linear_ft",
     "unit_price",
@@ -432,6 +446,7 @@ ROOFING_DETAIL_QUANTITY_TEMPLATE_COMPACT_COLUMNS = [
     "estimated_cost",
     "compatibility_status",
     "compatibility_warnings",
+    *DECISION_EVIDENCE_DISPLAY_COLUMNS,
     "notes",
 ]
 
@@ -442,6 +457,7 @@ ROOFING_BOARD_FASTENER_TEMPLATE_COMPACT_COLUMNS = [
     "resolved_template_option",
     "historical_selector_recommendation",
     "historical_selector_evidence_count",
+    *DECISION_EVIDENCE_DISPLAY_COLUMNS,
     "basis_sqft",
     "board_area_sqft",
     "thickness_inches",
@@ -464,6 +480,7 @@ ROOFING_GRANULES_TEMPLATE_COMPACT_COLUMNS = [
     "resolved_template_option",
     "historical_selector_recommendation",
     "historical_selector_evidence_count",
+    *DECISION_EVIDENCE_DISPLAY_COLUMNS,
     "basis_sqft",
     "coverage_lbs_per_100_sqft",
     "bag_weight_lbs",
@@ -484,6 +501,7 @@ ROOFING_EQUIPMENT_TEMPLATE_COMPACT_COLUMNS = [
     "resolved_template_option",
     "historical_selector_recommendation",
     "historical_selector_evidence_count",
+    *DECISION_EVIDENCE_DISPLAY_COLUMNS,
     "basis_sqft",
     "thickness_inches",
     "size",
@@ -495,6 +513,7 @@ ROOFING_EQUIPMENT_TEMPLATE_COMPACT_COLUMNS = [
     "estimated_cost",
     "compatibility_status",
     "compatibility_warnings",
+    *DECISION_EVIDENCE_DISPLAY_COLUMNS,
     "notes",
 ]
 
@@ -510,6 +529,7 @@ ROOFING_TRAVEL_FREIGHT_TEMPLATE_COMPACT_COLUMNS = [
     "estimated_cost",
     "compatibility_status",
     "compatibility_warnings",
+    *DECISION_EVIDENCE_DISPLAY_COLUMNS,
     "notes",
 ]
 
@@ -545,6 +565,7 @@ ROOFING_LABOR_TEMPLATE_COMPACT_COLUMNS = [
     "estimated_cost",
     "historical_selector_evidence_count",
     "decision_confidence",
+    *DECISION_EVIDENCE_DISPLAY_COLUMNS,
     "compatibility_status",
     "compatibility_warnings",
     "notes",
@@ -570,6 +591,7 @@ LABOR_WORKBENCH_COMPACT_COLUMNS = [
     "estimated_cost",
     "decision_evidence_count",
     "decision_confidence",
+    *DECISION_EVIDENCE_DISPLAY_COLUMNS,
     "row_traceability",
     "notes",
 ]

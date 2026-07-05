@@ -679,6 +679,16 @@ def validate_generated_case(case: dict[str, Any], data: EstimatorData | Any) -> 
         for row in draft.get("workbook_decisions") or []
         if isinstance(row, dict) and _safe_float(row.get("workbook_row"), -1) >= 0
     }
+    decision_keys = [
+        (
+            str(row.get("section") or ""),
+            str(row.get("decision_id") or ""),
+            str(row.get("workbook_row") or ""),
+        )
+        for row in draft.get("workbook_decisions") or []
+        if isinstance(row, dict)
+    ]
+    duplicate_decision_row_count = len(decision_keys) - len(set(decision_keys))
     if expected_rows:
         overlap = expected_rows & actual_rows
         if not overlap:
@@ -693,6 +703,8 @@ def validate_generated_case(case: dict[str, Any], data: EstimatorData | Any) -> 
         "parsed_scope": parsed,
         "actual_workbook_rows": sorted(actual_rows),
         "decision_count": len(draft.get("workbook_decisions") or []),
+        "decision_proposal_count": len(workbench.get("decision_proposals") or []),
+        "duplicate_decision_row_count": duplicate_decision_row_count + len(workbench.get("duplicate_decision_rows") or []),
     }
 
 

@@ -13,6 +13,7 @@ from typing import Any
 import pandas as pd
 
 from .decision_history import build_decision_recommendations, recommendation_lookup
+from .decision_proposals import apply_decision_proposals_to_workbench, build_decision_proposals
 from .formula_mirror import (
     calculate_insulation_foam,
     calculate_insulation_abaa_fee,
@@ -3732,6 +3733,25 @@ def _roofing_foam_decision_defaults(data: Any, filters: dict[str, Any] | None) -
     }
 
 
+def _roofing_coating_decision_defaults(data: Any, filters: dict[str, Any] | None) -> dict[str, Any]:
+    decisions = _decision_recommendation_lookup(data, filters) if data is not None else {}
+    decision_id = "roofing_coating_system"
+    return {
+        "selector_code": _decision_value(decisions, decision_id, "selector_code", ""),
+        "resolved_item_name": _decision_value(decisions, decision_id, "resolved_item_name", ""),
+        "warranty_years": _decision_value(decisions, decision_id, "warranty_years", ""),
+        "wet_mils_estimate": _decision_value(decisions, decision_id, "wet_mils_estimate", ""),
+        "gal_per_100_sqft": _decision_value(decisions, decision_id, "gal_per_100_sqft", ""),
+        "gal_per_sqft": _decision_value(decisions, decision_id, "gal_per_sqft", ""),
+        "waste_factor_pct": _decision_value(decisions, decision_id, "waste_factor_pct", ""),
+        "meta": _decision_meta(
+            decisions,
+            decision_id,
+            ["selector_code", "resolved_item_name", "warranty_years", "wet_mils_estimate", "gal_per_100_sqft", "gal_per_sqft", "waste_factor_pct"],
+        ),
+    }
+
+
 def _insulation_foam_decision_defaults(data: Any, filters: dict[str, Any] | None) -> dict[str, Any]:
     decisions = _decision_recommendation_lookup(data, filters) if data is not None else {}
     decision_id = "insulation_foam_system"
@@ -3879,7 +3899,13 @@ def _build_roofing_foam_template_decisions(
                 "selected_pricing_item_id": selected_candidate.get("pricing_item_id"),
                 "pricing_candidates": candidates,
                 "pricing_candidates_json": json.dumps(candidates, default=str),
-                "compatibility_status": "review" if warnings and compatibility.get("compatibility_status") == "compatible" else compatibility.get("compatibility_status"),
+                "compatibility_status": (
+                    "review"
+                    if include and scope.get("coating_path_review")
+                    else "review"
+                    if warnings and compatibility.get("compatibility_status") == "compatible"
+                    else compatibility.get("compatibility_status")
+                ),
                 "compatibility_warnings": warnings,
                 "product_guidance_status": "matched" if selected_candidate.get("product_id") else "missing",
                 "product_id": selected_candidate.get("product_id") or "",
@@ -3981,14 +4007,24 @@ def _build_roofing_coating_template_decisions(
 ) -> list[dict[str, Any]]:
     if _is_insulation_scope(scope):
         return []
+    filters = historical_filters_from_scope(scope)
+    defaults = _roofing_coating_decision_defaults(data, filters)
+    meta = defaults.get("meta") if isinstance(defaults.get("meta"), dict) else {}
     coating_row = coating_row or {}
 
     existing_by_row = {str(row.get("workbook_row") or ""): row for row in existing_rows or [] if isinstance(row, dict)}
-    coating_scope = bool(coating_row.get("include")) or bool(scope.get("coating_type")) or "coating" in _normalized(scope.get("project_type"))
+    coating_scope = (
+        bool(coating_row.get("include"))
+        or bool(scope.get("coating_required"))
+        or bool(scope.get("coating_type"))
+        or "coating" in _normalized(scope.get("project_type"))
+    )
     default_basis = safe_number(first_nonblank(coating_row.get("editable_basis_sqft"), coating_row.get("default_basis_sqft"), _estimate_area(scope)), 0.0)
     base_historical_option = _coating_historical_option(coating_row, scope)
+    base_historical_option = str(first_nonblank(defaults.get("resolved_item_name"), base_historical_option))
     base_selector_code = first_nonblank(
         coating_row.get("selector_code"),
+        defaults.get("selector_code"),
         _roofing_selector_code_for_option(base_historical_option),
         _default_roofing_selector_code_for_scope(scope),
     )
@@ -4023,12 +4059,14 @@ def _build_roofing_coating_template_decisions(
     default_total_gal_per_100 = positive_number(
         safe_number(coating_row.get("editable_qty_per_sqft"), 0.0) * 100,
         safe_number(coating_row.get("historical_qty_per_sqft"), 0.0) * 100,
+        defaults.get("gal_per_100_sqft"),
+        safe_number(defaults.get("gal_per_sqft"), 0.0) * 100,
         decision_values.get("gal_per_100_sqft"),
         coating_row.get("gal_per_100_sqft"),
         default=1.0,
     )
     default_gal_per_100 = default_total_gal_per_100 / default_include_count
-    default_waste = safe_number(first_nonblank(coating_row.get("waste_factor_pct"), decision_values.get("waste_factor_pct"), 0), 0.0)
+    default_waste = safe_number(first_nonblank(coating_row.get("waste_factor_pct"), decision_values.get("waste_factor_pct"), defaults.get("waste_factor_pct"), 0), 0.0)
     default_selected_candidate = first_nonblank(coating_row.get("item_name"), coating_row.get("current_item"))
 
     rows: list[dict[str, Any]] = []
@@ -4062,6 +4100,15 @@ def _build_roofing_coating_template_decisions(
             0.0,
         )
         include = bool(existing["include"]) if "include" in existing else bool(row_number in default_included_rows)
+        evidence_count = int(
+            max(
+                safe_number(existing.get("decision_evidence_count"), 0),
+                safe_number(existing.get("historical_selector_evidence_count"), 0),
+                safe_number(coating_row.get("decision_evidence_count"), 0),
+                safe_number(coating_row.get("evidence_count"), 0),
+                safe_number(meta.get("decision_evidence_count"), 0),
+            )
+        )
         basis_sqft = safe_number(first_nonblank(existing.get("basis_sqft"), default_basis), 0.0)
         gal_per_100 = positive_number(
             "" if material_rate_override else existing.get("gal_per_100_sqft"),
@@ -4087,6 +4134,8 @@ def _build_roofing_coating_template_decisions(
         )
         if gal_per_100 <= 0:
             warnings.append("Gallons per 100 sqft is missing; formula output requires estimator review.")
+        if include and scope.get("coating_path_review"):
+            warnings.append("Conditional coating/restoration path requires estimator qualification before final warranty or product commitment.")
         product_id = selected_candidate.get("product_id") or existing.get("product_id") or ""
         product_name = selected_candidate.get("product_name") or existing.get("product_name") or existing.get("product_knowledge_product_name") or ""
         product_manufacturer = selected_candidate.get("manufacturer") or existing.get("product_manufacturer") or ""
@@ -4110,33 +4159,20 @@ def _build_roofing_coating_template_decisions(
                 "historical_selector_recommendation": historical_option,
                 "historical_selector_code": _roofing_selector_code_for_option(historical_option),
                 "historical_selector_evidence_count": int(
-                    safe_number(
-                        existing.get("historical_selector_evidence_count")
-                        or existing.get("decision_evidence_count")
-                        or coating_row.get("decision_evidence_count")
-                        or coating_row.get("evidence_count"),
-                        0,
-                    )
+                    evidence_count
                 ),
                 "historical_selector_confidence": existing.get("historical_selector_confidence")
                 or existing.get("decision_confidence")
                 or coating_row.get("decision_confidence")
                 or coating_row.get("confidence")
+                or meta.get("decision_confidence")
                 or "",
-                "decision_evidence_count": int(
-                    safe_number(
-                        existing.get("decision_evidence_count")
-                        or existing.get("historical_selector_evidence_count")
-                        or coating_row.get("decision_evidence_count")
-                        or coating_row.get("evidence_count"),
-                        0,
-                    )
-                ),
-                "decision_confidence": existing.get("decision_confidence") or coating_row.get("decision_confidence") or coating_row.get("confidence") or "",
-                "decision_source_tables": existing.get("decision_source_tables") or coating_row.get("decision_source_tables"),
-                "decision_filters_applied": existing.get("decision_filters_applied") or coating_row.get("decision_filters_applied"),
-                "decision_filters_relaxed": existing.get("decision_filters_relaxed") or coating_row.get("decision_filters_relaxed"),
-                "evidence_summary": existing.get("evidence_summary") or coating_row.get("evidence_summary"),
+                "decision_evidence_count": evidence_count,
+                "decision_confidence": existing.get("decision_confidence") or coating_row.get("decision_confidence") or coating_row.get("confidence") or meta.get("decision_confidence") or "",
+                "decision_source_tables": existing.get("decision_source_tables") or coating_row.get("decision_source_tables") or meta.get("decision_source_tables"),
+                "decision_filters_applied": existing.get("decision_filters_applied") or coating_row.get("decision_filters_applied") or meta.get("decision_filters_applied"),
+                "decision_filters_relaxed": existing.get("decision_filters_relaxed") or coating_row.get("decision_filters_relaxed") or meta.get("decision_filters_relaxed"),
+                "evidence_summary": existing.get("evidence_summary") or coating_row.get("evidence_summary") or meta.get("decision_recommendation_json"),
                 "basis_sqft": round(basis_sqft, 2),
                 "gal_per_100_sqft": round(gal_per_100, 6),
                 "gal_per_sqft": round(safe_number(formula.get("gal_per_sqft"), 0.0), 8),
@@ -4151,7 +4187,13 @@ def _build_roofing_coating_template_decisions(
                 "selected_pricing_item_id": selected_candidate.get("pricing_item_id"),
                 "pricing_candidates": candidates,
                 "pricing_candidates_json": json.dumps(candidates, default=str),
-                "compatibility_status": "review" if warnings and compatibility.get("compatibility_status") == "compatible" else compatibility.get("compatibility_status"),
+                "compatibility_status": (
+                    "review"
+                    if include and scope.get("coating_path_review")
+                    else "review"
+                    if warnings and compatibility.get("compatibility_status") == "compatible"
+                    else compatibility.get("compatibility_status")
+                ),
                 "compatibility_warnings": warnings,
                 "product_guidance_status": product_context_status,
                 "product_id": product_id,
@@ -4185,7 +4227,7 @@ def _build_roofing_coating_template_decisions(
                 "recommended_decision_value": {
                     "selector_code": _roofing_selector_code_for_option(historical_option),
                     "resolved_template_option": historical_option,
-                    "evidence_count": int(safe_number(coating_row.get("decision_evidence_count") or coating_row.get("evidence_count"), 0)),
+                    "evidence_count": evidence_count,
                 },
                 "calculated_output": formula.get("estimated_cost"),
                 "calculated_output_summary": _value_summary(
@@ -4303,6 +4345,14 @@ def _build_roofing_primer_template_decisions(
         ),
         0.0,
     )
+    evidence_count = int(
+        max(
+            safe_number(existing.get("decision_evidence_count"), 0),
+            safe_number(existing.get("historical_selector_evidence_count"), 0),
+            safe_number(primer_row.get("decision_evidence_count"), 0),
+            safe_number(primer_row.get("evidence_count"), 0),
+        )
+    )
     formula = calculate_roofing_primer(
         area_sqft=basis_sqft,
         coverage_sqft_per_unit=coverage,
@@ -4337,8 +4387,10 @@ def _build_roofing_primer_template_decisions(
             "selector_options_json": json.dumps(_roofing_primer_selector_options(), default=str),
             "historical_selector_recommendation": historical_option,
             "historical_selector_code": _roofing_primer_selector_code_for_option(historical_option),
-            "historical_selector_evidence_count": int(safe_number(primer_row.get("decision_evidence_count") or primer_row.get("evidence_count"), 0)),
+            "historical_selector_evidence_count": evidence_count,
             "historical_selector_confidence": primer_row.get("decision_confidence") or primer_row.get("confidence") or "",
+            "decision_evidence_count": evidence_count,
+            "decision_confidence": primer_row.get("decision_confidence") or primer_row.get("confidence") or "",
             "basis_sqft": round(basis_sqft, 2),
             "coverage_sqft_per_unit": round(coverage, 4),
             "unit_price": round(unit_price, 4),
@@ -4381,7 +4433,7 @@ def _build_roofing_primer_template_decisions(
             "recommended_decision_value": {
                 "selector_code": _roofing_primer_selector_code_for_option(historical_option),
                 "resolved_template_option": historical_option,
-                "evidence_count": int(safe_number(primer_row.get("decision_evidence_count") or primer_row.get("evidence_count"), 0)),
+                "evidence_count": evidence_count,
             },
             "calculated_output": formula.get("estimated_cost"),
             "calculated_output_summary": _value_summary(
@@ -4471,6 +4523,14 @@ def _build_roofing_detail_template_decisions(
             ),
             0.0,
         )
+        evidence_count = int(
+            max(
+                safe_number(existing.get("decision_evidence_count"), 0),
+                safe_number(existing.get("historical_selector_evidence_count"), 0),
+                safe_number((caulk_row or {}).get("decision_evidence_count"), 0),
+                safe_number((caulk_row or {}).get("evidence_count"), 0),
+            )
+        )
         units = positive_number(
             existing.get("units"),
             existing.get("estimated_units"),
@@ -4511,8 +4571,10 @@ def _build_roofing_detail_template_decisions(
                 "selector_options_json": json.dumps(_roofing_caulk_selector_options(row_number), default=str),
                 "historical_selector_recommendation": first_nonblank((caulk_row or {}).get("recommended_decision_value"), resolved_option),
                 "historical_selector_code": _roofing_caulk_selector_code_for_option(first_nonblank((caulk_row or {}).get("recommended_decision_value"), resolved_option)),
-                "historical_selector_evidence_count": int(safe_number((caulk_row or {}).get("decision_evidence_count") or (caulk_row or {}).get("evidence_count"), 0)),
+                "historical_selector_evidence_count": evidence_count,
                 "historical_selector_confidence": (caulk_row or {}).get("decision_confidence") or (caulk_row or {}).get("confidence") or "",
+                "decision_evidence_count": evidence_count,
+                "decision_confidence": (caulk_row or {}).get("decision_confidence") or (caulk_row or {}).get("confidence") or "",
                 "units": round(units, 4),
                 "estimated_units": formula.get("units"),
                 "unit_price": round(unit_price, 4),
@@ -4552,7 +4614,7 @@ def _build_roofing_detail_template_decisions(
                 "recommended_decision_value": {
                     "selector_code": _roofing_caulk_selector_code_for_option(first_nonblank((caulk_row or {}).get("recommended_decision_value"), resolved_option)),
                     "resolved_template_option": first_nonblank((caulk_row or {}).get("recommended_decision_value"), resolved_option),
-                    "evidence_count": int(safe_number((caulk_row or {}).get("decision_evidence_count") or (caulk_row or {}).get("evidence_count"), 0)),
+                    "evidence_count": evidence_count,
                 },
                 "calculated_output": formula.get("estimated_cost"),
                 "calculated_output_summary": _value_summary({"units": formula.get("units"), "cost": formula.get("estimated_cost")}),
@@ -4587,6 +4649,14 @@ def _build_roofing_detail_template_decisions(
             (fabric_row or {}).get("current_price"),
         ),
         0.0,
+    )
+    evidence_count = int(
+        max(
+            safe_number(existing.get("decision_evidence_count"), 0),
+            safe_number(existing.get("historical_selector_evidence_count"), 0),
+            safe_number((fabric_row or {}).get("decision_evidence_count"), 0),
+            safe_number((fabric_row or {}).get("evidence_count"), 0),
+        )
     )
     linear_ft = positive_number(
         existing.get("linear_ft"),
@@ -4624,8 +4694,10 @@ def _build_roofing_detail_template_decisions(
             "selector_options_json": "[]",
             "historical_selector_recommendation": first_nonblank((fabric_row or {}).get("recommended_decision_value"), "Fabric"),
             "historical_selector_code": "",
-            "historical_selector_evidence_count": int(safe_number((fabric_row or {}).get("decision_evidence_count") or (fabric_row or {}).get("evidence_count"), 0)),
+            "historical_selector_evidence_count": evidence_count,
             "historical_selector_confidence": (fabric_row or {}).get("decision_confidence") or (fabric_row or {}).get("confidence") or "",
+            "decision_evidence_count": evidence_count,
+            "decision_confidence": (fabric_row or {}).get("decision_confidence") or (fabric_row or {}).get("confidence") or "",
             "linear_ft": round(linear_ft, 4),
             "units": round(linear_ft, 4),
             "estimated_units": formula.get("units"),
@@ -4663,7 +4735,7 @@ def _build_roofing_detail_template_decisions(
             },
             "recommended_decision_value": {
                 "resolved_template_option": first_nonblank((fabric_row or {}).get("recommended_decision_value"), "Fabric"),
-                "evidence_count": int(safe_number((fabric_row or {}).get("decision_evidence_count") or (fabric_row or {}).get("evidence_count"), 0)),
+                "evidence_count": evidence_count,
             },
             "calculated_output": formula.get("estimated_cost"),
             "calculated_output_summary": _value_summary({"linear_ft": formula.get("linear_ft"), "cost": formula.get("estimated_cost")}),
@@ -6410,6 +6482,8 @@ def _scope_from_recommendation(recommendation: Any) -> dict[str, Any]:
         "penetrations_complexity": first_nonblank(parsed.get("penetrations_complexity"), parsed.get("penetration_complexity"), ""),
         "penetration_count": parsed.get("penetration_count"),
         "notes": first_nonblank(parsed.get("notes"), parsed.get("raw_notes"), parsed.get("field_notes"), parsed.get("input_notes"), ""),
+        "coating_required": bool(parsed.get("coating_required")),
+        "coating_path_review": bool(parsed.get("coating_path_review")),
     }
     for field in (
         "building_footprint_length_ft",
@@ -6489,7 +6563,10 @@ def _package_suggestion_status(recommendation: Any, package: str, scope: dict[st
             if row.get("included_in_total") is False or row.get("needs_review") is True or row.get("review_required") is True:
                 return "review"
             return "yes"
-    if package == "coating" and first_nonblank((_rec_value(recommendation, "parsed_fields", {}) or {}).get("coating_type")):
+    if package == "coating" and (
+        (scope is not None and scope.get("coating_required"))
+        or first_nonblank((_rec_value(recommendation, "parsed_fields", {}) or {}).get("coating_type"))
+    ):
         return "yes"
     if package == "primer" and _has_positive_note_signal(note_text, ["primer", "prime", "priming", "rust", "oxidation", "adhesion"]):
         return "review"
@@ -6500,6 +6577,42 @@ def _package_suggestion_status(recommendation: Any, package: str, scope: dict[st
     if package == "caulk_detail" and _has_positive_note_signal(note_text, ["curb", "penetration", "pipe boot", "pitch pocket", "detail", "caulk", "sealant"]):
         return "review"
     return "no"
+
+
+def _material_plan_row_for_category(recommendation: Any, scope: dict[str, Any], *categories: str) -> dict[str, Any] | None:
+    return _material_plan_row_for_category_from_rows(_records(_rec_value(recommendation, "material_plan", [])), scope, *categories)
+
+
+def _material_plan_row_for_category_from_rows(rows: list[dict[str, Any]], scope: dict[str, Any], *categories: str) -> dict[str, Any] | None:
+    wanted = {_normalized(category) for category in categories if category}
+    if not wanted:
+        return None
+    area = _estimate_area(scope)
+    for row in rows:
+        category = _normalized(first_nonblank(row.get("category"), row.get("package"), row.get("template_bucket")))
+        text = _normalized(" ".join(str(row.get(key) or "") for key in ("category", "package", "template_bucket", "item", "notes")))
+        if category not in wanted and not any(item in text for item in wanted):
+            continue
+        normalized = dict(row)
+        _fill_blank(normalized, "item_name", first_nonblank(row.get("item_name"), row.get("item"), row.get("current_pricing_item")))
+        _fill_blank(normalized, "current_item", first_nonblank(row.get("current_item"), row.get("current_pricing_item"), row.get("item")))
+        _fill_blank(normalized, "current_unit_price", first_nonblank(row.get("current_unit_price"), row.get("unit_price")))
+        _fill_blank(normalized, "current_price", first_nonblank(row.get("current_price"), row.get("unit_price")))
+        _fill_blank(normalized, "decision_evidence_count", first_nonblank(row.get("decision_evidence_count"), row.get("evidence_count"), row.get("matched_comparable_job_count")))
+        _fill_blank(normalized, "decision_confidence", first_nonblank(row.get("decision_confidence"), row.get("confidence")))
+        quantity = safe_number(first_nonblank(row.get("estimated_quantity"), row.get("quantity")), 0.0)
+        if area > 0 and quantity > 0 and not normalized.get("editable_qty_per_sqft"):
+            normalized["editable_qty_per_sqft"] = quantity / area
+            normalized["historical_qty_per_sqft"] = quantity / area
+        _fill_blank(normalized, "selected_item_reason", first_nonblank(row.get("applies_reason"), row.get("notes")))
+        _fill_blank(normalized, "item_source", first_nonblank(row.get("selected_price_source"), row.get("source_type"), row.get("price_source_type")))
+        return normalized
+    return None
+
+
+def _fill_blank(row: dict[str, Any], key: str, value: Any) -> None:
+    if row.get(key) in (None, "") and value not in (None, ""):
+        row[key] = value
 
 
 def _plan_included_labor(recommendation: Any, package: str) -> bool:
@@ -7292,7 +7405,8 @@ def _is_coating_scope(scope: dict[str, Any], notes: str = "") -> bool:
     coating_type = _normalized(scope.get("coating_type"))
     text = _normalized(notes)
     return bool(
-        coating_type
+        scope.get("coating_required")
+        or coating_type
         or "coating" in project_type
         or "restoration" in project_type
         or "coating" in text
@@ -7933,6 +8047,7 @@ def build_estimating_workbench(
     historical_filters: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     scope = {**_scope_from_recommendation(recommendation), **(scope_override or {})}
+    source_material_plan = _records(_rec_value(recommendation, "material_plan", []))
     filters = {**historical_filters_from_scope(scope), **(historical_filters or {})}
     estimate_id = first_nonblank((_rec_value(recommendation, "parsed_fields", {}) or {}).get("run_id"), f"estimate-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}")
     review_flags = list(_rec_value(recommendation, "review_flags", []) or [])
@@ -7950,21 +8065,25 @@ def build_estimating_workbench(
         if not _is_insulation_scope(scope)
         else []
     )
+    coating_plan_row = _material_plan_row_for_category(recommendation, scope, "coating") if not _is_insulation_scope(scope) else None
+    primer_plan_row = _material_plan_row_for_category(recommendation, scope, "primer") if not _is_insulation_scope(scope) else None
+    caulk_plan_row = _material_plan_row_for_category(recommendation, scope, "caulk_detail", "caulk_sealant") if not _is_insulation_scope(scope) else None
+    fabric_plan_row = _material_plan_row_for_category(recommendation, scope, "fabric", "reinforcement") if not _is_insulation_scope(scope) else None
     roofing_coating_template_decisions = (
-        _build_roofing_coating_template_decisions(scope=scope, coating_row=None, data=data)
+        _build_roofing_coating_template_decisions(scope=scope, coating_row=coating_plan_row, data=data)
         if not _is_insulation_scope(scope)
         else []
     )
     roofing_primer_template_decisions = (
-        _build_roofing_primer_template_decisions(scope=scope, primer_row=None, data=data)
+        _build_roofing_primer_template_decisions(scope=scope, primer_row=primer_plan_row, data=data)
         if not _is_insulation_scope(scope)
         else []
     )
     roofing_detail_template_decisions = (
         _build_roofing_detail_template_decisions(
             scope=scope,
-            caulk_row=None,
-            fabric_row=None,
+            caulk_row=caulk_plan_row,
+            fabric_row=fabric_plan_row,
             data=data,
         )
         if not _is_insulation_scope(scope)
@@ -8130,6 +8249,7 @@ def build_estimating_workbench(
     workbench = {
         "estimate_id": estimate_id,
         "scope": scope,
+        "source_material_plan": source_material_plan,
         "historical_filters": filters,
         "historical_filter_hash": historical_filter_hash(filters),
         "area_calculation_trace": area_trace,
@@ -8167,6 +8287,7 @@ def build_estimating_workbench(
             }
         ],
     }
+    workbench["decision_proposals"] = build_decision_proposals(scope, recommendation=recommendation, data=data)
     return recalculate_workbench_tables(workbench)
 
 
@@ -8179,6 +8300,13 @@ def _records_from_editor(value: Any) -> list[dict[str, Any]]:
 def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float = DEFAULT_HOURLY_RATE) -> dict[str, Any]:
     updated = deepcopy(workbench)
     scope = updated.setdefault("scope", {})
+    source_material_plan = _records(updated.get("source_material_plan") or [])
+    if updated.get("decision_proposals"):
+        updated = apply_decision_proposals_to_workbench(
+            updated,
+            updated.get("decision_proposals") or [],
+            decision_sections=WORKBENCH_DECISION_SECTIONS,
+        )
     if _is_insulation_scope(scope):
         updated["insulation_surfaces"] = _build_insulation_surface_rows_for_workbench(
             scope,
@@ -8193,6 +8321,10 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
             existing_rows=updated.get("insulation_foam_template_decisions") or None,
         )
     if not _is_insulation_scope(scope):
+        coating_plan_row = _material_plan_row_for_category_from_rows(source_material_plan, scope, "coating")
+        primer_plan_row = _material_plan_row_for_category_from_rows(source_material_plan, scope, "primer")
+        caulk_plan_row = _material_plan_row_for_category_from_rows(source_material_plan, scope, "caulk_detail", "caulk_sealant")
+        fabric_plan_row = _material_plan_row_for_category_from_rows(source_material_plan, scope, "fabric", "reinforcement")
         if "roofing_foam_template_decisions" in updated:
             updated["roofing_foam_template_decisions"] = _build_roofing_foam_template_decisions(
                 scope=scope,
@@ -8200,20 +8332,20 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
             )
         updated["roofing_coating_template_decisions"] = _build_roofing_coating_template_decisions(
             scope=scope,
-            coating_row=None,
+            coating_row=coating_plan_row,
             existing_rows=updated.get("roofing_coating_template_decisions") or None,
         )
         if "roofing_primer_template_decisions" in updated:
             updated["roofing_primer_template_decisions"] = _build_roofing_primer_template_decisions(
                 scope=scope,
-                primer_row=None,
+                primer_row=primer_plan_row,
                 existing_rows=updated.get("roofing_primer_template_decisions") or None,
             )
         if "roofing_detail_template_decisions" in updated:
             updated["roofing_detail_template_decisions"] = _build_roofing_detail_template_decisions(
                 scope=scope,
-                caulk_row=None,
-                fabric_row=None,
+                caulk_row=caulk_plan_row,
+                fabric_row=fabric_plan_row,
                 existing_rows=updated.get("roofing_detail_template_decisions") or None,
             )
         if "roofing_detail_quantity_template_decisions" in updated:
@@ -8344,6 +8476,11 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
     updated.pop("materials", None)
     updated.pop("labor", None)
     updated.pop("adders", None)
+    updated = apply_decision_proposals_to_workbench(
+        updated,
+        updated.get("decision_proposals") or [],
+        decision_sections=WORKBENCH_DECISION_SECTIONS,
+    )
     return updated
 
 

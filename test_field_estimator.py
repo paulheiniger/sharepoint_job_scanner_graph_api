@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
+import pytest
 
 import jobscan.estimator.field_estimator as field_estimator_module
 from jobscan.estimator.field_estimator import build_labor_plan, build_material_plan, estimate_from_field_notes
 from jobscan.estimator.field_notes import parse_field_notes, parse_field_sqft
 from jobscan.estimator.schemas import EstimatorAssumptions, EstimatorData
+from jobscan.estimator.workbench import build_estimating_workbench
 
 
 TEST_CASE_A_NOTE = (
@@ -23,6 +27,9 @@ INSULATION_EMAIL = (
     "The building will have two 9ft rollup doors, two 36\" walk-in doors and five 24\"x36\" windows. "
     "The building is being installed beginning to mid-August and I would like the work in September or October."
 )
+
+
+GENERATED_CASES_ROOT = Path("output/estimator_generated_cases/cases")
 
 
 def field_data(*, with_template_rows: bool = True, with_pricing: bool = True, with_fallback: bool = False) -> EstimatorData:
@@ -206,6 +213,48 @@ def test_clean_standing_seam_maintenance_coating_does_not_infer_rust_or_seam_tre
     assert not any(row.get("included_in_total") is not False and row.get("estimated_cost") for row in seam_rows)
     runtime = recommendation.debug.get("runtime_seconds_by_stage") or {}
     assert runtime.get("select_materials", 999) < 10
+
+
+def test_pegasus_reviewed_notes_create_conditional_coating_scope_and_workbench_defaults() -> None:
+    note = (
+        GENERATED_CASES_ROOT
+        / "hist_roofing_pegasus_39_pearce_various_repairs_2025_ponding_pens_seams"
+        / "notes_chat_reviewed.txt"
+    ).read_text()
+
+    recommendation = estimate_from_field_notes(note, data=field_data())
+    parsed = recommendation.parsed_fields
+
+    assert parsed["estimated_sqft"] == pytest.approx(45570.2, abs=0.1)
+    assert parsed["project_type"] == "roof coating"
+    assert parsed["coating_required"] is True
+    assert parsed["coating_path_review"] is True
+    assert parsed.get("warranty_target_years") is None
+    assert parsed["condition_detail_flags"]
+    assert {"ponding", "penetrations", "open_seams", "rusted_fasteners"}.issubset(
+        set(parsed["condition_detail_flags"])
+    )
+
+    workbench = build_estimating_workbench(recommendation, field_data())
+    included_coating_rows = [
+        row for row in workbench["roofing_coating_template_decisions"] if row.get("include")
+    ]
+    assert [row["workbook_row"] for row in included_coating_rows] == ["26", "27"]
+    assert all(row["basis_sqft"] == pytest.approx(45570.2, abs=0.1) for row in included_coating_rows)
+    assert all(row["estimated_gallons"] > 0 for row in included_coating_rows)
+    assert all(row["compatibility_status"] == "review" for row in included_coating_rows)
+    assert any(
+        "Conditional coating/restoration path" in warning
+        for row in included_coating_rows
+        for warning in row.get("compatibility_warnings", [])
+    )
+
+    included_detail_rows = {
+        row["template_bucket"]
+        for row in workbench["roofing_detail_quantity_template_decisions"]
+        if row.get("include")
+    }
+    assert {"seams_misc", "penetrations"}.issubset(included_detail_rows)
 
 
 def test_missing_sqft_triggers_review() -> None:
@@ -1173,6 +1222,36 @@ def test_insulation_email_routes_and_parses_building_dimensions() -> None:
     assert recommendation.estimate_status == "READY_TO_ESTIMATE"
     assert recommendation.estimate_low is None
     assert not recommendation.material_plan or all(row.get("category") != "coating" for row in recommendation.material_plan)
+
+
+def test_reviewed_insulation_generated_formula_notes_parse_wall_and_ceiling_area() -> None:
+    cases = [
+        (
+            "hist_insulation_massey_eric_pole_barn",
+            pytest.approx(2999.88, abs=0.1),
+            pytest.approx(1739.88, abs=0.1),
+            pytest.approx(1260.0, abs=0.1),
+        ),
+        (
+            "hist_insulation_ku_ghent_4g_coal_conveyor_belt_ramp",
+            pytest.approx(1749.39, abs=0.1),
+            pytest.approx(1014.39, abs=0.1),
+            pytest.approx(735.0, abs=0.1),
+        ),
+    ]
+
+    for case_dir, expected_total, expected_walls, expected_ceiling in cases:
+        note = (GENERATED_CASES_ROOT / case_dir / "notes_chat_reviewed.txt").read_text()
+        parsed = estimate_from_field_notes(note, data=EstimatorData()).parsed_fields
+
+        assert parsed["division"] == "Insulation"
+        assert parsed["estimated_sqft"] == expected_total
+        assert parsed["gross_insulation_area_sqft"] == expected_total
+        assert parsed["net_insulation_area_sqft"] == expected_total
+        assert parsed["gross_wall_area_sqft"] == expected_walls
+        assert parsed["ceiling_area_sqft"] == expected_ceiling
+        assert parsed["outside_walls_included"] is True
+        assert parsed["ceiling_included"] is True
 
 
 def test_insulation_explicit_opening_dimensions_compute_net_area() -> None:

@@ -14,6 +14,14 @@ from .workbench import recalculate_workbench_tables, summarize_workbench_totals,
 
 DEFAULT_WORKBENCH_EXPORT_DIR = Path("output/estimator_workbench_exports")
 EXCEL_CELL_LIMIT = 32000
+PROPOSAL_EVIDENCE_COLUMNS = [
+    "decision_evidence_summary",
+    "proposal_source",
+    "proposal_confidence",
+    "proposal_review_required",
+    "proposal_review_reasons",
+    "proposal_evidence",
+]
 
 INSULATION_DECISION_SECTION_COLUMNS = {
     "insulation_detail_material_template_decisions": [
@@ -197,8 +205,9 @@ def _write_xlsx(path: Path, sheets: dict[str, Any]) -> None:
 
 def _compact_rows(rows: list[dict[str, Any]], columns: list[str]) -> list[dict[str, Any]]:
     compact: list[dict[str, Any]] = []
+    requested_columns = list(dict.fromkeys([*columns, *PROPOSAL_EVIDENCE_COLUMNS]))
     for row in rows or []:
-        compact.append({column: row.get(column) for column in columns if column in row})
+        compact.append({column: row.get(column) for column in requested_columns if column in row})
     return compact
 
 
@@ -248,6 +257,11 @@ def _decision_trace_rows(
                     "estimated_cost": row.get("estimated_cost"),
                     "evidence_count": row.get("decision_evidence_count") or row.get("evidence_count"),
                     "confidence": row.get("decision_confidence") or row.get("confidence"),
+                    "decision_evidence_summary": row.get("decision_evidence_summary"),
+                    "proposal_source": row.get("proposal_source"),
+                    "proposal_confidence": row.get("proposal_confidence"),
+                    "proposal_review_required": row.get("proposal_review_required"),
+                    "proposal_review_reasons": row.get("proposal_review_reasons"),
                     "row_traceability": row.get("row_traceability"),
                     "notes": row.get("notes"),
                 }
@@ -440,6 +454,11 @@ def build_workbench_review_payloads(
                     "estimated_cost": row.get("estimated_cost"),
                     "evidence_count": row.get("decision_evidence_count") or row.get("evidence_count"),
                     "confidence": row.get("decision_confidence") or row.get("confidence"),
+                    "decision_evidence_summary": row.get("decision_evidence_summary"),
+                    "proposal_source": row.get("proposal_source"),
+                    "proposal_confidence": row.get("proposal_confidence"),
+                    "proposal_review_required": row.get("proposal_review_required"),
+                    "proposal_review_reasons": row.get("proposal_review_reasons"),
                     "row_traceability": row.get("row_traceability"),
                     "notes": row.get("notes"),
                 }

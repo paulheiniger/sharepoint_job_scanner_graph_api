@@ -14,6 +14,7 @@ from jobscan.estimator.generated_cases import (
     write_generated_case_outputs,
 )
 from jobscan.estimator.schemas import EstimatorData
+from scripts.evaluate_generated_case_reviewed_notes import _row_overlap, _scope_checks
 
 
 def generated_case_data() -> EstimatorData:
@@ -237,6 +238,111 @@ def test_outputs_include_jsonl_xlsx_and_per_case_files(tmp_path) -> None:
     assert (first_dir / "notes.txt").exists()
     assert (first_dir / "source_decisions.json").exists()
     assert (first_dir / "validation.json").exists()
+
+
+def test_reviewed_notes_evaluator_filters_decision_row_overlap_from_scaffolding() -> None:
+    case = {
+        "expected_workbook_rows": [1, 26, 27, 116, 163, 173],
+        "expected_decisions": [
+            {"workbook_row": 1, "line_item_kind": "header"},
+            {"workbook_row": 26, "line_item_kind": "material"},
+            {"workbook_row": 27, "line_item_kind": "material", "template_bucket": "coating"},
+            {"workbook_row": 116, "line_item_kind": "labor"},
+            {"workbook_row": 163, "line_item_kind": "total"},
+            {"workbook_row": 173, "line_item_kind": "other"},
+        ],
+    }
+    validation = {"actual_workbook_rows": [26, 116], "notes": "Customer requested coating."}
+
+    result = _row_overlap(case, validation)
+
+    assert result["raw_expected_row_count"] == 6
+    assert result["raw_overlap_ratio"] == 2 / 6
+    assert result["decision_expected_row_count"] == 3
+    assert result["decision_row_overlap_ratio"] == 2 / 3
+    assert result["scaffold_expected_row_count"] == 3
+    assert result["decision_missing_rows"] == [27]
+    assert result["raw_expected_rows"] == [1, 26, 27, 116, 163, 173]
+    assert result["missing_decision_rows_by_reason"]["prompt_evidenced"] == [27]
+    assert result["prompt_evidenced_decision_pass"] is False
+    assert result["baseline_required_decision_pass"] is True
+    assert result["duplicate_decision_row_pass"] is True
+
+
+def test_reviewed_notes_evaluator_tracks_duplicate_decision_rows_and_historical_only_rows() -> None:
+    case = {
+        "template_type": "roofing",
+        "expected_workbook_rows": [39, 79],
+        "expected_decisions": [
+            {"workbook_row": 39, "line_item_kind": "material", "template_bucket": "primer"},
+            {"workbook_row": 79, "line_item_kind": "material", "template_bucket": "fabric"},
+        ],
+    }
+    validation = {
+        "actual_workbook_rows": [],
+        "notes": "Review primer for rust. No fabric is mentioned.",
+        "duplicate_decision_row_count": 2,
+    }
+
+    result = _row_overlap(case, validation)
+
+    assert result["missing_decision_rows_by_reason"]["conditional_review"] == [39]
+    assert result["missing_decision_rows_by_reason"]["historical_only"] == [79]
+    assert result["conditional_review_decision_pass"] is False
+    assert result["hidden_historical_only_count"] == 1
+    assert result["duplicate_decision_row_count"] == 2
+    assert result["duplicate_decision_row_pass"] is False
+
+
+def test_reviewed_notes_evaluator_treats_hidden_warranty_as_not_evidenced() -> None:
+    case = {
+        "expected_scope_fields": {
+            "estimated_sqft": 10000,
+            "project_type": "roof coating",
+            "warranty_years": 15,
+        }
+    }
+    validation = {
+        "notes": "Metal roof/coating restoration seems possible if the roof can qualify.",
+        "parsed_scope": {
+            "estimated_sqft": 10000,
+            "project_type": "roof coating",
+            "coating_required": True,
+            "coating_path_review": True,
+            "warranty_target_years": None,
+        },
+    }
+
+    result = _scope_checks(case, validation)
+
+    assert result["scope_area_pass"] is True
+    assert result["coating_path_pass"] is True
+    assert result["explicit_warranty_pass"] is True
+    assert result["warranty_evaluation_reason"] == "not_evidenced_in_reviewed_notes"
+
+
+def test_reviewed_notes_evaluator_checks_warranty_when_reviewed_note_states_duration() -> None:
+    case = {
+        "expected_scope_fields": {
+            "estimated_sqft": 10000,
+            "project_type": "roof coating",
+            "warranty_years": 15,
+        }
+    }
+    validation = {
+        "notes": "Customer requests a 15-year silicone coating warranty.",
+        "parsed_scope": {
+            "estimated_sqft": 10000,
+            "project_type": "roof coating",
+            "coating_required": True,
+            "warranty_target_years": None,
+        },
+    }
+
+    result = _scope_checks(case, validation)
+
+    assert result["explicit_warranty_pass"] is False
+    assert result["warranty_evaluation_reason"] == "explicit_in_reviewed_notes"
 
 
 def test_cli_dry_run_writes_ten_cases_without_openai(tmp_path, monkeypatch) -> None:

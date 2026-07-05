@@ -120,6 +120,24 @@ def parse_field_warranty_target(text: str) -> int | None:
     return candidates[0][1]
 
 
+def _has_conditional_coating_path(text: str) -> bool:
+    lowered = clean_text(text).lower()
+    patterns = (
+        r"\bcoating\s+(?:path|option)\b",
+        r"\bcoating\s+restoration\s+(?:seems\s+)?possible\b",
+        r"\broof\s+restoration\s+review\b",
+        r"\brestoration\s+review\b",
+        r"\brepair/restoration\s+lead\b",
+        r"\bsmall\s+repair\s+or\s+full\s+restoration\b",
+        r"\broof\s+coating/detail\s+categories?\s+may\s+have\s+been\s+considered\b",
+        r"\brepairs?\s+plus\s+(?:a\s+)?coating\b",
+        r"\bpractical\s+repairs?\s+plus\s+(?:a\s+)?coating\b",
+        r"\bcoating\s+path\s+if\s+.*\bqualif",
+        r"\bif\s+.*\broof\s+can\s+qualif",
+    )
+    return any(re.search(pattern, lowered) for pattern in patterns)
+
+
 def parse_count_word(value: str) -> int | None:
     text = value.strip().lower()
     if text in NUMBER_WORDS:
@@ -174,6 +192,59 @@ def _opening_area(quantity: int, width_ft: float | None, height_ft: float | None
     return round(quantity * width_ft * height_ft, 2)
 
 
+def _parse_formula_insulation_areas(text: str) -> dict[str, Any]:
+    lowered = clean_text(text).lower()
+    result: dict[str, Any] = {}
+    wall_match = re.search(
+        r"\bwalls?\s+(?P<qty>\d+(?:\.\d+)?)\s*(?:x|by)\s*"
+        r"\(\s*(?P<length>\d+(?:\.\d+)?)\s*\+\s*(?P<width>\d+(?:\.\d+)?)\s*\)\s*"
+        r"(?:x|by)\s*(?P<height>\d+(?:\.\d+)?)\b",
+        lowered,
+        re.I,
+    )
+    if wall_match:
+        qty = to_float(wall_match.group("qty")) or 2.0
+        length = to_float(wall_match.group("length"))
+        width = to_float(wall_match.group("width"))
+        height = to_float(wall_match.group("height"))
+        if length and width and height:
+            wall_area = round(qty * (length + width) * height, 2)
+            result.update(
+                {
+                    "building_footprint_length_ft": length,
+                    "building_footprint_width_ft": width,
+                    "building_perimeter_ft": round(qty * (length + width), 2),
+                    "wall_height_ft": height,
+                    "gross_wall_area_sqft": wall_area,
+                    "outside_walls_included": True,
+                    "formula_wall_area_sqft": wall_area,
+                    "formula_wall_source_text": wall_match.group(0),
+                }
+            )
+    ceiling_match = re.search(
+        r"\b(?:ceiling|ceiling/underside|underside)\s+"
+        r"(?P<length>\d+(?:\.\d+)?)\s*(?:x|by)\s*(?P<width>\d+(?:\.\d+)?)\b",
+        lowered,
+        re.I,
+    )
+    if ceiling_match:
+        length = to_float(ceiling_match.group("length"))
+        width = to_float(ceiling_match.group("width"))
+        if length and width:
+            ceiling_area = round(length * width, 2)
+            result.update(
+                {
+                    "building_footprint_length_ft": result.get("building_footprint_length_ft") or length,
+                    "building_footprint_width_ft": result.get("building_footprint_width_ft") or width,
+                    "footprint_area_sqft": ceiling_area,
+                    "ceiling_area_sqft": ceiling_area,
+                    "ceiling_included": True,
+                    "formula_ceiling_source_text": ceiling_match.group(0),
+                }
+            )
+    return result
+
+
 def _clean_phone(match_value: str | None) -> str:
     return re.sub(r"\s+", " ", match_value or "").strip()
 
@@ -207,6 +278,16 @@ def parse_insulation_quote_scope(notes: str) -> dict[str, Any]:
     if re.search(r"\bnot\s+(?:the\s+)?ceiling\b", lowered) and result["roof_underside_included"]:
         result["ceiling_included"] = False
 
+    formula_areas = _parse_formula_insulation_areas(text)
+    if formula_areas:
+        result.update(formula_areas)
+        if formula_areas.get("formula_wall_source_text"):
+            result["evidence_by_field"]["wall_formula"] = formula_areas.get("formula_wall_source_text")
+            result["confidence_by_field"]["wall_formula"] = "high"
+        if formula_areas.get("formula_ceiling_source_text"):
+            result["evidence_by_field"]["ceiling_formula"] = formula_areas.get("formula_ceiling_source_text")
+            result["confidence_by_field"]["ceiling_formula"] = "high"
+
     footprint_match = re.search(
         r"\b(?P<length>\d+(?:\.\d+)?)\s*(?:'|’|ft|feet|foot)?\s*(?:x|by)\s*"
         r"(?P<width>\d+(?:\.\d+)?)\s*(?:'|’|ft|feet|foot)?\s*(?:metal\s+)?building\b",
@@ -220,7 +301,7 @@ def parse_insulation_quote_scope(notes: str) -> dict[str, Any]:
             lowered,
             re.I,
         )
-    if footprint_match:
+    if footprint_match and not formula_areas:
         length = to_float(footprint_match.group("length"))
         width = to_float(footprint_match.group("width"))
         if length and width:
@@ -233,7 +314,7 @@ def parse_insulation_quote_scope(notes: str) -> dict[str, Any]:
             result["confidence_by_field"]["building_footprint"] = "high"
 
     wall_height_match = re.search(r"\b(?P<height>\d+(?:\.\d+)?)\s*(?:'|’|ft|feet|foot)\s+(?:side)?walls?\b", lowered, re.I)
-    if wall_height_match:
+    if wall_height_match and "wall_height_ft" not in result:
         wall_height = to_float(wall_height_match.group("height"))
         if wall_height:
             result["wall_height_ft"] = wall_height
@@ -280,8 +361,13 @@ def parse_insulation_quote_scope(notes: str) -> dict[str, Any]:
             result["evidence_by_field"].get("roof_center_height_ft"),
             result["evidence_by_field"].get("building_footprint"),
         )
-    ceiling_area = 0.0 if result.get("roof_underside_included") else (to_float(result.get("ceiling_area_sqft")) or 0.0)
-    if result.get("roof_underside_included"):
+    formula_ceiling_area = bool(result.get("formula_ceiling_source_text"))
+    ceiling_area = (
+        to_float(result.get("ceiling_area_sqft")) or 0.0
+        if formula_ceiling_area or not result.get("roof_underside_included")
+        else 0.0
+    )
+    if result.get("roof_underside_included") and not formula_ceiling_area:
         result["ceiling_area_sqft"] = 0.0
     wall_area = to_float(result.get("gross_wall_area_sqft")) or 0.0
     gross_area = wall_area + ceiling_area + roof_underside_area
@@ -567,12 +653,20 @@ def parse_condition_detail_flags(text: str) -> list[str]:
     no_leaks = bool(re.search(r"\b(?:no|without)\s+(?:interior\s+)?leaks?\b|\bno\s+leaking\b", lowered))
     flags: list[str] = []
     if not no_rust:
-        if "rusted fastener" in lowered or "rusted fasteners" in lowered:
+        if "rusted fastener" in lowered or "rusted fasteners" in lowered or "rust/fastener" in lowered or "rust / fastener" in lowered:
             flags.append("rusted_fasteners")
         elif "rust" in lowered or "rusted" in lowered:
             flags.append("rust")
-    if not no_open_seams and ("open seam" in lowered or "open seams" in lowered or "seams opening" in lowered):
+    if not no_open_seams and (
+        "open seam" in lowered
+        or "open seams" in lowered
+        or "seams opening" in lowered
+        or "seam treatment" in lowered
+        or re.search(r"\bseams\b", lowered)
+    ):
         flags.append("open_seams")
+    if re.search(r"\bpenetrations?\b", lowered):
+        flags.append("penetrations")
     if not no_leaks and re.search(r"\b(?:leak|leaks|leaking)\b", lowered):
         flags.append("leaks")
     if "ponding" in lowered:
@@ -652,9 +746,12 @@ def parse_field_notes(field_input: FieldNotesInput | str, overrides: dict[str, A
     else:
         coating_type = first_nonblank(scope.get("coating_type"))
 
+    conditional_coating_path = _has_conditional_coating_path(notes)
     project_type = first_nonblank(scope.get("project_type"))
     if insulation_scope:
         project_type = "spray foam insulation"
+    elif conditional_coating_path:
+        project_type = "roof coating"
     if any(phrase in text for phrase in ("button up", "button-up", "temporary repair")):
         project_type = "button-up repair"
     elif any(phrase in text for phrase in ("full tear off", "full tear-off", "tear off", "tearoff")):
@@ -705,7 +802,7 @@ def parse_field_notes(field_input: FieldNotesInput | str, overrides: dict[str, A
             missing.append("substrate")
         if not first_nonblank(roof_condition):
             missing.append("roof_condition")
-        if not coating_type and not warranty_target:
+        if not coating_type and not warranty_target and not conditional_coating_path:
             missing.append("coating/warranty target")
         if not first_nonblank(field_input.site_address, city):
             missing.append("address/city for travel")
@@ -713,6 +810,12 @@ def parse_field_notes(field_input: FieldNotesInput | str, overrides: dict[str, A
     review_flags = list(dimension_summary.warnings)
     if insulation_scope:
         review_flags.extend(str(item) for item in insulation_scope.get("review_flags") or [])
+    elif conditional_coating_path:
+        review_flags.append("Conditional coating/restoration path requires estimator qualification before warranty commitment.")
+        if not warranty_target:
+            review_flags.append("Coating path mentioned, but warranty duration was not stated.")
+        if not coating_type:
+            review_flags.append("Coating path mentioned, but coating chemistry/product was not stated.")
     if override_sqft and dimension_net_sqft and abs(override_sqft - dimension_net_sqft) / max(override_sqft, 1) > 0.10:
         review_flags.append("Sqft override differs from dimension math; override was used.")
     if any(term in text for term in ("ir scan", "infrared", "moisture scan", "thermal scan")):
@@ -767,7 +870,10 @@ def parsed_to_scope(parsed: ParsedFieldNotes, field_input: FieldNotesInput) -> d
             "condition_detail_flags": parsed.condition_detail_flags,
             "penetration_count": parsed.penetration_count,
             "warranty_target": parsed.warranty_target_years,
-            "coating_required": False if insulation_scope else bool(parsed.coating_type or parsed.warranty_target_years),
+            "coating_required": False
+            if insulation_scope
+            else bool(parsed.coating_type or parsed.warranty_target_years or _has_conditional_coating_path(field_input.raw_notes)),
+            "coating_path_review": False if insulation_scope else _has_conditional_coating_path(field_input.raw_notes),
             "location": ", ".join(part for part in (parsed.city, parsed.state) if part),
             "site_address": first_nonblank(field_input.site_address, insulation_scope.get("address")),
             "destination_address": first_nonblank(field_input.site_address, insulation_scope.get("address"), ", ".join(part for part in (parsed.city, parsed.state) if part)),

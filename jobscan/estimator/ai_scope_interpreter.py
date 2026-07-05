@@ -848,22 +848,38 @@ def deterministic_scope_interpretation(notes: str, deterministic_scope: dict[str
         elif "modified bitumen" in lowered or "mod bit" in lowered:
             substrate = "modified bitumen"
 
+    conditional_coating_path = bool(
+        re.search(
+            r"\b(?:coating\s+(?:path|option)|coating\s+restoration\s+(?:seems\s+)?possible|"
+            r"roof\s+restoration\s+review|restoration\s+review|repair/restoration\s+lead|"
+            r"small\s+repair\s+or\s+full\s+restoration|"
+            r"roof\s+coating/detail\s+categories?\s+may\s+have\s+been\s+considered|"
+            r"repairs?\s+plus\s+(?:a\s+)?coating|"
+            r"practical\s+repairs?\s+plus\s+(?:a\s+)?coating)\b",
+            lowered,
+        )
+        or re.search(r"\bcoating\s+path\s+if\s+.*\bqualif", lowered)
+        or re.search(r"\bif\s+.*\broof\s+can\s+qualif", lowered)
+    )
     estimate_mode = "unknown"
     if any(term in lowered for term in ("spray foam", "insulation", "r-value", "thermal barrier", "dc315")):
         estimate_mode = "insulation"
-    elif any(term in lowered for term in ("service call", "pipe boot", "patch", "repair", "leak call", "emergency")) and not any(term in lowered for term in ("full", "restoration", "coating system")):
-        estimate_mode = "repair"
+    elif conditional_coating_path or coating or any(term in lowered for term in ("restoration", "roof coating", "coating system")):
+        estimate_mode = "restoration"
     elif any(term in lowered for term in ("maintenance coating", "extend the life")):
         estimate_mode = "maintenance"
-    elif coating or any(term in lowered for term in ("restoration", "roof coating", "coating system")):
-        estimate_mode = "restoration"
+    elif any(term in lowered for term in ("service call", "pipe boot", "patch", "repair", "leak call", "emergency")):
+        estimate_mode = "repair"
 
     project_type = "roof coating" if estimate_mode in {"restoration", "maintenance"} else first_nonblank(deterministic_scope.get("project_type"))
     warranty = _extract_warranty(text) or _as_int(deterministic_scope.get("warranty_target_years")) or _as_int(deterministic_scope.get("warranty_target"))
     defects = dict(cleaned["defects"])
-    defects["rusted_fasteners"] = _has_positive(text, r"\brusted\s+fasteners?\b")
+    defects["rusted_fasteners"] = _has_positive(text, r"\b(?:rusted\s+fasteners?|rust\s*/\s*fasteners?)\b")
     defects["rust"] = _has_positive(text, r"\brust(?:ed|y)?\b") or defects["rusted_fasteners"]
-    defects["open_seams"] = _has_positive(text, r"\b(?:open\s+seams?|failed\s+seams?|seams?\s+(?:opening|separating|beginning\s+to\s+separate))\b")
+    defects["open_seams"] = _has_positive(
+        text,
+        r"\b(?:open\s+seams?|failed\s+seams?|seams\s+(?:opening|separating|beginning\s+to\s+separate)|seam\s+treatment|seams)\b",
+    )
     defects["leaks"] = _has_positive(text, r"\b(?:leaks?|leaking)\b")
     defects["ponding"] = _has_positive(text, r"\bponding\b")
     defects["failed_coating"] = _has_positive(text, r"\b(?:failed|failing|peeling)\s+(?:coating|roof coating)\b")
@@ -963,6 +979,8 @@ def deterministic_scope_interpretation(notes: str, deterministic_scope: dict[str
             "estimated_sqft": net,
             "dimension_evidence": evidence_by_field.get("dimensions", []),
             "coating_type": coating,
+            "coating_required": bool(coating or conditional_coating_path),
+            "coating_path_review": conditional_coating_path,
             "warranty_years": warranty,
             "warranty_target_years": warranty,
             "condition": condition,
@@ -1205,6 +1223,9 @@ def merge_ai_scope_with_deterministic(
         )
 
     for field in ("project_type", "division", "building_type", "substrate", "coating_type", "estimate_mode"):
+        if ai_scope.get(field):
+            set_field(field, ai_scope[field], f"AI interpreted {field}.")
+    for field in ("coating_required", "coating_path_review"):
         if ai_scope.get(field):
             set_field(field, ai_scope[field], f"AI interpreted {field}.")
     if ai_scope.get("roof_type"):

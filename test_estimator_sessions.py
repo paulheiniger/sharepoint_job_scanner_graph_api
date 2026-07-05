@@ -34,6 +34,21 @@ def sample_workbench() -> dict:
             "job_name": "Session Test Roof",
         },
         "historical_filters": {"division": "Roofing", "template_type": "roofing"},
+        "decision_proposals": [
+            {
+                "decision_id": "roofing_coating_system_row_26",
+                "template_type": "roofing",
+                "section": "roofing_coating_template_decisions",
+                "template_bucket": "coating",
+                "workbook_row": "26",
+                "include": True,
+                "source": "explicit_note",
+                "confidence": 0.9,
+                "review_required": True,
+                "review_reasons": ["Warranty duration was not stated."],
+                "evidence": {"note": [{"text": "Customer requested coating."}]},
+            }
+        ],
         "roofing_coating_template_decisions": [
             {
                 "include": True,
@@ -60,6 +75,15 @@ def sample_workbench() -> dict:
                 "product_guidance": "Use as silicone roof coating.",
                 "product_warnings": ["Do not apply over wet substrate."],
                 "product_source_documents": ["gaf_silicone_pds.pdf"],
+                "decision_proposal": {
+                    "decision_id": "roofing_coating_system_row_26",
+                    "source": "explicit_note",
+                },
+                "proposal_source": "explicit_note",
+                "proposal_confidence": 0.9,
+                "proposal_evidence": {"note": [{"text": "Customer requested coating."}]},
+                "proposal_review_reasons": ["Warranty duration was not stated."],
+                "decision_evidence_summary": "note evidence, historical evidence (11), product guidance, formula preview",
                 "workbook_cell_write_preview": [{"cell": "Estimate!A26", "field": "selector_code", "value": "11"}],
             }
         ],
@@ -137,6 +161,9 @@ def test_session_decision_helpers_are_decision_only() -> None:
 
     coating = next(row for row in final["decisions"] if row["decision_id"] == "roofing_coating_system_row_26")
     assert coating["template_bucket"] == "coating"
+    assert coating["proposal_source"] == "explicit_note"
+    assert coating["source_evidence"]["proposal_evidence"]["note"][0]["text"] == "Customer requested coating."
+    assert coating["proposal_review_reasons"] == ["Warranty duration was not stated."]
     assert coating["product_guidance_snapshot"]["source_documents"] == ["gaf_silicone_pds.pdf"]
     assert coating["source_evidence"]["decision_source_tables"] == "roofing_coating_decision_history"
 
@@ -264,5 +291,9 @@ def test_estimator_session_lifecycle_and_exports(tmp_path) -> None:
     assert rows[0]["template_type"] == "roofing"
     assert rows[0]["division"] == "Roofing"
     assert rows[0]["estimator_edits"][0]["field_name"] == "total_hours"
-    assert rows[0]["proposed_decisions"][0]["decisions"][0]["decision_id"].startswith("roofing_coating_system_row_")
+    proposed_decisions = rows[0]["proposed_decisions"][0]["decisions"]
+    assert any(
+        str(decision.get("decision_id") or "").startswith("roofing_coating_system_row_")
+        for decision in proposed_decisions
+    )
     assert not any(row.get("section") == "materials" for row in rows[0]["workbook_cell_writes"])
