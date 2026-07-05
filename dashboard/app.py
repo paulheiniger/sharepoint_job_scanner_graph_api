@@ -76,6 +76,12 @@ logger = logging.getLogger(__name__)
 DEFAULT_DATABASE_URL = "postgresql+psycopg2://spraytec:spraytec_dev_password@127.0.0.1:5433/spraytec_ops"
 DECISION_EVIDENCE_DISPLAY_COLUMNS = [
     "decision_evidence_summary",
+    "decision_evidence_types",
+    "why_included",
+    "historical_evidence_summary",
+    "pricing_evidence_summary",
+    "product_evidence_summary",
+    "formula_evidence_summary",
     "proposal_source",
     "proposal_confidence",
     "proposal_review_required",

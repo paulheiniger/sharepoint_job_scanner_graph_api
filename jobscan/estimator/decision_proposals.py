@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable
 
@@ -190,7 +191,7 @@ def _annotate_row(row: dict[str, Any], proposal: dict[str, Any] | None) -> dict[
             updated["compatibility_warnings"] = list(dict.fromkeys(warnings))
             if str(updated.get("compatibility_status") or "").lower() in {"", "compatible", "not_included"}:
                 updated["compatibility_status"] = "review"
-    updated["decision_evidence_summary"] = _decision_evidence_summary(updated)
+    updated.update(_decision_evidence_fields(updated))
     return updated
 
 
@@ -223,23 +224,153 @@ def _merge_duplicate_rows(existing: dict[str, Any], incoming: dict[str, Any]) ->
         dict.fromkeys([*(existing.get("compatibility_warnings") or []), *(incoming.get("compatibility_warnings") or [])])
     )
     merged["proposal_evidence"] = _merge_evidence(existing.get("proposal_evidence") or {}, incoming.get("proposal_evidence") or {})
-    merged["decision_evidence_summary"] = _decision_evidence_summary(merged)
+    merged.update(_decision_evidence_fields(merged))
     return merged
 
 
 def _decision_evidence_summary(row: dict[str, Any]) -> str:
+    return _decision_evidence_fields(row)["decision_evidence_summary"]
+
+
+def _decision_evidence_fields(row: dict[str, Any]) -> dict[str, Any]:
+    evidence_types: list[str] = []
+    why_included = _why_included_summary(row)
+    historical = _historical_evidence_summary(row)
+    pricing = _pricing_evidence_summary(row)
+    product = _product_evidence_summary(row)
+    formula = _formula_evidence_summary(row)
+
+    if _has_note_evidence(row):
+        evidence_types.append("note")
+    if historical:
+        evidence_types.append("historical")
+    if pricing:
+        evidence_types.append("pricing")
+    if product:
+        evidence_types.append("product")
+    if formula:
+        evidence_types.append("formula")
+
     parts: list[str] = []
-    evidence = row.get("proposal_evidence") or {}
-    if evidence.get("note"):
+    if _has_note_evidence(row):
         parts.append("note evidence")
-    if evidence.get("historical") or row.get("decision_evidence_count"):
+    if historical:
         count = row.get("decision_evidence_count") or row.get("historical_selector_evidence_count")
         parts.append(f"historical evidence{f' ({count})' if count else ''}")
-    if evidence.get("product_guidance") or row.get("product_id") or row.get("product_guidance"):
+    if pricing:
+        parts.append("pricing/material evidence")
+    if product:
         parts.append("product guidance")
-    if row.get("formula_model"):
+    if formula:
         parts.append("formula preview")
-    return ", ".join(dict.fromkeys(parts))
+    return {
+        "decision_evidence_summary": ", ".join(dict.fromkeys(parts)),
+        "decision_evidence_types": ", ".join(evidence_types),
+        "why_included": why_included,
+        "historical_evidence_summary": historical,
+        "pricing_evidence_summary": pricing,
+        "product_evidence_summary": product,
+        "formula_evidence_summary": formula,
+    }
+
+
+def _has_note_evidence(row: dict[str, Any]) -> bool:
+    evidence = row.get("proposal_evidence") or {}
+    return bool(evidence.get("note"))
+
+
+def _why_included_summary(row: dict[str, Any]) -> str:
+    if not row.get("include"):
+        return ""
+    source = str(row.get("proposal_source") or "").strip()
+    if source:
+        label = source.replace("_", " ")
+        reasons = [str(item) for item in row.get("proposal_review_reasons") or [] if item]
+        return f"Included by {label}" + (f"; review: {'; '.join(reasons[:2])}" if reasons else "")
+    if row.get("decision_evidence_count") or row.get("historical_selector_evidence_count"):
+        return "Included from historical default/workbench rule"
+    return "Included by workbench rule or estimator edit"
+
+
+def _historical_evidence_summary(row: dict[str, Any]) -> str:
+    count = int(_safe_number(row.get("decision_evidence_count") or row.get("historical_selector_evidence_count"), 0))
+    if count <= 0:
+        return ""
+    confidence = str(row.get("decision_confidence") or row.get("historical_selector_confidence") or "").strip()
+    recommendation = str(row.get("historical_selector_recommendation") or row.get("historical_recommendation") or "").strip()
+    parts = [f"{count} historical decision row{'s' if count != 1 else ''}"]
+    if confidence:
+        parts.append(f"confidence {confidence}")
+    if recommendation:
+        parts.append(f"recommendation {recommendation}")
+    return "; ".join(parts)
+
+
+def _pricing_evidence_summary(row: dict[str, Any]) -> str:
+    candidate = str(row.get("selected_pricing_candidate") or row.get("item_name") or "").strip()
+    unit_price = _safe_number(row.get("unit_price") or row.get("current_unit_price") or row.get("current_price"), 0)
+    source = ""
+    for item in _pricing_candidates(row):
+        if candidate and _norm(item.get("item_name")) == _norm(candidate):
+            source = str(item.get("source") or item.get("why_suggested") or "").strip()
+            break
+    if not candidate and unit_price <= 0:
+        return ""
+    parts = []
+    if candidate:
+        parts.append(candidate)
+    if unit_price > 0:
+        parts.append(f"unit price {unit_price:g}")
+    if source:
+        parts.append(f"source {source}")
+    return "; ".join(parts)
+
+
+def _product_evidence_summary(row: dict[str, Any]) -> str:
+    product_name = str(row.get("product_name") or row.get("product_knowledge_product_name") or "").strip()
+    product_id = str(row.get("product_id") or "").strip()
+    guidance = str(row.get("product_guidance") or "").strip()
+    status = str(row.get("product_guidance_status") or "").strip()
+    if not any((product_name, product_id, guidance, status == "matched")):
+        return ""
+    label = product_name or product_id or "Product guidance matched"
+    return label + (f"; {_shorten(guidance, 160)}" if guidance else "")
+
+
+def _formula_evidence_summary(row: dict[str, Any]) -> str:
+    formula = str(row.get("formula_model") or row.get("formula_source") or "").strip()
+    output = str(row.get("calculated_output_summary") or "").strip()
+    if not formula and not output:
+        return ""
+    if formula and output:
+        return f"{formula}; {output}"
+    return formula or output
+
+
+def _pricing_candidates(row: dict[str, Any]) -> list[dict[str, Any]]:
+    if isinstance(row.get("pricing_candidates"), list):
+        return [dict(item) for item in row.get("pricing_candidates") or [] if isinstance(item, dict)]
+    try:
+        parsed = json.loads(row.get("pricing_candidates_json") or "[]")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        parsed = []
+    return [dict(item) for item in parsed if isinstance(item, dict)]
+
+
+def _safe_number(value: Any, default: float = 0.0) -> float:
+    try:
+        if value in (None, ""):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _shorten(value: Any, limit: int) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
 
 
 def _roofing_scope_proposals(scope: dict[str, Any], notes: str) -> list[DecisionProposal]:

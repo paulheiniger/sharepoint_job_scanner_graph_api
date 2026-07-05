@@ -4143,6 +4143,7 @@ def _build_roofing_coating_template_decisions(
         product_warning_summary = existing.get("product_warning_summary") or selected_candidate.get("product_warning_summary") or ""
         product_source_documents = selected_candidate.get("product_source_documents") or existing.get("product_source_documents") or []
         product_context_status = "matched" if product_id else "missing"
+        selected_name = selected_candidate.get("item_name") or str(first_nonblank(existing.get("selected_pricing_candidate"), default_selected_candidate, ""))
         rows.append(
             {
                 "include": include,
@@ -4183,7 +4184,7 @@ def _build_roofing_coating_template_decisions(
                 "estimated_cost": formula.get("estimated_cost"),
                 "formula_model": formula.get("formula_model"),
                 "formula_source": formula.get("formula_source"),
-                "selected_pricing_candidate": selected_candidate.get("item_name") or str(default_selected_candidate or ""),
+                "selected_pricing_candidate": selected_name,
                 "selected_pricing_item_id": selected_candidate.get("pricing_item_id"),
                 "pricing_candidates": candidates,
                 "pricing_candidates_json": json.dumps(candidates, default=str),
@@ -4209,7 +4210,7 @@ def _build_roofing_coating_template_decisions(
                 "decision_values": {
                     "selector_code": selector_code,
                     "resolved_template_option": resolved_option,
-                    "selected_pricing_candidate": selected_candidate.get("item_name") or str(default_selected_candidate or ""),
+                    "selected_pricing_candidate": selected_name,
                     "basis_sqft": round(basis_sqft, 2),
                     "gal_per_100_sqft": round(gal_per_100, 6),
                     "waste_factor_pct": round(waste_pct, 4),
@@ -4218,7 +4219,7 @@ def _build_roofing_coating_template_decisions(
                 "editable_decision_value": {
                     "selector_code": selector_code,
                     "resolved_template_option": resolved_option,
-                    "selected_pricing_candidate": selected_candidate.get("item_name") or str(default_selected_candidate or ""),
+                    "selected_pricing_candidate": selected_name,
                     "basis_sqft": round(basis_sqft, 2),
                     "gal_per_100_sqft": round(gal_per_100, 6),
                     "waste_factor_pct": round(waste_pct, 4),
