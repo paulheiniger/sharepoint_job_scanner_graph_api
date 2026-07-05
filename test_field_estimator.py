@@ -378,6 +378,120 @@ def test_build_labor_plan_falls_back_when_labor_rows_are_malformed() -> None:
     assert labor_hours == 40
 
 
+def test_labor_plan_sizes_coating_labor_from_material_quantity_driver() -> None:
+    calibration = {
+        "labor_by_bucket": [
+            {
+                "template_bucket": "labor_base",
+                "median_days": 1,
+                "median_crew_size": 4,
+                "median_total_hours": 20,
+                "median_estimated_cost": 1600,
+                "evidence_count": 1,
+            }
+        ],
+        "all_labor_rows": [
+            {"job_id": "J1", "template_bucket": "labor_base", "total_hours": 20, "line_item_kind": "labor"},
+        ],
+        "all_material_rows": [
+            {"job_id": "J1", "template_bucket": "coating", "estimated_gallons": 100, "line_item_kind": "material"},
+        ],
+    }
+    scope = {
+        "project_type": "roof coating",
+        "coating_required": True,
+        "coating_type": "silicone",
+        "surface_area_sqft": 10000,
+        "notes": "Metal roof coating.",
+    }
+    decision = {"labor_modifiers": {"combined_labor_multiplier": 1.0}, "crew_assumptions": {"recommended_crew_size": 4}}
+
+    plan, *_ = build_labor_plan(
+        scope,
+        calibration,
+        decision,
+        EstimatorAssumptions(),
+        material_plan=[{"category": "coating", "quantity": 200, "unit": "gal"}],
+    )
+    base = {row["task"]: row for row in plan}["labor_base"]
+
+    assert base["labor_driver_applied"] is True
+    assert base["labor_driver_type"] == "material_quantity"
+    assert base["labor_driver_quantity"] == 200
+    assert base["historical_driver_rate"] == pytest.approx(0.2)
+    assert base["total_hours"] == 40
+    assert "200 gal" in base["labor_driver_summary"]
+
+
+def test_labor_plan_sizes_seam_labor_from_seam_linear_feet() -> None:
+    calibration = {
+        "labor_by_bucket": [
+            {
+                "template_bucket": "labor_seam_sealer",
+                "median_days": 1,
+                "median_crew_size": 4,
+                "median_total_hours": 10,
+                "median_estimated_cost": 800,
+                "evidence_count": 1,
+            }
+        ],
+        "all_labor_rows": [
+            {"job_id": "J1", "template_bucket": "labor_seam_sealer", "total_hours": 10, "line_item_kind": "labor"},
+        ],
+        "all_material_rows": [
+            {"job_id": "J1", "template_bucket": "seam_treatment", "linear_ft": 100, "line_item_kind": "material"},
+        ],
+    }
+    scope = {
+        "project_type": "roof coating",
+        "coating_required": True,
+        "surface_area_sqft": 10000,
+        "notes": "Metal roof coating with open seams and seam treatment.",
+    }
+    decision = {"labor_modifiers": {"combined_labor_multiplier": 1.0}, "crew_assumptions": {"recommended_crew_size": 4}}
+
+    plan, *_ = build_labor_plan(
+        scope,
+        calibration,
+        decision,
+        EstimatorAssumptions(),
+        material_plan=[{"category": "seam_treatment", "quantity": 500, "unit": "lf"}],
+    )
+    seam = {row["task"]: row for row in plan}["labor_seam_sealer"]
+
+    assert seam["labor_driver_applied"] is True
+    assert seam["labor_driver_unit"] == "lf"
+    assert seam["historical_driver_rate"] == pytest.approx(0.1)
+    assert seam["total_hours"] == 50
+
+
+def test_labor_plan_keeps_project_sqft_driver_for_non_material_labor() -> None:
+    plan, *_ = build_labor_plan(
+        {"project_type": "roof coating", "coating_required": True, "surface_area_sqft": 10000, "notes": "Metal roof coating."},
+        {
+            "labor_by_bucket": [
+                {
+                    "template_bucket": "labor_cleanup",
+                    "median_days": 0.5,
+                    "median_crew_size": 4,
+                    "median_total_hours": 16,
+                    "median_estimated_cost": 1200,
+                    "evidence_count": 3,
+                }
+            ],
+        },
+        {"labor_modifiers": {"combined_labor_multiplier": 1.0}, "crew_assumptions": {"recommended_crew_size": 4}},
+        EstimatorAssumptions(),
+        material_plan=[{"category": "coating", "quantity": 200, "unit": "gal"}],
+    )
+    cleanup = {row["task"]: row for row in plan}["labor_cleanup"]
+
+    assert cleanup["labor_driver_type"] == "project_sqft"
+    assert cleanup["labor_driver_quantity"] == 10000
+    assert cleanup["labor_driver_applied"] is False
+    assert "hours per 1,000 sqft" in cleanup["labor_driver_summary"]
+
+
 def test_field_estimator_does_not_crash_with_nan_template_labor_history() -> None:
     data = field_data()
     data.template_rows.loc[data.template_rows["line_item_kind"] == "labor", ["days", "crew_size", "total_hours", "estimated_cost"]] = float("nan")

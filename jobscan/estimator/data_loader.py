@@ -163,6 +163,12 @@ def normalize_estimator_data(data: EstimatorData) -> EstimatorData:
     data.product_properties = normalize_estimator_dataframe(data.product_properties)
     data.product_rules = normalize_estimator_dataframe(data.product_rules)
     data.product_decision_links = normalize_estimator_dataframe(data.product_decision_links)
+    data.template_selector_maps = normalize_estimator_dataframe(data.template_selector_maps)
+    data.template_lookup_tables = normalize_estimator_dataframe(data.template_lookup_tables)
+    data.template_row_catalog = normalize_estimator_dataframe(data.template_row_catalog)
+    data.template_formula_models = normalize_estimator_dataframe(data.template_formula_models)
+    data.template_product_options = normalize_estimator_dataframe(data.template_product_options)
+    data.template_labor_options = normalize_estimator_dataframe(data.template_labor_options)
     data.estimator_decision_recommendations = normalize_numeric_columns(
         data.estimator_decision_recommendations,
         [
@@ -360,6 +366,18 @@ def load_estimator_data_from_database(database_url: str) -> EstimatorData:
             ("product_properties", "product_properties"),
             ("product_rules", "product_rules"),
             ("product_decision_links", "product_decision_links"),
+        ):
+            if relation_exists(connection, relation_name):
+                setattr(data, attr, _read_sql_dataframe(connection, f"SELECT * FROM {relation_name}"))
+                data.source_files_used.append(f"database: {relation_name}")
+
+        for attr, relation_name in (
+            ("template_selector_maps", "template_selector_maps"),
+            ("template_lookup_tables", "template_lookup_tables"),
+            ("template_row_catalog", "template_row_catalog"),
+            ("template_formula_models", "template_formula_models"),
+            ("template_product_options", "template_product_options"),
+            ("template_labor_options", "template_labor_options"),
         ):
             if relation_exists(connection, relation_name):
                 setattr(data, attr, _read_sql_dataframe(connection, f"SELECT * FROM {relation_name}"))

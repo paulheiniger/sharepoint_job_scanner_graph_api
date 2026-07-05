@@ -880,7 +880,8 @@ def calculate_mixed_labor(
     if days_value <= 0 and hours > 0 and crew > 0:
         days_value = hours / (crew * hours_per_day)
     daily = safe_number(daily_rate, 0.0)
-    hourly = safe_number(hourly_rate, 0.0)
+    hourly_input = safe_number(hourly_rate, 0.0)
+    hourly = hourly_input
     if daily <= 0 and hourly > 0 and crew > 0:
         daily = hourly * crew * hours_per_day
     if hourly <= 0 and daily > 0 and crew > 0 and hours_per_day > 0:
@@ -898,15 +899,21 @@ def calculate_mixed_labor(
         cost = hours * hourly if hours > 0 and hourly > 0 else 0.0
         cost_basis = "hours_hourly_rate" if cost else "missing_hours_or_hourly_rate"
     else:
+        # Roofing/insulation templates use a mixed cost formula like:
+        # IF(G=0, B*J, D*G). Column G is the total-hours input, so the
+        # workbook uses daily mode only when hours are blank/zero.
         if hours <= 0 and days_value > 0 and daily > 0:
             cost = days_value * daily
             cost_basis = "days_daily_rate"
-        elif hours > 0 and hourly > 0:
-            cost = hours * hourly
+        elif hours > 0 and hourly_input > 0:
+            cost = hours * hourly_input
             cost_basis = "hours_hourly_rate"
         else:
             cost = 0.0
             cost_basis = "missing_labor_formula_inputs"
+    display_hours = hours
+    if display_hours <= 0 and days_value > 0 and crew > 0 and hours_per_day > 0:
+        display_hours = days_value * crew * hours_per_day
     return {
         "formula_model": "labor_cost_from_days_crew_rate",
         "formula_mode": mode,
@@ -914,8 +921,11 @@ def calculate_mixed_labor(
         "days": round(days_value, 6),
         "crew_size": round(crew, 6),
         "total_hours": round(hours, 6) if include else 0.0,
+        "display_total_hours": round(display_hours, 6) if include else 0.0,
+        "crew_labor_hours": round(display_hours, 6) if include else 0.0,
         "daily_rate": round(daily, 6),
-        "hourly_rate": round(hourly, 6),
+        "hourly_rate": round(hourly_input, 6),
+        "derived_hourly_rate": round(hourly, 6),
         "estimated_cost": round(cost, 2),
         "calculated_output": round(cost, 2),
     }

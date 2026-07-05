@@ -26,22 +26,6 @@ def fmt(value: Any) -> str:
     return f"{number:.2f}".rstrip("0").rstrip(".")
 
 
-def decision_names(case: dict[str, Any], bucket: str) -> list[str]:
-    names: list[str] = []
-    for row in case.get("expected_decisions") or []:
-        if row.get("template_bucket") != bucket:
-            continue
-        name = generated_cases._clean_text(row.get("resolved_item_name") or row.get("selected_item_name"))
-        if name and name.lower() not in {"product", "types:", "type"}:
-            names.append(name)
-    return list(dict.fromkeys(names))
-
-
-def first_decision_name(case: dict[str, Any], bucket: str, default: str = "") -> str:
-    names = decision_names(case, bucket)
-    return names[0] if names else default
-
-
 def expected_warranty(case: dict[str, Any]) -> int | None:
     value = (case.get("expected_scope_fields") or {}).get("warranty_years")
     if value:
@@ -81,17 +65,14 @@ def roofing_dimensions(case: dict[str, Any]) -> str:
 def insulation_note(case: dict[str, Any]) -> str:
     case_id = str(case.get("case_id") or "")
     dims = insulation_dimensions(case)
-    foam = first_decision_name(case, "foam")
-    sealant = first_decision_name(case, "caulk_sealant")
     barrier = "DC315 or other ignition/thermal barrier"
-    foam_hint = f"Historical notes point toward {foam};" if foam else ""
-    sealant_hint = f" Review {sealant} at seams/transitions." if sealant else " Review sealant at seams/transitions."
+    sealant_hint = "Review sealant at seams/transitions."
 
     if "graves_county" in case_id:
         return (
             "Email / field note draft for Graves County Athletic at 2290 KY-121: multipurpose facility at Graves County High School. "
             f"{dims} Owner wants durable closed-cell foam on the metal building shell. Walls target R-21. Ceiling target R-30. "
-            f"{foam_hint} estimator should verify final product, thickness, and yield. Code/owner may require {barrier}. "
+            f"Estimator should infer foam system, thickness, and yield from the surface R-values and condensation risk. Code/owner may require {barrier}. "
             "Tall walls and open ceiling likely need lift/scissor access, masking around athletic finishes, setup, cleanup, loading, travel, and temporary power/heat review. "
             f"{sealant_hint}"
         )
@@ -99,21 +80,21 @@ def insulation_note(case: dict[str, Any]) -> str:
         return (
             "Dictated note: Austin, IN / Travis Gardner pole-barn style insulation request. "
             f"{dims} Customer is talking walls and ceiling, not just a patch. Walls target R-21. Ceiling target R-30 if budget allows. "
-            f"{foam_hint} use the R-value targets to decide thickness and whether closed-cell or open-cell makes sense by surface. "
+            "Use the R-value targets to decide thickness and whether closed-cell or open-cell makes sense by surface. "
             f"Review {barrier}, masking, setup, cleanup, loading, travel, and small equipment/access."
         )
     if "massey_eric_pole_barn" in case_id:
         return (
             "Field notes for Eric Massey pole barn: spray foam quote for a small metal/pole-barn building. "
             f"{dims} Owner wants the barn tightened up and usable through temperature swings. Walls target R-21. Ceiling target R-30. "
-            f"{foam_hint} estimator should decide closed-cell versus open-cell by surface and condensation risk. "
+            "Estimator should decide closed-cell versus open-cell by surface and condensation risk. "
             f"Review {barrier}, final opening deductions, corner/door sealant, masking, setup, cleanup, loading, and travel."
         )
     if "eastern_elementary" in case_id:
         return (
             "Eastern Elementary, 6928 Bethlehem Rd. Small school insulation/foam repair scope, not a full-building shell. "
             f"{dims} Existing condition appears to need dense closed-cell or roof-foam style patching, not production wall foam. "
-            f"{foam_hint} review primer/detail prep, {sealant or 'silicone sealant'} at transitions, masking, setup, cleanup, and school-hours access coordination. "
+            "Review primer/detail prep, sealant at transitions, masking, setup, cleanup, and school-hours access coordination. "
             f"Verify substrate, exact location, target thickness/R-value, and whether {barrier} is required."
         )
     if "ku_ghent" in case_id:
@@ -121,7 +102,7 @@ def insulation_note(case: dict[str, Any]) -> str:
             "KU Ghent 4G coal conveyor belt ramp: industrial insulation/foam scope on the conveyor/ramp enclosure. "
             f"{dims} Environment is dirty/industrial with access and safety constraints. Use closed-cell/roof-foam thinking because condensation and abuse are concerns. "
             "Walls target about R-14. Ceiling target about R-21 unless the plant specifies otherwise. "
-            f"{foam_hint} include orientation/ISN review, lift or equipment access, generator/temp power, masking, setup, cleanup, loading, travel, drum disposal/freight if minimums apply. "
+            "Include orientation/ISN review, lift or equipment access, generator/temp power, masking, setup, cleanup, loading, travel, drum disposal/freight if minimums apply. "
             f"{sealant_hint} Review thermal or ignition barrier requirements before final."
         )
     return (
@@ -135,37 +116,35 @@ def roofing_note(case: dict[str, Any]) -> str:
     dims = roofing_dimensions(case)
     warranty = expected_warranty(case)
     warranty_text = f"{warranty}-year" if warranty else "reviewed"
-    coating = first_decision_name(case, "coating", "silicone")
-    primer = first_decision_name(case, "primer", "primer")
-    sealant = first_decision_name(case, "caulk_sealant", "detail sealant")
+    coating = "silicone-style"
 
     if "pegasus" in case_id:
         return (
             "Pegasus, 39 Pearce Industrial Rd. Various roof repairs/restoration review. "
-            f"{dims} Field notes mention ponding, penetrations, open seams, rusted/aging fasteners, and multiple repair/detail conditions. "
-            f"Customer wants a practical {warranty_text} {coating} restoration option if the metal roof qualifies, not just isolated repairs. "
-            f"Review {primer} for rust, seam treatment, {sealant}, fabric/reinforcement at repairs, wet-area allowance, access/equipment, generator if power is unreliable, truck/travel, loading, and detail/top-coat labor."
+            f"{dims} Repair list from walkdown: seal open panel laps and ridge seams, replace or tighten rusted screws/fasteners, reinforce leaking penetrations and curb corners, repair edge flashing gaps, and evaluate ponding/wet areas before coating. "
+            f"Customer wants a practical {warranty_text} {coating} restoration option if the metal roof qualifies, not just isolated patches. "
+            "Review rust-inhibitive primer need, seam treatment, detail sealant, reinforcement fabric at repairs, wet-area allowance, access/equipment, generator if power is unreliable, truck/travel, loading, and detail/top-coat labor."
         )
     if "uk_wt_young" in case_id:
         return (
             "UK WT Young Library Phase 2 roof restoration notes. "
-            f"{dims} Existing roof has seams, curbs, drains, penetrations, edge conditions, and isolated board/fastener/plate repairs before coating. "
+            f"{dims} Existing roof has open seams, curb/drain/penetration details, edge flashing gaps, and isolated board/fastener/plate repairs before coating. "
             f"Owner is asking for a {warranty_text} {coating} roof coating restoration option if the roof qualifies. "
-            f"Review {primer}, {sealant}, reinforcement fabric at problem details, granules or walk areas, lift/forklift/generator access, loading/travel, library work constraints, and whether wet areas need IR scan or repair allowance."
+            "Review primer, detail sealant, reinforcement fabric at problem details, granules or walk areas, lift/forklift/generator access, loading/travel, library work constraints, and whether wet areas need IR scan or repair allowance."
         )
     if "galt_house" in case_id:
         return (
             "Galt House WT main pool deck / Aqua-Seal scope, dated around May 2025. "
             f"{dims} This is a pool deck/waterproofing coating project rather than a standard metal roof. "
-            f"Owner needs a {warranty_text} AquaSeal-style waterproofing/wear system if the deck substrate qualifies. "
-            "Review surface prep, cracks/joints, urethane/detail sealant, fabric at joints, drainage/ponding, pedestrian protection, masking, hotel/pool work windows, generator/equipment if needed, cleanup, truck/travel, and detail labor."
+            f"Owner needs a {warranty_text} waterproofing/wear system if the deck substrate qualifies. "
+            "Repair list is surface prep, cracks and control joints, drain transitions, coating tie-ins, traffic/walk areas, and drainage/ponding review. Include pedestrian protection, masking, hotel/pool work windows, generator/equipment if needed, cleanup, truck/travel, and detail labor."
         )
     if "2025_roofing_did_not_get" in case_id:
         return (
             "Roofing opportunity from 2025 that we did not get; source notes are limited. "
-            f"{dims} Treat as a commercial roof restoration lead with seams, penetrations, age/detail work, rust/fastener review, and repair allowance before coating. "
+            f"{dims} Treat as a commercial roof restoration lead with open seams, penetration details, aging fasteners, edge repairs, and repair allowance before coating. "
             f"Customer seemed to want a {warranty_text} {coating} option instead of tear-off if the substrate qualifies. "
-            f"Review {primer}, sealant, fabric, lift/access, generator/temp power, truck/travel, loading, seam/detail labor, possible granules/top-coat decision, and wet insulation or repair areas before pricing."
+            "Review primer, sealant, fabric, lift/access, generator/temp power, truck/travel, loading, seam/detail labor, possible granules/top-coat decision, and wet insulation or repair areas before pricing."
         )
     if "shelbyville" in case_id:
         return (

@@ -359,6 +359,7 @@ def historical_template_calibration(data: EstimatorData, similar_jobs: pd.DataFr
         "template_row_count": int(len(relevant)),
         "labor_by_bucket": labor_summary,
         "all_labor_rows": all_labor_rows.to_dict(orient="records") if not all_labor_rows.empty else [],
+        "all_material_rows": material_rows.to_dict(orient="records") if not material_rows.empty else [],
         "relationship_labor_rates": data.relationship_labor_rates.to_dict(orient="records") if not data.relationship_labor_rates.empty else [],
         "job_package_summary": data.job_package_summary.to_dict(orient="records") if not data.job_package_summary.empty else [],
         "material_by_bucket": material_summary,
@@ -402,6 +403,62 @@ ROOF_COATING_FALLBACK_HOURS_PER_1000 = {
     "labor_prime": 2.5,
     "infrared_scan": 1.0,
     "labor_top_coat_granules": 2.0,
+}
+
+LABOR_DRIVER_SPECS: dict[str, dict[str, Any]] = {
+    "labor_base": {
+        "driver_type": "material_quantity",
+        "material_categories": ("coating",),
+        "driver_unit": "gal",
+        "rate_unit": "hours_per_gallon",
+        "quantity_fields": ("quantity", "estimated_gallons", "estimated_units", "calculated_quantity"),
+    },
+    "labor_top_coat": {
+        "driver_type": "material_quantity",
+        "material_categories": ("coating",),
+        "driver_unit": "gal",
+        "rate_unit": "hours_per_gallon",
+        "quantity_fields": ("quantity", "estimated_gallons", "estimated_units", "calculated_quantity"),
+    },
+    "labor_prime": {
+        "driver_type": "material_quantity",
+        "material_categories": ("primer",),
+        "driver_unit": "sqft",
+        "rate_unit": "hours_per_primer_sqft",
+        "quantity_fields": ("quantity", "area_sqft", "source_plan_quantity", "calculated_quantity"),
+    },
+    "labor_seam_sealer": {
+        "driver_type": "material_quantity",
+        "material_categories": ("seam_treatment", "seams_misc", "fabric"),
+        "driver_unit": "lf",
+        "rate_unit": "hours_per_linear_ft",
+        "quantity_fields": ("quantity", "linear_ft", "source_plan_quantity", "calculated_quantity", "estimated_units"),
+    },
+    "labor_details": {
+        "driver_type": "material_quantity",
+        "material_categories": ("caulk_detail", "caulk_sealant", "penetrations", "hvac_units", "drains"),
+        "driver_unit": "unit",
+        "rate_unit": "hours_per_detail_unit",
+        "quantity_fields": ("quantity", "estimated_units", "calculated_quantity", "source_plan_quantity", "units"),
+    },
+    "labor_caulk": {
+        "driver_type": "material_quantity",
+        "material_categories": ("caulk_detail", "caulk_sealant"),
+        "driver_unit": "unit",
+        "rate_unit": "hours_per_sealant_unit",
+        "quantity_fields": ("quantity", "estimated_units", "calculated_quantity", "source_plan_quantity", "units"),
+    },
+    "labor_top_coat_granules": {
+        "driver_type": "material_quantity",
+        "material_categories": ("granules",),
+        "driver_unit": "bag",
+        "rate_unit": "hours_per_bag",
+        "quantity_fields": ("quantity", "estimated_units", "calculated_quantity"),
+    },
+    "labor_prep": {"driver_type": "project_sqft", "driver_unit": "sqft", "rate_unit": "hours_per_1000_sqft"},
+    "labor_cleanup": {"driver_type": "project_sqft", "driver_unit": "sqft", "rate_unit": "hours_per_1000_sqft"},
+    "labor_loading": {"driver_type": "project_sqft", "driver_unit": "sqft", "rate_unit": "hours_per_1000_sqft"},
+    "infrared_scan": {"driver_type": "project_sqft", "driver_unit": "sqft", "rate_unit": "hours_per_1000_sqft"},
 }
 
 ROOF_COATING_LABOR_BUCKET_ROLES = {
@@ -1066,6 +1123,194 @@ def _fallback_hours_for_task(task: str, area: float, scope: dict[str, Any]) -> f
     if task == "infrared_scan":
         return max(4.0, area_factor * rate)
     return max(2.0, area_factor * rate)
+
+
+def _normalized_bucket(value: Any) -> str:
+    return str(first_nonblank(value)).strip().lower().replace(" ", "_").replace("-", "_")
+
+
+def _row_bucket(row: dict[str, Any]) -> str:
+    return _normalized_bucket(first_nonblank(row.get("category"), row.get("package"), row.get("template_bucket"), row.get("task")))
+
+
+def _quantity_from_row(row: dict[str, Any], fields: tuple[str, ...]) -> float | None:
+    for field in fields:
+        value = optional_positive_float(row.get(field))
+        if value is not None:
+            return value
+    return None
+
+
+def _labor_confidence(evidence_count: int) -> str:
+    if evidence_count >= 5:
+        return "high"
+    if evidence_count >= 2:
+        return "medium"
+    if evidence_count >= 1:
+        return "low"
+    return "none"
+
+
+def _material_rows_for_driver(rows: list[dict[str, Any]], categories: tuple[str, ...]) -> list[dict[str, Any]]:
+    wanted = {_normalized_bucket(category) for category in categories}
+    matched: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        bucket = _row_bucket(row)
+        text = " ".join(str(row.get(key) or "") for key in ("category", "package", "template_bucket", "item", "row_label")).lower()
+        if bucket in wanted or any(category.replace("_", " ") in text or category in text for category in wanted):
+            matched.append(row)
+    return matched
+
+
+def _current_labor_driver(
+    *,
+    task: str,
+    scope: dict[str, Any],
+    material_plan: list[dict[str, Any]] | None,
+    area: float,
+) -> dict[str, Any]:
+    spec = LABOR_DRIVER_SPECS.get(task) or {"driver_type": "project_sqft", "driver_unit": "sqft", "rate_unit": "hours_per_1000_sqft"}
+    driver_type = str(spec.get("driver_type") or "project_sqft")
+    if driver_type == "material_quantity":
+        categories = tuple(spec.get("material_categories") or ())
+        quantity_fields = tuple(spec.get("quantity_fields") or ("quantity", "estimated_units", "calculated_quantity"))
+        matched_rows = _material_rows_for_driver(material_plan or [], categories)
+        quantity = sum(_quantity_from_row(row, quantity_fields) or 0.0 for row in matched_rows)
+        if quantity > 0:
+            units = {_normalized_bucket(row.get("unit")) for row in matched_rows if row.get("unit")}
+            review_required = bool(units & {"allowance", "mixed", "usd", "$", "dollar", "dollars"})
+            return {
+                "driver_type": driver_type,
+                "driver_quantity": quantity,
+                "driver_unit": spec.get("driver_unit") or first_nonblank(next(iter(units), ""), "unit"),
+                "driver_source": "material_plan",
+                "rate_unit": spec.get("rate_unit"),
+                "driver_review_required": review_required,
+                "driver_review_reason": "Material driver is an allowance/mixed unit." if review_required else "",
+            }
+        return {
+            "driver_type": driver_type,
+            "driver_quantity": 0.0,
+            "driver_unit": spec.get("driver_unit") or "unit",
+            "driver_source": "missing_material_quantity",
+            "rate_unit": spec.get("rate_unit"),
+            "driver_review_required": True,
+            "driver_review_reason": "Related material quantity is missing; using existing labor sizing.",
+        }
+    return {
+        "driver_type": "project_sqft",
+        "driver_quantity": area,
+        "driver_unit": "sqft",
+        "driver_source": "scope_area",
+        "rate_unit": "hours_per_1000_sqft",
+        "driver_review_required": area <= 0,
+        "driver_review_reason": "Project square footage is missing." if area <= 0 else "",
+    }
+
+
+def _historical_labor_driver_rate(calibration: dict[str, Any], task: str) -> dict[str, Any]:
+    spec = LABOR_DRIVER_SPECS.get(task)
+    if not spec or spec.get("driver_type") != "material_quantity":
+        return {}
+    categories = tuple(spec.get("material_categories") or ())
+    quantity_fields = tuple(spec.get("quantity_fields") or ("estimated_units", "quantity", "calculated_quantity"))
+    labor_rows = [row for row in calibration.get("all_labor_rows") or [] if isinstance(row, dict) and _task_name_from_row(row) == task]
+    material_rows = [row for row in calibration.get("all_material_rows") or [] if isinstance(row, dict)]
+    if not labor_rows or not material_rows:
+        return {}
+    material_by_job: dict[str, list[dict[str, Any]]] = {}
+    for row in _material_rows_for_driver(material_rows, categories):
+        job_id = str(first_nonblank(row.get("job_id"), row.get("document_id")))
+        if job_id:
+            material_by_job.setdefault(job_id, []).append(row)
+    rates: list[float] = []
+    for labor in labor_rows:
+        hours = _labor_row_hours(labor)
+        if hours is None or hours <= 0:
+            continue
+        job_id = str(first_nonblank(labor.get("job_id"), labor.get("document_id")))
+        quantity = sum(_quantity_from_row(row, quantity_fields) or 0.0 for row in material_by_job.get(job_id, []))
+        if quantity > 0:
+            rates.append(hours / quantity)
+    if not rates:
+        return {}
+    series = pd.Series(rates, dtype=float)
+    return {
+        "historical_driver_rate": float(series.median()),
+        "historical_driver_rate_p25": float(series.quantile(0.25)),
+        "historical_driver_rate_p75": float(series.quantile(0.75)),
+        "historical_driver_evidence_count": len(rates),
+        "historical_driver_source": "paired_template_labor_material_rows",
+    }
+
+
+def _apply_labor_driver_sizing(
+    row: dict[str, Any],
+    *,
+    task: str,
+    scope: dict[str, Any],
+    material_plan: list[dict[str, Any]] | None,
+    calibration: dict[str, Any],
+    area: float,
+    multiplier: float,
+    crew_size: int,
+    assumptions: EstimatorAssumptions,
+) -> dict[str, Any]:
+    current_driver = _current_labor_driver(task=task, scope=scope, material_plan=material_plan, area=area)
+    rate_info = _historical_labor_driver_rate(calibration, task)
+    driver_type = current_driver.get("driver_type")
+    quantity = optional_positive_float(current_driver.get("driver_quantity"))
+    rate = optional_positive_float(rate_info.get("historical_driver_rate"))
+    original_hours = safe_float(row.get("total_hours"), 0.0)
+    row.update(
+        {
+            "labor_driver_type": driver_type,
+            "labor_driver_quantity": round(safe_float(current_driver.get("driver_quantity"), 0.0), 4),
+            "labor_driver_unit": current_driver.get("driver_unit"),
+            "labor_driver_source": current_driver.get("driver_source"),
+            "labor_driver_rate_unit": current_driver.get("rate_unit"),
+            "labor_driver_review_required": bool(current_driver.get("driver_review_required")),
+            "labor_driver_review_reason": current_driver.get("driver_review_reason") or "",
+            **rate_info,
+        }
+    )
+    if driver_type == "material_quantity" and quantity and rate:
+        new_hours = quantity * rate * max(multiplier, 0.1)
+        hourly_cost = safe_float(row.get("estimated_cost"), 0.0) / original_hours if original_hours > 0 else assumptions.blended_hourly_rate
+        row["original_total_hours_before_driver_sizing"] = round(original_hours, 2)
+        row["total_hours"] = round(new_hours, 1)
+        row["labor_hours"] = round(new_hours, 1)
+        row["estimated_cost"] = round(new_hours * hourly_cost, 2)
+        row["adjusted_days"] = round(new_hours / max(max(crew_size, 1) * 8, 1), 2)
+        row["crew_days"] = row["adjusted_days"]
+        row["base_days"] = row["adjusted_days"]
+        row["labor_driver_applied"] = True
+        row["labor_driver_confidence"] = _labor_confidence(int(rate_info.get("historical_driver_evidence_count") or 0))
+        row["labor_driver_summary"] = (
+            f"{quantity:g} {current_driver.get('driver_unit')} x "
+            f"{rate:.4g} {current_driver.get('rate_unit')} from "
+            f"{int(rate_info.get('historical_driver_evidence_count') or 0)} paired historical jobs."
+        )
+        row["notes"] = f"{first_nonblank(row.get('notes'))} Labor sized from related material quantity: {row['labor_driver_summary']}".strip()
+    elif driver_type == "project_sqft" and area > 0:
+        hours_per_1000 = _labor_hours_per_1000(row, area)
+        row["historical_driver_rate"] = round(hours_per_1000, 4) if hours_per_1000 is not None else None
+        row["historical_driver_evidence_count"] = safe_int(row.get("evidence_count"), 0)
+        row["historical_driver_source"] = first_nonblank(row.get("calibration_method"), "historical_labor_hours_per_1000_sqft")
+        row["labor_driver_applied"] = False
+        row["labor_driver_confidence"] = _labor_confidence(safe_int(row.get("evidence_count"), 0))
+        row["labor_driver_summary"] = (
+            f"{hours_per_1000:.4g} hours per 1,000 sqft from historical labor rows."
+            if hours_per_1000 is not None
+            else "Project-sqft labor driver selected, but historical hours/sqft is unavailable."
+        )
+    else:
+        row["labor_driver_applied"] = False
+        row["labor_driver_confidence"] = "none"
+        row["labor_driver_summary"] = first_nonblank(current_driver.get("driver_review_reason"), "Labor driver evidence unavailable; existing sizing retained.")
+    return row
 
 
 def _fallback_labor_row(
@@ -2624,6 +2869,7 @@ def build_labor_plan(
     calibration: dict[str, Any],
     decision: dict[str, Any],
     assumptions: EstimatorAssumptions,
+    material_plan: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], float, float, int, int, int]:
     area = safe_float(scope.get("surface_area_sqft"), 0.0)
     multiplier = to_float_or_default(decision.get("labor_modifiers", {}).get("combined_labor_multiplier"), 1.0)
@@ -2708,8 +2954,6 @@ def build_labor_plan(
                 adjusted_days = safe_float(days * multiplier, 1.0)
                 adjusted_hours = safe_float(hours * multiplier, 0.0) if hours is not None else adjusted_days * row_crew_size * 10
                 estimated_cost = safe_float(cost * multiplier, 0.0) if cost is not None else 0.0
-                total_hours += adjusted_hours
-                total_cost += estimated_cost
                 task = row.get("template_bucket") or "labor_calibration"
                 labor_package = _labor_package_for_bucket(task)
                 evidence_count = safe_int(row.get("evidence_count"), 0)
@@ -2725,32 +2969,44 @@ def build_labor_plan(
                     )
                 if row_incomplete and "incomplete" not in notes.lower():
                     notes = f"{notes} Historical labor calibration was incomplete for one or more tasks; defaults were used."
-                plan.append(
-                    _labor_row_with_package_context(
-                        {
-                            "task": task,
-                            "base_days": round(days, 2),
-                            "adjusted_days": round(adjusted_days, 2),
-                            "crew_size": row_crew_size,
-                            "total_hours": round(adjusted_hours, 1),
-                            "estimated_cost": round(estimated_cost, 2),
-                            "evidence_count": evidence_count,
-                            "needs_review": bool(row_incomplete),
-                            "calibration_method": calibration_method,
-                            "selection_level": selection_level,
-                            "labor_bucket_role": row.get("labor_bucket_role"),
-                            "labor_selection_status": row.get("labor_selection_status") or "selected",
-                            "labor_selection_reason": row.get("labor_selection_reason"),
-                            "median_hours_per_1000_sqft": round(hours_per_1000, 2) if hours_per_1000 is not None else None,
-                            "capped_hours": row.get("capped_hours"),
-                            "notes": notes,
-                        },
-                        work_packages.get(labor_package),
-                        production_rate=production_rate,
-                        evidence_count=evidence_count,
-                        source_type="historical_calibration",
-                    )
+                plan_row = _labor_row_with_package_context(
+                    {
+                        "task": task,
+                        "base_days": round(days, 2),
+                        "adjusted_days": round(adjusted_days, 2),
+                        "crew_size": row_crew_size,
+                        "total_hours": round(adjusted_hours, 1),
+                        "estimated_cost": round(estimated_cost, 2),
+                        "evidence_count": evidence_count,
+                        "needs_review": bool(row_incomplete),
+                        "calibration_method": calibration_method,
+                        "selection_level": selection_level,
+                        "labor_bucket_role": row.get("labor_bucket_role"),
+                        "labor_selection_status": row.get("labor_selection_status") or "selected",
+                        "labor_selection_reason": row.get("labor_selection_reason"),
+                        "median_hours_per_1000_sqft": round(hours_per_1000, 2) if hours_per_1000 is not None else None,
+                        "capped_hours": row.get("capped_hours"),
+                        "notes": notes,
+                    },
+                    work_packages.get(labor_package),
+                    production_rate=production_rate,
+                    evidence_count=evidence_count,
+                    source_type="historical_calibration",
                 )
+                plan_row = _apply_labor_driver_sizing(
+                    plan_row,
+                    task=task,
+                    scope=scope,
+                    material_plan=material_plan,
+                    calibration=calibration,
+                    area=area,
+                    multiplier=multiplier,
+                    crew_size=row_crew_size,
+                    assumptions=assumptions,
+                )
+                plan.append(plan_row)
+                total_hours += safe_float(plan_row.get("total_hours"), 0.0)
+                total_cost += safe_float(plan_row.get("estimated_cost"), 0.0)
             except Exception as err:
                 incomplete_calibration = True
                 skipped_rows.append(f"Skipped malformed labor calibration row: {type(err).__name__}")
@@ -2800,6 +3056,17 @@ def build_labor_plan(
                     f"{fallback_row.get('notes', '')} "
                     "Historical labor calibration was incomplete for this task; fallback used candidate evidence count."
                 ).strip()
+            fallback_row = _apply_labor_driver_sizing(
+                fallback_row,
+                task=task,
+                scope=scope,
+                material_plan=material_plan,
+                calibration=calibration,
+                area=area,
+                multiplier=1.0,
+                crew_size=safe_int(fallback_row.get("crew_size"), crew_size),
+                assumptions=assumptions,
+            )
             plan.append(fallback_row)
             total_hours += safe_float(fallback_row.get("total_hours"), 0.0)
             total_cost += safe_float(fallback_row.get("estimated_cost"), 0.0)
@@ -3323,7 +3590,13 @@ def estimate_from_field_notes(
     labor_review_flags: list[str] = []
     stage_start = time.perf_counter()
     try:
-        labor_plan, labor_low, labor_high, crew_size, duration_days, _labor_hours = build_labor_plan(scope, calibration, decision, assumptions)
+        labor_plan, labor_low, labor_high, crew_size, duration_days, _labor_hours = build_labor_plan(
+            scope,
+            calibration,
+            decision,
+            assumptions,
+            material_plan=material_plan,
+        )
         labor_plan, labor_low, labor_high, _labor_hours, primer_labor_flags = _exclude_primer_labor_if_material_excluded(
             material_plan,
             labor_plan,

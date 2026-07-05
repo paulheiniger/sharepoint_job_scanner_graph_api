@@ -325,6 +325,7 @@ INSULATION_DECISION_SECTION_COLUMNS = {
         "daily_rate",
         "hourly_rate",
         "total_hours",
+        "labor_driver_summary",
         "formula_mode",
         "estimated_cost",
         "compatibility_status",
@@ -4541,6 +4542,27 @@ def project_display_frame(frame: pd.DataFrame, columns: Iterable[str]) -> pd.Dat
     return frame[available].copy() if available else frame.copy()
 
 
+def _editable_values_differ(original_value: Any, edited_value: Any) -> bool:
+    def _normalize(value: Any) -> Any:
+        if value is None:
+            return ""
+        try:
+            if pd.isna(value):
+                return ""
+        except (TypeError, ValueError):
+            pass
+        return value
+
+    original_normalized = _normalize(original_value)
+    edited_normalized = _normalize(edited_value)
+    try:
+        original_number = float(original_normalized)
+        edited_number = float(edited_normalized)
+        return abs(original_number - edited_number) > 1e-9
+    except (TypeError, ValueError):
+        return str(original_normalized) != str(edited_normalized)
+
+
 def merge_editable_rows(
     original_rows: list[dict[str, Any]],
     edited_rows: list[dict[str, Any]],
@@ -4552,6 +4574,12 @@ def merge_editable_rows(
         edited = edited_rows[idx] if idx < len(edited_rows) else {}
         for field in editable_fields:
             if field in edited:
+                if field in {"total_hours", "editable_total_hours"}:
+                    if _editable_values_differ(original.get(field), edited[field]):
+                        row["manual_labor_hours_override"] = True
+                        row["manual_override"] = True
+                        row["total_hours_source"] = "estimator_override"
+                        row["labor_driver_applied"] = False
                 row[field] = edited[field]
         merged.append(row)
     return merged

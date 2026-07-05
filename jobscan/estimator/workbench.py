@@ -148,6 +148,47 @@ INSULATION_LABOR_PACKAGES: list[dict[str, Any]] = [
     {"package": "meals_lodging", "label": "Meals / Lodging", "workbook_row": "100"},
 ]
 
+INSULATION_LABOR_DRIVER_SPECS: dict[str, dict[str, Any]] = {
+    "labor_foam": {
+        "driver_type": "material_quantity",
+        "driver_unit": "set",
+        "rate_unit": "hours_per_foam_set",
+        "dependency_fields": ("foam_sets",),
+        "historical_material_buckets": ("foam",),
+        "historical_quantity_fields": ("estimated_sets", "estimated_units"),
+    },
+    "labor_dc_315": {
+        "driver_type": "material_quantity",
+        "driver_unit": "gal",
+        "rate_unit": "hours_per_thermal_barrier_gallon",
+        "dependency_fields": ("thermal_gallons",),
+        "historical_material_buckets": ("thermal_barrier_coating",),
+        "historical_quantity_fields": ("estimated_gallons", "estimated_units"),
+    },
+    "labor_prime": {
+        "driver_type": "material_quantity",
+        "driver_unit": "unit",
+        "rate_unit": "hours_per_primer_unit",
+        "dependency_fields": ("primer_units",),
+        "historical_material_buckets": ("primer",),
+        "historical_quantity_fields": ("estimated_units",),
+    },
+    "labor_membrane": {
+        "driver_type": "material_quantity",
+        "driver_unit": "lf",
+        "rate_unit": "hours_per_membrane_lf",
+        "dependency_fields": ("membrane_lf",),
+        "historical_material_buckets": ("membrane",),
+        "historical_quantity_fields": ("linear_ft", "estimated_units"),
+    },
+    "labor_set_up": {"driver_type": "project_sqft", "driver_unit": "sqft", "rate_unit": "hours_per_1000_sqft"},
+    "labor_mask": {"driver_type": "project_sqft", "driver_unit": "sqft", "rate_unit": "hours_per_1000_sqft"},
+    "labor_misc": {"driver_type": "project_sqft", "driver_unit": "sqft", "rate_unit": "hours_per_1000_sqft"},
+    "labor_clean_up": {"driver_type": "project_sqft", "driver_unit": "sqft", "rate_unit": "hours_per_1000_sqft"},
+    "labor_loading": {"driver_type": "project_sqft", "driver_unit": "sqft", "rate_unit": "hours_per_1000_sqft"},
+    "labor_traveling": {"driver_type": "project_sqft", "driver_unit": "sqft", "rate_unit": "hours_per_1000_sqft"},
+}
+
 INSULATION_DECISION_SECTION_KEYS = (
     "insulation_detail_material_template_decisions",
     "insulation_thermal_barrier_template_decisions",
@@ -631,6 +672,35 @@ def safe_number(value: Any, default: float = 0.0) -> float:
     if number is None or not math.isfinite(number):
         return default
     return float(number)
+
+
+def _expected_labor_hours_from_days_crew(days: Any, crew_size: Any, *, hours_per_day: float = 10.0) -> float:
+    day_count = safe_number(days, 0.0)
+    crew = safe_number(crew_size, 0.0)
+    if day_count <= 0 or crew <= 0 or hours_per_day <= 0:
+        return 0.0
+    return day_count * crew * hours_per_day
+
+
+def _populate_expected_mixed_labor_hours(
+    *,
+    include: bool,
+    formula_mode: Any,
+    total_hours: Any,
+    days: Any,
+    crew_size: Any,
+    hourly_rate: Any,
+) -> tuple[float, str]:
+    hours = safe_number(total_hours, 0.0)
+    mode = str(formula_mode or "mixed_formula")
+    if hours > 0:
+        return hours, "provided"
+    if not include or mode != "mixed_formula" or safe_number(hourly_rate, 0.0) <= 0:
+        return hours, "not_applicable"
+    expected_hours = _expected_labor_hours_from_days_crew(days, crew_size)
+    if expected_hours <= 0:
+        return hours, "missing_days_or_crew"
+    return expected_hours, "estimated_from_days_crew"
 
 
 def _mode_text(values: list[Any]) -> str:
@@ -2141,6 +2211,14 @@ def _candidate_guidance_summary(product_context: dict[str, Any]) -> str:
     return " ".join(parts)
 
 
+def _cost_source_for_candidate(formula: dict[str, Any], candidate: dict[str, Any]) -> str:
+    cost_source = str(formula.get("cost_source") or "")
+    candidate_source = str(candidate.get("source") or candidate.get("item_source") or "")
+    if cost_source == "current_pricing" and candidate_source == "estimate_template_rows_formula_compatible":
+        return "historical_formula_unit_price"
+    return cost_source
+
+
 def _material_item_options(row: dict[str, Any]) -> list[dict[str, Any]]:
     options: list[dict[str, Any]] = []
     try:
@@ -2165,9 +2243,53 @@ def _material_item_options(row: dict[str, Any]) -> list[dict[str, Any]]:
     return options
 
 
+def _candidate_options_with_historical_templates(
+    row: dict[str, Any],
+    *,
+    package: str,
+    scope: dict[str, Any],
+    data: Any = None,
+    default_unit: str = "unit",
+) -> list[dict[str, Any]]:
+    options_by_name: dict[str, dict[str, Any]] = {}
+    for option in _material_item_options(row):
+        name = _normalized(option.get("item_name"))
+        if name:
+            options_by_name[name] = dict(option)
+    if data is not None:
+        for option in _historical_template_item_options(
+            data,
+            package,
+            historical_filters_from_scope(scope),
+            default_unit,
+        ):
+            name = _normalized(option.get("item_name"))
+            if not name:
+                continue
+            existing = options_by_name.get(name, {})
+            merged = {**option, **existing}
+            if safe_number(merged.get("unit_price"), 0.0) <= 0:
+                merged["unit_price"] = option.get("unit_price", 0.0)
+                if safe_number(merged.get("unit_price"), 0.0) > 0:
+                    merged["source"] = option.get("source")
+                    merged["selected_item_reason"] = option.get("selected_item_reason")
+            if safe_number(merged.get("median_cost_per_sqft"), 0.0) <= 0:
+                merged["median_cost_per_sqft"] = option.get("median_cost_per_sqft", 0.0)
+            if safe_number(merged.get("median_qty_per_sqft"), 0.0) <= 0:
+                merged["median_qty_per_sqft"] = option.get("median_qty_per_sqft", 0.0)
+            if safe_number(merged.get("evidence_count"), 0.0) <= 0:
+                merged["evidence_count"] = option.get("evidence_count", 0)
+            if not merged.get("source"):
+                merged["source"] = option.get("source")
+            if not merged.get("selected_item_reason"):
+                merged["selected_item_reason"] = option.get("selected_item_reason")
+            options_by_name[name] = merged
+    return list(options_by_name.values())
+
+
 def _foam_pricing_candidates(row: dict[str, Any], scope: dict[str, Any], data: Any = None, template_option: str = "") -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
-    for option in _material_item_options(row):
+    for option in _candidate_options_with_historical_templates(row, package="foam", scope=scope, data=data, default_unit="set"):
         item_name = str(option.get("item_name") or "").strip()
         if not item_name:
             continue
@@ -2241,7 +2363,7 @@ def _roofing_foam_pricing_candidates(
     template_option: str = "",
 ) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
-    for option in _material_item_options(row):
+    for option in _candidate_options_with_historical_templates(row, package="foam", scope=scope, data=data, default_unit="set"):
         item_name = str(option.get("item_name") or "").strip()
         if not item_name:
             continue
@@ -2343,7 +2465,7 @@ def _roofing_coating_pricing_candidates(
     template_option: str = "",
 ) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
-    for option in _material_item_options(row):
+    for option in _candidate_options_with_historical_templates(row, package="coating", scope=scope, data=data, default_unit="gal"):
         item_name = str(option.get("item_name") or "").strip()
         if not item_name:
             continue
@@ -2433,7 +2555,7 @@ def _roofing_primer_pricing_candidates(
     template_option: str = "",
 ) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
-    for option in _material_item_options(row):
+    for option in _candidate_options_with_historical_templates(row, package="primer", scope=scope, data=data, default_unit="unit"):
         item_name = str(option.get("item_name") or "").strip()
         if not item_name:
             continue
@@ -2653,7 +2775,7 @@ def _roofing_detail_pricing_candidates(
     template_option: str = "",
 ) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
-    for option in _material_item_options(row):
+    for option in _candidate_options_with_historical_templates(row, package=package, scope=scope, data=data, default_unit="unit"):
         item_name = str(option.get("item_name") or "").strip()
         if not item_name:
             continue
@@ -2708,7 +2830,7 @@ def _roofing_board_pricing_candidates(
 ) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     fit_package = "fastener_treatment" if package == "fasteners" else package
-    for option in _material_item_options(row):
+    for option in _candidate_options_with_historical_templates(row, package=package, scope=scope, data=data, default_unit="unit"):
         item_name = str(option.get("item_name") or "").strip()
         if not item_name:
             continue
@@ -2760,7 +2882,7 @@ def _roofing_granules_pricing_candidates(
     template_option: str = "",
 ) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
-    for option in _material_item_options(row):
+    for option in _candidate_options_with_historical_templates(row, package="granules", scope=scope, data=data, default_unit="bag"):
         item_name = str(option.get("item_name") or "").strip()
         if not item_name:
             continue
@@ -3201,6 +3323,7 @@ def _row_for_bucket(rows: list[dict[str, Any]] | None, bucket: str) -> dict[str,
             _normalized(row.get("adder_key")),
             _normalized(row.get("adder")),
             _normalized(row.get("labor_package")),
+            _normalized(row.get("task")),
         }
         if bucket_key in values or values.intersection(aliases):
             return row
@@ -3265,7 +3388,7 @@ def _decision_output_summary(formula: dict[str, Any]) -> str:
                 formula.get("estimated_drums"),
                 formula.get("calculated_quantity"),
             ),
-            "hours": formula.get("total_hours"),
+            "hours": first_nonblank(formula.get("display_total_hours"), formula.get("total_hours")),
             "cost": formula.get("estimated_cost"),
             "source": formula.get("formula_source"),
         }
@@ -3518,12 +3641,218 @@ def _insulation_labor_daily_rate_cell(crew_size: Any) -> str:
     return f"People!{chr(ord('C') + int(key))}12" if key else ""
 
 
+def _driver_confidence(evidence_count: int) -> str:
+    if evidence_count >= 5:
+        return "high"
+    if evidence_count >= 2:
+        return "medium"
+    if evidence_count >= 1:
+        return "low"
+    return "none"
+
+
+def _insulation_driver_quantity_from_dependencies(package: str, scope: dict[str, Any], dependencies: dict[str, Any] | None) -> dict[str, Any]:
+    spec = INSULATION_LABOR_DRIVER_SPECS.get(package) or {"driver_type": "project_sqft", "driver_unit": "sqft", "rate_unit": "hours_per_1000_sqft"}
+    driver_type = str(spec.get("driver_type") or "project_sqft")
+    if driver_type == "material_quantity":
+        deps = dependencies or {}
+        for field in spec.get("dependency_fields") or ():
+            quantity = safe_number(deps.get(field), 0.0)
+            if quantity > 0:
+                return {
+                    "labor_driver_type": driver_type,
+                    "labor_driver_quantity": round(quantity, 4),
+                    "labor_driver_unit": spec.get("driver_unit"),
+                    "labor_driver_source": f"workbench_dependency.{field}",
+                    "labor_driver_rate_unit": spec.get("rate_unit"),
+                    "labor_driver_review_required": False,
+                    "labor_driver_review_reason": "",
+                }
+        return {
+            "labor_driver_type": driver_type,
+            "labor_driver_quantity": 0.0,
+            "labor_driver_unit": spec.get("driver_unit"),
+            "labor_driver_source": "missing_material_quantity",
+            "labor_driver_rate_unit": spec.get("rate_unit"),
+            "labor_driver_review_required": True,
+            "labor_driver_review_reason": "Related insulation material quantity is missing; labor remains review-required.",
+        }
+    area = _estimate_area(scope)
+    return {
+        "labor_driver_type": "project_sqft",
+        "labor_driver_quantity": round(area, 4),
+        "labor_driver_unit": "sqft",
+        "labor_driver_source": "scope_area",
+        "labor_driver_rate_unit": "hours_per_1000_sqft",
+        "labor_driver_review_required": area <= 0,
+        "labor_driver_review_reason": "Project square footage is missing." if area <= 0 else "",
+    }
+
+
+def _template_row_quantity_for_insulation_driver(row: dict[str, Any], package: str) -> float:
+    spec = INSULATION_LABOR_DRIVER_SPECS.get(package) or {}
+    for field in spec.get("historical_quantity_fields") or ():
+        quantity = safe_number(row.get(field), 0.0)
+        if quantity > 0:
+            if package == "labor_foam" and field == "estimated_units":
+                return quantity / 1000.0
+            return quantity
+    return 0.0
+
+
+def _historical_insulation_labor_driver_rate(data: Any, package: str) -> dict[str, Any]:
+    spec = INSULATION_LABOR_DRIVER_SPECS.get(package) or {}
+    if spec.get("driver_type") != "material_quantity" or data is None:
+        return {}
+    rows = _frame(data, "template_rows")
+    if rows.empty:
+        return {}
+    if "template_type" in rows.columns:
+        scoped = rows[rows["template_type"].map(_normalized).eq("insulation")].copy()
+        if not scoped.empty:
+            rows = scoped
+    bucket_text = _text_series(rows, "template_bucket").map(_normalized)
+    kind_text = _text_series(rows, "line_item_kind").map(_normalized)
+    labor_rows = rows[(kind_text.eq("labor")) & (bucket_text.eq(_normalized(package)))].copy()
+    material_buckets = {_normalized(bucket) for bucket in spec.get("historical_material_buckets") or ()}
+    material_rows = rows[bucket_text.isin(material_buckets)].copy()
+    if labor_rows.empty or material_rows.empty:
+        return {}
+    material_by_job: dict[str, list[dict[str, Any]]] = {}
+    for row in material_rows.to_dict(orient="records"):
+        job_id = str(first_nonblank(row.get("job_id"), row.get("document_id")))
+        if job_id:
+            material_by_job.setdefault(job_id, []).append(row)
+    rates: list[float] = []
+    for row in labor_rows.to_dict(orient="records"):
+        hours = safe_number(row.get("total_hours"), 0.0)
+        if hours <= 0:
+            continue
+        job_id = str(first_nonblank(row.get("job_id"), row.get("document_id")))
+        quantity = sum(_template_row_quantity_for_insulation_driver(material, package) for material in material_by_job.get(job_id, []))
+        if quantity > 0:
+            rates.append(hours / quantity)
+    if not rates:
+        return {}
+    series = pd.Series(rates, dtype=float)
+    return {
+        "historical_driver_rate": round(float(series.median()), 6),
+        "historical_driver_rate_p25": round(float(series.quantile(0.25)), 6),
+        "historical_driver_rate_p75": round(float(series.quantile(0.75)), 6),
+        "historical_driver_evidence_count": len(rates),
+        "historical_driver_source": "paired_insulation_template_labor_material_rows",
+    }
+
+
+DRIVER_OWNED_TOTAL_HOUR_SOURCES = {
+    "driver_quantity_history",
+    "driver_recomputed_from_quantity",
+}
+
+MANUAL_TOTAL_HOUR_SOURCES = {
+    "estimator_override",
+    "estimator_edit",
+    "manual_override",
+    "manual",
+}
+
+
+def _labor_hours_manually_overridden(row: dict[str, Any] | None) -> bool:
+    if not isinstance(row, dict):
+        return False
+    source = str(row.get("total_hours_source") or row.get("labor_hours_source") or "").strip().lower()
+    if source in MANUAL_TOTAL_HOUR_SOURCES:
+        return True
+    return bool(row.get("manual_labor_hours_override"))
+
+
+def _labor_driver_owns_total_hours(existing: dict[str, Any] | None, labor: dict[str, Any] | None = None) -> bool:
+    rows = [row for row in (existing, labor) if isinstance(row, dict)]
+    for row in rows:
+        source = str(row.get("total_hours_source") or row.get("labor_hours_source") or "").strip().lower()
+        if source in DRIVER_OWNED_TOTAL_HOUR_SOURCES:
+            return True
+    existing_row = existing if isinstance(existing, dict) else {}
+    # Rows produced before source tracking used "provided" even when the driver populated the hours.
+    return bool(existing_row.get("labor_driver_applied")) and not _labor_hours_manually_overridden(existing_row)
+
+
+def _apply_insulation_labor_driver(
+    *,
+    package: str,
+    scope: dict[str, Any],
+    dependencies: dict[str, Any] | None,
+    data: Any,
+    labor: dict[str, Any],
+    existing: dict[str, Any],
+    include: bool,
+    total_hours: float,
+    days: float,
+    crew_size: int,
+) -> tuple[float, float, dict[str, Any]]:
+    driver = _insulation_driver_quantity_from_dependencies(package, scope, dependencies)
+    rate_info = _historical_insulation_labor_driver_rate(data, package)
+    if not rate_info and any(key in existing for key in ("historical_driver_rate", "historical_driver_evidence_count")):
+        rate_info = {
+            "historical_driver_rate": existing.get("historical_driver_rate"),
+            "historical_driver_rate_p25": existing.get("historical_driver_rate_p25"),
+            "historical_driver_rate_p75": existing.get("historical_driver_rate_p75"),
+            "historical_driver_evidence_count": existing.get("historical_driver_evidence_count"),
+            "historical_driver_source": existing.get("historical_driver_source"),
+        }
+    quantity = safe_number(driver.get("labor_driver_quantity"), 0.0)
+    rate = safe_number(rate_info.get("historical_driver_rate"), 0.0)
+    review_reason = str(driver.get("labor_driver_review_reason") or "")
+    manual_hours_override = _labor_hours_manually_overridden(existing) or _labor_hours_manually_overridden(labor)
+    applied = False if manual_hours_override else bool(existing.get("labor_driver_applied") or labor.get("labor_driver_applied"))
+    if include and not manual_hours_override and total_hours <= 0 and driver.get("labor_driver_type") == "material_quantity" and quantity > 0 and rate > 0:
+        total_hours = quantity * rate
+        days = total_hours / max(crew_size * 10.0, 1.0)
+        applied = True
+    elif driver.get("labor_driver_type") == "project_sqft":
+        area = safe_number(driver.get("labor_driver_quantity"), 0.0)
+        hours_per_1000 = safe_number(labor.get("editable_hours_per_1000_sqft"), 0.0)
+        if hours_per_1000 <= 0 and total_hours > 0 and area > 0:
+            hours_per_1000 = total_hours / area * 1000.0
+        if hours_per_1000 > 0:
+            rate_info.setdefault("historical_driver_rate", round(hours_per_1000, 6))
+            rate_info.setdefault("historical_driver_evidence_count", labor.get("decision_evidence_count") or labor.get("evidence_count") or 0)
+            rate_info.setdefault("historical_driver_source", "historical_labor_hours_per_1000_sqft")
+    elif manual_hours_override and driver.get("labor_driver_type") == "material_quantity":
+        applied = False
+        review_reason = review_reason or "Estimator labor-hour override retained; driver evidence is advisory."
+    elif include and quantity > 0 and rate <= 0:
+        review_reason = "Historical driver rate is missing; existing labor sizing retained."
+    evidence_count = int(safe_number(rate_info.get("historical_driver_evidence_count"), 0))
+    if quantity > 0 and rate > 0:
+        summary = (
+            f"{quantity:g} {driver.get('labor_driver_unit')} x {rate:.4g} "
+            f"{driver.get('labor_driver_rate_unit')} from {evidence_count} paired historical jobs."
+        )
+    elif driver.get("labor_driver_type") == "project_sqft" and safe_number(rate_info.get("historical_driver_rate"), 0.0) > 0:
+        summary = f"{safe_number(rate_info.get('historical_driver_rate'), 0.0):.4g} hours per 1,000 sqft from historical labor rows."
+    else:
+        summary = review_reason or "Labor driver evidence unavailable; existing sizing retained."
+    driver.update(rate_info)
+    driver.update(
+        {
+            "labor_driver_applied": applied,
+            "labor_driver_confidence": _driver_confidence(evidence_count),
+            "labor_driver_summary": summary,
+            "labor_driver_review_required": bool(driver.get("labor_driver_review_required") or review_reason),
+            "labor_driver_review_reason": review_reason,
+        }
+    )
+    return total_hours, days, driver
+
+
 def _build_insulation_labor_template_decisions(
     *,
     scope: dict[str, Any],
     labor_rows: list[dict[str, Any]] | None = None,
     existing_rows: list[dict[str, Any]] | None = None,
     data: Any = None,
+    dependencies: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     if not _is_insulation_scope(scope):
         return []
@@ -3565,10 +3894,41 @@ def _build_insulation_labor_template_decisions(
         crew_size = int(safe_number(first_nonblank(existing.get("crew_size"), labor.get("crew_size"), 3), 3) or 3)
         days = safe_number(first_nonblank(existing.get("days"), existing.get("editable_days"), labor.get("days"), labor.get("editable_days"), 0), 0.0)
         hours_per_1000 = safe_number(first_nonblank(existing.get("editable_hours_per_1000_sqft"), labor.get("editable_hours_per_1000_sqft"), 0), 0.0)
-        total_hours = safe_number(first_nonblank(existing.get("total_hours"), existing.get("editable_total_hours"), labor.get("calculated_hours"), labor.get("total_hours"), 0), 0.0)
-        hourly_rate = safe_number(first_nonblank(existing.get("hourly_rate"), existing.get("labor_rate"), labor.get("hourly_rate"), labor.get("labor_rate"), DEFAULT_HOURLY_RATE), DEFAULT_HOURLY_RATE)
+        manual_hours_override = _labor_hours_manually_overridden(existing) or _labor_hours_manually_overridden(labor)
+        driver_owned_hours = _labor_driver_owns_total_hours(existing, labor)
+        total_hours = (
+            0.0
+            if driver_owned_hours and not manual_hours_override
+            else safe_number(first_nonblank(existing.get("total_hours"), existing.get("editable_total_hours"), labor.get("calculated_hours"), labor.get("total_hours"), 0), 0.0)
+        )
+        hourly_rate = safe_number(first_nonblank(existing.get("hourly_rate"), existing.get("labor_rate"), labor.get("hourly_rate"), labor.get("labor_rate")), 0.0)
         daily_rate = safe_number(first_nonblank(existing.get("daily_rate"), labor.get("daily_rate"), 0), 0.0)
         formula_mode = str(first_nonblank(existing.get("formula_mode"), labor.get("formula_mode"), "mixed_formula"))
+        total_hours, days, driver_fields = _apply_insulation_labor_driver(
+            package=package,
+            scope=scope,
+            dependencies=dependencies,
+            data=data,
+            labor=labor,
+            existing=existing,
+            include=include,
+            total_hours=total_hours,
+            days=days,
+            crew_size=crew_size,
+        )
+        total_hours, total_hours_source = _populate_expected_mixed_labor_hours(
+            include=include,
+            formula_mode=formula_mode,
+            total_hours=total_hours,
+            days=days,
+            crew_size=crew_size,
+            hourly_rate=hourly_rate,
+        )
+        if manual_hours_override:
+            total_hours_source = str(first_nonblank(existing.get("total_hours_source"), labor.get("total_hours_source"), "estimator_override"))
+            driver_fields["labor_driver_applied"] = False
+        elif driver_fields.get("labor_driver_applied") and driver_fields.get("labor_driver_type") == "material_quantity":
+            total_hours_source = "driver_quantity_history"
         formula = calculate_mixed_labor(
             days=days,
             crew_size=crew_size,
@@ -3580,6 +3940,7 @@ def _build_insulation_labor_template_decisions(
             formula_mode=formula_mode,
             include=include,
         )
+        display_hours = safe_number(formula.get("display_total_hours"), formula.get("total_hours"))
         row_number = int(safe_number(workbook_row, 0))
         selected_cell = _insulation_labor_daily_rate_cell(crew_size)
         preview = [
@@ -3617,10 +3978,14 @@ def _build_insulation_labor_template_decisions(
                 "editable_hours_per_1000_sqft": round(hours_per_1000, 4),
                 "total_hours": formula.get("total_hours"),
                 "calculated_hours": formula.get("total_hours"),
+                "total_hours_source": total_hours_source,
+                "display_total_hours": round(display_hours, 4),
+                "crew_labor_hours": round(display_hours, 4),
                 "editable_total_hours": formula.get("total_hours"),
                 "formula_mode": formula.get("formula_mode"),
                 "formula_model": formula.get("formula_model"),
                 "formula_source": formula.get("formula_source"),
+                **driver_fields,
                 "estimated_cost": formula.get("estimated_cost"),
                 "calculated_output": formula.get("calculated_output"),
                 "calculated_output_summary": _decision_output_summary(formula),
@@ -3637,6 +4002,8 @@ def _build_insulation_labor_template_decisions(
                 "compatibility_status": "review" if warnings else ("compatible" if include else "not_included"),
                 "compatibility_warnings": warnings,
                 "notes": "Labor decision mirrors the insulation workbook mixed formula. "
+                + ("Expected total hours were filled from days x crew x 10. " if total_hours_source == "estimated_from_days_crew" else "")
+                + (f"Labor driver: {driver_fields.get('labor_driver_summary')}. " if driver_fields.get("labor_driver_summary") else "")
                 + (" ".join(warnings) if warnings else "Template formula preview is available for estimator review."),
                 "decision_values": {
                     "days": formula.get("days"),
@@ -3644,6 +4011,9 @@ def _build_insulation_labor_template_decisions(
                     "daily_rate": formula.get("daily_rate"),
                     "hourly_rate": formula.get("hourly_rate"),
                     "total_hours": formula.get("total_hours"),
+                    "total_hours_source": total_hours_source,
+                    "labor_driver": driver_fields.get("labor_driver_summary"),
+                    "display_total_hours": round(display_hours, 4),
                     "formula_mode": formula.get("formula_mode"),
                 },
                 "editable_decision_value": {
@@ -3652,6 +4022,8 @@ def _build_insulation_labor_template_decisions(
                     "daily_rate": formula.get("daily_rate"),
                     "hourly_rate": formula.get("hourly_rate"),
                     "total_hours": formula.get("total_hours"),
+                    "total_hours_source": total_hours_source,
+                    "display_total_hours": round(display_hours, 4),
                     "formula_mode": formula.get("formula_mode"),
                 },
                 "recommended_decision_value": labor.get("recommended_decision_value") or {},
@@ -3668,8 +4040,11 @@ def _insulation_dependency_totals(workbench: dict[str, Any] | None = None, *, ro
     foam_rows = workbench.get("insulation_foam_template_decisions") or []
     deps = {
         "foam_units": sum(safe_number(row.get("estimated_units"), 0.0) for row in foam_rows if isinstance(row, dict) and row.get("include")),
+        "foam_sets": sum(safe_number(row.get("estimated_sets"), 0.0) for row in foam_rows if isinstance(row, dict) and row.get("include")),
         "thermal_gallons": 0.0,
         "primer_units": 0.0,
+        "membrane_lf": 0.0,
+        "caulk_units": 0.0,
         "thinner_units": 0.0,
         "pre_pricing_total": 0.0,
     }
@@ -3680,8 +4055,12 @@ def _insulation_dependency_totals(workbench: dict[str, Any] | None = None, *, ro
             bucket = str(row.get("template_bucket") or "")
             if bucket == "thermal_barrier_coating":
                 deps["thermal_gallons"] += safe_number(row.get("estimated_gallons"), 0.0)
+            elif bucket == "membrane":
+                deps["membrane_lf"] += safe_number(row.get("linear_ft"), 0.0)
             elif bucket == "primer":
                 deps["primer_units"] += safe_number(row.get("estimated_units"), 0.0)
+            elif bucket == "caulk_sealant":
+                deps["caulk_units"] += safe_number(row.get("estimated_units"), 0.0)
             elif bucket == "thinner":
                 deps["thinner_units"] += safe_number(row.get("estimated_units"), 0.0)
             if section != "insulation_pricing_template_decisions":
@@ -4124,6 +4503,7 @@ def _build_roofing_coating_template_decisions(
             cost_per_sqft=coating_row.get("historical_cost_per_sqft"),
             include=include,
         )
+        cost_source = _cost_source_for_candidate(formula, selected_candidate)
         compatibility = _roofing_coating_candidate_compatibility(
             template_option=resolved_option,
             candidate=selected_candidate,
@@ -4134,6 +4514,8 @@ def _build_roofing_coating_template_decisions(
         )
         if gal_per_100 <= 0:
             warnings.append("Gallons per 100 sqft is missing; formula output requires estimator review.")
+        if include and safe_number(formula.get("estimated_cost"), 0.0) <= 0:
+            warnings.append("Coating material cost is missing; current pricing or historical cost/sqft is required.")
         if include and scope.get("coating_path_review"):
             warnings.append("Conditional coating/restoration path requires estimator qualification before final warranty or product commitment.")
         product_id = selected_candidate.get("product_id") or existing.get("product_id") or ""
@@ -4184,6 +4566,7 @@ def _build_roofing_coating_template_decisions(
                 "estimated_cost": formula.get("estimated_cost"),
                 "formula_model": formula.get("formula_model"),
                 "formula_source": formula.get("formula_source"),
+                "cost_source": cost_source,
                 "selected_pricing_candidate": selected_name,
                 "selected_pricing_item_id": selected_candidate.get("pricing_item_id"),
                 "pricing_candidates": candidates,
@@ -4309,6 +4692,9 @@ def _build_roofing_primer_template_decisions(
     )
     default_include = bool(
         primer_row.get("include")
+        or primer_row.get("review_required")
+        or safe_number(primer_row.get("estimated_cost"), 0.0) > 0
+        or safe_number(first_nonblank(primer_row.get("estimated_quantity"), primer_row.get("quantity")), 0.0) > 0
         or str(primer_row.get("suggested_by_notes_rules") or "").lower() == "yes"
         or explicit_include_signal
     )
@@ -4337,12 +4723,31 @@ def _build_roofing_primer_template_decisions(
         candidates,
         first_nonblank(existing.get("selected_pricing_candidate"), primer_row.get("item_name"), primer_row.get("current_item")),
     )
+    source_plan_unit_is_area = bool(primer_row.get("source_plan_unit_is_area"))
+    source_plan_cost_per_sqft = safe_number(
+        first_nonblank(primer_row.get("source_plan_cost_per_sqft"), primer_row.get("historical_cost_per_sqft")),
+        0.0,
+    )
+    selected_candidate_unit_is_area = _normalized(selected_candidate.get("unit")) in {
+        "sqft",
+        "sq ft",
+        "sf",
+        "square foot",
+        "square feet",
+    }
+    selected_candidate_source = _normalized(selected_candidate.get("source"))
+    selected_candidate_unit_price = (
+        ""
+        if source_plan_unit_is_area and selected_candidate_unit_is_area and selected_candidate_source != "pricing_catalog"
+        else selected_candidate.get("unit_price")
+    )
+    source_plan_unit_price = "" if source_plan_unit_is_area else primer_row.get("current_unit_price")
     unit_price = safe_number(
         first_nonblank(
             existing.get("unit_price"),
-            selected_candidate.get("unit_price"),
-            primer_row.get("current_unit_price"),
-            primer_row.get("current_price"),
+            selected_candidate_unit_price,
+            source_plan_unit_price,
+            "" if source_plan_unit_is_area else primer_row.get("current_price"),
         ),
         0.0,
     )
@@ -4358,7 +4763,7 @@ def _build_roofing_primer_template_decisions(
         area_sqft=basis_sqft,
         coverage_sqft_per_unit=coverage,
         unit_price=unit_price,
-        cost_per_sqft=primer_row.get("historical_cost_per_sqft"),
+        cost_per_sqft=source_plan_cost_per_sqft,
         include=include,
     )
     compatibility = _roofing_primer_candidate_compatibility(
@@ -4371,6 +4776,8 @@ def _build_roofing_primer_template_decisions(
     )
     if coverage <= 0:
         warnings.append("Primer coverage is missing; formula output requires estimator review.")
+    if include and safe_number(formula.get("estimated_cost"), 0.0) <= 0:
+        warnings.append("Primer material cost is missing; current pricing or historical cost/sqft is required.")
     product_context_status = "matched" if selected_candidate.get("product_id") else "missing"
     selected_name = selected_candidate.get("item_name") or str(first_nonblank(primer_row.get("item_name"), primer_row.get("current_item"), ""))
     return [
@@ -4399,6 +4806,7 @@ def _build_roofing_primer_template_decisions(
             "estimated_cost": formula.get("estimated_cost"),
             "formula_model": formula.get("formula_model"),
             "formula_source": formula.get("formula_source"),
+            "cost_source": formula.get("cost_source"),
             "selected_pricing_candidate": selected_name,
             "selected_pricing_item_id": selected_candidate.get("pricing_item_id"),
             "pricing_candidates": candidates,
@@ -4441,6 +4849,7 @@ def _build_roofing_primer_template_decisions(
                 {
                     "units": formula.get("estimated_units"),
                     "cost": formula.get("estimated_cost"),
+                    "source": formula.get("cost_source"),
                 }
             ),
             "workbook_cell_write_preview": [
@@ -4537,6 +4946,8 @@ def _build_roofing_detail_template_decisions(
             existing.get("estimated_units"),
             existing.get("calculated_quantity"),
             (caulk_row or {}).get("calculated_quantity") if include else "",
+            (caulk_row or {}).get("estimated_quantity") if include else "",
+            (caulk_row or {}).get("quantity") if include else "",
             default=0.0,
         )
         formula = calculate_roofing_units_cost(
@@ -4582,6 +4993,7 @@ def _build_roofing_detail_template_decisions(
                 "estimated_cost": formula.get("estimated_cost"),
                 "formula_model": formula.get("formula_model"),
                 "formula_source": formula.get("formula_source"),
+                "cost_source": formula.get("cost_source"),
                 "selected_pricing_candidate": selected_name,
                 "selected_pricing_item_id": selected_candidate.get("pricing_item_id"),
                 "pricing_candidates": candidates,
@@ -4665,6 +5077,8 @@ def _build_roofing_detail_template_decisions(
         existing.get("estimated_units"),
         existing.get("calculated_quantity"),
         (fabric_row or {}).get("calculated_quantity") if fabric_include else "",
+        (fabric_row or {}).get("estimated_quantity") if fabric_include else "",
+        (fabric_row or {}).get("quantity") if fabric_include else "",
         default=0.0,
     )
     formula = calculate_roofing_fabric(linear_ft=linear_ft, unit_price=unit_price, include=fabric_include)
@@ -4706,6 +5120,7 @@ def _build_roofing_detail_template_decisions(
             "estimated_cost": formula.get("estimated_cost"),
             "formula_model": formula.get("formula_model"),
             "formula_source": formula.get("formula_source"),
+            "cost_source": formula.get("cost_source"),
             "selected_pricing_candidate": selected_name,
             "selected_pricing_item_id": selected_candidate.get("pricing_item_id"),
             "pricing_candidates": candidates,
@@ -4757,7 +5172,19 @@ def _build_roofing_detail_quantity_template_decisions(
         return []
     materials = materials or []
     existing_by_row = {str(row.get("workbook_row") or ""): row for row in existing_rows or [] if isinstance(row, dict)}
-    material_by_key = {str(row.get("package_key") or row.get("template_bucket") or "").lower(): row for row in materials if isinstance(row, dict)}
+    material_by_key: dict[str, dict[str, Any]] = {}
+    for row in materials:
+        if not isinstance(row, dict):
+            continue
+        for key in (
+            row.get("package_key"),
+            row.get("template_bucket"),
+            row.get("package"),
+            row.get("category"),
+        ):
+            key_norm = _normalized(key)
+            if key_norm:
+                material_by_key.setdefault(key_norm, row)
     notes = _normalized(
         " ".join(
             str(scope.get(key) or "")
@@ -4773,7 +5200,7 @@ def _build_roofing_detail_quantity_template_decisions(
         existing = existing_by_row.get(row_key, {})
         related_material = {}
         for material_key in spec.get("material_keys") or []:
-            related_material = material_by_key.get(str(material_key)) or {}
+            related_material = material_by_key.get(_normalized(material_key)) or _row_for_bucket(materials, str(material_key)) or {}
             if related_material:
                 break
         signal = bool((related_material or {}).get("include") or _has_positive_note_signal(notes, spec.get("signals") or []))
@@ -4785,6 +5212,8 @@ def _build_roofing_detail_quantity_template_decisions(
                 existing.get("estimated_units"),
                 existing.get("calculated_quantity"),
                 related_material.get("calculated_quantity"),
+                related_material.get("estimated_quantity"),
+                related_material.get("quantity"),
                 default=0.0,
             )
         else:
@@ -4794,9 +5223,13 @@ def _build_roofing_detail_quantity_template_decisions(
                 existing.get("linear_ft"),
                 existing.get("calculated_quantity"),
                 related_material.get("calculated_quantity"),
+                related_material.get("estimated_quantity"),
+                related_material.get("quantity"),
                 default=0.0,
             )
         amount = safe_number(first_nonblank(existing.get("amount"), existing.get("estimated_cost")), 0.0)
+        if amount <= 0 and bucket == "seams_misc":
+            amount = safe_number(related_material.get("estimated_cost"), 0.0)
         formula = calculate_roofing_detail_quantity(
             quantity=quantity,
             amount=amount,
@@ -4821,6 +5254,7 @@ def _build_roofing_detail_quantity_template_decisions(
                 "estimated_cost": formula.get("estimated_cost"),
                 "formula_model": formula.get("formula_model"),
                 "formula_source": formula.get("formula_source"),
+                "cost_source": formula.get("cost_source"),
                 "compatibility_status": "review" if warnings else "compatible",
                 "compatibility_warnings": warnings,
                 "notes": f"{spec['label']} preserves the workbook detail quantity input for row {row_number}."
@@ -6109,6 +6543,7 @@ def _build_roofing_labor_template_decisions(
     *,
     scope: dict[str, Any],
     labor_rows: list[dict[str, Any]] | None = None,
+    source_labor_rows: list[dict[str, Any]] | None = None,
     existing_rows: list[dict[str, Any]] | None = None,
     data: Any = None,
 ) -> list[dict[str, Any]]:
@@ -6190,6 +6625,9 @@ def _build_roofing_labor_template_decisions(
         workbook_row = str(labor.get("workbook_row") or "")
         if not package or not workbook_row:
             continue
+        source_labor = _row_for_bucket(source_labor_rows, package) or {}
+        if source_labor:
+            labor = {**labor, **source_labor, "package_key": package, "template_bucket": package, "workbook_row": workbook_row}
         existing = existing_by_key.get(package) or existing_by_key.get(workbook_row) or {}
         include = bool(existing["include"]) if "include" in existing else bool(labor.get("include"))
         crew_size = int(
@@ -6224,9 +6662,17 @@ def _build_roofing_labor_template_decisions(
             ),
             0.0,
         )
-        hourly_rate = safe_number(first_nonblank(existing.get("hourly_rate"), existing.get("labor_rate"), labor.get("hourly_rate"), labor.get("labor_rate")), DEFAULT_HOURLY_RATE)
+        hourly_rate = safe_number(first_nonblank(existing.get("hourly_rate"), existing.get("labor_rate"), labor.get("hourly_rate"), labor.get("labor_rate")), 0.0)
         daily_rate = safe_number(first_nonblank(existing.get("daily_rate"), labor.get("daily_rate")), 0.0)
         formula_mode = str(first_nonblank(existing.get("formula_mode"), labor.get("formula_mode"), "mixed_formula"))
+        total_hours, total_hours_source = _populate_expected_mixed_labor_hours(
+            include=include,
+            formula_mode=formula_mode,
+            total_hours=total_hours,
+            days=days,
+            crew_size=crew_size,
+            hourly_rate=hourly_rate,
+        )
         formula = calculate_mixed_labor(
             days=days,
             crew_size=crew_size,
@@ -6239,6 +6685,7 @@ def _build_roofing_labor_template_decisions(
             include=include,
         )
         calculated_hours = safe_number(formula.get("total_hours"), 0.0)
+        display_hours = safe_number(formula.get("display_total_hours"), calculated_hours)
         calculated_days = safe_number(formula.get("days"), days)
         calculated_daily_rate = safe_number(formula.get("daily_rate"), daily_rate)
         calculated_hourly_rate = safe_number(formula.get("hourly_rate"), hourly_rate)
@@ -6282,19 +6729,37 @@ def _build_roofing_labor_template_decisions(
                 "editable_hours_per_1000_sqft": round(hours_per_1000, 4),
                 "total_hours": round(calculated_hours, 4),
                 "calculated_hours": round(calculated_hours, 4),
+                "total_hours_source": total_hours_source,
+                "display_total_hours": round(display_hours, 4),
+                "crew_labor_hours": round(display_hours, 4),
                 "editable_total_hours": round(calculated_hours, 4),
                 "formula_mode": str(formula.get("formula_mode") or formula_mode),
                 "formula_model": str(formula.get("formula_model") or "labor_cost_from_days_crew_rate"),
                 "formula_source": str(formula.get("formula_source") or ""),
+                "labor_driver_type": labor.get("labor_driver_type"),
+                "labor_driver_quantity": labor.get("labor_driver_quantity"),
+                "labor_driver_unit": labor.get("labor_driver_unit"),
+                "labor_driver_source": labor.get("labor_driver_source"),
+                "labor_driver_rate_unit": labor.get("labor_driver_rate_unit"),
+                "historical_driver_rate": labor.get("historical_driver_rate"),
+                "historical_driver_evidence_count": labor.get("historical_driver_evidence_count"),
+                "historical_driver_source": labor.get("historical_driver_source"),
+                "labor_driver_applied": labor.get("labor_driver_applied"),
+                "labor_driver_confidence": labor.get("labor_driver_confidence"),
+                "labor_driver_summary": labor.get("labor_driver_summary"),
+                "labor_driver_review_required": labor.get("labor_driver_review_required"),
+                "labor_driver_review_reason": labor.get("labor_driver_review_reason"),
                 "estimated_cost": formula.get("estimated_cost"),
                 "days_was_explicit": days_was_explicit,
                 "calculated_output": formula.get("estimated_cost"),
                 "calculated_output_summary": _value_summary(
                     {
                         "days": round(calculated_days, 4),
-                        "hours": round(calculated_hours, 4),
+                        "hours": round(display_hours, 4),
+                        "workbook_hours": round(calculated_hours, 4),
                         "cost": formula.get("estimated_cost"),
                         "formula_mode": str(formula.get("formula_mode") or formula_mode),
+                        "source": str(formula.get("formula_source") or ""),
                     }
                 ),
                 "historical_recommendation": labor.get("historical_recommendation") or "",
@@ -6307,7 +6772,8 @@ def _build_roofing_labor_template_decisions(
                 "confidence": labor.get("confidence") or "",
                 "compatibility_status": "review" if warnings else "compatible",
                 "compatibility_warnings": warnings,
-                "notes": "Labor decision mirrors the workbook mixed formula: if total hours are zero, cost uses days x daily rate; otherwise cost uses hourly rate x total hours."
+                "notes": "Labor decision mirrors the workbook mixed formula: if total hours are zero, cost uses days x daily rate; otherwise cost uses hourly rate x total hours. "
+                + ("Expected total hours were filled from days x crew x 10." if total_hours_source == "estimated_from_days_crew" else "")
                 + (" " + " ".join(warnings) if warnings else ""),
                 "decision_values": {
                     "days": round(calculated_days, 4),
@@ -6317,6 +6783,9 @@ def _build_roofing_labor_template_decisions(
                     "daily_rate": round(calculated_daily_rate, 4),
                     "hourly_rate": round(calculated_hourly_rate, 4),
                     "total_hours": round(calculated_hours, 4),
+                    "total_hours_source": total_hours_source,
+                    "labor_driver": labor.get("labor_driver_summary"),
+                    "display_total_hours": round(display_hours, 4),
                     "formula_mode": str(formula.get("formula_mode") or formula_mode),
                     "formula_model": str(formula.get("formula_model") or "labor_cost_from_days_crew_rate"),
                     "formula_source": str(formula.get("formula_source") or ""),
@@ -6329,6 +6798,8 @@ def _build_roofing_labor_template_decisions(
                     "daily_rate": round(calculated_daily_rate, 4),
                     "hourly_rate": round(calculated_hourly_rate, 4),
                     "total_hours": round(calculated_hours, 4),
+                    "total_hours_source": total_hours_source,
+                    "display_total_hours": round(display_hours, 4),
                     "formula_mode": str(formula.get("formula_mode") or formula_mode),
                 },
                 "recommended_decision_value": labor.get("recommended_decision_value") or {},
@@ -6602,6 +7073,21 @@ def _material_plan_row_for_category_from_rows(rows: list[dict[str, Any]], scope:
         _fill_blank(normalized, "decision_evidence_count", first_nonblank(row.get("decision_evidence_count"), row.get("evidence_count"), row.get("matched_comparable_job_count")))
         _fill_blank(normalized, "decision_confidence", first_nonblank(row.get("decision_confidence"), row.get("confidence")))
         quantity = safe_number(first_nonblank(row.get("estimated_quantity"), row.get("quantity")), 0.0)
+        estimated_cost = safe_number(row.get("estimated_cost"), 0.0)
+        unit = _normalized(row.get("unit"))
+        if quantity > 0:
+            _fill_blank(normalized, "source_plan_quantity", quantity)
+            _fill_blank(normalized, "calculated_quantity", quantity)
+            _fill_blank(normalized, "estimated_units", quantity)
+        if estimated_cost > 0:
+            _fill_blank(normalized, "source_plan_estimated_cost", estimated_cost)
+        if unit:
+            _fill_blank(normalized, "source_plan_unit", unit)
+        if unit in {"sqft", "sq ft", "sf", "square foot", "square feet"}:
+            normalized["source_plan_unit_is_area"] = True
+        if area > 0 and estimated_cost > 0:
+            _fill_blank(normalized, "source_plan_cost_per_sqft", estimated_cost / area)
+            _fill_blank(normalized, "historical_cost_per_sqft", estimated_cost / area)
         if area > 0 and quantity > 0 and not normalized.get("editable_qty_per_sqft"):
             normalized["editable_qty_per_sqft"] = quantity / area
             normalized["historical_qty_per_sqft"] = quantity / area
@@ -7616,18 +8102,133 @@ def _package_item_fit_score(package: str, option: dict[str, Any], scope: dict[st
     return _package_item_fit_details(package, option, scope)[0]
 
 
+def _formula_quantity_for_historical_unit_price(row: pd.Series, package: str) -> float:
+    package_key = _normalized(package)
+    if package_key == "coating":
+        return safe_number(first_nonblank(row.get("estimated_gallons"), row.get("estimated_units")), 0.0)
+    if package_key == "board_stock":
+        area = safe_number(first_nonblank(row.get("area_sqft"), row.get("quantity")), 0.0)
+        return area / 100.0 if area > 0 else 0.0
+    if package_key in {"fasteners", "plates", "fastener_treatment"}:
+        units = safe_number(first_nonblank(row.get("estimated_units"), row.get("quantity")), 0.0)
+        return units / 1000.0 if units > 0 else 0.0
+    if package_key in {"fabric", "seam_treatment", "seams_misc"}:
+        return safe_number(first_nonblank(row.get("linear_ft"), row.get("estimated_units"), row.get("quantity")), 0.0)
+    return safe_number(
+        first_nonblank(
+            row.get("estimated_units"),
+            row.get("estimated_gallons"),
+            row.get("quantity"),
+            row.get("linear_ft"),
+        ),
+        0.0,
+    )
+
+
+def _historical_template_item_options(
+    data: Any,
+    package: str,
+    filters: dict[str, Any] | None,
+    default_unit: str,
+) -> list[dict[str, Any]]:
+    rows = _frame(data, "template_rows")
+    if rows.empty:
+        return []
+    rows = rows.copy()
+    if "template_type" in rows.columns:
+        template_type = _normalized((filters or {}).get("template_type")) or _normalized((filters or {}).get("division"))
+        if template_type:
+            expected = "insulation" if "insulation" in template_type else "roofing" if "roof" in template_type else template_type
+            scoped = rows[rows["template_type"].map(_normalized).eq(expected)]
+            if not scoped.empty:
+                rows = scoped.copy()
+    if "line_item_kind" in rows.columns:
+        material_like = rows["line_item_kind"].map(_normalized).isin({"material", "equipment"})
+        if material_like.any():
+            rows = rows[material_like].copy()
+    package_rows = rows[_package_match_series(rows, package)].copy()
+    if package_rows.empty:
+        return []
+    eligible, _ = _scope_filter_diagnostics(package_rows, filters)
+    if eligible.empty:
+        eligible = package_rows
+    eligible["_workbench_item_name"] = eligible.apply(_item_name_from_row, axis=1)
+    eligible = eligible[eligible["_workbench_item_name"].astype(str).str.strip().ne("")].copy()
+    if eligible.empty:
+        return []
+    estimated_cost = _numeric_series(eligible, "estimated_cost")
+    unit_price = _numeric_series(eligible, "unit_price")
+    area = _numeric_series(eligible, "area_sqft")
+    eligible["_formula_quantity_for_unit_price"] = eligible.apply(
+        lambda row: _formula_quantity_for_historical_unit_price(row, package),
+        axis=1,
+    )
+    formula_quantity = _numeric_series(eligible, "_formula_quantity_for_unit_price")
+    derived_unit_price = unit_price.where(unit_price.notna() & (unit_price > 0), estimated_cost / formula_quantity)
+    cost_per_sqft = _numeric_series(eligible, "cost_per_sqft")
+    if cost_per_sqft.isna().all():
+        cost_per_sqft = estimated_cost / area
+    qty_per_sqft = _numeric_series(eligible, "qty_per_sqft")
+    if qty_per_sqft.isna().all():
+        qty_per_sqft = formula_quantity / area
+    eligible["_historical_formula_unit_price"] = derived_unit_price
+    eligible["_historical_cost_per_sqft"] = cost_per_sqft
+    eligible["_historical_qty_per_sqft"] = qty_per_sqft
+    usable = eligible[
+        (
+            eligible["_historical_formula_unit_price"].notna()
+            & (eligible["_historical_formula_unit_price"] > 0)
+        )
+        | (
+            eligible["_historical_cost_per_sqft"].notna()
+            & (eligible["_historical_cost_per_sqft"] > 0)
+        )
+    ].copy()
+    if usable.empty:
+        return []
+    options: list[dict[str, Any]] = []
+    for item_name, group in usable.groupby("_workbench_item_name", dropna=False):
+        unit_values = _numeric_series(group, "_historical_formula_unit_price")
+        qty_values = _numeric_series(group, "_historical_qty_per_sqft")
+        cost_values = _numeric_series(group, "_historical_cost_per_sqft")
+        evidence_count = _job_count(group)
+        unit = first_nonblank(next((value for value in group.get("unit", pd.Series(dtype=object)).dropna().astype(str) if value.strip()), ""), default_unit)
+        options.append(
+            {
+                "item_name": str(item_name),
+                "unit": unit,
+                "unit_price": _positive_percentile(unit_values, 0.5),
+                "median_qty_per_sqft": _positive_percentile(qty_values, 0.5),
+                "median_cost_per_sqft": _positive_percentile(cost_values, 0.5),
+                "evidence_count": evidence_count,
+                "source": "estimate_template_rows_formula_compatible",
+                "selected_item_reason": "Historical unit price derived from matching workbook row outputs.",
+            }
+        )
+    options.sort(
+        key=lambda option: (
+            safe_number(option.get("evidence_count"), 0),
+            safe_number(option.get("unit_price"), 0),
+            safe_number(option.get("median_cost_per_sqft"), 0),
+        ),
+        reverse=True,
+    )
+    return options
+
+
 def _historical_item_options(
     data: Any,
     package: str,
     filters: dict[str, Any] | None,
     default_unit: str,
 ) -> list[dict[str, Any]]:
+    template_options = _historical_template_item_options(data, package, filters, default_unit)
     summary = _frame(data, "job_package_summary")
     if summary.empty:
-        return []
+        return template_options
     package_rows = summary[_package_match_series(summary, package)].copy()
     if package_rows.empty:
-        return []
+        return template_options
     eligible, _ = _scope_filter_diagnostics(package_rows, filters)
 
     def accepted_count(candidate_rows: pd.DataFrame) -> int:
@@ -7662,7 +8263,25 @@ def _historical_item_options(
                 "source": "historical_most_common_item",
             }
         )
-    options.sort(key=lambda option: (safe_number(option.get("evidence_count"), 0), safe_number(option.get("median_qty_per_sqft"), 0)), reverse=True)
+    merged_by_name: dict[str, dict[str, Any]] = {}
+    for option in [*options, *template_options]:
+        key = _normalized(option.get("item_name"))
+        if not key:
+            continue
+        existing = merged_by_name.get(key, {})
+        merged = {**existing, **option}
+        for field in ("unit_price", "median_qty_per_sqft", "median_cost_per_sqft"):
+            if safe_number(merged.get(field), 0.0) <= 0:
+                merged[field] = first_nonblank(existing.get(field), option.get(field), 0.0)
+        merged["evidence_count"] = max(
+            int(safe_number(existing.get("evidence_count"), 0)),
+            int(safe_number(option.get("evidence_count"), 0)),
+        )
+        if existing.get("source") and option.get("source") and existing.get("source") != option.get("source"):
+            merged["source"] = f"{existing.get('source')}+{option.get('source')}"
+        merged_by_name[key] = merged
+    options = list(merged_by_name.values())
+    options.sort(key=lambda option: (safe_number(option.get("evidence_count"), 0), safe_number(option.get("unit_price"), 0), safe_number(option.get("median_qty_per_sqft"), 0)), reverse=True)
     return options
 
 
@@ -7709,8 +8328,14 @@ def _select_material_item(
                 historical_selectable = [item for item in historical_scored if _is_selectable_package_item(package, item[1], scope)]
                 if historical_selectable:
                     selected = dict(historical_selectable[0][1])
-                    selected["unit_price"] = 0.0
-                    selected["item_source"] = "historical_most_common_item" if safe_number(selected.get("median_qty_per_sqft"), 0) > 0 else "historical_cost_default"
+                    selected["unit_price"] = safe_number(selected.get("unit_price"), 0.0)
+                    selected["item_source"] = (
+                        "historical_formula_unit_price"
+                        if selected["unit_price"] > 0
+                        else "historical_most_common_item"
+                        if safe_number(selected.get("median_qty_per_sqft"), 0) > 0
+                        else "historical_cost_default"
+                    )
                     selected["item_median_qty_per_sqft"] = selected.get("median_qty_per_sqft", 0.0)
                     selected["item_median_cost_per_sqft"] = selected.get("median_cost_per_sqft", 0.0)
                     selected["item_evidence_count"] = selected.get("evidence_count", 0)
@@ -7783,8 +8408,14 @@ def _select_material_item(
             }
         selected_tuple = selectable[0] if selectable else historical_scored[0]
         selected = dict(selected_tuple[1])
-        selected["unit_price"] = 0.0
-        selected["item_source"] = "historical_most_common_item" if safe_number(selected.get("median_qty_per_sqft"), 0) > 0 else "historical_cost_default"
+        selected["unit_price"] = safe_number(selected.get("unit_price"), 0.0)
+        selected["item_source"] = (
+            "historical_formula_unit_price"
+            if selected["unit_price"] > 0
+            else "historical_most_common_item"
+            if safe_number(selected.get("median_qty_per_sqft"), 0) > 0
+            else "historical_cost_default"
+        )
         selected["item_median_qty_per_sqft"] = selected.get("median_qty_per_sqft", 0.0)
         selected["item_median_cost_per_sqft"] = selected.get("median_cost_per_sqft", 0.0)
         selected["item_evidence_count"] = selected.get("evidence_count", 0)
@@ -8049,6 +8680,7 @@ def build_estimating_workbench(
 ) -> dict[str, Any]:
     scope = {**_scope_from_recommendation(recommendation), **(scope_override or {})}
     source_material_plan = _records(_rec_value(recommendation, "material_plan", []))
+    source_labor_plan = _records(_rec_value(recommendation, "labor_plan", []))
     filters = {**historical_filters_from_scope(scope), **(historical_filters or {})}
     estimate_id = first_nonblank((_rec_value(recommendation, "parsed_fields", {}) or {}).get("run_id"), f"estimate-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}")
     review_flags = list(_rec_value(recommendation, "review_flags", []) or [])
@@ -8093,6 +8725,7 @@ def build_estimating_workbench(
     roofing_detail_quantity_template_decisions = (
         _build_roofing_detail_quantity_template_decisions(
             scope=scope,
+            materials=source_material_plan,
         )
         if not _is_insulation_scope(scope)
         else []
@@ -8180,6 +8813,7 @@ def build_estimating_workbench(
         insulation_labor_template_decisions = _build_insulation_labor_template_decisions(
             scope=scope,
             data=data,
+            dependencies=insulation_dependencies,
         )
         insulation_dependencies = _insulation_dependency_totals(
             {
@@ -8226,6 +8860,7 @@ def build_estimating_workbench(
     roofing_labor_template_decisions = (
         _build_roofing_labor_template_decisions(
             scope=scope,
+            source_labor_rows=source_labor_plan,
             data=data,
         )
         if not _is_insulation_scope(scope)
@@ -8251,6 +8886,7 @@ def build_estimating_workbench(
         "estimate_id": estimate_id,
         "scope": scope,
         "source_material_plan": source_material_plan,
+        "source_labor_plan": source_labor_plan,
         "historical_filters": filters,
         "historical_filter_hash": historical_filter_hash(filters),
         "area_calculation_trace": area_trace,
@@ -8302,6 +8938,7 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
     updated = deepcopy(workbench)
     scope = updated.setdefault("scope", {})
     source_material_plan = _records(updated.get("source_material_plan") or [])
+    source_labor_plan = _records(updated.get("source_labor_plan") or [])
     if updated.get("decision_proposals"):
         updated = apply_decision_proposals_to_workbench(
             updated,
@@ -8352,6 +8989,7 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
         if "roofing_detail_quantity_template_decisions" in updated:
             updated["roofing_detail_quantity_template_decisions"] = _build_roofing_detail_quantity_template_decisions(
                 scope=scope,
+                materials=source_material_plan,
                 existing_rows=updated.get("roofing_detail_quantity_template_decisions") or None,
             )
         if "roofing_board_fastener_template_decisions" in updated:
@@ -8387,6 +9025,7 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
         if "roofing_labor_template_decisions" in updated:
             updated["roofing_labor_template_decisions"] = _build_roofing_labor_template_decisions(
                 scope=scope,
+                source_labor_rows=source_labor_plan,
                 existing_rows=updated.get("roofing_labor_template_decisions") or None,
             )
     if _is_insulation_scope(scope):
@@ -8451,6 +9090,7 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
         updated["insulation_labor_template_decisions"] = _build_insulation_labor_template_decisions(
             scope=scope,
             existing_rows=updated.get("insulation_labor_template_decisions") or None,
+            dependencies=insulation_dependencies,
         )
         insulation_dependencies = _insulation_dependency_totals(
             updated,
@@ -9028,6 +9668,7 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any]) -> dict[str, A
         for row in insulation_labor_decision_rows:
             crew_size = max(1, int(safe_number(row.get("crew_size"), 1)))
             hours = safe_number(row.get("calculated_hours") or row.get("total_hours"), 0.0)
+            display_hours = safe_number(row.get("display_total_hours") or row.get("crew_labor_hours"), hours)
             labor_rows.append(
                 {
                     "decision_id": row.get("decision_id"),
@@ -9037,6 +9678,9 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any]) -> dict[str, A
                     "task": row.get("template_bucket") or row.get("package_key"),
                     "crew_size": crew_size,
                     "total_hours": hours,
+                    "total_hours_source": row.get("total_hours_source"),
+                    "display_total_hours": display_hours,
+                    "crew_labor_hours": display_hours,
                     "adjusted_days": safe_number(row.get("days"), 0.0),
                     "base_days": safe_number(row.get("days"), 0.0),
                     "daily_rate": safe_number(row.get("daily_rate"), 0.0),
@@ -9044,6 +9688,19 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any]) -> dict[str, A
                     "formula_mode": row.get("formula_mode"),
                     "formula_model": row.get("formula_model"),
                     "formula_source": row.get("formula_source"),
+                    "labor_driver_type": row.get("labor_driver_type"),
+                    "labor_driver_quantity": row.get("labor_driver_quantity"),
+                    "labor_driver_unit": row.get("labor_driver_unit"),
+                    "labor_driver_source": row.get("labor_driver_source"),
+                    "labor_driver_rate_unit": row.get("labor_driver_rate_unit"),
+                    "historical_driver_rate": row.get("historical_driver_rate"),
+                    "historical_driver_evidence_count": row.get("historical_driver_evidence_count"),
+                    "historical_driver_source": row.get("historical_driver_source"),
+                    "labor_driver_applied": row.get("labor_driver_applied"),
+                    "labor_driver_confidence": row.get("labor_driver_confidence"),
+                    "labor_driver_summary": row.get("labor_driver_summary"),
+                    "labor_driver_review_required": row.get("labor_driver_review_required"),
+                    "labor_driver_review_reason": row.get("labor_driver_review_reason"),
                     "estimated_cost": safe_number(row.get("estimated_cost"), 0.0),
                     "calculated_output_summary": row.get("calculated_output_summary"),
                     "workbook_cell_write_preview": row.get("workbook_cell_write_preview") or [],
@@ -9054,6 +9711,7 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any]) -> dict[str, A
         for row in roofing_labor_decision_rows:
             crew_size = max(1, int(safe_number(row.get("crew_size"), 1)))
             hours = safe_number(row.get("calculated_hours") or row.get("total_hours"), 0.0)
+            display_hours = safe_number(row.get("display_total_hours") or row.get("crew_labor_hours"), hours)
             labor_rows.append(
                 {
                     "decision_id": row.get("decision_id"),
@@ -9063,6 +9721,9 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any]) -> dict[str, A
                     "task": row.get("template_bucket") or row.get("package_key"),
                     "crew_size": crew_size,
                     "total_hours": hours,
+                    "total_hours_source": row.get("total_hours_source"),
+                    "display_total_hours": display_hours,
+                    "crew_labor_hours": display_hours,
                     "adjusted_days": safe_number(row.get("days"), 0.0),
                     "base_days": safe_number(row.get("days"), 0.0),
                     "daily_rate": safe_number(row.get("daily_rate"), 0.0),
@@ -9070,6 +9731,19 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any]) -> dict[str, A
                     "formula_mode": row.get("formula_mode"),
                     "formula_model": row.get("formula_model"),
                     "formula_source": row.get("formula_source"),
+                    "labor_driver_type": row.get("labor_driver_type"),
+                    "labor_driver_quantity": row.get("labor_driver_quantity"),
+                    "labor_driver_unit": row.get("labor_driver_unit"),
+                    "labor_driver_source": row.get("labor_driver_source"),
+                    "labor_driver_rate_unit": row.get("labor_driver_rate_unit"),
+                    "historical_driver_rate": row.get("historical_driver_rate"),
+                    "historical_driver_evidence_count": row.get("historical_driver_evidence_count"),
+                    "historical_driver_source": row.get("historical_driver_source"),
+                    "labor_driver_applied": row.get("labor_driver_applied"),
+                    "labor_driver_confidence": row.get("labor_driver_confidence"),
+                    "labor_driver_summary": row.get("labor_driver_summary"),
+                    "labor_driver_review_required": row.get("labor_driver_review_required"),
+                    "labor_driver_review_reason": row.get("labor_driver_review_reason"),
                     "estimated_cost": safe_number(row.get("estimated_cost"), 0.0),
                     "calculated_output_summary": row.get("calculated_output_summary"),
                     "workbook_cell_write_preview": row.get("workbook_cell_write_preview") or [],

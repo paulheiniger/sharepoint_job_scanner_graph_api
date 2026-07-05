@@ -141,6 +141,39 @@ def test_load_estimator_data_loads_template_rows_and_pricing_from_database(tmp_p
                 """
             )
         )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE template_formula_models (
+                    template_formula_model_id TEXT PRIMARY KEY,
+                    template_type TEXT,
+                    template_name TEXT,
+                    sheet_name TEXT,
+                    cell_address TEXT,
+                    row_number INTEGER,
+                    template_bucket TEXT,
+                    formula_model TEXT,
+                    formula TEXT
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE template_lookup_tables (
+                    lookup_table_id TEXT PRIMARY KEY,
+                    template_type TEXT,
+                    template_name TEXT,
+                    sheet_name TEXT,
+                    table_name TEXT,
+                    row_number INTEGER,
+                    lookup_key TEXT,
+                    values_json TEXT
+                )
+                """
+            )
+        )
         conn.execute(text("INSERT INTO dashboard_jobs VALUES ('J1', 'DB Job', 'Roofing', 10000)"))
         conn.execute(
             text(
@@ -157,6 +190,23 @@ def test_load_estimator_data_loads_template_rows_and_pricing_from_database(tmp_p
         )
         conn.execute(text("INSERT INTO pricing_catalog VALUES ('P1', 'Silicone', 42, true)"))
         conn.execute(text("INSERT INTO pricing_catalog VALUES ('P2', 'Old Silicone', 30, false)"))
+        conn.execute(
+            text(
+                """
+                INSERT INTO template_formula_models
+                VALUES ('F1', 'roofing', 'Roofing Template', 'Estimate', 'H122', 122, 'labor_base',
+                        'labor_cost_from_days_crew_rate', '=IF(G122=0,B122*J122,D122*G122)')
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO template_lookup_tables
+                VALUES ('L1', 'roofing', 'Roofing Template', 'People', 'crew_rate_matrix', 12, '4', '{"F": 1600}')
+                """
+            )
+        )
 
     data = load_estimator_data(tmp_path, database_url=f"sqlite:///{db_path}")
 
@@ -164,9 +214,13 @@ def test_load_estimator_data_loads_template_rows_and_pricing_from_database(tmp_p
     assert len(data.template_rows) == 1
     assert len(data.pricing) == 1
     assert len(data.pricing_catalog) == 1
+    assert len(data.template_formula_models) == 1
+    assert len(data.template_lookup_tables) == 1
     assert len(data.line_item_classifications) == 0
     assert "database: estimate_template_rows" in data.source_files_used
     assert "database: pricing_catalog" in data.source_files_used
+    assert "database: template_formula_models" in data.source_files_used
+    assert "database: template_lookup_tables" in data.source_files_used
     assert "output/job_index.json" not in data.source_files_used
     assert any("estimate_line_item_classifications table not found" in warning for warning in data.warnings)
 

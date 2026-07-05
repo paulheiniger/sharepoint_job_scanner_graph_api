@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+import pandas as pd
+
 from jobscan.estimator.schemas import EstimateRecommendation, EstimatorData
 from jobscan.estimator.workbench import (
     build_edit_history_rows,
@@ -66,6 +68,42 @@ def insulation_recommendation() -> EstimateRecommendation:
     )
 
 
+def insulation_labor_driver_data() -> EstimatorData:
+    return EstimatorData(
+        template_rows=pd.DataFrame(
+            [
+                {
+                    "job_id": "J1",
+                    "document_id": "D1",
+                    "template_type": "insulation",
+                    "template_bucket": "foam",
+                    "line_item_kind": "material",
+                    "selected_item_name": "Gaco 2.0 lb.",
+                    "area_sqft": 2400,
+                    "thickness_inches": 2,
+                    "yield_or_coverage": 12000,
+                    "estimated_units": 2000,
+                    "estimated_sets": 2,
+                    "unit_price": 2.4,
+                    "estimated_cost": 4800,
+                },
+                {
+                    "job_id": "J1",
+                    "document_id": "D1",
+                    "template_type": "insulation",
+                    "template_bucket": "labor_foam",
+                    "line_item_kind": "labor",
+                    "days": 1,
+                    "crew_size": 3,
+                    "total_hours": 12,
+                    "hourly_rate": 72,
+                    "estimated_cost": 864,
+                },
+            ]
+        )
+    )
+
+
 def test_roofing_workbench_uses_decision_sections_only() -> None:
     workbench = build_estimating_workbench(roofing_recommendation(), EstimatorData())
 
@@ -114,6 +152,59 @@ def test_insulation_workbench_uses_decision_sections_only() -> None:
     assert "labor_rows" not in draft
     assert any(row["row_type"] == "material" and row["template_bucket"] == "foam" for row in draft["workbook_decisions"])
     assert any(row["row_type"] == "labor" and row["template_bucket"] == "labor_foam" for row in draft["workbook_decisions"])
+
+
+def test_insulation_foam_labor_uses_foam_set_driver_evidence() -> None:
+    data = insulation_labor_driver_data()
+
+    workbench = build_estimating_workbench(insulation_recommendation(), data)
+    foam = workbench["insulation_foam_template_decisions"][0]
+    labor = next(row for row in workbench["insulation_labor_template_decisions"] if row["template_bucket"] == "labor_foam")
+    draft = workbench_to_draft_workbook_inputs(workbench)
+    draft_labor = next(row for row in draft["workbook_decisions"] if row.get("row_type") == "labor" and row["template_bucket"] == "labor_foam")
+
+    assert labor["labor_driver_applied"] is True
+    assert labor["labor_driver_type"] == "material_quantity"
+    assert labor["labor_driver_unit"] == "set"
+    assert labor["historical_driver_rate"] == 6
+    assert labor["labor_driver_quantity"] == foam["estimated_sets"]
+    assert labor["total_hours"] == round(foam["estimated_sets"] * 6, 4)
+    assert labor["total_hours_source"] == "driver_quantity_history"
+    assert draft_labor["labor_driver_summary"].startswith(f"{foam['estimated_sets']:g} set")
+
+
+def test_insulation_driver_labor_recomputes_when_material_quantity_changes() -> None:
+    workbench = build_estimating_workbench(insulation_recommendation(), insulation_labor_driver_data())
+    original_labor = next(row for row in workbench["insulation_labor_template_decisions"] if row["template_bucket"] == "labor_foam")
+
+    workbench["insulation_foam_template_decisions"][0]["yield_or_coverage"] = 6000
+    recalculated = recalculate_workbench_tables(workbench)
+    foam = recalculated["insulation_foam_template_decisions"][0]
+    labor = next(row for row in recalculated["insulation_labor_template_decisions"] if row["template_bucket"] == "labor_foam")
+
+    assert foam["estimated_sets"] > workbench["insulation_foam_template_decisions"][0].get("estimated_sets", 0)
+    assert labor["total_hours"] != original_labor["total_hours"]
+    assert labor["total_hours"] == round(foam["estimated_sets"] * 6, 4)
+    assert labor["total_hours_source"] == "driver_quantity_history"
+    assert labor["labor_driver_applied"] is True
+
+
+def test_insulation_driver_labor_preserves_estimator_hour_override() -> None:
+    workbench = build_estimating_workbench(insulation_recommendation(), insulation_labor_driver_data())
+    labor = next(row for row in workbench["insulation_labor_template_decisions"] if row["template_bucket"] == "labor_foam")
+    labor["total_hours"] = 9
+    labor["editable_total_hours"] = 9
+    labor["total_hours_source"] = "estimator_override"
+    labor["manual_labor_hours_override"] = True
+
+    workbench["insulation_foam_template_decisions"][0]["yield_or_coverage"] = 6000
+    recalculated = recalculate_workbench_tables(workbench)
+    recalculated_labor = next(row for row in recalculated["insulation_labor_template_decisions"] if row["template_bucket"] == "labor_foam")
+
+    assert recalculated_labor["total_hours"] == 9
+    assert recalculated_labor["total_hours_source"] == "estimator_override"
+    assert recalculated_labor["labor_driver_applied"] is False
+    assert "override retained" in recalculated_labor["labor_driver_review_reason"]
 
 
 def test_recalculate_removes_legacy_flat_rows() -> None:
@@ -195,6 +286,241 @@ def test_totals_use_decision_sections_only() -> None:
         "adder_total": 12.0,
         "draft_total": 162.0,
     }
+
+
+def test_roofing_source_allowances_flow_into_template_decisions() -> None:
+    recommendation = EstimateRecommendation(
+        parsed_fields={
+            "division": "Roofing",
+            "template_type": "roofing",
+            "project_type": "roof coating",
+            "net_sqft": 10000,
+            "estimated_sqft": 10000,
+            "coating_required": True,
+            "coating_type": "silicone",
+            "roof_condition": "rusted metal with open seams and penetrations",
+            "notes": "Metal roof restoration with primer, open seams, penetrations, and detail work.",
+        },
+        recommended_scope=[],
+        material_plan=[
+            {
+                "category": "primer",
+                "item": "Primer allowance",
+                "quantity": 10000,
+                "unit": "sqft",
+                "unit_price": 0.4,
+                "estimated_cost": 4000,
+                "selected_price_source": "rule_based_allowance",
+                "include": True,
+            },
+            {
+                "category": "seam_treatment",
+                "item": "Seam treatment allowance",
+                "quantity": 500,
+                "unit": "lf",
+                "unit_price": 3,
+                "estimated_cost": 1500,
+                "selected_price_source": "rule_based_allowance",
+                "include": True,
+            },
+            {
+                "category": "caulk_detail",
+                "item": "Silicone Sausage",
+                "quantity": 8,
+                "unit": "unit",
+                "unit_price": 150,
+                "estimated_cost": 1200,
+                "selected_price_source": "rule_based_allowance",
+                "include": True,
+            },
+        ],
+        labor_plan=[],
+        travel_plan={},
+        historical_calibration={},
+        similar_examples=[],
+        estimate_low=None,
+        estimate_target=None,
+        estimate_high=None,
+        review_flags=[],
+        human_review_required=True,
+        draft_workbook_inputs={},
+    )
+
+    workbench = build_estimating_workbench(recommendation, EstimatorData())
+
+    primer = workbench["roofing_primer_template_decisions"][0]
+    assert primer["include"] is True
+    assert primer["estimated_cost"] == 4000
+    assert primer["cost_source"] == "historical_cost_default"
+
+    caulk = next(row for row in workbench["roofing_detail_template_decisions"] if row["template_bucket"] == "caulk_detail")
+    assert caulk["include"] is True
+    assert caulk["estimated_units"] == 8
+    assert caulk["estimated_cost"] == 1200
+
+    seam = next(row for row in workbench["roofing_detail_quantity_template_decisions"] if row["template_bucket"] == "seams_misc")
+    assert seam["include"] is True
+    assert seam["linear_ft"] == 500
+    assert seam["estimated_cost"] == 1500
+
+    totals = summarize_workbench_totals(workbench)
+    assert totals["material_total"] >= 6700
+
+
+def test_mixed_formula_labor_exposes_display_hours_without_changing_workbook_hours() -> None:
+    formula_workbench = {
+        "scope": {"division": "Roofing", "template_type": "roofing", "project_type": "roof coating", "net_sqft": 1000},
+        "roofing_labor_template_decisions": [
+            {
+                "include": True,
+                "decision_id": "roofing_labor_base_row_122",
+                "template_bucket": "labor_base",
+                "workbook_row": "122",
+                "days": 1,
+                "crew_size": 4,
+                "daily_rate": 1600,
+                "total_hours": 0,
+                "formula_mode": "mixed_formula",
+            }
+        ],
+    }
+
+    recalculated = recalculate_workbench_tables(formula_workbench)
+    labor = recalculated["roofing_labor_template_decisions"][0]
+
+    assert labor["estimated_cost"] == 1600
+    assert labor["total_hours"] == 0
+    assert labor["display_total_hours"] == 40
+    assert "workbook_hours=0.0" in labor["calculated_output_summary"]
+
+
+def test_mixed_formula_labor_uses_hourly_branch_when_hourly_rate_is_present() -> None:
+    formula_workbench = {
+        "scope": {"division": "Roofing", "template_type": "roofing", "project_type": "roof coating", "net_sqft": 1000},
+        "roofing_labor_template_decisions": [
+            {
+                "include": True,
+                "decision_id": "roofing_labor_base_row_122",
+                "template_bucket": "labor_base",
+                "workbook_row": "122",
+                "days": 1,
+                "crew_size": 4,
+                "daily_rate": 1600,
+                "hourly_rate": 72,
+                "total_hours": 0,
+                "formula_mode": "mixed_formula",
+            }
+        ],
+    }
+
+    recalculated = recalculate_workbench_tables(formula_workbench)
+    labor = recalculated["roofing_labor_template_decisions"][0]
+
+    assert labor["estimated_cost"] == 2880
+    assert labor["formula_source"] == "hours_hourly_rate"
+    assert labor["total_hours"] == 40
+    assert labor["total_hours_source"] == "estimated_from_days_crew"
+    assert labor["display_total_hours"] == 40
+
+
+def test_roofing_labor_workbench_preserves_driver_evidence_from_recommendation() -> None:
+    recommendation = roofing_recommendation()
+    recommendation.labor_plan = [
+        {
+            "task": "labor_base",
+            "template_bucket": "labor_base",
+            "total_hours": 40,
+            "adjusted_days": 1.25,
+            "crew_size": 4,
+            "hourly_rate": 72,
+            "estimated_cost": 2880,
+            "labor_driver_type": "material_quantity",
+            "labor_driver_quantity": 200,
+            "labor_driver_unit": "gal",
+            "historical_driver_rate": 0.2,
+            "historical_driver_evidence_count": 3,
+            "labor_driver_applied": True,
+            "labor_driver_summary": "200 gal x 0.2 hours_per_gallon from 3 paired historical jobs.",
+        }
+    ]
+
+    workbench = build_estimating_workbench(recommendation, EstimatorData())
+    base = next(row for row in workbench["roofing_labor_template_decisions"] if row["template_bucket"] == "labor_base")
+    draft = workbench_to_draft_workbook_inputs(workbench)
+    draft_base = next(row for row in draft["workbook_decisions"] if row.get("row_type") == "labor" and row["template_bucket"] == "labor_base")
+
+    assert base["labor_driver_applied"] is True
+    assert base["labor_driver_quantity"] == 200
+    assert base["historical_driver_rate"] == 0.2
+    assert draft_base["labor_driver_summary"].startswith("200 gal")
+
+
+def test_roofing_coating_uses_formula_compatible_historical_unit_price() -> None:
+    recommendation = EstimateRecommendation(
+        parsed_fields={
+            "division": "Roofing",
+            "template_type": "roofing",
+            "project_type": "roof coating",
+            "net_sqft": 10000,
+            "estimated_sqft": 10000,
+            "coating_required": True,
+            "coating_type": "silicone",
+        },
+        recommended_scope=[],
+        material_plan=[
+            {
+                "category": "coating",
+                "item": "Gaco Silicone Roof Coating",
+                "quantity": 100,
+                "unit": "gal",
+                "unit_price": None,
+                "estimated_cost": 0,
+                "selected_price_source": "historical_fallback",
+                "include": True,
+            }
+        ],
+        labor_plan=[],
+        travel_plan={},
+        historical_calibration={},
+        similar_examples=[],
+        estimate_low=None,
+        estimate_target=None,
+        estimate_high=None,
+        review_flags=[],
+        human_review_required=True,
+        draft_workbook_inputs={},
+    )
+    data = EstimatorData(
+        template_rows=pd.DataFrame(
+            [
+                {
+                    "template_row_id": "hist-coating-1",
+                    "job_id": "J1",
+                    "template_type": "roofing",
+                    "sheet_name": "Estimate",
+                    "row_number": 26,
+                    "template_bucket": "coating",
+                    "line_item_kind": "material",
+                    "selected_item_name": "Gaco Silicone Roof Coating",
+                    "unit": "gal",
+                    "area_sqft": 10000,
+                    "gal_per_100_sqft": 1.0,
+                    "estimated_gallons": 100,
+                    "estimated_units": 100,
+                    "estimated_cost": 5000,
+                }
+            ]
+        )
+    )
+
+    workbench = build_estimating_workbench(recommendation, data)
+    coating = workbench["roofing_coating_template_decisions"][0]
+    included_coatings = [row for row in workbench["roofing_coating_template_decisions"] if row.get("include")]
+
+    assert coating["unit_price"] == 50
+    assert sum(row["estimated_cost"] for row in included_coatings) == 5000
+    assert coating["cost_source"] == "historical_formula_unit_price"
+    assert coating["selected_pricing_candidate"] == "Gaco Silicone Roof Coating"
 
 
 def test_edit_history_tracks_decision_rows_not_flat_rows() -> None:

@@ -178,6 +178,7 @@ def test_insulation_review_package_uses_decision_sheets(tmp_path) -> None:
                 "crew_size": 3,
                 "hourly_rate": 72,
                 "total_hours": 36,
+                "labor_driver_summary": "0.6 set x 60 hours_per_foam_set",
                 "estimated_cost": 2592,
                 "gal_per_100_sqft": 1.5,
                 "feet_per_unit": 10,
@@ -217,6 +218,7 @@ def test_insulation_review_package_uses_decision_sheets(tmp_path) -> None:
     labor_headers = [cell.value for cell in next(summary_workbook["Insulation Labor Plan"].iter_rows(min_row=1, max_row=1))]
     assert "labor_task" in labor_headers
     assert "total_hours" in labor_headers
+    assert "labor_driver_summary" in labor_headers
     assert "gal_per_100_sqft" not in labor_headers
     assert "feet_per_unit" not in labor_headers
     assert "Workbook Decisions" in summary_workbook.sheetnames

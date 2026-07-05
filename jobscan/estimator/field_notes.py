@@ -693,6 +693,8 @@ def parse_condition_detail_flags(text: str) -> list[str]:
             or "rust/fasteners" in lowered
             or "rust / fastener" in lowered
             or "rust / fasteners" in lowered
+            or "rusted screws" in lowered
+            or "rusted screw" in lowered
             or re.search(r"\brusted\s*/\s*aging\s+fasteners?\b", lowered)
         ):
             flags.append("rusted_fasteners")

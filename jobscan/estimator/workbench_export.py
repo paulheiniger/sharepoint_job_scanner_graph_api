@@ -125,6 +125,7 @@ INSULATION_DECISION_SECTION_COLUMNS = {
         "daily_rate",
         "hourly_rate",
         "total_hours",
+        "labor_driver_summary",
         "formula_mode",
         "estimated_cost",
         "compatibility_status",

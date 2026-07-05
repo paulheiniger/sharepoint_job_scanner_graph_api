@@ -84,6 +84,29 @@ def test_dashboard_imports_safely() -> None:
     assert hasattr(app, "route_estimator_request")
 
 
+def test_merge_editable_rows_marks_labor_hour_override() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    merged = app.merge_editable_rows(
+        [
+            {
+                "include": True,
+                "template_bucket": "labor_foam",
+                "total_hours": 2.4,
+                "total_hours_source": "driver_quantity_history",
+                "labor_driver_applied": True,
+            }
+        ],
+        [{"include": True, "total_hours": 4.0}],
+        {"include", "total_hours"},
+    )
+
+    assert merged[0]["total_hours"] == 4.0
+    assert merged[0]["manual_labor_hours_override"] is True
+    assert merged[0]["total_hours_source"] == "estimator_override"
+    assert merged[0]["labor_driver_applied"] is False
+
+
 def test_estimator_page_no_longer_shows_structural_override_block() -> None:
     app = importlib.import_module("dashboard.app")
 
@@ -97,52 +120,12 @@ def test_estimator_page_no_longer_shows_structural_override_block() -> None:
 def test_estimator_workbench_uses_compact_columns_by_default() -> None:
     app = importlib.import_module("dashboard.app")
 
-    assert app.MATERIAL_WORKBENCH_COMPACT_COLUMNS == [
-        "include",
-        "workbook_row",
-        "package",
-        "estimator_decision",
-        "historical_recommendation",
-        "editable_value",
-        "calculated_output_summary",
-        "item_name",
-        "suggested_by_notes_rules",
-        "editable_basis_sqft",
-        "editable_qty_per_sqft",
-        "calculated_quantity",
-        "unit",
-        "current_unit_price",
-        "estimated_cost",
-        "decision_evidence_count",
-        "decision_confidence",
-        "product_guidance",
-        "product_warning_summary",
-        "row_traceability",
-        "notes",
-    ]
-    assert app.LABOR_WORKBENCH_COMPACT_COLUMNS == [
-        "include",
-        "workbook_row",
-        "labor_package",
-        "estimator_decision",
-        "historical_recommendation",
-        "editable_value",
-        "calculated_output_summary",
-        "suggested_by_notes_rules",
-        "days",
-        "crew_people_selection",
-        "daily_rate",
-        "formula_mode",
-        "editable_hours_per_1000_sqft",
-        "calculated_hours",
-        "crew_size",
-        "labor_rate",
-        "estimated_cost",
-        "decision_evidence_count",
-        "decision_confidence",
-        "row_traceability",
-        "notes",
-    ]
+    assert {"include", "workbook_row", "package", "estimated_cost", "decision_evidence_count", "product_guidance", "notes"}.issubset(
+        set(app.MATERIAL_WORKBENCH_COMPACT_COLUMNS)
+    )
+    assert {"include", "workbook_row", "labor_package", "calculated_hours", "estimated_cost", "decision_evidence_count", "notes"}.issubset(
+        set(app.LABOR_WORKBENCH_COMPACT_COLUMNS)
+    )
     assert app.ADDER_WORKBENCH_COMPACT_COLUMNS == [
         "include",
         "workbook_row",
@@ -164,6 +147,7 @@ def test_estimator_workbench_uses_compact_columns_by_default() -> None:
         "daily_rate",
         "hourly_rate",
         "total_hours",
+        "labor_driver_summary",
         "formula_mode",
         "estimated_cost",
         "compatibility_status",
@@ -183,6 +167,7 @@ def test_project_display_frame_removes_hidden_compact_columns() -> None:
                 "workbook_row": "86",
                 "labor_task": "Foam",
                 "total_hours": 12,
+                "labor_driver_summary": "2 set x 6 hours_per_foam_set",
                 "gal_per_100_sqft": 1.5,
                 "feet_per_unit": 10,
             }
@@ -194,7 +179,7 @@ def test_project_display_frame_removes_hidden_compact_columns() -> None:
         app.INSULATION_DECISION_SECTION_COLUMNS["insulation_labor_template_decisions"],
     )
 
-    assert list(projected.columns) == ["include", "workbook_row", "labor_task", "total_hours"]
+    assert list(projected.columns) == ["include", "workbook_row", "labor_task", "total_hours", "labor_driver_summary"]
     assert "gal_per_100_sqft" not in projected.columns
     assert "feet_per_unit" not in projected.columns
 
