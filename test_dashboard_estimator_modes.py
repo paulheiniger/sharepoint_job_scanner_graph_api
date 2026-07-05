@@ -107,6 +107,20 @@ def test_merge_editable_rows_marks_labor_hour_override() -> None:
     assert merged[0]["labor_driver_applied"] is False
 
 
+def test_merge_editable_rows_marks_include_override() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    merged = app.merge_editable_rows(
+        [{"include": True, "template_bucket": "primer", "include_source": "historical_companion"}],
+        [{"include": False}],
+        {"include"},
+    )
+
+    assert merged[0]["include"] is False
+    assert merged[0]["manual_override"] is True
+    assert merged[0]["include_source"] == "estimator_edit"
+
+
 def test_estimator_page_no_longer_shows_structural_override_block() -> None:
     app = importlib.import_module("dashboard.app")
 

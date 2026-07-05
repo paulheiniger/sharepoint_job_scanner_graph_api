@@ -4574,6 +4574,9 @@ def merge_editable_rows(
         edited = edited_rows[idx] if idx < len(edited_rows) else {}
         for field in editable_fields:
             if field in edited:
+                if field == "include" and _editable_values_differ(original.get(field), edited[field]):
+                    row["manual_override"] = True
+                    row["include_source"] = "estimator_edit"
                 if field in {"total_hours", "editable_total_hours"}:
                     if _editable_values_differ(original.get(field), edited[field]):
                         row["manual_labor_hours_override"] = True

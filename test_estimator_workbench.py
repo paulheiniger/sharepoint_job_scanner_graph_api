@@ -104,6 +104,40 @@ def insulation_labor_driver_data() -> EstimatorData:
     )
 
 
+def roofing_companion_data() -> EstimatorData:
+    return EstimatorData(
+        relationship_package_cooccurrence=pd.DataFrame(
+            [
+                {
+                    "project_type": "roof coating",
+                    "substrate": "metal",
+                    "package_a": "coating",
+                    "package_b": "primer",
+                    "co_occurrence_rate": 0.82,
+                    "job_count": 9,
+                    "supporting_job_ids": '["J1","J2"]',
+                },
+                {
+                    "project_type": "roof coating",
+                    "substrate": "metal",
+                    "package_a": "coating",
+                    "package_b": "caulk_detail",
+                    "co_occurrence_rate": 0.74,
+                    "job_count": 7,
+                },
+                {
+                    "project_type": "roof coating",
+                    "substrate": "metal",
+                    "package_a": "fabric",
+                    "package_b": "seam_treatment",
+                    "co_occurrence_rate": 0.8,
+                    "job_count": 6,
+                },
+            ]
+        )
+    )
+
+
 def test_roofing_workbench_uses_decision_sections_only() -> None:
     workbench = build_estimating_workbench(roofing_recommendation(), EstimatorData())
 
@@ -123,6 +157,81 @@ def test_roofing_workbench_uses_decision_sections_only() -> None:
     coating_decisions = [row for row in draft["workbook_decisions"] if row["template_bucket"] == "coating"]
     assert [row["workbook_row"] for row in coating_decisions] == ["26", "27"]
     assert all(row["row_type"] == "material" for row in coating_decisions)
+
+
+def test_roofing_companion_relationships_suggest_primer_and_detail_rows() -> None:
+    workbench = build_estimating_workbench(roofing_recommendation(), roofing_companion_data())
+
+    primer = workbench["roofing_primer_template_decisions"][0]
+    sealant = next(row for row in workbench["roofing_detail_template_decisions"] if row["template_bucket"] == "caulk_detail")
+
+    assert primer["include"] is True
+    assert primer["proposal_source"] == "historical_companion"
+    assert primer["proposal_evidence"]["relationship_package_cooccurrence"]
+    assert primer["proposal_review_required"] is True
+    assert any("Historical companion suggestion" in warning for warning in primer["compatibility_warnings"])
+    assert sealant["include"] is True
+    assert sealant["proposal_source"] == "historical_companion"
+    assert sealant["why_included"].startswith("Included by historical companion")
+
+
+def test_fabric_companion_suggests_seam_detail_labor_review_marked() -> None:
+    workbench = build_estimating_workbench(roofing_recommendation(), roofing_companion_data())
+    fabric = next(row for row in workbench["roofing_detail_template_decisions"] if row["template_bucket"] == "fabric")
+    fabric["include"] = True
+    fabric["manual_override"] = True
+    fabric["include_source"] = "estimator_edit"
+
+    recalculated = recalculate_workbench_tables(workbench)
+    seam_labor = next(row for row in recalculated["roofing_labor_template_decisions"] if row["template_bucket"] == "labor_seam_sealer")
+
+    assert seam_labor["include"] is True
+    assert seam_labor["proposal_source"] == "historical_companion"
+    assert seam_labor["proposal_review_required"] is True
+    assert "fabric" in seam_labor["proposal_review_reasons"][0]
+
+
+def test_full_tearoff_notes_include_board_fasteners_and_disposal_rows() -> None:
+    workbench = build_estimating_workbench(
+        roofing_recommendation(),
+        EstimatorData(),
+        scope_override={
+            "project_type": "roof replacement",
+            "coating_type": "",
+            "raw_input_notes": "Full tear off with wet insulation and damaged board; include disposal review.",
+            "net_sqft": 12000,
+            "estimated_sqft": 12000,
+        },
+    )
+
+    board = next(row for row in workbench["roofing_board_fastener_template_decisions"] if row["template_bucket"] == "board_stock" and row["workbook_row"] == "58")
+    fasteners = next(row for row in workbench["roofing_board_fastener_template_decisions"] if row["template_bucket"] == "fasteners")
+    plates = next(row for row in workbench["roofing_board_fastener_template_decisions"] if row["template_bucket"] == "plates")
+    dumpster = next(row for row in workbench["roofing_equipment_template_decisions"] if row["template_bucket"] == "dumpster")
+
+    assert board["include"] is True
+    assert fasteners["include"] is True
+    assert plates["include"] is True
+    assert dumpster["include"] is True
+    assert board["proposal_review_required"] is True
+    assert dumpster["proposal_review_required"] is True
+
+
+def test_manual_uncheck_prevents_companion_proposal_from_rechecking_row() -> None:
+    workbench = build_estimating_workbench(roofing_recommendation(), roofing_companion_data())
+    primer = workbench["roofing_primer_template_decisions"][0]
+    assert primer["include"] is True
+
+    primer["include"] = False
+    primer["manual_override"] = True
+    primer["include_source"] = "estimator_edit"
+    recalculated = recalculate_workbench_tables(workbench)
+    recalculated_primer = recalculated["roofing_primer_template_decisions"][0]
+
+    assert recalculated_primer["include"] is False
+    assert recalculated_primer["manual_override"] is True
+    assert recalculated_primer["proposal_source"] == "historical_companion"
+    assert recalculated_primer["proposal_review_required"] is True
 
 
 def test_insulation_workbench_uses_decision_sections_only() -> None:

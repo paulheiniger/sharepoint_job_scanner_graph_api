@@ -4,15 +4,158 @@ import json
 from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable
 
+import pandas as pd
+
 
 SOURCE_PRECEDENCE = {
     "ai_scope": 10,
     "product_guidance": 20,
     "historical_default": 30,
+    "historical_companion": 35,
     "deterministic_rule": 40,
     "explicit_note": 50,
     "estimator_edit": 60,
 }
+
+
+MATERIAL_COMPANION_TARGETS: dict[str, list[dict[str, str]]] = {
+    "primer": [
+        {
+            "section": "roofing_primer_template_decisions",
+            "decision_id": "roofing_primer_system_row_39",
+            "template_bucket": "primer",
+            "workbook_row": "39",
+        }
+    ],
+    "caulk_detail": [
+        {
+            "section": "roofing_detail_template_decisions",
+            "decision_id": "roofing_caulk_sealant_row_43",
+            "template_bucket": "caulk_detail",
+            "workbook_row": "43",
+        }
+    ],
+    "caulk_sealant": [
+        {
+            "section": "roofing_detail_template_decisions",
+            "decision_id": "roofing_caulk_sealant_row_43",
+            "template_bucket": "caulk_detail",
+            "workbook_row": "43",
+        }
+    ],
+    "seam_treatment": [
+        {
+            "section": "roofing_detail_quantity_template_decisions",
+            "decision_id": "roofing_seams_misc_row_47",
+            "template_bucket": "seams_misc",
+            "workbook_row": "47",
+        },
+        {
+            "section": "roofing_labor_template_decisions",
+            "decision_id": "roofing_labor_seam_sealer_row_120",
+            "template_bucket": "labor_seam_sealer",
+            "workbook_row": "120",
+        },
+    ],
+    "fabric": [
+        {
+            "section": "roofing_detail_template_decisions",
+            "decision_id": "roofing_fabric_row_79",
+            "template_bucket": "fabric",
+            "workbook_row": "79",
+        },
+        {
+            "section": "roofing_labor_template_decisions",
+            "decision_id": "roofing_labor_seam_sealer_row_120",
+            "template_bucket": "labor_seam_sealer",
+            "workbook_row": "120",
+        },
+    ],
+    "board_stock": [
+        {
+            "section": "roofing_board_fastener_template_decisions",
+            "decision_id": "roofing_board_stock_row_58",
+            "template_bucket": "board_stock",
+            "workbook_row": "58",
+        },
+        {
+            "section": "roofing_board_fastener_template_decisions",
+            "decision_id": "roofing_fasteners_row_63",
+            "template_bucket": "fasteners",
+            "workbook_row": "63",
+        },
+        {
+            "section": "roofing_board_fastener_template_decisions",
+            "decision_id": "roofing_plates_row_65",
+            "template_bucket": "plates",
+            "workbook_row": "65",
+        },
+    ],
+    "fasteners": [
+        {
+            "section": "roofing_board_fastener_template_decisions",
+            "decision_id": "roofing_fasteners_row_63",
+            "template_bucket": "fasteners",
+            "workbook_row": "63",
+        }
+    ],
+    "plates": [
+        {
+            "section": "roofing_board_fastener_template_decisions",
+            "decision_id": "roofing_plates_row_65",
+            "template_bucket": "plates",
+            "workbook_row": "65",
+        }
+    ],
+    "dumpster": [
+        {
+            "section": "roofing_equipment_template_decisions",
+            "decision_id": "roofing_dumpsters_row_69",
+            "template_bucket": "dumpster",
+            "workbook_row": "69",
+        }
+    ],
+    "disposal": [
+        {
+            "section": "roofing_equipment_template_decisions",
+            "decision_id": "roofing_dumpsters_row_69",
+            "template_bucket": "dumpster",
+            "workbook_row": "69",
+        }
+    ],
+}
+
+
+PACKAGE_COMPANION_ALIASES = {
+    "caulk": "caulk_detail",
+    "sealant": "caulk_detail",
+    "seams": "seam_treatment",
+    "seams_misc": "seam_treatment",
+    "seam": "seam_treatment",
+    "board": "board_stock",
+    "cover_board": "board_stock",
+    "iso_board": "board_stock",
+    "dumpsters": "dumpster",
+    "drum_disposal": "disposal",
+}
+
+
+WORKBENCH_MATERIAL_SECTIONS = (
+    "roofing_foam_template_decisions",
+    "roofing_coating_template_decisions",
+    "roofing_primer_template_decisions",
+    "roofing_detail_template_decisions",
+    "roofing_detail_quantity_template_decisions",
+    "roofing_board_fastener_template_decisions",
+    "roofing_granules_template_decisions",
+    "roofing_equipment_template_decisions",
+    "roofing_accessory_template_decisions",
+    "insulation_foam_template_decisions",
+    "insulation_detail_material_template_decisions",
+    "insulation_thermal_barrier_template_decisions",
+    "insulation_support_material_template_decisions",
+    "insulation_equipment_logistics_template_decisions",
+)
 
 
 @dataclass(frozen=True)
@@ -125,6 +268,32 @@ def build_decision_proposals(scope: dict[str, Any], recommendation: Any = None, 
     return merge_decision_proposals(proposals)
 
 
+def build_material_companion_proposals(workbench: dict[str, Any], data: Any = None) -> list[dict[str, Any]]:
+    template_type = _workbench_template_type(workbench, [])
+    if template_type != "roofing":
+        return []
+    included_packages = _included_workbench_packages(workbench)
+    if not included_packages:
+        return []
+    relationship_rows = _relationship_cooccurrence_rows(workbench, data)
+    proposals: list[DecisionProposal] = []
+    for row in relationship_rows:
+        package_a = _canonical_package(_first_value(row, "package_a", "source_package", "antecedent_package", "package"))
+        package_b = _canonical_package(_first_value(row, "package_b", "target_package", "consequent_package", "related_package"))
+        if not package_a or not package_b:
+            continue
+        rate = _safe_number(_first_value(row, "co_occurrence_rate", "support", "rate"), 0.0)
+        job_count = int(_safe_number(_first_value(row, "job_count", "evidence_count", "supporting_job_count", "count"), 0))
+        if rate < 0.5 or job_count < 3:
+            continue
+        for anchor, target in ((package_a, package_b), (package_b, package_a)):
+            if anchor not in included_packages or target in included_packages:
+                continue
+            for target_spec in MATERIAL_COMPANION_TARGETS.get(target, []):
+                proposals.append(_companion_proposal(target_spec, anchor=anchor, target=target, row=row, rate=rate, job_count=job_count))
+    return merge_decision_proposals(proposals)
+
+
 def apply_decision_proposals_to_workbench(
     workbench: dict[str, Any],
     proposals: Iterable[DecisionProposal | dict[str, Any]] | None,
@@ -176,6 +345,7 @@ def _annotate_row(row: dict[str, Any], proposal: dict[str, Any] | None) -> dict[
     if proposal:
         if proposal.get("include") is not None and not updated.get("manual_override"):
             updated["include"] = bool(proposal.get("include"))
+            updated["include_source"] = proposal.get("source")
         for key, value in (proposal.get("proposed_values") or {}).items():
             if value is not None and _proposal_value_can_fill(updated.get(key)):
                 updated[key] = value
@@ -193,6 +363,85 @@ def _annotate_row(row: dict[str, Any], proposal: dict[str, Any] | None) -> dict[
                 updated["compatibility_status"] = "review"
     updated.update(_decision_evidence_fields(updated))
     return updated
+
+
+def _relationship_cooccurrence_rows(workbench: dict[str, Any], data: Any = None) -> list[dict[str, Any]]:
+    frame = getattr(data, "relationship_package_cooccurrence", pd.DataFrame()) if data is not None else pd.DataFrame()
+    if isinstance(frame, pd.DataFrame) and not frame.empty:
+        return frame.to_dict(orient="records")
+    rows = workbench.get("relationship_package_cooccurrence") or workbench.get("relationship_package_cooccurrence_rows") or []
+    if isinstance(rows, pd.DataFrame):
+        return rows.to_dict(orient="records")
+    return [dict(row) for row in rows if isinstance(row, dict)]
+
+
+def _included_workbench_packages(workbench: dict[str, Any]) -> set[str]:
+    packages: set[str] = set()
+    for section in WORKBENCH_MATERIAL_SECTIONS:
+        for row in workbench.get(section) or []:
+            if not isinstance(row, dict) or not row.get("include"):
+                continue
+            for key in ("template_bucket", "package_key", "category", "labor_package", "task"):
+                package = _canonical_package(row.get(key))
+                if package:
+                    packages.add(package)
+    return packages
+
+
+def _canonical_package(value: Any) -> str:
+    text = _norm(value).replace(" ", "_")
+    return PACKAGE_COMPANION_ALIASES.get(text, text)
+
+
+def _first_value(row: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = row.get(key)
+        if value not in (None, ""):
+            return value
+    return ""
+
+
+def _companion_proposal(
+    target_spec: dict[str, str],
+    *,
+    anchor: str,
+    target: str,
+    row: dict[str, Any],
+    rate: float,
+    job_count: int,
+) -> DecisionProposal:
+    reason = (
+        f"Historical companion suggestion: {target.replace('_', ' ')} appeared with "
+        f"{anchor.replace('_', ' ')} in {rate:.0%} of {job_count} comparable job(s); verify scope and quantity."
+    )
+    evidence = {
+        "relationship_package_cooccurrence": [
+            {
+                "anchor_package": anchor,
+                "suggested_package": target,
+                "co_occurrence_rate": rate,
+                "job_count": job_count,
+                "project_type": row.get("project_type"),
+                "substrate": row.get("substrate"),
+                "supporting_job_ids": row.get("supporting_job_ids"),
+            }
+        ]
+    }
+    confidence = min(0.9, 0.35 + (rate * 0.4) + min(job_count, 20) / 100)
+    return DecisionProposal(
+        decision_id=target_spec["decision_id"],
+        template_type="roofing",
+        template_bucket=target_spec["template_bucket"],
+        workbook_row=target_spec["workbook_row"],
+        include=True,
+        proposed_values={},
+        confidence=round(confidence, 4),
+        review_required=True,
+        review_reasons=[reason],
+        evidence=evidence,
+        source="historical_companion",
+        section=target_spec["section"],
+    )
 
 
 def _proposal_value_can_fill(value: Any) -> bool:
@@ -420,7 +669,7 @@ def _roofing_scope_proposals(scope: dict[str, Any], notes: str) -> list[Decision
     text = _norm(notes)
     flag_blob = " ".join(str(flag) for flag in scope.get("condition_detail_flags") or [])
     if any(term in text or term in flag_blob for term in ("primer", "prime", "rust", "fastener")):
-        proposals.append(_proposal(template_type, "roofing_primer_template_decisions", "roofing_primer_row_39", "primer", "39", include=True, confidence=0.75, note=_snippet(notes, ["primer", "rust", "fastener"])))
+        proposals.append(_proposal(template_type, "roofing_primer_template_decisions", "roofing_primer_system_row_39", "primer", "39", include=True, confidence=0.75, note=_snippet(notes, ["primer", "rust", "fastener"])))
     if any(term in text or term in flag_blob for term in ("caulk", "sealant", "penetration", "detail")):
         proposals.append(_proposal(template_type, "roofing_detail_template_decisions", "roofing_caulk_sealant_row_43", "caulk_sealant", "43", include=True, confidence=0.75, note=_snippet(notes, ["caulk", "sealant", "penetration", "detail"])))
         proposals.append(_proposal(template_type, "roofing_detail_quantity_template_decisions", "roofing_penetrations_row_49", "penetrations", "49", include=True, confidence=0.7, review_reasons=["Detail quantity requires estimator count if units were not stated."], note=_snippet(notes, ["penetration", "detail"])))
@@ -429,6 +678,27 @@ def _roofing_scope_proposals(scope: dict[str, Any], notes: str) -> list[Decision
         proposals.append(_proposal(template_type, "roofing_labor_template_decisions", "roofing_labor_seam_sealer_row_120", "labor_seam_sealer", "120", include=True, confidence=0.7, note=_snippet(notes, ["seam", "seams"])))
     if "fabric" in text or "reinforcement" in text:
         proposals.append(_proposal(template_type, "roofing_detail_template_decisions", "roofing_fabric_row_79", "fabric", "79", include=True, confidence=0.7, review_reasons=["Fabric/reinforcement extent requires estimator review."], note=_snippet(notes, ["fabric", "reinforcement"])))
+        proposals.append(_proposal(template_type, "roofing_labor_template_decisions", "roofing_labor_seam_sealer_row_120", "labor_seam_sealer", "120", include=True, confidence=0.65, review_reasons=["Fabric/reinforcement usually needs seam/detail labor; verify extent."], note=_snippet(notes, ["fabric", "reinforcement"])))
+    if any(term in text for term in ("full tear off", "full tear-off", "tear off", "tear-off", "tearoff", "remove wet", "wet insulation", "damaged board", "replace board")):
+        for section, decision_id, bucket, row in (
+            ("roofing_board_fastener_template_decisions", "roofing_board_stock_row_58", "board_stock", "58"),
+            ("roofing_board_fastener_template_decisions", "roofing_fasteners_row_63", "fasteners", "63"),
+            ("roofing_board_fastener_template_decisions", "roofing_plates_row_65", "plates", "65"),
+            ("roofing_equipment_template_decisions", "roofing_dumpsters_row_69", "dumpster", "69"),
+        ):
+            proposals.append(
+                _proposal(
+                    template_type,
+                    section,
+                    decision_id,
+                    bucket,
+                    row,
+                    include=True,
+                    confidence=0.75,
+                    review_reasons=["Tear-off/recover companion row requires estimator confirmation of system, quantity, and disposal needs."],
+                    note=_snippet(notes, ["tear off", "tear-off", "wet insulation", "damaged board", "replace board"]),
+                )
+            )
     if "generator" in text:
         proposals.append(_proposal(template_type, "roofing_equipment_template_decisions", "roofing_generator_row_99", "generator", "99", include=True, confidence=0.8, note=_snippet(notes, ["generator"])))
     if any(term in text for term in ("lift", "equipment access", "access/equipment")):

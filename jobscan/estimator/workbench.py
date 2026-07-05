@@ -13,7 +13,11 @@ from typing import Any
 import pandas as pd
 
 from .decision_history import build_decision_recommendations, recommendation_lookup
-from .decision_proposals import apply_decision_proposals_to_workbench, build_decision_proposals
+from .decision_proposals import (
+    apply_decision_proposals_to_workbench,
+    build_decision_proposals,
+    build_material_companion_proposals,
+)
 from .formula_mirror import (
     calculate_insulation_foam,
     calculate_insulation_abaa_fee,
@@ -8923,6 +8927,7 @@ def build_estimating_workbench(
                 "applied_automatically": False,
             }
         ],
+        "relationship_package_cooccurrence": _records(_frame(data, "relationship_package_cooccurrence")) if data is not None else [],
     }
     workbench["decision_proposals"] = build_decision_proposals(scope, recommendation=recommendation, data=data)
     return recalculate_workbench_tables(workbench)
@@ -8934,17 +8939,65 @@ def _records_from_editor(value: Any) -> list[dict[str, Any]]:
     return _records(value)
 
 
+def _manual_include_override_lookup(workbench: dict[str, Any]) -> dict[tuple[str, str, str, str], dict[str, Any]]:
+    overrides: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    template_type = "insulation" if _is_insulation_scope(workbench.get("scope") or {}) else "roofing"
+    for section in WORKBENCH_DECISION_SECTIONS:
+        for row in workbench.get(section) or []:
+            if not isinstance(row, dict) or not row.get("manual_override") or "include" not in row:
+                continue
+            key = (
+                template_type,
+                section,
+                str(first_nonblank(row.get("decision_id"), row.get("source_decision_id"), row.get("template_bucket"))),
+                str(row.get("workbook_row") or ""),
+            )
+            overrides[key] = {
+                "include": bool(row.get("include")),
+                "manual_override": True,
+                "include_source": row.get("include_source") or "estimator_edit",
+            }
+    return overrides
+
+
+def _restore_manual_include_overrides(workbench: dict[str, Any], overrides: dict[tuple[str, str, str, str], dict[str, Any]]) -> dict[str, Any]:
+    if not overrides:
+        return workbench
+    template_type = "insulation" if _is_insulation_scope(workbench.get("scope") or {}) else "roofing"
+    for section in WORKBENCH_DECISION_SECTIONS:
+        rows = workbench.get(section) or []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            key = (
+                template_type,
+                section,
+                str(first_nonblank(row.get("decision_id"), row.get("source_decision_id"), row.get("template_bucket"))),
+                str(row.get("workbook_row") or ""),
+            )
+            override = overrides.get(key)
+            if override:
+                row.update(override)
+    return workbench
+
+
 def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float = DEFAULT_HOURLY_RATE) -> dict[str, Any]:
     updated = deepcopy(workbench)
     scope = updated.setdefault("scope", {})
     source_material_plan = _records(updated.get("source_material_plan") or [])
     source_labor_plan = _records(updated.get("source_labor_plan") or [])
-    if updated.get("decision_proposals"):
+    base_decision_proposals = [
+        proposal
+        for proposal in updated.get("decision_proposals") or []
+        if str((proposal or {}).get("source") or "") != "historical_companion"
+    ]
+    if base_decision_proposals:
         updated = apply_decision_proposals_to_workbench(
             updated,
-            updated.get("decision_proposals") or [],
+            base_decision_proposals,
             decision_sections=WORKBENCH_DECISION_SECTIONS,
         )
+    manual_include_overrides = _manual_include_override_lookup(updated)
     if _is_insulation_scope(scope):
         updated["insulation_surfaces"] = _build_insulation_surface_rows_for_workbench(
             scope,
@@ -9117,9 +9170,11 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
     updated.pop("materials", None)
     updated.pop("labor", None)
     updated.pop("adders", None)
+    updated = _restore_manual_include_overrides(updated, manual_include_overrides)
+    companion_proposals = build_material_companion_proposals(updated)
     updated = apply_decision_proposals_to_workbench(
         updated,
-        updated.get("decision_proposals") or [],
+        [*base_decision_proposals, *companion_proposals],
         decision_sections=WORKBENCH_DECISION_SECTIONS,
     )
     return updated
