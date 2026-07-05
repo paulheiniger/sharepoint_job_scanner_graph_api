@@ -847,6 +847,192 @@ def test_roofing_coating_uses_formula_compatible_historical_unit_price() -> None
     assert coating["selected_pricing_candidate"] == "Gaco Silicone Roof Coating"
 
 
+def test_insulation_thermal_barrier_uses_formula_compatible_historical_unit_price() -> None:
+    recommendation = insulation_recommendation()
+    recommendation.parsed_fields["notes"] = "Spray foam insulation with DC315 thermal barrier."
+    data = EstimatorData(
+        template_rows=pd.DataFrame(
+            [
+                {
+                    "template_row_id": "hist-dc315-1",
+                    "job_id": "I1",
+                    "template_type": "insulation",
+                    "sheet_name": "Estimate",
+                    "row_number": 30,
+                    "template_bucket": "thermal_barrier_coating",
+                    "line_item_kind": "material",
+                    "selected_item_name": "DC 315 Thermal Barrier",
+                    "unit": "gal",
+                    "area_sqft": 2400,
+                    "estimated_gallons": 24,
+                    "estimated_units": 24,
+                    "estimated_cost": 1440,
+                }
+            ]
+        )
+    )
+
+    workbench = build_estimating_workbench(recommendation, data)
+    thermal = workbench["insulation_thermal_barrier_template_decisions"][0]
+
+    assert thermal["include"] is True
+    assert thermal["unit_price"] == 60
+    assert thermal["estimated_gallons"] == 24
+    assert thermal["estimated_cost"] == 1440
+    assert thermal["cost_source"] == "historical_formula_unit_price"
+    assert thermal["selected_pricing_candidate"] == "DC 315 Thermal Barrier"
+    assert "estimate_template_rows_formula_compatible" in thermal["pricing_evidence_summary"]
+    assert any(option["item_name"] == "DC 315 Thermal Barrier" for option in json.loads(thermal["item_options_json"]))
+
+
+def test_insulation_template_product_option_supplies_unit_price_before_historical_fallback() -> None:
+    recommendation = insulation_recommendation()
+    recommendation.parsed_fields["notes"] = "Spray foam insulation with DC315 thermal barrier."
+    data = EstimatorData(
+        template_product_options=pd.DataFrame(
+            [
+                {
+                    "template_type": "insulation",
+                    "row_number": 30,
+                    "template_bucket": "thermal_barrier_coating",
+                    "product_name": "DC 315 Current",
+                    "unit": "gal",
+                    "unit_price": 62,
+                }
+            ]
+        ),
+        template_rows=pd.DataFrame(
+            [
+                {
+                    "template_row_id": "hist-dc315-1",
+                    "job_id": "I1",
+                    "template_type": "insulation",
+                    "row_number": 30,
+                    "template_bucket": "thermal_barrier_coating",
+                    "line_item_kind": "material",
+                    "selected_item_name": "DC 315 Historical",
+                    "unit": "gal",
+                    "estimated_gallons": 24,
+                    "estimated_cost": 1200,
+                }
+            ]
+        ),
+    )
+
+    workbench = build_estimating_workbench(recommendation, data)
+    thermal = workbench["insulation_thermal_barrier_template_decisions"][0]
+
+    assert thermal["unit_price"] == 62
+    assert thermal["estimated_cost"] == 1488
+    assert thermal["cost_source"] == "current_pricing"
+    assert thermal["selected_pricing_candidate"] == "DC 315 Current"
+    assert thermal["selected_price_source"] == "template_product_options"
+
+
+def test_insulation_sealant_uses_opening_and_corner_linear_feet_without_duplicate_row() -> None:
+    recommendation = insulation_recommendation()
+    recommendation.parsed_fields.update(
+        {
+            "notes": "Spray foam insulation. Seal around overhead door openings and corners.",
+            "wall_height_ft": 11.25,
+            "openings": [
+                {
+                    "opening_type": "overhead_door",
+                    "quantity": 2,
+                    "width_ft": 10,
+                    "height_ft": 10,
+                    "known_area_sqft": 200,
+                }
+            ],
+        }
+    )
+    data = EstimatorData(
+        template_rows=pd.DataFrame(
+            [
+                {
+                    "template_row_id": "hist-sealant-1",
+                    "job_id": "I1",
+                    "template_type": "insulation",
+                    "row_number": 41,
+                    "template_bucket": "caulk_sealant",
+                    "line_item_kind": "material",
+                    "selected_item_name": "Liquid Flashing",
+                    "unit": "unit",
+                    "linear_ft": 100,
+                    "estimated_units": 10,
+                    "estimated_cost": 200,
+                }
+            ]
+        )
+    )
+
+    workbench = build_estimating_workbench(recommendation, data)
+    sealant_rows = workbench["insulation_detail_material_template_decisions"]
+    first = next(row for row in sealant_rows if row["workbook_row"] == "41")
+    second = next(row for row in sealant_rows if row["workbook_row"] == "43")
+
+    assert first["include"] is True
+    assert first["linear_ft"] == 125
+    assert first["estimated_units"] == 12.5
+    assert first["unit_price"] == 20
+    assert first["estimated_cost"] == 250
+    assert first["cost_source"] == "historical_formula_unit_price"
+    assert second["include"] is False
+
+
+def test_insulation_drum_disposal_rejects_polluted_plate_history() -> None:
+    recommendation = insulation_recommendation()
+    recommendation.parsed_fields["notes"] = "Spray foam insulation with DC315 thermal barrier."
+    data = EstimatorData(
+        template_rows=pd.DataFrame(
+            [
+                {
+                    "template_row_id": "hist-dc315-1",
+                    "job_id": "I1",
+                    "template_type": "insulation",
+                    "row_number": 30,
+                    "template_bucket": "thermal_barrier_coating",
+                    "line_item_kind": "material",
+                    "row_label": "DC315",
+                    "selected_item_name": "DC 315 TB",
+                    "unit": "gal",
+                    "estimated_gallons": 24,
+                    "estimated_cost": 1248,
+                },
+                {
+                    "template_row_id": "hist-drum-good-quantity",
+                    "job_id": "I1",
+                    "template_type": "insulation",
+                    "row_number": 65,
+                    "template_bucket": "drum_disposal",
+                    "line_item_kind": "equipment",
+                    "row_label": "Drum Disp.",
+                    "estimated_units": 2,
+                },
+                {
+                    "template_row_id": "hist-drum-polluted-price",
+                    "job_id": "I2",
+                    "template_type": "insulation",
+                    "row_number": 65,
+                    "template_bucket": "drum_disposal",
+                    "line_item_kind": "equipment",
+                    "row_label": "Plates",
+                    "unit_price": 80,
+                },
+            ]
+        )
+    )
+
+    workbench = build_estimating_workbench(recommendation, data)
+    drum = next(row for row in workbench["insulation_support_material_template_decisions"] if row["template_bucket"] == "drum_disposal")
+
+    assert drum["include"] is True
+    assert drum["unit_price"] == 0
+    assert drum["estimated_cost"] == 0
+    assert drum["selected_pricing_candidate"] == "Drum Disposal"
+    assert "Plates" not in drum["pricing_evidence_summary"]
+
+
 def test_edit_history_tracks_decision_rows_not_flat_rows() -> None:
     original = {
         "estimate_id": "edit-test",

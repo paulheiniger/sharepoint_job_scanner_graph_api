@@ -898,13 +898,12 @@ def _pricing_evidence_summary(row: dict[str, Any]) -> str:
         if candidate and _norm(item.get("item_name")) == _norm(candidate):
             source = str(item.get("source") or item.get("why_suggested") or "").strip()
             break
-    if not candidate and unit_price <= 0:
+    if unit_price <= 0:
         return ""
     parts = []
     if candidate:
         parts.append(candidate)
-    if unit_price > 0:
-        parts.append(f"unit price {unit_price:g}")
+    parts.append(f"unit price {unit_price:g}")
     if source:
         parts.append(f"source {source}")
     return "; ".join(parts)
@@ -934,11 +933,18 @@ def _formula_evidence_summary(row: dict[str, Any]) -> str:
 def _pricing_candidates(row: dict[str, Any]) -> list[dict[str, Any]]:
     if isinstance(row.get("pricing_candidates"), list):
         return [dict(item) for item in row.get("pricing_candidates") or [] if isinstance(item, dict)]
-    try:
-        parsed = json.loads(row.get("pricing_candidates_json") or "[]")
-    except (TypeError, ValueError, json.JSONDecodeError):
-        parsed = []
-    return [dict(item) for item in parsed if isinstance(item, dict)]
+    candidates: list[dict[str, Any]] = []
+    for key in ("pricing_candidates_json", "pricing_options_json", "item_options_json"):
+        try:
+            parsed = json.loads(row.get(key) or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            parsed = []
+        for item in parsed:
+            if isinstance(item, dict):
+                candidates.append(dict(item))
+        if candidates:
+            break
+    return candidates
 
 
 def _safe_number(value: Any, default: float = 0.0) -> float:

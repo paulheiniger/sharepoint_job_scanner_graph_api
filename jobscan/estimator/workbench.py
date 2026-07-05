@@ -1287,6 +1287,35 @@ def _item_name_from_row(row: pd.Series | dict[str, Any]) -> str:
     ).strip()
 
 
+def _historical_item_name_for_package(row: pd.Series | dict[str, Any], package: str) -> str:
+    primary = str(
+        first_nonblank(
+            row.get("item_name") if isinstance(row, dict) else row.get("item_name"),
+            row.get("line_item_name") if isinstance(row, dict) else row.get("line_item_name"),
+            row.get("selected_item_name") if isinstance(row, dict) else row.get("selected_item_name"),
+            row.get("normalized_item_name") if isinstance(row, dict) else row.get("normalized_item_name"),
+            row.get("product_name") if isinstance(row, dict) else row.get("product_name"),
+            "",
+        )
+        or ""
+    ).strip()
+    row_label = str((row.get("row_label") if isinstance(row, dict) else row.get("row_label")) or "").strip()
+    if primary and _is_selectable_package_item(package, {"item_name": primary}, {}):
+        return primary
+    if row_label and _is_selectable_package_item(package, {"item_name": row_label}, {}):
+        return row_label
+    if primary:
+        return primary
+    if row_label:
+        return row_label
+    for key in ("template_bucket", "package"):
+        value = row.get(key) if isinstance(row, dict) else row.get(key)
+        label = str(value or "").strip()
+        if label and _is_selectable_package_item(package, {"item_name": label}, {}):
+            return label
+    return ""
+
+
 def _price_value_from_row(row: pd.Series | dict[str, Any], preferred: str = "unit_price") -> float:
     for column in (preferred, "matched_price", "price_per_unit", "unit_price", "price_per_gallon", "price_per_sqft"):
         value = row.get(column) if isinstance(row, dict) else row.get(column)
@@ -2580,6 +2609,155 @@ def _candidate_options_with_historical_templates(
     return list(options_by_name.values())
 
 
+def _insulation_material_catalog_options(
+    *,
+    spec: dict[str, Any],
+    scope: dict[str, Any],
+    data: Any = None,
+) -> list[dict[str, Any]]:
+    if data is None:
+        return []
+    bucket = str(spec.get("template_bucket") or "")
+    workbook_row = str(spec.get("workbook_row") or "")
+    catalog_row = {
+        "template_type": "insulation",
+        "template_bucket": bucket,
+        "package_key": bucket,
+        "decision_id": spec.get("decision_id"),
+        "source_decision_id": spec.get("decision_id"),
+        "workbook_row": workbook_row,
+        "row_number": workbook_row,
+    }
+    catalog = _template_option_catalog_payload(data)
+    product_options = _product_options_from_catalog(
+        catalog=catalog,
+        row=catalog_row,
+        template_type="insulation",
+    )
+    pricing_options = _pricing_options_for_package(
+        _frame(data, "pricing_catalog"),
+        {
+            "package": bucket,
+            "keywords": spec.get("keywords") or _package_aliases(bucket),
+            "default_unit": spec.get("default_unit") or spec.get("unit") or "unit",
+        },
+        scope,
+    )
+    return _merge_option_lists(
+        product_options,
+        pricing_options,
+        identity_fields=("item_name", "pricing_item_id", "source", "item_source"),
+    )
+
+
+def _insulation_material_pricing_candidates(
+    *,
+    spec: dict[str, Any],
+    source: dict[str, Any],
+    existing: dict[str, Any],
+    scope: dict[str, Any],
+    data: Any = None,
+    item_name: Any = "",
+) -> list[dict[str, Any]]:
+    bucket = str(spec.get("template_bucket") or "")
+    seed = {**source, **existing}
+    if item_name:
+        seed["item_name"] = item_name
+    catalog_options = _insulation_material_catalog_options(spec=spec, scope=scope, data=data)
+    if catalog_options:
+        existing_options = _material_item_options(seed)
+        seed["item_options_json"] = json.dumps(
+            _merge_option_lists(
+                existing_options,
+                catalog_options,
+                identity_fields=("item_name", "pricing_item_id", "source", "item_source"),
+            ),
+            default=str,
+        )
+    default_unit = str(spec.get("default_unit") or spec.get("unit") or "unit")
+    candidates = _candidate_options_with_historical_templates(
+        seed,
+        package=bucket,
+        scope=scope,
+        data=data,
+        default_unit=default_unit,
+    )
+    deduped = _merge_option_lists(
+        candidates,
+        [],
+        identity_fields=("item_name", "pricing_item_id", "source", "item_source"),
+    )
+    return deduped[:12]
+
+
+def _selected_insulation_material_pricing_candidate(
+    *,
+    candidates: list[dict[str, Any]],
+    preferred_names: list[Any],
+    package: str,
+    scope: dict[str, Any],
+) -> dict[str, Any]:
+    preferred = {_normalized(name) for name in preferred_names if _normalized(name)}
+    scored: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    source_rank = {
+        "current_pricing": 5,
+        "template_product_options": 4,
+        "estimate_template_rows_formula_compatible": 3,
+        "pricing_or_history": 2,
+        "selected_item": 1,
+    }
+    for index, candidate in enumerate(candidates):
+        unit_price = safe_number(candidate.get("unit_price"), 0.0)
+        if unit_price <= 0:
+            continue
+        if not _is_selectable_package_item(package, candidate, scope):
+            continue
+        fit_score, fit_reasons = _package_item_fit_details(package, candidate, scope)
+        item_name = str(candidate.get("item_name") or "").strip()
+        candidate_source = str(candidate.get("source") or candidate.get("item_source") or "")
+        enriched = {
+            **candidate,
+            "source": candidate_source or "pricing_or_history",
+            "fit_score": round(fit_score, 4),
+            "fit_reasons": fit_reasons,
+        }
+        scored.append(
+            (
+                (
+                    _normalized(item_name) in preferred,
+                    fit_score,
+                    source_rank.get(_normalized(candidate_source), source_rank.get(candidate_source, 0)),
+                    safe_number(candidate.get("evidence_count"), 0.0),
+                    -index,
+                    item_name,
+                ),
+                enriched,
+            )
+        )
+    if not scored:
+        return {}
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return scored[0][1]
+
+
+def _pricing_evidence_summary(candidate: dict[str, Any]) -> str:
+    if not candidate:
+        return ""
+    parts: list[str] = []
+    if candidate.get("item_name"):
+        parts.append(str(candidate.get("item_name")))
+    unit_price = safe_number(candidate.get("unit_price"), 0.0)
+    if unit_price > 0:
+        parts.append(f"unit price {unit_price:g}")
+    source = candidate.get("source") or candidate.get("item_source")
+    if source:
+        parts.append(f"source {source}")
+    evidence_count = int(safe_number(candidate.get("evidence_count"), 0.0))
+    if evidence_count > 0:
+        parts.append(f"{evidence_count} historical rows")
+    return "; ".join(parts)
+
+
 def _foam_pricing_candidates(row: dict[str, Any], scope: dict[str, Any], data: Any = None, template_option: str = "") -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     for option in _candidate_options_with_historical_templates(row, package="foam", scope=scope, data=data, default_unit="set"):
@@ -3688,6 +3866,42 @@ def _decision_output_summary(formula: dict[str, Any]) -> str:
     )
 
 
+def _insulation_opening_perimeter_ft(scope: dict[str, Any]) -> float:
+    total = 0.0
+    for opening in scope.get("openings") or []:
+        if not isinstance(opening, dict):
+            continue
+        quantity = safe_number(opening.get("quantity"), 1.0) or 1.0
+        width = optional_number(opening.get("width_ft"))
+        height = optional_number(opening.get("height_ft"))
+        if width is None or height is None or width <= 0 or height <= 0:
+            continue
+        total += quantity * 2.0 * (width + height)
+    return round(total, 4)
+
+
+def _insulation_sealant_linear_ft_from_scope(scope: dict[str, Any], notes_text: str) -> float:
+    explicit = positive_number(
+        scope.get("sealant_linear_ft"),
+        scope.get("caulk_linear_ft"),
+        scope.get("detail_linear_ft"),
+        default=0.0,
+    )
+    if explicit > 0:
+        return round(explicit, 4)
+    linear_ft = 0.0
+    opening_perimeter = _insulation_opening_perimeter_ft(scope)
+    if opening_perimeter > 0 and _contains_any_text(notes_text, ["door", "opening", "overhead", "rollup", "sealant", "caulk"]):
+        linear_ft += opening_perimeter
+    wall_height = safe_number(scope.get("wall_height_ft"), 0.0)
+    if wall_height > 0 and _contains_any_text(notes_text, ["corner", "corners"]):
+        linear_ft += 4.0 * wall_height
+    building_perimeter = safe_number(scope.get("building_perimeter_ft"), 0.0)
+    if building_perimeter > 0 and _contains_any_text(notes_text, ["perimeter seal", "base seal", "seal perimeter", "around perimeter"]):
+        linear_ft += building_perimeter
+    return round(linear_ft, 4)
+
+
 def _insulation_material_preview(row: dict[str, Any]) -> list[dict[str, Any]]:
     workbook_row = str(row.get("workbook_row") or "")
     first_row = int(safe_number(workbook_row.split("-")[0].split("/")[0], 0)) if workbook_row and workbook_row[0].isdigit() else 0
@@ -3726,7 +3940,13 @@ def _calculate_insulation_decision_formula(
     dependencies: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     formula_kind = str(spec.get("formula") or "direct")
-    unit_price = safe_number(first_nonblank(existing.get("unit_price"), source_row.get("current_unit_price"), source_row.get("current_price"), source_row.get("unit_price")), 0.0)
+    unit_price = positive_number(
+        existing.get("unit_price"),
+        source_row.get("current_unit_price"),
+        source_row.get("current_price"),
+        source_row.get("unit_price"),
+        default=0.0,
+    )
     amount = safe_number(first_nonblank(existing.get("amount"), existing.get("editable_value"), source_row.get("editable_value"), source_row.get("estimated_cost")), 0.0)
     basis_sqft = safe_number(first_nonblank(existing.get("basis_sqft"), source_row.get("editable_basis_sqft"), source_row.get("default_basis_sqft"), area), 0.0)
     linear_ft = safe_number(first_nonblank(existing.get("linear_ft"), source_row.get("linear_ft"), source_row.get("calculated_quantity")), 0.0)
@@ -3816,25 +4036,35 @@ def _build_insulation_decision_rows(
     notes_text = _normalized(" ".join(str(scope.get(key) or "") for key in ("notes", "raw_input_notes", "project_type", "building_type")))
     rows: list[dict[str, Any]] = []
     deps = dict(dependencies or {})
+    auto_included_buckets: set[str] = set()
     for spec in specs:
         source = _source_for_insulation_decision(spec, materials=materials, adders=adders)
         existing = existing_index.get(str(spec.get("workbook_row"))) or existing_index.get(str(spec.get("template_bucket"))) or existing_index.get(str(spec.get("decision_id"))) or {}
         bucket = str(spec.get("template_bucket") or "")
         workbook_row = str(spec.get("workbook_row") or "")
         include_default = bool(source.get("include"))
+        auto_include = include_default
         trigger_terms = _package_aliases(bucket)
         if any(term and term in notes_text for term in trigger_terms):
             include_default = True
+            auto_include = True
         if bucket in {"drum_disposal"} and any(safe_number(deps.get(key), 0.0) > 0 for key in ("foam_units", "thermal_gallons", "primer_units", "thinner_units")):
             include_default = True
-        include = bool(existing["include"]) if "include" in existing else include_default
+            auto_include = True
+        if "include" in existing:
+            include = bool(existing["include"])
+        elif include_default and auto_include and bucket in auto_included_buckets:
+            include = False
+        else:
+            include = include_default
+        if include and auto_include and "include" not in existing:
+            auto_included_buckets.add(bucket)
         selector_code, resolved_option, selector_options = _selector_choice(
             decision_id=spec.get("selector_decision_id"),
             workbook_row=workbook_row,
             existing=existing,
             source_row=source,
         )
-        formula, inputs = _calculate_insulation_decision_formula(spec, include=include, source_row=source, existing=existing, area=area, dependencies=deps)
         item_name = first_nonblank(
             existing.get("selected_pricing_candidate"),
             source.get("item_name"),
@@ -3842,6 +4072,40 @@ def _build_insulation_decision_rows(
             resolved_option,
             spec.get("label"),
         )
+        pricing_candidates = _insulation_material_pricing_candidates(
+            spec=spec,
+            source=source,
+            existing=existing,
+            scope=scope,
+            data=data,
+            item_name=item_name,
+        )
+        selected_pricing_candidate = _selected_insulation_material_pricing_candidate(
+            candidates=pricing_candidates,
+            preferred_names=[
+                existing.get("selected_pricing_candidate"),
+                source.get("item_name"),
+                source.get("current_item"),
+                resolved_option,
+                spec.get("label"),
+            ],
+            package=bucket,
+            scope=scope,
+        )
+        priced_source = dict(source)
+        if selected_pricing_candidate and positive_number(existing.get("unit_price"), source.get("current_unit_price"), source.get("current_price"), source.get("unit_price"), default=0.0) <= 0:
+            priced_source["current_unit_price"] = selected_pricing_candidate.get("unit_price")
+            priced_source["current_price"] = selected_pricing_candidate.get("unit_price")
+            priced_source["unit_price"] = selected_pricing_candidate.get("unit_price")
+            priced_source["current_item"] = selected_pricing_candidate.get("item_name")
+            priced_source["item_name"] = selected_pricing_candidate.get("item_name")
+            item_name = selected_pricing_candidate.get("item_name") or item_name
+        if bucket == "caulk_sealant" and positive_number(existing.get("linear_ft"), source.get("linear_ft"), source.get("calculated_quantity"), default=0.0) <= 0:
+            sealant_linear_ft = _insulation_sealant_linear_ft_from_scope(scope, notes_text)
+            if sealant_linear_ft > 0:
+                priced_source["linear_ft"] = sealant_linear_ft
+                priced_source["calculated_quantity"] = sealant_linear_ft
+        formula, inputs = _calculate_insulation_decision_formula(spec, include=include, source_row=priced_source, existing=existing, area=area, dependencies=deps)
         product_context = _insulation_product_context_for_row(data=data, decision_id=str(spec.get("decision_id")), bucket=bucket, item_name=item_name)
         guidance = _insulation_product_guidance_fields(product_context)
         warnings: list[str] = []
@@ -3865,6 +4129,14 @@ def _build_insulation_decision_rows(
             "selector_options_json": json.dumps(selector_options, default=str),
             "selected_pricing_candidate": item_name,
             "unit_price": inputs.get("unit_price"),
+            "pricing_options": pricing_candidates,
+            "pricing_options_json": json.dumps(pricing_candidates, default=str),
+            "pricing_candidates": pricing_candidates,
+            "pricing_candidates_json": json.dumps(pricing_candidates, default=str),
+            "item_options": pricing_candidates,
+            "item_options_json": json.dumps(pricing_candidates, default=str),
+            "pricing_evidence_summary": _pricing_evidence_summary(selected_pricing_candidate),
+            "selected_price_source": selected_pricing_candidate.get("source") or selected_pricing_candidate.get("item_source") or "",
             "basis_sqft": inputs.get("basis_sqft"),
             "linear_ft": inputs.get("linear_ft"),
             "quantity": inputs.get("quantity"),
@@ -3879,6 +4151,7 @@ def _build_insulation_decision_rows(
             "amount": inputs.get("amount"),
             "formula_model": formula.get("formula_model"),
             "formula_source": formula.get("formula_source"),
+            "cost_source": _cost_source_for_candidate(formula, selected_pricing_candidate),
             "estimated_units": safe_number(first_nonblank(formula.get("estimated_units"), formula.get("estimated_drums"), formula.get("calculated_quantity")), 0.0),
             "estimated_gallons": safe_number(formula.get("estimated_gallons"), 0.0),
             "estimated_drums": safe_number(formula.get("estimated_drums"), 0.0),
@@ -8317,13 +8590,13 @@ def _package_item_fit_details(package: str, option: dict[str, Any], scope: dict[
         if _contains_any_text(combined, ["roof coating", "primer", "granule"]):
             score -= 250
             reasons.append("less suitable for seam treatment")
-    elif package == "caulk_detail":
+    elif package in {"caulk_detail", "caulk_sealant"}:
         if _contains_any_text(combined, ["caulk", "sealant", "flashing grade", "detail", "tube", "sausage"]):
             score += 220
-            reasons.append("caulk/detail product signal")
+            reasons.append("caulk/sealant product signal")
         if _contains_any_text(combined, ["roof coating", "primer", "granule"]):
             score -= 250
-            reasons.append("less suitable for caulk/detail")
+            reasons.append("less suitable for caulk/sealant")
     elif package == "fastener_treatment":
         if _contains_any_text(combined, ["fastener", "screw", "washer", "plate"]):
             score += 220
@@ -8445,7 +8718,7 @@ def _historical_template_item_options(
     eligible, _ = _scope_filter_diagnostics(package_rows, filters)
     if eligible.empty:
         eligible = package_rows
-    eligible["_workbench_item_name"] = eligible.apply(_item_name_from_row, axis=1)
+    eligible["_workbench_item_name"] = eligible.apply(lambda row: _historical_item_name_for_package(row, package), axis=1)
     eligible = eligible[eligible["_workbench_item_name"].astype(str).str.strip().ne("")].copy()
     if eligible.empty:
         return []
