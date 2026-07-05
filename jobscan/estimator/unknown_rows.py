@@ -25,6 +25,9 @@ UNKNOWN_EXPORT_COLUMNS = [
     "row_label",
     "selected_item_name",
     "line_item_kind",
+    "template_row_role",
+    "template_row_role_source",
+    "template_row_role_detail",
     "source_file_pattern",
     "sample_source_files",
     "sample_job_ids",
@@ -47,10 +50,20 @@ MAPPING_COLUMNS = [
     "notes",
     "approved",
 ]
+YELLOW_RGB_VALUES = {"FFFFFF00", "FFFF00", "00FFFF00"}
+NON_INFORMATIONAL_TEMPLATE_ROLE = "template_header_or_instruction"
+METADATA_TEMPLATE_ROLE = "template_metadata"
+
+
+def _text(value: Any) -> str:
+    if value is None:
+        return ""
+    text_value = str(value).strip()
+    return "" if text_value.lower() in {"nan", "none", "null"} else text_value
 
 
 def norm(value: Any) -> str:
-    return " ".join(str(value or "").strip().lower().replace("_", " ").replace("-", " ").split())
+    return " ".join(_text(value).lower().replace("_", " ").replace("-", " ").split())
 
 
 def is_unknown_bucket(value: Any) -> bool:
@@ -74,6 +87,200 @@ def source_file_pattern(source_file: Any) -> str:
     name = re.sub(r"\b\d+\b", "#", name)
     name = re.sub(r"\s+", " ", name).strip()
     return name
+
+
+def infer_template_type_from_path(path: Path | str) -> str:
+    name = Path(path).name.lower()
+    if "roof" in name:
+        return "roofing"
+    if "insulation" in name or "foam" in name:
+        return "insulation"
+    return ""
+
+
+def _cell_is_yellow(cell: Any) -> bool:
+    fill = getattr(cell, "fill", None)
+    if fill is None or not getattr(fill, "fill_type", None):
+        return False
+    color = getattr(fill, "fgColor", None)
+    if color is None or getattr(color, "type", "") != "rgb":
+        return False
+    rgb = str(getattr(color, "rgb", "") or "").upper()
+    return rgb in YELLOW_RGB_VALUES
+
+
+def _display_cell_value(value: Any) -> str:
+    if value is None:
+        return ""
+    text_value = str(value).strip()
+    if len(text_value) > 80:
+        return text_value[:77] + "..."
+    return text_value
+
+
+def extract_highlighted_template_row_roles(
+    workbook_path: Path | str,
+    *,
+    template_type: str | None = None,
+    sheet_name: str = "Estimate",
+) -> dict[tuple[str, str, int], dict[str, Any]]:
+    """Read yellow-highlighted template rows as non-informational row hints."""
+    from openpyxl import load_workbook
+
+    path = Path(workbook_path)
+    resolved_template_type = template_type or infer_template_type_from_path(path)
+    if not resolved_template_type:
+        resolved_template_type = "unknown"
+    workbook = load_workbook(path, data_only=False)
+    if sheet_name not in workbook.sheetnames:
+        return {}
+    worksheet = workbook[sheet_name]
+    hints: dict[tuple[str, str, int], dict[str, Any]] = {}
+    max_col = min(worksheet.max_column or 1, 12)
+    for row_number in range(1, (worksheet.max_row or 0) + 1):
+        yellow_columns: list[int] = []
+        values: list[str] = []
+        for col_number in range(1, max_col + 1):
+            cell = worksheet.cell(row_number, col_number)
+            if _cell_is_yellow(cell):
+                yellow_columns.append(col_number)
+            display_value = _display_cell_value(cell.value)
+            if display_value:
+                values.append(f"{cell.coordinate}={display_value}")
+        if not yellow_columns:
+            continue
+        hints[(resolved_template_type, sheet_name, row_number)] = {
+            "template_type": resolved_template_type,
+            "sheet_name": sheet_name,
+            "row_number": row_number,
+            "template_row_role": NON_INFORMATIONAL_TEMPLATE_ROLE,
+            "template_row_role_source": str(path),
+            "template_row_role_detail": f"yellow_cols={','.join(str(col) for col in yellow_columns)}; values={' | '.join(values[:6])}",
+        }
+    return hints
+
+
+def load_template_row_role_hints(
+    workbook_paths: list[Path | str] | None,
+    *,
+    template_type: str | None = None,
+    sheet_name: str = "Estimate",
+) -> dict[tuple[str, str, int], dict[str, Any]]:
+    hints: dict[tuple[str, str, int], dict[str, Any]] = {}
+    for workbook_path in workbook_paths or []:
+        hints.update(
+            extract_highlighted_template_row_roles(
+                workbook_path,
+                template_type=template_type,
+                sheet_name=sheet_name,
+            )
+        )
+    return hints
+
+
+def _role_hint_for_cluster(
+    key: dict[str, Any],
+    row_role_hints: dict[tuple[str, str, int], dict[str, Any]] | None,
+) -> dict[str, Any]:
+    if not row_role_hints:
+        return {}
+    template_type = str(key.get("template_type") or "")
+    sheet_name = str(key.get("sheet_name") or "")
+    row_number = pd.to_numeric(pd.Series([key.get("row_number")]), errors="coerce").iloc[0]
+    if pd.isna(row_number):
+        return {}
+    exact = row_role_hints.get((template_type, sheet_name, int(row_number)))
+    if exact:
+        return exact
+    return row_role_hints.get(("unknown", sheet_name, int(row_number)), {})
+
+
+def _role_payload(role: str, source: str, detail: str) -> dict[str, Any]:
+    return {
+        "template_row_role": role,
+        "template_row_role_source": source,
+        "template_row_role_detail": detail,
+    }
+
+
+def _heuristic_template_row_role(key: dict[str, Any]) -> dict[str, Any]:
+    label = norm(key.get("row_label"))
+    selected = norm(key.get("selected_item_name"))
+    combined = " ".join(part for part in (label, selected) if part)
+    if not label and not selected:
+        return _role_payload(
+            NON_INFORMATIONAL_TEMPLATE_ROLE,
+            "heuristic_blank_unknown_row",
+            "blank unknown row with no row label or selected item",
+        )
+    metadata_terms = (
+        "today's date",
+        "job name",
+        "job type",
+        "site address",
+        "city state zip",
+        "city, state, zip",
+        "contact",
+        "email address",
+        "phone",
+        "fax",
+        "title",
+        "est square feet",
+        "est. square feet",
+    )
+    if any(term in combined for term in metadata_terms):
+        return _role_payload(
+            METADATA_TEMPLATE_ROLE,
+            "heuristic_metadata_text",
+            f"row_label={key.get('row_label')}; selected_item_name={key.get('selected_item_name')}",
+        )
+    exact_scaffold_values = {
+        "*",
+        "type",
+        "types:",
+        "types",
+        "mfg:",
+        "mfg",
+        "manufacturer",
+        "days",
+        "no. of trips",
+        "describe:",
+        "describe",
+    }
+    label_scaffold_values = {
+        "*",
+        "summary",
+        "labor / subcontractor",
+        "warranty, bonding, and insurance",
+        "bonding and insurance",
+        "miscellaneous insurance",
+    }
+    scaffold_terms = (
+        "est square feet",
+        "est. square feet",
+        "price / sq",
+        "price / sq. ft",
+        "price per sq",
+        "margin %",
+        "total hours",
+        "sales tax",
+        "worksheet price",
+        "work sheet price",
+        "additional amount w/o markup",
+    )
+    if selected in exact_scaffold_values or label in label_scaffold_values or any(term in combined for term in scaffold_terms):
+        return _role_payload(
+            NON_INFORMATIONAL_TEMPLATE_ROLE,
+            "heuristic_non_informational_text",
+            f"row_label={key.get('row_label')}; selected_item_name={key.get('selected_item_name')}",
+        )
+    if selected in {"types:", "types", "mfg:", "mfg"} and label:
+        return _role_payload(
+            NON_INFORMATIONAL_TEMPLATE_ROLE,
+            "heuristic_template_instruction_text",
+            f"row_label={key.get('row_label')}; selected_item_name={key.get('selected_item_name')}",
+        )
+    return {}
 
 
 def table_columns(conn: Connection) -> set[str]:
@@ -231,7 +438,13 @@ def _nearby_buckets(cluster_rows: pd.DataFrame, context_index: dict[tuple[str, s
     return " | ".join(f"{bucket} ({count})" for bucket, count in ranked[:5])
 
 
-def build_unknown_clusters(unknown_rows: pd.DataFrame, all_rows: pd.DataFrame | None = None, *, limit: int = 500) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def build_unknown_clusters(
+    unknown_rows: pd.DataFrame,
+    all_rows: pd.DataFrame | None = None,
+    *,
+    limit: int = 500,
+    row_role_hints: dict[tuple[str, str, int], dict[str, Any]] | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     if unknown_rows.empty:
         empty_clusters = pd.DataFrame(columns=UNKNOWN_EXPORT_COLUMNS)
         return empty_clusters, pd.DataFrame(), pd.DataFrame(columns=MAPPING_COLUMNS)
@@ -247,12 +460,24 @@ def build_unknown_clusters(unknown_rows: pd.DataFrame, all_rows: pd.DataFrame | 
         key_values = key_values if isinstance(key_values, tuple) else (key_values,)
         key = dict(zip(group_cols, key_values, strict=False))
         cluster_id = stable_cluster_id([key.get(column) for column in group_cols])
-        suggested_bucket, suggested_kind, confidence = suggest_mapping(key.get("row_label"), key.get("selected_item_name"), key.get("row_number"))
+        role_hint = _role_hint_for_cluster(key, row_role_hints) or _heuristic_template_row_role(key)
+        if role_hint.get("template_row_role") == NON_INFORMATIONAL_TEMPLATE_ROLE:
+            suggested_bucket, suggested_kind, confidence = "template_scaffolding", "header", "high"
+            review_status = "template_non_informational"
+        elif role_hint.get("template_row_role") == METADATA_TEMPLATE_ROLE:
+            suggested_bucket, suggested_kind, confidence = "template_metadata", "metadata", "high"
+            review_status = "template_metadata"
+        else:
+            suggested_bucket, suggested_kind, confidence = suggest_mapping(key.get("row_label"), key.get("selected_item_name"), key.get("row_number"))
+            review_status = "needs_review"
         cluster = {
             "cluster_id": cluster_id,
             "row_count": int(len(group)),
             "distinct_file_count": int(group["source_file"].dropna().astype(str).nunique()),
             **key,
+            "template_row_role": role_hint.get("template_row_role", ""),
+            "template_row_role_source": role_hint.get("template_row_role_source", ""),
+            "template_row_role_detail": role_hint.get("template_row_role_detail", ""),
             "source_file_pattern": _sample_values(group["source_file_pattern"], 3),
             "sample_source_files": _sample_values(group["source_file"], 5),
             "sample_job_ids": _sample_values(group["job_id"], 5),
@@ -261,7 +486,7 @@ def build_unknown_clusters(unknown_rows: pd.DataFrame, all_rows: pd.DataFrame | 
             "suggested_bucket": suggested_bucket,
             "suggested_line_item_kind": suggested_kind,
             "confidence": confidence,
-            "review_status": "needs_review",
+            "review_status": review_status,
         }
         clusters.append(cluster)
         for _, sample in group.head(5).iterrows():
@@ -289,20 +514,39 @@ def build_unknown_clusters(unknown_rows: pd.DataFrame, all_rows: pd.DataFrame | 
     return clusters_df[UNKNOWN_EXPORT_COLUMNS], samples_df, mapping_df
 
 
-def export_unknown_review(conn: Connection, output_dir: Path | str, *, limit: int = 500) -> dict[str, Path]:
+def export_unknown_review(
+    conn: Connection,
+    output_dir: Path | str,
+    *,
+    limit: int = 500,
+    row_role_hints: dict[tuple[str, str, int], dict[str, Any]] | None = None,
+) -> dict[str, Path]:
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     unknown_rows = read_template_rows(conn, unknown_only=True)
     all_rows = read_template_rows(conn, unknown_only=False)
-    clusters, samples, mapping = build_unknown_clusters(unknown_rows, all_rows, limit=limit)
+    clusters, samples, mapping = build_unknown_clusters(unknown_rows, all_rows, limit=limit, row_role_hints=row_role_hints)
+    non_informational = clusters[clusters["template_row_role"].eq(NON_INFORMATIONAL_TEMPLATE_ROLE)].copy()
+    metadata = clusters[clusters["template_row_role"].eq(METADATA_TEMPLATE_ROLE)].copy()
+    actionable = clusters[~clusters["template_row_role"].isin({NON_INFORMATIONAL_TEMPLATE_ROLE, METADATA_TEMPLATE_ROLE})].copy()
     paths = {
         "clusters": output / "unknown_row_clusters.csv",
+        "actionable_clusters": output / "unknown_row_clusters_actionable.csv",
+        "non_informational_clusters": output / "unknown_row_clusters_non_informational.csv",
+        "metadata_clusters": output / "unknown_row_clusters_metadata.csv",
         "samples": output / "unknown_row_samples.csv",
         "mapping": output / "unknown_mapping_template.csv",
     }
     clusters.to_csv(paths["clusters"], index=False)
+    actionable.to_csv(paths["actionable_clusters"], index=False)
+    non_informational.to_csv(paths["non_informational_clusters"], index=False)
+    metadata.to_csv(paths["metadata_clusters"], index=False)
     samples.to_csv(paths["samples"], index=False)
     mapping.to_csv(paths["mapping"], index=False)
+    if row_role_hints:
+        role_path = output / "template_row_role_hints.csv"
+        pd.DataFrame(row_role_hints.values()).to_csv(role_path, index=False)
+        paths["row_role_hints"] = role_path
     return paths
 
 
@@ -447,6 +691,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--summary", action="store_true")
     parser.add_argument("--apply-mapping")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--template-row-role-xlsx", action="append", default=[], help="Template workbook with yellow-highlighted non-informational rows. May be repeated.")
+    parser.add_argument("--template-type", help="Override template type for highlighted row-role workbooks.")
+    parser.add_argument("--template-sheet", default="Estimate", help="Worksheet to read from highlighted row-role workbooks.")
     return parser.parse_args(argv)
 
 
@@ -463,7 +710,12 @@ def main(argv: list[str] | None = None) -> int:
             results = apply_mapping(conn, args.apply_mapping, dry_run=args.dry_run, output_dir=output_dir)
             print_apply_summary(results, dry_run=args.dry_run)
             return 0
-        paths = export_unknown_review(conn, output_dir, limit=args.limit)
+        row_role_hints = load_template_row_role_hints(
+            [Path(path) for path in args.template_row_role_xlsx],
+            template_type=args.template_type,
+            sheet_name=args.template_sheet,
+        )
+        paths = export_unknown_review(conn, output_dir, limit=args.limit, row_role_hints=row_role_hints)
     print("Unknown row review exports written:")
     for label, path in paths.items():
         print(f"  {label}: {path}")

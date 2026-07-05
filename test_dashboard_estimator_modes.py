@@ -136,8 +136,107 @@ def test_estimator_page_exposes_reference_job_ids_scope_field() -> None:
 
     source = inspect.getsource(app.estimator_prototype_page)
 
-    assert "Reference Job IDs" in source
+    assert "Reference Jobs" in source
+    assert "Other Reference Job IDs" in source
+    assert "st.multiselect" in source
     assert "reference_job_ids" in source
+
+
+def test_parse_reference_job_ids_accepts_common_separators() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    assert app.parse_reference_job_ids("JOB-1; JOB-2|JOB-3\nJOB-4, JOB-5") == [
+        "JOB-1",
+        "JOB-2",
+        "JOB-3",
+        "JOB-4",
+        "JOB-5",
+    ]
+
+
+def test_estimator_reference_job_options_use_names_and_template_rows() -> None:
+    app = importlib.import_module("dashboard.app")
+    data = app.EstimatorData(
+        jobs=pd.DataFrame(
+            [
+                {
+                    "job_id": "JOB-1",
+                    "customer": "Acme",
+                    "job_name": "Metal roof restoration",
+                    "estimated_sqft": 10000,
+                }
+            ]
+        ),
+        template_rows=pd.DataFrame(
+            [
+                {
+                    "job_id": "JOB-1",
+                    "template_type": "roofing",
+                    "source_file": "Acme Estimate.xlsx",
+                },
+                {
+                    "job_id": "JOB-2",
+                    "template_type": "roofing",
+                    "source_file": "Library Roof Estimate.xlsx",
+                    "project_type": "roof coating",
+                },
+                {
+                    "job_id": "JOB-3",
+                    "template_type": "insulation",
+                    "source_file": "Pole Barn Insulation.xlsx",
+                },
+            ]
+        ),
+    )
+
+    options, labels = app.estimator_reference_job_options(data, template_type="roofing")
+
+    assert set(options) == {"JOB-1", "JOB-2"}
+    assert labels["JOB-1"].startswith("Acme - Metal roof restoration (JOB-1)")
+    assert labels["JOB-2"].startswith("Library Roof Estimate.xlsx (JOB-2)")
+    assert "JOB-3" not in labels
+
+
+def test_decision_row_option_helpers_parse_row_specific_options() -> None:
+    app = importlib.import_module("dashboard.app")
+    row = {
+        "workbook_row": "26",
+        "editable_selector_code": "11",
+        "resolved_template_option": "Gaco Silicone",
+        "selector_options_json": (
+            '[{"selector_code": "11", "resolved_template_option": "Gaco Silicone"},'
+            ' {"selector_code": "12", "resolved_template_option": "Acrylic"}]'
+        ),
+        "item_options_json": (
+            '[{"item_name": "Gaco Silicone Roof Coating", "unit_price": 1250},'
+            ' {"item_name": "Gaco Silicone Roof Coating", "unit_price": 1250},'
+            ' {"item_name": "Alternate Coating", "unit_price": "review"}]'
+        ),
+        "crew_selector_options_json": '[{"selector_code": "5", "resolved_template_option": "5 person crew", "crew_size": 5, "daily_rate": 3600}]',
+    }
+
+    selector_options = app.decision_row_selector_options(row)
+    pricing_options = app.decision_row_pricing_options(row)
+
+    assert [option["selector_code"] for option in selector_options] == ["11", "12"]
+    assert [option["item_name"] for option in pricing_options] == [
+        "Gaco Silicone Roof Coating",
+        "Alternate Coating",
+    ]
+    assert app.decision_row_has_option_editor(row, {"editable_selector_code", "selected_pricing_candidate"})
+    assert app.decision_row_has_option_editor(row, {"crew_size", "daily_rate"})
+    assert app._matching_option_index(selector_options, ["Acrylic"], ["resolved_template_option"]) == 1
+    assert app.pricing_option_label(pricing_options[0]) == "Gaco Silicone Roof Coating - $1,250.00"
+    assert app.pricing_option_label(pricing_options[1]) == "Alternate Coating - review"
+
+
+def test_estimator_page_exposes_optional_row_option_editor() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    source = inspect.getsource(app.estimator_prototype_page)
+
+    assert "Show selected-row option editor" in source
+    assert "render_decision_row_option_editor" in source
 
 
 def test_estimator_workbench_uses_compact_columns_by_default() -> None:

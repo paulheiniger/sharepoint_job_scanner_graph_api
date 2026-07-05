@@ -3,12 +3,15 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
+from openpyxl import Workbook
+from openpyxl.styles import PatternFill
 from sqlalchemy import create_engine, text
 
 from jobscan.estimator.unknown_rows import (
     apply_mapping,
     build_unknown_clusters,
     export_unknown_review,
+    extract_highlighted_template_row_roles,
     read_template_rows,
     summarize_unknown_rows,
 )
@@ -122,6 +125,90 @@ def test_export_unknown_review_writes_expected_csvs(tmp_path: Path) -> None:
     assert paths["mapping"].exists()
     clusters = pd.read_csv(paths["clusters"])
     assert {"cluster_id", "row_count", "suggested_bucket", "nearby_known_buckets_above"}.issubset(clusters.columns)
+    assert paths["actionable_clusters"].exists()
+    assert paths["non_informational_clusters"].exists()
+    assert paths["metadata_clusters"].exists()
+
+
+def test_highlighted_template_rows_split_non_informational_unknown_clusters(tmp_path: Path) -> None:
+    engine = create_template_row_db()
+    row_role_hints = {
+        ("roofing", "Estimate", 120): {
+            "template_type": "roofing",
+            "sheet_name": "Estimate",
+            "row_number": 120,
+            "template_row_role": "template_header_or_instruction",
+            "template_row_role_source": "test-template.xlsx",
+            "template_row_role_detail": "yellow_cols=1,2,3",
+        }
+    }
+
+    with engine.begin() as conn:
+        paths = export_unknown_review(conn, tmp_path, limit=10, row_role_hints=row_role_hints)
+
+    all_clusters = pd.read_csv(paths["clusters"])
+    non_info = pd.read_csv(paths["non_informational_clusters"])
+    actionable = pd.read_csv(paths["actionable_clusters"])
+    header_row = all_clusters[all_clusters["row_number"].eq(120)].iloc[0]
+
+    assert header_row["template_row_role"] == "template_header_or_instruction"
+    assert header_row["suggested_bucket"] == "template_scaffolding"
+    assert header_row["suggested_line_item_kind"] == "header"
+    assert 120 in set(non_info["row_number"])
+    assert 120 not in set(actionable["row_number"])
+    assert paths["row_role_hints"].exists()
+
+
+def test_text_scaffold_rows_split_without_highlight_hints(tmp_path: Path) -> None:
+    engine = create_template_row_db()
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO estimate_template_rows (
+                    template_row_id, document_id, job_id, source_file, template_type, sheet_name,
+                    row_number, template_bucket, line_item_kind, row_label, selected_item_name,
+                    raw_text, estimated_cost
+                )
+                VALUES (
+                    'r7', 'd4', 'j4', 'Job 1004 Estimate.xlsx', 'roofing', 'Estimate',
+                    7, 'unknown', 'unknown', '', 'Title:', '', NULL
+                )
+                """
+            )
+        )
+        paths = export_unknown_review(conn, tmp_path, limit=10)
+
+    non_info = pd.read_csv(paths["non_informational_clusters"])
+    actionable = pd.read_csv(paths["actionable_clusters"])
+    metadata = pd.read_csv(paths["metadata_clusters"])
+
+    assert 7 in set(metadata["row_number"])
+    assert 7 not in set(non_info["row_number"])
+    assert 7 not in set(actionable["row_number"])
+
+
+def test_extract_highlighted_template_row_roles_reads_yellow_rows(tmp_path: Path) -> None:
+    workbook_path = tmp_path / "Estimate Roofing Test.xlsx"
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Estimate"
+    yellow = PatternFill(fill_type="solid", fgColor="FFFFFF00")
+    worksheet["A14"] = "Type"
+    worksheet["B14"] = "Sq. Ft."
+    worksheet["A14"].fill = yellow
+    worksheet["B14"].fill = yellow
+    worksheet["A15"] = "Actionable"
+    workbook.save(workbook_path)
+
+    hints = extract_highlighted_template_row_roles(workbook_path)
+
+    assert ("roofing", "Estimate", 14) in hints
+    assert ("roofing", "Estimate", 15) not in hints
+    hint = hints[("roofing", "Estimate", 14)]
+    assert hint["template_row_role"] == "template_header_or_instruction"
+    assert "A14=Type" in hint["template_row_role_detail"]
 
 
 def test_apply_mapping_dry_run_and_apply_preserves_original_bucket(tmp_path: Path) -> None:

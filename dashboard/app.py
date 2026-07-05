@@ -4542,6 +4542,319 @@ def project_display_frame(frame: pd.DataFrame, columns: Iterable[str]) -> pd.Dat
     return frame[available].copy() if available else frame.copy()
 
 
+def estimator_reference_job_options(data: EstimatorData, *, template_type: str = "") -> tuple[list[str], dict[str, str]]:
+    jobs = getattr(data, "jobs", pd.DataFrame())
+    template_rows = getattr(data, "template_rows", pd.DataFrame())
+    rows: dict[str, dict[str, Any]] = {}
+
+    def add_row(row: dict[str, Any]) -> None:
+        job_id = text_value(row.get("job_id"))
+        if not job_id:
+            return
+        existing = rows.setdefault(job_id, {"job_id": job_id})
+        for key in ("customer", "job_name", "division", "template_type", "project_type", "source_file", "estimated_sqft"):
+            if not text_value(existing.get(key)) and text_value(row.get(key)):
+                existing[key] = row.get(key)
+
+    if isinstance(jobs, pd.DataFrame) and not jobs.empty:
+        for row in jobs.to_dict(orient="records"):
+            add_row(row)
+    if isinstance(template_rows, pd.DataFrame) and not template_rows.empty:
+        frame = template_rows
+        requested_template = text_value(template_type).lower()
+        if requested_template and "template_type" in frame.columns:
+            scoped = frame[frame["template_type"].fillna("").astype(str).str.lower().eq(requested_template)]
+            if not scoped.empty:
+                frame = scoped
+        for row in frame.to_dict(orient="records"):
+            add_row(row)
+
+    def label(row: dict[str, Any]) -> str:
+        title = text_value(row.get("job_name")) or text_value(row.get("source_file")) or text_value(row.get("job_id"))
+        customer = text_value(row.get("customer"))
+        project_type = text_value(row.get("project_type") or row.get("template_type"))
+        sqft = text_value(row.get("estimated_sqft"))
+        parts = [part for part in (customer, title) if part]
+        label_text = " - ".join(parts) if parts else text_value(row.get("job_id"))
+        suffix = " | ".join(part for part in (project_type, f"{sqft} sqft" if sqft else "") if part)
+        return f"{label_text} ({row['job_id']})" + (f" - {suffix}" if suffix else "")
+
+    sorted_rows = sorted(rows.values(), key=lambda row: label(row).lower())
+    options = [str(row["job_id"]) for row in sorted_rows]
+    labels = {str(row["job_id"]): label(row) for row in sorted_rows}
+    return options, labels
+
+
+def parse_reference_job_ids(value: Any) -> list[str]:
+    if value in (None, ""):
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [text_value(item) for item in value if text_value(item)]
+    text = str(value)
+    for token in ("\n", ";", "|"):
+        text = text.replace(token, ",")
+    return [part.strip() for part in text.split(",") if part.strip()]
+
+
+def json_list_value(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    if not text_value(value):
+        return []
+    try:
+        parsed = json.loads(str(value))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def decision_row_selector_options(row: dict[str, Any]) -> list[dict[str, Any]]:
+    options = json_list_value(row.get("selector_options")) or json_list_value(row.get("selector_options_json"))
+    normalized: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for option in options:
+        if not isinstance(option, dict):
+            continue
+        selector_code = text_value(option.get("selector_code") or option.get("code") or option.get("value"))
+        label = text_value(
+            option.get("resolved_template_option")
+            or option.get("template_option")
+            or option.get("label")
+            or option.get("description")
+        )
+        if not selector_code and not label:
+            continue
+        key = (selector_code, label)
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append({**option, "selector_code": selector_code, "resolved_template_option": label})
+    return normalized
+
+
+def decision_row_pricing_options(row: dict[str, Any]) -> list[dict[str, Any]]:
+    options = (
+        json_list_value(row.get("item_options_json"))
+        or json_list_value(row.get("pricing_options"))
+        or json_list_value(row.get("pricing_options_json"))
+    )
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for option in options:
+        if not isinstance(option, dict):
+            continue
+        item_name = text_value(
+            option.get("item_name")
+            or option.get("selected_pricing_candidate")
+            or option.get("resolved_template_option")
+            or option.get("label")
+        )
+        if not item_name or item_name in seen:
+            continue
+        seen.add(item_name)
+        normalized.append({**option, "item_name": item_name})
+    return normalized
+
+
+def decision_row_crew_options(row: dict[str, Any]) -> list[dict[str, Any]]:
+    options = json_list_value(row.get("crew_selector_options")) or json_list_value(row.get("crew_selector_options_json"))
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for option in options:
+        if not isinstance(option, dict):
+            continue
+        selector_code = text_value(option.get("selector_code") or option.get("code") or option.get("value"))
+        label = text_value(option.get("resolved_template_option") or option.get("label") or option.get("description"))
+        key = selector_code or label
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        normalized.append({**option, "selector_code": selector_code, "resolved_template_option": label})
+    return normalized
+
+
+def decision_row_label(row: dict[str, Any], idx: int) -> str:
+    row_id = text_value(row.get("workbook_row") or row.get("row_number") or idx + 1)
+    label = text_value(
+        row.get("resolved_template_option")
+        or row.get("template_line")
+        or row.get("labor_task")
+        or row.get("template_bucket")
+        or row.get("decision_id")
+    )
+    return f"Row {row_id}" + (f" - {label}" if label else "")
+
+
+def decision_row_has_option_editor(row: dict[str, Any], editable_fields: set[str]) -> bool:
+    return (
+        ("editable_selector_code" in editable_fields and bool(decision_row_selector_options(row)))
+        or ("selected_pricing_candidate" in editable_fields and bool(decision_row_pricing_options(row)))
+        or (
+            bool({"crew_people_selection", "crew_selection", "crew_size", "daily_rate"} & editable_fields)
+            and bool(decision_row_crew_options(row))
+        )
+    )
+
+
+def _matching_option_index(options: list[dict[str, Any]], current_values: Iterable[Any], fields: Iterable[str]) -> int:
+    normalized_values = {text_value(value).lower() for value in current_values if text_value(value)}
+    if not normalized_values:
+        return 0
+    for idx, option in enumerate(options):
+        option_values = {text_value(option.get(field)).lower() for field in fields if text_value(option.get(field))}
+        if normalized_values & option_values:
+            return idx
+    return 0
+
+
+def pricing_option_label(option: dict[str, Any]) -> str:
+    label = text_value(option.get("item_name") or option.get("resolved_template_option") or option.get("label"))
+    unit_price = text_value(option.get("unit_price"))
+    if not unit_price:
+        return label
+    try:
+        return f"{label} - ${float(unit_price):,.2f}"
+    except ValueError:
+        return f"{label} - {unit_price}"
+
+
+def render_decision_row_option_editor(
+    *,
+    section_key: str,
+    section_label: str,
+    rows: list[dict[str, Any]],
+    editable_fields: set[str],
+    workbench_key: str,
+    scope_key: str,
+    historical_filters_key: str,
+) -> list[dict[str, Any]]:
+    editable_indexes = [
+        idx
+        for idx, row in enumerate(rows or [])
+        if isinstance(row, dict) and decision_row_has_option_editor(row, editable_fields)
+    ]
+    if not editable_indexes:
+        return rows
+
+    selected_idx = st.selectbox(
+        f"{section_label} row options",
+        options=editable_indexes,
+        format_func=lambda idx: decision_row_label(rows[idx], idx),
+        key=f"wb_row_option_editor_{section_key}_{workbench_key}_{scope_key}_{historical_filters_key}",
+        help="Select one row to edit with row-specific template and pricing options.",
+    )
+    edited_rows = [dict(row) for row in rows]
+    row = dict(edited_rows[selected_idx])
+    original_row = dict(row)
+
+    c1, c2 = st.columns(2)
+    selector_options = decision_row_selector_options(row)
+    if "editable_selector_code" in editable_fields and selector_options:
+        selector_index = _matching_option_index(
+            selector_options,
+            [
+                row.get("editable_selector_code"),
+                row.get("selector_code"),
+                row.get("resolved_template_option"),
+            ],
+            ["selector_code", "resolved_template_option"],
+        )
+        with c1:
+            selected_selector = st.selectbox(
+                "Template Option",
+                options=list(range(len(selector_options))),
+                index=selector_index,
+                format_func=lambda idx: (
+                    f"{selector_options[idx].get('selector_code')} - {selector_options[idx].get('resolved_template_option')}"
+                    if selector_options[idx].get("selector_code")
+                    else str(selector_options[idx].get("resolved_template_option") or "")
+                ),
+                key=f"wb_row_selector_{section_key}_{selected_idx}_{workbench_key}_{scope_key}_{historical_filters_key}",
+            )
+        selector_option = selector_options[selected_selector]
+        row["editable_selector_code"] = selector_option.get("selector_code") or row.get("editable_selector_code")
+        row["selector_code"] = selector_option.get("selector_code") or row.get("selector_code")
+        if selector_option.get("resolved_template_option"):
+            row["resolved_template_option"] = selector_option.get("resolved_template_option")
+
+    pricing_options = decision_row_pricing_options(row)
+    if "selected_pricing_candidate" in editable_fields and pricing_options:
+        pricing_index = _matching_option_index(
+            pricing_options,
+            [row.get("selected_pricing_candidate"), row.get("item_name")],
+            ["item_name", "selected_pricing_candidate", "resolved_template_option"],
+        )
+        with c2:
+            selected_pricing = st.selectbox(
+                "Pricing Candidate",
+                options=list(range(len(pricing_options))),
+                index=pricing_index,
+                format_func=lambda idx: pricing_option_label(pricing_options[idx]),
+                key=f"wb_row_pricing_{section_key}_{selected_idx}_{workbench_key}_{scope_key}_{historical_filters_key}",
+            )
+        pricing_option = pricing_options[selected_pricing]
+        row["selected_pricing_candidate"] = pricing_option.get("item_name") or row.get("selected_pricing_candidate")
+        if text_value(pricing_option.get("unit_price")):
+            row["unit_price"] = pricing_option.get("unit_price")
+
+    crew_options = decision_row_crew_options(row)
+    if {"crew_people_selection", "crew_selection", "crew_size", "daily_rate"} & editable_fields and crew_options:
+        crew_index = _matching_option_index(
+            crew_options,
+            [row.get("crew_people_selection"), row.get("crew_selection"), row.get("selected_daily_rate_cell")],
+            ["selector_code", "resolved_template_option", "daily_rate_cell"],
+        )
+        with c1:
+            selected_crew = st.selectbox(
+                "Crew / People Rate",
+                options=list(range(len(crew_options))),
+                index=crew_index,
+                format_func=lambda idx: (
+                    f"{crew_options[idx].get('selector_code')} - {crew_options[idx].get('resolved_template_option')}"
+                    if crew_options[idx].get("selector_code")
+                    else str(crew_options[idx].get("resolved_template_option") or "")
+                ),
+                key=f"wb_row_crew_{section_key}_{selected_idx}_{workbench_key}_{scope_key}_{historical_filters_key}",
+            )
+        crew_option = crew_options[selected_crew]
+        if "crew_people_selection" in editable_fields:
+            row["crew_people_selection"] = crew_option.get("selector_code") or row.get("crew_people_selection")
+        if "crew_selection" in editable_fields:
+            row["crew_selection"] = crew_option.get("selector_code") or row.get("crew_selection")
+        if "crew_size" in editable_fields and text_value(crew_option.get("crew_size")):
+            row["crew_size"] = crew_option.get("crew_size")
+        if text_value(crew_option.get("daily_rate")):
+            row["daily_rate"] = crew_option.get("daily_rate")
+
+    override_fields = set(editable_fields) | {
+        "selector_code",
+        "resolved_template_option",
+        "selected_pricing_candidate",
+        "crew_selection",
+        "crew_people_selection",
+        "daily_rate",
+        "unit_price",
+    }
+    if any(_editable_values_differ(original_row.get(field), row.get(field)) for field in override_fields):
+        row["manual_override"] = True
+        row["proposal_source"] = "estimator_edit"
+    edited_rows[selected_idx] = row
+
+    with st.expander("Selected row evidence and guidance", expanded=False):
+        evidence = row.get("decision_evidence_summary") or row.get("proposal_evidence_summary") or row.get("notes")
+        if evidence:
+            st.caption(str(evidence))
+        warnings = row.get("compatibility_warnings") or row.get("proposal_review_reasons")
+        if warnings:
+            st.warning(str(warnings))
+        guidance = row.get("product_guidance")
+        if guidance:
+            st.info(str(guidance))
+    return edited_rows
+
+
 def _editable_values_differ(original_value: Any, edited_value: Any) -> bool:
     def _normalize(value: Any) -> Any:
         if value is None:
@@ -5026,15 +5339,28 @@ def estimator_prototype_page() -> None:
             edited_condition = st.text_input("Roof Condition", value=str(base_scope.get("roof_condition") or ""), key=f"wb_condition_{workbench_key}")
             edited_access = st.text_input("Access", value=str(base_scope.get("access_complexity") or ""), key=f"wb_access_{workbench_key}")
             edited_penetrations = st.text_input("Penetrations", value=str(base_scope.get("penetrations_complexity") or ""), key=f"wb_penetrations_{workbench_key}")
-        reference_default = base_scope.get("reference_job_ids") or base_scope.get("reference_project_ids") or ""
-        if isinstance(reference_default, (list, tuple, set)):
-            reference_default = ", ".join(str(item) for item in reference_default if str(item).strip())
-        edited_reference_job_ids = st.text_input(
-            "Reference Job IDs",
-            value=str(reference_default or ""),
-            key=f"wb_reference_jobs_{workbench_key}",
-            help="Comma-separated historical job IDs to use as comparison anchors.",
+        reference_defaults = parse_reference_job_ids(base_scope.get("reference_job_ids") or base_scope.get("reference_project_ids") or "")
+        reference_options, reference_labels = estimator_reference_job_options(
+            data,
+            template_type=str(base_scope.get("template_type") or historical_filters_from_scope(base_scope).get("template_type") or ""),
         )
+        selected_reference_defaults = [job_id for job_id in reference_defaults if job_id in reference_options]
+        manual_reference_defaults = [job_id for job_id in reference_defaults if job_id not in reference_options]
+        selected_reference_job_ids = st.multiselect(
+            "Reference Jobs",
+            options=reference_options,
+            default=selected_reference_defaults,
+            format_func=lambda job_id: reference_labels.get(str(job_id), str(job_id)),
+            key=f"wb_reference_jobs_select_{workbench_key}",
+            help="Historical jobs selected here act as comparison anchors for estimator decisions.",
+        )
+        manual_reference_job_ids = st.text_input(
+            "Other Reference Job IDs",
+            value=", ".join(manual_reference_defaults),
+            key=f"wb_reference_jobs_manual_{workbench_key}",
+            help="Optional comma-separated job IDs not shown in the list.",
+        )
+        edited_reference_job_ids = [*selected_reference_job_ids, *parse_reference_job_ids(manual_reference_job_ids)]
 
         edited_scope = {
             **base_scope,
@@ -5152,6 +5478,12 @@ def estimator_prototype_page() -> None:
             key=f"wb_show_row_details_{workbench_key}_{historical_filters_key}",
             help="Shows accepted/rejected evidence, percentile ranges, relaxed filters, and source diagnostics.",
         )
+        show_row_option_editor = st.checkbox(
+            "Show selected-row option editor",
+            value=False,
+            key=f"wb_show_row_option_editor_{workbench_key}_{historical_filters_key}",
+            help="Shows one focused editor per section with row-specific template, pricing, and crew dropdowns.",
+        )
         surface_review_rows = build_surface_area_review_rows(parsed_fields, original_workbench)
         if surface_review_rows:
             st.markdown("#### Surface Areas / Dimensions")
@@ -5268,11 +5600,22 @@ def estimator_prototype_page() -> None:
                 },
                 disabled=[column for column in foam_template_column_order if column not in foam_template_editable_fields],
             )
-            edited_workbench["insulation_foam_template_decisions"] = merge_editable_rows(
+            merged_foam_template_rows = merge_editable_rows(
                 foam_template_rows,
                 edited_foam_template_df.to_dict(orient="records"),
                 foam_template_editable_fields,
             )
+            if show_row_option_editor:
+                merged_foam_template_rows = render_decision_row_option_editor(
+                    section_key="insulation_foam_template_decisions",
+                    section_label="Insulation Foam Template Decision",
+                    rows=merged_foam_template_rows,
+                    editable_fields=foam_template_editable_fields,
+                    workbench_key=workbench_key,
+                    scope_key=scope_key,
+                    historical_filters_key=historical_filters_key,
+                )
+            edited_workbench["insulation_foam_template_decisions"] = merged_foam_template_rows
 
         insulation_template_editable_fields = {
             "include",
@@ -5355,11 +5698,22 @@ def estimator_prototype_page() -> None:
                 },
                 disabled=[column for column in section_column_order if column not in insulation_template_editable_fields],
             )
-            edited_workbench[section_key] = merge_editable_rows(
+            merged_section_rows = merge_editable_rows(
                 section_rows,
                 edited_section_df.to_dict(orient="records"),
                 insulation_template_editable_fields,
             )
+            if show_row_option_editor:
+                merged_section_rows = render_decision_row_option_editor(
+                    section_key=section_key,
+                    section_label=section_label,
+                    rows=merged_section_rows,
+                    editable_fields=insulation_template_editable_fields,
+                    workbench_key=workbench_key,
+                    scope_key=scope_key,
+                    historical_filters_key=historical_filters_key,
+                )
+            edited_workbench[section_key] = merged_section_rows
 
         if original_workbench.get("roofing_foam_template_decisions"):
             st.markdown("#### Roofing SPF Foam Decision")
@@ -5417,11 +5771,22 @@ def estimator_prototype_page() -> None:
                     column for column in roofing_foam_template_column_order if column not in roofing_foam_template_editable_fields
                 ],
             )
-            edited_workbench["roofing_foam_template_decisions"] = merge_editable_rows(
+            merged_roofing_foam_template_rows = merge_editable_rows(
                 roofing_foam_template_rows,
                 edited_roofing_foam_template_df.to_dict(orient="records"),
                 roofing_foam_template_editable_fields,
             )
+            if show_row_option_editor:
+                merged_roofing_foam_template_rows = render_decision_row_option_editor(
+                    section_key="roofing_foam_template_decisions",
+                    section_label="Roofing SPF Foam Decision",
+                    rows=merged_roofing_foam_template_rows,
+                    editable_fields=roofing_foam_template_editable_fields,
+                    workbench_key=workbench_key,
+                    scope_key=scope_key,
+                    historical_filters_key=historical_filters_key,
+                )
+            edited_workbench["roofing_foam_template_decisions"] = merged_roofing_foam_template_rows
 
         if original_workbench.get("roofing_coating_template_decisions"):
             st.markdown("#### Roof Coating System Decision")
@@ -5473,11 +5838,22 @@ def estimator_prototype_page() -> None:
                 },
                 disabled=[column for column in coating_template_column_order if column not in coating_template_editable_fields],
             )
-            edited_workbench["roofing_coating_template_decisions"] = merge_editable_rows(
+            merged_coating_template_rows = merge_editable_rows(
                 coating_template_rows,
                 edited_coating_template_df.to_dict(orient="records"),
                 coating_template_editable_fields,
             )
+            if show_row_option_editor:
+                merged_coating_template_rows = render_decision_row_option_editor(
+                    section_key="roofing_coating_template_decisions",
+                    section_label="Roof Coating System Decision",
+                    rows=merged_coating_template_rows,
+                    editable_fields=coating_template_editable_fields,
+                    workbench_key=workbench_key,
+                    scope_key=scope_key,
+                    historical_filters_key=historical_filters_key,
+                )
+            edited_workbench["roofing_coating_template_decisions"] = merged_coating_template_rows
 
         if original_workbench.get("roofing_primer_template_decisions"):
             st.markdown("#### Roofing Primer System Decision")
@@ -5526,11 +5902,22 @@ def estimator_prototype_page() -> None:
                 },
                 disabled=[column for column in primer_template_column_order if column not in primer_template_editable_fields],
             )
-            edited_workbench["roofing_primer_template_decisions"] = merge_editable_rows(
+            merged_primer_template_rows = merge_editable_rows(
                 primer_template_rows,
                 edited_primer_template_df.to_dict(orient="records"),
                 primer_template_editable_fields,
             )
+            if show_row_option_editor:
+                merged_primer_template_rows = render_decision_row_option_editor(
+                    section_key="roofing_primer_template_decisions",
+                    section_label="Roofing Primer System Decision",
+                    rows=merged_primer_template_rows,
+                    editable_fields=primer_template_editable_fields,
+                    workbench_key=workbench_key,
+                    scope_key=scope_key,
+                    historical_filters_key=historical_filters_key,
+                )
+            edited_workbench["roofing_primer_template_decisions"] = merged_primer_template_rows
 
         if original_workbench.get("roofing_detail_template_decisions"):
             st.markdown("#### Roofing Fabric / Sealant System Decision")
@@ -5579,11 +5966,22 @@ def estimator_prototype_page() -> None:
                 },
                 disabled=[column for column in detail_template_column_order if column not in detail_template_editable_fields],
             )
-            edited_workbench["roofing_detail_template_decisions"] = merge_editable_rows(
+            merged_detail_template_rows = merge_editable_rows(
                 detail_template_rows,
                 edited_detail_template_df.to_dict(orient="records"),
                 detail_template_editable_fields,
             )
+            if show_row_option_editor:
+                merged_detail_template_rows = render_decision_row_option_editor(
+                    section_key="roofing_detail_template_decisions",
+                    section_label="Roofing Fabric / Sealant System Decision",
+                    rows=merged_detail_template_rows,
+                    editable_fields=detail_template_editable_fields,
+                    workbench_key=workbench_key,
+                    scope_key=scope_key,
+                    historical_filters_key=historical_filters_key,
+                )
+            edited_workbench["roofing_detail_template_decisions"] = merged_detail_template_rows
 
         if original_workbench.get("roofing_detail_quantity_template_decisions"):
             st.markdown("#### Roofing Detail Quantity Decision")
@@ -5634,11 +6032,22 @@ def estimator_prototype_page() -> None:
                     if column not in detail_quantity_template_editable_fields
                 ],
             )
-            edited_workbench["roofing_detail_quantity_template_decisions"] = merge_editable_rows(
+            merged_detail_quantity_template_rows = merge_editable_rows(
                 detail_quantity_template_rows,
                 edited_detail_quantity_template_df.to_dict(orient="records"),
                 detail_quantity_template_editable_fields,
             )
+            if show_row_option_editor:
+                merged_detail_quantity_template_rows = render_decision_row_option_editor(
+                    section_key="roofing_detail_quantity_template_decisions",
+                    section_label="Roofing Detail Quantity Decision",
+                    rows=merged_detail_quantity_template_rows,
+                    editable_fields=detail_quantity_template_editable_fields,
+                    workbench_key=workbench_key,
+                    scope_key=scope_key,
+                    historical_filters_key=historical_filters_key,
+                )
+            edited_workbench["roofing_detail_quantity_template_decisions"] = merged_detail_quantity_template_rows
 
         if original_workbench.get("roofing_board_fastener_template_decisions"):
             st.markdown("#### Roofing Board / Fastener System Decision")
@@ -5694,11 +6103,22 @@ def estimator_prototype_page() -> None:
                 },
                 disabled=[column for column in board_template_column_order if column not in board_template_editable_fields],
             )
-            edited_workbench["roofing_board_fastener_template_decisions"] = merge_editable_rows(
+            merged_board_template_rows = merge_editable_rows(
                 board_template_rows,
                 edited_board_template_df.to_dict(orient="records"),
                 board_template_editable_fields,
             )
+            if show_row_option_editor:
+                merged_board_template_rows = render_decision_row_option_editor(
+                    section_key="roofing_board_fastener_template_decisions",
+                    section_label="Roofing Board / Fastener System Decision",
+                    rows=merged_board_template_rows,
+                    editable_fields=board_template_editable_fields,
+                    workbench_key=workbench_key,
+                    scope_key=scope_key,
+                    historical_filters_key=historical_filters_key,
+                )
+            edited_workbench["roofing_board_fastener_template_decisions"] = merged_board_template_rows
 
         if original_workbench.get("roofing_granules_template_decisions"):
             st.markdown("#### Roofing Granules System Decision")
@@ -5749,11 +6169,22 @@ def estimator_prototype_page() -> None:
                 },
                 disabled=[column for column in granules_template_column_order if column not in granules_template_editable_fields],
             )
-            edited_workbench["roofing_granules_template_decisions"] = merge_editable_rows(
+            merged_granules_template_rows = merge_editable_rows(
                 granules_template_rows,
                 edited_granules_template_df.to_dict(orient="records"),
                 granules_template_editable_fields,
             )
+            if show_row_option_editor:
+                merged_granules_template_rows = render_decision_row_option_editor(
+                    section_key="roofing_granules_template_decisions",
+                    section_label="Roofing Granules System Decision",
+                    rows=merged_granules_template_rows,
+                    editable_fields=granules_template_editable_fields,
+                    workbench_key=workbench_key,
+                    scope_key=scope_key,
+                    historical_filters_key=historical_filters_key,
+                )
+            edited_workbench["roofing_granules_template_decisions"] = merged_granules_template_rows
 
         if original_workbench.get("roofing_equipment_template_decisions"):
             st.markdown("#### Roofing Equipment / Dumpster Decision")
@@ -5807,11 +6238,22 @@ def estimator_prototype_page() -> None:
                 },
                 disabled=[column for column in equipment_template_column_order if column not in equipment_template_editable_fields],
             )
-            edited_workbench["roofing_equipment_template_decisions"] = merge_editable_rows(
+            merged_equipment_template_rows = merge_editable_rows(
                 equipment_template_rows,
                 edited_equipment_template_df.to_dict(orient="records"),
                 equipment_template_editable_fields,
             )
+            if show_row_option_editor:
+                merged_equipment_template_rows = render_decision_row_option_editor(
+                    section_key="roofing_equipment_template_decisions",
+                    section_label="Roofing Equipment / Dumpster Decision",
+                    rows=merged_equipment_template_rows,
+                    editable_fields=equipment_template_editable_fields,
+                    workbench_key=workbench_key,
+                    scope_key=scope_key,
+                    historical_filters_key=historical_filters_key,
+                )
+            edited_workbench["roofing_equipment_template_decisions"] = merged_equipment_template_rows
 
         if original_workbench.get("roofing_travel_freight_template_decisions"):
             st.markdown("#### Roofing Travel / Freight Decision")
@@ -5866,11 +6308,22 @@ def estimator_prototype_page() -> None:
                     if column not in travel_freight_template_editable_fields
                 ],
             )
-            edited_workbench["roofing_travel_freight_template_decisions"] = merge_editable_rows(
+            merged_travel_freight_template_rows = merge_editable_rows(
                 travel_freight_template_rows,
                 edited_travel_freight_template_df.to_dict(orient="records"),
                 travel_freight_template_editable_fields,
             )
+            if show_row_option_editor:
+                merged_travel_freight_template_rows = render_decision_row_option_editor(
+                    section_key="roofing_travel_freight_template_decisions",
+                    section_label="Roofing Travel / Freight Decision",
+                    rows=merged_travel_freight_template_rows,
+                    editable_fields=travel_freight_template_editable_fields,
+                    workbench_key=workbench_key,
+                    scope_key=scope_key,
+                    historical_filters_key=historical_filters_key,
+                )
+            edited_workbench["roofing_travel_freight_template_decisions"] = merged_travel_freight_template_rows
 
         if original_workbench.get("roofing_accessory_template_decisions"):
             st.markdown("#### Roofing Accessories / Support Decision")
@@ -5919,11 +6372,22 @@ def estimator_prototype_page() -> None:
                 },
                 disabled=[column for column in accessory_template_column_order if column not in accessory_template_editable_fields],
             )
-            edited_workbench["roofing_accessory_template_decisions"] = merge_editable_rows(
+            merged_accessory_template_rows = merge_editable_rows(
                 accessory_template_rows,
                 edited_accessory_template_df.to_dict(orient="records"),
                 accessory_template_editable_fields,
             )
+            if show_row_option_editor:
+                merged_accessory_template_rows = render_decision_row_option_editor(
+                    section_key="roofing_accessory_template_decisions",
+                    section_label="Roofing Accessories / Support Decision",
+                    rows=merged_accessory_template_rows,
+                    editable_fields=accessory_template_editable_fields,
+                    workbench_key=workbench_key,
+                    scope_key=scope_key,
+                    historical_filters_key=historical_filters_key,
+                )
+            edited_workbench["roofing_accessory_template_decisions"] = merged_accessory_template_rows
 
         if original_workbench.get("roofing_labor_template_decisions"):
             st.markdown("#### Roofing Labor Planning Decision")
@@ -5982,11 +6446,22 @@ def estimator_prototype_page() -> None:
                 },
                 disabled=[column for column in labor_template_column_order if column not in labor_template_editable_fields],
             )
-            edited_workbench["roofing_labor_template_decisions"] = merge_editable_rows(
+            merged_labor_template_rows = merge_editable_rows(
                 labor_template_rows,
                 edited_labor_template_df.to_dict(orient="records"),
                 labor_template_editable_fields,
             )
+            if show_row_option_editor:
+                merged_labor_template_rows = render_decision_row_option_editor(
+                    section_key="roofing_labor_template_decisions",
+                    section_label="Roofing Labor Planning Decision",
+                    rows=merged_labor_template_rows,
+                    editable_fields=labor_template_editable_fields,
+                    workbench_key=workbench_key,
+                    scope_key=scope_key,
+                    historical_filters_key=historical_filters_key,
+                )
+            edited_workbench["roofing_labor_template_decisions"] = merged_labor_template_rows
 
         edited_workbench = recalculate_workbench_tables(edited_workbench)
         st.session_state[previous_workbench_key] = edited_workbench

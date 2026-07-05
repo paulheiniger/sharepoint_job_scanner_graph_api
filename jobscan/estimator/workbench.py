@@ -774,6 +774,36 @@ def _normalized(value: Any) -> str:
     return " ".join(str(value or "").lower().replace("_", " ").replace("-", " ").split())
 
 
+def _json_records(value: Any) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [row for row in value if isinstance(row, dict)]
+    if isinstance(value, tuple):
+        return [row for row in value if isinstance(row, dict)]
+    if isinstance(value, str):
+        if not value.strip():
+            return []
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return []
+        return _json_records(parsed)
+    return []
+
+
+def _json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
 def _is_insulation_scope(scope: dict[str, Any] | None) -> bool:
     scope = scope or {}
     division = _normalized(scope.get("division"))
@@ -798,6 +828,265 @@ def _is_insulation_scope(scope: dict[str, Any] | None) -> bool:
         )
     )
     return any(term in text for term in ("insulation", "spray foam", "foam sprayed", "dc315", "thermal barrier"))
+
+
+def _workbench_template_type(workbench: dict[str, Any]) -> str:
+    return "insulation" if _is_insulation_scope(workbench.get("scope") or {}) else "roofing"
+
+
+def _template_option_catalog_payload(data: Any) -> dict[str, list[dict[str, Any]]]:
+    if data is None:
+        return {}
+    return {
+        "template_selector_maps": _records(_frame(data, "template_selector_maps")),
+        "template_product_options": _records(_frame(data, "template_product_options")),
+        "template_labor_options": _records(_frame(data, "template_labor_options")),
+    }
+
+
+def _template_option_catalog_from_workbench(workbench: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    return {
+        "template_selector_maps": _records(workbench.get("template_selector_maps")),
+        "template_product_options": _records(workbench.get("template_product_options")),
+        "template_labor_options": _records(workbench.get("template_labor_options")),
+    }
+
+
+def _template_type_matches(record: dict[str, Any], template_type: str) -> bool:
+    record_template = _normalized(record.get("template_type"))
+    return not record_template or record_template == _normalized(template_type)
+
+
+def _template_row_numbers(row: dict[str, Any]) -> set[int]:
+    values = [row.get("row_number"), row.get("workbook_row"), row.get("template_rows")]
+    numbers: set[int] = set()
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, (int, float)) and safe_number(value, 0) > 0:
+            numbers.add(int(safe_number(value, 0)))
+            continue
+        for token in re.findall(r"\d+", str(value)):
+            try:
+                numbers.add(int(token))
+            except ValueError:
+                continue
+    return numbers
+
+
+def _template_bucket_values(row: dict[str, Any]) -> set[str]:
+    values: set[str] = set()
+    for key in (
+        "template_bucket",
+        "package_key",
+        "category",
+        "labor_package",
+        "bucket",
+        "source_decision_id",
+        "decision_id",
+    ):
+        normalized = _normalized(row.get(key))
+        if normalized:
+            values.add(normalized)
+    return values
+
+
+def _template_option_matches_row(option: dict[str, Any], row: dict[str, Any], template_type: str) -> bool:
+    if not _template_type_matches(option, template_type):
+        return False
+    option_row_number = int(safe_number(option.get("row_number"), 0))
+    if option_row_number and option_row_number in _template_row_numbers(row):
+        return True
+    option_buckets = _template_bucket_values(option)
+    return bool(option_buckets & _template_bucket_values(row))
+
+
+def _merge_option_lists(
+    existing: list[dict[str, Any]],
+    additions: list[dict[str, Any]],
+    *,
+    identity_fields: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[str, ...]] = set()
+    for option in [*existing, *additions]:
+        if not isinstance(option, dict):
+            continue
+        identity = tuple(_normalized(option.get(field)) for field in identity_fields)
+        if not any(identity):
+            identity = tuple(_normalized(value) for value in option.values() if isinstance(value, (str, int, float)))[:1]
+        if identity in seen:
+            continue
+        seen.add(identity)
+        merged.append(option)
+    return merged
+
+
+def _selector_options_from_catalog(
+    *,
+    catalog: dict[str, list[dict[str, Any]]],
+    row: dict[str, Any],
+    template_type: str,
+) -> list[dict[str, Any]]:
+    options: list[dict[str, Any]] = []
+    for source_row in catalog.get("template_selector_maps") or []:
+        if not _template_option_matches_row(source_row, row, template_type):
+            continue
+        selector_code = str(first_nonblank(source_row.get("selector_code"), source_row.get("lookup_key"), "")).strip()
+        resolved_option = str(
+            first_nonblank(
+                source_row.get("resolved_item_name"),
+                source_row.get("resolved_template_option"),
+                source_row.get("product_name"),
+                source_row.get("selected_item_name"),
+                source_row.get("item_name"),
+                "",
+            )
+        ).strip()
+        if not selector_code and not resolved_option:
+            continue
+        options.append(
+            {
+                "selector_code": selector_code,
+                "resolved_template_option": resolved_option,
+                "row_number": int(safe_number(source_row.get("row_number"), 0)) or None,
+                "selector_cell": source_row.get("selector_cell"),
+                "selector_source": "template_selector_maps",
+                "template_bucket": source_row.get("template_bucket") or row.get("template_bucket"),
+            }
+        )
+    return options
+
+
+def _product_options_from_catalog(
+    *,
+    catalog: dict[str, list[dict[str, Any]]],
+    row: dict[str, Any],
+    template_type: str,
+) -> list[dict[str, Any]]:
+    options: list[dict[str, Any]] = []
+    for source_row in catalog.get("template_product_options") or []:
+        if not _template_option_matches_row(source_row, row, template_type):
+            continue
+        values = _json_object(source_row.get("source_values_json"))
+        product_name = str(
+            first_nonblank(
+                source_row.get("product_name"),
+                source_row.get("item_name"),
+                source_row.get("selected_item_name"),
+                source_row.get("resolved_item_name"),
+                values.get("product_name"),
+                values.get("item_name"),
+                values.get("selected_item_name"),
+                "",
+            )
+        ).strip()
+        if not product_name:
+            continue
+        options.append(
+            {
+                "item_name": product_name,
+                "unit": first_nonblank(source_row.get("unit"), values.get("unit"), values.get("units"), ""),
+                "unit_price": safe_number(
+                    first_nonblank(source_row.get("unit_price"), values.get("unit_price"), values.get("price"), values.get("rate")),
+                    0.0,
+                ),
+                "item_source": "template_product_options",
+                "selector_code": source_row.get("selector_code") or values.get("selector_code"),
+                "template_bucket": source_row.get("template_bucket") or row.get("template_bucket"),
+                "row_number": int(safe_number(source_row.get("row_number"), 0)) or None,
+            }
+        )
+    return options
+
+
+def _labor_options_from_catalog(
+    *,
+    catalog: dict[str, list[dict[str, Any]]],
+    row: dict[str, Any],
+    template_type: str,
+) -> list[dict[str, Any]]:
+    options: list[dict[str, Any]] = []
+    for source_row in catalog.get("template_labor_options") or []:
+        if not _template_option_matches_row(source_row, row, template_type):
+            continue
+        values = _json_object(source_row.get("source_values_json"))
+        selector_code = str(
+            first_nonblank(
+                source_row.get("lookup_key"),
+                source_row.get("selector_code"),
+                values.get("lookup_key"),
+                values.get("selector_code"),
+                values.get("crew_size"),
+                "",
+            )
+        ).strip()
+        label = str(
+            first_nonblank(
+                values.get("label"),
+                values.get("description"),
+                source_row.get("labor_package"),
+                source_row.get("lookup_key"),
+                row.get("labor_task"),
+                "",
+            )
+        ).strip()
+        daily_rate = first_nonblank(source_row.get("daily_rate"), values.get("daily_rate"), values.get("rate"), "")
+        if daily_rate and "rate" not in _normalized(label):
+            label = f"{label} - {daily_rate}".strip(" -")
+        if not selector_code and not label:
+            continue
+        options.append(
+            {
+                "selector_code": selector_code,
+                "resolved_template_option": label,
+                "daily_rate": safe_number(daily_rate, 0.0),
+                "crew_size": safe_number(first_nonblank(source_row.get("crew_size"), values.get("crew_size")), 0.0),
+                "hours_per_day": safe_number(first_nonblank(source_row.get("hours_per_day"), values.get("hours_per_day")), 0.0),
+                "labor_package": source_row.get("labor_package") or row.get("template_bucket"),
+                "row_number": int(safe_number(source_row.get("row_number"), 0)) or None,
+                "selector_source": "template_labor_options",
+            }
+        )
+    return options
+
+
+def enrich_workbench_template_options(workbench: dict[str, Any]) -> dict[str, Any]:
+    catalog = _template_option_catalog_from_workbench(workbench)
+    if not any(catalog.values()):
+        return workbench
+    template_type = _workbench_template_type(workbench)
+    for section in WORKBENCH_DECISION_SECTIONS:
+        rows = workbench.get(section) or []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            selector_options = _merge_option_lists(
+                _json_records(row.get("selector_options")) or _json_records(row.get("selector_options_json")),
+                _selector_options_from_catalog(catalog=catalog, row=row, template_type=template_type),
+                identity_fields=("row_number", "selector_code", "resolved_template_option"),
+            )
+            if selector_options:
+                row["selector_options"] = selector_options
+                row["selector_options_json"] = json.dumps(selector_options, default=str)
+
+            product_options = _merge_option_lists(
+                _json_records(row.get("item_options_json")) or _json_records(row.get("pricing_options_json")),
+                _product_options_from_catalog(catalog=catalog, row=row, template_type=template_type),
+                identity_fields=("item_name", "selector_code", "template_bucket"),
+            )
+            if product_options:
+                row["item_options_json"] = json.dumps(product_options, default=str)
+
+            labor_options = _merge_option_lists(
+                _json_records(row.get("crew_selector_options")) or _json_records(row.get("crew_selector_options_json")),
+                _labor_options_from_catalog(catalog=catalog, row=row, template_type=template_type),
+                identity_fields=("selector_code", "resolved_template_option", "labor_package"),
+            )
+            if labor_options:
+                row["crew_selector_options"] = labor_options
+                row["crew_selector_options_json"] = json.dumps(labor_options, default=str)
+    return workbench
 
 
 def _history_label(scope: dict[str, Any] | None) -> str:
@@ -8891,6 +9180,7 @@ def build_estimating_workbench(
         "scope": scope,
         "source_material_plan": source_material_plan,
         "source_labor_plan": source_labor_plan,
+        **_template_option_catalog_payload(data),
         "historical_filters": filters,
         "historical_filter_hash": historical_filter_hash(filters),
         "area_calculation_trace": area_trace,
@@ -9177,6 +9467,7 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
         [*base_decision_proposals, *companion_proposals],
         decision_sections=WORKBENCH_DECISION_SECTIONS,
     )
+    updated = enrich_workbench_template_options(updated)
     return updated
 
 

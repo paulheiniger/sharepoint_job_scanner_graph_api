@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 
 import pandas as pd
@@ -230,6 +231,59 @@ def test_roofing_workbench_uses_decision_sections_only() -> None:
     coating_decisions = [row for row in draft["workbook_decisions"] if row["template_bucket"] == "coating"]
     assert [row["workbook_row"] for row in coating_decisions] == ["26", "27"]
     assert all(row["row_type"] == "material" for row in coating_decisions)
+
+
+def test_workbench_enriches_row_options_from_template_catalogs() -> None:
+    data = EstimatorData(
+        template_selector_maps=pd.DataFrame(
+            [
+                {
+                    "template_type": "roofing",
+                    "template_bucket": "coating",
+                    "row_number": 26,
+                    "selector_cell": "A26",
+                    "selector_code": "99",
+                    "resolved_item_name": "Catalog Silicone Alt",
+                }
+            ]
+        ),
+        template_product_options=pd.DataFrame(
+            [
+                {
+                    "template_type": "roofing",
+                    "template_bucket": "coating",
+                    "row_number": 26,
+                    "selector_code": "99",
+                    "product_name": "Catalog Silicone Pail",
+                    "source_values_json": {"unit": "pail", "unit_price": 77},
+                }
+            ]
+        ),
+        template_labor_options=pd.DataFrame(
+            [
+                {
+                    "template_type": "roofing",
+                    "row_number": 122,
+                    "labor_package": "labor_base",
+                    "lookup_key": "5",
+                    "source_values_json": {"description": "5 person crew", "daily_rate": 3600, "crew_size": 5},
+                }
+            ]
+        ),
+    )
+
+    workbench = build_estimating_workbench(roofing_recommendation(), data)
+    workbench = recalculate_workbench_tables(workbench)
+    coating = next(row for row in workbench["roofing_coating_template_decisions"] if row["workbook_row"] == "26")
+    base_labor = next(row for row in workbench["roofing_labor_template_decisions"] if row["template_bucket"] == "labor_base")
+
+    selector_options = json.loads(coating["selector_options_json"])
+    item_options = json.loads(coating["item_options_json"])
+    crew_options = json.loads(base_labor["crew_selector_options_json"])
+
+    assert any(option["selector_code"] == "99" and option["resolved_template_option"] == "Catalog Silicone Alt" for option in selector_options)
+    assert any(option["item_name"] == "Catalog Silicone Pail" and option["unit_price"] == 77 for option in item_options)
+    assert any(option.get("selector_code") == "5" and option.get("daily_rate") == 3600 for option in crew_options)
 
 
 def test_roofing_companion_relationships_suggest_primer_and_detail_rows() -> None:
