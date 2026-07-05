@@ -1045,7 +1045,7 @@ def _roofing_scope_proposals(scope: dict[str, Any], notes: str) -> list[Decision
     if any(term in text for term in ("lift", "equipment access", "access/equipment")):
         proposals.append(_proposal(template_type, "roofing_equipment_template_decisions", "roofing_lift_equipment_row_73", "lift", "73", include=True, confidence=0.65, review_reasons=["Access equipment type/period requires estimator confirmation."], note=_snippet(notes, ["lift", "access", "equipment"])))
     for decision_id, bucket, row, terms in (
-        ("roofing_truck_expense_row_108", "truck_expense", "108", ["truck", "travel"]),
+        ("roofing_truck_expense_row_108", "truck_expense", "108", ["truck", "truck expense", "miles", "mileage", "round trip"]),
         ("roofing_labor_loading_row_137", "labor_loading", "137", ["loading", "setup", "set up"]),
         ("roofing_labor_traveling_row_139", "labor_traveling", "139", ["travel"]),
         ("roofing_labor_details_row_128", "labor_details", "128", ["details", "detail"]),
@@ -1081,7 +1081,7 @@ def _insulation_scope_proposals(scope: dict[str, Any], notes: str) -> list[Decis
     for decision_id, bucket, row, section, terms in (
         ("insulation_generator_row_53", "generator", "53", "insulation_equipment_logistics_template_decisions", ["generator", "temp power", "temporary power"]),
         ("insulation_lift_equipment_row_47", "lift", "47", "insulation_equipment_logistics_template_decisions", ["lift", "access", "equipment"]),
-        ("insulation_truck_expense_row_70", "truck_expense", "70", "insulation_equipment_logistics_template_decisions", ["truck", "travel"]),
+        ("insulation_truck_expense_row_70", "truck_expense", "70", "insulation_equipment_logistics_template_decisions", ["truck", "truck expense", "miles", "mileage", "round trip"]),
         ("insulation_labor_mask_row_80", "labor_mask", "80", "insulation_labor_template_decisions", ["masking", "mask"]),
         ("insulation_labor_loading_row_95", "labor_loading", "95", "insulation_labor_template_decisions", ["loading", "setup", "set up"]),
         ("insulation_labor_traveling_row_97", "labor_traveling", "97", "insulation_labor_template_decisions", ["travel"]),

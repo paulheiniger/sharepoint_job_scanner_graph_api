@@ -1033,6 +1033,192 @@ def test_insulation_drum_disposal_rejects_polluted_plate_history() -> None:
     assert "Plates" not in drum["pricing_evidence_summary"]
 
 
+def test_insulation_foam_rolls_up_r_value_thickness_and_template_yield() -> None:
+    recommendation = insulation_recommendation()
+    recommendation.parsed_fields.update(
+        {
+            "notes": "Spray outside walls and flat ceiling. Walls target R-21. Ceiling target R-30.",
+            "gross_wall_area_sqft": 1855.65,
+            "opening_area_known_sqft": 200,
+            "ceiling_area_sqft": 1344,
+            "net_insulation_area_sqft": 2999.65,
+            "foam_type": "closed_cell",
+            "insulation_r_value_targets": [
+                {"surface_type": "walls", "target_r_value": 21},
+                {"surface_type": "ceiling", "target_r_value": 30},
+            ],
+        }
+    )
+    data = EstimatorData(
+        template_rows=pd.DataFrame(
+            [
+                {
+                    "template_row_id": "hist-foam-1",
+                    "job_id": "I1",
+                    "template_type": "insulation",
+                    "row_number": 19,
+                    "template_bucket": "foam",
+                    "line_item_kind": "material",
+                    "selected_item_name": "GACO 2.0",
+                    "unit_price": 2.25,
+                    "estimated_units": 1000,
+                    "estimated_cost": 2250,
+                }
+            ]
+        )
+    )
+
+    workbench = build_estimating_workbench(recommendation, data)
+    foam = workbench["insulation_foam_template_decisions"][0]
+
+    assert foam["include"] is True
+    assert foam["thickness_inches"] == 4.6721
+    assert foam["yield_or_coverage"] == 2600
+    assert foam["estimated_units"] > 0
+    assert foam["estimated_cost"] > 0
+    assert foam["thickness_source"]
+    assert foam["yield_or_coverage_source"]
+
+
+def test_insulation_foam_recalc_treats_persisted_zero_thickness_and_yield_as_missing() -> None:
+    recommendation = insulation_recommendation()
+    recommendation.parsed_fields.update(
+        {
+            "notes": "Spray outside walls and flat ceiling. Walls target R-21. Ceiling target R-30.",
+            "gross_wall_area_sqft": 1855.65,
+            "opening_area_known_sqft": 200,
+            "ceiling_area_sqft": 1344,
+            "net_insulation_area_sqft": 2999.65,
+            "foam_type": "closed_cell",
+            "insulation_r_value_targets": [
+                {"surface_type": "walls", "target_r_value": 21},
+                {"surface_type": "ceiling", "target_r_value": 30},
+            ],
+        }
+    )
+    workbench = build_estimating_workbench(recommendation, EstimatorData())
+    workbench["insulation_foam_template_decisions"][0]["thickness_inches"] = 0
+    workbench["insulation_foam_template_decisions"][0]["yield_or_coverage"] = 0
+    workbench["insulation_foam_template_decisions"][0]["unit_price"] = 2.25
+
+    recalculated = recalculate_workbench_tables(workbench)
+    foam = recalculated["insulation_foam_template_decisions"][0]
+
+    assert foam["thickness_inches"] == 4.6721
+    assert foam["yield_or_coverage"] == 2600
+    assert foam["estimated_cost"] > 0
+
+
+def test_insulation_loading_and_travel_labor_use_default_hourly_rate_when_rate_missing() -> None:
+    recommendation = insulation_recommendation()
+    recommendation.parsed_fields["notes"] = "Spray foam insulation. Include loading and travel."
+    data = EstimatorData(
+        estimator_decision_recommendations=pd.DataFrame(
+            [
+                {
+                    "decision_id": "insulation_labor_loading",
+                    "field_name": "days",
+                    "recommended_value": 1,
+                    "evidence_count": 4,
+                    "source_jobs_count": 4,
+                    "confidence": "medium",
+                    "history_table": "test",
+                },
+                {
+                    "decision_id": "insulation_labor_traveling",
+                    "field_name": "days",
+                    "recommended_value": 1.5,
+                    "evidence_count": 4,
+                    "source_jobs_count": 4,
+                    "confidence": "medium",
+                    "history_table": "test",
+                },
+                {
+                    "decision_id": "insulation_labor_traveling",
+                    "field_name": "crew_size",
+                    "recommended_value": 3,
+                    "evidence_count": 4,
+                    "source_jobs_count": 4,
+                    "confidence": "medium",
+                    "history_table": "test",
+                },
+            ]
+        )
+    )
+
+    workbench = build_estimating_workbench(recommendation, data)
+    loading = next(row for row in workbench["insulation_labor_template_decisions"] if row["template_bucket"] == "labor_loading")
+    traveling = next(row for row in workbench["insulation_labor_template_decisions"] if row["template_bucket"] == "labor_traveling")
+
+    assert loading["estimated_cost"] > 0
+    assert loading["hourly_rate"] == 72
+    assert loading["total_hours"] > 0
+    assert traveling["estimated_cost"] > 0
+    assert traveling["hourly_rate"] == 72
+    assert traveling["total_hours"] > 0
+
+
+def test_insulation_travel_note_does_not_check_truck_expense_without_mileage_basis() -> None:
+    recommendation = insulation_recommendation()
+    recommendation.parsed_fields["notes"] = "Spray foam insulation. Include setup, loading, and travel."
+
+    workbench = build_estimating_workbench(recommendation, EstimatorData())
+    truck = next(
+        row
+        for row in workbench["insulation_equipment_logistics_template_decisions"]
+        if row["template_bucket"] == "truck_expense"
+    )
+    traveling = next(row for row in workbench["insulation_labor_template_decisions"] if row["template_bucket"] == "labor_traveling")
+
+    assert traveling["include"] is True
+    assert "Labor formula preview needs days, hours, or rate input" in " ".join(traveling["compatibility_warnings"])
+    assert truck["include"] is False
+    assert truck["estimated_cost"] == 0
+
+
+def test_insulation_stale_markup_proposal_unchecked_without_percentage_basis() -> None:
+    recommendation = insulation_recommendation()
+    recommendation.parsed_fields["notes"] = "Spray foam insulation. Deduct two overhead door openings."
+    workbench = build_estimating_workbench(recommendation, EstimatorData())
+    workbench["decision_proposals"].append(
+        {
+            "decision_id": "insulation_overhead_row_118",
+            "template_type": "insulation",
+            "template_bucket": "overhead",
+            "workbook_row": "118",
+            "section": "insulation_pricing_template_decisions",
+            "include": True,
+            "proposed_values": {},
+            "confidence": 0.7,
+            "review_required": False,
+            "review_reasons": [],
+            "evidence": {},
+            "source": "deterministic_rule",
+        }
+    )
+
+    recalculated = recalculate_workbench_tables(workbench)
+    overhead = next(row for row in recalculated["insulation_pricing_template_decisions"] if row["template_bucket"] == "overhead")
+
+    assert overhead["include"] is False
+    assert overhead["include_source"] == "calculation_basis_guard"
+    assert overhead["estimated_cost"] == 0
+    assert overhead["formula_source"] == "not_included"
+
+
+def test_insulation_foam_driver_hours_use_default_hourly_rate_when_hourly_missing() -> None:
+    data = insulation_labor_driver_data()
+    data.template_rows.loc[data.template_rows["template_bucket"].eq("labor_foam"), "hourly_rate"] = None
+
+    workbench = build_estimating_workbench(insulation_recommendation(), data)
+    labor = next(row for row in workbench["insulation_labor_template_decisions"] if row["template_bucket"] == "labor_foam")
+
+    assert labor["total_hours"] > 0
+    assert labor["hourly_rate"] == 72
+    assert labor["estimated_cost"] > 0
+    assert labor["formula_source"] == "hours_hourly_rate"
+
+
 def test_edit_history_tracks_decision_rows_not_flat_rows() -> None:
     original = {
         "estimate_id": "edit-test",

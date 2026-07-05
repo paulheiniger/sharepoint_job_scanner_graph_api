@@ -3504,6 +3504,30 @@ def _selected_foam_candidate(candidates: list[dict[str, Any]], selected_name: An
     return candidates[0] if candidates else {}
 
 
+def _weighted_insulation_foam_thickness_from_scope(scope: dict[str, Any], foam_row: dict[str, Any] | None = None) -> float:
+    if not _is_insulation_scope(scope):
+        return 0.0
+    try:
+        rows = build_insulation_surface_decisions(
+            scope,
+            notes=str(first_nonblank(scope.get("notes"), scope.get("raw_input_notes"), "")),
+            product_context=_foam_product_context_from_row(foam_row),
+            default_thickness_inches=first_nonblank((foam_row or {}).get("thickness_inches"), (foam_row or {}).get("foam_thickness_inches")),
+        )
+    except Exception:
+        return 0.0
+    weighted = 0.0
+    area_total = 0.0
+    for row in rows:
+        area = safe_number(row.get("net_area_sqft"), 0.0)
+        thickness = safe_number(first_nonblank(row.get("edited_thickness_inches"), row.get("rounded_thickness_inches")), 0.0)
+        if area <= 0 or thickness <= 0:
+            continue
+        weighted += area * thickness
+        area_total += area
+    return round(weighted / area_total, 4) if area_total > 0 else 0.0
+
+
 def _build_insulation_foam_template_decisions(
     *,
     scope: dict[str, Any],
@@ -3547,20 +3571,51 @@ def _build_insulation_foam_template_decisions(
     material_thickness = safe_number(foam_row.get("thickness_inches"), 0.0)
     material_synced_thickness = safe_number(foam_row.get("foam_thickness_inches"), 0.0)
     direct_material_thickness_edit = material_thickness > 0 and material_synced_thickness > 0 and abs(material_thickness - material_synced_thickness) > 1e-9
-    thickness = safe_number(
-        first_nonblank(
-            foam_row.get("thickness_inches") if direct_material_thickness_edit else "",
-            existing.get("thickness_inches"),
-            foam_row.get("thickness_inches"),
-            foam_row.get("foam_thickness_inches"),
-            defaults.get("thickness_inches"),
-        ),
-        0.0,
+    weighted_scope_thickness = _weighted_insulation_foam_thickness_from_scope(scope, foam_row)
+    provided_thickness = positive_number(
+        foam_row.get("thickness_inches") if direct_material_thickness_edit else "",
+        existing.get("thickness_inches"),
+        foam_row.get("thickness_inches"),
+        foam_row.get("foam_thickness_inches"),
+        default=0.0,
     )
-    yield_or_coverage = safe_number(
-        first_nonblank(existing.get("yield_or_coverage"), foam_row.get("yield_factor"), foam_row.get("median_foam_yield"), defaults.get("yield_or_coverage")),
-        0.0,
+    historical_thickness = positive_number(defaults.get("thickness_inches"), default=0.0)
+    thickness = positive_number(
+        provided_thickness,
+        historical_thickness,
+        weighted_scope_thickness,
+        default=0.0,
     )
+    provided_yield_or_coverage = positive_number(
+        existing.get("yield_or_coverage"),
+        foam_row.get("yield_factor"),
+        foam_row.get("median_foam_yield"),
+        default=0.0,
+    )
+    historical_yield_or_coverage = positive_number(defaults.get("yield_or_coverage"), default=0.0)
+    template_yield_or_coverage = positive_number(ROOFING_FOAM_DEFAULTS.get(19, {}).get("yield_or_coverage"), default=0.0)
+    yield_or_coverage = positive_number(
+        provided_yield_or_coverage,
+        historical_yield_or_coverage,
+        template_yield_or_coverage,
+        default=0.0,
+    )
+    if provided_thickness > 0:
+        thickness_source = "provided"
+    elif historical_thickness > 0:
+        thickness_source = "historical_default"
+    elif thickness > 0:
+        thickness_source = "surface_r_value_weighted_average"
+    else:
+        thickness_source = "missing"
+    if provided_yield_or_coverage > 0:
+        yield_or_coverage_source = "provided"
+    elif historical_yield_or_coverage > 0:
+        yield_or_coverage_source = "historical_default"
+    elif yield_or_coverage > 0:
+        yield_or_coverage_source = "template_default"
+    else:
+        yield_or_coverage_source = "missing"
     selected_candidate_name = first_nonblank(existing.get("selected_pricing_candidate"), foam_row.get("item_name"), foam_row.get("current_item"))
     stored_candidates = existing.get("pricing_candidates") if isinstance(existing.get("pricing_candidates"), list) else []
     if not stored_candidates:
@@ -3597,6 +3652,16 @@ def _build_insulation_foam_template_decisions(
     warnings = list(dict.fromkeys([*(selected_candidate.get("compatibility_warnings") or []), *(compatibility.get("compatibility_warnings") or [])]))
     if yield_or_coverage <= 0:
         warnings.append("Yield/coverage is missing; template formula output requires estimator review.")
+    elif not first_nonblank(existing.get("yield_or_coverage"), foam_row.get("yield_factor"), foam_row.get("median_foam_yield"), defaults.get("yield_or_coverage")):
+        warnings.append("Foam yield uses template default; estimator should confirm product yield before quoting.")
+    if thickness > 0 and not first_nonblank(
+        foam_row.get("thickness_inches") if direct_material_thickness_edit else "",
+        existing.get("thickness_inches"),
+        foam_row.get("thickness_inches"),
+        foam_row.get("foam_thickness_inches"),
+        defaults.get("thickness_inches"),
+    ):
+        warnings.append("Foam thickness is area-weighted from surface R-value targets; estimator should review row-level export.")
     return [
         {
             "include": include,
@@ -3646,7 +3711,9 @@ def _build_insulation_foam_template_decisions(
             "evidence_summary": existing.get("evidence_summary") or foam_row.get("evidence_summary"),
             "basis_sqft": round(basis_sqft, 2),
             "thickness_inches": round(thickness, 4),
+            "thickness_source": thickness_source,
             "yield_or_coverage": round(yield_or_coverage, 4),
+            "yield_or_coverage_source": yield_or_coverage_source,
             "unit_price": round(unit_price, 4),
             "estimated_units": formula.get("estimated_units"),
             "estimated_sets": formula.get("estimated_sets"),
@@ -3671,7 +3738,9 @@ def _build_insulation_foam_template_decisions(
                 "selected_pricing_candidate": selected_candidate.get("item_name") or str(selected_candidate_name or ""),
                 "basis_sqft": round(basis_sqft, 2),
                 "thickness_inches": round(thickness, 4),
+                "thickness_source": thickness_source,
                 "yield_or_coverage": round(yield_or_coverage, 4),
+                "yield_or_coverage_source": yield_or_coverage_source,
                 "unit_price": round(unit_price, 4),
             },
             "editable_decision_value": {
@@ -3680,7 +3749,9 @@ def _build_insulation_foam_template_decisions(
                 "selected_pricing_candidate": selected_candidate.get("item_name") or str(selected_candidate_name or ""),
                 "basis_sqft": round(basis_sqft, 2),
                 "thickness_inches": round(thickness, 4),
+                "thickness_source": thickness_source,
                 "yield_or_coverage": round(yield_or_coverage, 4),
+                "yield_or_coverage_source": yield_or_coverage_source,
                 "unit_price": round(unit_price, 4),
             },
             "recommended_decision_value": {
@@ -4020,6 +4091,118 @@ def _calculate_insulation_decision_formula(
     return formula, inputs
 
 
+def _manual_include_locked(row: dict[str, Any]) -> bool:
+    source = str(first_nonblank(row.get("include_source"), row.get("proposal_source"), "")).strip().lower()
+    return bool(row.get("manual_override")) or source in {"estimator_edit", "manual_override"}
+
+
+def _insulation_explicit_travel_basis(row: dict[str, Any]) -> bool:
+    return (
+        positive_number(row.get("trip_count"), default=0.0) > 0
+        or positive_number(row.get("round_trip_miles"), default=0.0) > 0
+        or positive_number(row.get("unit_price"), row.get("current_unit_price"), row.get("current_price"), default=0.0) > 0
+    )
+
+
+def _insulation_should_include_decision(
+    *,
+    spec: dict[str, Any],
+    bucket: str,
+    include: bool,
+    source: dict[str, Any],
+    existing: dict[str, Any],
+    notes_text: str,
+) -> bool:
+    if not include or _manual_include_locked(existing):
+        return include
+    formula_kind = str(spec.get("formula") or "")
+    if formula_kind == "travel" and bucket in {"truck_expense", "sales_inspection_trips"}:
+        explicit_note = _contains_any_text(
+            notes_text,
+            ["truck", "truck expense", "mileage", "miles", "round trip", "sales trip", "inspection trip"],
+        )
+        if not explicit_note and not (_insulation_explicit_travel_basis(source) or _insulation_explicit_travel_basis(existing)):
+            return False
+    if formula_kind == "markup" and bucket in {"overhead", "profit"}:
+        pct_or_amount = positive_number(
+            existing.get("percentage"),
+            existing.get("markup_pct"),
+            existing.get("amount"),
+            source.get("percentage"),
+            source.get("markup_pct"),
+            source.get("amount"),
+            default=0.0,
+        )
+        explicit_terms = (
+            ["overhead markup", "overhead percentage", "overhead rate", "markup", "oh&p", "o&p"]
+            if bucket == "overhead"
+            else ["profit markup", "profit percentage", "profit rate", "markup", "oh&p", "o&p"]
+        )
+        explicit_note = _contains_any_text(notes_text, explicit_terms)
+        if pct_or_amount <= 0 and not explicit_note:
+            return False
+    return include
+
+
+def _clear_auto_included_insulation_scaffold_row(row: dict[str, Any], reason: str) -> None:
+    row["include"] = False
+    row["include_source"] = "calculation_basis_guard"
+    row["formula_source"] = "not_included"
+    for key in (
+        "estimated_cost",
+        "calculated_output",
+        "estimated_units",
+        "estimated_gallons",
+        "estimated_drums",
+    ):
+        row[key] = 0.0
+    row["compatibility_status"] = "not_included"
+    row["calculated_output_summary"] = ""
+    warnings = [warning for warning in row.get("compatibility_warnings") or [] if "Formula preview needs estimator input" not in str(warning)]
+    row["compatibility_warnings"] = warnings
+    notes = str(row.get("notes") or "")
+    if reason and reason not in notes:
+        row["notes"] = (notes + " " + reason).strip()
+
+
+def _guard_insulation_scaffold_auto_includes(workbench: dict[str, Any]) -> dict[str, Any]:
+    if not _is_insulation_scope(workbench.get("scope") or {}):
+        return workbench
+    notes_text = _normalized(
+        " ".join(str((workbench.get("scope") or {}).get(key) or "") for key in ("notes", "raw_input_notes", "project_type", "building_type"))
+    )
+    for section in ("insulation_equipment_logistics_template_decisions", "insulation_pricing_template_decisions"):
+        for row in workbench.get(section) or []:
+            if not isinstance(row, dict) or not row.get("include") or _manual_include_locked(row):
+                continue
+            bucket = str(row.get("template_bucket") or "")
+            formula_kind = str(row.get("formula_model") or "")
+            if bucket in {"truck_expense", "sales_inspection_trips"}:
+                explicit_note = _contains_any_text(
+                    notes_text,
+                    ["truck", "truck expense", "mileage", "miles", "round trip", "sales trip", "inspection trip"],
+                )
+                if not explicit_note and not _insulation_explicit_travel_basis(row):
+                    _clear_auto_included_insulation_scaffold_row(
+                        row,
+                        "Auto-included travel scaffold row was left unchecked because no truck/trip/mileage basis was available.",
+                    )
+            if bucket in {"overhead", "profit"} and "markup" in formula_kind:
+                pct_or_amount = positive_number(row.get("percentage"), row.get("markup_pct"), row.get("amount"), default=0.0)
+                explicit_terms = (
+                    ["overhead markup", "overhead percentage", "overhead rate", "markup", "oh&p", "o&p"]
+                    if bucket == "overhead"
+                    else ["profit markup", "profit percentage", "profit rate", "markup", "oh&p", "o&p"]
+                )
+                explicit_note = _contains_any_text(notes_text, explicit_terms)
+                if pct_or_amount <= 0 and not explicit_note:
+                    _clear_auto_included_insulation_scaffold_row(
+                        row,
+                        "Auto-included markup scaffold row was left unchecked because no markup percentage was available.",
+                    )
+    return workbench
+
+
 def _build_insulation_decision_rows(
     *,
     section: str,
@@ -4057,6 +4240,14 @@ def _build_insulation_decision_rows(
             include = False
         else:
             include = include_default
+        include = _insulation_should_include_decision(
+            spec=spec,
+            bucket=bucket,
+            include=include,
+            source=source,
+            existing=existing,
+            notes_text=notes_text,
+        )
         if include and auto_include and "include" not in existing:
             auto_included_buckets.add(bucket)
         selector_code, resolved_option, selector_options = _selector_choice(
@@ -4470,6 +4661,10 @@ def _build_insulation_labor_template_decisions(
         hourly_rate = safe_number(first_nonblank(existing.get("hourly_rate"), existing.get("labor_rate"), labor.get("hourly_rate"), labor.get("labor_rate")), 0.0)
         daily_rate = safe_number(first_nonblank(existing.get("daily_rate"), labor.get("daily_rate"), 0), 0.0)
         formula_mode = str(first_nonblank(existing.get("formula_mode"), labor.get("formula_mode"), "mixed_formula"))
+        hourly_rate_source = "provided" if hourly_rate > 0 else ""
+        if include and hourly_rate <= 0 and daily_rate <= 0 and formula_mode == "mixed_formula":
+            hourly_rate = DEFAULT_HOURLY_RATE
+            hourly_rate_source = "default_hourly_rate"
         total_hours, days, driver_fields = _apply_insulation_labor_driver(
             package=package,
             scope=scope,
@@ -4482,6 +4677,9 @@ def _build_insulation_labor_template_decisions(
             days=days,
             crew_size=crew_size,
         )
+        if include and hourly_rate <= 0 and formula_mode == "mixed_formula" and total_hours > 0:
+            hourly_rate = DEFAULT_HOURLY_RATE
+            hourly_rate_source = "default_hourly_rate"
         total_hours, total_hours_source = _populate_expected_mixed_labor_hours(
             include=include,
             formula_mode=formula_mode,
@@ -4519,6 +4717,8 @@ def _build_insulation_labor_template_decisions(
         warnings = []
         if include and safe_number(formula.get("estimated_cost"), 0.0) <= 0:
             warnings.append("Labor formula preview needs days, hours, or rate input.")
+        if hourly_rate_source == "default_hourly_rate":
+            warnings.append("Labor hourly rate uses estimator default; verify People sheet rate before quoting.")
         decisions.append(
             {
                 "include": include,
@@ -4541,6 +4741,7 @@ def _build_insulation_labor_template_decisions(
                 "daily_rate": formula.get("daily_rate"),
                 "hourly_rate": formula.get("hourly_rate"),
                 "labor_rate": formula.get("hourly_rate"),
+                "hourly_rate_source": hourly_rate_source,
                 "editable_hours_per_1000_sqft": round(hours_per_1000, 4),
                 "total_hours": formula.get("total_hours"),
                 "calculated_hours": formula.get("total_hours"),
@@ -9740,6 +9941,7 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
         [*base_decision_proposals, *companion_proposals],
         decision_sections=WORKBENCH_DECISION_SECTIONS,
     )
+    updated = _guard_insulation_scaffold_auto_includes(updated)
     updated = enrich_workbench_template_options(updated)
     return updated
 
