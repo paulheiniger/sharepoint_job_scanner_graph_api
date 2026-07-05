@@ -180,6 +180,19 @@ def test_deterministic_area_synthesis_matches_source_area() -> None:
         assert facts["area_trace"]["net_area_sqft"] == expected_area
 
 
+def test_deterministic_area_synthesis_includes_deductions() -> None:
+    candidates = select_historical_candidates(generated_case_data(), limit=2, seed=2)
+
+    for candidate in candidates:
+        facts = build_case_facts(candidate)
+        area_trace = facts["area_trace"]
+        source_area = float(candidate["area_sqft"])
+        assert area_trace["gross_area_sqft"] > area_trace["net_area_sqft"]
+        assert area_trace["deduction_area_sqft"] > 0
+        assert "deduct" in area_trace["formula"].lower()
+        assert area_trace["net_area_sqft"] == source_area
+
+
 def test_ai_prompt_separates_explicit_facts_from_inference_clues() -> None:
     candidate = select_historical_candidates(generated_case_data(), limit=1, template_types=("roofing",))[0]
     facts = build_case_facts(candidate)
@@ -190,6 +203,49 @@ def test_ai_prompt_separates_explicit_facts_from_inference_clues() -> None:
     assert "inference_clues" in payload
     assert "hidden_expected_decisions_do_not_list" in payload
     assert "Do not mention selector codes" in " ".join(payload["hard_rules"])
+
+
+def test_ai_prompt_filters_and_dedupes_expected_decision_context() -> None:
+    candidate = select_historical_candidates(generated_case_data(), limit=1, template_types=("roofing",))[0]
+    facts = build_case_facts(candidate)
+    facts["expected_decisions"].extend(
+        [
+            {
+                "decision_id": "roofing_coating_system",
+                "template_bucket": "coating",
+                "line_item_kind": "material",
+                "workbook_row": 26,
+                "resolved_item_name": "Duplicate Coating",
+            },
+            {"decision_id": "customer", "template_bucket": "customer", "line_item_kind": "other", "workbook_row": 1},
+            {"decision_id": "total_job_cost", "template_bucket": "total_job_cost", "line_item_kind": "total", "workbook_row": 163},
+        ]
+    )
+
+    payload = json.loads(build_ai_case_prompt(facts))
+    context = payload["expected_decision_summary_for_context_only"]
+    keys = [(row.get("decision_id"), row.get("template_bucket"), row.get("workbook_row")) for row in context]
+
+    assert len(keys) == len(set(keys))
+    assert ("customer", "customer", 1) not in keys
+    assert ("total_job_cost", "total_job_cost", 163) not in keys
+    assert sum(1 for key in keys if key == ("roofing_coating_system", "coating", 26)) == 1
+    assert "Filtered and deduped" in payload["expected_decision_context_note"]
+
+
+def test_expected_decisions_from_historical_rows_are_deduped() -> None:
+    data = generated_case_data()
+    duplicate = data.template_rows.iloc[[0]].copy()
+    duplicate.loc[:, "resolved_item_name"] = ""
+    data.template_rows = pd.concat([data.template_rows, duplicate], ignore_index=True)
+
+    candidate = select_historical_candidates(data, limit=1, template_types=("roofing",), seed=1)[0]
+    keys = [
+        (row.get("decision_id"), row.get("template_bucket"), row.get("workbook_row"))
+        for row in candidate["expected_decisions"]
+    ]
+
+    assert len(keys) == len(set(keys))
 
 
 def test_ai_output_validator_rejects_changed_area_and_decision_leakage() -> None:

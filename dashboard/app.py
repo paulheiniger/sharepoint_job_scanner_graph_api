@@ -190,7 +190,6 @@ INSULATION_FOAM_TEMPLATE_COMPACT_COLUMNS = [
     "selected_pricing_candidate",
     "compatibility_status",
     "compatibility_warnings",
-    *DECISION_EVIDENCE_DISPLAY_COLUMNS,
     "product_guidance",
     "notes",
 ]
@@ -452,7 +451,6 @@ ROOFING_DETAIL_QUANTITY_TEMPLATE_COMPACT_COLUMNS = [
     "estimated_cost",
     "compatibility_status",
     "compatibility_warnings",
-    *DECISION_EVIDENCE_DISPLAY_COLUMNS,
     "notes",
 ]
 
@@ -519,7 +517,6 @@ ROOFING_EQUIPMENT_TEMPLATE_COMPACT_COLUMNS = [
     "estimated_cost",
     "compatibility_status",
     "compatibility_warnings",
-    *DECISION_EVIDENCE_DISPLAY_COLUMNS,
     "notes",
 ]
 
@@ -2234,7 +2231,7 @@ def show_table(
     n: int | None = None,
 ) -> None:
     table_df = with_folder_link(df)
-    requested_columns = list(columns) if columns is not None else list(table_df.columns)
+    requested_columns = unique_columns(columns if columns is not None else table_df.columns)
     available = [column for column in requested_columns if column in table_df.columns]
     if not available:
         show_empty("No requested columns are available.")
@@ -4528,8 +4525,19 @@ def display_safe_records(records: list[dict[str, Any]], *, editable_fields: set[
     return rows
 
 
+def unique_columns(columns: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for column in columns:
+        if column in seen:
+            continue
+        seen.add(column)
+        out.append(column)
+    return out
+
+
 def project_display_frame(frame: pd.DataFrame, columns: Iterable[str]) -> pd.DataFrame:
-    available = [column for column in columns if column in frame.columns]
+    available = [column for column in unique_columns(columns) if column in frame.columns]
     return frame[available].copy() if available else frame.copy()
 
 

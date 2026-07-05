@@ -55,6 +55,29 @@ DECISION_FIELD_CANDIDATES = (
     "estimated_cost",
 )
 
+PROMPT_CONTEXT_EXCLUDED_BUCKETS = {
+    "address",
+    "city",
+    "customer",
+    "email",
+    "estimate_adder",
+    "estimate_date",
+    "estimated_square_feet",
+    "job_name",
+    "job_type",
+    "misc_insurance",
+    "overhead",
+    "permits",
+    "phone",
+    "profit",
+    "site_address",
+    "total_job_cost",
+    "warranty",
+    "worksheet_price",
+    "worksheet_price_adjusted",
+}
+PROMPT_CONTEXT_EXCLUDED_KINDS = {"header", "total", "subtotal", "other"}
+
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
@@ -67,7 +90,19 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
 
 
 def _clean_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and math.isnan(value):
+        return ""
+    if str(value).strip().lower() in {"nan", "none", "null"}:
+        return ""
     return " ".join(str(value or "").strip().split())
+
+
+def _format_generated_number(value: float) -> str:
+    if float(value).is_integer():
+        return str(int(value))
+    return f"{value:.2f}".rstrip("0").rstrip(".")
 
 
 def _lower(value: Any) -> str:
@@ -213,6 +248,65 @@ def _decision_id_for_row(template_type: str, bucket: str, line_kind: str) -> str
     return f"roofing_{bucket}"
 
 
+def _decision_key(decision: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(decision.get("decision_id") or ""),
+        str(decision.get("template_bucket") or ""),
+        str(decision.get("workbook_row") or ""),
+    )
+
+
+def _value_present(value: Any) -> bool:
+    if value in (None, ""):
+        return False
+    if isinstance(value, float) and math.isnan(value):
+        return False
+    if str(value).strip().lower() in {"", "nan", "none", "null"}:
+        return False
+    return True
+
+
+def _merge_expected_decision(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(existing)
+    for key, value in incoming.items():
+        if _value_present(value) and not _value_present(merged.get(key)):
+            merged[key] = value
+    return merged
+
+
+def _dedupe_expected_decisions(decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for decision in decisions:
+        key = _decision_key(decision)
+        if key in merged:
+            merged[key] = _merge_expected_decision(merged[key], decision)
+        else:
+            merged[key] = dict(decision)
+    out = list(merged.values())
+    out.sort(key=lambda item: (str(item.get("decision_id") or ""), int(_safe_float(item.get("workbook_row"), 99999))))
+    return out
+
+
+def _prompt_decision_context(decisions: list[dict[str, Any]], *, limit: int = 24) -> list[dict[str, Any]]:
+    context: list[dict[str, Any]] = []
+    for row in _dedupe_expected_decisions(decisions):
+        bucket = _clean_text(row.get("template_bucket")).lower()
+        line_kind = _clean_text(row.get("line_item_kind")).lower()
+        if bucket in PROMPT_CONTEXT_EXCLUDED_BUCKETS or line_kind in PROMPT_CONTEXT_EXCLUDED_KINDS:
+            continue
+        item = {
+            "decision_id": row.get("decision_id"),
+            "template_bucket": row.get("template_bucket"),
+            "line_item_kind": row.get("line_item_kind"),
+            "workbook_row": row.get("workbook_row"),
+            "resolved_item_name": row.get("resolved_item_name") or row.get("selected_item_name"),
+        }
+        context.append({key: value for key, value in item.items() if _value_present(value)})
+        if len(context) >= limit:
+            break
+    return context
+
+
 def _expected_decisions_from_rows(group: pd.DataFrame, template_type: str) -> list[dict[str, Any]]:
     decisions: list[dict[str, Any]] = []
     rows = _ensure_columns(
@@ -265,8 +359,7 @@ def _expected_decisions_from_rows(group: pd.DataFrame, template_type: str) -> li
                 if value not in (None, "") and not (isinstance(value, float) and math.isnan(value)):
                     payload[field] = value
         decisions.append(payload)
-    decisions.sort(key=lambda item: (str(item.get("decision_id") or ""), int(_safe_float(item.get("workbook_row"), 99999))))
-    return decisions
+    return _dedupe_expected_decisions(decisions)
 
 
 def select_historical_candidates(
@@ -364,40 +457,74 @@ def select_historical_candidates(
 def _rectangle_for_area(area: float) -> dict[str, Any]:
     if area <= 0:
         area = 10000.0
-    length = max(20.0, round(math.sqrt(area * 1.5) / 5) * 5)
-    width = round(area / length, 2)
+    deduction = 0.0
+    target_gross = area
+    if area >= 1500:
+        deduction = round(min(500.0, max(100.0, area * 0.015)), 2)
+        target_gross = area + deduction
+    length = max(20.0, round(math.sqrt(target_gross * 1.5) / 5) * 5)
+    width = round(target_gross / length, 2)
     gross = round(length * width, 2)
+    deduction = round(max(gross - area, 0.0), 2)
+    net = round(gross - deduction, 2)
+    formula = f"{_format_generated_number(length)} ft x {_format_generated_number(width)} ft"
+    if deduction:
+        formula = (
+            f"gross roof: {formula}; deduct {_format_generated_number(deduction)} sq ft for curbs/equipment; "
+            f"net {_format_generated_number(net)} sq ft"
+        )
     return {
         "length_ft": length,
         "width_ft": width,
         "gross_area_sqft": gross,
-        "deduction_area_sqft": 0.0,
-        "net_area_sqft": gross,
-        "formula": f"{length:g} ft x {width:g} ft",
+        "deduction_area_sqft": deduction,
+        "net_area_sqft": net,
+        "formula": formula,
     }
 
 
 def _insulation_surfaces_for_area(area: float) -> dict[str, Any]:
     if area <= 0:
         area = 3000.0
-    walls = round(area * 0.58, 2)
-    ceiling = round(area - walls, 2)
+    deduction = 200.0 if area >= 1500 else 0.0
+    gross_target = area + deduction
+    walls = round(gross_target * 0.58, 2)
+    ceiling = round(gross_target - walls, 2)
     length = 60.0
     width = round(ceiling / length, 2) if ceiling > 0 else 40.0
     perimeter = 2 * (length + width)
     wall_height = round(walls / perimeter, 2) if perimeter > 0 else 12.0
+    gross_wall_area = round(perimeter * wall_height, 2)
+    ceiling_area = round(length * width, 2)
+    gross_area = round(gross_wall_area + ceiling_area, 2)
+    if not deduction:
+        ceiling_area = round(max(area - gross_wall_area, 0.0), 2)
+        gross_area = round(gross_wall_area + ceiling_area, 2)
+    deduction = round(max(gross_area - area, 0.0), 2)
+    net = round(area, 2)
+    formula = (
+        f"walls: 2 x ({_format_generated_number(length)} + {_format_generated_number(width)}) x "
+        f"{_format_generated_number(wall_height)}; ceiling: {_format_generated_number(length)} x "
+        f"{_format_generated_number(width)}"
+    )
+    if deduction:
+        formula = (
+            f"{formula}; deduct {_format_generated_number(deduction)} sq ft for doors/openings; "
+            f"net {_format_generated_number(net)} sq ft"
+        )
     return {
         "building_length_ft": length,
         "building_width_ft": width,
         "wall_height_ft": wall_height,
-        "gross_wall_area_sqft": walls,
-        "ceiling_area_sqft": ceiling,
-        "deduction_area_sqft": 0.0,
-        "net_area_sqft": round(walls + ceiling, 2),
-        "formula": f"walls: 2 x ({length:g} + {width:g}) x {wall_height:g}; ceiling: {length:g} x {width:g}",
+        "gross_area_sqft": gross_area,
+        "gross_wall_area_sqft": gross_wall_area,
+        "ceiling_area_sqft": ceiling_area,
+        "deduction_area_sqft": deduction,
+        "net_area_sqft": net,
+        "formula": formula,
         "surfaces": [
-            {"surface_type": "walls", "gross_area_sqft": walls, "deduction_area_sqft": 0.0, "net_area_sqft": walls},
-            {"surface_type": "ceiling", "gross_area_sqft": ceiling, "deduction_area_sqft": 0.0, "net_area_sqft": ceiling},
+            {"surface_type": "walls", "gross_area_sqft": gross_wall_area, "deduction_area_sqft": deduction, "net_area_sqft": round(gross_wall_area - deduction, 2)},
+            {"surface_type": "ceiling", "gross_area_sqft": ceiling_area, "deduction_area_sqft": 0.0, "net_area_sqft": ceiling_area},
         ],
     }
 
@@ -519,15 +646,10 @@ def build_ai_case_prompt(case_facts: dict[str, Any]) -> str:
         "explicit_note_facts": (case_facts.get("deterministic_facts") or {}).get("explicit_note_facts") or {},
         "inference_clues": case_facts.get("inference_clues") or [],
         "hidden_expected_decisions_do_not_list": (case_facts.get("deterministic_facts") or {}).get("hidden_source_decisions") or {},
-        "expected_decision_summary_for_context_only": [
-            {
-                "decision_id": row.get("decision_id"),
-                "template_bucket": row.get("template_bucket"),
-                "workbook_row": row.get("workbook_row"),
-                "resolved_item_name": row.get("resolved_item_name") or row.get("selected_item_name"),
-            }
-            for row in case_facts.get("expected_decisions") or []
-        ],
+        "expected_decision_summary_for_context_only": _prompt_decision_context(case_facts.get("expected_decisions") or []),
+        "expected_decision_context_note": (
+            "Filtered and deduped actionable estimator decisions only. Use these to shape clues, not as text to list."
+        ),
     }
     return json.dumps(payload, default=_json_default, indent=2)
 
@@ -611,6 +733,8 @@ def validate_ai_case_output(ai_payload: dict[str, Any], case_facts: dict[str, An
         errors.append("AI output did not include generated_notes.")
     area = _safe_float((case_facts.get("area_trace") or {}).get("net_area_sqft"), 0.0)
     for match in re.finditer(r"\b(?:roof|area|building|scope|walls?|ceiling)[^.\n]{0,60}?([0-9][0-9,]*(?:\.[0-9]+)?)\s*(?:sq\s*ft|sqft|sf)\b", notes, re.I):
+        if re.search(r"\b(deduct|deduction|less|minus|opening|openings|curbs?|equipment)\b", match.group(0), re.I):
+            continue
         stated = _safe_float(match.group(1).replace(",", ""), 0.0)
         if area > 0 and stated > 0 and abs(stated - area) / area > 0.08:
             errors.append(f"AI-stated area {stated:g} sqft conflicts with deterministic area {area:g}.")

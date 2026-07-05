@@ -90,6 +90,29 @@ def parse_field_sqft(text: str) -> float | None:
     return None
 
 
+def parse_explicit_net_area(text: str, *, preferred_context: str = "") -> float | None:
+    normalized = clean_text(text).replace(",", "")
+    context = preferred_context.strip().lower()
+    patterns = [
+        rf"\buse\s+net\s+(?:{re.escape(context)}\s+)?area\s+(?P<area>\d+(?:\.\d+)?)\s*(?P<k>k)?\s*(?:sq\.?\s*ft|sqft|sf|square\s*feet)\b"
+        if context
+        else r"\buse\s+net\s+area\s+(?P<area>\d+(?:\.\d+)?)\s*(?P<k>k)?\s*(?:sq\.?\s*ft|sqft|sf|square\s*feet)\b",
+        r"\buse\s+net\s+(?P<area>\d+(?:\.\d+)?)\s*(?P<k>k)?\s*(?:sq\.?\s*ft|sqft|sf|square\s*feet)\b",
+        r"\bnet\s+(?:scope\s+|area\s+)?(?P<area>\d+(?:\.\d+)?)\s*(?P<k>k)?\s*(?:sq\.?\s*ft|sqft|sf|square\s*feet)\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, normalized, re.I)
+        if not match:
+            continue
+        area = to_float(match.group("area"))
+        if area is None:
+            continue
+        if match.groupdict().get("k") or ("k" in match.group(0).lower() and area < 1000):
+            area *= 1000
+        return area
+    return None
+
+
 def parse_city_state(text: str) -> tuple[str, str]:
     explicit = re.search(r"\b([A-Z][A-Za-z .'-]+),\s*([A-Z]{2})\b", text)
     if explicit:
@@ -124,6 +147,8 @@ def _has_conditional_coating_path(text: str) -> bool:
     lowered = clean_text(text).lower()
     patterns = (
         r"\bcoating\s+(?:path|option)\b",
+        r"\bcoating\s+restoration\s+option\b",
+        r"\broof\s+coating\s+restoration\s+option\b",
         r"\bcoating\s+restoration\s+(?:seems\s+)?possible\b",
         r"\broof\s+restoration\s+review\b",
         r"\brestoration\s+review\b",
@@ -558,8 +583,16 @@ def parse_insulation_quote_scope(notes: str) -> dict[str, Any]:
 
     result["openings"] = openings
     result["opening_area_known_sqft"] = round(opening_area_known, 2)
+    explicit_net_area = parse_explicit_net_area(text, preferred_context="insulation")
     if gross_area:
-        result["net_insulation_area_sqft"] = round(max(gross_area - opening_area_known, 0.0), 2)
+        if explicit_net_area is not None and explicit_net_area <= gross_area:
+            result["net_insulation_area_sqft"] = round(explicit_net_area, 2)
+            if not opening_area_known and gross_area > explicit_net_area:
+                opening_area_known = round(gross_area - explicit_net_area, 2)
+                result["opening_area_known_sqft"] = opening_area_known
+                result["review_flags"].append("Opening deduction inferred from explicit net area and gross formula.")
+        else:
+            result["net_insulation_area_sqft"] = round(max(gross_area - opening_area_known, 0.0), 2)
         result["estimated_sqft"] = result["net_insulation_area_sqft"]
         result["surface_area_sqft"] = result["net_insulation_area_sqft"]
         result["gross_area_sqft"] = round(gross_area, 2)
@@ -653,7 +686,15 @@ def parse_condition_detail_flags(text: str) -> list[str]:
     no_leaks = bool(re.search(r"\b(?:no|without)\s+(?:interior\s+)?leaks?\b|\bno\s+leaking\b", lowered))
     flags: list[str] = []
     if not no_rust:
-        if "rusted fastener" in lowered or "rusted fasteners" in lowered or "rust/fastener" in lowered or "rust / fastener" in lowered:
+        if (
+            "rusted fastener" in lowered
+            or "rusted fasteners" in lowered
+            or "rust/fastener" in lowered
+            or "rust/fasteners" in lowered
+            or "rust / fastener" in lowered
+            or "rust / fasteners" in lowered
+            or re.search(r"\brusted\s*/\s*aging\s+fasteners?\b", lowered)
+        ):
             flags.append("rusted_fasteners")
         elif "rust" in lowered or "rusted" in lowered:
             flags.append("rust")

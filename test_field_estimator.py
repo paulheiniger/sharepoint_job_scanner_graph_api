@@ -229,7 +229,7 @@ def test_pegasus_reviewed_notes_create_conditional_coating_scope_and_workbench_d
     assert parsed["project_type"] == "roof coating"
     assert parsed["coating_required"] is True
     assert parsed["coating_path_review"] is True
-    assert parsed.get("warranty_target_years") is None
+    assert parsed.get("warranty_target_years") == 15
     assert parsed["condition_detail_flags"]
     assert {"ponding", "penetrations", "open_seams", "rusted_fasteners"}.issubset(
         set(parsed["condition_detail_flags"])
@@ -1228,30 +1228,44 @@ def test_reviewed_insulation_generated_formula_notes_parse_wall_and_ceiling_area
     cases = [
         (
             "hist_insulation_massey_eric_pole_barn",
-            pytest.approx(2999.88, abs=0.1),
-            pytest.approx(1739.88, abs=0.1),
-            pytest.approx(1260.0, abs=0.1),
+            pytest.approx(2999.65, abs=0.1),
+            pytest.approx(3199.65, abs=0.1),
+            pytest.approx(200.0, abs=0.1),
+            pytest.approx(1855.65, abs=0.1),
+            pytest.approx(1344.0, abs=0.1),
+            21,
+            30,
         ),
         (
             "hist_insulation_ku_ghent_4g_coal_conveyor_belt_ramp",
-            pytest.approx(1749.39, abs=0.1),
-            pytest.approx(1014.39, abs=0.1),
-            pytest.approx(735.0, abs=0.1),
+            pytest.approx(1750.26, abs=0.1),
+            pytest.approx(1950.26, abs=0.1),
+            pytest.approx(200.0, abs=0.1),
+            pytest.approx(1131.26, abs=0.1),
+            pytest.approx(819.0, abs=0.1),
+            14,
+            21,
         ),
     ]
 
-    for case_dir, expected_total, expected_walls, expected_ceiling in cases:
+    for case_dir, expected_net, expected_gross, expected_deduction, expected_walls, expected_ceiling, wall_r, ceiling_r in cases:
         note = (GENERATED_CASES_ROOT / case_dir / "notes_chat_reviewed.txt").read_text()
         parsed = estimate_from_field_notes(note, data=EstimatorData()).parsed_fields
 
         assert parsed["division"] == "Insulation"
-        assert parsed["estimated_sqft"] == expected_total
-        assert parsed["gross_insulation_area_sqft"] == expected_total
-        assert parsed["net_insulation_area_sqft"] == expected_total
+        assert parsed["estimated_sqft"] == expected_net
+        assert parsed["gross_insulation_area_sqft"] == expected_gross
+        assert parsed["opening_area_known_sqft"] == expected_deduction
+        assert parsed["net_insulation_area_sqft"] == expected_net
+        assert parsed["deduction_area_sqft"] == expected_deduction
+        assert parsed["net_area_sqft"] == expected_net
         assert parsed["gross_wall_area_sqft"] == expected_walls
         assert parsed["ceiling_area_sqft"] == expected_ceiling
         assert parsed["outside_walls_included"] is True
         assert parsed["ceiling_included"] is True
+        targets = {row["surface_type"]: row["target_r_value"] for row in parsed["insulation_r_value_targets"]}
+        assert targets["walls"] == wall_r
+        assert targets["ceiling"] == ceiling_r
 
 
 def test_insulation_explicit_opening_dimensions_compute_net_area() -> None:
