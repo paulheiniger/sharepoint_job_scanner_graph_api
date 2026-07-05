@@ -138,6 +138,79 @@ def roofing_companion_data() -> EstimatorData:
     )
 
 
+def roofing_reference_project_data() -> EstimatorData:
+    return EstimatorData(
+        template_rows=pd.DataFrame(
+            [
+                {
+                    "job_id": "REF1",
+                    "source_file": "Reference Estimate.xlsx",
+                    "template_type": "roofing",
+                    "project_type": "roof coating",
+                    "substrate": "metal",
+                    "coating_type": "silicone",
+                    "template_bucket": "coating",
+                    "line_item_kind": "material",
+                    "row_number": 26,
+                    "selector_code": "11",
+                    "resolved_item_name": "Gaco Silicone",
+                    "area_sqft": 10000,
+                    "gal_per_100_sqft": 1.4,
+                    "waste_factor_pct": 10,
+                    "unit_price": 42,
+                },
+                {
+                    "job_id": "REF1",
+                    "source_file": "Reference Estimate.xlsx",
+                    "template_type": "roofing",
+                    "project_type": "roof coating",
+                    "substrate": "metal",
+                    "coating_type": "silicone",
+                    "template_bucket": "primer",
+                    "line_item_kind": "material",
+                    "row_number": 39,
+                    "selector_code": "1",
+                    "resolved_item_name": "Gaco E-5320",
+                    "area_sqft": 10000,
+                    "estimated_units": 10,
+                    "unit_price": 120,
+                },
+                {
+                    "job_id": "REF1",
+                    "source_file": "Reference Estimate.xlsx",
+                    "template_type": "roofing",
+                    "project_type": "roof coating",
+                    "substrate": "metal",
+                    "coating_type": "silicone",
+                    "template_bucket": "caulk_detail",
+                    "line_item_kind": "material",
+                    "row_number": 43,
+                    "resolved_item_name": "Silicone Sausage",
+                    "area_sqft": 10000,
+                    "estimated_units": 5,
+                    "unit_price": 30,
+                },
+                {
+                    "job_id": "REF1",
+                    "source_file": "Reference Estimate.xlsx",
+                    "template_type": "roofing",
+                    "project_type": "roof coating",
+                    "substrate": "metal",
+                    "coating_type": "silicone",
+                    "template_bucket": "labor_seam_sealer",
+                    "line_item_kind": "labor",
+                    "row_number": 120,
+                    "area_sqft": 10000,
+                    "total_hours": 50,
+                    "crew_size": 4,
+                    "hourly_rate": 72,
+                    "formula_mode": "mixed_formula",
+                },
+            ]
+        )
+    )
+
+
 def test_roofing_workbench_uses_decision_sections_only() -> None:
     workbench = build_estimating_workbench(roofing_recommendation(), EstimatorData())
 
@@ -232,6 +305,94 @@ def test_manual_uncheck_prevents_companion_proposal_from_rechecking_row() -> Non
     assert recalculated_primer["manual_override"] is True
     assert recalculated_primer["proposal_source"] == "historical_companion"
     assert recalculated_primer["proposal_review_required"] is True
+
+
+def test_reference_project_fills_material_and_labor_pattern_scaled_to_current_area() -> None:
+    workbench = build_estimating_workbench(
+        roofing_recommendation(),
+        roofing_reference_project_data(),
+        scope_override={
+            "reference_job_ids": "REF1",
+            "roof_type_substrate": "metal",
+            "net_sqft": 20000,
+            "estimated_sqft": 20000,
+        },
+    )
+
+    primer = workbench["roofing_primer_template_decisions"][0]
+    sealant = next(row for row in workbench["roofing_detail_template_decisions"] if row["template_bucket"] == "caulk_detail" and row["workbook_row"] == "43")
+    seam_labor = next(row for row in workbench["roofing_labor_template_decisions"] if row["template_bucket"] == "labor_seam_sealer")
+
+    assert primer["include"] is True
+    assert primer["proposal_source"] == "reference_project"
+    assert primer["basis_sqft"] == 20000
+    assert primer["coverage_sqft_per_unit"] == 1000
+    assert primer["proposal_evidence"]["reference_project"][0]["job_id"] == "REF1"
+    assert primer["reference_project_evidence_summary"].startswith("reference job REF1")
+    assert sealant["include"] is True
+    assert sealant["units"] == 10
+    assert seam_labor["include"] is True
+    assert seam_labor["total_hours"] == 100
+    assert seam_labor["crew_size"] == 4
+
+
+def test_reference_project_can_be_selected_by_mentioning_known_job_id_in_notes() -> None:
+    workbench = build_estimating_workbench(
+        roofing_recommendation(),
+        roofing_reference_project_data(),
+        scope_override={
+            "raw_input_notes": "This roof is like REF1 but at the current site.",
+            "roof_type_substrate": "metal",
+            "net_sqft": 10000,
+            "estimated_sqft": 10000,
+        },
+    )
+
+    primer = workbench["roofing_primer_template_decisions"][0]
+
+    assert primer["include"] is True
+    assert primer["proposal_source"] == "reference_project"
+    assert primer["proposal_evidence"]["reference_project"][0]["job_id"] == "REF1"
+
+
+def test_reference_project_marks_substrate_mismatch_for_review() -> None:
+    workbench = build_estimating_workbench(
+        roofing_recommendation(),
+        roofing_reference_project_data(),
+        scope_override={
+            "reference_job_ids": ["REF1"],
+            "roof_type_substrate": "membrane",
+            "net_sqft": 10000,
+            "estimated_sqft": 10000,
+        },
+    )
+
+    primer = workbench["roofing_primer_template_decisions"][0]
+
+    assert primer["include"] is True
+    assert primer["proposal_source"] == "reference_project"
+    assert primer["proposal_review_required"] is True
+    assert any("substrate" in reason for reason in primer["proposal_review_reasons"])
+
+
+def test_manual_uncheck_prevents_reference_project_from_rechecking_row() -> None:
+    workbench = build_estimating_workbench(
+        roofing_recommendation(),
+        roofing_reference_project_data(),
+        scope_override={"reference_job_ids": "REF1", "roof_type_substrate": "metal"},
+    )
+    primer = workbench["roofing_primer_template_decisions"][0]
+    assert primer["include"] is True
+
+    primer["include"] = False
+    primer["manual_override"] = True
+    primer["include_source"] = "estimator_edit"
+    recalculated = recalculate_workbench_tables(workbench)
+    recalculated_primer = recalculated["roofing_primer_template_decisions"][0]
+
+    assert recalculated_primer["include"] is False
+    assert recalculated_primer["manual_override"] is True
+    assert recalculated_primer["proposal_source"] == "reference_project"
 
 
 def test_insulation_workbench_uses_decision_sections_only() -> None:

@@ -5026,6 +5026,15 @@ def estimator_prototype_page() -> None:
             edited_condition = st.text_input("Roof Condition", value=str(base_scope.get("roof_condition") or ""), key=f"wb_condition_{workbench_key}")
             edited_access = st.text_input("Access", value=str(base_scope.get("access_complexity") or ""), key=f"wb_access_{workbench_key}")
             edited_penetrations = st.text_input("Penetrations", value=str(base_scope.get("penetrations_complexity") or ""), key=f"wb_penetrations_{workbench_key}")
+        reference_default = base_scope.get("reference_job_ids") or base_scope.get("reference_project_ids") or ""
+        if isinstance(reference_default, (list, tuple, set)):
+            reference_default = ", ".join(str(item) for item in reference_default if str(item).strip())
+        edited_reference_job_ids = st.text_input(
+            "Reference Job IDs",
+            value=str(reference_default or ""),
+            key=f"wb_reference_jobs_{workbench_key}",
+            help="Comma-separated historical job IDs to use as comparison anchors.",
+        )
 
         edited_scope = {
             **base_scope,
@@ -5039,6 +5048,7 @@ def estimator_prototype_page() -> None:
             "roof_condition": edited_condition,
             "access_complexity": edited_access,
             "penetrations_complexity": edited_penetrations,
+            "reference_job_ids": edited_reference_job_ids,
         }
         scope_key = hashlib.sha1(json.dumps(edited_scope, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:8]
 

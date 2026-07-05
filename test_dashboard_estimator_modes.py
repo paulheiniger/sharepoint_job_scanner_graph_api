@@ -131,6 +131,15 @@ def test_estimator_page_no_longer_shows_structural_override_block() -> None:
     assert "Sqft override" not in source
 
 
+def test_estimator_page_exposes_reference_job_ids_scope_field() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    source = inspect.getsource(app.estimator_prototype_page)
+
+    assert "Reference Job IDs" in source
+    assert "reference_job_ids" in source
+
+
 def test_estimator_workbench_uses_compact_columns_by_default() -> None:
     app = importlib.import_module("dashboard.app")
 

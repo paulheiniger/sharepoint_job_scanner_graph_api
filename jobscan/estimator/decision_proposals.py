@@ -13,6 +13,7 @@ SOURCE_PRECEDENCE = {
     "historical_default": 30,
     "historical_companion": 35,
     "deterministic_rule": 40,
+    "reference_project": 45,
     "explicit_note": 50,
     "estimator_edit": 60,
 }
@@ -157,6 +158,39 @@ WORKBENCH_MATERIAL_SECTIONS = (
     "insulation_equipment_logistics_template_decisions",
 )
 
+REFERENCE_PROJECT_OVERRIDE_FIELDS = {
+    "selector_code",
+    "editable_selector_code",
+    "resolved_template_option",
+    "selected_pricing_candidate",
+    "basis_sqft",
+    "coverage_sqft_per_unit",
+    "gal_per_100_sqft",
+    "gal_per_sqft",
+    "waste_factor_pct",
+    "wet_mils_estimate",
+    "unit_price",
+    "price_per_square",
+    "unit_price_per_thousand",
+    "thickness_inches",
+    "yield_or_coverage",
+    "units",
+    "estimated_units",
+    "linear_ft",
+    "board_area_sqft",
+    "days",
+    "editable_days",
+    "crew_size",
+    "crew_people_selection",
+    "crew_selector_code",
+    "daily_rate",
+    "hourly_rate",
+    "labor_rate",
+    "total_hours",
+    "editable_total_hours",
+    "formula_mode",
+}
+
 
 @dataclass(frozen=True)
 class DecisionProposal:
@@ -264,6 +298,7 @@ def build_decision_proposals(scope: dict[str, Any], recommendation: Any = None, 
         proposals.extend(_insulation_scope_proposals(scope, notes))
     else:
         proposals.extend(_roofing_scope_proposals(scope, notes))
+    proposals.extend(_reference_project_proposals(scope, data=data, template_type=template_type, notes=notes))
     proposals.extend(_ai_scope_proposals(template_type, _ai_scope_debug(recommendation)))
     return merge_decision_proposals(proposals)
 
@@ -347,7 +382,12 @@ def _annotate_row(row: dict[str, Any], proposal: dict[str, Any] | None) -> dict[
             updated["include"] = bool(proposal.get("include"))
             updated["include_source"] = proposal.get("source")
         for key, value in (proposal.get("proposed_values") or {}).items():
-            if value is not None and _proposal_value_can_fill(updated.get(key)):
+            reference_can_override = (
+                proposal.get("source") == "reference_project"
+                and not updated.get("manual_override")
+                and key in REFERENCE_PROJECT_OVERRIDE_FIELDS
+            )
+            if value is not None and (_proposal_value_can_fill(updated.get(key)) or reference_can_override):
                 updated[key] = value
         updated["decision_proposal"] = proposal
         updated["proposal_source"] = proposal.get("source")
@@ -373,6 +413,276 @@ def _relationship_cooccurrence_rows(workbench: dict[str, Any], data: Any = None)
     if isinstance(rows, pd.DataFrame):
         return rows.to_dict(orient="records")
     return [dict(row) for row in rows if isinstance(row, dict)]
+
+
+def _reference_project_proposals(
+    scope: dict[str, Any],
+    *,
+    data: Any = None,
+    template_type: str,
+    notes: str,
+) -> list[DecisionProposal]:
+    rows = _reference_template_rows(scope, data=data, notes=notes)
+    if rows.empty:
+        return []
+    proposals: list[DecisionProposal] = []
+    for _, row in rows.iterrows():
+        row_dict = row.to_dict()
+        if _norm(row_dict.get("template_type")) and _norm(row_dict.get("template_type")) != _norm(template_type):
+            continue
+        target = _reference_target_for_row(row_dict, template_type)
+        if not target:
+            continue
+        values, scale = _reference_values_for_row(row_dict, scope, target)
+        reasons = _reference_review_reasons(row_dict, scope, scale)
+        evidence = {
+            "reference_project": [
+                {
+                    "job_id": row_dict.get("job_id"),
+                    "source_file": row_dict.get("source_file"),
+                    "template_bucket": row_dict.get("template_bucket"),
+                    "row_number": row_dict.get("row_number"),
+                    "selected_item_name": row_dict.get("selected_item_name") or row_dict.get("resolved_item_name"),
+                    "reference_area_sqft": _reference_area(row_dict),
+                    "current_area_sqft": _scope_area(scope),
+                    "scale_factor": scale,
+                }
+            ]
+        }
+        proposals.append(
+            DecisionProposal(
+                decision_id=target["decision_id"],
+                template_type=template_type,
+                template_bucket=target["template_bucket"],
+                workbook_row=target["workbook_row"],
+                include=True,
+                proposed_values=values,
+                confidence=0.88 if not reasons else 0.72,
+                review_required=bool(reasons),
+                review_reasons=reasons,
+                evidence=evidence,
+                source="reference_project",
+                section=target["section"],
+            )
+        )
+    return proposals
+
+
+def _reference_template_rows(scope: dict[str, Any], *, data: Any = None, notes: str = "") -> pd.DataFrame:
+    frame = getattr(data, "template_rows", pd.DataFrame()) if data is not None else pd.DataFrame()
+    if not isinstance(frame, pd.DataFrame) or frame.empty or "job_id" not in frame.columns:
+        return pd.DataFrame()
+    reference_ids = _reference_job_ids(scope, frame, notes)
+    if not reference_ids:
+        return pd.DataFrame()
+    job_keys = frame["job_id"].fillna("").astype(str).map(str.strip)
+    return frame[job_keys.isin(reference_ids)].copy()
+
+
+def _reference_job_ids(scope: dict[str, Any], template_rows: pd.DataFrame, notes: str) -> list[str]:
+    values: list[str] = []
+    for key in (
+        "reference_job_ids",
+        "reference_project_ids",
+        "selected_reference_job_ids",
+        "selected_reference_jobs",
+        "similar_to_job_ids",
+        "similar_project_ids",
+    ):
+        values.extend(_split_reference_values(scope.get(key)))
+    note_text = _norm(notes)
+    if note_text and "job_id" in template_rows.columns:
+        for job_id in sorted({str(item).strip() for item in template_rows["job_id"].dropna().astype(str) if str(item).strip()}):
+            if len(job_id) >= 3 and _norm(job_id) in note_text:
+                values.append(job_id)
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        clean = str(value or "").strip()
+        if clean and clean not in seen:
+            seen.add(clean)
+            out.append(clean)
+    return out
+
+
+def _split_reference_values(value: Any) -> list[str]:
+    if value in (None, ""):
+        return []
+    if isinstance(value, dict):
+        return _split_reference_values(value.get("job_id") or value.get("id") or value.get("name"))
+    if isinstance(value, (list, tuple, set)):
+        out: list[str] = []
+        for item in value:
+            out.extend(_split_reference_values(item))
+        return out
+    text = str(value)
+    for token in ("\n", ";", "|"):
+        text = text.replace(token, ",")
+    return [part.strip() for part in text.split(",") if part.strip()]
+
+
+def _reference_target_for_row(row: dict[str, Any], template_type: str) -> dict[str, str] | None:
+    bucket = _canonical_package(row.get("template_bucket"))
+    kind = _norm(row.get("line_item_kind"))
+    row_number = str(int(_safe_number(row.get("row_number"), 0))) if _safe_number(row.get("row_number"), 0) > 0 else ""
+    if template_type == "roofing":
+        if bucket == "coating":
+            row_number = row_number if row_number in {"26", "27", "28"} else "26"
+            return {"section": "roofing_coating_template_decisions", "decision_id": f"roofing_coating_system_row_{row_number}", "template_bucket": "coating", "workbook_row": row_number}
+        if bucket == "primer":
+            return {"section": "roofing_primer_template_decisions", "decision_id": "roofing_primer_system_row_39", "template_bucket": "primer", "workbook_row": "39"}
+        if bucket in {"caulk_detail", "caulk_sealant"}:
+            row_number = row_number if row_number in {"43", "45"} else "43"
+            return {"section": "roofing_detail_template_decisions", "decision_id": f"roofing_caulk_sealant_row_{row_number}", "template_bucket": "caulk_detail", "workbook_row": row_number}
+        if bucket == "fabric":
+            return {"section": "roofing_detail_template_decisions", "decision_id": "roofing_fabric_row_79", "template_bucket": "fabric", "workbook_row": "79"}
+        if bucket == "board_stock":
+            row_number = row_number if row_number in {"58", "59", "60"} else "58"
+            return {"section": "roofing_board_fastener_template_decisions", "decision_id": f"roofing_board_stock_row_{row_number}", "template_bucket": "board_stock", "workbook_row": row_number}
+        if bucket == "fasteners":
+            return {"section": "roofing_board_fastener_template_decisions", "decision_id": "roofing_fasteners_row_63", "template_bucket": "fasteners", "workbook_row": "63"}
+        if bucket == "plates":
+            return {"section": "roofing_board_fastener_template_decisions", "decision_id": "roofing_plates_row_65", "template_bucket": "plates", "workbook_row": "65"}
+        if bucket == "granules":
+            return {"section": "roofing_granules_template_decisions", "decision_id": "roofing_granules_row_36", "template_bucket": "granules", "workbook_row": "36"}
+        if bucket in {"dumpster", "disposal"}:
+            return {"section": "roofing_equipment_template_decisions", "decision_id": "roofing_dumpsters_row_69", "template_bucket": "dumpster", "workbook_row": "69"}
+        if kind == "labor" or bucket.startswith("labor_"):
+            if not row_number:
+                return None
+            return {"section": "roofing_labor_template_decisions", "decision_id": f"roofing_{bucket}_row_{row_number}", "template_bucket": bucket, "workbook_row": row_number}
+    if template_type == "insulation":
+        if bucket == "foam":
+            return {"section": "insulation_foam_template_decisions", "decision_id": "insulation_foam_template_selector", "template_bucket": "foam", "workbook_row": "19"}
+        if bucket == "thermal_barrier_coating":
+            return {"section": "insulation_thermal_barrier_template_decisions", "decision_id": "insulation_thermal_barrier_row_30", "template_bucket": "thermal_barrier_coating", "workbook_row": "30"}
+        if bucket in {"caulk_detail", "caulk_sealant"}:
+            return {"section": "insulation_detail_material_template_decisions", "decision_id": "insulation_caulk_sealant_row_41", "template_bucket": "caulk_sealant", "workbook_row": "41"}
+        if kind == "labor" or bucket.startswith("labor_"):
+            if not row_number:
+                return None
+            return {"section": "insulation_labor_template_decisions", "decision_id": f"insulation_{bucket}_row_{row_number}", "template_bucket": bucket, "workbook_row": row_number}
+    return None
+
+
+def _reference_values_for_row(row: dict[str, Any], scope: dict[str, Any], target: dict[str, str]) -> tuple[dict[str, Any], float]:
+    values: dict[str, Any] = {}
+    selected_name = _first_value(row, "resolved_item_name", "selected_item_name", "item_name")
+    selector_code = _first_value(row, "selector_code", "editable_selector_code")
+    if selector_code not in (None, ""):
+        values["selector_code"] = str(selector_code)
+        values["editable_selector_code"] = str(selector_code)
+    if selected_name not in (None, ""):
+        values["resolved_template_option"] = selected_name
+        values["selected_pricing_candidate"] = selected_name
+    unit_price = _safe_number(_first_value(row, "unit_price", "current_unit_price", "daily_rate"), 0.0)
+    if unit_price > 0:
+        values["unit_price"] = round(unit_price, 4)
+
+    reference_area = _reference_area(row)
+    current_area = _scope_area(scope)
+    scale = current_area / reference_area if current_area > 0 and reference_area > 0 else 1.0
+    bucket = target["template_bucket"]
+    if bucket in {"coating", "primer", "board_stock", "granules"} and current_area > 0:
+        values["basis_sqft"] = round(current_area, 2)
+    if bucket == "coating":
+        for field in ("gal_per_100_sqft", "gal_per_sqft", "waste_factor_pct", "wet_mils_estimate"):
+            number = _safe_number(row.get(field), 0.0)
+            if number > 0:
+                values[field] = round(number, 6)
+    elif bucket == "primer":
+        estimated_units = _safe_number(_first_value(row, "estimated_units", "quantity"), 0.0)
+        if reference_area > 0 and estimated_units > 0:
+            values["coverage_sqft_per_unit"] = round(reference_area / estimated_units, 4)
+    elif bucket == "caulk_detail":
+        quantity = _safe_number(_first_value(row, "estimated_units", "quantity", "calculated_quantity"), 0.0)
+        if quantity > 0:
+            values["units"] = round(quantity * scale, 4)
+            values["estimated_units"] = round(quantity * scale, 4)
+    elif bucket == "fabric":
+        quantity = _safe_number(_first_value(row, "linear_ft", "estimated_units", "quantity", "calculated_quantity"), 0.0)
+        if quantity > 0:
+            values["linear_ft"] = round(quantity * scale, 4)
+            values["units"] = round(quantity * scale, 4)
+            values["estimated_units"] = round(quantity * scale, 4)
+    elif bucket == "board_stock":
+        thickness = _safe_number(row.get("thickness_inches"), 0.0)
+        if thickness > 0:
+            values["thickness_inches"] = round(thickness, 4)
+        if unit_price > 0:
+            values["price_per_square"] = round(unit_price, 4)
+    elif bucket in {"fasteners", "plates"}:
+        if current_area > 0:
+            values["board_area_sqft"] = round(current_area, 2)
+        if unit_price > 0:
+            values["unit_price_per_thousand"] = round(unit_price, 4)
+    elif bucket == "foam":
+        if current_area > 0:
+            values["basis_sqft"] = round(current_area, 2)
+        for field in ("thickness_inches", "yield_or_coverage"):
+            number = _safe_number(row.get(field), 0.0)
+            if number > 0:
+                values[field] = round(number, 4)
+    elif bucket.startswith("labor_"):
+        crew_size = _safe_number(row.get("crew_size"), 0.0)
+        hours = _safe_number(_first_value(row, "total_hours", "labor_hours"), 0.0)
+        if crew_size > 0:
+            values["crew_size"] = int(crew_size)
+            values["crew_people_selection"] = int(crew_size)
+            values["crew_selector_code"] = int(crew_size)
+        if hours > 0:
+            scaled_hours = round(hours * scale, 4)
+            values["total_hours"] = scaled_hours
+            values["editable_total_hours"] = scaled_hours
+            if crew_size > 0:
+                values["days"] = round(scaled_hours / max(crew_size * 10.0, 1.0), 4)
+                values["editable_days"] = values["days"]
+        for field in ("daily_rate", "hourly_rate", "formula_mode"):
+            value = row.get(field)
+            if value not in (None, ""):
+                values[field] = value
+                if field == "hourly_rate":
+                    values["labor_rate"] = value
+    return values, round(scale, 6)
+
+
+def _reference_review_reasons(row: dict[str, Any], scope: dict[str, Any], scale: float) -> list[str]:
+    reasons: list[str] = []
+    for field, label in (
+        ("project_type", "project type"),
+        ("substrate", "substrate"),
+        ("coating_type", "coating type"),
+    ):
+        current_value = scope.get("roof_type_substrate") if field == "substrate" else scope.get(field)
+        current = _norm(current_value)
+        reference = _norm(row.get(field))
+        if current and reference and current != reference and current not in reference and reference not in current:
+            reasons.append(f"Reference {label} '{row.get(field)}' differs from current '{current_value}'.")
+    if scale and (scale >= 3 or scale <= 0.3333):
+        reasons.append(f"Reference job area scale is {scale:.2f}x; verify scaled quantities.")
+    return list(dict.fromkeys(reasons))
+
+
+def _scope_area(scope: dict[str, Any]) -> float:
+    return _safe_number(
+        scope.get("net_sqft")
+        or scope.get("estimated_sqft")
+        or scope.get("gross_sqft")
+        or scope.get("net_insulation_area_sqft")
+        or scope.get("gross_insulation_area_sqft"),
+        0.0,
+    )
+
+
+def _reference_area(row: dict[str, Any]) -> float:
+    return _safe_number(
+        row.get("area_sqft")
+        or row.get("basis_sqft")
+        or row.get("quantity")
+        or row.get("estimated_sqft")
+        or row.get("area_basis_sqft"),
+        0.0,
+    )
 
 
 def _included_workbench_packages(workbench: dict[str, Any]) -> set[str]:
@@ -484,11 +794,14 @@ def _decision_evidence_summary(row: dict[str, Any]) -> str:
 def _decision_evidence_fields(row: dict[str, Any]) -> dict[str, Any]:
     evidence_types: list[str] = []
     why_included = _why_included_summary(row)
+    reference = _reference_project_evidence_summary(row)
     historical = _historical_evidence_summary(row)
     pricing = _pricing_evidence_summary(row)
     product = _product_evidence_summary(row)
     formula = _formula_evidence_summary(row)
 
+    if reference:
+        evidence_types.append("reference_project")
     if _has_note_evidence(row):
         evidence_types.append("note")
     if historical:
@@ -501,6 +814,8 @@ def _decision_evidence_fields(row: dict[str, Any]) -> dict[str, Any]:
         evidence_types.append("formula")
 
     parts: list[str] = []
+    if reference:
+        parts.append("reference project evidence")
     if _has_note_evidence(row):
         parts.append("note evidence")
     if historical:
@@ -516,6 +831,7 @@ def _decision_evidence_fields(row: dict[str, Any]) -> dict[str, Any]:
         "decision_evidence_summary": ", ".join(dict.fromkeys(parts)),
         "decision_evidence_types": ", ".join(evidence_types),
         "why_included": why_included,
+        "reference_project_evidence_summary": reference,
         "historical_evidence_summary": historical,
         "pricing_evidence_summary": pricing,
         "product_evidence_summary": product,
@@ -552,6 +868,25 @@ def _historical_evidence_summary(row: dict[str, Any]) -> str:
         parts.append(f"confidence {confidence}")
     if recommendation:
         parts.append(f"recommendation {recommendation}")
+    return "; ".join(parts)
+
+
+def _reference_project_evidence_summary(row: dict[str, Any]) -> str:
+    evidence = row.get("proposal_evidence") or {}
+    rows = evidence.get("reference_project") or []
+    if not rows:
+        return ""
+    item = rows[0] if isinstance(rows[0], dict) else {}
+    job_id = str(item.get("job_id") or "").strip()
+    bucket = str(item.get("template_bucket") or "").strip()
+    scale = _safe_number(item.get("scale_factor"), 0)
+    parts = []
+    if job_id:
+        parts.append(f"reference job {job_id}")
+    if bucket:
+        parts.append(f"bucket {bucket}")
+    if scale > 0:
+        parts.append(f"scale {scale:.3g}x")
     return "; ".join(parts)
 
 
