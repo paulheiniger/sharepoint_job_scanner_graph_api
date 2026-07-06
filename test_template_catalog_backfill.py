@@ -40,6 +40,28 @@ def _sample_intelligence_doc() -> dict:
                 "unit_price": 225,
             }
         ],
+        "lookup_tables": [
+            {
+                "sheet_name": "Materials",
+                "table_name": "coatings",
+                "row_number": 2,
+                "lookup_key": "Gaco Silicone",
+                "headers": {"A": "Coatings", "C": "Cost"},
+                "values": {"A": "Gaco Silicone", "C": 42},
+            }
+        ],
+        "formula_models": [
+            {
+                "sheet_name": "Estimate",
+                "cell": "H26",
+                "row_number": 26,
+                "template_bucket": "coating",
+                "formula_kind": "formula",
+                "formula_model": "cost_from_qty_unit_price",
+                "formula": "=E26*G26",
+                "dependencies": ["E26", "G26"],
+            }
+        ],
         "people_rate_table": [
             {
                 "table_name": "people_daily_rate_selector",
@@ -102,6 +124,8 @@ def test_backfill_builds_catalog_rows_from_template_intelligence_and_history() -
     rows_by_table = build_template_catalog_backfill(intelligence_docs=[_sample_intelligence_doc()], data=data)
 
     assert len(rows_by_table["template_selector_maps"]) == 1
+    assert len(rows_by_table["template_lookup_tables"]) == 1
+    assert len(rows_by_table["template_formula_models"]) == 1
     assert {row["row_number"] for row in rows_by_table["template_row_catalog"]} == {26, 122}
     assert any(row["product_name"] == "Gaco S20 Silicone" for row in rows_by_table["template_product_options"])
     assert any(row["product_name"] == "Historical Silicone" for row in rows_by_table["template_product_options"])
@@ -159,5 +183,7 @@ def test_backfill_loads_intelligence_files_and_writes_preview(tmp_path) -> None:
 
     summary = json.loads(paths["summary"].read_text(encoding="utf-8"))
     assert summary["template_selector_maps"] == 1
+    assert summary["template_lookup_tables"] == 1
+    assert summary["template_formula_models"] == 1
     assert paths["template_product_options"].exists()
     assert paths["template_labor_options"].exists()

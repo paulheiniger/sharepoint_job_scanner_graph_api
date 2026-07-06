@@ -153,6 +153,64 @@ def row_catalog_rows(intelligence_docs: list[dict[str, Any]]) -> list[dict[str, 
     return rows
 
 
+def lookup_table_rows(intelligence_docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for doc in intelligence_docs:
+        template_type = _text(doc.get("template_type"))
+        template_name = _text(doc.get("template_name") or Path(_text(doc.get("template_path"))).name or template_type)
+        for row in doc.get("lookup_tables") or []:
+            sheet_name = _text(row.get("sheet_name"))
+            table_name = _text(row.get("table_name"))
+            row_number = _safe_int(row.get("row_number"))
+            lookup_key = _text(row.get("lookup_key"))
+            if not template_type or not template_name or not sheet_name or not table_name or not row_number:
+                continue
+            rows.append(
+                {
+                    "lookup_table_id": _stable_id("lookup", template_type, template_name, sheet_name, table_name, row_number, lookup_key),
+                    "template_type": template_type,
+                    "template_name": template_name,
+                    "sheet_name": sheet_name,
+                    "table_name": table_name,
+                    "row_number": row_number,
+                    "lookup_key": lookup_key,
+                    "headers_json": _json_text(row.get("headers") or {}),
+                    "values_json": _json_text(row.get("values") or {}),
+                }
+            )
+    return rows
+
+
+def formula_model_rows(intelligence_docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for doc in intelligence_docs:
+        template_type = _text(doc.get("template_type"))
+        template_name = _text(doc.get("template_name") or Path(_text(doc.get("template_path"))).name or template_type)
+        for row in doc.get("formula_models") or []:
+            sheet_name = _text(row.get("sheet_name"))
+            cell_address = _text(row.get("cell") or row.get("cell_address"))
+            row_number = _safe_int(row.get("row_number"))
+            if not template_type or not template_name or not sheet_name or not cell_address:
+                continue
+            rows.append(
+                {
+                    "template_formula_model_id": _stable_id("formula", template_type, template_name, sheet_name, cell_address),
+                    "template_type": template_type,
+                    "template_name": template_name,
+                    "sheet_name": sheet_name,
+                    "cell_address": cell_address,
+                    "row_number": row_number or None,
+                    "template_bucket": _text(row.get("template_bucket")),
+                    "formula_kind": _text(row.get("formula_kind")),
+                    "formula_model": _text(row.get("formula_model")),
+                    "formula": _text(row.get("formula")),
+                    "dependencies_json": _json_text(row.get("dependencies") or row.get("formula_dependencies") or []),
+                    "selector_map_json": _json_text(row.get("selector_map") or {}),
+                }
+            )
+    return rows
+
+
 def product_option_rows_from_intelligence(intelligence_docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for doc in intelligence_docs:
@@ -327,7 +385,9 @@ def build_template_catalog_backfill(
         product_rows.extend(historical_product_option_rows(data, max_rows=historical_product_limit))
     return {
         "template_selector_maps": _dedupe(selector_map_rows(intelligence_docs), "selector_map_id"),
+        "template_lookup_tables": _dedupe(lookup_table_rows(intelligence_docs), "lookup_table_id"),
         "template_row_catalog": _dedupe(row_catalog_rows(intelligence_docs), "template_row_catalog_id"),
+        "template_formula_models": _dedupe(formula_model_rows(intelligence_docs), "template_formula_model_id"),
         "template_product_options": _dedupe(product_rows, "template_product_option_id"),
         "template_labor_options": _dedupe(labor_option_rows_from_intelligence(intelligence_docs), "template_labor_option_id"),
     }
@@ -400,6 +460,22 @@ def write_catalog_rows(conn: Connection, rows_by_table: dict[str, list[dict[str,
             rows_by_table.get("template_row_catalog") or [],
             ["template_row_catalog_id", "template_type", "template_name", "sheet_name", "row_number", "section", "template_bucket", "line_item_kind", "formula_model", "cell_roles_json"],
             json_columns={"cell_roles_json"},
+        ),
+        "template_lookup_tables": _upsert_rows(
+            conn,
+            "template_lookup_tables",
+            "lookup_table_id",
+            rows_by_table.get("template_lookup_tables") or [],
+            ["lookup_table_id", "template_type", "template_name", "sheet_name", "table_name", "row_number", "lookup_key", "headers_json", "values_json"],
+            json_columns={"headers_json", "values_json"},
+        ),
+        "template_formula_models": _upsert_rows(
+            conn,
+            "template_formula_models",
+            "template_formula_model_id",
+            rows_by_table.get("template_formula_models") or [],
+            ["template_formula_model_id", "template_type", "template_name", "sheet_name", "cell_address", "row_number", "template_bucket", "formula_kind", "formula_model", "formula", "dependencies_json", "selector_map_json"],
+            json_columns={"dependencies_json", "selector_map_json"},
         ),
         "template_product_options": _upsert_rows(
             conn,

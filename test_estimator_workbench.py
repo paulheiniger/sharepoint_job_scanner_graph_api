@@ -286,6 +286,131 @@ def test_workbench_enriches_row_options_from_template_catalogs() -> None:
     assert any(option.get("selector_code") == "5" and option.get("daily_rate") == 3600 for option in crew_options)
 
 
+def test_workbench_prefers_approved_template_pricing_link_for_material_candidate() -> None:
+    data = EstimatorData(
+        template_product_options=pd.DataFrame(
+            [
+                {
+                    "template_product_option_id": "tpl_gaco_2",
+                    "template_type": "insulation",
+                    "template_bucket": "foam",
+                    "row_number": 21,
+                    "product_name": "Gaco 2.0 lb.",
+                    "unit": "unit",
+                    "unit_price": 0,
+                }
+            ]
+        ),
+        template_pricing_option_links=pd.DataFrame(
+            [
+                {
+                    "link_id": "map_gaco_2_enverge",
+                    "template_product_option_id": "tpl_gaco_2",
+                    "pricing_candidate_key": "price_enverge",
+                    "template_type": "insulation",
+                    "template_bucket": "foam",
+                    "row_number": 21,
+                    "template_product_name": "Gaco 2.0 lb.",
+                    "canonical_template_option": "Enverge OnePass",
+                    "pricing_product_name": "Enverge Closed Cell OnePass",
+                    "confidence": 0.96,
+                    "reason": "Approved mapping from LLM review.",
+                    "review_status": "approved",
+                }
+            ]
+        ),
+        pricing_catalog=pd.DataFrame(
+            [
+                {
+                    "pricing_item_id": "price_wrong",
+                    "product_name": "GacoRoofFoam F2733",
+                    "product_name_normalized": "gacorooffoam f2733",
+                    "unit_price": 99,
+                    "is_current": True,
+                    "status": "active",
+                },
+                {
+                    "pricing_item_id": "price-current-enverge",
+                    "product_name": "Enverge Closed Cell OnePass",
+                    "product_name_normalized": "enverge closed cell onepass",
+                    "unit_price": 6.1,
+                    "is_current": True,
+                    "status": "active",
+                },
+            ]
+        ),
+    )
+
+    workbench = build_estimating_workbench(
+        insulation_recommendation(),
+        data,
+        scope_override={"foam_type": "closed_cell", "raw_input_notes": "Use closed-cell wall foam."},
+    )
+    foam = workbench["insulation_foam_template_decisions"][0]
+
+    assert foam["selected_pricing_candidate"] == "Enverge Closed Cell OnePass"
+    assert foam["unit_price"] == 6.1
+    assert foam["selected_price_source"] == "template_pricing_option_link"
+    assert "template_pricing_option_link" in foam["pricing_evidence_summary"]
+    selected_candidate = next(
+        candidate for candidate in foam["pricing_candidates"] if candidate["item_name"] == "Enverge Closed Cell OnePass"
+    )
+    assert selected_candidate["source"] == "template_pricing_option_link"
+    assert "Approved mapping" in selected_candidate["why_suggested"]
+
+
+def test_workbench_uses_materials_lookup_pricing_for_board_and_fabric() -> None:
+    data = EstimatorData(
+        template_lookup_tables=pd.DataFrame(
+            [
+                {
+                    "lookup_table_id": "lookup_iso",
+                    "template_type": "roofing",
+                    "template_name": "Roofing Template",
+                    "sheet_name": "Materials",
+                    "table_name": "board",
+                    "row_number": 18,
+                    "lookup_key": "ISO board",
+                    "values_json": '{"A": "ISO board", "B": "1\\"", "C": 47.38, "D": 42.25, "E": "Square"}',
+                },
+                {
+                    "lookup_table_id": "lookup_fabric",
+                    "template_type": "roofing",
+                    "template_name": "Roofing Template",
+                    "sheet_name": "Materials",
+                    "table_name": "fabric",
+                    "row_number": 9,
+                    "lookup_key": "",
+                    "values_json": '{"A": null, "B": "12\\"", "C": 53.03, "D": 300}',
+                },
+            ]
+        )
+    )
+
+    workbench = build_estimating_workbench(
+        roofing_recommendation(),
+        data,
+        scope_override={
+            "project_type": "roof replacement",
+            "raw_input_notes": "Full tear off with damaged ISO board and fabric reinforcement at open seams.",
+            "net_sqft": 10000,
+            "estimated_sqft": 10000,
+        },
+    )
+    board = next(
+        row
+        for row in workbench["roofing_board_fastener_template_decisions"]
+        if row["template_bucket"] == "board_stock" and row["workbook_row"] == "58"
+    )
+    fabric = next(row for row in workbench["roofing_detail_template_decisions"] if row["template_bucket"] == "fabric")
+
+    assert board["unit_price"] == 47.38
+    assert board["selected_pricing_candidate"].startswith("ISO board")
+    assert any(candidate["source"] == "template_lookup_materials" for candidate in board["pricing_candidates"])
+    assert fabric["unit_price"] == round(53.03 / 300, 4)
+    assert any(candidate["source"] == "template_lookup_materials" for candidate in fabric["pricing_candidates"])
+
+
 def test_roofing_companion_relationships_suggest_primer_and_detail_rows() -> None:
     workbench = build_estimating_workbench(roofing_recommendation(), roofing_companion_data())
 

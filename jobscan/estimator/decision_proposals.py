@@ -14,6 +14,7 @@ SOURCE_PRECEDENCE = {
     "historical_companion": 35,
     "deterministic_rule": 40,
     "reference_project": 45,
+    "photo_evidence": 47,
     "explicit_note": 50,
     "estimator_edit": 60,
 }
@@ -299,6 +300,7 @@ def build_decision_proposals(scope: dict[str, Any], recommendation: Any = None, 
     else:
         proposals.extend(_roofing_scope_proposals(scope, notes))
     proposals.extend(_reference_project_proposals(scope, data=data, template_type=template_type, notes=notes))
+    proposals.extend(_photo_scope_proposals(template_type, scope))
     proposals.extend(_ai_scope_proposals(template_type, _ai_scope_debug(recommendation)))
     return merge_decision_proposals(proposals)
 
@@ -1120,6 +1122,34 @@ def _proposal(
         source=source,
         section=section,
     )
+
+
+def _photo_scope_proposals(template_type: str, scope: dict[str, Any]) -> list[DecisionProposal]:
+    raw = scope.get("photo_decision_proposals") or []
+    proposals: list[DecisionProposal] = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        proposal_template = str(item.get("template_type") or template_type or "").strip().lower()
+        if proposal_template and proposal_template != template_type:
+            continue
+        proposals.append(
+            DecisionProposal(
+                decision_id=str(item.get("decision_id") or ""),
+                template_type=template_type,
+                template_bucket=str(item.get("template_bucket") or ""),
+                workbook_row=str(item.get("workbook_row") or ""),
+                include=item.get("include") if item.get("include") is not None else True,
+                proposed_values=dict(item.get("proposed_values") or {}),
+                confidence=float(item.get("confidence") or 0.0),
+                review_required=True if item.get("review_required") is None else bool(item.get("review_required")),
+                review_reasons=list(item.get("review_reasons") or ["Photo evidence requires estimator confirmation."]),
+                evidence=item.get("evidence") if isinstance(item.get("evidence"), dict) else {},
+                source="photo_evidence",
+                section=str(item.get("section") or ""),
+            )
+        )
+    return proposals
 
 
 def _ai_scope_proposals(template_type: str, ai_debug: dict[str, Any]) -> list[DecisionProposal]:

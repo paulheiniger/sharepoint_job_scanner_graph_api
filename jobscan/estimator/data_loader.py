@@ -164,6 +164,7 @@ def normalize_estimator_data(data: EstimatorData) -> EstimatorData:
     data.product_rules = normalize_estimator_dataframe(data.product_rules)
     data.product_decision_links = normalize_estimator_dataframe(data.product_decision_links)
     data.template_product_option_links = normalize_estimator_dataframe(data.template_product_option_links)
+    data.template_pricing_option_links = normalize_estimator_dataframe(data.template_pricing_option_links)
     data.template_selector_maps = normalize_estimator_dataframe(data.template_selector_maps)
     data.template_lookup_tables = normalize_estimator_dataframe(data.template_lookup_tables)
     data.template_row_catalog = normalize_estimator_dataframe(data.template_row_catalog)
@@ -368,6 +369,7 @@ def load_estimator_data_from_database(database_url: str) -> EstimatorData:
             ("product_rules", "product_rules"),
             ("product_decision_links", "product_decision_links"),
             ("template_product_option_links", "template_product_option_links"),
+            ("template_pricing_option_links", "template_pricing_option_links"),
         ):
             if relation_exists(connection, relation_name):
                 setattr(data, attr, _read_sql_dataframe(connection, f"SELECT * FROM {relation_name}"))

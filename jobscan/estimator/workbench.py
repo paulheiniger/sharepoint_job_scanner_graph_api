@@ -2561,7 +2561,222 @@ def _cost_source_for_candidate(formula: dict[str, Any], candidate: dict[str, Any
     candidate_source = str(candidate.get("source") or candidate.get("item_source") or "")
     if cost_source == "current_pricing" and candidate_source == "estimate_template_rows_formula_compatible":
         return "historical_formula_unit_price"
+    if cost_source == "current_pricing" and candidate_source in {"template_pricing_option_link", "template_lookup_materials"}:
+        return candidate_source
     return cost_source
+
+
+def _candidate_source_rank(source: Any) -> int:
+    normalized = _normalized(source)
+    ranks = {
+        "template pricing option link": 8,
+        "template lookup materials": 7,
+        "current pricing plus historical usage": 6,
+        "current pricing": 5,
+        "template product options": 4,
+        "estimate template rows formula compatible": 3,
+        "historical formula unit price": 3,
+        "pricing or history": 2,
+        "selected item": 1,
+    }
+    return ranks.get(normalized, 0)
+
+
+def _normalized_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def _matches_text(left: Any, right: Any) -> bool:
+    left_text = _normalized(left)
+    right_text = _normalized(right)
+    if not left_text or not right_text:
+        return False
+    return left_text == right_text or left_text in right_text or right_text in left_text
+
+
+def _pricing_catalog_row_for_link(data: Any, link: dict[str, Any]) -> dict[str, Any]:
+    pricing = _current_pricing_rows(_frame(data, "pricing_catalog"))
+    if pricing.empty:
+        pricing = _current_pricing_rows(_frame(data, "pricing"))
+    if pricing.empty:
+        return {}
+    pricing_item_id = str(first_nonblank(link.get("pricing_item_id"), link.get("pricing_candidate_key"), "") or "").strip()
+    if pricing_item_id and "pricing_item_id" in pricing.columns:
+        exact = pricing[pricing["pricing_item_id"].fillna("").astype(str).eq(pricing_item_id)]
+        if not exact.empty:
+            return exact.iloc[0].to_dict()
+    target_names = [
+        link.get("pricing_product_name"),
+        link.get("canonical_template_option"),
+        link.get("template_product_name"),
+    ]
+    normalized_columns = [column for column in ("product_name_normalized", "product_name", "description") if column in pricing.columns]
+    for target in target_names:
+        target_norm = _normalized(target)
+        target_key = _normalized_key(target)
+        if not target_norm:
+            continue
+        for _, row in pricing.iterrows():
+            row_text = " ".join(str(row.get(column) or "") for column in normalized_columns)
+            if _matches_text(target_norm, row_text) or (target_key and target_key == _normalized_key(row_text)):
+                return row.to_dict()
+    return {}
+
+
+def _template_pricing_link_matches(
+    link: dict[str, Any],
+    option: dict[str, Any],
+    *,
+    package: str,
+    row: dict[str, Any],
+) -> bool:
+    if str(link.get("review_status") or "approved").lower() not in {"approved", "active", ""}:
+        return False
+    option_id = str(option.get("template_product_option_id") or "").strip()
+    link_option_id = str(link.get("template_product_option_id") or "").strip()
+    if option_id and link_option_id and option_id == link_option_id:
+        return True
+    if link.get("template_bucket") and _normalized(link.get("template_bucket")) != _normalized(package):
+        return False
+    row_numbers = _template_row_numbers(row)
+    option_row = int(safe_number(option.get("row_number"), 0))
+    link_row = int(safe_number(link.get("row_number"), 0))
+    if link_row and row_numbers and link_row not in row_numbers:
+        return False
+    if link_row and option_row and link_row != option_row:
+        return False
+    link_selector = str(link.get("selector_code") or "").strip()
+    option_selector = str(option.get("selector_code") or "").strip()
+    if link_selector and option_selector and link_selector != option_selector:
+        return False
+    option_names = [
+        option.get("item_name"),
+        option.get("resolved_template_option"),
+        row.get("item_name"),
+        row.get("resolved_template_option"),
+        row.get("current_item"),
+    ]
+    link_names = [link.get("template_product_name"), link.get("canonical_template_option"), link.get("pricing_product_name")]
+    if any(_matches_text(left, right) for left in option_names for right in link_names):
+        return True
+    return bool(link_row and row_numbers and link_row in row_numbers and not link_option_id)
+
+
+def _template_pricing_link_options(
+    data: Any,
+    *,
+    row: dict[str, Any],
+    options: list[dict[str, Any]],
+    package: str,
+    default_unit: str,
+) -> list[dict[str, Any]]:
+    links = _records(_frame(data, "template_pricing_option_links"))
+    if not links:
+        return []
+    linked_options: list[dict[str, Any]] = []
+    option_pool = options or [{}]
+    for link in links:
+        for option in option_pool:
+            if not _template_pricing_link_matches(link, option, package=package, row=row):
+                continue
+            pricing_row = _pricing_catalog_row_for_link(data, link)
+            item_name = first_nonblank(
+                pricing_row.get("product_name") if pricing_row else "",
+                pricing_row.get("description") if pricing_row else "",
+                link.get("pricing_product_name"),
+                option.get("item_name"),
+                link.get("canonical_template_option"),
+                "",
+            )
+            if not item_name:
+                continue
+            preferred = "price_per_gallon" if package == "coating" else "unit_price"
+            unit_price = _price_value_from_row(pricing_row, preferred) if pricing_row else safe_number(option.get("unit_price"), 0.0)
+            linked_options.append(
+                {
+                    **option,
+                    "item_name": str(item_name),
+                    "unit": _unit_from_row(pricing_row, default_unit) if pricing_row else option.get("unit") or default_unit,
+                    "unit_price": unit_price,
+                    "pricing_item_id": first_nonblank(pricing_row.get("pricing_item_id") if pricing_row else "", link.get("pricing_item_id"), ""),
+                    "pricing_candidate_key": link.get("pricing_candidate_key"),
+                    "template_product_option_id": link.get("template_product_option_id") or option.get("template_product_option_id"),
+                    "template_pricing_link_id": link.get("link_id"),
+                    "source": "template_pricing_option_link",
+                    "item_source": "template_pricing_option_link",
+                    "selected_item_reason": first_nonblank(
+                        link.get("reason"),
+                        "Approved template option to pricing catalog mapping.",
+                    ),
+                    "mapping_confidence": safe_number(link.get("confidence"), 0.0),
+                }
+            )
+            break
+    return linked_options
+
+
+def _template_lookup_material_price(table_name: str, values: dict[str, Any]) -> tuple[float, str, str]:
+    cost = safe_number(values.get("C"), 0.0)
+    units = safe_number(values.get("D"), 0.0)
+    basis = str(first_nonblank(values.get("E"), values.get("D"), "") or "")
+    if table_name in {"fabric", "solvents"} and cost > 0 and units > 0:
+        return cost / units, "lf" if table_name == "fabric" else "gal", f"Materials tab cost {cost:g} divided by unit {units:g}."
+    if table_name in {"fasteners", "plates"} and cost > 0:
+        return cost, "1000", "Materials tab price per 1,000 units."
+    if table_name == "board" and cost > 0:
+        return cost, "Square", "Materials tab board price per square."
+    if cost > 0:
+        return cost, basis or "unit", "Materials tab unit cost."
+    return 0.0, basis or "unit", ""
+
+
+def _template_lookup_material_options(data: Any, *, package: str, default_unit: str) -> list[dict[str, Any]]:
+    table_map = {
+        "board_stock": {"board"},
+        "fasteners": {"fasteners"},
+        "fastener_treatment": {"fasteners"},
+        "plates": {"plates"},
+        "fabric": {"fabric"},
+        "seam_treatment": {"fabric"},
+        "thinner": {"solvents"},
+    }
+    wanted_tables = table_map.get(package, set())
+    if not wanted_tables:
+        return []
+    rows = _records(_frame(data, "template_lookup_tables"))
+    options: list[dict[str, Any]] = []
+    for lookup in rows:
+        if _normalized(lookup.get("sheet_name")) != "materials":
+            continue
+        table_name = _normalized(lookup.get("table_name"))
+        if table_name not in wanted_tables:
+            continue
+        values = _json_object(lookup.get("values_json"))
+        label = first_nonblank(lookup.get("lookup_key"), values.get("A"), "")
+        if table_name == "fabric":
+            label = f"{first_nonblank(values.get('B'), label, '').strip()} Fabric".strip()
+        elif table_name in {"fasteners", "board"} and values.get("B"):
+            label = f"{label} {values.get('B')}".strip()
+        if not label:
+            label = str(table_name).replace("_", " ").title()
+        unit_price, unit, reason = _template_lookup_material_price(table_name, values)
+        if unit_price <= 0:
+            continue
+        options.append(
+            {
+                "item_name": str(label),
+                "unit": unit or default_unit,
+                "unit_price": unit_price,
+                "template_lookup_table_id": lookup.get("lookup_table_id"),
+                "template_product_option_id": "",
+                "source": "template_lookup_materials",
+                "item_source": "template_lookup_materials",
+                "selected_item_reason": reason,
+                "template_bucket": package,
+                "row_number": lookup.get("row_number"),
+            }
+        )
+    return options
 
 
 def _material_item_options(row: dict[str, Any]) -> list[dict[str, Any]]:
@@ -2597,10 +2812,35 @@ def _candidate_options_with_historical_templates(
     default_unit: str = "unit",
 ) -> list[dict[str, Any]]:
     options_by_name: dict[str, dict[str, Any]] = {}
-    for option in _material_item_options(row):
+    material_options = _material_item_options(row)
+    if data is not None:
+        material_options = _merge_option_lists(
+            material_options,
+            _template_pricing_link_options(
+                data,
+                row=row,
+                options=material_options,
+                package=package,
+                default_unit=default_unit,
+            ),
+            identity_fields=("item_name", "pricing_item_id", "pricing_candidate_key", "source"),
+        )
+        material_options = _merge_option_lists(
+            material_options,
+            _template_lookup_material_options(data, package=package, default_unit=default_unit),
+            identity_fields=("item_name", "template_lookup_table_id", "source"),
+        )
+    for option in material_options:
         name = _normalized(option.get("item_name"))
-        if name:
-            options_by_name[name] = dict(option)
+        if not name:
+            continue
+        existing = options_by_name.get(name, {})
+        merged = {**existing, **option}
+        if _candidate_source_rank(option.get("source") or option.get("item_source")) >= _candidate_source_rank(
+            existing.get("source") or existing.get("item_source")
+        ):
+            merged = {**existing, **option}
+        options_by_name[name] = merged
     if data is not None:
         for option in _historical_template_item_options(
             data,
@@ -2722,13 +2962,6 @@ def _selected_insulation_material_pricing_candidate(
 ) -> dict[str, Any]:
     preferred = {_normalized(name) for name in preferred_names if _normalized(name)}
     scored: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
-    source_rank = {
-        "current_pricing": 5,
-        "template_product_options": 4,
-        "estimate_template_rows_formula_compatible": 3,
-        "pricing_or_history": 2,
-        "selected_item": 1,
-    }
     for index, candidate in enumerate(candidates):
         unit_price = safe_number(candidate.get("unit_price"), 0.0)
         if unit_price <= 0:
@@ -2749,7 +2982,7 @@ def _selected_insulation_material_pricing_candidate(
                 (
                     _normalized(item_name) in preferred,
                     fit_score,
-                    source_rank.get(_normalized(candidate_source), source_rank.get(candidate_source, 0)),
+                    _candidate_source_rank(candidate_source),
                     safe_number(candidate.get("evidence_count"), 0.0),
                     -index,
                     item_name,
@@ -2775,6 +3008,11 @@ def _pricing_evidence_summary(candidate: dict[str, Any]) -> str:
     source = candidate.get("source") or candidate.get("item_source")
     if source:
         parts.append(f"source {source}")
+    reason = first_nonblank(candidate.get("selected_item_reason"), candidate.get("why_suggested"), "")
+    if reason:
+        parts.append(str(reason))
+    elif _normalized(source) == "template pricing option link":
+        parts.append("Approved mapping from template-pricing link.")
     evidence_count = int(safe_number(candidate.get("evidence_count"), 0.0))
     if evidence_count > 0:
         parts.append(f"{evidence_count} historical rows")
@@ -2819,19 +3057,55 @@ def _foam_current_pricing_options(data: Any, template_option: Any) -> list[dict[
 
 def _foam_pricing_candidates(row: dict[str, Any], scope: dict[str, Any], data: Any = None, template_option: str = "") -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
-    options = [
+    seed_row = dict(row or {})
+    if data is not None:
+        seed_row.setdefault("template_type", "insulation")
+        seed_row.setdefault("template_bucket", "foam")
+        seed_row.setdefault("package_key", "foam")
+        seed_row.setdefault("decision_id", "insulation_foam_system")
+        seed_row.setdefault("workbook_row", "19-21")
+        seed_row.setdefault("row_number", "19-21")
+        catalog_options = _product_options_from_catalog(
+            catalog=_template_option_catalog_payload(data),
+            row=seed_row,
+            template_type="insulation",
+        )
+        if catalog_options:
+            seed_row["item_options_json"] = json.dumps(
+                _merge_option_lists(
+                    _material_item_options(seed_row),
+                    catalog_options,
+                    identity_fields=("item_name", "template_product_option_id", "selector_code"),
+                ),
+                default=str,
+            )
+    raw_options = [
         *_foam_current_pricing_options(data, template_option),
-        *_candidate_options_with_historical_templates(row, package="foam", scope=scope, data=data, default_unit="unit"),
+        *_candidate_options_with_historical_templates(seed_row, package="foam", scope=scope, data=data, default_unit="unit"),
     ]
-    seen_options: set[str] = set()
-    for option in options:
+    options_by_name: dict[str, dict[str, Any]] = {}
+    for option in raw_options:
         item_name = str(option.get("item_name") or "").strip()
         if not item_name:
             continue
-        option_key = _normalized(item_name)
-        if option_key in seen_options:
+        key = _normalized(item_name)
+        existing = options_by_name.get(key, {})
+        if _candidate_source_rank(option.get("source") or option.get("item_source")) >= _candidate_source_rank(
+            existing.get("source") or existing.get("item_source")
+        ):
+            merged = {**existing, **option}
+            if safe_number(merged.get("unit_price"), 0.0) <= 0:
+                merged["unit_price"] = first_nonblank(existing.get("unit_price"), option.get("unit_price"), 0.0)
+            options_by_name[key] = merged
+        elif existing:
+            merged = {**option, **existing}
+            if safe_number(merged.get("unit_price"), 0.0) <= 0:
+                merged["unit_price"] = first_nonblank(option.get("unit_price"), existing.get("unit_price"), 0.0)
+            options_by_name[key] = merged
+    for option in options_by_name.values():
+        item_name = str(option.get("item_name") or "").strip()
+        if not item_name:
             continue
-        seen_options.add(option_key)
         context = (
             _product_context(
                 data,
@@ -2856,6 +3130,7 @@ def _foam_pricing_candidates(row: dict[str, Any], scope: dict[str, Any], data: A
                     "unit_price": safe_number(option.get("unit_price"), 0.0),
                     "source": option.get("source") or option.get("item_source") or "pricing_or_history",
                     "why_suggested": option.get("selected_item_reason") or option.get("source") or "",
+                    "selected_item_reason": option.get("selected_item_reason") or option.get("why_suggested") or "",
                     "product_id": context.get("product_id") or "",
                     "product_name": context.get("product_name") or "",
                     "manufacturer": context.get("manufacturer") or "",
@@ -2876,6 +3151,7 @@ def _foam_pricing_candidates(row: dict[str, Any], scope: dict[str, Any], data: A
             _foam_candidate_rank(candidate),
             safe_number(candidate.get("template_family_match_score"), 0.0),
             not _is_roofing_foam_candidate(candidate),
+            _candidate_source_rank(candidate.get("source")),
             safe_number(candidate.get("unit_price"), 0.0) > 0,
             safe_number(candidate.get("product_match_score"), 0.0),
             candidate.get("item_name") or "",
@@ -2951,6 +3227,7 @@ def _roofing_foam_pricing_candidates(
                 "unit_price": safe_number(option.get("unit_price"), 0.0),
                 "source": option.get("source") or option.get("item_source") or "pricing_or_history",
                 "why_suggested": option.get("selected_item_reason") or option.get("source") or "",
+                "selected_item_reason": option.get("selected_item_reason") or option.get("why_suggested") or "",
                 "product_id": context.get("product_id") or "",
                 "product_name": context.get("product_name") or "",
                 "manufacturer": context.get("manufacturer") or "",
@@ -2966,6 +3243,7 @@ def _roofing_foam_pricing_candidates(
         key=lambda candidate: (
             1 if _is_roofing_foam_candidate(candidate) else 0,
             _foam_candidate_rank(candidate),
+            _candidate_source_rank(candidate.get("source")),
             safe_number(candidate.get("product_match_score"), 0.0),
             safe_number(candidate.get("unit_price"), 0.0) > 0,
             candidate.get("item_name") or "",
@@ -3066,6 +3344,7 @@ def _roofing_coating_pricing_candidates(
                 "unit_price": safe_number(option.get("unit_price"), 0.0),
                 "source": option.get("source") or option.get("item_source") or "pricing_or_history",
                 "why_suggested": option.get("selected_item_reason") or option.get("source") or "; ".join(reasons),
+                "selected_item_reason": option.get("selected_item_reason") or option.get("why_suggested") or "",
                 "product_id": context.get("product_id") or "",
                 "product_name": context.get("product_name") or "",
                 "manufacturer": context.get("manufacturer") or "",
@@ -3084,6 +3363,7 @@ def _roofing_coating_pricing_candidates(
             1 if candidate.get("compatibility_status") == "compatible" else 0,
             1 if _is_valid_coating_option(candidate) else 0,
             safe_number(candidate.get("fit_score"), 0.0),
+            _candidate_source_rank(candidate.get("source")),
             safe_number(candidate.get("product_match_score"), 0.0),
             safe_number(candidate.get("unit_price"), 0.0) > 0,
             candidate.get("item_name") or "",
@@ -3168,6 +3448,7 @@ def _roofing_primer_pricing_candidates(
                 "unit_price": safe_number(option.get("unit_price"), 0.0),
                 "source": option.get("source") or option.get("item_source") or "pricing_or_history",
                 "why_suggested": option.get("selected_item_reason") or option.get("source") or "; ".join(reasons),
+                "selected_item_reason": option.get("selected_item_reason") or option.get("why_suggested") or "",
                 "product_id": context.get("product_id") or "",
                 "product_name": context.get("product_name") or "",
                 "manufacturer": context.get("manufacturer") or "",
@@ -3185,6 +3466,7 @@ def _roofing_primer_pricing_candidates(
         key=lambda candidate: (
             1 if candidate.get("compatibility_status") == "compatible" else 0,
             safe_number(candidate.get("fit_score"), 0.0),
+            _candidate_source_rank(candidate.get("source")),
             safe_number(candidate.get("product_match_score"), 0.0),
             safe_number(candidate.get("unit_price"), 0.0) > 0,
             candidate.get("item_name") or "",
@@ -3401,6 +3683,7 @@ def _roofing_detail_pricing_candidates(
                 "unit_price": safe_number(option.get("unit_price"), 0.0),
                 "source": option.get("source") or option.get("item_source") or "pricing_or_history",
                 "why_suggested": option.get("selected_item_reason") or option.get("source") or "; ".join(reasons),
+                "selected_item_reason": option.get("selected_item_reason") or option.get("why_suggested") or "",
                 "product_id": context.get("product_id") or "",
                 "product_name": context.get("product_name") or "",
                 "manufacturer": context.get("manufacturer") or "",
@@ -3418,6 +3701,7 @@ def _roofing_detail_pricing_candidates(
         key=lambda candidate: (
             1 if candidate.get("compatibility_status") == "compatible" else 0,
             safe_number(candidate.get("fit_score"), 0.0),
+            _candidate_source_rank(candidate.get("source")),
             safe_number(candidate.get("product_match_score"), 0.0),
             safe_number(candidate.get("unit_price"), 0.0) > 0,
             candidate.get("item_name") or "",
@@ -3468,6 +3752,7 @@ def _roofing_board_pricing_candidates(
                 "unit_price": safe_number(option.get("unit_price"), 0.0),
                 "source": option.get("source") or option.get("item_source") or "pricing_or_history",
                 "why_suggested": option.get("selected_item_reason") or option.get("source") or "; ".join(reasons),
+                "selected_item_reason": option.get("selected_item_reason") or option.get("why_suggested") or "",
                 "product_id": context.get("product_id") or "",
                 "product_name": context.get("product_name") or "",
                 "manufacturer": context.get("manufacturer") or "",
@@ -3485,6 +3770,7 @@ def _roofing_board_pricing_candidates(
         key=lambda candidate: (
             1 if candidate.get("compatibility_status") == "compatible" else 0,
             safe_number(candidate.get("fit_score"), 0.0),
+            _candidate_source_rank(candidate.get("source")),
             safe_number(candidate.get("product_match_score"), 0.0),
             safe_number(candidate.get("unit_price"), 0.0) > 0,
             candidate.get("item_name") or "",
@@ -3531,6 +3817,7 @@ def _roofing_granules_pricing_candidates(
                 "unit_price": safe_number(option.get("unit_price"), 0.0),
                 "source": option.get("source") or option.get("item_source") or "pricing_or_history",
                 "why_suggested": option.get("selected_item_reason") or option.get("source") or "; ".join(reasons),
+                "selected_item_reason": option.get("selected_item_reason") or option.get("why_suggested") or "",
                 "product_id": context.get("product_id") or "",
                 "product_name": context.get("product_name") or "",
                 "manufacturer": context.get("manufacturer") or "",
@@ -3548,6 +3835,7 @@ def _roofing_granules_pricing_candidates(
         key=lambda candidate: (
             1 if candidate.get("compatibility_status") == "compatible" else 0,
             safe_number(candidate.get("fit_score"), 0.0),
+            _candidate_source_rank(candidate.get("source")),
             safe_number(candidate.get("product_match_score"), 0.0),
             safe_number(candidate.get("unit_price"), 0.0) > 0,
             candidate.get("item_name") or "",
@@ -3789,6 +4077,23 @@ def _selected_foam_candidate(candidates: list[dict[str, Any]], selected_name: An
             if _normalized(candidate.get("item_name")) == normalized:
                 requested = candidate
                 break
+    approved_priced = [
+        candidate
+        for candidate in candidates
+        if _candidate_source_rank(candidate.get("source") or candidate.get("item_source")) >= _candidate_source_rank("template_pricing_option_link")
+        and safe_number(candidate.get("unit_price"), 0.0) > 0
+        and not _is_bad_default_foam_candidate(candidate)
+    ]
+    if approved_priced:
+        approved_priced.sort(
+            key=lambda candidate: (
+                _candidate_source_rank(candidate.get("source") or candidate.get("item_source")),
+                safe_number(candidate.get("template_family_match_score"), 0.0),
+                safe_number(candidate.get("product_match_score"), 0.0),
+            ),
+            reverse=True,
+        )
+        return approved_priced[0]
     best_family_candidate = max(
         candidates,
         key=lambda candidate: safe_number(candidate.get("template_family_match_score"), 0.0),
@@ -4003,6 +4308,18 @@ def _build_insulation_foam_template_decisions(
         "matched" if selected_candidate.get("product_id") else "",
         "missing",
     )
+    selected_candidate_for_summary = next(
+        (
+            candidate
+            for candidate in candidates
+            if _normalized(candidate.get("item_name")) == _normalized(selected_candidate.get("item_name"))
+            and (
+                not selected_candidate.get("source")
+                or _normalized(candidate.get("source")) == _normalized(selected_candidate.get("source"))
+            )
+        ),
+        selected_candidate,
+    )
     return [
         {
             "include": include,
@@ -4064,7 +4381,8 @@ def _build_insulation_foam_template_decisions(
             "cost_source": _cost_source_for_candidate(formula, selected_candidate),
             "selected_pricing_candidate": selected_candidate.get("item_name") or str(selected_candidate_name or ""),
             "selected_pricing_item_id": selected_candidate.get("pricing_item_id"),
-            "pricing_evidence_summary": _pricing_evidence_summary(selected_candidate),
+            "selected_price_source": selected_candidate_for_summary.get("source") or selected_candidate_for_summary.get("item_source") or "",
+            "pricing_evidence_summary": _pricing_evidence_summary(selected_candidate_for_summary),
             "pricing_candidates": candidates,
             "pricing_candidates_json": json.dumps(candidates, default=str),
             "compatibility_status": "review" if warnings and compatibility.get("compatibility_status") == "compatible" else compatibility.get("compatibility_status"),
@@ -8132,6 +8450,20 @@ def _scope_from_recommendation(recommendation: Any) -> dict[str, Any]:
         "insulation_deductions",
         "insulation_r_value_targets",
         "area_calculation_explanation",
+        "photo_evidence",
+        "photo_decision_proposals",
+        "photo_scope_updates",
+        "photo_selected_image_ids",
+        "photo_selected_hashes",
+        "photo_visible_issues",
+        "photo_risk_flags",
+        "photo_missing_photos",
+        "photo_confidence",
+        "condition_detail_flags",
+        "defects",
+        "scope_triggers",
+        "missing_info",
+        "review_flags",
     ):
         if field in parsed:
             scope[field] = parsed.get(field)

@@ -85,6 +85,25 @@ CREATE TABLE IF NOT EXISTS template_product_option_links (
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS template_pricing_option_links (
+    link_id TEXT PRIMARY KEY,
+    template_product_option_id TEXT,
+    pricing_candidate_key TEXT,
+    pricing_item_id TEXT,
+    template_type TEXT,
+    template_bucket TEXT,
+    row_number INTEGER,
+    selector_code TEXT,
+    template_product_name TEXT,
+    canonical_template_option TEXT,
+    pricing_product_name TEXT,
+    confidence NUMERIC,
+    reason TEXT,
+    review_status TEXT DEFAULT 'approved',
+    source_file TEXT,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS product_document_queue (
     queue_id TEXT PRIMARY KEY,
     source_path TEXT UNIQUE,
@@ -155,6 +174,8 @@ CREATE INDEX IF NOT EXISTS idx_product_decision_links_product ON product_decisio
 CREATE INDEX IF NOT EXISTS idx_product_decision_links_decision ON product_decision_links(decision_id);
 CREATE INDEX IF NOT EXISTS idx_template_product_option_links_option ON template_product_option_links(template_product_option_id);
 CREATE INDEX IF NOT EXISTS idx_template_product_option_links_product ON template_product_option_links(product_id);
+CREATE INDEX IF NOT EXISTS idx_template_pricing_option_links_option ON template_pricing_option_links(template_product_option_id);
+CREATE INDEX IF NOT EXISTS idx_template_pricing_option_links_pricing ON template_pricing_option_links(pricing_candidate_key);
 CREATE INDEX IF NOT EXISTS idx_product_document_queue_status ON product_document_queue(ingest_status);
 CREATE INDEX IF NOT EXISTS idx_product_family_lookup_vendor ON product_family_lookup(vendor);
 CREATE INDEX IF NOT EXISTS idx_product_family_lookup_domain ON product_family_lookup(source_domain);

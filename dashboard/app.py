@@ -64,6 +64,14 @@ from jobscan.estimator.workbench import (
 )
 from jobscan.estimator.workbench_export import DEFAULT_WORKBENCH_EXPORT_DIR, export_workbench_review_package
 from jobscan.estimator.workbook_writer import DEFAULT_ESTIMATE_OUTPUT_DIR, generate_estimate_workbook, resolve_default_template_path
+from jobscan.estimator.photo_evidence import (
+    analyze_selected_photos_with_ai,
+    apply_photo_scope_context,
+    build_photo_scope_context,
+    combine_notes_with_photo_context,
+    merge_photo_ai_analysis,
+    stage_uploaded_images,
+)
 
 try:
     from streamlit_calendar import calendar
@@ -4657,6 +4665,147 @@ def parse_reference_job_ids(value: Any) -> list[str]:
     return [part.strip() for part in text.split(",") if part.strip()]
 
 
+def render_estimator_photo_upload_panel(*, notes: str, estimate_type: str) -> dict[str, Any] | None:
+    st.subheader("Photo Evidence")
+    st.caption(
+        "Upload photos freely. The app stores them, generates thumbnails, classifies obvious signals locally, "
+        "and selects a small representative set. No vision API call runs unless you click Analyze Selected Photos with AI."
+    )
+    upload_key_source = f"{estimate_type}|{notes}|{current_estimator_session_id() or 'draft'}"
+    upload_key = hashlib.sha1(upload_key_source.encode("utf-8")).hexdigest()[:16]
+    uploaded_files = st.file_uploader(
+        "Upload job photos",
+        type=["jpg", "jpeg", "png", "webp", "bmp", "tif", "tiff"],
+        accept_multiple_files=True,
+        key=f"estimator_photo_uploads_{upload_key}",
+        help="Photos are processed locally first. Use selected photos as decision evidence only when you choose to include them.",
+    )
+    if not uploaded_files:
+        st.session_state.pop("estimator_photo_context", None)
+        st.session_state.pop("estimator_photo_records", None)
+        return None
+
+    photo_records = stage_uploaded_images(uploaded_files, upload_key=upload_key)
+    if not photo_records:
+        st.info("No readable image files were uploaded.")
+        return None
+
+    st.session_state["estimator_photo_records"] = photo_records
+    selected_default = {record.get("content_hash") for record in photo_records if record.get("selected")}
+    photo_rows = [
+        {
+            "use": record.get("content_hash") in selected_default,
+            "file_name": record.get("file_name"),
+            "category": record.get("category"),
+            "signals": ", ".join(record.get("signals") or []),
+            "quality_flags": ", ".join(record.get("quality_flags") or []),
+            "image_id": record.get("image_id"),
+            "content_hash": record.get("content_hash"),
+        }
+        for record in photo_records
+    ]
+    photo_df = pd.DataFrame(photo_rows)
+    edited_photo_df = st.data_editor(
+        photo_df[["use", "file_name", "category", "signals", "quality_flags", "image_id"]],
+        hide_index=True,
+        use_container_width=True,
+        num_rows="fixed",
+        key=f"estimator_photo_selection_{upload_key}",
+        column_config={
+            "use": "Use",
+            "file_name": "Photo",
+            "category": "Local Category",
+            "signals": "Local Signals",
+            "quality_flags": "Quality Flags",
+            "image_id": "Image ID",
+        },
+        disabled=["file_name", "category", "signals", "quality_flags", "image_id"],
+    )
+    selected_image_ids = {str(row.get("image_id")) for row in edited_photo_df.to_dict(orient="records") if row.get("use") and row.get("image_id")}
+    selected_hashes = [str(record.get("content_hash")) for record in photo_records if str(record.get("image_id")) in selected_image_ids]
+    selected_records = [record for record in photo_records if record.get("content_hash") in set(selected_hashes)]
+    if selected_records:
+        preview_cols = st.columns(min(len(selected_records), 4))
+        for idx, record in enumerate(selected_records[:4]):
+            thumb = record.get("thumbnail_path")
+            if thumb and Path(str(thumb)).exists():
+                preview_cols[idx % len(preview_cols)].image(str(thumb), caption=str(record.get("file_name") or ""), use_container_width=True)
+
+    estimate_type_text = str(estimate_type or "").lower()
+    template_hint = "insulation" if "insulation" in estimate_type_text else "roofing" if "roof" in estimate_type_text else ""
+    photo_context = build_photo_scope_context(photo_records, selected_hashes=selected_hashes, template_type=template_hint)
+    try:
+        max_ai_images = max(1, int(os.getenv("OPENAI_ESTIMATOR_PHOTO_MAX_IMAGES", "8")))
+    except (TypeError, ValueError):
+        max_ai_images = 8
+    ai_analysis_key = f"estimator_photo_ai_analysis_{upload_key}"
+    selected_hash_set = {str(value) for value in selected_hashes if str(value)}
+    stored_ai_analysis = st.session_state.get(ai_analysis_key)
+    if stored_ai_analysis and set(str(value) for value in (stored_ai_analysis.get("selected_hashes") or [])) == selected_hash_set:
+        photo_context = merge_photo_ai_analysis(photo_context, stored_ai_analysis, records=photo_records)
+    elif stored_ai_analysis:
+        st.caption("Stored AI photo analysis is hidden because the selected photo set changed.")
+    st.caption(
+        f"Optional AI photo analysis sends at most {max_ai_images} selected image(s), uses cached results when available, "
+        "and returns structured estimator notes."
+    )
+    analyze_disabled = not selected_hashes
+    if st.button(
+        "Analyze Selected Photos with AI",
+        key=f"estimator_analyze_photos_ai_{upload_key}",
+        disabled=analyze_disabled,
+        help="Runs only when clicked. The selected photos are sent to the configured OpenAI model with low-detail image inputs.",
+    ):
+        if not os.getenv("OPENAI_API_KEY"):
+            st.warning("OPENAI_API_KEY is not configured for this runtime, so AI photo analysis cannot run.")
+        else:
+            try:
+                with st.spinner("Analyzing selected photos..."):
+                    stored_ai_analysis = analyze_selected_photos_with_ai(
+                        photo_records,
+                        selected_hashes=selected_hashes,
+                        template_type=template_hint,
+                        notes=notes,
+                        max_images=max_ai_images,
+                    )
+                st.session_state[ai_analysis_key] = stored_ai_analysis
+                photo_context = merge_photo_ai_analysis(photo_context, stored_ai_analysis, records=photo_records)
+                if stored_ai_analysis.get("cache_hit"):
+                    st.success("Loaded cached AI photo analysis for this selected photo set.")
+                else:
+                    st.success("AI photo analysis added to the selected photo evidence.")
+            except Exception as exc:
+                st.warning(f"AI photo analysis failed: {type(exc).__name__}: {exc}")
+    st.session_state["estimator_photo_context"] = photo_context
+    use_photo_evidence = st.checkbox(
+        "Use selected photo evidence to fill review-marked decisions",
+        value=True,
+        key=f"estimator_use_photo_evidence_{upload_key}",
+        help="Photo evidence becomes review-required decision evidence. It does not call the vision API and does not override estimator edits.",
+    )
+    st.session_state["estimator_use_photo_evidence"] = use_photo_evidence
+
+    metric_row(
+        [
+            ("Uploaded", str(photo_context.get("image_count") or 0)),
+            ("Selected", str(photo_context.get("selected_image_count") or 0)),
+            ("Local Signals", str(len(photo_context.get("signals") or []))),
+            ("Confidence", f"{float(photo_context.get('confidence') or 0):.2f}"),
+        ]
+    )
+    if photo_context.get("note_text"):
+        st.info(photo_context["note_text"])
+    if photo_context.get("ai_photo_analysis_used"):
+        ai_analysis = photo_context.get("ai_photo_analysis") or {}
+        if ai_analysis.get("cache_hit"):
+            st.caption("AI photo analysis source: cached")
+        else:
+            st.caption("AI photo analysis source: current run")
+    if photo_context.get("missing_photos"):
+        st.warning("Missing useful photos: " + "; ".join(str(item) for item in photo_context.get("missing_photos") or []))
+    return photo_context if use_photo_evidence else None
+
+
 def json_list_value(value: Any) -> list[Any]:
     if isinstance(value, list):
         return value
@@ -5132,6 +5281,8 @@ def estimator_prototype_page() -> None:
         st.caption(f"Auto-detected estimate type: {resolved_estimate_type}")
     else:
         st.caption(f"Selected estimate type: {resolved_estimate_type}")
+    active_photo_context = render_estimator_photo_upload_panel(notes=notes, estimate_type=resolved_estimate_type)
+    estimator_input_notes = combine_notes_with_photo_context(notes, active_photo_context)
 
     project_type = ""
     division = ""
@@ -5169,16 +5320,17 @@ def estimator_prototype_page() -> None:
             field_state = st.text_input("State", value="", key="field_estimator_state")
     if st.button("Build Filled Estimate Template", key="generate_field_estimate_recommendation"):
         try:
+            photo_file_ids = (active_photo_context or {}).get("selected_image_ids") or []
             session_id = capture_estimator_session_event(
                 estimator_sessions.create_estimator_session,
-                raw_input_notes=notes,
+                raw_input_notes=estimator_input_notes,
                 division="Repair" if resolved_estimate_type == ESTIMATE_TYPE_REPAIR else "",
                 template_type="repair" if resolved_estimate_type == ESTIMATE_TYPE_REPAIR else "",
                 job_name=field_job_name,
                 site_address=field_site_address,
                 input_source_type="manual",
-                photos_present=False,
-                source_file_ids=data.source_files_used,
+                photos_present=bool(active_photo_context),
+                source_file_ids=[*(data.source_files_used or []), *photo_file_ids],
                 estimate_status="PARSING",
             )
             if session_id:
@@ -5187,7 +5339,7 @@ def estimator_prototype_page() -> None:
                 st.session_state.pop("estimator_session_id", None)
             if resolved_estimate_type == ESTIMATE_TYPE_REPAIR:
                 route, repair_result = route_estimator_request(
-                    notes,
+                    estimator_input_notes,
                     resolved_estimate_type,
                     overrides={
                         "roof_type": repair_roof_type_override,
@@ -5199,7 +5351,7 @@ def estimator_prototype_page() -> None:
                 st.session_state["field_estimate_route"] = route
                 st.session_state["integrated_repair_estimate_result"] = repair_result.to_dict()
                 st.session_state["field_estimate_recommendation"] = None
-                st.session_state["field_estimate_recommendation_notes"] = notes
+                st.session_state["field_estimate_recommendation_notes"] = estimator_input_notes
                 st.session_state.pop("integrated_repair_estimate_audit_paths", None)
                 if session_id:
                     repair_payload = repair_result.to_dict()
@@ -5224,7 +5376,7 @@ def estimator_prototype_page() -> None:
                 st.warning("Field notes estimator is not available in this deployment yet.")
             else:
                 recommendation = field_estimator_fn(
-                    notes,
+                    estimator_input_notes,
                     {
                         "job_name": field_job_name,
                         "site_address": field_site_address,
@@ -5233,10 +5385,20 @@ def estimator_prototype_page() -> None:
                     },
                     data=field_notes_data,
                 )
+                if active_photo_context:
+                    recommendation.parsed_fields = apply_photo_scope_context(recommendation.parsed_fields or {}, active_photo_context)
+                    recommendation.review_flags = list(
+                        dict.fromkeys(
+                            [
+                                *(getattr(recommendation, "review_flags", None) or []),
+                                *((active_photo_context.get("scope_updates") or {}).get("review_flags") or []),
+                            ]
+                        )
+                    )
                 st.session_state["field_estimate_recommendation"] = recommendation
                 st.session_state["field_estimate_route"] = resolved_estimate_type
                 st.session_state.pop("integrated_repair_estimate_result", None)
-                st.session_state["field_estimate_recommendation_notes"] = notes
+                st.session_state["field_estimate_recommendation_notes"] = estimator_input_notes
                 st.session_state.pop("field_estimator_evidence_export_paths", None)
                 if session_id:
                     parsed_scope = recommendation.parsed_fields or {}
@@ -5285,9 +5447,9 @@ def estimator_prototype_page() -> None:
             st.session_state.pop("integrated_repair_estimate_result", None)
     if st.session_state.get("field_estimate_route") == ESTIMATE_TYPE_REPAIR:
         repair_payload = st.session_state.get("integrated_repair_estimate_result")
-        recommendation_notes = st.session_state.get("field_estimate_recommendation_notes") or notes
+        recommendation_notes = st.session_state.get("field_estimate_recommendation_notes") or estimator_input_notes
         if repair_payload:
-            if recommendation_notes != notes:
+            if recommendation_notes != estimator_input_notes:
                 st.warning(
                     "The displayed repair estimate was generated from earlier notes. "
                     "Click Build Filled Estimate Template again to refresh it for the current text."
@@ -5296,8 +5458,8 @@ def estimator_prototype_page() -> None:
             return
     field_recommendation = st.session_state.get("field_estimate_recommendation")
     if field_recommendation:
-        recommendation_notes = st.session_state.get("field_estimate_recommendation_notes") or notes
-        if recommendation_notes != notes:
+        recommendation_notes = st.session_state.get("field_estimate_recommendation_notes") or estimator_input_notes
+        if recommendation_notes != estimator_input_notes:
             st.warning(
                 "The displayed estimate was generated from earlier notes. "
                 "Click Build Filled Estimate Template again to refresh it for the current text."

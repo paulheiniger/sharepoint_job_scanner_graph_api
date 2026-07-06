@@ -38,6 +38,7 @@ from jobscan.products.product_ingest import ingest_product_directory, ingest_pro
 from jobscan.products import product_ingest as product_ingest_module
 from jobscan.products.product_matching import match_product, product_context_for_decision
 from jobscan.products.product_rules import DECISION_LINKS_BY_CATEGORY
+from jobscan.products.llm_mapping_import import build_approved_mapping_import, write_import_preview
 from jobscan.products.template_product_mapping import (
     collect_product_mapping_audit,
     proposed_product_aliases,
@@ -378,6 +379,140 @@ def test_product_context_uses_template_product_option_links() -> None:
     assert context["product_id"] == "gaco_onepass"
     assert context["match_strategy"] == "template_product_option_link"
     assert context["match_score"] >= 0.98
+
+
+def test_llm_approved_mapping_import_builds_seed_products_and_links(tmp_path) -> None:
+    input_dir = tmp_path / "llm_inputs"
+    input_dir.mkdir()
+    pd.DataFrame(
+        [
+            {
+                "template_option_key": "tpl_gaco_2",
+                "source_option_ids": "tplopt_1;tplopt_2",
+                "template_type": "insulation",
+                "template_bucket": "foam",
+                "row_number": 19,
+                "selector_code": 11,
+                "raw_template_option": "Gaco 2.0 lb.",
+                "category_hint": "spray_foam",
+            }
+        ]
+    ).to_csv(input_dir / "template_options_for_llm.csv", index=False)
+    pd.DataFrame(
+        [
+            {
+                "knowledge_key": "enverge_onepass",
+                "manufacturer": "Gaco",
+                "raw_product_name": "Enverge OnePass HFO",
+                "product_family": "Enverge OnePass HFO",
+                "category": "spray_foam",
+                "subcategory": "Closed Cell SPF",
+                "unit": "set",
+                "aliases": "Gaco 2.0 lb.;GacoOnePass",
+                "decision_links": '["insulation_foam_system"]',
+            }
+        ]
+    ).to_csv(input_dir / "product_knowledge_for_llm.csv", index=False)
+    pd.DataFrame(
+        [
+            {
+                "pricing_candidate_key": "price_gaco_2",
+                "raw_pricing_name": "Enverge Closed Cell OnePass",
+                "source_file": "Pricing Sheet.csv",
+            }
+        ]
+    ).to_csv(input_dir / "pricing_candidates_for_llm.csv", index=False)
+    mapping_path = tmp_path / "mapping.jsonl"
+    mapping_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "template_option_key": "tpl_gaco_2",
+                        "canonical_template_option": "Enverge OnePass HFO",
+                        "pricing_candidate_key": "price_gaco_2",
+                        "knowledge_key": "enverge_onepass",
+                        "mapping_status": "approved",
+                        "confidence": 0.96,
+                        "suggested_aliases": ["Gaco 2.0"],
+                        "reason": "Approved alias mapping.",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "template_option_key": "tpl_gaco_2",
+                        "knowledge_key": "bad",
+                        "mapping_status": "needs_review",
+                    }
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    rows = build_approved_mapping_import(mapping_path=mapping_path, llm_input_dir=input_dir)
+    paths = write_import_preview(rows, tmp_path / "preview")
+
+    assert len(rows["product_catalog"]) == 1
+    assert rows["product_catalog"][0]["product_id"] == "enverge_onepass"
+    assert {row["template_product_option_id"] for row in rows["template_product_option_links"]} == {"tplopt_1", "tplopt_2"}
+    assert len(rows["template_pricing_option_links"]) == 2
+    assert any(row["alias"] == "Gaco 2.0" for row in rows["product_aliases"])
+    assert rows["skipped"] == []
+    assert paths["template_product_option_links"].exists()
+
+
+def test_llm_approved_mapping_import_accepts_csv_mapping(tmp_path) -> None:
+    input_dir = tmp_path / "llm_inputs"
+    input_dir.mkdir()
+    pd.DataFrame(
+        [
+            {
+                "knowledge_key": "noburn_thb",
+                "manufacturer": "No-Burn",
+                "raw_product_name": "NoBurn TH-B+",
+                "product_family": "NoBurn TH-B+",
+                "category": "thermal_barrier",
+                "decision_links": '["insulation_thermal_barrier"]',
+            }
+        ]
+    ).to_csv(input_dir / "product_knowledge_for_llm.csv", index=False)
+    pd.DataFrame(
+        [
+            {
+                "pricing_candidate_key": "price_noburn",
+                "raw_pricing_name": "No-Burn TH-B+",
+            }
+        ]
+    ).to_csv(input_dir / "pricing_candidates_for_llm.csv", index=False)
+    pd.DataFrame(
+        [
+            {
+                "template_option_key": "tpl_noburn",
+                "source_option_ids": "tplopt_noburn",
+                "template_type": "insulation",
+                "template_bucket": "thermal_barrier_coating",
+                "row_number": 31,
+                "selector_code": "",
+                "raw_template_option": "No Burn",
+                "category_hint": "thermal_barrier",
+                "canonical_template_option": "NoBurn TH-B+",
+                "pricing_candidate_key": "price_noburn",
+                "knowledge_key": "noburn_thb",
+                "mapping_status": "approved",
+                "confidence": 0.96,
+                "suggested_aliases": "['No Burn']",
+                "reason": "Approved CSV mapping.",
+            }
+        ]
+    ).to_csv(input_dir / "mapping.csv", index=False)
+
+    rows = build_approved_mapping_import(mapping_path=input_dir / "mapping.csv", llm_input_dir=input_dir)
+
+    assert rows["product_catalog"][0]["product_id"] == "noburn_thb"
+    assert rows["template_product_option_links"][0]["template_product_option_id"] == "tplopt_noburn"
+    assert any(row["alias"] == "No Burn" for row in rows["product_aliases"])
+    assert rows["template_pricing_option_links"][0]["pricing_candidate_key"] == "price_noburn"
 
 
 def test_product_match_rejects_weak_cross_category_fuzzy_match() -> None:

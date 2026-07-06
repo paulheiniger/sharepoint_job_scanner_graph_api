@@ -174,6 +174,28 @@ def test_load_estimator_data_loads_template_rows_and_pricing_from_database(tmp_p
                 """
             )
         )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE template_pricing_option_links (
+                    link_id TEXT PRIMARY KEY,
+                    template_product_option_id TEXT,
+                    pricing_candidate_key TEXT,
+                    pricing_item_id TEXT,
+                    template_type TEXT,
+                    template_bucket TEXT,
+                    row_number INTEGER,
+                    selector_code TEXT,
+                    template_product_name TEXT,
+                    canonical_template_option TEXT,
+                    pricing_product_name TEXT,
+                    confidence NUMERIC,
+                    reason TEXT,
+                    review_status TEXT
+                )
+                """
+            )
+        )
         conn.execute(text("INSERT INTO dashboard_jobs VALUES ('J1', 'DB Job', 'Roofing', 10000)"))
         conn.execute(
             text(
@@ -207,6 +229,15 @@ def test_load_estimator_data_loads_template_rows_and_pricing_from_database(tmp_p
                 """
             )
         )
+        conn.execute(
+            text(
+                """
+                INSERT INTO template_pricing_option_links
+                VALUES ('TPL1', 'OPT1', 'price_silicone', 'P1', 'roofing', 'coating', 26, '11',
+                        'Gaco Silicone', 'Gaco Silicone', 'Silicone', 0.95, 'approved test mapping', 'approved')
+                """
+            )
+        )
 
     data = load_estimator_data(tmp_path, database_url=f"sqlite:///{db_path}")
 
@@ -216,11 +247,13 @@ def test_load_estimator_data_loads_template_rows_and_pricing_from_database(tmp_p
     assert len(data.pricing_catalog) == 1
     assert len(data.template_formula_models) == 1
     assert len(data.template_lookup_tables) == 1
+    assert len(data.template_pricing_option_links) == 1
     assert len(data.line_item_classifications) == 0
     assert "database: estimate_template_rows" in data.source_files_used
     assert "database: pricing_catalog" in data.source_files_used
     assert "database: template_formula_models" in data.source_files_used
     assert "database: template_lookup_tables" in data.source_files_used
+    assert "database: template_pricing_option_links" in data.source_files_used
     assert "output/job_index.json" not in data.source_files_used
     assert any("estimate_line_item_classifications table not found" in warning for warning in data.warnings)
 
