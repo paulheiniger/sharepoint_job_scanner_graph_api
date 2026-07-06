@@ -751,7 +751,14 @@ def _frame(data: Any, attr: str) -> pd.DataFrame:
     return value if isinstance(value, pd.DataFrame) else pd.DataFrame(value)
 
 
-def _product_context(data: Any, *, item_name: str, decision_id: str, package: str) -> dict[str, Any]:
+def _product_context(
+    data: Any,
+    *,
+    item_name: str,
+    decision_id: str,
+    package: str,
+    template_product_option_id: str | None = None,
+) -> dict[str, Any]:
     catalog = _frame(data, "product_catalog")
     if catalog.empty or not item_name:
         return {}
@@ -764,6 +771,9 @@ def _product_context(data: Any, *, item_name: str, decision_id: str, package: st
             product_rules=_frame(data, "product_rules"),
             product_documents=_frame(data, "product_documents"),
             product_decision_links=_frame(data, "product_decision_links"),
+            product_aliases=_frame(data, "product_aliases"),
+            template_product_links=_frame(data, "template_product_option_links"),
+            template_product_option_id=template_product_option_id,
             category=package,
         )
     except Exception:
@@ -985,6 +995,7 @@ def _product_options_from_catalog(
             continue
         options.append(
             {
+                "template_product_option_id": source_row.get("template_product_option_id"),
                 "item_name": product_name,
                 "unit": first_nonblank(source_row.get("unit"), values.get("unit"), values.get("units"), ""),
                 "unit_price": safe_number(
@@ -2764,7 +2775,17 @@ def _foam_pricing_candidates(row: dict[str, Any], scope: dict[str, Any], data: A
         item_name = str(option.get("item_name") or "").strip()
         if not item_name:
             continue
-        context = _product_context(data, item_name=item_name, decision_id="insulation_foam_system", package="foam") if data is not None else {}
+        context = (
+            _product_context(
+                data,
+                item_name=item_name,
+                decision_id="insulation_foam_system",
+                package="foam",
+                template_product_option_id=option.get("template_product_option_id"),
+            )
+            if data is not None
+            else {}
+        )
         compatibility = _foam_candidate_compatibility(template_option=template_option, candidate=option, scope=scope, product_context=context)
         candidates.append(
             {
@@ -2780,6 +2801,8 @@ def _foam_pricing_candidates(row: dict[str, Any], scope: dict[str, Any], data: A
                 "product_guidance": _candidate_guidance_summary(context),
                 "product_source_documents": context.get("source_documents") or [],
                 "product_match_score": context.get("match_score") or 0.0,
+                "product_match_strategy": context.get("match_strategy") or "",
+                "product_matched_name": context.get("matched_name") or "",
                 **compatibility,
             }
         )
@@ -2838,7 +2861,17 @@ def _roofing_foam_pricing_candidates(
         item_name = str(option.get("item_name") or "").strip()
         if not item_name:
             continue
-        context = _product_context(data, item_name=item_name, decision_id="roofing_foam", package="foam") if data is not None else {}
+        context = (
+            _product_context(
+                data,
+                item_name=item_name,
+                decision_id="roofing_foam",
+                package="foam",
+                template_product_option_id=option.get("template_product_option_id"),
+            )
+            if data is not None
+            else {}
+        )
         compatibility = _roofing_foam_candidate_compatibility(
             template_option=template_option,
             candidate=option,
@@ -2858,6 +2891,8 @@ def _roofing_foam_pricing_candidates(
                 "product_guidance": _candidate_guidance_summary(context),
                 "product_source_documents": context.get("source_documents") or [],
                 "product_match_score": context.get("match_score") or 0.0,
+                "product_match_strategy": context.get("match_strategy") or "",
+                "product_matched_name": context.get("matched_name") or "",
                 **compatibility,
             }
         )
@@ -2940,7 +2975,17 @@ def _roofing_coating_pricing_candidates(
         item_name = str(option.get("item_name") or "").strip()
         if not item_name:
             continue
-        context = _product_context(data, item_name=item_name, decision_id="roofing_coating_system", package="coating") if data is not None else {}
+        context = (
+            _product_context(
+                data,
+                item_name=item_name,
+                decision_id="roofing_coating_system",
+                package="coating",
+                template_product_option_id=option.get("template_product_option_id"),
+            )
+            if data is not None
+            else {}
+        )
         compatibility = _roofing_coating_candidate_compatibility(
             template_option=template_option,
             candidate=option,
@@ -2961,6 +3006,8 @@ def _roofing_coating_pricing_candidates(
                 "product_guidance": _candidate_guidance_summary(context),
                 "product_source_documents": context.get("source_documents") or [],
                 "product_match_score": context.get("match_score") or 0.0,
+                "product_match_strategy": context.get("match_strategy") or "",
+                "product_matched_name": context.get("matched_name") or "",
                 "fit_score": round(score, 4),
                 "fit_reasons": reasons,
                 **compatibility,
@@ -3030,7 +3077,17 @@ def _roofing_primer_pricing_candidates(
         item_name = str(option.get("item_name") or "").strip()
         if not item_name:
             continue
-        context = _product_context(data, item_name=item_name, decision_id="roofing_primer", package="primer") if data is not None else {}
+        context = (
+            _product_context(
+                data,
+                item_name=item_name,
+                decision_id="roofing_primer",
+                package="primer",
+                template_product_option_id=option.get("template_product_option_id"),
+            )
+            if data is not None
+            else {}
+        )
         score, reasons = _package_item_fit_details("primer", option, scope)
         compatibility = _roofing_primer_candidate_compatibility(
             template_option=template_option,
@@ -3051,6 +3108,8 @@ def _roofing_primer_pricing_candidates(
                 "product_guidance": _candidate_guidance_summary(context),
                 "product_source_documents": context.get("source_documents") or [],
                 "product_match_score": context.get("match_score") or 0.0,
+                "product_match_strategy": context.get("match_strategy") or "",
+                "product_matched_name": context.get("matched_name") or "",
                 "fit_score": round(score, 4),
                 "fit_reasons": reasons,
                 **compatibility,
@@ -3250,7 +3309,17 @@ def _roofing_detail_pricing_candidates(
         item_name = str(option.get("item_name") or "").strip()
         if not item_name:
             continue
-        context = _product_context(data, item_name=item_name, decision_id=decision_id, package=package) if data is not None else {}
+        context = (
+            _product_context(
+                data,
+                item_name=item_name,
+                decision_id=decision_id,
+                package=package,
+                template_product_option_id=option.get("template_product_option_id"),
+            )
+            if data is not None
+            else {}
+        )
         score, reasons = _package_item_fit_details(package, option, scope)
         compatibility = _roofing_detail_candidate_compatibility(
             package=package,
@@ -3272,6 +3341,8 @@ def _roofing_detail_pricing_candidates(
                 "product_guidance": _candidate_guidance_summary(context),
                 "product_source_documents": context.get("source_documents") or [],
                 "product_match_score": context.get("match_score") or 0.0,
+                "product_match_strategy": context.get("match_strategy") or "",
+                "product_matched_name": context.get("matched_name") or "",
                 "fit_score": round(score, 4),
                 "fit_reasons": reasons,
                 **compatibility,
@@ -3305,7 +3376,17 @@ def _roofing_board_pricing_candidates(
         item_name = str(option.get("item_name") or "").strip()
         if not item_name:
             continue
-        context = _product_context(data, item_name=item_name, decision_id=decision_id, package=fit_package) if data is not None else {}
+        context = (
+            _product_context(
+                data,
+                item_name=item_name,
+                decision_id=decision_id,
+                package=fit_package,
+                template_product_option_id=option.get("template_product_option_id"),
+            )
+            if data is not None
+            else {}
+        )
         score, reasons = _package_item_fit_details(fit_package, option, scope)
         compatibility = _roofing_board_candidate_compatibility(
             package=package,
@@ -3327,6 +3408,8 @@ def _roofing_board_pricing_candidates(
                 "product_guidance": _candidate_guidance_summary(context),
                 "product_source_documents": context.get("source_documents") or [],
                 "product_match_score": context.get("match_score") or 0.0,
+                "product_match_strategy": context.get("match_strategy") or "",
+                "product_matched_name": context.get("matched_name") or "",
                 "fit_score": round(score, 4),
                 "fit_reasons": reasons,
                 **compatibility,
@@ -3357,7 +3440,17 @@ def _roofing_granules_pricing_candidates(
         item_name = str(option.get("item_name") or "").strip()
         if not item_name:
             continue
-        context = _product_context(data, item_name=item_name, decision_id="roofing_granules", package="granules") if data is not None else {}
+        context = (
+            _product_context(
+                data,
+                item_name=item_name,
+                decision_id="roofing_granules",
+                package="granules",
+                template_product_option_id=option.get("template_product_option_id"),
+            )
+            if data is not None
+            else {}
+        )
         score, reasons = _package_item_fit_details("granules", option, scope)
         compatibility = _roofing_granules_candidate_compatibility(
             template_option=template_option,
@@ -3378,6 +3471,8 @@ def _roofing_granules_pricing_candidates(
                 "product_guidance": _candidate_guidance_summary(context),
                 "product_source_documents": context.get("source_documents") or [],
                 "product_match_score": context.get("match_score") or 0.0,
+                "product_match_strategy": context.get("match_strategy") or "",
+                "product_matched_name": context.get("matched_name") or "",
                 "fit_score": round(score, 4),
                 "fit_reasons": reasons,
                 **compatibility,
@@ -3904,8 +3999,19 @@ def _insulation_product_context_for_row(
     decision_id: str,
     bucket: str,
     item_name: Any,
+    template_product_option_id: Any = None,
 ) -> dict[str, Any]:
-    return _product_context(data, item_name=str(item_name or ""), decision_id=decision_id, package=bucket) if data is not None else {}
+    return (
+        _product_context(
+            data,
+            item_name=str(item_name or ""),
+            decision_id=decision_id,
+            package=bucket,
+            template_product_option_id=str(template_product_option_id or "") or None,
+        )
+        if data is not None
+        else {}
+    )
 
 
 def _insulation_product_guidance_fields(context: dict[str, Any]) -> dict[str, Any]:
@@ -3918,6 +4024,8 @@ def _insulation_product_guidance_fields(context: dict[str, Any]) -> dict[str, An
         "product_warning_summary": _value_summary(context.get("warnings") or []),
         "product_source_documents": context.get("source_documents") or [],
         "product_match_score": context.get("match_score") or 0.0,
+        "product_match_strategy": context.get("match_strategy") or "",
+        "product_matched_name": context.get("matched_name") or "",
     }
 
 
@@ -4297,7 +4405,13 @@ def _build_insulation_decision_rows(
                 priced_source["linear_ft"] = sealant_linear_ft
                 priced_source["calculated_quantity"] = sealant_linear_ft
         formula, inputs = _calculate_insulation_decision_formula(spec, include=include, source_row=priced_source, existing=existing, area=area, dependencies=deps)
-        product_context = _insulation_product_context_for_row(data=data, decision_id=str(spec.get("decision_id")), bucket=bucket, item_name=item_name)
+        product_context = _insulation_product_context_for_row(
+            data=data,
+            decision_id=str(spec.get("decision_id")),
+            bucket=bucket,
+            item_name=item_name,
+            template_product_option_id=selected_pricing_candidate.get("template_product_option_id"),
+        )
         guidance = _insulation_product_guidance_fields(product_context)
         warnings: list[str] = []
         if include and safe_number(formula.get("estimated_cost"), 0.0) <= 0 and str(formula.get("formula_source")) != "not_included":

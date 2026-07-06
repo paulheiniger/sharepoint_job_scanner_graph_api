@@ -28,6 +28,7 @@ class EstimatorData:
     product_properties: pd.DataFrame = field(default_factory=pd.DataFrame)
     product_rules: pd.DataFrame = field(default_factory=pd.DataFrame)
     product_decision_links: pd.DataFrame = field(default_factory=pd.DataFrame)
+    template_product_option_links: pd.DataFrame = field(default_factory=pd.DataFrame)
     template_selector_maps: pd.DataFrame = field(default_factory=pd.DataFrame)
     template_lookup_tables: pd.DataFrame = field(default_factory=pd.DataFrame)
     template_row_catalog: pd.DataFrame = field(default_factory=pd.DataFrame)

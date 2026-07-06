@@ -38,6 +38,11 @@ from jobscan.products.product_ingest import ingest_product_directory, ingest_pro
 from jobscan.products import product_ingest as product_ingest_module
 from jobscan.products.product_matching import match_product, product_context_for_decision
 from jobscan.products.product_rules import DECISION_LINKS_BY_CATEGORY
+from jobscan.products.template_product_mapping import (
+    collect_product_mapping_audit,
+    proposed_product_aliases,
+    proposed_template_product_links,
+)
 from jobscan.products.validate_catalog import validate_product_catalog, write_validation_workbook
 
 
@@ -309,6 +314,110 @@ def test_product_context_uses_decision_link_and_source_evidence() -> None:
     assert any(row["source_text"] == "Coverage: 200-250 ft2/gal." for row in context["source_evidence"])
 
 
+def test_product_match_uses_product_alias_table_rows() -> None:
+    matched = match_product(
+        "DC 315 TB",
+        pd.DataFrame(
+            [
+                {
+                    "product_id": "ift_dc315",
+                    "manufacturer": "International Fireproof Technology",
+                    "product_name": "DC315 Intumescent Coating",
+                    "category": "thermal_barrier",
+                    "active": True,
+                }
+            ]
+        ),
+        category="thermal_barrier",
+        decision_id="insulation_thermal_barrier",
+        product_aliases=pd.DataFrame(
+            [
+                {
+                    "product_id": "ift_dc315",
+                    "alias": "DC 315 TB",
+                    "alias_type": "historical_template_row",
+                    "confidence": 0.95,
+                }
+            ]
+        ),
+    )
+
+    assert matched["product_id"] == "ift_dc315"
+    assert matched["match_strategy"] == "exact_product_or_alias"
+    assert matched["matched_name"] == "DC 315 TB"
+
+
+def test_product_context_uses_template_product_option_links() -> None:
+    context = product_context_for_decision(
+        product_name="Gaco 2.0",
+        decision_id="insulation_foam_system",
+        product_catalog=pd.DataFrame(
+            [
+                {
+                    "product_id": "gaco_onepass",
+                    "manufacturer": "Gaco",
+                    "product_name": "GacoOnePass Closed Cell Spray Foam",
+                    "category": "spray_foam",
+                    "active": True,
+                }
+            ]
+        ),
+        template_product_links=pd.DataFrame(
+            [
+                {
+                    "template_product_option_id": "tplopt_gaco_2lb",
+                    "product_id": "gaco_onepass",
+                    "review_status": "approved",
+                }
+            ]
+        ),
+        template_product_option_id="tplopt_gaco_2lb",
+        category="foam",
+    )
+
+    assert context["product_id"] == "gaco_onepass"
+    assert context["match_strategy"] == "template_product_option_link"
+    assert context["match_score"] >= 0.98
+
+
+def test_product_mapping_audit_generates_alias_and_template_link_candidates() -> None:
+    data = EstimatorData(
+        product_catalog=pd.DataFrame(
+            [
+                {
+                    "product_id": "gaco_onepass",
+                    "manufacturer": "Gaco",
+                    "product_name": "GacoOnePass Closed Cell Spray Foam",
+                    "category": "spray_foam",
+                    "active": True,
+                    "aliases": ["Gaco 2.0 lb"],
+                }
+            ]
+        ),
+        template_product_options=pd.DataFrame(
+            [
+                {
+                    "template_product_option_id": "tplopt_gaco_2lb",
+                    "template_type": "insulation",
+                    "template_bucket": "foam",
+                    "row_number": 19,
+                    "selector_code": "11",
+                    "product_name": "Gaco 2.0 lb.",
+                }
+            ]
+        ),
+    )
+
+    audit = collect_product_mapping_audit(data)
+    aliases = proposed_product_aliases(data, audit)
+    links = proposed_template_product_links(audit)
+
+    assert audit.iloc[0]["matched_product_id"] == "gaco_onepass"
+    assert aliases.iloc[0]["alias"] == "Gaco 2.0 lb."
+    assert links.iloc[0]["template_product_option_id"] == "tplopt_gaco_2lb"
+    assert links.iloc[0]["product_id"] == "gaco_onepass"
+
+
 def test_product_document_queue_discovers_local_docs_and_writes_csv(tmp_path) -> None:
     docs = tmp_path / "product_documents"
     docs.mkdir()
@@ -352,6 +461,7 @@ def test_product_document_queue_records_controlled_approved_url_metadata() -> No
 def test_product_family_lookup_seed_loads_and_builds_controlled_queue() -> None:
     rows = load_product_family_lookup()
     families = {row["canonical_product_family"]: row for row in rows}
+    by_lookup_id = {row["lookup_id"]: row for row in rows}
 
     assert len(rows) >= 40
     assert families["GacoPrime"]["vendor"] == "Gaco"
@@ -363,6 +473,11 @@ def test_product_family_lookup_seed_loads_and_builds_controlled_queue() -> None:
     assert families["GacoOnePass"]["density_class"] == "2.0 lb"
     assert families["GacoOnePass"]["priority"] == 20
     assert "insulation_foam_system" in families["GacoOnePass"]["decision_nodes"]
+    assert families["GacoRoofFoam F2733 RHFO"]["template_option"] == "Gaco Roof 2.7"
+    assert families["GacoRoofFoam F2733 RHFO"]["mapping_status"] == "approved"
+    assert families["GacoRoofFoam F2733 RHFO"]["alias_policy"] == "auto_alias_after_doc_ingest"
+    assert by_lookup_id["ift_dc315"]["template_option"] == "DC315 TB"
+    assert by_lookup_id["ift_dc315"]["vendor_product_url"] == "https://www.painttoprotect.com/"
     assert families["WALLTITE"]["domain_approved"] is True
     assert families["PSI closed-cell SPF"]["domain_approved"] is False
     assert "insulation_thermal_barrier" in families["DC315"]["decision_nodes"]

@@ -61,6 +61,35 @@ def _aliases(row: dict[str, Any]) -> list[str]:
     return [str(item) for item in aliases if str(item or "").strip()]
 
 
+def _alias_names_for_product(product_aliases: Any, product_id: str) -> list[str]:
+    if not product_id:
+        return []
+    names: list[str] = []
+    for row in _records(product_aliases):
+        if str(row.get("product_id") or "") != product_id:
+            continue
+        alias = str(row.get("alias") or "").strip()
+        if alias:
+            names.append(alias)
+    return names
+
+
+def _template_link_product_ids(template_product_links: Any, template_product_option_id: str | None) -> set[str]:
+    option_id = str(template_product_option_id or "").strip()
+    if not option_id:
+        return set()
+    product_ids: set[str] = set()
+    for row in _records(template_product_links):
+        if str(row.get("template_product_option_id") or "") != option_id:
+            continue
+        if str(row.get("review_status") or "approved").lower() in {"rejected", "inactive"}:
+            continue
+        product_id = str(row.get("product_id") or "").strip()
+        if product_id:
+            product_ids.add(product_id)
+    return product_ids
+
+
 def _category_matches(product_category: Any, requested_category: str | None, decision_id: str | None = None) -> bool:
     product = str(product_category or "").lower().strip()
     requested = str(requested_category or "").lower().strip()
@@ -136,6 +165,9 @@ def match_product(
     category: str | None = None,
     decision_id: str | None = None,
     product_decision_links: Any = None,
+    product_aliases: Any = None,
+    template_product_links: Any = None,
+    template_product_option_id: str | None = None,
     min_score: float = 0.55,
 ) -> dict[str, Any]:
     products = _records(product_catalog)
@@ -146,24 +178,52 @@ def match_product(
         for link in _records(product_decision_links):
             if str(link.get("decision_id") or "") == decision_id:
                 link_product_ids.add(str(link.get("product_id") or ""))
+    template_link_product_ids = _template_link_product_ids(template_product_links, template_product_option_id)
     query = normalize_product_name(product_name)
     best: dict[str, Any] = {}
     best_score = 0.0
+    best_strategy = ""
+    best_matched_name = ""
     for row in products:
         if row.get("active") is False:
             continue
-        candidate_names = [row.get("product_name"), row.get("sku"), row.get("product_family"), *_aliases(row)]
-        score = max(_contains_score(query, normalize_product_name(name)) for name in candidate_names if name)
+        product_id = str(row.get("product_id") or "")
+        candidate_names = [
+            row.get("product_name"),
+            row.get("sku"),
+            row.get("product_family"),
+            *_aliases(row),
+            *_alias_names_for_product(product_aliases, product_id),
+        ]
+        scored_names = [
+            (_contains_score(query, normalize_product_name(name)), str(name or ""))
+            for name in candidate_names
+            if str(name or "").strip()
+        ]
+        score, matched_name = max(scored_names, default=(0.0, ""))
+        strategy = "fuzzy_product_name"
+        if score >= 1.0:
+            strategy = "exact_product_or_alias"
         if category and _category_matches(row.get("category"), category, decision_id):
             score += 0.06
         if link_product_ids and str(row.get("product_id") or "") in link_product_ids:
             score += 0.1
+        if template_link_product_ids and product_id in template_link_product_ids:
+            score = max(score, 0.98)
+            strategy = "template_product_option_link"
         if score > best_score:
             best = row
             best_score = score
+            best_strategy = strategy
+            best_matched_name = matched_name
     if best_score < min_score:
         return {}
-    return {**best, "match_score": round(min(best_score, 1.0), 4)}
+    return {
+        **best,
+        "match_score": round(min(best_score, 1.0), 4),
+        "match_strategy": best_strategy,
+        "matched_name": best_matched_name,
+    }
 
 
 def product_context_for_decision(
@@ -175,6 +235,9 @@ def product_context_for_decision(
     product_rules: Any = None,
     product_documents: Any = None,
     product_decision_links: Any = None,
+    product_aliases: Any = None,
+    template_product_links: Any = None,
+    template_product_option_id: str | None = None,
     category: str | None = None,
 ) -> dict[str, Any]:
     product = match_product(
@@ -183,6 +246,9 @@ def product_context_for_decision(
         category=category,
         decision_id=decision_id,
         product_decision_links=product_decision_links,
+        product_aliases=product_aliases,
+        template_product_links=template_product_links,
+        template_product_option_id=template_product_option_id,
     )
     if not product:
         return {}
@@ -227,6 +293,8 @@ def product_context_for_decision(
         "product_name": product.get("product_name") or "",
         "category": product.get("category") or "",
         "match_score": product.get("match_score"),
+        "match_strategy": product.get("match_strategy"),
+        "matched_name": product.get("matched_name"),
         "recommended_use": "; ".join(str(row.get("rule_value") or "") for row in recommended[:3]),
         "manufacturer_guidance": "; ".join(str(row.get("rule_value") or "") for row in rules[:5]),
         "coverage": "; ".join(

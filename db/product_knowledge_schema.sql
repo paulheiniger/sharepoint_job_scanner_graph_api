@@ -70,6 +70,21 @@ CREATE TABLE IF NOT EXISTS product_decision_links (
     reason TEXT
 );
 
+CREATE TABLE IF NOT EXISTS template_product_option_links (
+    link_id TEXT PRIMARY KEY,
+    template_product_option_id TEXT,
+    product_id TEXT REFERENCES product_catalog(product_id) ON DELETE CASCADE,
+    template_type TEXT,
+    template_bucket TEXT,
+    row_number INTEGER,
+    selector_code TEXT,
+    product_name TEXT,
+    confidence NUMERIC,
+    reason TEXT,
+    review_status TEXT DEFAULT 'approved',
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS product_document_queue (
     queue_id TEXT PRIMARY KEY,
     source_path TEXT UNIQUE,
@@ -104,16 +119,25 @@ CREATE TABLE IF NOT EXISTS product_family_lookup (
     vendor TEXT,
     canonical_product_family TEXT,
     template_option TEXT,
+    product_type TEXT,
     cell_type TEXT,
     density_class TEXT,
     application_hint TEXT,
     lookup_priority TEXT,
     lookup_terms TEXT,
     preferred_documents TEXT,
+    document_priority TEXT,
     official_vendor_url TEXT,
+    vendor_product_url TEXT,
     source_domain TEXT,
     domain_approved BOOLEAN DEFAULT false,
     decision_nodes JSONB DEFAULT '[]'::jsonb,
+    mapping_status TEXT,
+    alias_policy TEXT,
+    search_strategy TEXT,
+    document_collection_status TEXT,
+    knowledge_status TEXT,
+    replacement_for TEXT,
     priority INTEGER DEFAULT 50,
     active BOOLEAN DEFAULT true,
     status TEXT,
@@ -129,12 +153,23 @@ CREATE INDEX IF NOT EXISTS idx_product_properties_product ON product_properties(
 CREATE INDEX IF NOT EXISTS idx_product_rules_product ON product_rules(product_id);
 CREATE INDEX IF NOT EXISTS idx_product_decision_links_product ON product_decision_links(product_id);
 CREATE INDEX IF NOT EXISTS idx_product_decision_links_decision ON product_decision_links(decision_id);
+CREATE INDEX IF NOT EXISTS idx_template_product_option_links_option ON template_product_option_links(template_product_option_id);
+CREATE INDEX IF NOT EXISTS idx_template_product_option_links_product ON template_product_option_links(product_id);
 CREATE INDEX IF NOT EXISTS idx_product_document_queue_status ON product_document_queue(ingest_status);
 CREATE INDEX IF NOT EXISTS idx_product_family_lookup_vendor ON product_family_lookup(vendor);
 CREATE INDEX IF NOT EXISTS idx_product_family_lookup_domain ON product_family_lookup(source_domain);
 
 ALTER TABLE product_catalog ADD COLUMN IF NOT EXISTS extraction_method TEXT;
 ALTER TABLE product_catalog ADD COLUMN IF NOT EXISTS extraction_warnings JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS product_type TEXT;
+ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS document_priority TEXT;
+ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS vendor_product_url TEXT;
+ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS mapping_status TEXT;
+ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS alias_policy TEXT;
+ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS search_strategy TEXT;
+ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS document_collection_status TEXT;
+ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS knowledge_status TEXT;
+ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS replacement_for TEXT;
 ALTER TABLE product_documents ADD COLUMN IF NOT EXISTS extraction_method TEXT;
 ALTER TABLE product_documents ADD COLUMN IF NOT EXISTS extraction_warnings JSONB DEFAULT '[]'::jsonb;
 ALTER TABLE product_properties ADD COLUMN IF NOT EXISTS numeric_min NUMERIC;

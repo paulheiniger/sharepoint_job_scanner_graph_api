@@ -18,16 +18,25 @@ LOOKUP_COLUMNS = [
     "vendor",
     "canonical_product_family",
     "template_option",
+    "product_type",
     "cell_type",
     "density_class",
     "application_hint",
     "lookup_priority",
     "lookup_terms",
     "preferred_documents",
+    "document_priority",
     "official_vendor_url",
+    "vendor_product_url",
     "source_domain",
     "domain_approved",
     "decision_nodes",
+    "mapping_status",
+    "alias_policy",
+    "search_strategy",
+    "document_collection_status",
+    "knowledge_status",
+    "replacement_for",
     "priority",
     "active",
     "notes",
@@ -89,19 +98,27 @@ def normalize_lookup_row(row: dict[str, Any], *, approved_domains: set[str] | li
     family = clean_text(row.get("canonical_product_family"))
     lookup_terms = clean_text(row.get("lookup_terms"))
     template_option = clean_text(row.get("template_option"))
+    product_type = clean_text(row.get("product_type"))
     cell_type = clean_text(row.get("cell_type"))
     density_class = clean_text(row.get("density_class"))
     application_hint = clean_text(row.get("application_hint"))
     lookup_priority = clean_text(row.get("lookup_priority"))
     preferred_documents = clean_text(row.get("preferred_documents"))
+    document_priority = clean_text(row.get("document_priority"))
     official_url = clean_text(row.get("official_vendor_url"))
+    vendor_product_url = clean_text(row.get("vendor_product_url"))
     domain = _source_domain(official_url)
     nodes = row.get("decision_nodes")
     if isinstance(nodes, str):
         try:
             nodes = json.loads(nodes)
         except Exception:
-            nodes = [part.strip() for part in nodes.split("|") if part.strip()]
+            for separator in ("|", ";", ","):
+                if separator in nodes:
+                    nodes = [part.strip() for part in nodes.split(separator) if part.strip()]
+                    break
+            else:
+                nodes = [nodes.strip()] if nodes.strip() else []
     if not nodes:
         node_text = " ".join(
             part
@@ -114,16 +131,25 @@ def normalize_lookup_row(row: dict[str, Any], *, approved_domains: set[str] | li
         "vendor": vendor,
         "canonical_product_family": family,
         "template_option": template_option,
+        "product_type": product_type,
         "cell_type": cell_type,
         "density_class": density_class,
         "application_hint": application_hint,
         "lookup_priority": lookup_priority,
         "lookup_terms": lookup_terms,
         "preferred_documents": preferred_documents,
+        "document_priority": document_priority,
         "official_vendor_url": official_url,
+        "vendor_product_url": vendor_product_url,
         "source_domain": domain,
         "domain_approved": is_approved_document_url(official_url, approved_domains or DEFAULT_APPROVED_DOMAINS),
         "decision_nodes": nodes,
+        "mapping_status": clean_text(row.get("mapping_status")),
+        "alias_policy": clean_text(row.get("alias_policy")),
+        "search_strategy": clean_text(row.get("search_strategy")),
+        "document_collection_status": clean_text(row.get("document_collection_status")),
+        "knowledge_status": clean_text(row.get("knowledge_status")),
+        "replacement_for": clean_text(row.get("replacement_for")),
         "priority": int(row.get("priority") or _priority_from_lookup_priority(lookup_priority)),
         "active": row.get("active", True) is not False and str(row.get("active", "true")).lower() not in {"false", "0", "no"},
         "notes": clean_text(row.get("notes")),
@@ -192,6 +218,8 @@ def build_document_queue_from_lookup(
                 + (f" [{row.get('template_option')}]" if row.get("template_option") else "")
                 + f" (terms: {row.get('lookup_terms')}"
                 + (f"; preferred docs: {row.get('preferred_documents')}" if row.get("preferred_documents") else "")
+                + (f"; mapping: {row.get('mapping_status')}" if row.get("mapping_status") else "")
+                + (f"; alias: {row.get('alias_policy')}" if row.get("alias_policy") else "")
                 + ")"
             )
             for row in ordered_family_rows[:12]
@@ -226,16 +254,25 @@ def upsert_product_family_lookup(db_url: str, rows: list[dict[str, Any]]) -> int
                     vendor TEXT,
                     canonical_product_family TEXT,
                     template_option TEXT,
+                    product_type TEXT,
                     cell_type TEXT,
                     density_class TEXT,
                     application_hint TEXT,
                     lookup_priority TEXT,
                     lookup_terms TEXT,
                     preferred_documents TEXT,
+                    document_priority TEXT,
                     official_vendor_url TEXT,
+                    vendor_product_url TEXT,
                     source_domain TEXT,
                     domain_approved BOOLEAN DEFAULT false,
                     decision_nodes JSONB DEFAULT '[]'::jsonb,
+                    mapping_status TEXT,
+                    alias_policy TEXT,
+                    search_strategy TEXT,
+                    document_collection_status TEXT,
+                    knowledge_status TEXT,
+                    replacement_for TEXT,
                     priority INTEGER DEFAULT 50,
                     active BOOLEAN DEFAULT true,
                     notes TEXT,
@@ -248,11 +285,20 @@ def upsert_product_family_lookup(db_url: str, rows: list[dict[str, Any]]) -> int
         for statement in [
             "ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS source_domain TEXT",
             "ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS template_option TEXT",
+            "ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS product_type TEXT",
             "ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS cell_type TEXT",
             "ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS density_class TEXT",
             "ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS application_hint TEXT",
             "ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS lookup_priority TEXT",
             "ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS preferred_documents TEXT",
+            "ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS document_priority TEXT",
+            "ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS vendor_product_url TEXT",
+            "ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS mapping_status TEXT",
+            "ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS alias_policy TEXT",
+            "ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS search_strategy TEXT",
+            "ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS document_collection_status TEXT",
+            "ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS knowledge_status TEXT",
+            "ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS replacement_for TEXT",
             "ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS status TEXT",
             "ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS domain_approved BOOLEAN DEFAULT false",
             "ALTER TABLE product_family_lookup ADD COLUMN IF NOT EXISTS decision_nodes JSONB DEFAULT '[]'::jsonb",
@@ -270,32 +316,48 @@ def upsert_product_family_lookup(db_url: str, rows: list[dict[str, Any]]) -> int
                     """
                     INSERT INTO product_family_lookup (
                         lookup_id, vendor, canonical_product_family, template_option,
-                        cell_type, density_class, application_hint, lookup_priority,
-                        lookup_terms, preferred_documents, official_vendor_url,
+                        product_type, cell_type, density_class, application_hint, lookup_priority,
+                        lookup_terms, preferred_documents, document_priority, official_vendor_url,
+                        vendor_product_url,
                         source_domain, domain_approved, decision_nodes,
+                        mapping_status, alias_policy, search_strategy,
+                        document_collection_status, knowledge_status, replacement_for,
                         priority, active, notes, status, updated_at
                     )
                     VALUES (
                         :lookup_id, :vendor, :canonical_product_family, :template_option,
-                        :cell_type, :density_class, :application_hint, :lookup_priority,
-                        :lookup_terms, :preferred_documents, :official_vendor_url,
+                        :product_type, :cell_type, :density_class, :application_hint, :lookup_priority,
+                        :lookup_terms, :preferred_documents, :document_priority, :official_vendor_url,
+                        :vendor_product_url,
                         :source_domain, :domain_approved,
-                        CAST(:decision_nodes AS JSONB), :priority, :active, :notes, :status, now()
+                        CAST(:decision_nodes AS JSONB),
+                        :mapping_status, :alias_policy, :search_strategy,
+                        :document_collection_status, :knowledge_status, :replacement_for,
+                        :priority, :active, :notes, :status, now()
                     )
                     ON CONFLICT (lookup_id) DO UPDATE SET
                         vendor = EXCLUDED.vendor,
                         canonical_product_family = EXCLUDED.canonical_product_family,
                         template_option = EXCLUDED.template_option,
+                        product_type = EXCLUDED.product_type,
                         cell_type = EXCLUDED.cell_type,
                         density_class = EXCLUDED.density_class,
                         application_hint = EXCLUDED.application_hint,
                         lookup_priority = EXCLUDED.lookup_priority,
                         lookup_terms = EXCLUDED.lookup_terms,
                         preferred_documents = EXCLUDED.preferred_documents,
+                        document_priority = EXCLUDED.document_priority,
                         official_vendor_url = EXCLUDED.official_vendor_url,
+                        vendor_product_url = EXCLUDED.vendor_product_url,
                         source_domain = EXCLUDED.source_domain,
                         domain_approved = EXCLUDED.domain_approved,
                         decision_nodes = EXCLUDED.decision_nodes,
+                        mapping_status = EXCLUDED.mapping_status,
+                        alias_policy = EXCLUDED.alias_policy,
+                        search_strategy = EXCLUDED.search_strategy,
+                        document_collection_status = EXCLUDED.document_collection_status,
+                        knowledge_status = EXCLUDED.knowledge_status,
+                        replacement_for = EXCLUDED.replacement_for,
                         priority = EXCLUDED.priority,
                         active = EXCLUDED.active,
                         notes = EXCLUDED.notes,
