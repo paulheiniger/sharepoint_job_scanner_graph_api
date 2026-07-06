@@ -812,6 +812,16 @@ def reset_database_connection() -> None:
         logger.exception("database engine cache clear failed")
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def read_binary_file_cached(path: str, mtime_ns: int, size: int) -> bytes:
+    return Path(path).read_bytes()
+
+
+def cached_download_bytes(path: Path) -> bytes:
+    stat = path.stat()
+    return read_binary_file_cached(str(path), int(stat.st_mtime_ns), int(stat.st_size))
+
+
 def database_target_debug_payload() -> dict[str, Any]:
     target = database_target(DATABASE_URL)
     return {
@@ -6811,29 +6821,13 @@ def estimator_prototype_page() -> None:
         st.markdown("**Review Package**")
         if st.button("Export Review Package", key=f"export_workbench_review_package_{workbench_key}_{scope_key}_{historical_filters_key}"):
             try:
-                workbook_path_for_package = None
-                workbook_error_for_package = None
-                template_path = resolve_default_template_path()
-                if not template_path.exists():
-                    workbook_error_for_package = "Estimate template workbook not found. Add it to templates/Estimate - Full Turnkey.xlsx."
-                    st.session_state.pop(workbook_path_key, None)
-                    st.session_state[workbook_error_key] = workbook_error_for_package
-                else:
-                    try:
-                        edited_workbook_inputs = workbench_to_draft_workbook_inputs(edited_workbench)
-                        generated_workbook_path = generate_estimate_workbook(
-                            edited_workbook_inputs,
-                            template_path,
-                            DEFAULT_ESTIMATE_OUTPUT_DIR,
-                        )
-                        workbook_path_for_package = str(generated_workbook_path)
-                        st.session_state[workbook_path_key] = workbook_path_for_package
-                        st.session_state.pop(workbook_error_key, None)
-                    except Exception as workbook_exc:
-                        logger.exception("Field notes Excel draft generation failed during review package export")
-                        workbook_error_for_package = f"Could not generate Excel estimate draft: {safe_exception_text(workbook_exc)}"
-                        st.session_state.pop(workbook_path_key, None)
-                        st.session_state[workbook_error_key] = workbook_error_for_package
+                workbook_path_for_package = st.session_state.get(workbook_path_key)
+                if workbook_path_for_package and not Path(str(workbook_path_for_package)).exists():
+                    workbook_path_for_package = None
+                workbook_error_for_package = None if workbook_path_for_package else (
+                    st.session_state.get(workbook_error_key)
+                    or "Workbook was not included. Use Generate Excel Estimate Draft first if the package needs the workbook."
+                )
                 package_path = export_workbench_review_package(
                     workbench=edited_workbench,
                     input_notes=recommendation_notes,
@@ -6844,6 +6838,7 @@ def estimator_prototype_page() -> None:
                     or field_recommendation.parsed_fields.get("runtime_seconds_by_stage")
                     or {},
                     run_id=str(edited_workbench.get("estimate_id") or workbench_key),
+                    include_debug=False,
                 )
                 session_id = current_estimator_session_id()
                 if session_id:
@@ -6875,6 +6870,7 @@ def estimator_prototype_page() -> None:
                         artifact_json={"final_decision_id": final_id, "workbook_export_error": workbook_error_for_package},
                     )
                 st.session_state[f"workbench_review_package_path_{workbench_key}"] = str(package_path)
+                st.session_state[f"workbench_review_package_bytes_{workbench_key}"] = cached_download_bytes(package_path)
                 st.success(f"Estimator review package created: {package_path}")
                 if workbook_path_for_package:
                     st.caption(f"Included generated workbook: {workbook_path_for_package}")
@@ -6890,7 +6886,7 @@ def estimator_prototype_page() -> None:
                 st.caption(f"Local review package path: {package_path}")
                 st.download_button(
                     "Download Review Package",
-                    data=package_path.read_bytes(),
+                    data=st.session_state.get(f"workbench_review_package_bytes_{workbench_key}") or cached_download_bytes(package_path),
                     file_name=package_path.name,
                     mime="application/zip",
                     key=f"download_workbench_review_package_{workbench_key}",
@@ -6925,8 +6921,10 @@ def estimator_prototype_page() -> None:
                         get_engine(),
                         session_id,
                         DEFAULT_WORKBENCH_EXPORT_DIR / f"estimator_session_{session_id}.zip",
+                        include_full_payload=False,
                     )
                     st.session_state[f"estimator_session_review_package_path_{session_id}"] = str(session_package_path)
+                    st.session_state[f"estimator_session_review_package_bytes_{session_id}"] = cached_download_bytes(session_package_path)
                     st.success(f"Estimator session review package created: {session_package_path}")
                 except Exception as exc:
                     logger.exception("Estimator session review package export failed")
@@ -6938,7 +6936,8 @@ def estimator_prototype_page() -> None:
                     st.caption(f"Local session package path: {session_package_path}")
                     st.download_button(
                         "Download Session Review Package",
-                        data=session_package_path.read_bytes(),
+                        data=st.session_state.get(f"estimator_session_review_package_bytes_{session_id}")
+                        or cached_download_bytes(session_package_path),
                         file_name=session_package_path.name,
                         mime="application/zip",
                         key=f"download_estimator_session_review_package_{session_id}",

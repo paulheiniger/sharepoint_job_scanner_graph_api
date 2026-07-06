@@ -119,6 +119,22 @@ def test_export_package_creates_zip_with_decision_files_and_workbook(tmp_path) -
     assert "Debug Materials" not in sheetnames
 
 
+def test_export_package_can_omit_full_debug_payload_for_fast_ui_export(tmp_path) -> None:
+    zip_path = export_workbench_review_package(
+        workbench=sample_workbench(),
+        input_notes="Roof coating notes",
+        output_dir=tmp_path,
+        include_debug=False,
+    )
+
+    with zipfile.ZipFile(zip_path) as archive:
+        names = set(archive.namelist())
+        assert "workbench_summary.json" in names
+        assert "workbench_summary.xlsx" in names
+        assert "workbench_debug.json" not in names
+        assert "workbench_debug_omitted.txt" in names
+
+
 def test_insulation_review_package_uses_decision_sheets(tmp_path) -> None:
     workbench = {
         "estimate_id": "insulation-review",

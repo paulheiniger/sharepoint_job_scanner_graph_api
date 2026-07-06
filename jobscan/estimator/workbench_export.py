@@ -385,6 +385,7 @@ def build_workbench_review_payloads(
     runtime: dict[str, Any] | None = None,
     run_id: str | None = None,
     timestamp: str | None = None,
+    include_debug: bool = True,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     """Build JSON/XLSX payloads for an estimator workbench review package."""
 
@@ -855,32 +856,40 @@ def build_workbench_review_payloads(
         "runtime": runtime or recalculated.get("runtime") or {},
     }
 
-    debug = {
-        "run_id": resolved_run_id,
-        "timestamp": resolved_timestamp,
-        "input_notes": input_notes or "",
-        "workbench": recalculated,
-        "area_calculation_trace": area_trace,
-        "roofing_foam_template_decisions": roofing_foam_template_decisions,
-        "roofing_coating_template_decisions": roofing_coating_template_decisions,
-        "roofing_primer_template_decisions": roofing_primer_template_decisions,
-        "roofing_detail_template_decisions": roofing_detail_template_decisions,
-        "roofing_detail_quantity_template_decisions": roofing_detail_quantity_template_decisions,
-        "roofing_board_fastener_template_decisions": roofing_board_fastener_template_decisions,
-        "roofing_granules_template_decisions": roofing_granules_template_decisions,
-        "roofing_equipment_template_decisions": roofing_equipment_template_decisions,
-        "roofing_travel_freight_template_decisions": roofing_travel_freight_template_decisions,
-        "roofing_accessory_template_decisions": roofing_accessory_template_decisions,
-        "roofing_labor_template_decisions": roofing_labor_template_decisions,
-        "insulation_foam_template_decisions": foam_template_decisions,
-        "insulation_performance_specs": performance_specs,
-        **insulation_decision_sections,
-        "workbook_decisions": workbook_decisions,
-        "decision_trace": decision_trace,
-        "product_guidance": product_guidance,
-        "totals": totals,
-        "warnings": recalculated.get("review_flags") or [],
-    }
+    debug = (
+        {
+            "run_id": resolved_run_id,
+            "timestamp": resolved_timestamp,
+            "input_notes": input_notes or "",
+            "workbench": recalculated,
+            "area_calculation_trace": area_trace,
+            "roofing_foam_template_decisions": roofing_foam_template_decisions,
+            "roofing_coating_template_decisions": roofing_coating_template_decisions,
+            "roofing_primer_template_decisions": roofing_primer_template_decisions,
+            "roofing_detail_template_decisions": roofing_detail_template_decisions,
+            "roofing_detail_quantity_template_decisions": roofing_detail_quantity_template_decisions,
+            "roofing_board_fastener_template_decisions": roofing_board_fastener_template_decisions,
+            "roofing_granules_template_decisions": roofing_granules_template_decisions,
+            "roofing_equipment_template_decisions": roofing_equipment_template_decisions,
+            "roofing_travel_freight_template_decisions": roofing_travel_freight_template_decisions,
+            "roofing_accessory_template_decisions": roofing_accessory_template_decisions,
+            "roofing_labor_template_decisions": roofing_labor_template_decisions,
+            "insulation_foam_template_decisions": foam_template_decisions,
+            "insulation_performance_specs": performance_specs,
+            **insulation_decision_sections,
+            "workbook_decisions": workbook_decisions,
+            "decision_trace": decision_trace,
+            "product_guidance": product_guidance,
+            "totals": totals,
+            "warnings": recalculated.get("review_flags") or [],
+        }
+        if include_debug
+        else {
+            "run_id": resolved_run_id,
+            "timestamp": resolved_timestamp,
+            "debug_omitted": True,
+        }
+    )
 
     workbook_sheets = {
         "Parsed Scope": summary["parsed_scope"],
@@ -928,6 +937,7 @@ def export_workbench_review_package(
     workbook_export_error: str | None = None,
     runtime: dict[str, Any] | None = None,
     run_id: str | None = None,
+    include_debug: bool = True,
 ) -> Path:
     """Create a timestamped Estimator Workbench review ZIP package."""
 
@@ -946,10 +956,18 @@ def export_workbench_review_package(
         runtime=runtime,
         run_id=resolved_run_id,
         timestamp=datetime.now(UTC).isoformat(),
+        include_debug=include_debug,
     )
 
     (package_dir / "workbench_summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
-    (package_dir / "workbench_debug.json").write_text(json.dumps(debug, indent=2, sort_keys=True), encoding="utf-8")
+    if include_debug:
+        (package_dir / "workbench_debug.json").write_text(json.dumps(debug, indent=2, sort_keys=True), encoding="utf-8")
+    else:
+        (package_dir / "workbench_debug_omitted.txt").write_text(
+            "Full workbench_debug.json was omitted for fast Streamlit export. "
+            "Run export_workbench_review_package(..., include_debug=True) for full debug payload.",
+            encoding="utf-8",
+        )
     (package_dir / "estimator_input.txt").write_text(input_notes or "", encoding="utf-8")
     (package_dir / "README.txt").write_text(
         _readme_text(summary, workbook_path=workbook_path, workbook_export_error=workbook_export_error),

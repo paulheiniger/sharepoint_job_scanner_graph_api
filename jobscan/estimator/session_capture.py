@@ -643,6 +643,8 @@ def export_estimator_session_package(
     engine: Engine,
     session_id: str,
     out: str | Path | None = None,
+    *,
+    include_full_payload: bool = True,
 ) -> Path:
     payload = load_estimator_session_payload(engine, session_id)
     output = Path(out) if out else DEFAULT_SESSION_EXPORT_DIR / f"estimator_session_{session_id}.zip"
@@ -654,7 +656,6 @@ def export_estimator_session_package(
     review = payload["review"]
     files = {
         "session_review.json": json.dumps(review, indent=2, sort_keys=True, default=str),
-        "session_payload.json": json.dumps(payload, indent=2, sort_keys=True, default=str),
         "raw_notes.txt": review.get("raw_input_notes") or "",
         "parsed_scope.json": json.dumps(review.get("parsed_scope") or {}, indent=2, sort_keys=True, default=str),
         "assumptions.json": json.dumps(review.get("assumptions") or {}, indent=2, sort_keys=True, default=str),
@@ -666,6 +667,13 @@ def export_estimator_session_package(
         "workbook_cell_writes.json": json.dumps(review.get("workbook_cell_writes") or [], indent=2, sort_keys=True, default=str),
         "workbook_export_path.txt": str(review.get("workbook_export_path") or ""),
     }
+    if include_full_payload:
+        files["session_payload.json"] = json.dumps(payload, indent=2, sort_keys=True, default=str)
+    else:
+        files["session_payload_omitted.txt"] = (
+            "Full session_payload.json was omitted for fast Streamlit export. "
+            "Run export_estimator_session_package(..., include_full_payload=True) for full audit payload."
+        )
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for filename, content in files.items():
             archive.writestr(filename, content)
