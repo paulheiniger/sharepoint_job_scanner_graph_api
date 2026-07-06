@@ -1065,7 +1065,28 @@ def test_insulation_foam_rolls_up_r_value_thickness_and_template_yield() -> None
                     "estimated_cost": 2250,
                 }
             ]
-        )
+        ),
+        product_catalog=pd.DataFrame(
+            [
+                {
+                    "product_id": "gaco_onepass",
+                    "manufacturer": "Gaco",
+                    "product_name": "GacoOnePass Closed Cell Spray Foam",
+                    "category": "spray_foam",
+                    "active": True,
+                }
+            ]
+        ),
+        product_aliases=pd.DataFrame(
+            [
+                {
+                    "product_id": "gaco_onepass",
+                    "alias": "GACO 2.0",
+                    "alias_type": "historical_template_row",
+                    "confidence": 0.95,
+                }
+            ]
+        ),
     )
 
     workbench = build_estimating_workbench(recommendation, data)
@@ -1076,8 +1097,20 @@ def test_insulation_foam_rolls_up_r_value_thickness_and_template_yield() -> None
     assert foam["yield_or_coverage"] == 2600
     assert foam["estimated_units"] > 0
     assert foam["estimated_cost"] > 0
+    assert foam["unit_price"] == 2.25
+    assert foam["product_id"] == "gaco_onepass"
+    assert foam["product_guidance_status"] == "matched"
+    assert "Product guidance documents have not been ingested yet" in foam["product_guidance"]
     assert foam["thickness_source"]
     assert foam["yield_or_coverage_source"]
+
+    workbench["insulation_foam_template_decisions"][0]["unit_price"] = 0
+    recalculated = recalculate_workbench_tables(workbench)
+    recalculated_foam = recalculated["insulation_foam_template_decisions"][0]
+
+    assert recalculated_foam["unit_price"] == 2.25
+    assert recalculated_foam["estimated_cost"] > 0
+    assert recalculated_foam["pricing_evidence_summary"]
 
 
 def test_insulation_foam_recalc_treats_persisted_zero_thickness_and_yield_as_missing() -> None:
@@ -1107,6 +1140,35 @@ def test_insulation_foam_recalc_treats_persisted_zero_thickness_and_yield_as_mis
     assert foam["thickness_inches"] == 4.6721
     assert foam["yield_or_coverage"] == 2600
     assert foam["estimated_cost"] > 0
+
+
+def test_insulation_foam_recalc_marks_stored_weak_product_match_for_review() -> None:
+    recommendation = insulation_recommendation()
+    workbench = build_estimating_workbench(recommendation, EstimatorData())
+    candidate = {
+        "item_name": "GACO 2.0",
+        "unit_price": 2.25,
+        "source": "estimate_template_rows_formula_compatible",
+        "compatibility_status": "compatible",
+        "product_id": "weak_roofing_product",
+        "product_name": "Weak Roofing Product",
+        "product_match_score": 0.57,
+        "product_match_strategy": "fuzzy_product_name",
+        "product_guidance": "Roof coating guidance that should not be trusted for foam.",
+    }
+    foam = workbench["insulation_foam_template_decisions"][0]
+    foam["selected_pricing_candidate"] = "GACO 2.0"
+    foam["unit_price"] = 0
+    foam["pricing_candidates"] = [candidate]
+    foam["pricing_candidates_json"] = json.dumps([candidate])
+
+    recalculated = recalculate_workbench_tables(workbench)
+    recalculated_foam = recalculated["insulation_foam_template_decisions"][0]
+
+    assert recalculated_foam["unit_price"] == 2.25
+    assert recalculated_foam["product_guidance_status"] == "review"
+    assert "Weak product match" in recalculated_foam["product_guidance"]
+    assert any("weak product match" in warning.lower() for warning in recalculated_foam["compatibility_warnings"])
 
 
 def test_insulation_loading_and_travel_labor_use_default_hourly_rate_when_rate_missing() -> None:

@@ -190,6 +190,9 @@ INSULATION_FOAM_TEMPLATE_COMPACT_COLUMNS = [
     "selected_pricing_candidate",
     "compatibility_status",
     "compatibility_warnings",
+    "product_guidance_status",
+    "product_name",
+    "product_match_score",
     "product_guidance",
     "notes",
 ]
@@ -225,6 +228,8 @@ INSULATION_DECISION_TEMPLATE_COMPACT_COLUMNS = [
     "selected_pricing_candidate",
     "compatibility_status",
     "compatibility_warnings",
+    "product_guidance_status",
+    "product_name",
     "product_guidance",
     "notes",
 ]
@@ -246,6 +251,8 @@ INSULATION_DECISION_SECTION_COLUMNS = {
         "selected_pricing_candidate",
         "compatibility_status",
         "compatibility_warnings",
+        "product_guidance_status",
+        "product_name",
         "product_guidance",
         "notes",
     ],
@@ -264,6 +271,8 @@ INSULATION_DECISION_SECTION_COLUMNS = {
         "selected_pricing_candidate",
         "compatibility_status",
         "compatibility_warnings",
+        "product_guidance_status",
+        "product_name",
         "product_guidance",
         "notes",
     ],
@@ -281,6 +290,8 @@ INSULATION_DECISION_SECTION_COLUMNS = {
         "selected_pricing_candidate",
         "compatibility_status",
         "compatibility_warnings",
+        "product_guidance_status",
+        "product_name",
         "product_guidance",
         "notes",
     ],
@@ -4537,9 +4548,59 @@ def unique_columns(columns: Iterable[str]) -> list[str]:
     return out
 
 
+COMPACT_ALWAYS_SHOW_COLUMNS = {
+    "include",
+    "workbook_row",
+    "template_line",
+    "package",
+    "template_bucket",
+    "labor_package",
+    "labor_task",
+    "estimator_decision",
+    "editable_selector_code",
+    "resolved_template_option",
+    "historical_recommendation",
+    "historical_selector_recommendation",
+    "selected_pricing_candidate",
+    "unit_price",
+    "estimated_cost",
+    "compatibility_status",
+    "compatibility_warnings",
+    "product_guidance_status",
+    "product_guidance",
+    "notes",
+}
+
+
+def compact_column_has_value(series: pd.Series) -> bool:
+    if series.empty:
+        return False
+    for value in series:
+        if value is None:
+            continue
+        if isinstance(value, float) and pd.isna(value):
+            continue
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            if float(value) != 0.0:
+                return True
+            continue
+        text = str(value).strip()
+        if not text or text.lower() in {"0", "0.0", "nan", "none", "null", "[]", "{}"}:
+            continue
+        return True
+    return False
+
+
 def project_display_frame(frame: pd.DataFrame, columns: Iterable[str]) -> pd.DataFrame:
     available = [column for column in unique_columns(columns) if column in frame.columns]
-    return frame[available].copy() if available else frame.copy()
+    if not available:
+        return frame.copy()
+    compact_columns = [
+        column
+        for column in available
+        if column in COMPACT_ALWAYS_SHOW_COLUMNS or compact_column_has_value(frame[column])
+    ]
+    return frame[compact_columns or available].copy()
 
 
 def estimator_reference_job_options(data: EstimatorData, *, template_type: str = "") -> tuple[list[str], dict[str, str]]:

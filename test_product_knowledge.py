@@ -380,6 +380,27 @@ def test_product_context_uses_template_product_option_links() -> None:
     assert context["match_score"] >= 0.98
 
 
+def test_product_match_rejects_weak_cross_category_fuzzy_match() -> None:
+    matched = match_product(
+        "GACO 2.0",
+        pd.DataFrame(
+            [
+                {
+                    "product_id": "gaco_roof_coating",
+                    "manufacturer": "Gaco",
+                    "product_name": "Gaco Silicone Roof Coating",
+                    "category": "roof_coating",
+                    "active": True,
+                }
+            ]
+        ),
+        category="foam",
+        decision_id="insulation_foam_system",
+    )
+
+    assert matched == {}
+
+
 def test_product_mapping_audit_generates_alias_and_template_link_candidates() -> None:
     data = EstimatorData(
         product_catalog=pd.DataFrame(

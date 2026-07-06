@@ -1237,6 +1237,11 @@ def _product_guidance_summary(product_context: dict[str, Any]) -> str:
     warnings = product_context.get("warnings") or []
     if warnings:
         parts.append(f"Warnings: {_value_summary(warnings)}")
+    if not parts and product_context.get("product_id"):
+        product_name = first_nonblank(product_context.get("product_name"), product_context.get("product_id"))
+        manufacturer = product_context.get("manufacturer")
+        label = " ".join(str(part) for part in (manufacturer, product_name) if part)
+        parts.append(f"Matched product: {label}. Product guidance documents have not been ingested yet.")
     return " ".join(parts)
 
 
@@ -2541,6 +2546,11 @@ def _candidate_guidance_summary(product_context: dict[str, Any]) -> str:
         parts.append(f"Limitations: {product_context.get('important_limitations')}")
     if product_context.get("warnings"):
         parts.append("Warnings available.")
+    if not parts and product_context.get("product_id"):
+        product_name = first_nonblank(product_context.get("product_name"), product_context.get("product_id"))
+        manufacturer = product_context.get("manufacturer")
+        label = " ".join(str(part) for part in (manufacturer, product_name) if part)
+        parts.append(f"Matched product: {label}. Product guidance documents have not been ingested yet.")
     return " ".join(parts)
 
 
@@ -3725,7 +3735,13 @@ def _build_insulation_foam_template_decisions(
         selected_candidate_name,
         preserve_bad_selection=bool(first_nonblank(existing.get("selected_pricing_candidate"))),
     )
-    unit_price = safe_number(first_nonblank(existing.get("unit_price"), selected_candidate.get("unit_price"), foam_row.get("current_unit_price"), defaults.get("unit_price")), 0.0)
+    unit_price = positive_number(
+        existing.get("unit_price"),
+        selected_candidate.get("unit_price"),
+        foam_row.get("current_unit_price"),
+        defaults.get("unit_price"),
+        default=0.0,
+    )
     notes_text = _normalized(" ".join(str(scope.get(key) or "") for key in ("notes", "raw_input_notes", "project_type", "scope_of_work")))
     foam_scope = bool(
         foam_row.get("include")
@@ -3757,6 +3773,18 @@ def _build_insulation_foam_template_decisions(
         defaults.get("thickness_inches"),
     ):
         warnings.append("Foam thickness is area-weighted from surface R-value targets; estimator should review row-level export.")
+    product_match_score = safe_number(selected_candidate.get("product_match_score"), 0.0)
+    product_match_strategy = str(selected_candidate.get("product_match_strategy") or "")
+    weak_product_match = bool(
+        selected_candidate.get("product_id")
+        and product_match_score < 0.75
+        and product_match_strategy not in {"exact_product_or_alias", "template_product_option_link"}
+    )
+    product_guidance = selected_candidate.get("product_guidance") or ""
+    if weak_product_match:
+        product_label = first_nonblank(selected_candidate.get("product_name"), selected_candidate.get("product_id"))
+        product_guidance = f"Weak product match to {product_label}; confirm template-product mapping before using guidance."
+        warnings.append("Product guidance is based on a weak product match and requires mapping review.")
     return [
         {
             "include": include,
@@ -3815,13 +3843,22 @@ def _build_insulation_foam_template_decisions(
             "estimated_cost": formula.get("estimated_cost"),
             "formula_model": formula.get("formula_model"),
             "formula_source": formula.get("formula_source"),
+            "cost_source": _cost_source_for_candidate(formula, selected_candidate),
             "selected_pricing_candidate": selected_candidate.get("item_name") or str(selected_candidate_name or ""),
             "selected_pricing_item_id": selected_candidate.get("pricing_item_id"),
+            "pricing_evidence_summary": _pricing_evidence_summary(selected_candidate),
             "pricing_candidates": candidates,
             "pricing_candidates_json": json.dumps(candidates, default=str),
             "compatibility_status": "review" if warnings and compatibility.get("compatibility_status") == "compatible" else compatibility.get("compatibility_status"),
             "compatibility_warnings": warnings,
-            "product_guidance": selected_candidate.get("product_guidance") or "",
+            "product_id": selected_candidate.get("product_id") or "",
+            "product_name": selected_candidate.get("product_name") or "",
+            "product_manufacturer": selected_candidate.get("manufacturer") or "",
+            "product_guidance_status": "review" if weak_product_match else ("matched" if selected_candidate.get("product_id") else "missing"),
+            "product_guidance": product_guidance,
+            "product_match_score": product_match_score,
+            "product_match_strategy": product_match_strategy,
+            "product_matched_name": selected_candidate.get("product_matched_name") or "",
             "product_source_documents": selected_candidate.get("product_source_documents") or [],
             "notes": (
                 "Template selector is the estimator decision. Pricing/product candidate is shown separately for review. "

@@ -204,7 +204,11 @@ def match_product(
         strategy = "fuzzy_product_name"
         if score >= 1.0:
             strategy = "exact_product_or_alias"
-        if category and _category_matches(row.get("category"), category, decision_id):
+        category_match = _category_matches(row.get("category"), category, decision_id) if category else False
+        if category and row.get("category") and not category_match and strategy != "exact_product_or_alias":
+            if not (template_link_product_ids and product_id in template_link_product_ids):
+                continue
+        if category and category_match:
             score += 0.06
         if link_product_ids and str(row.get("product_id") or "") in link_product_ids:
             score += 0.1
