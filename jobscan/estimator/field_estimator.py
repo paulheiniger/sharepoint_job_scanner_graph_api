@@ -1907,8 +1907,19 @@ def _build_work_package_decisions(scope: dict[str, Any], decision: dict[str, Any
     no_visible_rust = bool(re.search(r"\b(?:no|without)\s+(?:visible\s+)?rust\b|\bno\s+rusted\s+fasteners?\b", text))
     rusted_metal = metal_context and _positive_rust_evidence(text)
     explicit_primer = any(term in text for term in primer_terms)
+    explicit_primer_include = bool(
+        re.search(r"\b(include|included|add|apply|use)\s+(?:\w+\s+){0,4}(primer|priming)\b", text)
+        or re.search(r"\b(primer|priming)\s+(?:is\s+)?included\b", text)
+    )
+    primer_review_language = bool(
+        re.search(r"\b(review|verify|evaluate|confirm)\s+(?:\w+\s+){0,6}(primer|priming)\b", text)
+        or re.search(r"\b(primer|priming)\s+(?:\w+\s+){0,4}(need|needs|required|requirement|requirements)\b", text)
+    )
     if coating_required and (explicit_primer or rusted_metal or foam_context):
-        primer_applies: bool | str = True if ("primer" in text or "prime" in text or rusted_metal or "asphalt bleed" in text or "bleed" in text) else "review"
+        if primer_review_language and not explicit_primer_include:
+            primer_applies = "review"
+        else:
+            primer_applies: bool | str = True if ("primer" in text or "prime" in text or rusted_metal or "asphalt bleed" in text or "bleed" in text) else "review"
         primer_reason = "Primer trigger found from substrate/condition/manufacturer language."
         primer_confidence = 0.78 if primer_applies is True else 0.58
     else:

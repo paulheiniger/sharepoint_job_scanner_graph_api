@@ -47,7 +47,7 @@ def test_roofing_coating_formula_calculates_gallons_wet_mils_and_cost() -> None:
     assert result["estimated_cost"] == 6300
 
 
-def test_mixed_labor_formula_uses_days_when_hours_are_zero() -> None:
+def test_mixed_labor_formula_uses_daily_rate_branch_when_daily_rate_is_present() -> None:
     days_based = calculate_mixed_labor(
         days=2,
         crew_size=4,
@@ -56,7 +56,7 @@ def test_mixed_labor_formula_uses_days_when_hours_are_zero() -> None:
         hourly_rate=75,
         formula_mode="mixed_formula",
     )
-    hours_based = calculate_mixed_labor(
+    daily_rate_wins = calculate_mixed_labor(
         days=2,
         crew_size=4,
         total_hours=50,
@@ -64,8 +64,18 @@ def test_mixed_labor_formula_uses_days_when_hours_are_zero() -> None:
         hourly_rate=75,
         formula_mode="mixed_formula",
     )
+    hours_based = calculate_mixed_labor(
+        days=2,
+        crew_size=4,
+        total_hours=50,
+        daily_rate=0,
+        hourly_rate=75,
+        formula_mode="mixed_formula",
+    )
 
     assert days_based["estimated_cost"] == 2400
     assert days_based["formula_source"] == "days_daily_rate"
+    assert daily_rate_wins["estimated_cost"] == 2400
+    assert daily_rate_wins["formula_source"] == "days_daily_rate"
     assert hours_based["estimated_cost"] == 3750
     assert hours_based["formula_source"] == "hours_hourly_rate"

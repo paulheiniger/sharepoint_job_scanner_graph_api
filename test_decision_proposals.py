@@ -22,7 +22,7 @@ def test_explicit_note_proposal_includes_coating_rows_with_review_evidence() -> 
 
     coating = [row for row in proposals if row["template_bucket"] == "coating"]
 
-    assert {row["workbook_row"] for row in coating} >= {"26", "27"}
+    assert {row["workbook_row"] for row in coating} == {"26"}
     assert all(row["include"] is True for row in coating)
     assert all(row["review_required"] is True for row in coating)
     assert all(row["evidence"]["note"] for row in coating)

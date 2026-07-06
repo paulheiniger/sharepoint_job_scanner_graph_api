@@ -882,7 +882,7 @@ def calculate_mixed_labor(
     daily = safe_number(daily_rate, 0.0)
     hourly_input = safe_number(hourly_rate, 0.0)
     hourly = hourly_input
-    if daily <= 0 and hourly > 0 and crew > 0:
+    if mode != "mixed_formula" and daily <= 0 and hourly > 0 and crew > 0:
         daily = hourly * crew * hours_per_day
     if hourly <= 0 and daily > 0 and crew > 0 and hours_per_day > 0:
         hourly = daily / (crew * hours_per_day)
@@ -900,12 +900,13 @@ def calculate_mixed_labor(
         cost_basis = "hours_hourly_rate" if cost else "missing_hours_or_hourly_rate"
     else:
         # Roofing/insulation templates use a mixed cost formula like:
-        # IF(G=0, B*J, D*G). Column G is the total-hours input, so the
-        # workbook uses daily mode only when hours are blank/zero.
-        if hours <= 0 and days_value > 0 and daily > 0:
+        # IF(G=0, B*J, D*G). Column G is the daily-rate output, so a selected
+        # daily rate uses days x daily rate; rows without a daily rate fall
+        # back to total hours x hourly rate.
+        if daily > 0 and days_value > 0:
             cost = days_value * daily
             cost_basis = "days_daily_rate"
-        elif hours > 0 and hourly_input > 0:
+        elif daily <= 0 and hours > 0 and hourly_input > 0:
             cost = hours * hourly_input
             cost_basis = "hours_hourly_rate"
         else:

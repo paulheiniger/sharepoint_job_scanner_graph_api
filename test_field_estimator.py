@@ -239,7 +239,7 @@ def test_pegasus_reviewed_notes_create_conditional_coating_scope_and_workbench_d
     included_coating_rows = [
         row for row in workbench["roofing_coating_template_decisions"] if row.get("include")
     ]
-    assert [row["workbook_row"] for row in included_coating_rows] == ["26", "27"]
+    assert [row["workbook_row"] for row in included_coating_rows] == ["26"]
     assert all(row["basis_sqft"] == pytest.approx(45570.2, abs=0.1) for row in included_coating_rows)
     assert all(row["estimated_gallons"] > 0 for row in included_coating_rows)
     assert all(row["compatibility_status"] == "review" for row in included_coating_rows)
@@ -248,6 +248,12 @@ def test_pegasus_reviewed_notes_create_conditional_coating_scope_and_workbench_d
         for row in included_coating_rows
         for warning in row.get("compatibility_warnings", [])
     )
+    primer = workbench["roofing_primer_template_decisions"][0]
+    assert primer["include"] is True
+    assert primer["estimated_cost"] == 0
+    assert primer["proposal_review_required"] is True
+    assert any("review-only" in warning for warning in primer.get("compatibility_warnings", []))
+    assert not any(row.get("include") for row in workbench["roofing_board_fastener_template_decisions"])
 
     included_detail_rows = {
         row["template_bucket"]

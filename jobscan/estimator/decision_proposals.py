@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable
 
@@ -993,7 +994,7 @@ def _roofing_scope_proposals(scope: dict[str, Any], notes: str) -> list[Decision
             reasons.append("Coating chemistry/product was not stated.")
         if not scope.get("warranty_target_years") and not scope.get("warranty_years"):
             reasons.append("Warranty duration was not stated.")
-        for row in ("26", "27"):
+        for row in ("26",):
             proposals.append(
                 _proposal(
                     template_type,
@@ -1012,7 +1013,23 @@ def _roofing_scope_proposals(scope: dict[str, Any], notes: str) -> list[Decision
     text = _norm(notes)
     flag_blob = " ".join(str(flag) for flag in scope.get("condition_detail_flags") or [])
     if any(term in text or term in flag_blob for term in ("primer", "prime", "rust", "fastener")):
-        proposals.append(_proposal(template_type, "roofing_primer_template_decisions", "roofing_primer_system_row_39", "primer", "39", include=True, confidence=0.75, note=_snippet(notes, ["primer", "rust", "fastener"])))
+        primer_review = bool(
+            re.search(r"\b(review|verify|evaluate|confirm)\s+(?:\w+\s+){0,6}(primer|priming)\b", text)
+            or re.search(r"\b(primer|priming)\s+(?:\w+\s+){0,4}(need|needs|required|requirement|requirements)\b", text)
+        )
+        proposals.append(
+            _proposal(
+                template_type,
+                "roofing_primer_template_decisions",
+                "roofing_primer_system_row_39",
+                "primer",
+                "39",
+                include=True,
+                confidence=0.55 if primer_review else 0.75,
+                review_reasons=["Primer was mentioned as a review/verification item; estimator must confirm before pricing."] if primer_review else [],
+                note=_snippet(notes, ["primer", "rust", "fastener"]),
+            )
+        )
     if any(term in text or term in flag_blob for term in ("caulk", "sealant", "penetration", "detail")):
         proposals.append(_proposal(template_type, "roofing_detail_template_decisions", "roofing_caulk_sealant_row_43", "caulk_sealant", "43", include=True, confidence=0.75, note=_snippet(notes, ["caulk", "sealant", "penetration", "detail"])))
         proposals.append(_proposal(template_type, "roofing_detail_quantity_template_decisions", "roofing_penetrations_row_49", "penetrations", "49", include=True, confidence=0.7, review_reasons=["Detail quantity requires estimator count if units were not stated."], note=_snippet(notes, ["penetration", "detail"])))
@@ -1159,7 +1176,7 @@ def _ai_scope_proposals(template_type: str, ai_debug: dict[str, Any]) -> list[De
     packages = parsed.get("scope_packages") if isinstance(parsed.get("scope_packages"), dict) else {}
     proposals: list[DecisionProposal] = []
     if template_type == "roofing" and packages.get("coating"):
-        for row in ("26", "27"):
+        for row in ("26",):
             proposals.append(
                 _proposal(
                     "roofing",

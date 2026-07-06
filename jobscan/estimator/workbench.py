@@ -592,7 +592,7 @@ ROOFING_LIFT_DEFAULT_SIZE = "20'"
 ROOFING_LIFT_DEFAULT_MARGIN_PCT = 20.0
 ROOFING_GENERATOR_DEFAULT_DAYS = 7.0
 ROOFING_GENERATOR_DEFAULT_UNIT_PRICE = 50.0
-ROOFING_SALES_INSPECTION_DEFAULT_TRIPS = 9.0
+ROOFING_SALES_INSPECTION_DEFAULT_TRIPS = 1.0
 ROOFING_TRUCK_EXPENSE_DEFAULT_TRIPS = 16.0
 ROOFING_TRAVEL_DEFAULT_ROUND_TRIP_MILES = 20.0
 ROOFING_SALES_INSPECTION_DEFAULT_RATE = 0.75
@@ -5888,7 +5888,7 @@ def _build_roofing_coating_template_decisions(
         for row in existing_rows or []
         if isinstance(row, dict) and row.get("include") and int(safe_number(row.get("workbook_row"), 0)) in ROOFING_COATING_TEMPLATE_ROWS
     }
-    default_included_rows = existing_included_rows or ({26, 27} if coating_scope else set())
+    default_included_rows = existing_included_rows or ({26} if coating_scope else set())
     default_include_count = max(1, len(default_included_rows))
     default_total_gal_per_100 = positive_number(
         safe_number(coating_row.get("editable_qty_per_sqft"), 0.0) * 100,
@@ -5899,7 +5899,18 @@ def _build_roofing_coating_template_decisions(
         coating_row.get("gal_per_100_sqft"),
         default=1.0,
     )
-    default_gal_per_100 = default_total_gal_per_100 / default_include_count
+    default_rate_divisor = default_include_count
+    if (
+        default_include_count == 1
+        and material_rate <= 0
+        and historical_rate <= 0
+        and (
+            safe_number(defaults.get("gal_per_100_sqft"), 0.0) > 0
+            or safe_number(defaults.get("gal_per_sqft"), 0.0) > 0
+        )
+    ):
+        default_rate_divisor = 2
+    default_gal_per_100 = default_total_gal_per_100 / max(1, default_rate_divisor)
     default_waste = safe_number(first_nonblank(coating_row.get("waste_factor_pct"), decision_values.get("waste_factor_pct"), defaults.get("waste_factor_pct"), 0), 0.0)
     default_selected_candidate = first_nonblank(coating_row.get("item_name"), coating_row.get("current_item"))
 
@@ -6154,12 +6165,27 @@ def _build_roofing_primer_template_decisions(
         or explicit_include_signal
     )
     include = bool(existing["include"]) if "include" in existing else default_include
-    basis_sqft = positive_number(
-        existing.get("basis_sqft"),
-        primer_row.get("editable_basis_sqft"),
-        primer_row.get("default_basis_sqft"),
-        area if include else "",
-        0.0,
+    primer_source_priced = bool(
+        primer_row.get("include")
+        or safe_number(primer_row.get("estimated_cost"), 0.0) > 0
+        or safe_number(first_nonblank(primer_row.get("estimated_quantity"), primer_row.get("quantity")), 0.0) > 0
+    )
+    review_only_primer = bool(
+        include
+        and existing.get("proposal_review_required")
+        and not primer_source_priced
+        and not explicit_include_signal
+    )
+    basis_sqft = (
+        0.0
+        if review_only_primer
+        else positive_number(
+            existing.get("basis_sqft"),
+            primer_row.get("editable_basis_sqft"),
+            primer_row.get("default_basis_sqft"),
+            area if include else "",
+            0.0,
+        )
     )
     coverage = positive_number(
         existing.get("coverage_sqft_per_unit"),
@@ -6206,6 +6232,8 @@ def _build_roofing_primer_template_decisions(
         ),
         0.0,
     )
+    if review_only_primer:
+        unit_price = 0.0
     evidence_count = int(
         max(
             safe_number(existing.get("decision_evidence_count"), 0),
@@ -6231,6 +6259,8 @@ def _build_roofing_primer_template_decisions(
     )
     if coverage <= 0:
         warnings.append("Primer coverage is missing; formula output requires estimator review.")
+    if review_only_primer:
+        warnings.append("Primer is review-only from notes; cost is held at zero until primer scope and product are confirmed.")
     if include and safe_number(formula.get("estimated_cost"), 0.0) <= 0:
         warnings.append("Primer material cost is missing; current pricing or historical cost/sqft is required.")
     product_context_status = "matched" if selected_candidate.get("product_id") else "missing"
@@ -6763,26 +6793,36 @@ def _build_roofing_board_fastener_template_decisions(
             for key in ("notes", "raw_input_notes", "roof_condition", "project_type", "substrate", "roof_type_substrate")
         )
     )
+    board_review_signal = bool(
+        re.search(r"\b(review|verify|evaluate|possible|allowance|attention|may need)\s+(?:\w+\s+){0,6}(board|fastener|plate|wet area|wet areas)\b", notes)
+        or re.search(r"\b(board|fastener|plate|wet area|wet areas)\s+(?:\w+\s+){0,6}(review|verify|evaluate|possible|allowance|attention)\b", notes)
+    )
+    board_hard_signal = _has_positive_note_signal(
+        notes,
+        [
+            "cover board",
+            "iso board",
+            "dens deck",
+            "deck board",
+            "board stock",
+            "flute filler",
+            "wood fiber",
+            "wet insulation replacement",
+            "replace wet insulation",
+            "remove wet insulation",
+            "damaged board",
+            "replace board",
+            "board replacement",
+            "recover board",
+            "full tear off",
+            "tear off",
+            "tearoff",
+        ],
+    )
     board_signal = bool(
         board_row.get("include")
-        or _has_positive_note_signal(
-            notes,
-            [
-                "cover board",
-                "iso board",
-                "dens deck",
-                "deck board",
-                "board stock",
-                "flute filler",
-                "wood fiber",
-                "wet insulation",
-                "damaged board",
-                "replace board",
-                "recover board",
-                "tear off",
-                "tearoff",
-            ],
-        )
+        or (board_hard_signal and not board_review_signal)
+        or (board_hard_signal and any(term in notes for term in ("full tear off", "tear off", "tearoff", "replace", "replacement", "damaged board")))
     )
     default_selector = str(first_nonblank(board_row.get("selector_code"), _default_roofing_board_selector_code_for_scope(scope), "1"))
     default_area = positive_number(
@@ -6848,6 +6888,8 @@ def _build_roofing_board_fastener_template_decisions(
         warnings = list(
             dict.fromkeys([*(selected_candidate.get("compatibility_warnings") or []), *(compatibility.get("compatibility_warnings") or [])])
         )
+        if board_review_signal and not include:
+            warnings.append("Board/fastener/plate scope is review-only from notes; leave unchecked until replacement quantity is confirmed.")
         if include and basis_sqft <= 0:
             warnings.append("Board area is missing; board cost formula requires estimator review.")
         selected_name = selected_candidate.get("item_name") or str(default_selected_candidate or "")
@@ -6880,7 +6922,13 @@ def _build_roofing_board_fastener_template_decisions(
                 "selected_pricing_item_id": selected_candidate.get("pricing_item_id"),
                 "pricing_candidates": candidates,
                 "pricing_candidates_json": json.dumps(candidates, default=str),
-                "compatibility_status": "review" if warnings and compatibility.get("compatibility_status") == "compatible" else compatibility.get("compatibility_status"),
+                "compatibility_status": (
+                    "review"
+                    if board_review_signal and not include
+                    else "review"
+                    if warnings and compatibility.get("compatibility_status") == "compatible"
+                    else compatibility.get("compatibility_status")
+                ),
                 "compatibility_warnings": warnings,
                 "product_guidance_status": "matched" if selected_candidate.get("product_id") else "missing",
                 "product_id": selected_candidate.get("product_id") or "",
@@ -6981,6 +7029,8 @@ def _build_roofing_board_fastener_template_decisions(
         warnings = list(
             dict.fromkeys([*(selected_candidate.get("compatibility_warnings") or []), *(compatibility.get("compatibility_warnings") or [])])
         )
+        if board_review_signal and not include:
+            warnings.append(f"{label} scope is review-only from notes; leave unchecked until board replacement scope is confirmed.")
         if include and board_area <= 0:
             warnings.append(f"{label} board area is missing; workbook formula requires estimator review.")
         selected_name = selected_candidate.get("item_name") or str(first_nonblank(source_row.get("item_name"), source_row.get("current_item"), ""))
@@ -7638,6 +7688,8 @@ def _build_roofing_travel_freight_template_decisions(
     for row_number, bucket, label, signal_terms, default_trips, default_rate, adder_keys in travel_specs:
         existing = existing_by_row.get(str(row_number), {})
         signal = bool(any((adder_by_key.get(key) or {}).get("include") for key in adder_keys) or _has_positive_note_signal(notes, signal_terms))
+        if bucket == "sales_trips":
+            signal = True
         include = bool(existing["include"]) if "include" in existing else signal
         default_amount = adder_default(*adder_keys)
         trips = safe_number(first_nonblank(existing.get("trip_count"), existing.get("trips")), 0.0)
@@ -8004,6 +8056,7 @@ def _build_roofing_labor_template_decisions(
 ) -> list[dict[str, Any]]:
     if _is_insulation_scope(scope):
         return []
+    package_labels = {str(spec.get("package") or ""): str(spec.get("label") or "") for spec in LABOR_PACKAGES}
     decision_defaults = _decision_recommendation_lookup(data, historical_filters_from_scope(scope)) if data is not None else {}
     if not labor_rows and not existing_rows:
         note_text = _normalized(
@@ -8081,6 +8134,10 @@ def _build_roofing_labor_template_decisions(
         if not package or not workbook_row:
             continue
         source_labor = _row_for_bucket(source_labor_rows, package) or {}
+        source_labor_task = first_nonblank(
+            source_labor.get("labor_package") if isinstance(source_labor, dict) else None,
+            source_labor.get("task") if isinstance(source_labor, dict) else None,
+        )
         if source_labor:
             labor = {**labor, **source_labor, "package_key": package, "template_bucket": package, "workbook_row": workbook_row}
         existing = existing_by_key.get(package) or existing_by_key.get(workbook_row) or {}
@@ -8120,6 +8177,12 @@ def _build_roofing_labor_template_decisions(
         hourly_rate = safe_number(first_nonblank(existing.get("hourly_rate"), existing.get("labor_rate"), labor.get("hourly_rate"), labor.get("labor_rate")), 0.0)
         daily_rate = safe_number(first_nonblank(existing.get("daily_rate"), labor.get("daily_rate")), 0.0)
         formula_mode = str(first_nonblank(existing.get("formula_mode"), labor.get("formula_mode"), "mixed_formula"))
+        hourly_rate_source = str(first_nonblank(existing.get("hourly_rate_source"), labor.get("hourly_rate_source"), ""))
+        if hourly_rate <= 0 and daily_rate <= 0 and total_hours > 0:
+            evidence_cost = safe_number(first_nonblank(labor.get("estimated_cost"), labor.get("median_estimated_cost"), existing.get("estimated_cost")), 0.0)
+            if evidence_cost > 0:
+                hourly_rate = evidence_cost / total_hours
+                hourly_rate_source = "derived_from_labor_cost_and_hours"
         total_hours, total_hours_source = _populate_expected_mixed_labor_hours(
             include=include,
             formula_mode=formula_mode,
@@ -8153,7 +8216,7 @@ def _build_roofing_labor_template_decisions(
             {"cell": f"Estimate!G{row_number}", "field": "total_hours", "value": round(calculated_hours, 4)},
             {"cell": f"Estimate!J{row_number}", "field": "daily_rate_formula_output", "value": round(calculated_daily_rate, 4)},
         ]
-        task_label = str(first_nonblank(labor.get("labor_package"), package.replace("_", " ").title()))
+        task_label = str(first_nonblank(package_labels.get(package), labor.get("labor_package"), package.replace("_", " ").title()))
         warnings = []
         if include and calculated_hours <= 0 and calculated_days <= 0:
             warnings.append("Labor days or total hours are missing.")
@@ -8169,6 +8232,7 @@ def _build_roofing_labor_template_decisions(
                 "workbook_row": workbook_row,
                 "labor_task": task_label,
                 "labor_package": task_label,
+                "source_labor_task": source_labor_task,
                 "days": round(calculated_days, 4),
                 "editable_days": round(calculated_days, 4),
                 "crew_size": crew_size,
@@ -8181,6 +8245,7 @@ def _build_roofing_labor_template_decisions(
                 "daily_rate": round(calculated_daily_rate, 4),
                 "hourly_rate": round(calculated_hourly_rate, 4),
                 "labor_rate": round(calculated_hourly_rate, 4),
+                "hourly_rate_source": hourly_rate_source,
                 "editable_hours_per_1000_sqft": round(hours_per_1000, 4),
                 "total_hours": round(calculated_hours, 4),
                 "calculated_hours": round(calculated_hours, 4),
@@ -8227,7 +8292,7 @@ def _build_roofing_labor_template_decisions(
                 "confidence": labor.get("confidence") or "",
                 "compatibility_status": "review" if warnings else "compatible",
                 "compatibility_warnings": warnings,
-                "notes": "Labor decision mirrors the workbook mixed formula: if total hours are zero, cost uses days x daily rate; otherwise cost uses hourly rate x total hours. "
+                "notes": "Labor decision mirrors the workbook mixed formula: if daily rate is present, cost uses days x daily rate; otherwise cost uses hourly rate x total hours. "
                 + ("Expected total hours were filled from days x crew x 10." if total_hours_source == "estimated_from_days_crew" else "")
                 + (" " + " ".join(warnings) if warnings else ""),
                 "decision_values": {
@@ -8237,6 +8302,7 @@ def _build_roofing_labor_template_decisions(
                     "crew_selector_code": crew_size,
                     "daily_rate": round(calculated_daily_rate, 4),
                     "hourly_rate": round(calculated_hourly_rate, 4),
+                    "hourly_rate_source": hourly_rate_source,
                     "total_hours": round(calculated_hours, 4),
                     "total_hours_source": total_hours_source,
                     "labor_driver": labor.get("labor_driver_summary"),

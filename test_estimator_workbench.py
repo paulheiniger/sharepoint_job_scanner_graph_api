@@ -219,7 +219,7 @@ def test_roofing_workbench_uses_decision_sections_only() -> None:
     assert "labor" not in workbench
     assert "adders" not in workbench
     assert [row["workbook_row"] for row in workbench["roofing_coating_template_decisions"]] == ["26", "27", "28"]
-    assert [row["include"] for row in workbench["roofing_coating_template_decisions"]] == [True, True, False]
+    assert [row["include"] for row in workbench["roofing_coating_template_decisions"]] == [True, False, False]
     assert workbench["roofing_coating_template_decisions"][0]["decision_id"] == "roofing_coating_system_row_26"
     assert workbench["roofing_coating_template_decisions"][0]["selector_options"]
 
@@ -229,7 +229,7 @@ def test_roofing_workbench_uses_decision_sections_only() -> None:
     assert "material_rows" not in draft
     assert "labor_rows" not in draft
     coating_decisions = [row for row in draft["workbook_decisions"] if row["template_bucket"] == "coating"]
-    assert [row["workbook_row"] for row in coating_decisions] == ["26", "27"]
+    assert [row["workbook_row"] for row in coating_decisions] == ["26"]
     assert all(row["row_type"] == "material" for row in coating_decisions)
 
 
@@ -467,6 +467,29 @@ def test_full_tearoff_notes_include_board_fasteners_and_disposal_rows() -> None:
     assert dumpster["include"] is True
     assert board["proposal_review_required"] is True
     assert dumpster["proposal_review_required"] is True
+
+
+def test_board_fastener_attention_notes_are_review_only_not_full_board_scope() -> None:
+    workbench = build_estimating_workbench(
+        roofing_recommendation(),
+        EstimatorData(),
+        scope_override={
+            "project_type": "roof coating",
+            "raw_input_notes": "Coating restoration review; some areas may need board, fastener, or plate attention before coating.",
+            "net_sqft": 12000,
+            "estimated_sqft": 12000,
+        },
+    )
+
+    board = next(row for row in workbench["roofing_board_fastener_template_decisions"] if row["template_bucket"] == "board_stock" and row["workbook_row"] == "58")
+    fasteners = next(row for row in workbench["roofing_board_fastener_template_decisions"] if row["template_bucket"] == "fasteners")
+    plates = next(row for row in workbench["roofing_board_fastener_template_decisions"] if row["template_bucket"] == "plates")
+
+    assert board["include"] is False
+    assert fasteners["include"] is False
+    assert plates["include"] is False
+    assert board["compatibility_status"] == "review"
+    assert any("review-only" in warning for warning in board["compatibility_warnings"])
 
 
 def test_manual_uncheck_prevents_companion_proposal_from_rechecking_row() -> None:
@@ -843,7 +866,7 @@ def test_mixed_formula_labor_exposes_display_hours_without_changing_workbook_hou
     assert "workbook_hours=0.0" in labor["calculated_output_summary"]
 
 
-def test_mixed_formula_labor_uses_hourly_branch_when_hourly_rate_is_present() -> None:
+def test_mixed_formula_labor_keeps_daily_branch_when_daily_rate_is_present() -> None:
     formula_workbench = {
         "scope": {"division": "Roofing", "template_type": "roofing", "project_type": "roof coating", "net_sqft": 1000},
         "roofing_labor_template_decisions": [
@@ -865,11 +888,152 @@ def test_mixed_formula_labor_uses_hourly_branch_when_hourly_rate_is_present() ->
     recalculated = recalculate_workbench_tables(formula_workbench)
     labor = recalculated["roofing_labor_template_decisions"][0]
 
+    assert labor["estimated_cost"] == 1600
+    assert labor["formula_source"] == "days_daily_rate"
+    assert labor["total_hours"] == 40
+    assert labor["total_hours_source"] == "estimated_from_days_crew"
+    assert labor["display_total_hours"] == 40
+
+
+def test_mixed_formula_labor_uses_hourly_branch_when_daily_rate_is_absent() -> None:
+    formula_workbench = {
+        "scope": {"division": "Roofing", "template_type": "roofing", "project_type": "roof coating", "net_sqft": 1000},
+        "roofing_labor_template_decisions": [
+            {
+                "include": True,
+                "decision_id": "roofing_labor_base_row_122",
+                "template_bucket": "labor_base",
+                "workbook_row": "122",
+                "days": 1,
+                "crew_size": 4,
+                "daily_rate": 0,
+                "hourly_rate": 72,
+                "total_hours": 0,
+                "formula_mode": "mixed_formula",
+            }
+        ],
+    }
+
+    recalculated = recalculate_workbench_tables(formula_workbench)
+    labor = recalculated["roofing_labor_template_decisions"][0]
+
     assert labor["estimated_cost"] == 2880
     assert labor["formula_source"] == "hours_hourly_rate"
     assert labor["total_hours"] == 40
     assert labor["total_hours_source"] == "estimated_from_days_crew"
-    assert labor["display_total_hours"] == 40
+
+
+def test_roofing_labor_template_label_survives_generic_source_task() -> None:
+    formula_workbench = {
+        "scope": {"division": "Roofing", "template_type": "roofing", "project_type": "roof coating", "net_sqft": 1000},
+        "source_labor_plan": [
+            {
+                "task": "coating",
+                "template_bucket": "labor_base",
+                "days": 1,
+                "crew_size": 4,
+                "daily_rate": 1600,
+                "total_hours": 40,
+            }
+        ],
+        "roofing_labor_template_decisions": [
+            {
+                "include": True,
+                "decision_id": "roofing_labor_base_row_122",
+                "template_bucket": "labor_base",
+                "workbook_row": "122",
+                "days": 1,
+                "crew_size": 4,
+                "daily_rate": 1600,
+                "total_hours": 40,
+                "formula_mode": "mixed_formula",
+            }
+        ],
+    }
+
+    recalculated = recalculate_workbench_tables(formula_workbench)
+    labor = recalculated["roofing_labor_template_decisions"][0]
+
+    assert labor["labor_task"] == "Base Coat"
+    assert labor["source_labor_task"] == "coating"
+
+
+def test_roofing_labor_derives_hourly_rate_from_cost_and_hours_when_rate_missing() -> None:
+    formula_workbench = {
+        "scope": {"division": "Roofing", "template_type": "roofing", "project_type": "roof coating", "net_sqft": 1000},
+        "source_labor_plan": [
+            {
+                "task": "labor_base",
+                "template_bucket": "labor_base",
+                "total_hours": 40,
+                "estimated_cost": 2880,
+            }
+        ],
+        "roofing_labor_template_decisions": [
+            {
+                "include": True,
+                "decision_id": "roofing_labor_base_row_122",
+                "template_bucket": "labor_base",
+                "workbook_row": "122",
+                "days": 1,
+                "crew_size": 4,
+                "daily_rate": 0,
+                "hourly_rate": 0,
+                "total_hours": 40,
+                "formula_mode": "mixed_formula",
+            }
+        ],
+    }
+
+    recalculated = recalculate_workbench_tables(formula_workbench)
+    labor = recalculated["roofing_labor_template_decisions"][0]
+
+    assert labor["hourly_rate"] == 72
+    assert labor["hourly_rate_source"] == "derived_from_labor_cost_and_hours"
+    assert labor["estimated_cost"] == 2880
+    assert labor["formula_source"] == "hours_hourly_rate"
+
+
+def test_roofing_workbench_defaults_one_sales_inspection_trip() -> None:
+    workbench = build_estimating_workbench(roofing_recommendation(), EstimatorData())
+    trips = next(row for row in workbench["roofing_travel_freight_template_decisions"] if row["template_bucket"] == "sales_trips")
+
+    assert trips["include"] is True
+    assert trips["trip_count"] == 1
+    assert trips["estimated_cost"] == 15
+
+
+def test_review_only_primer_does_not_price_full_area_until_confirmed() -> None:
+    formula_workbench = {
+        "scope": {
+            "division": "Roofing",
+            "template_type": "roofing",
+            "project_type": "roof coating",
+            "net_sqft": 10000,
+            "raw_input_notes": "Review rust-inhibitive primer need before coating.",
+        },
+        "roofing_primer_template_decisions": [
+            {
+                "include": True,
+                "decision_id": "roofing_primer_system_row_39",
+                "template_bucket": "primer",
+                "workbook_row": "39",
+                "proposal_review_required": True,
+                "basis_sqft": 10000,
+                "coverage_sqft_per_unit": 250,
+                "unit_price": 40,
+            }
+        ],
+    }
+
+    recalculated = recalculate_workbench_tables(formula_workbench)
+    primer = recalculated["roofing_primer_template_decisions"][0]
+
+    assert primer["include"] is True
+    assert primer["basis_sqft"] == 0
+    assert primer["unit_price"] == 0
+    assert primer["estimated_cost"] == 0
+    assert any("review-only" in warning for warning in primer["compatibility_warnings"])
 
 
 def test_roofing_labor_workbench_preserves_driver_evidence_from_recommendation() -> None:
