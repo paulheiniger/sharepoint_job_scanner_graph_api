@@ -1171,6 +1171,65 @@ def test_insulation_foam_recalc_marks_stored_weak_product_match_for_review() -> 
     assert any("weak product match" in warning.lower() for warning in recalculated_foam["compatibility_warnings"])
 
 
+def test_insulation_foam_prefers_current_family_pricing_over_unrelated_history() -> None:
+    recommendation = insulation_recommendation()
+    recommendation.parsed_fields.update(
+        {
+            "notes": "Spray outside walls and flat ceiling. Walls target R-21. Ceiling target R-30.",
+            "gross_wall_area_sqft": 1855.65,
+            "opening_area_known_sqft": 200,
+            "ceiling_area_sqft": 1344,
+            "net_insulation_area_sqft": 2999.65,
+            "foam_type": "closed_cell",
+            "insulation_r_value_targets": [
+                {"surface_type": "walls", "target_r_value": 21},
+                {"surface_type": "ceiling", "target_r_value": 30},
+            ],
+        }
+    )
+    data = EstimatorData(
+        pricing_catalog=pd.DataFrame(
+            [
+                {
+                    "pricing_item_id": "P-ONEPASS",
+                    "product_name": "Enverge Closed Cell OnePass",
+                    "category": "Foam",
+                    "unit_price": 2.05,
+                    "status": "active",
+                    "is_current": True,
+                    "needs_review": False,
+                }
+            ]
+        ),
+        template_rows=pd.DataFrame(
+            [
+                {
+                    "template_row_id": "hist-profill",
+                    "job_id": "I1",
+                    "template_type": "insulation",
+                    "row_number": 19,
+                    "template_bucket": "foam",
+                    "line_item_kind": "material",
+                    "selected_item_name": "ProFill",
+                    "unit_price": 2.0,
+                    "estimated_units": 1000,
+                    "estimated_cost": 2000,
+                }
+            ]
+        ),
+    )
+
+    workbench = build_estimating_workbench(recommendation, data)
+    foam = workbench["insulation_foam_template_decisions"][0]
+
+    assert foam["resolved_template_option"] == "Gaco 2.0 lb."
+    assert foam["selected_pricing_candidate"] == "Enverge Closed Cell OnePass"
+    assert foam["unit_price"] == 2.05
+    assert foam["cost_source"] == "current_pricing"
+    assert foam["product_guidance_status"] == "mapped"
+    assert "Mapped product family" in foam["product_guidance"]
+
+
 def test_insulation_loading_and_travel_labor_use_default_hourly_rate_when_rate_missing() -> None:
     recommendation = insulation_recommendation()
     recommendation.parsed_fields["notes"] = "Spray foam insulation. Include loading and travel."

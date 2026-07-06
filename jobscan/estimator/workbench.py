@@ -2519,10 +2519,12 @@ def _foam_candidate_compatibility(
     scope_text = _normalized(" ".join(str(scope.get(key) or "") for key in ("project_type", "building_type", "substrate", "notes", "raw_input_notes")))
     if candidate_traits["application"] == "roofing" and any(term in scope_text for term in ("wall", "ceiling", "metal building", "insulation")):
         warnings.append("Pricing candidate appears to be roofing foam; confirm fit for wall/ceiling insulation.")
+    if safe_number(candidate.get("unit_price"), 0.0) > 100:
+        warnings.append("Foam unit price looks like package/set pricing, not the workbook formula unit price.")
     if not product_context.get("product_id"):
         warnings.append("No product data sheet match is available for this pricing candidate.")
     status = "compatible" if not warnings else "review"
-    if any("mismatch" in warning.lower() or "roofing foam" in warning.lower() for warning in warnings):
+    if any("mismatch" in warning.lower() or "roofing foam" in warning.lower() or "package/set pricing" in warning.lower() for warning in warnings):
         status = "spec_mismatch"
     return {
         "compatibility_status": status,
@@ -2779,12 +2781,57 @@ def _pricing_evidence_summary(candidate: dict[str, Any]) -> str:
     return "; ".join(parts)
 
 
+def _foam_current_pricing_options(data: Any, template_option: Any) -> list[dict[str, Any]]:
+    if data is None:
+        return []
+    pricing = _frame(data, "pricing_catalog")
+    if pricing.empty:
+        pricing = _frame(data, "pricing")
+    current = _current_pricing_rows(pricing)
+    if current.empty:
+        return []
+    options: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for _, row in current.iterrows():
+        item_name = first_nonblank(row.get("product_name"), row.get("description"), row.get("pricing_item_id"), "")
+        if not item_name:
+            continue
+        family_score, family_reason, _family_row = _foam_template_family_match(template_option, item_name)
+        if family_score < 80:
+            continue
+        key = _normalized(item_name)
+        if key in seen:
+            continue
+        seen.add(key)
+        unit_price = _price_value_from_row(row, "unit_price")
+        options.append(
+            {
+                "item_name": str(item_name),
+                "unit": _unit_from_row(row, "unit"),
+                "unit_price": unit_price,
+                "pricing_item_id": row.get("pricing_item_id"),
+                "source": "current_pricing",
+                "selected_item_reason": f"Current pricing matched template product family: {family_reason}.",
+            }
+        )
+    return options
+
+
 def _foam_pricing_candidates(row: dict[str, Any], scope: dict[str, Any], data: Any = None, template_option: str = "") -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
-    for option in _candidate_options_with_historical_templates(row, package="foam", scope=scope, data=data, default_unit="set"):
+    options = [
+        *_foam_current_pricing_options(data, template_option),
+        *_candidate_options_with_historical_templates(row, package="foam", scope=scope, data=data, default_unit="unit"),
+    ]
+    seen_options: set[str] = set()
+    for option in options:
         item_name = str(option.get("item_name") or "").strip()
         if not item_name:
             continue
+        option_key = _normalized(item_name)
+        if option_key in seen_options:
+            continue
+        seen_options.add(option_key)
         context = (
             _product_context(
                 data,
@@ -2796,29 +2843,38 @@ def _foam_pricing_candidates(row: dict[str, Any], scope: dict[str, Any], data: A
             if data is not None
             else {}
         )
+        family_context = _foam_product_family_context(template_option, item_name)
+        if not context.get("product_id") and family_context:
+            context = {**family_context, **context}
         compatibility = _foam_candidate_compatibility(template_option=template_option, candidate=option, scope=scope, product_context=context)
         candidates.append(
-            {
-                "item_name": item_name,
-                "pricing_item_id": option.get("pricing_item_id"),
-                "unit": option.get("unit"),
-                "unit_price": safe_number(option.get("unit_price"), 0.0),
-                "source": option.get("source") or option.get("item_source") or "pricing_or_history",
-                "why_suggested": option.get("selected_item_reason") or option.get("source") or "",
-                "product_id": context.get("product_id") or "",
-                "product_name": context.get("product_name") or "",
-                "manufacturer": context.get("manufacturer") or "",
-                "product_guidance": _candidate_guidance_summary(context),
-                "product_source_documents": context.get("source_documents") or [],
-                "product_match_score": context.get("match_score") or 0.0,
-                "product_match_strategy": context.get("match_strategy") or "",
-                "product_matched_name": context.get("matched_name") or "",
-                **compatibility,
-            }
+            _enrich_foam_candidate_with_template_family(
+                {
+                    "item_name": item_name,
+                    "pricing_item_id": option.get("pricing_item_id"),
+                    "unit": option.get("unit"),
+                    "unit_price": safe_number(option.get("unit_price"), 0.0),
+                    "source": option.get("source") or option.get("item_source") or "pricing_or_history",
+                    "why_suggested": option.get("selected_item_reason") or option.get("source") or "",
+                    "product_id": context.get("product_id") or "",
+                    "product_name": context.get("product_name") or "",
+                    "manufacturer": context.get("manufacturer") or "",
+                    "product_guidance": _candidate_guidance_summary(context) or context.get("product_guidance") or "",
+                    "product_source_documents": context.get("source_documents") or [],
+                    "product_match_score": context.get("match_score") or context.get("product_match_score") or 0.0,
+                    "product_match_strategy": context.get("match_strategy") or context.get("product_match_strategy") or "",
+                    "product_matched_name": context.get("matched_name") or context.get("product_matched_name") or "",
+                    "product_guidance_status": context.get("product_guidance_status") or ("matched" if context.get("product_id") else "missing"),
+                    "product_family_lookup_id": context.get("product_family_lookup_id") or "",
+                    **compatibility,
+                },
+                template_option,
+            )
         )
     candidates.sort(
         key=lambda candidate: (
             _foam_candidate_rank(candidate),
+            safe_number(candidate.get("template_family_match_score"), 0.0),
             not _is_roofing_foam_candidate(candidate),
             safe_number(candidate.get("unit_price"), 0.0) > 0,
             safe_number(candidate.get("product_match_score"), 0.0),
@@ -3557,6 +3613,136 @@ def _foam_candidate_rank(candidate: dict[str, Any]) -> int:
     return 1
 
 
+_PRODUCT_FAMILY_LOOKUP_CACHE: list[dict[str, Any]] | None = None
+
+
+def _product_family_key(value: Any) -> str:
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).split())
+
+
+def _product_family_lookup_rows() -> list[dict[str, Any]]:
+    global _PRODUCT_FAMILY_LOOKUP_CACHE
+    if _PRODUCT_FAMILY_LOOKUP_CACHE is not None:
+        return _PRODUCT_FAMILY_LOOKUP_CACHE
+    path = Path(__file__).resolve().parents[1] / "products" / "product_family_lookup_seed.csv"
+    rows: list[dict[str, Any]] = []
+    if path.exists():
+        try:
+            with path.open(newline="", encoding="utf-8") as handle:
+                for row in csv.DictReader(handle):
+                    if str(row.get("active", "true")).strip().lower() in {"false", "0", "no"}:
+                        continue
+                    rows.append(dict(row))
+        except Exception:
+            rows = []
+    _PRODUCT_FAMILY_LOOKUP_CACHE = rows
+    return rows
+
+
+def _product_family_rows_for_template_option(template_option: Any) -> list[dict[str, Any]]:
+    template_key = _product_family_key(template_option)
+    if not template_key:
+        return []
+    rows: list[dict[str, Any]] = []
+    for row in _product_family_lookup_rows():
+        if _product_family_key(row.get("template_option")) == template_key:
+            rows.append(row)
+    return rows
+
+
+def _foam_template_family_match(template_option: Any, candidate_name: Any) -> tuple[int, str, dict[str, Any]]:
+    template_key = _product_family_key(template_option)
+    candidate_key = _product_family_key(candidate_name)
+    if not template_key or not candidate_key:
+        return 0, "", {}
+    candidate_tokens = set(candidate_key.split())
+    if candidate_key == template_key or candidate_key in template_key or template_key in candidate_key:
+        return 120, "candidate name matches template option", {}
+    best_score = 0
+    best_reason = ""
+    best_row: dict[str, Any] = {}
+    for row in _product_family_rows_for_template_option(template_option):
+        family_key = _product_family_key(row.get("canonical_product_family"))
+        replacement_key = _product_family_key(row.get("replacement_for"))
+        lookup_key = _product_family_key(row.get("lookup_terms"))
+        vendor_key = _product_family_key(row.get("vendor"))
+        family_tokens = set(family_key.split())
+        score = 0
+        reason = ""
+        if family_key and (candidate_key in family_key or family_key in candidate_key):
+            score = 110
+            reason = "candidate matches mapped product family"
+        elif family_tokens and family_tokens.issubset(candidate_tokens):
+            score = 108
+            reason = "candidate contains mapped product family terms"
+        elif replacement_key and (candidate_key in replacement_key or replacement_key in candidate_key):
+            score = 95
+            reason = "candidate matches replacement mapping"
+        elif lookup_key and candidate_key in lookup_key:
+            score = 85
+            reason = "candidate appears in product family lookup terms"
+        elif vendor_key and vendor_key in candidate_key:
+            score = 60
+            reason = "candidate matches product family vendor"
+        if score > best_score:
+            best_score = score
+            best_reason = reason
+            best_row = row
+    return best_score, best_reason, best_row
+
+
+def _foam_product_family_context(template_option: Any, candidate_name: Any) -> dict[str, Any]:
+    score, reason, row = _foam_template_family_match(template_option, candidate_name)
+    if score < 80 or not row:
+        return {}
+    family = first_nonblank(row.get("canonical_product_family"), candidate_name)
+    vendor = row.get("vendor") or ""
+    family_label = str(family or "")
+    vendor_label = str(vendor or "")
+    display_name = family_label if vendor_label and _product_family_key(family_label).startswith(_product_family_key(vendor_label)) else " ".join(
+        str(part) for part in (vendor_label, family_label) if part
+    )
+    guidance_parts = [f"Mapped product family: {display_name}."]
+    if row.get("replacement_for"):
+        guidance_parts.append(f"Template mapping: {template_option} replaces/points to {family}.")
+    if row.get("knowledge_status") not in {"ready", "complete"}:
+        guidance_parts.append("Product guidance documents have not been ingested yet.")
+    return {
+        "product_family_lookup_id": row.get("lookup_id") or "",
+        "product_name": family,
+        "manufacturer": vendor,
+        "product_guidance": " ".join(guidance_parts),
+        "product_guidance_status": "mapped",
+        "product_match_score": round(score / 120, 4),
+        "product_match_strategy": "product_family_lookup",
+        "product_matched_name": family,
+        "template_family_match_reason": reason,
+    }
+
+
+def _enrich_foam_candidate_with_template_family(candidate: dict[str, Any], template_option: Any) -> dict[str, Any]:
+    item_name = candidate.get("item_name")
+    family_score, family_reason, _family_row = _foam_template_family_match(template_option, item_name)
+    family_context = _foam_product_family_context(template_option, item_name)
+    out = dict(candidate)
+    if family_score > safe_number(out.get("template_family_match_score"), 0.0):
+        out["template_family_match_score"] = family_score
+        out["template_family_match_reason"] = family_reason
+    if family_context and not out.get("product_id"):
+        out.setdefault("product_family_lookup_id", family_context.get("product_family_lookup_id") or "")
+        out["product_name"] = out.get("product_name") or family_context.get("product_name") or ""
+        out["manufacturer"] = out.get("manufacturer") or family_context.get("manufacturer") or ""
+        out["product_guidance"] = out.get("product_guidance") or family_context.get("product_guidance") or ""
+        out["product_guidance_status"] = out.get("product_guidance_status") or family_context.get("product_guidance_status") or "mapped"
+        out["product_match_score"] = max(
+            safe_number(out.get("product_match_score"), 0.0),
+            safe_number(family_context.get("product_match_score"), 0.0),
+        )
+        out["product_match_strategy"] = out.get("product_match_strategy") or family_context.get("product_match_strategy") or ""
+        out["product_matched_name"] = out.get("product_matched_name") or family_context.get("product_matched_name") or ""
+    return out
+
+
 def _is_roofing_foam_candidate(candidate: dict[str, Any]) -> bool:
     text = _normalized(
         " ".join(
@@ -3591,6 +3777,10 @@ def _is_bad_default_foam_candidate(candidate: dict[str, Any]) -> bool:
     return str(candidate.get("compatibility_status") or "").lower() == "spec_mismatch" or _is_roofing_foam_candidate(candidate)
 
 
+def _is_implausible_foam_formula_unit_price(candidate: dict[str, Any]) -> bool:
+    return safe_number(candidate.get("unit_price"), 0.0) > 100
+
+
 def _selected_foam_candidate(candidates: list[dict[str, Any]], selected_name: Any, *, preserve_bad_selection: bool = False) -> dict[str, Any]:
     normalized = _normalized(selected_name)
     requested: dict[str, Any] | None = None
@@ -3599,6 +3789,20 @@ def _selected_foam_candidate(candidates: list[dict[str, Any]], selected_name: An
             if _normalized(candidate.get("item_name")) == normalized:
                 requested = candidate
                 break
+    best_family_candidate = max(
+        candidates,
+        key=lambda candidate: safe_number(candidate.get("template_family_match_score"), 0.0),
+        default={},
+    )
+    best_family_score = safe_number(best_family_candidate.get("template_family_match_score"), 0.0)
+    requested_family_score = safe_number(requested.get("template_family_match_score"), 0.0) if requested else 0.0
+    if (
+        best_family_score >= 80
+        and best_family_score > requested_family_score
+        and not _is_bad_default_foam_candidate(best_family_candidate)
+        and not _is_implausible_foam_formula_unit_price(best_family_candidate)
+    ):
+        return best_family_candidate
     if requested and (preserve_bad_selection or not _is_bad_default_foam_candidate(requested)):
         return requested
     for candidate in candidates:
@@ -3730,13 +3934,22 @@ def _build_insulation_foam_template_decisions(
         except (TypeError, ValueError, json.JSONDecodeError):
             stored_candidates = []
     candidates = stored_candidates if data is None and stored_candidates else _foam_pricing_candidates(foam_row, scope, data=data, template_option=resolved_option)
+    candidates = [
+        _enrich_foam_candidate_with_template_family(candidate, resolved_option)
+        for candidate in candidates
+        if isinstance(candidate, dict)
+    ]
     selected_candidate = _selected_foam_candidate(
         candidates,
         selected_candidate_name,
         preserve_bad_selection=bool(first_nonblank(existing.get("selected_pricing_candidate"))),
     )
+    selected_candidate_changed = bool(
+        first_nonblank(existing.get("selected_pricing_candidate"))
+        and _normalized(existing.get("selected_pricing_candidate")) != _normalized(selected_candidate.get("item_name"))
+    )
     unit_price = positive_number(
-        existing.get("unit_price"),
+        "" if selected_candidate_changed else existing.get("unit_price"),
         selected_candidate.get("unit_price"),
         foam_row.get("current_unit_price"),
         defaults.get("unit_price"),
@@ -3785,6 +3998,11 @@ def _build_insulation_foam_template_decisions(
         product_label = first_nonblank(selected_candidate.get("product_name"), selected_candidate.get("product_id"))
         product_guidance = f"Weak product match to {product_label}; confirm template-product mapping before using guidance."
         warnings.append("Product guidance is based on a weak product match and requires mapping review.")
+    product_guidance_status = first_nonblank(
+        selected_candidate.get("product_guidance_status"),
+        "matched" if selected_candidate.get("product_id") else "",
+        "missing",
+    )
     return [
         {
             "include": include,
@@ -3854,11 +4072,12 @@ def _build_insulation_foam_template_decisions(
             "product_id": selected_candidate.get("product_id") or "",
             "product_name": selected_candidate.get("product_name") or "",
             "product_manufacturer": selected_candidate.get("manufacturer") or "",
-            "product_guidance_status": "review" if weak_product_match else ("matched" if selected_candidate.get("product_id") else "missing"),
+            "product_guidance_status": "review" if weak_product_match else product_guidance_status,
             "product_guidance": product_guidance,
             "product_match_score": product_match_score,
             "product_match_strategy": product_match_strategy,
             "product_matched_name": selected_candidate.get("product_matched_name") or "",
+            "product_family_lookup_id": selected_candidate.get("product_family_lookup_id") or "",
             "product_source_documents": selected_candidate.get("product_source_documents") or [],
             "notes": (
                 "Template selector is the estimator decision. Pricing/product candidate is shown separately for review. "
