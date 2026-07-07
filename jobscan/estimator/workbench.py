@@ -7040,11 +7040,7 @@ def _build_roofing_board_fastener_template_decisions(
             "tearoff",
         ],
     )
-    board_signal = bool(
-        board_row.get("include")
-        or (board_hard_signal and not board_review_signal)
-        or (board_hard_signal and any(term in notes for term in ("full tear off", "tear off", "tearoff", "replace", "replacement", "damaged board")))
-    )
+    board_signal = bool(board_row.get("include"))
     default_selector = str(first_nonblank(board_row.get("selector_code"), _default_roofing_board_selector_code_for_scope(scope), "1"))
     default_area = positive_number(
         board_row.get("editable_basis_sqft"),
@@ -7109,7 +7105,7 @@ def _build_roofing_board_fastener_template_decisions(
         warnings = list(
             dict.fromkeys([*(selected_candidate.get("compatibility_warnings") or []), *(compatibility.get("compatibility_warnings") or [])])
         )
-        if board_review_signal and not include:
+        if (board_review_signal or board_hard_signal) and not include:
             warnings.append("Board/fastener/plate scope is review-only from notes; leave unchecked until replacement quantity is confirmed.")
         if include and basis_sqft <= 0:
             warnings.append("Board area is missing; board cost formula requires estimator review.")
@@ -7525,10 +7521,8 @@ def _build_roofing_equipment_template_decisions(
         row_number=ROOFING_DUMPSTER_TEMPLATE_ROW,
     )
     existing = existing_by_row.get(str(ROOFING_DUMPSTER_TEMPLATE_ROW), {})
-    dumpster_signal = bool(
-        (adder_by_key.get("dumpster") or {}).get("include")
-        or _has_positive_note_signal(notes, ["dumpster", "dumpsters", "tear off", "tearoff", "disposal", "remove wet", "wet insulation"])
-    )
+    dumpster_note_signal = _has_positive_note_signal(notes, ["dumpster", "dumpsters", "tear off", "tearoff", "disposal", "remove wet", "wet insulation"])
+    dumpster_signal = bool((adder_by_key.get("dumpster") or {}).get("include"))
     include = bool(existing["include"]) if "include" in existing else dumpster_signal
     default_selector = _default_roofing_dumpster_selector_code_for_scope(scope)
     selector_code = str(
@@ -7564,6 +7558,8 @@ def _build_roofing_equipment_template_decisions(
         warnings.append("Roof thickness is missing; dumpster count preview is zero until thickness is entered.")
     if include and unit_price <= 0:
         warnings.append("Dumpster unit price is missing.")
+    if dumpster_note_signal and not include:
+        warnings.append("Dumpster/disposal scope is review-only from notes; leave unchecked until disposal quantity is confirmed.")
     rows.append(
         {
             "include": include,

@@ -488,7 +488,7 @@ def test_fabric_companion_suggests_seam_detail_labor_review_marked() -> None:
     assert "fabric" in seam_labor["proposal_review_reasons"][0]
 
 
-def test_full_tearoff_notes_include_board_fasteners_and_disposal_rows() -> None:
+def test_full_tearoff_notes_do_not_auto_include_board_fasteners_and_disposal_rows() -> None:
     workbench = build_estimating_workbench(
         roofing_recommendation(),
         EstimatorData(),
@@ -506,12 +506,12 @@ def test_full_tearoff_notes_include_board_fasteners_and_disposal_rows() -> None:
     plates = next(row for row in workbench["roofing_board_fastener_template_decisions"] if row["template_bucket"] == "plates")
     dumpster = next(row for row in workbench["roofing_equipment_template_decisions"] if row["template_bucket"] == "dumpster")
 
-    assert board["include"] is True
-    assert fasteners["include"] is True
-    assert plates["include"] is True
-    assert dumpster["include"] is True
-    assert board["proposal_review_required"] is True
-    assert dumpster["proposal_review_required"] is True
+    assert board["include"] is False
+    assert fasteners["include"] is False
+    assert plates["include"] is False
+    assert dumpster["include"] is False
+    assert board.get("proposal_source") != "deterministic_rule"
+    assert dumpster.get("proposal_source") != "deterministic_rule"
 
 
 def test_board_fastener_attention_notes_are_review_only_not_full_board_scope() -> None:
@@ -1457,12 +1457,12 @@ def test_insulation_sealant_uses_opening_and_corner_linear_feet_without_duplicat
     first = next(row for row in sealant_rows if row["workbook_row"] == "41")
     second = next(row for row in sealant_rows if row["workbook_row"] == "43")
 
-    assert first["include"] is True
+    assert first["include"] is False
     assert first["linear_ft"] == 125
-    assert first["estimated_units"] == 12.5
+    assert first["estimated_units"] == 0
     assert first["unit_price"] == 20
-    assert first["estimated_cost"] == 250
-    assert first["cost_source"] == "historical_formula_unit_price"
+    assert first["estimated_cost"] == 0
+    assert first["cost_source"] == "not_included"
     assert second["include"] is False
 
 

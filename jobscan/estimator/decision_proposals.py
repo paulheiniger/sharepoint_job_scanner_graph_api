@@ -429,10 +429,6 @@ def build_decision_proposals(scope: dict[str, Any], recommendation: Any = None, 
     template_type = "insulation" if _is_insulation_scope(scope) else "roofing"
     notes = _note_text(scope)
     proposals: list[DecisionProposal] = []
-    if template_type == "insulation":
-        proposals.extend(_insulation_scope_proposals(scope, notes))
-    else:
-        proposals.extend(_roofing_scope_proposals(scope, notes))
     proposals.extend(_reference_project_proposals(scope, data=data, template_type=template_type, notes=notes))
     proposals.extend(_photo_scope_proposals(template_type, scope))
     proposals.extend(_chat_estimator_proposals(template_type, scope))

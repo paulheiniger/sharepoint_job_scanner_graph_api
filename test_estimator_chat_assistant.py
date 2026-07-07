@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
+
 import pandas as pd
 
-from jobscan.estimator.chat_assistant import run_estimator_chat_turn
+from jobscan.estimator.chat_assistant import estimator_context_summary, run_estimator_chat_turn
 from jobscan.estimator.schemas import EstimatorData
 
 
@@ -45,6 +47,39 @@ def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
             ]
         ),
         pricing=pd.DataFrame([{"item_name": "Open Cell SPF"}]),
+        template_product_options=pd.DataFrame(
+            [
+                {
+                    "template_type": "insulation",
+                    "template_bucket": "foam",
+                    "product_name": "Open Cell SPF",
+                    "unit": "set",
+                    "unit_price": 1600,
+                    "yield_or_coverage": 4500,
+                }
+            ]
+        ),
+        product_catalog=pd.DataFrame(
+            [
+                {
+                    "product_id": "open-cell",
+                    "product_name": "Open Cell SPF",
+                    "category": "spray_foam",
+                    "recommended_use": "Open-cell insulation where vapor drive and code requirements are reviewed.",
+                }
+            ]
+        ),
+        relationship_package_cooccurrence=pd.DataFrame(
+            [
+                {
+                    "template_type": "insulation",
+                    "source_package": "foam",
+                    "companion_package": "labor_foam",
+                    "cooccurrence_rate": 0.94,
+                    "evidence_count": 18,
+                }
+            ]
+        ),
         estimator_decision_recommendations=pd.DataFrame(
             [
                 {
@@ -64,6 +99,12 @@ def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
         calls.append((messages, model))
         assert "common_template_buckets" in messages[1]["content"]
         assert "decision_recommendation_examples" in messages[1]["content"]
+        assert "decision_menu" in messages[1]["content"]
+        assert "formula_requirements" in messages[1]["content"]
+        assert "pricing_candidates_by_bucket" in messages[1]["content"]
+        assert "product_guidance_digest" in messages[1]["content"]
+        assert "companion_relationships" in messages[1]["content"]
+        assert "yield_or_coverage" in messages[1]["content"]
         return {
             "assistant_message": "Drafted the insulation estimate.",
             "estimator_notes": "30x40 metal building, open-cell foam, 2226 sq ft.",
@@ -100,6 +141,116 @@ def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
     assert result.workbook_decision_preferences[0]["template_bucket"] == "foam"
 
 
+def test_estimator_chat_decision_menu_uses_template_catalog_metadata() -> None:
+    data = EstimatorData(
+        template_row_catalog=pd.DataFrame(
+            [
+                {
+                    "template_type": "roofing",
+                    "template_name": "Roofing Template",
+                    "sheet_name": "Estimate",
+                    "row_number": 26,
+                    "section": "Materials",
+                    "template_bucket": "coating",
+                    "line_item_kind": "material",
+                    "formula_model": "selector_lookup",
+                    "cell_roles_json": json.dumps({"A": "selector_code", "C": "area_sqft", "G": "unit_price"}),
+                },
+                {
+                    "template_type": "roofing",
+                    "template_name": "Roofing Template",
+                    "sheet_name": "Estimate",
+                    "row_number": 122,
+                    "section": "Labor",
+                    "template_bucket": "labor_base",
+                    "line_item_kind": "labor",
+                    "formula_model": "mixed_hours_or_daily",
+                    "cell_roles_json": json.dumps({"B": "days", "D": "total_hours", "G": "daily_rate", "J": "hourly_rate"}),
+                },
+                {
+                    "template_type": "roofing",
+                    "template_name": "Roofing Template",
+                    "sheet_name": "Estimate",
+                    "row_number": 163,
+                    "section": "Totals",
+                    "template_bucket": "total_job_cost",
+                    "line_item_kind": "total",
+                    "formula_model": "sum_total",
+                    "cell_roles_json": "{}",
+                },
+            ]
+        ),
+        template_formula_models=pd.DataFrame(
+            [
+                {
+                    "template_type": "roofing",
+                    "template_name": "Roofing Template",
+                    "sheet_name": "Estimate",
+                    "cell_address": "H26",
+                    "row_number": 26,
+                    "template_bucket": "coating",
+                    "formula_model": "coating_gallons_from_area_rate_waste",
+                    "dependencies_json": json.dumps(["C26", "E26", "G26"]),
+                }
+            ]
+        ),
+        decision_history_tables={
+            "decision_nodes": pd.DataFrame(
+                [
+                    {
+                        "template_type": "roofing",
+                        "decision_id": "roofing_coating_system",
+                        "title": "Roofing Coating System",
+                        "category": "product_selection",
+                        "rows_controlled": [26],
+                    },
+                    {
+                        "template_type": "roofing",
+                        "decision_id": "roofing_labor_base",
+                        "title": "Base Roofing Labor",
+                        "category": "labor_planning",
+                        "rows_controlled": [122],
+                    },
+                ]
+            ),
+            "row_traceability": pd.DataFrame(
+                [
+                    {
+                        "template_type": "roofing",
+                        "decision_id": "roofing_coating_system",
+                        "row_number": 26,
+                        "template_bucket": "coating",
+                    },
+                    {
+                        "template_type": "roofing",
+                        "decision_id": "roofing_labor_base",
+                        "row_number": 122,
+                        "template_bucket": "labor_base",
+                    },
+                ]
+            ),
+        },
+    )
+
+    context = estimator_context_summary(data, scope={"template_type": "roofing"})
+    menu = context["decision_menu"]
+    coating = next(row for row in menu if row["template_bucket"] == "coating" and row["workbook_row"] == "26")
+    labor = next(row for row in menu if row["template_bucket"] == "labor_base" and row["workbook_row"] == "122")
+
+    assert coating["source"] == "template_row_catalog+decision_graph"
+    assert coating["decision_id"] == "roofing_coating_system"
+    assert coating["label"] == "Roofing Coating System"
+    assert coating["graph_category"] == "product_selection"
+    assert "selector_code" in coating["editable_fields"]
+    assert "basis_sqft" in coating["formula_requirements"]
+    assert "unit_price" in coating["formula_requirements"]
+    assert labor["decision_id"] == "roofing_labor_base"
+    assert labor["section"] == "roofing_labor_template_decisions"
+    assert "daily_rate" in labor["editable_fields"]
+    assert not any(row["template_bucket"] == "total_job_cost" for row in menu)
+    assert any(row["source"] == "curated_fallback" for row in menu)
+
+
 def test_estimator_chat_sends_multi_turn_history_and_existing_scope_to_provider() -> None:
     calls = []
 
@@ -109,7 +260,7 @@ def test_estimator_chat_sends_multi_turn_history_and_existing_scope_to_provider(
         assert "Confirm target R-value" in payload
         assert "closed cell at R-21" in payload
         assert '"existing_scope"' in payload
-        assert '"foam_type": "open_cell"' in payload
+        assert '"foam_type": "closed_cell"' in payload
         return {
             "assistant_message": "Updated the foam selection and marked thickness for review.",
             "estimator_notes": "Use closed cell at R-21; thickness should be verified by product R-value.",
@@ -147,6 +298,61 @@ def test_estimator_chat_sends_multi_turn_history_and_existing_scope_to_provider(
     assert calls
     assert result.scope_overrides["foam_type"] == "closed_cell"
     assert result.workbook_decision_preferences[0]["review_required"] is True
+
+
+def test_estimator_chat_preserves_full_takeoff_across_followup_answers() -> None:
+    def provider(messages, model):
+        payload = messages[1]["content"]
+        assert "30x40 metal building" in payload
+        assert "open cell foam, r21" in payload
+        assert '"net_insulation_area_sqft": 2226.0' in payload
+        return {
+            "assistant_message": "Using R21 and 3.8 R/in gives about 5.53 inches.",
+            "estimator_notes": "Open cell foam at R21, simple access.",
+            "scope_overrides": {
+                "template_type": "insulation",
+                "foam_type": "open_cell",
+                "foam_thickness_inches": 5.53,
+            },
+            "workbook_decision_preferences": [
+                {
+                    "decision_id": "insulation_foam_template_selector",
+                    "template_bucket": "foam",
+                    "include": True,
+                    "proposed_values": {"foam_type": "open_cell", "thickness_inches": 5.53},
+                    "confidence": 0.82,
+                    "review_required": True,
+                }
+            ],
+            "confidence": 0.82,
+        }
+
+    result = run_estimator_chat_turn(
+        [
+            {"role": "user", "content": COLLINS_NOTE.replace("Open cell spray foam.", "")},
+            {"role": "assistant", "content": "Questions to confirm:\n- What type of foam insulation do you prefer?\n- Do you have specific R-value targets?"},
+            {"role": "user", "content": "open cell foam, r21, metal barn with simple access"},
+            {"role": "assistant", "content": "Workbook changes proposed:\n- include insulation: foam_type=open_cell, insulation_r_value_targets={'walls': 21, 'ceiling': 21}"},
+            {"role": "user", "content": "3.8 R/in can be used to estimate required thickness"},
+        ],
+        template_type_hint="insulation",
+        provider=provider,
+        model="test-model",
+    )
+
+    scope = result.scope_overrides
+    assert scope["template_type"] == "insulation"
+    assert scope["foam_type"] == "open_cell"
+    assert scope["building_footprint_length_ft"] == 30
+    assert scope["building_footprint_width_ft"] == 40
+    assert scope["wall_height_ft"] == 9
+    assert scope["opening_area_known_sqft"] == 234
+    assert scope["net_insulation_area_sqft"] == 2226
+    assert scope["estimated_sqft"] == 2226
+    assert scope["target_r_value"] == 21
+    assert scope["r_value_per_inch_assumption"] == 3.8
+    assert scope["foam_thickness_inches"] == 5.53
+    assert "30x40 metal building" in result.estimator_notes
 
 
 def test_estimator_chat_normalizes_decision_patch_aliases() -> None:

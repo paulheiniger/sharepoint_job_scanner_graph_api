@@ -8,7 +8,7 @@ from jobscan.estimator.decision_proposals import (
 )
 
 
-def test_explicit_note_proposal_includes_coating_rows_with_review_evidence() -> None:
+def test_note_triggered_scope_rules_do_not_create_inclusion_proposals_by_default() -> None:
     proposals = build_decision_proposals(
         {
             "template_type": "roofing",
@@ -22,11 +22,7 @@ def test_explicit_note_proposal_includes_coating_rows_with_review_evidence() -> 
 
     coating = [row for row in proposals if row["template_bucket"] == "coating"]
 
-    assert {row["workbook_row"] for row in coating} == {"26"}
-    assert all(row["include"] is True for row in coating)
-    assert all(row["review_required"] is True for row in coating)
-    assert all(row["evidence"]["note"] for row in coating)
-    assert all(row["proposed_values"]["basis_sqft"] == 45570.2 for row in coating)
+    assert coating == []
 
 
 def test_weak_ai_only_proposal_is_review_marked() -> None:
@@ -92,9 +88,8 @@ def test_historical_only_warranty_is_not_invented_without_prompt_evidence() -> N
         }
     )
 
-    assert proposals
+    assert proposals == []
     assert not any("warranty_years" in (row.get("proposed_values") or {}) for row in proposals)
-    assert any("Warranty duration was not stated." in row.get("review_reasons", []) for row in proposals)
 
 
 def test_duplicate_proposals_merge_by_precedence_and_evidence() -> None:

@@ -5037,53 +5037,6 @@ def render_estimator_chat_draft_panel(
         role = str(message.get("role") or "assistant")
         with st.chat_message("user" if role == "user" else "assistant"):
             st.write(str(message.get("content") or ""))
-    source = str(result.get("source") or "")
-    confidence = float(result.get("confidence") or 0)
-    metric_row(
-        [
-            ("Confidence", f"{confidence:.2f}"),
-            ("Questions", str(len(result.get("missing_questions") or []))),
-            ("Decision Cues", str(len(result.get("workbook_decision_preferences") or []))),
-            ("Source", source.replace("_", " ").title()),
-        ]
-    )
-    decision_preferences = result.get("workbook_decision_preferences") or []
-    change_rows = estimator_chat_decision_change_rows(decision_preferences)
-    if change_rows:
-        st.caption("Workbook row changes proposed by chat. Build or rebuild the template to apply them through the normal workbook calculation path.")
-        change_df = display_safe_dataframe(change_rows)
-        st.dataframe(
-            change_df[
-                [
-                    column
-                    for column in [
-                        "action",
-                        "target",
-                        "field_changes",
-                        "confidence",
-                        "review_required",
-                        "why",
-                    ]
-                    if column in change_df.columns
-                ]
-            ],
-            use_container_width=True,
-            hide_index=True,
-        )
-    scope_overrides = result.get("scope_overrides") if isinstance(result.get("scope_overrides"), dict) else {}
-    if scope_overrides:
-        with st.expander("Parsed scope and workbook inputs", expanded=False):
-            st.dataframe(display_safe_dataframe([scope_overrides]), use_container_width=True, hide_index=True)
-            if result.get("estimator_notes"):
-                st.text_area(
-                    "Generated estimator notes",
-                    value=str(result.get("estimator_notes") or ""),
-                    height=180,
-                    key=f"estimator_chat_notes_preview_{chat_key}",
-                )
-    if decision_preferences:
-        with st.expander("Workbook decision cues", expanded=False):
-            st.dataframe(display_safe_dataframe(decision_preferences), use_container_width=True, hide_index=True)
     return result if use_chat_draft else None
 
 
@@ -5590,8 +5543,8 @@ def estimator_prototype_page() -> None:
     else:
         use_historical_calibration = False
     field_notes_data = data if use_historical_calibration else EstimatorData()
-    with st.expander("Photos, job header, and advanced options", expanded=False):
-        active_photo_context = render_estimator_photo_upload_panel(notes=chat_augmented_notes, estimate_type=resolved_estimate_type)
+    active_photo_context = None
+    with st.expander("Job header and advanced options", expanded=False):
         f1, f2 = st.columns(2)
         with f1:
             field_job_name = st.text_input("Job name", key="field_estimator_job_name")

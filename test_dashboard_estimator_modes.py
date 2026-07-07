@@ -251,7 +251,11 @@ def test_estimator_chat_panel_supports_multi_turn_replies() -> None:
     assert "existing_scope=existing_scope" in source
     assert "estimator_chat_assistant_history_content" in source
     assert "Start a new estimate chat" in source
-    assert "Workbook row changes proposed by chat" in source
+    assert "Workbook row changes proposed by chat" not in source
+    assert "Parsed scope and workbook inputs" not in source
+    assert "Workbook decision cues" not in source
+    assert "Photos, job header" not in page_source
+    assert "render_estimator_photo_upload_panel" not in page_source
     assert "Build / Rebuild Filled Estimate Template" in page_source
 
 
