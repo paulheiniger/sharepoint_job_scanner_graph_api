@@ -212,6 +212,51 @@ def roofing_reference_project_data() -> EstimatorData:
     )
 
 
+def mismatched_insulation_reference_project_data() -> EstimatorData:
+    return EstimatorData(
+        template_rows=pd.DataFrame(
+            [
+                {
+                    "job_id": "KU-BELT",
+                    "source_file": "Estimate Insulation - KU 4G Belt Ramp (Both Sides 1,400').xlsx",
+                    "template_type": "insulation",
+                    "template_bucket": "labor_caulk",
+                    "line_item_kind": "labor",
+                    "row_number": 126,
+                    "days": 1,
+                    "crew_size": 4,
+                    "total_hours": 42,
+                    "hourly_rate": 80,
+                },
+                {
+                    "job_id": "KU-BELT",
+                    "source_file": "Estimate Insulation - KU 4G Belt Ramp (Both Sides 1,400').xlsx",
+                    "template_type": "insulation",
+                    "template_bucket": "thermal_barrier_coating",
+                    "line_item_kind": "material",
+                    "row_number": 30,
+                    "selected_item_name": "Margin %",
+                    "unit_price": 30,
+                    "estimated_units": 30,
+                },
+                {
+                    "job_id": "KU-BELT",
+                    "source_file": "Estimate Insulation - KU 4G Belt Ramp (Both Sides 1,400').xlsx",
+                    "template_type": "insulation",
+                    "template_bucket": "foam",
+                    "line_item_kind": "material",
+                    "row_number": 19,
+                    "selected_item_name": "Gaco Roof 2.7",
+                    "area_sqft": 1400,
+                    "thickness_inches": 2.5,
+                    "yield_or_coverage": 2600,
+                    "unit_price": 2.2,
+                },
+            ]
+        )
+    )
+
+
 def test_roofing_workbench_uses_decision_sections_only() -> None:
     workbench = build_estimating_workbench(roofing_recommendation(), EstimatorData())
 
@@ -224,7 +269,7 @@ def test_roofing_workbench_uses_decision_sections_only() -> None:
     assert workbench["roofing_coating_template_decisions"][0]["selector_options"]
 
     draft = workbench_to_draft_workbook_inputs(workbench)
-    assert set(draft) == {"template_type", "header", "workbook_decisions"}
+    assert set(draft) == {"template_type", "header", "pricing", "workbook_decisions"}
     assert draft["template_type"] == "roofing"
     assert "material_rows" not in draft
     assert "labor_rows" not in draft
@@ -577,6 +622,32 @@ def test_reference_project_marks_substrate_mismatch_for_review() -> None:
     assert any("substrate" in reason for reason in primer["proposal_review_reasons"])
 
 
+def test_insulation_reference_project_ignores_rows_from_roofing_spf_layout() -> None:
+    workbench = build_estimating_workbench(
+        insulation_recommendation(),
+        mismatched_insulation_reference_project_data(),
+        scope_override={
+            "reference_job_ids": "KU-BELT",
+            "net_sqft": 1750,
+            "estimated_sqft": 1750,
+            "net_insulation_area_sqft": 1750,
+            "notes": "Closed-cell foam on walls and ceiling; review thermal barrier.",
+        },
+    )
+
+    foam = workbench["insulation_foam_template_decisions"][0]
+    thermal = workbench["insulation_thermal_barrier_template_decisions"][0]
+    reference_labor = [
+        row
+        for row in workbench["insulation_labor_template_decisions"]
+        if row.get("proposal_source") == "reference_project"
+    ]
+
+    assert foam["proposal_source"] == "reference_project"
+    assert thermal.get("resolved_template_option") != "Margin %"
+    assert not reference_labor
+
+
 def test_manual_uncheck_prevents_reference_project_from_rechecking_row() -> None:
     workbench = build_estimating_workbench(
         roofing_recommendation(),
@@ -618,7 +689,7 @@ def test_insulation_workbench_uses_decision_sections_only() -> None:
     assert {"labor_set_up", "labor_foam", "labor_clean_up", "labor_loading", "labor_traveling"}.issubset(included_labor)
 
     draft = workbench_to_draft_workbook_inputs(workbench)
-    assert set(draft) == {"template_type", "header", "workbook_decisions"}
+    assert set(draft) == {"template_type", "header", "pricing", "workbook_decisions"}
     assert draft["template_type"] == "insulation"
     assert "material_rows" not in draft
     assert "labor_rows" not in draft
@@ -659,6 +730,50 @@ def test_insulation_driver_labor_recomputes_when_material_quantity_changes() -> 
     assert labor["total_hours"] == round(foam["estimated_sets"] * 6, 4)
     assert labor["total_hours_source"] == "driver_quantity_history"
     assert labor["labor_driver_applied"] is True
+
+
+def test_estimator_chat_foam_preference_fills_thickness_and_estimated_units() -> None:
+    workbench = build_estimating_workbench(
+        insulation_recommendation(),
+        EstimatorData(),
+        scope_override={
+            "estimated_sqft": 2226,
+            "net_sqft": 2226,
+            "net_insulation_area_sqft": 2226,
+            "foam_type": "open_cell",
+            "foam_thickness_inches": 5,
+            "estimator_chat": {
+                "source": "ai_chat",
+                "confidence": 0.82,
+                "assistant_message": "Use 5 inch open-cell foam for the 2,226 sq ft metal building.",
+                "workbook_decision_preferences": [
+                    {
+                        "decision_id": "insulation_foam_template_selector",
+                        "template_bucket": "foam",
+                        "include": True,
+                        "proposed_values": {
+                            "basis_sqft": 2226,
+                            "thickness_inches": 5,
+                            "yield_or_coverage": 4500,
+                            "resolved_template_option": "Gaco 0.5 lb.",
+                        },
+                        "confidence": 0.82,
+                    }
+                ],
+            },
+        },
+    )
+
+    foam = workbench["insulation_foam_template_decisions"][0]
+
+    assert foam["proposal_source"] == "chat_estimator"
+    assert foam["include"] is True
+    assert foam["thickness_inches"] == 5
+    assert foam["yield_or_coverage"] == 4500
+    assert foam["estimated_units"] == 2473.333333
+    assert foam["estimated_sets"] == 2.473333
+    assert foam["estimated_cost"] > 0
+    assert "chat_estimator" in foam["decision_evidence_types"]
 
 
 def test_insulation_driver_labor_preserves_estimator_hour_override() -> None:
@@ -752,12 +867,94 @@ def test_totals_use_decision_sections_only() -> None:
 
     totals = summarize_workbench_totals(workbench)
 
-    assert totals == {
-        "material_total": 100.0,
-        "labor_total": 50.0,
-        "adder_total": 12.0,
-        "draft_total": 162.0,
+    assert totals["material_total"] == 100.0
+    assert totals["labor_total"] == 50.0
+    assert totals["adder_total"] == 12.0
+    assert totals["pre_markup_total"] == 162.0
+    assert totals["overhead_amount"] == 0.0
+    assert totals["profit_amount"] == 0.0
+    assert totals["draft_total"] == 162.0
+
+
+def test_pricing_markup_defaults_are_inferred_from_template_rows() -> None:
+    data = EstimatorData(
+        template_rows=pd.DataFrame(
+            [
+                {"template_type": "roofing", "template_bucket": "overhead", "row_number": 165, "overhead_pct": 35},
+                {"template_type": "roofing", "template_bucket": "overhead", "row_number": 165, "overhead_pct": 33},
+                {"template_type": "roofing", "template_bucket": "overhead", "row_number": 165, "overhead_pct": 37},
+                {"template_type": "roofing", "template_bucket": "profit", "row_number": 167, "profit_pct": 25.5},
+                {"template_type": "roofing", "template_bucket": "profit", "row_number": 167, "profit_pct": 24},
+                {"template_type": "roofing", "template_bucket": "profit", "row_number": 167, "profit_pct": 27},
+            ]
+        )
+    )
+
+    workbench = build_estimating_workbench(roofing_recommendation(), data)
+    overhead = next(row for row in workbench["pricing_markup_decisions"] if row["template_bucket"] == "overhead")
+    profit = next(row for row in workbench["pricing_markup_decisions"] if row["template_bucket"] == "profit")
+
+    assert overhead["include"] is True
+    assert overhead["workbook_row"] == "165"
+    assert overhead["markup_pct"] == 35
+    assert overhead["historical_selector_evidence_count"] == 3
+    assert profit["markup_pct"] == 25.5
+    assert profit["percentage_cell"] == "F167"
+
+
+def test_pricing_markup_recalculates_from_estimator_overrides() -> None:
+    workbench = {
+        "scope": {"division": "Roofing", "template_type": "roofing", "project_type": "roof coating", "net_sqft": 1000},
+        "roofing_coating_template_decisions": [
+            {
+                "include": True,
+                "decision_id": "roofing_coating_system_row_26",
+                "template_bucket": "coating",
+                "workbook_row": "26",
+                "basis_sqft": 1000,
+                "gal_per_100_sqft": 1,
+                "unit_price": 10,
+            }
+        ],
+        "roofing_labor_template_decisions": [
+            {
+                "include": True,
+                "decision_id": "roofing_labor_base",
+                "template_bucket": "labor_base",
+                "workbook_row": "122",
+                "days": 1,
+                "crew_size": 4,
+                "hourly_rate": 25,
+                "total_hours": 2,
+            }
+        ],
+        "roofing_equipment_template_decisions": [
+            {
+                "include": True,
+                "decision_id": "roofing_lift_row_73",
+                "template_bucket": "lift",
+                "workbook_row": "73",
+                "editable_selector_code": "1",
+                "period": 1,
+                "unit_price": 10,
+            }
+        ],
+        "pricing_markup_decisions": [
+            {"include": True, "decision_id": "pricing_overhead", "template_bucket": "overhead", "workbook_row": "165", "markup_pct": 10},
+            {"include": True, "decision_id": "pricing_profit", "template_bucket": "profit", "workbook_row": "167", "markup_pct": 20},
+        ],
     }
+
+    recalculated = recalculate_workbench_tables(workbench)
+    totals = summarize_workbench_totals(recalculated)
+    draft_inputs = workbench_to_draft_workbook_inputs(recalculated)
+
+    assert totals["pre_markup_total"] == 177
+    assert totals["overhead_amount"] == 17.7
+    assert totals["profit_amount"] == 38.94
+    assert totals["draft_total"] == 233.64
+    assert draft_inputs["pricing"]["overhead_pct"] == 10
+    assert draft_inputs["pricing"]["profit_pct"] == 20
 
 
 def test_roofing_source_allowances_flow_into_template_decisions() -> None:
@@ -1592,11 +1789,11 @@ def test_insulation_stale_markup_proposal_unchecked_without_percentage_basis() -
     workbench = build_estimating_workbench(recommendation, EstimatorData())
     workbench["decision_proposals"].append(
         {
-            "decision_id": "insulation_overhead_row_118",
+                "decision_id": "pricing_overhead",
             "template_type": "insulation",
             "template_bucket": "overhead",
             "workbook_row": "118",
-            "section": "insulation_pricing_template_decisions",
+                "section": "pricing_markup_decisions",
             "include": True,
             "proposed_values": {},
             "confidence": 0.7,
@@ -1608,7 +1805,7 @@ def test_insulation_stale_markup_proposal_unchecked_without_percentage_basis() -
     )
 
     recalculated = recalculate_workbench_tables(workbench)
-    overhead = next(row for row in recalculated["insulation_pricing_template_decisions"] if row["template_bucket"] == "overhead")
+    overhead = next(row for row in recalculated["pricing_markup_decisions"] if row["template_bucket"] == "overhead")
 
     assert overhead["include"] is False
     assert overhead["include_source"] == "calculation_basis_guard"

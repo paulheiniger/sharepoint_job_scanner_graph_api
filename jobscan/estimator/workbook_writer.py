@@ -61,6 +61,11 @@ INSULATION_LABOR_ROW_BY_TASK = {
     "meals_lodging": 100,
 }
 
+MARKUP_PERCENT_CELLS = {
+    "roofing": {"overhead_pct": "F165", "profit_pct": "F167"},
+    "insulation": {"overhead_pct": "F118", "profit_pct": "F120"},
+}
+
 
 def resolve_default_template_path() -> Path:
     return DEFAULT_ESTIMATE_TEMPLATE_PATH if DEFAULT_ESTIMATE_TEMPLATE_PATH.exists() else FALLBACK_ESTIMATE_TEMPLATE_PATH
@@ -808,6 +813,11 @@ def generate_estimate_workbook(
     header_cells = INSULATION_HEADER_CELLS if template_type == "insulation" else HEADER_CELLS
     for key, cell in header_cells.items():
         _write_cell(ws, cell, header.get(key))
+    pricing = draft_workbook_inputs.get("pricing") or {}
+    for key, cell in MARKUP_PERCENT_CELLS.get(template_type, {}).items():
+        value = _number(pricing.get(key))
+        if value is not None:
+            _write_cell(ws, cell, round(value, 4))
     if template_type == "roofing":
         _write_cell(ws, "C12", header.get("C12_estimated_sqft"))
     dimension_lines = [

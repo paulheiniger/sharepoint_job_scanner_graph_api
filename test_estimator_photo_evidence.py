@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from jobscan.estimator.photo_evidence import (
     analyze_selected_photos_with_ai,
+    apply_photo_record_edits,
     apply_photo_scope_context,
     build_photo_scope_context,
     classify_photo,
@@ -112,6 +113,46 @@ def test_empty_selected_hashes_means_no_photo_evidence() -> None:
 
     assert context["selected_image_count"] == 0
     assert context["photo_decision_proposals"] == []
+
+
+def test_photo_record_edits_turn_generic_uploads_into_decision_evidence() -> None:
+    records = [
+        {
+            "image_id": "img1",
+            "content_hash": "hash1",
+            "file_name": "IMG_1234.jpg",
+            "category": "unknown",
+            "signals": [],
+            "quality_flags": [],
+            "duplicate": False,
+        },
+        {
+            "image_id": "img2",
+            "content_hash": "hash2",
+            "file_name": "IMG_1235.jpg",
+            "category": "unknown",
+            "signals": [],
+            "quality_flags": [],
+            "duplicate": False,
+        },
+    ]
+
+    edited = apply_photo_record_edits(
+        records,
+        [
+            {"image_id": "img1", "category": "seams", "signals": ""},
+            {"image_id": "img2", "category": "drains", "signals": "ponding"},
+        ],
+    )
+    context = build_photo_scope_context(edited, selected_hashes=["hash1", "hash2"], template_type="roofing")
+
+    assert edited[0]["signals"] == ["open_seams"]
+    assert edited[0]["classification_source"] == "estimator_review"
+    assert "open_seams" in context["signals"]
+    assert "ponding" in context["signals"]
+    decision_ids = {proposal["decision_id"] for proposal in context["photo_decision_proposals"]}
+    assert "roofing_seams_misc_row_47" in decision_ids
+    assert "roofing_fabric_row_79" in decision_ids
 
 
 def test_photo_evidence_applies_to_workbench_as_review_required() -> None:

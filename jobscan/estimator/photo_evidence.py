@@ -47,6 +47,26 @@ PHOTO_SIGNAL_KEYWORDS: dict[str, tuple[str, ...]] = {
     "masking_cleanup": ("masking", "mask", "cleanup", "plastic"),
 }
 
+PHOTO_CATEGORY_OPTIONS = [
+    "unknown",
+    *PHOTO_CATEGORY_KEYWORDS.keys(),
+]
+
+PHOTO_SIGNAL_OPTIONS = [
+    *PHOTO_SIGNAL_KEYWORDS.keys(),
+]
+
+PHOTO_CATEGORY_DEFAULT_SIGNALS: dict[str, tuple[str, ...]] = {
+    "roof_field": ("coating_wear",),
+    "seams": ("open_seams",),
+    "drains": ("ponding",),
+    "curbs_penetrations": ("curbs", "penetrations"),
+    "edge_parapet": ("edge_detail",),
+    "access": ("access_constraints",),
+    "fasteners_rust": ("rusted_fasteners", "metal_roof"),
+    "insulation_detail": ("spray_foam",),
+}
+
 REQUIRED_ROOFING_CATEGORIES = {
     "wide_overview": "wide overview of full roof",
     "drains": "close-up of drains/scuppers and ponding areas",
@@ -244,6 +264,61 @@ def build_photo_scope_context(
     }
 
 
+def apply_photo_record_edits(records: list[dict[str, Any]], edits: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Apply estimator-visible category/signal edits to staged photo records.
+
+    The initial classifier is deliberately cheap and usually has only filename
+    and metadata. These edits let a user turn generic phone filenames into
+    useful decision evidence without running paid vision analysis.
+    """
+
+    edits_by_image_id = {
+        str(edit.get("image_id") or ""): edit
+        for edit in edits or []
+        if str(edit.get("image_id") or "")
+    }
+    updated: list[dict[str, Any]] = []
+    for record in records or []:
+        row = dict(record)
+        edit = edits_by_image_id.get(str(row.get("image_id") or ""))
+        if not edit:
+            updated.append(row)
+            continue
+        original_category = str(row.get("category") or "unknown")
+        category = normalize_photo_category(edit.get("category") or original_category)
+        explicit_signals = parse_photo_signals(edit.get("signals"))
+        original_signals = [str(signal) for signal in (row.get("signals") or []) if str(signal)]
+        signals = explicit_signals if explicit_signals else list(PHOTO_CATEGORY_DEFAULT_SIGNALS.get(category, original_signals))
+        row["category"] = category
+        row["signals"] = signals
+        if category != original_category or signals != original_signals:
+            row["classification_source"] = "estimator_review"
+        else:
+            row.setdefault("classification_source", "local_filename_metadata")
+        updated.append(row)
+    return updated
+
+
+def normalize_photo_category(value: Any) -> str:
+    category = normalize_text(value).replace(" ", "_")
+    return category if category in PHOTO_CATEGORY_OPTIONS else "unknown"
+
+
+def parse_photo_signals(value: Any) -> list[str]:
+    if isinstance(value, str):
+        raw_items = re.split(r"[,;\n|]+", value)
+    elif isinstance(value, (list, tuple, set)):
+        raw_items = list(value)
+    else:
+        raw_items = []
+    signals: list[str] = []
+    for item in raw_items:
+        signal = normalize_text(item).replace(" ", "_")
+        if signal in PHOTO_SIGNAL_OPTIONS and signal not in signals:
+            signals.append(signal)
+    return signals
+
+
 def analyze_selected_photos_with_ai(
     records: list[dict[str, Any]],
     *,
@@ -417,6 +492,7 @@ def photo_decision_proposals(
                 "file_name": record.get("file_name"),
                 "category": record.get("category"),
                 "signals": record.get("signals") or [],
+                "classification_source": record.get("classification_source") or "local_filename_metadata",
             }
             for record in selected_records[:12]
         ]
@@ -443,7 +519,7 @@ def photo_decision_proposals(
 
     if template_type == "insulation":
         if "spray_foam" in signals:
-            add("insulation_foam_template_decisions", "insulation_foam_template_selector", "foam", "19", "Photo evidence suggests spray foam/insulation scope; verify surfaces, R-values, and foam type.", 0.05)
+            add("insulation_foam_template_decisions", "insulation_foam_template_selector", "foam", "19-21", "Photo evidence suggests spray foam/insulation scope; verify surfaces, R-values, and foam type.", 0.05)
         if "thermal_barrier" in signals:
             add("insulation_thermal_barrier_template_decisions", "insulation_thermal_barrier_row_30", "thermal_barrier_coating", "30", "Photo evidence mentions/shows thermal or ignition barrier context; confirm code requirement.")
         if "masking_cleanup" in signals or "access_constraints" in signals:

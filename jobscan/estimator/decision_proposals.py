@@ -15,6 +15,7 @@ SOURCE_PRECEDENCE = {
     "historical_companion": 35,
     "deterministic_rule": 40,
     "reference_project": 45,
+    "chat_estimator": 48,
     "photo_evidence": 47,
     "explicit_note": 50,
     "estimator_edit": 60,
@@ -193,6 +194,138 @@ REFERENCE_PROJECT_OVERRIDE_FIELDS = {
     "formula_mode",
 }
 
+CHAT_ESTIMATOR_OVERRIDE_FIELDS = {
+    "selector_code",
+    "editable_selector_code",
+    "resolved_template_option",
+    "selected_pricing_candidate",
+    "basis_sqft",
+    "area_sqft",
+    "thickness_inches",
+    "foam_thickness_inches",
+    "yield_or_coverage",
+    "coverage_sqft_per_unit",
+    "gal_per_100_sqft",
+    "gal_per_sqft",
+    "waste_factor_pct",
+    "wet_mils_estimate",
+    "unit_price",
+    "estimated_units",
+    "estimated_sets",
+    "linear_ft",
+    "units",
+    "days",
+    "editable_days",
+    "crew_size",
+    "crew_people_selection",
+    "crew_selector_code",
+    "total_hours",
+    "editable_total_hours",
+    "daily_rate",
+    "hourly_rate",
+    "labor_rate",
+    "formula_mode",
+}
+
+INSULATION_REFERENCE_ALLOWED_ROWS: dict[str, set[str]] = {
+    "foam": {"19", "20", "21"},
+    "membrane": {"24"},
+    "primer": {"26"},
+    "thermal_barrier_coating": {"30", "31", "32"},
+    "thinner": {"37"},
+    "caulk_sealant": {"41", "43"},
+    "caulk_detail": {"41", "43"},
+    "lift": {"47", "48"},
+    "delivery_fee": {"50"},
+    "generator": {"53"},
+    "space_heater": {"55"},
+    "misc_materials": {"57", "174", "175"},
+    "misc": {"57"},
+    "freight": {"59"},
+    "abaa_audit": {"61"},
+    "abaa_fee": {"63"},
+    "drum_disposal": {"65"},
+    "sales_inspection_trips": {"68"},
+    "truck_expense": {"70"},
+    "labor_set_up": {"78"},
+    "labor_mask": {"80"},
+    "labor_prime": {"82"},
+    "labor_membrane": {"84"},
+    "labor_foam": {"86"},
+    "labor_dc_315": {"88"},
+    "labor_misc": {"90"},
+    "labor_clean_up": {"92"},
+    "labor_loading": {"95"},
+    "labor_traveling": {"97"},
+    "meals_lodging": {"100"},
+    "labor_meals_lodging": {"100"},
+}
+
+ROOFING_REFERENCE_ALLOWED_ROWS: dict[str, set[str]] = {
+    "foam": {"19", "20", "21"},
+    "roofing_foam": {"19", "20", "21"},
+    "coating": {"26", "27", "28"},
+    "thinner": {"33"},
+    "granules": {"36"},
+    "primer": {"39"},
+    "caulk_detail": {"43", "45"},
+    "caulk_sealant": {"43", "45"},
+    "seams_misc": {"47"},
+    "board_stock": {"58", "59", "60"},
+    "fasteners": {"63"},
+    "plates": {"65"},
+    "dumpster": {"69"},
+    "disposal": {"69"},
+    "lift": {"73", "74"},
+    "delivery_fee": {"76"},
+    "fabric": {"79"},
+    "edge_metal": {"82"},
+    "gutter": {"84"},
+    "downspouts": {"86"},
+    "roof_hatch": {"88"},
+    "scuppers": {"90"},
+    "curbs": {"92"},
+    "ladders": {"94"},
+    "pitch_pockets": {"96"},
+    "generator": {"99"},
+    "misc": {"101"},
+    "misc_materials": {"101", "174", "175"},
+    "freight": {"103"},
+    "labor_prep": {"116"},
+    "labor_prime": {"118"},
+    "labor_seam_sealer": {"120"},
+    "labor_base": {"122", "124"},
+    "labor_caulk": {"126"},
+    "labor_details": {"128"},
+    "labor_top_coat": {"130"},
+    "labor_cleanup": {"132"},
+    "labor_loading": {"137", "136"},
+    "labor_traveling": {"138"},
+    "labor_infrared_scan": {"141"},
+    "labor_meals_lodging": {"144"},
+    "meals_lodging": {"144"},
+}
+
+REFERENCE_NON_DECISION_LABELS = {
+    "type",
+    "types",
+    "types:",
+    "margin",
+    "margin %",
+    "margin pct",
+    "linear ft",
+    "linear feet",
+    "est days",
+    "est. days",
+    "estimated days",
+    "size",
+    "period",
+    "units",
+    "unit",
+    "sq ft",
+    "sq. ft.",
+}
+
 
 @dataclass(frozen=True)
 class DecisionProposal:
@@ -302,6 +435,7 @@ def build_decision_proposals(scope: dict[str, Any], recommendation: Any = None, 
         proposals.extend(_roofing_scope_proposals(scope, notes))
     proposals.extend(_reference_project_proposals(scope, data=data, template_type=template_type, notes=notes))
     proposals.extend(_photo_scope_proposals(template_type, scope))
+    proposals.extend(_chat_estimator_proposals(template_type, scope))
     proposals.extend(_ai_scope_proposals(template_type, _ai_scope_debug(recommendation)))
     return merge_decision_proposals(proposals)
 
@@ -390,7 +524,12 @@ def _annotate_row(row: dict[str, Any], proposal: dict[str, Any] | None) -> dict[
                 and not updated.get("manual_override")
                 and key in REFERENCE_PROJECT_OVERRIDE_FIELDS
             )
-            if value is not None and (_proposal_value_can_fill(updated.get(key)) or reference_can_override):
+            chat_can_override = (
+                proposal.get("source") == "chat_estimator"
+                and not updated.get("manual_override")
+                and key in CHAT_ESTIMATOR_OVERRIDE_FIELDS
+            )
+            if value is not None and (_proposal_value_can_fill(updated.get(key)) or reference_can_override or chat_can_override):
                 updated[key] = value
         updated["decision_proposal"] = proposal
         updated["proposal_source"] = proposal.get("source")
@@ -433,6 +572,8 @@ def _reference_project_proposals(
         row_dict = row.to_dict()
         if _norm(row_dict.get("template_type")) and _norm(row_dict.get("template_type")) != _norm(template_type):
             continue
+        if not _reference_row_compatible(row_dict, template_type):
+            continue
         target = _reference_target_for_row(row_dict, template_type)
         if not target:
             continue
@@ -469,6 +610,25 @@ def _reference_project_proposals(
             )
         )
     return proposals
+
+
+def _reference_row_compatible(row: dict[str, Any], template_type: str) -> bool:
+    selected_name = _norm(_first_value(row, "resolved_item_name", "selected_item_name", "item_name"))
+    if selected_name in REFERENCE_NON_DECISION_LABELS:
+        return False
+    bucket = _canonical_package(row.get("template_bucket"))
+    row_number = str(int(_safe_number(row.get("row_number"), 0))) if _safe_number(row.get("row_number"), 0) > 0 else ""
+    if not row_number:
+        return True
+    allowed_by_bucket = (
+        INSULATION_REFERENCE_ALLOWED_ROWS if _norm(template_type) == "insulation" else ROOFING_REFERENCE_ALLOWED_ROWS
+    )
+    allowed_rows = allowed_by_bucket.get(bucket)
+    if allowed_rows is None:
+        if bucket.startswith("labor_"):
+            return False
+        return True
+    return row_number in allowed_rows
 
 
 def _reference_template_rows(scope: dict[str, Any], *, data: Any = None, notes: str = "") -> pd.DataFrame:
@@ -556,7 +716,7 @@ def _reference_target_for_row(row: dict[str, Any], template_type: str) -> dict[s
             return {"section": "roofing_labor_template_decisions", "decision_id": f"roofing_{bucket}_row_{row_number}", "template_bucket": bucket, "workbook_row": row_number}
     if template_type == "insulation":
         if bucket == "foam":
-            return {"section": "insulation_foam_template_decisions", "decision_id": "insulation_foam_template_selector", "template_bucket": "foam", "workbook_row": "19"}
+            return {"section": "insulation_foam_template_decisions", "decision_id": "insulation_foam_template_selector", "template_bucket": "foam", "workbook_row": "19-21"}
         if bucket == "thermal_barrier_coating":
             return {"section": "insulation_thermal_barrier_template_decisions", "decision_id": "insulation_thermal_barrier_row_30", "template_bucket": "thermal_barrier_coating", "workbook_row": "30"}
         if bucket in {"caulk_detail", "caulk_sealant"}:
@@ -666,6 +826,131 @@ def _reference_review_reasons(row: dict[str, Any], scope: dict[str, Any], scale:
     return list(dict.fromkeys(reasons))
 
 
+def _chat_estimator_proposals(template_type: str, scope: dict[str, Any]) -> list[DecisionProposal]:
+    chat_payload = scope.get("estimator_chat") if isinstance(scope.get("estimator_chat"), dict) else {}
+    raw = chat_payload.get("workbook_decision_preferences") or scope.get("workbook_decision_preferences") or []
+    proposals: list[DecisionProposal] = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        target = _chat_target_for_preference(template_type, item)
+        if not target:
+            continue
+        values = _clean_chat_proposed_values(item)
+        confidence = _safe_number(item.get("confidence"), _safe_number(chat_payload.get("confidence"), 0.62))
+        review_required = bool(item.get("review_required", confidence < 0.75))
+        reasons = list(item.get("review_reasons") or item.get("review_flags") or [])
+        if review_required and not reasons:
+            reasons.append("Estimator chat proposal requires estimator confirmation.")
+        evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+        if not evidence:
+            evidence = {
+                "chat_estimator": [
+                    {
+                        "assistant_message": chat_payload.get("assistant_message") or "",
+                        "source": chat_payload.get("source") or "estimator_chat",
+                    }
+                ]
+            }
+        proposals.append(
+            DecisionProposal(
+                decision_id=target["decision_id"],
+                template_type=template_type,
+                template_bucket=target["template_bucket"],
+                workbook_row=target["workbook_row"],
+                include=item.get("include") if item.get("include") is not None else True,
+                proposed_values=values,
+                confidence=max(0.0, min(confidence, 0.95)),
+                review_required=review_required,
+                review_reasons=reasons,
+                evidence=evidence,
+                source="chat_estimator",
+                section=target["section"],
+            )
+        )
+    return proposals
+
+
+def _chat_target_for_preference(template_type: str, item: dict[str, Any]) -> dict[str, str] | None:
+    bucket = _canonical_package(item.get("template_bucket") or item.get("package") or item.get("category"))
+    decision_id = str(item.get("decision_id") or "").strip()
+    workbook_row = str(item.get("workbook_row") or item.get("row_number") or "").strip()
+    if template_type == "insulation":
+        if bucket == "foam" or decision_id == "insulation_foam_template_selector":
+            return {
+                "section": "insulation_foam_template_decisions",
+                "decision_id": "insulation_foam_template_selector",
+                "template_bucket": "foam",
+                "workbook_row": "19-21",
+            }
+        if bucket == "thermal_barrier_coating":
+            return {
+                "section": "insulation_thermal_barrier_template_decisions",
+                "decision_id": decision_id or "insulation_thermal_barrier_row_30",
+                "template_bucket": "thermal_barrier_coating",
+                "workbook_row": workbook_row if workbook_row in {"30", "31", "32"} else "30",
+            }
+        if bucket in {"caulk_detail", "caulk_sealant"}:
+            return {
+                "section": "insulation_detail_material_template_decisions",
+                "decision_id": decision_id or "insulation_caulk_sealant_row_41",
+                "template_bucket": "caulk_sealant",
+                "workbook_row": workbook_row if workbook_row in {"41", "43"} else "41",
+            }
+        if bucket.startswith("labor_") and workbook_row:
+            return {
+                "section": "insulation_labor_template_decisions",
+                "decision_id": decision_id or f"insulation_{bucket}_row_{workbook_row}",
+                "template_bucket": bucket,
+                "workbook_row": workbook_row,
+            }
+    if template_type == "roofing":
+        if bucket == "coating":
+            return {
+                "section": "roofing_coating_template_decisions",
+                "decision_id": decision_id or f"roofing_coating_system_row_{workbook_row or '26'}",
+                "template_bucket": "coating",
+                "workbook_row": workbook_row if workbook_row in {"26", "27", "28"} else "26",
+            }
+        if bucket == "primer":
+            return {
+                "section": "roofing_primer_template_decisions",
+                "decision_id": decision_id or "roofing_primer_system_row_39",
+                "template_bucket": "primer",
+                "workbook_row": "39",
+            }
+        if bucket in {"caulk_detail", "caulk_sealant"}:
+            return {
+                "section": "roofing_detail_template_decisions",
+                "decision_id": decision_id or f"roofing_caulk_sealant_row_{workbook_row or '43'}",
+                "template_bucket": "caulk_detail",
+                "workbook_row": workbook_row if workbook_row in {"43", "45"} else "43",
+            }
+        if bucket.startswith("labor_") and workbook_row:
+            return {
+                "section": "roofing_labor_template_decisions",
+                "decision_id": decision_id or f"roofing_{bucket}_row_{workbook_row}",
+                "template_bucket": bucket,
+                "workbook_row": workbook_row,
+            }
+    if decision_id and workbook_row and item.get("section"):
+        return {
+            "section": str(item.get("section")),
+            "decision_id": decision_id,
+            "template_bucket": bucket,
+            "workbook_row": workbook_row,
+        }
+    return None
+
+
+def _clean_chat_proposed_values(item: dict[str, Any]) -> dict[str, Any]:
+    values = dict(item.get("proposed_values") or {})
+    for field in CHAT_ESTIMATOR_OVERRIDE_FIELDS:
+        if field in item and item.get(field) not in (None, ""):
+            values.setdefault(field, item.get(field))
+    return {key: value for key, value in values.items() if value is not None}
+
+
 def _scope_area(scope: dict[str, Any]) -> float:
     return _safe_number(
         scope.get("net_sqft")
@@ -709,6 +994,11 @@ def _canonical_package(value: Any) -> str:
 def _first_value(row: dict[str, Any], *keys: str) -> Any:
     for key in keys:
         value = row.get(key)
+        try:
+            if pd.isna(value):
+                continue
+        except (TypeError, ValueError):
+            pass
         if value not in (None, ""):
             return value
     return ""
@@ -802,9 +1092,12 @@ def _decision_evidence_fields(row: dict[str, Any]) -> dict[str, Any]:
     pricing = _pricing_evidence_summary(row)
     product = _product_evidence_summary(row)
     formula = _formula_evidence_summary(row)
+    chat = _chat_estimator_evidence_summary(row)
 
     if reference:
         evidence_types.append("reference_project")
+    if chat:
+        evidence_types.append("chat_estimator")
     if _has_note_evidence(row):
         evidence_types.append("note")
     if historical:
@@ -819,6 +1112,8 @@ def _decision_evidence_fields(row: dict[str, Any]) -> dict[str, Any]:
     parts: list[str] = []
     if reference:
         parts.append("reference project evidence")
+    if chat:
+        parts.append("chat estimator evidence")
     if _has_note_evidence(row):
         parts.append("note evidence")
     if historical:
@@ -835,6 +1130,7 @@ def _decision_evidence_fields(row: dict[str, Any]) -> dict[str, Any]:
         "decision_evidence_types": ", ".join(evidence_types),
         "why_included": why_included,
         "reference_project_evidence_summary": reference,
+        "chat_estimator_evidence_summary": chat,
         "historical_evidence_summary": historical,
         "pricing_evidence_summary": pricing,
         "product_evidence_summary": product,
@@ -845,6 +1141,16 @@ def _decision_evidence_fields(row: dict[str, Any]) -> dict[str, Any]:
 def _has_note_evidence(row: dict[str, Any]) -> bool:
     evidence = row.get("proposal_evidence") or {}
     return bool(evidence.get("note"))
+
+
+def _chat_estimator_evidence_summary(row: dict[str, Any]) -> str:
+    evidence = row.get("proposal_evidence") or {}
+    rows = evidence.get("chat_estimator") or []
+    if not rows:
+        return ""
+    first = rows[0] if isinstance(rows[0], dict) else {}
+    message = str(first.get("assistant_message") or "").strip()
+    return message[:180] if message else "Estimator chat proposal"
 
 
 def _why_included_summary(row: dict[str, Any]) -> str:
@@ -1084,9 +1390,13 @@ def _insulation_scope_proposals(scope: dict[str, Any], notes: str) -> list[Decis
             "insulation_foam_template_decisions",
             "insulation_foam_template_selector",
             "foam",
-            "19",
+            "19-21",
             include=True,
-            values={"basis_sqft": _first_positive(scope, "estimated_sqft", "net_insulation_area_sqft", "gross_insulation_area_sqft")},
+            values={
+                "basis_sqft": _first_positive(scope, "estimated_sqft", "net_insulation_area_sqft", "gross_insulation_area_sqft"),
+                "thickness_inches": _first_positive(scope, "foam_thickness_inches", "thickness_inches"),
+                "yield_or_coverage": _first_positive(scope, "yield_or_coverage", "foam_yield_or_coverage", "foam_yield"),
+            },
             confidence=0.85,
             review_reasons=[] if scope.get("foam_type") else ["Foam type was not stated; estimator must confirm open-cell vs closed-cell."],
             note=_snippet(notes, ["spray foam", "foam", "insulation"]),

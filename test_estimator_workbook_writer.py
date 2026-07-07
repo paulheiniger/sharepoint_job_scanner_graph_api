@@ -73,6 +73,10 @@ def test_generate_roofing_workbook_writes_decision_input_cells(tmp_path: Path) -
             "C4_site_address": "123 Roof St",
             "C12_estimated_sqft": 10000,
         },
+        "pricing": {
+            "overhead_pct": 35,
+            "profit_pct": 25.5,
+        },
         "workbook_decisions": [
             {
                 "row_type": "material",
@@ -121,6 +125,8 @@ def test_generate_roofing_workbook_writes_decision_input_cells(tmp_path: Path) -
     assert ws["C122"].value == 4
     assert ws["D122"].value == 72
     assert ws["G122"].value == 64
+    assert ws["F165"].value == 35
+    assert ws["F167"].value == 25.5
 
 
 def test_generate_insulation_workbook_writes_decision_input_cells(tmp_path: Path) -> None:
@@ -131,6 +137,10 @@ def test_generate_insulation_workbook_writes_decision_input_cells(tmp_path: Path
             "C2_job_name": "Insulation Decision Draft",
             "C3_job_type": "spray foam insulation",
             "net_area_sqft": 2388,
+        },
+        "pricing": {
+            "overhead_pct": 30,
+            "profit_pct": 20,
         },
         "workbook_decisions": [
             {
@@ -178,3 +188,5 @@ def test_generate_insulation_workbook_writes_decision_input_cells(tmp_path: Path
     assert ws["C86"].value == 3
     assert ws["D86"].value == 72
     assert ws["G86"].value == 36
+    assert ws["F118"].value == 30
+    assert ws["F120"].value == 20

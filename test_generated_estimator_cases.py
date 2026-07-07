@@ -248,6 +248,50 @@ def test_expected_decisions_from_historical_rows_are_deduped() -> None:
     assert len(keys) == len(set(keys))
 
 
+def test_expected_decisions_filter_mismatched_template_layout_rows() -> None:
+    data = generated_case_data()
+    bad_rows = pd.DataFrame(
+        [
+            {
+                "job_id": "I0",
+                "source_file": "sharepoint/insulation/I0.xlsx",
+                "template_type": "insulation",
+                "division": "Insulation",
+                "sheet_name": "Estimate",
+                "row_number": 126,
+                "template_bucket": "labor_caulk",
+                "line_item_kind": "labor",
+                "days": 1,
+                "crew_size": 4,
+                "total_hours": 42,
+            },
+            {
+                "job_id": "I0",
+                "source_file": "sharepoint/insulation/I0.xlsx",
+                "template_type": "insulation",
+                "division": "Insulation",
+                "sheet_name": "Estimate",
+                "row_number": 30,
+                "template_bucket": "thermal_barrier_coating",
+                "line_item_kind": "material",
+                "selected_item_name": "Margin %",
+                "unit_price": 30,
+            },
+        ]
+    )
+    data.template_rows = pd.concat([data.template_rows, bad_rows], ignore_index=True)
+
+    candidate = select_historical_candidates(data, limit=1, template_types=("insulation",), seed=1)[0]
+    keys = {
+        (row.get("template_bucket"), row.get("workbook_row"), row.get("selected_item_name"))
+        for row in candidate["expected_decisions"]
+    }
+
+    assert not any(key[0] == "labor_caulk" and key[1] == 126 for key in keys)
+    assert not any(key[0] == "thermal_barrier_coating" and key[2] == "Margin %" for key in keys)
+    assert any(row.get("template_bucket") == "foam" for row in candidate["expected_decisions"])
+
+
 def test_ai_output_validator_rejects_changed_area_and_decision_leakage() -> None:
     candidate = select_historical_candidates(generated_case_data(), limit=1, template_types=("roofing",))[0]
     facts = build_case_facts(candidate)

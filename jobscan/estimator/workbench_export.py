@@ -417,6 +417,7 @@ def build_workbench_review_payloads(
     roofing_travel_freight_template_decisions = list(recalculated.get("roofing_travel_freight_template_decisions") or [])
     roofing_accessory_template_decisions = list(recalculated.get("roofing_accessory_template_decisions") or [])
     roofing_labor_template_decisions = list(recalculated.get("roofing_labor_template_decisions") or [])
+    pricing_markup_decisions = list(recalculated.get("pricing_markup_decisions") or [])
     area_trace = list(recalculated.get("area_calculation_trace") or [])
     area_explanation = recalculated.get("area_calculation_explanation") or ""
     decision_trace = _decision_trace_rows(
@@ -775,6 +776,26 @@ def build_workbench_review_payloads(
                 "notes",
             ],
         ),
+        "pricing_markup_decisions": _compact_rows(
+            pricing_markup_decisions,
+            [
+                "include",
+                "workbook_row",
+                "template_line",
+                "percentage_cell",
+                "markup_pct",
+                "historical_markup_pct",
+                "historical_markup_p25",
+                "historical_markup_p75",
+                "base_total",
+                "estimated_cost",
+                "historical_selector_evidence_count",
+                "decision_confidence",
+                "compatibility_status",
+                "compatibility_warnings",
+                "notes",
+            ],
+        ),
         "insulation_foam_template_decisions": _compact_rows(
             foam_template_decisions,
             [
@@ -916,6 +937,7 @@ def build_workbench_review_payloads(
         "Insulation Compliance": summary["insulation_compliance_template_decisions"],
         "Insulation Labor Plan": summary["insulation_labor_template_decisions"],
         "Insulation Pricing": summary["insulation_pricing_template_decisions"],
+        "Pricing Markup": summary["pricing_markup_decisions"],
         "Historical Filters": summary["historical_filters"],
         "Workbook Decisions": summary["workbook_decisions"],
         "Decision Trace": decision_trace,

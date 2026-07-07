@@ -332,9 +332,18 @@ INSULATION_PRICING_DECISION_SPECS: list[dict[str, Any]] = [
     {"decision_id": "insulation_misc_insurance", "template_bucket": "misc_insurance", "label": "Miscellaneous Insurance", "workbook_row": "109", "formula": "direct"},
     {"decision_id": "insulation_permits", "template_bucket": "permits", "label": "Permits", "workbook_row": "111", "formula": "direct"},
     {"decision_id": "performance_payment_bonds", "template_bucket": "performance_payment_bonds", "label": "Performance / Payment Bonds", "workbook_row": "bond", "formula": "bond"},
-    {"decision_id": "insulation_overhead", "template_bucket": "overhead", "label": "Overhead", "workbook_row": "118", "formula": "markup"},
-    {"decision_id": "insulation_profit", "template_bucket": "profit", "label": "Profit", "workbook_row": "120", "formula": "markup"},
 ]
+
+PRICING_MARKUP_SPECS = {
+    "roofing": {
+        "overhead": {"decision_id": "pricing_overhead", "label": "Overhead", "workbook_row": "165", "percentage_cell": "F165"},
+        "profit": {"decision_id": "pricing_profit", "label": "Profit", "workbook_row": "167", "percentage_cell": "F167"},
+    },
+    "insulation": {
+        "overhead": {"decision_id": "pricing_overhead", "label": "Overhead", "workbook_row": "118", "percentage_cell": "F118"},
+        "profit": {"decision_id": "pricing_profit", "label": "Profit", "workbook_row": "120", "percentage_cell": "F120"},
+    },
+}
 
 ADDER_ROWS: list[dict[str, Any]] = [
     {"adder": "travel", "label": "Travel", "workbook_row": "106/108"},
@@ -1410,6 +1419,8 @@ def _filter_field_mask(rows: pd.DataFrame, field: str, value: Any) -> pd.Series:
         return pd.Series([True] * len(rows), index=rows.index)
     if field == "area_bucket":
         expected_text = _normalized(cleaned)
+        if "area_bucket" not in rows.columns and "area_sqft" not in rows.columns:
+            return pd.Series([True] * len(rows), index=rows.index)
         direct = rows["area_bucket"].map(_normalized).eq(expected_text) if "area_bucket" in rows.columns else pd.Series([False] * len(rows), index=rows.index)
         if "area_sqft" in rows.columns:
             by_area = _numeric_series(rows, "area_sqft").map(_area_bucket_for_sqft).map(_normalized).eq(expected_text)
@@ -4191,6 +4202,8 @@ def _build_insulation_foam_template_decisions(
         existing.get("thickness_inches"),
         foam_row.get("thickness_inches"),
         foam_row.get("foam_thickness_inches"),
+        scope.get("foam_thickness_inches"),
+        scope.get("thickness_inches"),
         default=0.0,
     )
     historical_thickness = positive_number(defaults.get("thickness_inches"), default=0.0)
@@ -4258,6 +4271,7 @@ def _build_insulation_foam_template_decisions(
         selected_candidate.get("unit_price"),
         foam_row.get("current_unit_price"),
         defaults.get("unit_price"),
+        ROOFING_FOAM_DEFAULTS.get(19, {}).get("unit_price"),
         default=0.0,
     )
     notes_text = _normalized(" ".join(str(scope.get(key) or "") for key in ("notes", "raw_input_notes", "project_type", "scope_of_work")))
@@ -4288,6 +4302,8 @@ def _build_insulation_foam_template_decisions(
         existing.get("thickness_inches"),
         foam_row.get("thickness_inches"),
         foam_row.get("foam_thickness_inches"),
+        scope.get("foam_thickness_inches"),
+        scope.get("thickness_inches"),
         defaults.get("thickness_inches"),
     ):
         warnings.append("Foam thickness is area-weighted from surface R-value targets; estimator should review row-level export.")
@@ -4619,6 +4635,186 @@ def _decision_output_summary(formula: dict[str, Any]) -> str:
     )
 
 
+def _markup_percentage_candidates(data: Any, filters: dict[str, Any], bucket: str) -> tuple[list[float], dict[str, Any]]:
+    rows = _frame(data, "template_rows")
+    if rows.empty:
+        return [], {"source": "template_rows_empty", "evidence_count": 0}
+    if "template_bucket" not in rows.columns:
+        return [], {"source": "template_bucket_missing", "evidence_count": 0}
+    scoped = rows[rows["template_bucket"].fillna("").astype(str).map(_normalized).eq(bucket)].copy()
+    if scoped.empty:
+        return [], {"source": "markup_bucket_missing", "evidence_count": 0}
+    value_column = "overhead_pct" if bucket == "overhead" else "profit_pct"
+    if value_column not in scoped.columns and "percentage" not in scoped.columns:
+        return [], {"source": "markup_percentage_missing", "evidence_count": 0}
+
+    def accepted_count(frame: pd.DataFrame) -> int:
+        series = pd.to_numeric(
+            frame[value_column] if value_column in frame.columns else frame.get("percentage", pd.Series(dtype=float)),
+            errors="coerce",
+        )
+        return int(series.dropna().between(0.01, 99.99).sum())
+
+    filtered, filter_summary = _filter_rows_with_relaxation(scoped, filters, accepted_count)
+    values: list[float] = []
+    for _, row in filtered.iterrows():
+        raw_value = first_nonblank(
+            row.get(value_column) if value_column in filtered.columns else "",
+            row.get("percentage") if "percentage" in filtered.columns else "",
+            row.get("margin_pct") if "margin_pct" in filtered.columns else "",
+        )
+        number = safe_number(raw_value, 0.0)
+        if 0 < number < 100:
+            values.append(number)
+    return values, filter_summary
+
+
+def _historical_markup_default(data: Any, filters: dict[str, Any], bucket: str) -> dict[str, Any]:
+    values, filter_summary = _markup_percentage_candidates(data, filters, bucket)
+    if not values:
+        return {
+            "percentage": 0.0,
+            "p25": 0.0,
+            "p75": 0.0,
+            "evidence_count": 0,
+            "confidence": "none",
+            "source": filter_summary.get("source") or "no_historical_markup_evidence",
+            "filters_applied": filter_summary.get("filters_applied", {}),
+            "filters_relaxed": filter_summary.get("filters_relaxed", []),
+        }
+    series = pd.Series(values, dtype="float64")
+    return {
+        "percentage": round(float(series.median()), 4),
+        "p25": round(float(series.quantile(0.25)), 4),
+        "p75": round(float(series.quantile(0.75)), 4),
+        "evidence_count": int(len(series)),
+        "confidence": "high" if len(series) >= 8 else "medium" if len(series) >= 3 else "low",
+        "source": "estimate_template_rows",
+        "filters_applied": filter_summary.get("filters_applied", {}),
+        "filters_relaxed": filter_summary.get("filters_relaxed", []),
+    }
+
+
+def _markup_formula(base_total: float, percentage: float, *, include: bool) -> dict[str, Any]:
+    amount = base_total * percentage / 100.0 if include and base_total > 0 and percentage > 0 else 0.0
+    return {
+        "formula_model": "markup_amount_from_base_pct",
+        "formula_source": "base_total_percentage" if amount else "not_included" if not include else "insufficient_formula_inputs",
+        "base_total": round(base_total, 2),
+        "percentage": round(percentage, 6),
+        "estimated_cost": round(amount, 2),
+        "calculated_output": round(amount, 2),
+    }
+
+
+def _build_pricing_markup_decisions(
+    *,
+    scope: dict[str, Any],
+    data: Any = None,
+    existing_rows: list[dict[str, Any]] | None = None,
+    pre_markup_total: float = 0.0,
+    historical_filters: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    template_type = "insulation" if _is_insulation_scope(scope) else "roofing"
+    specs = PRICING_MARKUP_SPECS[template_type]
+    existing_index = _existing_decision_rows(existing_rows)
+    filters = historical_filters or historical_filters_from_scope(scope)
+    overhead_default = _historical_markup_default(data, filters, "overhead")
+    profit_default = _historical_markup_default(data, filters, "profit")
+    rows: list[dict[str, Any]] = []
+    overhead_amount = 0.0
+    for bucket, default in (("overhead", overhead_default), ("profit", profit_default)):
+        spec = specs[bucket]
+        existing = (
+            existing_index.get(spec["workbook_row"])
+            or existing_index.get(spec["decision_id"])
+            or existing_index.get(bucket)
+            or {}
+        )
+        percentage = positive_number(
+            existing.get("markup_pct"),
+            existing.get("percentage"),
+            existing.get("overhead_pct") if bucket == "overhead" else existing.get("profit_pct"),
+            scope.get("overhead_pct") if bucket == "overhead" else scope.get("profit_pct"),
+            default.get("percentage"),
+            default=0.0,
+        )
+        include = bool(existing["include"]) if "include" in existing else percentage > 0
+        base_total = pre_markup_total if bucket == "overhead" else pre_markup_total + overhead_amount
+        formula = _markup_formula(base_total, percentage, include=include)
+        amount = safe_number(formula.get("estimated_cost"), 0.0)
+        if bucket == "overhead":
+            overhead_amount = amount
+        review_reasons = []
+        evidence_count = int(
+            positive_number(
+                default.get("evidence_count"),
+                existing.get("historical_selector_evidence_count"),
+                existing.get("decision_evidence_count"),
+                default=0,
+            )
+        )
+        historical_markup_pct = positive_number(default.get("percentage"), existing.get("historical_markup_pct"), default=0.0)
+        historical_markup_p25 = positive_number(default.get("p25"), existing.get("historical_markup_p25"), default=0.0)
+        historical_markup_p75 = positive_number(default.get("p75"), existing.get("historical_markup_p75"), default=0.0)
+        confidence = first_nonblank(default.get("confidence"), existing.get("decision_confidence"), existing.get("confidence"), "none")
+        if include and evidence_count <= 0 and "markup_pct" not in existing and "percentage" not in existing:
+            review_reasons.append("No historical markup percentage was found; estimator must set this before quoting.")
+        rows.append(
+            {
+                "include": include,
+                "section": "pricing_markup_decisions",
+                "decision_id": spec["decision_id"],
+                "source_decision_id": spec["decision_id"],
+                "template_bucket": bucket,
+                "package_key": bucket,
+                "workbook_row": spec["workbook_row"],
+                "template_line": spec["label"],
+                "percentage_cell": spec["percentage_cell"],
+                "markup_pct": round(percentage, 4),
+                "percentage": round(percentage, 4),
+                "overhead_pct": round(percentage, 4) if bucket == "overhead" else "",
+                "profit_pct": round(percentage, 4) if bucket == "profit" else "",
+                "base_total": formula.get("base_total"),
+                "estimated_cost": amount,
+                "calculated_output": amount,
+                "calculated_output_summary": _value_summary(
+                    {"base": formula.get("base_total"), "pct": round(percentage, 4), "cost": amount}
+                ),
+                "formula_model": formula.get("formula_model"),
+                "formula_source": formula.get("formula_source"),
+                "cost_source": "historical_markup_pct" if evidence_count else "estimator_markup_pct",
+                "historical_markup_pct": historical_markup_pct,
+                "historical_markup_p25": historical_markup_p25,
+                "historical_markup_p75": historical_markup_p75,
+                "historical_selector_evidence_count": evidence_count,
+                "decision_evidence_count": evidence_count,
+                "decision_confidence": confidence,
+                "confidence": confidence,
+                "compatibility_status": "review" if review_reasons else "compatible" if include else "not_included",
+                "compatibility_warnings": review_reasons,
+                "historical_evidence_summary": (
+                    f"{evidence_count} historical {bucket} rows; "
+                    f"median {historical_markup_pct}%, p25 {historical_markup_p25}%, p75 {historical_markup_p75}%."
+                    if evidence_count
+                    else "No historical markup evidence found."
+                ),
+                "notes": f"{spec['label']} percentage writes to Estimate!{spec['percentage_cell']}.",
+                "decision_values": {"markup_pct": round(percentage, 4), "base_total": formula.get("base_total")},
+                "editable_decision_value": {"markup_pct": round(percentage, 4), "base_total": formula.get("base_total")},
+                "recommended_decision_value": {
+                    "markup_pct": historical_markup_pct,
+                    "evidence_count": evidence_count,
+                },
+                "workbook_cell_write_preview": [
+                    {"cell": f"Estimate!{spec['percentage_cell']}", "field": f"{bucket}_pct", "value": round(percentage, 4)}
+                ],
+                "row_traceability": f"Estimate row {spec['workbook_row']}",
+            }
+        )
+    return rows
+
+
 def _insulation_opening_perimeter_ft(scope: dict[str, Any]) -> float:
     total = 0.0
     for opening in scope.get("openings") or []:
@@ -4882,6 +5078,31 @@ def _guard_insulation_scaffold_auto_includes(workbench: dict[str, Any]) -> dict[
                         row,
                         "Auto-included markup scaffold row was left unchecked because no markup percentage was available.",
                     )
+    return workbench
+
+
+def _guard_pricing_markup_auto_includes(workbench: dict[str, Any]) -> dict[str, Any]:
+    for row in workbench.get("pricing_markup_decisions") or []:
+        if not isinstance(row, dict) or not row.get("include"):
+            continue
+        pct = positive_number(
+            row.get("markup_pct"),
+            row.get("percentage"),
+            row.get("overhead_pct"),
+            row.get("profit_pct"),
+            default=0.0,
+        )
+        if pct > 0:
+            continue
+        row["include"] = False
+        row["include_source"] = "calculation_basis_guard"
+        row["estimated_cost"] = 0.0
+        row["calculated_output"] = 0.0
+        row["formula_source"] = "not_included"
+        warnings = list(row.get("compatibility_warnings") or [])
+        warnings.append("Markup row was unchecked because no overhead/profit percentage was provided.")
+        row["compatibility_warnings"] = list(dict.fromkeys(warnings))
+        row["compatibility_status"] = "review"
     return workbench
 
 
@@ -10401,6 +10622,35 @@ def build_estimating_workbench(
         if not _is_insulation_scope(scope)
         else []
     )
+    pre_markup_workbench = {
+        "scope": scope,
+        "insulation_performance_specs": [],
+        "insulation_foam_template_decisions": foam_template_decisions,
+        "insulation_detail_material_template_decisions": insulation_detail_material_template_decisions,
+        "insulation_thermal_barrier_template_decisions": insulation_thermal_barrier_template_decisions,
+        "insulation_support_material_template_decisions": insulation_support_material_template_decisions,
+        "insulation_equipment_logistics_template_decisions": insulation_equipment_logistics_template_decisions,
+        "insulation_compliance_template_decisions": insulation_compliance_template_decisions,
+        "insulation_labor_template_decisions": insulation_labor_template_decisions,
+        "insulation_pricing_template_decisions": insulation_pricing_template_decisions,
+        "roofing_foam_template_decisions": roofing_foam_template_decisions,
+        "roofing_coating_template_decisions": roofing_coating_template_decisions,
+        "roofing_primer_template_decisions": roofing_primer_template_decisions,
+        "roofing_detail_template_decisions": roofing_detail_template_decisions,
+        "roofing_detail_quantity_template_decisions": roofing_detail_quantity_template_decisions,
+        "roofing_board_fastener_template_decisions": roofing_board_fastener_template_decisions,
+        "roofing_granules_template_decisions": roofing_granules_template_decisions,
+        "roofing_equipment_template_decisions": roofing_equipment_template_decisions,
+        "roofing_travel_freight_template_decisions": roofing_travel_freight_template_decisions,
+        "roofing_accessory_template_decisions": roofing_accessory_template_decisions,
+        "roofing_labor_template_decisions": roofing_labor_template_decisions,
+    }
+    pricing_markup_decisions = _build_pricing_markup_decisions(
+        scope=scope,
+        data=data,
+        pre_markup_total=_pre_markup_total(pre_markup_workbench),
+        historical_filters=filters,
+    )
     surface_rows = _build_insulation_surface_rows_for_workbench(
         scope,
         notes=_scope_note_text(recommendation, scope),
@@ -10447,6 +10697,7 @@ def build_estimating_workbench(
         "roofing_travel_freight_template_decisions": roofing_travel_freight_template_decisions,
         "roofing_accessory_template_decisions": roofing_accessory_template_decisions,
         "roofing_labor_template_decisions": roofing_labor_template_decisions,
+        "pricing_markup_decisions": pricing_markup_decisions,
         "insulation_performance_specs": [],
         "insulation_deductions": build_insulation_deductions(scope) if _is_insulation_scope(scope) else [],
         "insulation_r_value_targets": parse_r_value_targets(_scope_note_text(recommendation, scope)) if _is_insulation_scope(scope) else [],
@@ -10699,6 +10950,12 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
             scope=scope,
             surface_rows=_records(updated.get("insulation_surfaces")),
         )
+    updated["pricing_markup_decisions"] = _build_pricing_markup_decisions(
+        scope=scope,
+        existing_rows=updated.get("pricing_markup_decisions") or None,
+        pre_markup_total=_pre_markup_total(updated),
+        historical_filters=updated.get("historical_filters") or historical_filters_from_scope(scope),
+    )
     updated.pop("materials", None)
     updated.pop("labor", None)
     updated.pop("adders", None)
@@ -10710,6 +10967,7 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
         decision_sections=WORKBENCH_DECISION_SECTIONS,
     )
     updated = _guard_insulation_scaffold_auto_includes(updated)
+    updated = _guard_pricing_markup_auto_includes(updated)
     updated = enrich_workbench_template_options(updated)
     return updated
 
@@ -10760,6 +11018,7 @@ def apply_historical_filter_update(previous_workbench: dict[str, Any] | None, fi
         "roofing_travel_freight_template_decisions",
         "roofing_accessory_template_decisions",
         "roofing_labor_template_decisions",
+        "pricing_markup_decisions",
     )
     for section in decision_sections:
         previous_rows = {
@@ -11358,6 +11617,13 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any]) -> dict[str, A
                 "source_section": row.get("section") or "labor_template_decisions",
             }
         )
+    pricing_markup_rows = [
+        row
+        for row in workbench.get("pricing_markup_decisions") or []
+        if isinstance(row, dict) and row.get("include")
+    ]
+    overhead_row = next((row for row in pricing_markup_rows if str(row.get("template_bucket") or "").lower() == "overhead"), {})
+    profit_row = next((row for row in pricing_markup_rows if str(row.get("template_bucket") or "").lower() == "profit"), {})
     return {
         "template_type": "insulation" if _is_insulation_scope(scope) else "roofing",
         "header": {
@@ -11370,6 +11636,13 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any]) -> dict[str, A
             "deduction_area_sqft": safe_number(scope.get("deduction_sqft"), 0.0),
             "net_area_sqft": _estimate_area(scope),
             "dimension_notes": [],
+        },
+        "pricing": {
+            "overhead_pct": safe_number(overhead_row.get("markup_pct"), 0.0),
+            "profit_pct": safe_number(profit_row.get("markup_pct"), 0.0),
+            "overhead_amount": safe_number(overhead_row.get("estimated_cost"), 0.0),
+            "profit_amount": safe_number(profit_row.get("estimated_cost"), 0.0),
+            "pricing_markup_decisions": pricing_markup_rows,
         },
         "workbook_decisions": workbook_decisions,
     }
@@ -11414,6 +11687,7 @@ WORKBENCH_DECISION_SECTIONS = (
     *ROOFING_MATERIAL_TOTAL_DECISION_SECTIONS,
     *ROOFING_ADDER_TOTAL_DECISION_SECTIONS,
     *ROOFING_LABOR_TOTAL_DECISION_SECTIONS,
+    "pricing_markup_decisions",
 )
 
 
@@ -11428,6 +11702,22 @@ def _decision_total_rows(workbench: dict[str, Any], section_names: Iterable[str]
 
 def _included_cost_total(rows: Iterable[dict[str, Any]]) -> float:
     return sum(safe_number(row.get("estimated_cost"), 0.0) for row in rows if row.get("include"))
+
+
+def _pre_markup_total(workbench: dict[str, Any]) -> float:
+    if _is_insulation_scope(workbench.get("scope") or {}):
+        material_decision_rows, _, _ = _insulation_material_total_rows(workbench)
+        labor_decision_rows = _decision_total_rows(workbench, INSULATION_LABOR_TOTAL_DECISION_SECTIONS)
+        adder_decision_rows = _decision_total_rows(workbench, INSULATION_ADDER_TOTAL_DECISION_SECTIONS)
+    else:
+        material_decision_rows = _decision_total_rows(workbench, ROOFING_MATERIAL_TOTAL_DECISION_SECTIONS)
+        labor_decision_rows = _decision_total_rows(workbench, ROOFING_LABOR_TOTAL_DECISION_SECTIONS)
+        adder_decision_rows = _decision_total_rows(workbench, ROOFING_ADDER_TOTAL_DECISION_SECTIONS)
+    return (
+        _included_cost_total(material_decision_rows)
+        + _included_cost_total(labor_decision_rows)
+        + _included_cost_total(adder_decision_rows)
+    )
 
 
 def _coverage_key_values(row: dict[str, Any]) -> set[str]:
@@ -11499,11 +11789,32 @@ def summarize_workbench_totals(workbench: dict[str, Any]) -> dict[str, float]:
     material_total = _included_cost_total(material_decision_rows)
     labor_total = _included_cost_total(labor_decision_rows)
     adder_total = _included_cost_total(adder_decision_rows)
+    pre_markup_total = material_total + labor_total + adder_total
+    markup_rows = [
+        row
+        for row in workbench.get("pricing_markup_decisions") or []
+        if isinstance(row, dict) and row.get("include")
+    ]
+    overhead_amount = sum(
+        safe_number(row.get("estimated_cost"), 0.0)
+        for row in markup_rows
+        if str(row.get("template_bucket") or "").lower() == "overhead"
+    )
+    profit_amount = sum(
+        safe_number(row.get("estimated_cost"), 0.0)
+        for row in markup_rows
+        if str(row.get("template_bucket") or "").lower() == "profit"
+    )
+    worksheet_price = pre_markup_total + overhead_amount + profit_amount
     return {
         "material_total": round(material_total, 2),
         "labor_total": round(labor_total, 2),
         "adder_total": round(adder_total, 2),
-        "draft_total": round(material_total + labor_total + adder_total, 2),
+        "pre_markup_total": round(pre_markup_total, 2),
+        "overhead_amount": round(overhead_amount, 2),
+        "profit_amount": round(profit_amount, 2),
+        "worksheet_price": round(worksheet_price, 2),
+        "draft_total": round(worksheet_price, 2),
     }
 
 

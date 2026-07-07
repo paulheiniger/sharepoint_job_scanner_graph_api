@@ -16,6 +16,7 @@ from jobscan.env import load_project_env
 
 from . import estimate_from_field_notes
 from .data_loader import load_estimator_data
+from .decision_proposals import _reference_row_compatible
 from .schemas import EstimatorData
 from .workbench import build_estimating_workbench, workbench_to_draft_workbook_inputs
 
@@ -341,6 +342,8 @@ def _expected_decisions_from_rows(group: pd.DataFrame, template_type: str) -> li
     for _, row in rows.iterrows():
         bucket = _clean_text(row.get("template_bucket"))
         if not bucket or bucket == "unknown":
+            continue
+        if not _reference_row_compatible(row.to_dict(), template_type):
             continue
         if not _row_has_decision(row):
             continue

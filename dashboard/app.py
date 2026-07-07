@@ -65,13 +65,17 @@ from jobscan.estimator.workbench import (
 from jobscan.estimator.workbench_export import DEFAULT_WORKBENCH_EXPORT_DIR, export_workbench_review_package
 from jobscan.estimator.workbook_writer import DEFAULT_ESTIMATE_OUTPUT_DIR, generate_estimate_workbook, resolve_default_template_path
 from jobscan.estimator.photo_evidence import (
+    PHOTO_CATEGORY_OPTIONS,
+    PHOTO_SIGNAL_OPTIONS,
     analyze_selected_photos_with_ai,
+    apply_photo_record_edits,
     apply_photo_scope_context,
     build_photo_scope_context,
     combine_notes_with_photo_context,
     merge_photo_ai_analysis,
     stage_uploaded_images,
 )
+from jobscan.estimator.chat_assistant import run_estimator_chat_turn
 
 try:
     from streamlit_calendar import calendar
@@ -589,6 +593,23 @@ ROOFING_LABOR_TEMPLATE_COMPACT_COLUMNS = [
     "historical_selector_evidence_count",
     "decision_confidence",
     *DECISION_EVIDENCE_DISPLAY_COLUMNS,
+    "compatibility_status",
+    "compatibility_warnings",
+    "notes",
+]
+
+PRICING_MARKUP_COMPACT_COLUMNS = [
+    "include",
+    "workbook_row",
+    "template_line",
+    "markup_pct",
+    "historical_markup_pct",
+    "historical_markup_p25",
+    "historical_markup_p75",
+    "base_total",
+    "estimated_cost",
+    "historical_selector_evidence_count",
+    "decision_confidence",
     "compatibility_status",
     "compatibility_warnings",
     "notes",
@@ -4715,6 +4736,7 @@ def render_estimator_photo_upload_panel(*, notes: str, estimate_type: str) -> di
         for record in photo_records
     ]
     photo_df = pd.DataFrame(photo_rows)
+    signal_help = "Comma-separated decision signals. Accepted: " + ", ".join(PHOTO_SIGNAL_OPTIONS)
     edited_photo_df = st.data_editor(
         photo_df[["use", "file_name", "category", "signals", "quality_flags", "image_id"]],
         hide_index=True,
@@ -4724,16 +4746,25 @@ def render_estimator_photo_upload_panel(*, notes: str, estimate_type: str) -> di
         column_config={
             "use": "Use",
             "file_name": "Photo",
-            "category": "Local Category",
-            "signals": "Local Signals",
+            "category": st.column_config.SelectboxColumn(
+                "Local Category",
+                options=PHOTO_CATEGORY_OPTIONS,
+                help="Cheap local classification. Update this when filenames are generic.",
+            ),
+            "signals": st.column_config.TextColumn(
+                "Decision Signals",
+                help=signal_help,
+            ),
             "quality_flags": "Quality Flags",
             "image_id": "Image ID",
         },
-        disabled=["file_name", "category", "signals", "quality_flags", "image_id"],
+        disabled=["file_name", "quality_flags", "image_id"],
     )
+    edited_photo_records = apply_photo_record_edits(photo_records, edited_photo_df.to_dict(orient="records"))
+    st.session_state["estimator_photo_records"] = edited_photo_records
     selected_image_ids = {str(row.get("image_id")) for row in edited_photo_df.to_dict(orient="records") if row.get("use") and row.get("image_id")}
-    selected_hashes = [str(record.get("content_hash")) for record in photo_records if str(record.get("image_id")) in selected_image_ids]
-    selected_records = [record for record in photo_records if record.get("content_hash") in set(selected_hashes)]
+    selected_hashes = [str(record.get("content_hash")) for record in edited_photo_records if str(record.get("image_id")) in selected_image_ids]
+    selected_records = [record for record in edited_photo_records if record.get("content_hash") in set(selected_hashes)]
     if selected_records:
         preview_cols = st.columns(min(len(selected_records), 4))
         for idx, record in enumerate(selected_records[:4]):
@@ -4743,7 +4774,7 @@ def render_estimator_photo_upload_panel(*, notes: str, estimate_type: str) -> di
 
     estimate_type_text = str(estimate_type or "").lower()
     template_hint = "insulation" if "insulation" in estimate_type_text else "roofing" if "roof" in estimate_type_text else ""
-    photo_context = build_photo_scope_context(photo_records, selected_hashes=selected_hashes, template_type=template_hint)
+    photo_context = build_photo_scope_context(edited_photo_records, selected_hashes=selected_hashes, template_type=template_hint)
     try:
         max_ai_images = max(1, int(os.getenv("OPENAI_ESTIMATOR_PHOTO_MAX_IMAGES", "8")))
     except (TypeError, ValueError):
@@ -4752,7 +4783,7 @@ def render_estimator_photo_upload_panel(*, notes: str, estimate_type: str) -> di
     selected_hash_set = {str(value) for value in selected_hashes if str(value)}
     stored_ai_analysis = st.session_state.get(ai_analysis_key)
     if stored_ai_analysis and set(str(value) for value in (stored_ai_analysis.get("selected_hashes") or [])) == selected_hash_set:
-        photo_context = merge_photo_ai_analysis(photo_context, stored_ai_analysis, records=photo_records)
+        photo_context = merge_photo_ai_analysis(photo_context, stored_ai_analysis, records=edited_photo_records)
     elif stored_ai_analysis:
         st.caption("Stored AI photo analysis is hidden because the selected photo set changed.")
     st.caption(
@@ -4772,14 +4803,14 @@ def render_estimator_photo_upload_panel(*, notes: str, estimate_type: str) -> di
             try:
                 with st.spinner("Analyzing selected photos..."):
                     stored_ai_analysis = analyze_selected_photos_with_ai(
-                        photo_records,
+                        edited_photo_records,
                         selected_hashes=selected_hashes,
                         template_type=template_hint,
                         notes=notes,
                         max_images=max_ai_images,
                     )
                 st.session_state[ai_analysis_key] = stored_ai_analysis
-                photo_context = merge_photo_ai_analysis(photo_context, stored_ai_analysis, records=photo_records)
+                photo_context = merge_photo_ai_analysis(photo_context, stored_ai_analysis, records=edited_photo_records)
                 if stored_ai_analysis.get("cache_hit"):
                     st.success("Loaded cached AI photo analysis for this selected photo set.")
                 else:
@@ -4814,6 +4845,96 @@ def render_estimator_photo_upload_panel(*, notes: str, estimate_type: str) -> di
     if photo_context.get("missing_photos"):
         st.warning("Missing useful photos: " + "; ".join(str(item) for item in photo_context.get("missing_photos") or []))
     return photo_context if use_photo_evidence else None
+
+
+def render_estimator_chat_draft_panel(
+    *,
+    notes: str,
+    estimate_type: str,
+    data: EstimatorData,
+) -> dict[str, Any] | None:
+    st.subheader("Estimator Chat Draft")
+    st.caption(
+        "Use this when the notes need estimator-style reasoning before the workbook is filled. "
+        "The chat creates a structured draft and scope overrides; workbook formulas still calculate the estimate."
+    )
+    chat_key_source = f"{estimate_type}|{notes}|{current_estimator_session_id() or 'draft'}"
+    chat_key = hashlib.sha1(chat_key_source.encode("utf-8")).hexdigest()[:16]
+    history_key = f"estimator_chat_history_{chat_key}"
+    default_history = [{"role": "user", "content": f"Project notes:\n{notes}"}]
+    chat_history = st.session_state.get(history_key) or default_history
+    if chat_history:
+        with st.expander("Estimator chat history", expanded=False):
+            for message in chat_history[-8:]:
+                role = str(message.get("role") or "assistant")
+                with st.chat_message("user" if role == "user" else "assistant"):
+                    st.write(str(message.get("content") or ""))
+    prompt = st.text_area(
+        "Message to estimator chat",
+        value="Turn these notes into an estimator-ready draft and fill the workbook-facing scope as far as the evidence supports.",
+        height=80,
+        key=f"estimator_chat_instruction_{chat_key}",
+    )
+    if st.button(
+        "Send to Estimator Chat",
+        key=f"estimator_chat_run_{chat_key}",
+        help="Runs an AI chat draft when OpenAI is configured; otherwise uses a deterministic fallback.",
+    ):
+        messages = [dict(message) for message in chat_history]
+        messages.append({"role": "user", "content": prompt})
+        with st.spinner("Drafting estimator chat response..."):
+            result = run_estimator_chat_turn(
+                messages,
+                data=data,
+                template_type_hint=estimate_type,
+            )
+        messages.append({"role": "assistant", "content": result.assistant_message})
+        st.session_state[history_key] = messages
+        st.session_state[f"estimator_chat_result_{chat_key}"] = result.to_dict()
+
+    result_payload = st.session_state.get(f"estimator_chat_result_{chat_key}")
+    if not result_payload:
+        return None
+    result = result_payload if isinstance(result_payload, dict) else {}
+    source = str(result.get("source") or "")
+    confidence = float(result.get("confidence") or 0)
+    metric_row(
+        [
+            ("Source", source.replace("_", " ").title()),
+            ("Confidence", f"{confidence:.2f}"),
+            ("Questions", str(len(result.get("missing_questions") or []))),
+            ("Decision Cues", str(len(result.get("workbook_decision_preferences") or []))),
+        ]
+    )
+    if result.get("assistant_message"):
+        st.info(str(result.get("assistant_message")))
+    if result.get("warnings"):
+        st.warning("\n".join(str(item) for item in result.get("warnings") or []))
+    use_chat_draft = st.checkbox(
+        "Use chat draft to build the workbook",
+        value=True,
+        key=f"estimator_chat_use_{chat_key}",
+        help="Uses the chat-expanded notes and scope overrides when Build Filled Estimate Template is clicked.",
+    )
+    with st.expander("Chat-filled estimator notes", expanded=True):
+        st.text_area(
+            "Estimator notes from chat",
+            value=str(result.get("estimator_notes") or ""),
+            height=220,
+            key=f"estimator_chat_notes_preview_{chat_key}",
+        )
+    scope_overrides = result.get("scope_overrides") if isinstance(result.get("scope_overrides"), dict) else {}
+    if scope_overrides:
+        with st.expander("Workbook-facing scope overrides", expanded=False):
+            st.dataframe(pd.DataFrame([scope_overrides]), use_container_width=True, hide_index=True)
+    missing_questions = result.get("missing_questions") or []
+    if missing_questions:
+        st.warning("Missing questions: " + "; ".join(str(item) for item in missing_questions))
+    decision_preferences = result.get("workbook_decision_preferences") or []
+    if decision_preferences:
+        with st.expander("Chat decision preferences", expanded=False):
+            st.dataframe(pd.DataFrame(decision_preferences), use_container_width=True, hide_index=True)
+    return result if use_chat_draft else None
 
 
 def json_list_value(value: Any) -> list[Any]:
@@ -5292,7 +5413,22 @@ def estimator_prototype_page() -> None:
     else:
         st.caption(f"Selected estimate type: {resolved_estimate_type}")
     active_photo_context = render_estimator_photo_upload_panel(notes=notes, estimate_type=resolved_estimate_type)
-    estimator_input_notes = combine_notes_with_photo_context(notes, active_photo_context)
+    photo_augmented_notes = combine_notes_with_photo_context(notes, active_photo_context)
+    active_chat_context = render_estimator_chat_draft_panel(
+        notes=photo_augmented_notes,
+        estimate_type=resolved_estimate_type,
+        data=data,
+    )
+    estimator_input_notes = (
+        str(active_chat_context.get("estimator_notes") or photo_augmented_notes)
+        if active_chat_context
+        else photo_augmented_notes
+    )
+    estimator_chat_scope_overrides = (
+        active_chat_context.get("scope_overrides")
+        if active_chat_context and isinstance(active_chat_context.get("scope_overrides"), dict)
+        else {}
+    )
 
     project_type = ""
     division = ""
@@ -5402,6 +5538,34 @@ def estimator_prototype_page() -> None:
                             [
                                 *(getattr(recommendation, "review_flags", None) or []),
                                 *((active_photo_context.get("scope_updates") or {}).get("review_flags") or []),
+                            ]
+                        )
+                    )
+                if estimator_chat_scope_overrides:
+                    recommendation.parsed_fields = {
+                        **(recommendation.parsed_fields or {}),
+                        **estimator_chat_scope_overrides,
+                        "estimator_chat": {
+                            "source": active_chat_context.get("source") if active_chat_context else "",
+                            "confidence": active_chat_context.get("confidence") if active_chat_context else None,
+                            "assistant_message": active_chat_context.get("assistant_message") if active_chat_context else "",
+                            "missing_questions": active_chat_context.get("missing_questions") if active_chat_context else [],
+                            "workbook_decision_preferences": active_chat_context.get("workbook_decision_preferences") if active_chat_context else [],
+                        },
+                    }
+                    recommendation.review_flags = list(
+                        dict.fromkeys(
+                            [
+                                *(getattr(recommendation, "review_flags", None) or []),
+                                "Estimator chat draft supplied scope overrides; estimator must verify before quoting.",
+                                *(
+                                    [
+                                        f"Estimator chat warning: {warning}"
+                                        for warning in (active_chat_context.get("warnings") or [])
+                                    ]
+                                    if active_chat_context
+                                    else []
+                                ),
                             ]
                         )
                     )
@@ -6696,6 +6860,55 @@ def estimator_prototype_page() -> None:
                 )
             edited_workbench["roofing_labor_template_decisions"] = merged_labor_template_rows
 
+        if original_workbench.get("pricing_markup_decisions"):
+            st.markdown("#### Pricing Markup")
+            pricing_markup_editable_fields = {
+                "include",
+                "markup_pct",
+            }
+            pricing_markup_rows = original_workbench.get("pricing_markup_decisions") or []
+            pricing_markup_df = pd.DataFrame(display_safe_records(pricing_markup_rows, editable_fields=pricing_markup_editable_fields))
+            pricing_markup_column_order = (
+                list(pricing_markup_df.columns)
+                if show_row_details
+                else [column for column in PRICING_MARKUP_COMPACT_COLUMNS if column in pricing_markup_df.columns]
+            )
+            pricing_markup_display_df = (
+                pricing_markup_df
+                if show_row_details
+                else project_display_frame(pricing_markup_df, pricing_markup_column_order)
+            )
+            edited_pricing_markup_df = st.data_editor(
+                pricing_markup_display_df,
+                use_container_width=True,
+                hide_index=True,
+                num_rows="fixed",
+                key=f"wb_pricing_markup_{workbench_key}_{scope_key}_{historical_filters_key}",
+                column_order=pricing_markup_column_order,
+                column_config={
+                    "include": "Include",
+                    "workbook_row": "Row",
+                    "template_line": "Markup",
+                    "markup_pct": "Markup %",
+                    "historical_markup_pct": "Historical %",
+                    "historical_markup_p25": "P25 %",
+                    "historical_markup_p75": "P75 %",
+                    "base_total": "Base Total",
+                    "estimated_cost": "Amount",
+                    "historical_selector_evidence_count": "Evidence",
+                    "decision_confidence": "Confidence",
+                    "compatibility_status": "Status",
+                    "compatibility_warnings": "Warnings",
+                    "notes": "Notes",
+                },
+                disabled=[column for column in pricing_markup_column_order if column not in pricing_markup_editable_fields],
+            )
+            edited_workbench["pricing_markup_decisions"] = merge_editable_rows(
+                pricing_markup_rows,
+                edited_pricing_markup_df.to_dict(orient="records"),
+                pricing_markup_editable_fields,
+            )
+
         edited_workbench = recalculate_workbench_tables(edited_workbench)
         st.session_state[previous_workbench_key] = edited_workbench
         totals = summarize_workbench_totals(edited_workbench)
@@ -6716,6 +6929,8 @@ def estimator_prototype_page() -> None:
                 ("Materials", fmt_dollar(totals.get("material_total"))),
                 ("Labor", fmt_dollar(totals.get("labor_total"))),
                 ("Adders", fmt_dollar(totals.get("adder_total"))),
+                ("Overhead", fmt_dollar(totals.get("overhead_amount"))),
+                ("Profit", fmt_dollar(totals.get("profit_amount"))),
                 ("Draft Total", fmt_dollar(totals.get("draft_total"))),
                 ("Labor Hrs / 1k Sq Ft", f"{labor_hours_per_1000:,.1f}"),
             ]

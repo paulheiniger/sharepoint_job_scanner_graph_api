@@ -43,6 +43,44 @@ def test_weak_ai_only_proposal_is_review_marked() -> None:
     assert all(row["confidence"] < 0.5 for row in coating)
 
 
+def test_estimator_chat_preferences_create_canonical_foam_proposal() -> None:
+    proposals = build_decision_proposals(
+        {
+            "template_type": "insulation",
+            "division": "Insulation",
+            "estimated_sqft": 2226,
+            "foam_type": "open_cell",
+            "estimator_chat": {
+                "source": "ai_chat",
+                "confidence": 0.82,
+                "assistant_message": "Use 5 inch open-cell foam for the metal building.",
+                "workbook_decision_preferences": [
+                    {
+                        "decision_id": "insulation_foam_template_selector",
+                        "template_bucket": "foam",
+                        "include": True,
+                        "proposed_values": {
+                            "basis_sqft": 2226,
+                            "thickness_inches": 5,
+                            "yield_or_coverage": 4500,
+                            "resolved_template_option": "Gaco 0.5 lb.",
+                        },
+                        "confidence": 0.82,
+                    }
+                ],
+            },
+        }
+    )
+
+    foam = next(row for row in proposals if row["template_bucket"] == "foam")
+
+    assert foam["source"] == "chat_estimator"
+    assert foam["workbook_row"] == "19-21"
+    assert foam["proposed_values"]["thickness_inches"] == 5
+    assert foam["proposed_values"]["yield_or_coverage"] == 4500
+    assert foam["evidence"]["chat_estimator"][0]["assistant_message"].startswith("Use 5 inch")
+
+
 def test_historical_only_warranty_is_not_invented_without_prompt_evidence() -> None:
     proposals = build_decision_proposals(
         {
