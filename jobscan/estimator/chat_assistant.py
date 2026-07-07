@@ -10,6 +10,7 @@ from typing import Any, Callable, Iterable
 
 import pandas as pd
 
+from .foam_yield_history import build_foam_yield_history_digest
 from .schemas import EstimatorData
 
 
@@ -311,6 +312,12 @@ def estimator_context_summary(data: EstimatorData | None, *, scope: dict[str, An
             limit=25,
         )
     summary["historical_decision_evidence"] = _historical_decision_evidence(data, template_type=template_type)
+    summary["foam_yield_history_digest"] = build_foam_yield_history_digest(
+        data,
+        scope=scope,
+        template_type=template_type,
+        limit=8,
+    ) if template_type == "insulation" else []
     summary["pricing_candidates_by_bucket"] = _pricing_candidates_by_bucket(data, template_type=template_type)
     summary["product_guidance_digest"] = _product_guidance_digest(data, template_type=template_type)
     summary["companion_relationships"] = _companion_relationships(data, template_type=template_type)
@@ -333,6 +340,7 @@ def _empty_chat_decision_context(scope: dict[str, Any] | None) -> dict[str, Any]
             for row in decision_menu
         ],
         "historical_decision_evidence": [],
+        "foam_yield_history_digest": [],
         "pricing_candidates_by_bucket": [],
         "product_guidance_digest": [],
         "companion_relationships": [],
@@ -1100,6 +1108,8 @@ def _chat_prompt_messages(
         "evidence, confidence, and review_required. Include section and workbook_row when known. "
         "Use proposed_values for editable workbook fields such as basis_sqft, thickness_inches, gal_per_100_sqft, unit_price, "
         "estimated_units, linear_ft, days, crew_size, daily_rate, hourly_rate, total_hours, editable_total_hours, and formula_mode. "
+        "For insulation foam yield_or_coverage, prefer foam_yield_history_digest entries matching foam type, product/template option, "
+        "and thickness band; include that evidence and set review_required when the historical range is wide or evidence is thin. "
         "You may do takeoff math from explicit dimensions and deductions. Do not invent hidden warranty years, exact proprietary products, "
         "or final quote totals when evidence is weak. Use review_required for assumptions. "
         "Workbook formulas remain authoritative for final costs."

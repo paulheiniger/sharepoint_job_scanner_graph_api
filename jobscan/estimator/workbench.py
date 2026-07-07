@@ -56,6 +56,7 @@ from .formula_mirror import (
     decision_dict,
     positive_number,
 )
+from .foam_yield_history import best_foam_yield_history
 from .insulation_surfaces import (
     apply_thickness_decisions,
     aggregate_surface_foam_outputs,
@@ -4351,16 +4352,50 @@ def _build_insulation_foam_template_decisions(
         weighted_scope_thickness,
         default=0.0,
     )
-    provided_yield_or_coverage = positive_number(
-        existing.get("yield_or_coverage"),
-        foam_row.get("yield_factor"),
+    existing_yield_source = str(existing.get("yield_or_coverage_source") or "").strip()
+    yield_history_scope = {
+        **scope,
+        "foam_thickness_inches": thickness,
+        "resolved_template_option": resolved_option,
+    }
+    historical_yield_match = best_foam_yield_history(data, scope=yield_history_scope, template_type="insulation") if data is not None else {}
+    if not historical_yield_match:
+        stored_yield_match = existing.get("yield_history_match")
+        if isinstance(stored_yield_match, dict):
+            historical_yield_match = stored_yield_match
+        else:
+            try:
+                parsed_yield_match = json.loads(existing.get("yield_history_match_json") or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed_yield_match = {}
+            historical_yield_match = parsed_yield_match if isinstance(parsed_yield_match, dict) else {}
+    matched_historical_yield_or_coverage = positive_number(historical_yield_match.get("median_yield_or_coverage"), default=0.0)
+    historical_yield_or_coverage = positive_number(
+        defaults.get("yield_or_coverage"),
         foam_row.get("median_foam_yield"),
+        existing.get("yield_or_coverage") if existing_yield_source == "historical_default" else "",
         default=0.0,
     )
-    historical_yield_or_coverage = positive_number(defaults.get("yield_or_coverage"), default=0.0)
     template_yield_or_coverage = positive_number(ROOFING_FOAM_DEFAULTS.get(19, {}).get("yield_or_coverage"), default=0.0)
+    existing_yield_value = positive_number(existing.get("yield_or_coverage"), default=0.0)
+    calculated_yield_values = [
+        value
+        for value in (matched_historical_yield_or_coverage, historical_yield_or_coverage, template_yield_or_coverage)
+        if value > 0
+    ]
+    existing_yield_is_calculated = (
+        existing_yield_source in {"historical_yield_by_scope", "historical_default", "template_default"}
+        and existing_yield_value > 0
+        and any(abs(existing_yield_value - value) < 1e-6 for value in calculated_yield_values)
+    )
+    provided_yield_or_coverage = positive_number(
+        "" if existing_yield_is_calculated else existing_yield_value,
+        foam_row.get("yield_factor"),
+        default=0.0,
+    )
     yield_or_coverage = positive_number(
         provided_yield_or_coverage,
+        matched_historical_yield_or_coverage,
         historical_yield_or_coverage,
         template_yield_or_coverage,
         default=0.0,
@@ -4375,6 +4410,8 @@ def _build_insulation_foam_template_decisions(
         thickness_source = "missing"
     if provided_yield_or_coverage > 0:
         yield_or_coverage_source = "provided"
+    elif matched_historical_yield_or_coverage > 0:
+        yield_or_coverage_source = "historical_yield_by_scope"
     elif historical_yield_or_coverage > 0:
         yield_or_coverage_source = "historical_default"
     elif yield_or_coverage > 0:
@@ -4434,7 +4471,16 @@ def _build_insulation_foam_template_decisions(
     warnings = list(dict.fromkeys([*(selected_candidate.get("compatibility_warnings") or []), *(compatibility.get("compatibility_warnings") or [])]))
     if yield_or_coverage <= 0:
         warnings.append("Yield/coverage is missing; template formula output requires estimator review.")
-    elif not first_nonblank(existing.get("yield_or_coverage"), foam_row.get("yield_factor"), foam_row.get("median_foam_yield"), defaults.get("yield_or_coverage")):
+    elif yield_or_coverage_source == "historical_yield_by_scope":
+        evidence_count = int(safe_number(historical_yield_match.get("evidence_count"), 0))
+        source_jobs = int(safe_number(historical_yield_match.get("source_jobs_count"), 0))
+        p25 = safe_number(historical_yield_match.get("p25_yield_or_coverage"), 0.0)
+        p75 = safe_number(historical_yield_match.get("p75_yield_or_coverage"), 0.0)
+        if evidence_count < 3 or source_jobs < 2:
+            warnings.append("Foam yield uses limited thickness-matched historical evidence; estimator should confirm product yield.")
+        elif p25 > 0 and p75 > 0 and p75 / p25 > 1.5:
+            warnings.append("Foam yield history has a wide range; estimator should confirm product yield.")
+    elif not first_nonblank(existing.get("yield_or_coverage"), foam_row.get("yield_factor"), defaults.get("yield_or_coverage"), foam_row.get("median_foam_yield")):
         warnings.append("Foam yield uses template default; estimator should confirm product yield before quoting.")
     if thickness > 0 and not first_nonblank(
         foam_row.get("thickness_inches") if direct_material_thickness_edit else "",
@@ -4527,6 +4573,10 @@ def _build_insulation_foam_template_decisions(
             "thickness_source": thickness_source,
             "yield_or_coverage": round(yield_or_coverage, 4),
             "yield_or_coverage_source": yield_or_coverage_source,
+            "yield_history_match": historical_yield_match,
+            "yield_history_match_json": json.dumps(historical_yield_match, default=str),
+            "yield_history_evidence_count": int(safe_number(historical_yield_match.get("evidence_count"), 0)),
+            "yield_history_source_jobs_count": int(safe_number(historical_yield_match.get("source_jobs_count"), 0)),
             "unit_price": round(unit_price, 4),
             "estimated_units": formula.get("estimated_units"),
             "estimated_sets": formula.get("estimated_sets"),
@@ -4565,6 +4615,7 @@ def _build_insulation_foam_template_decisions(
                 "thickness_source": thickness_source,
                 "yield_or_coverage": round(yield_or_coverage, 4),
                 "yield_or_coverage_source": yield_or_coverage_source,
+                "yield_history_match": historical_yield_match,
                 "unit_price": round(unit_price, 4),
             },
             "editable_decision_value": {
@@ -4576,6 +4627,7 @@ def _build_insulation_foam_template_decisions(
                 "thickness_source": thickness_source,
                 "yield_or_coverage": round(yield_or_coverage, 4),
                 "yield_or_coverage_source": yield_or_coverage_source,
+                "yield_history_match": historical_yield_match,
                 "unit_price": round(unit_price, 4),
             },
             "recommended_decision_value": {

@@ -41,8 +41,28 @@ def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
     data = EstimatorData(
         template_rows=pd.DataFrame(
             [
-                {"template_type": "insulation", "template_bucket": "foam"},
-                {"template_type": "insulation", "template_bucket": "foam"},
+                {
+                    "template_type": "insulation",
+                    "template_bucket": "foam",
+                    "line_item_kind": "material",
+                    "selected_item_name": "Open Cell SPF",
+                    "area_sqft": 2200,
+                    "thickness_inches": 5.5,
+                    "yield_or_coverage": 4500,
+                    "estimated_units": 2688.8889,
+                    "job_id": "I1",
+                },
+                {
+                    "template_type": "insulation",
+                    "template_bucket": "foam",
+                    "line_item_kind": "material",
+                    "selected_item_name": "Open Cell SPF",
+                    "area_sqft": 2400,
+                    "thickness_inches": 5.25,
+                    "yield_or_coverage": 4400,
+                    "estimated_units": 2863.6364,
+                    "job_id": "I2",
+                },
                 {"template_type": "insulation", "template_bucket": "labor_foam"},
             ]
         ),
@@ -104,6 +124,7 @@ def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
         assert "pricing_candidates_by_bucket" in messages[1]["content"]
         assert "product_guidance_digest" in messages[1]["content"]
         assert "companion_relationships" in messages[1]["content"]
+        assert "foam_yield_history_digest" in messages[1]["content"]
         assert "yield_or_coverage" in messages[1]["content"]
         return {
             "assistant_message": "Drafted the insulation estimate.",
@@ -139,6 +160,48 @@ def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
     assert result.confidence == 0.82
     assert result.scope_overrides["estimated_sqft"] == 2226
     assert result.workbook_decision_preferences[0]["template_bucket"] == "foam"
+
+
+def test_estimator_chat_context_includes_thickness_matched_foam_yield_digest() -> None:
+    data = EstimatorData(
+        template_rows=pd.DataFrame(
+            [
+                {
+                    "template_type": "insulation",
+                    "template_bucket": "foam",
+                    "line_item_kind": "material",
+                    "selected_item_name": "Gaco 0.5 lb.",
+                    "area_sqft": 2200,
+                    "thickness_inches": 5.5,
+                    "yield_or_coverage": 4500,
+                    "estimated_units": 2688.8889,
+                    "job_id": "I1",
+                },
+                {
+                    "template_type": "insulation",
+                    "template_bucket": "foam",
+                    "line_item_kind": "material",
+                    "selected_item_name": "Gaco 2.0 lb.",
+                    "area_sqft": 2200,
+                    "thickness_inches": 2,
+                    "yield_or_coverage": 2600,
+                    "estimated_units": 1692.3077,
+                    "job_id": "I2",
+                },
+            ]
+        )
+    )
+
+    context = estimator_context_summary(
+        data,
+        scope={"template_type": "insulation", "foam_type": "open_cell", "foam_thickness_inches": 5.53},
+    )
+
+    digest = context["foam_yield_history_digest"]
+    assert digest
+    assert digest[0]["foam_type"] == "open_cell"
+    assert digest[0]["thickness_band"] == "4-6"
+    assert digest[0]["median_yield_or_coverage"] == 4500
 
 
 def test_estimator_chat_decision_menu_uses_template_catalog_metadata() -> None:

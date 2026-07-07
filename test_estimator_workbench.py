@@ -1736,6 +1736,62 @@ def test_insulation_foam_rolls_up_r_value_thickness_and_template_yield() -> None
     assert recalculated_foam["pricing_evidence_summary"]
 
 
+def test_insulation_foam_uses_thickness_matched_yield_history_before_template_default() -> None:
+    recommendation = insulation_recommendation()
+    recommendation.parsed_fields.update(
+        {
+            "notes": "Spray outside walls and ceiling with open-cell foam at R-21.",
+            "net_insulation_area_sqft": 2226,
+            "estimated_sqft": 2226,
+            "foam_type": "open_cell",
+            "foam_thickness_inches": 5.5,
+        }
+    )
+    data = EstimatorData(
+        template_rows=pd.DataFrame(
+            [
+                {
+                    "template_row_id": "hist-open-yield-1",
+                    "job_id": "I1",
+                    "template_type": "insulation",
+                    "row_number": 19,
+                    "template_bucket": "foam",
+                    "line_item_kind": "material",
+                    "selected_item_name": "Gaco 0.5 lb.",
+                    "area_sqft": 2200,
+                    "thickness_inches": 5.5,
+                    "yield_or_coverage": 4500,
+                    "estimated_units": 2688.8889,
+                    "unit_price": 1.9,
+                },
+                {
+                    "template_row_id": "hist-closed-yield-1",
+                    "job_id": "I2",
+                    "template_type": "insulation",
+                    "row_number": 21,
+                    "template_bucket": "foam",
+                    "line_item_kind": "material",
+                    "selected_item_name": "Gaco 2.0 lb.",
+                    "area_sqft": 2200,
+                    "thickness_inches": 2,
+                    "yield_or_coverage": 2600,
+                    "estimated_units": 1692.3077,
+                    "unit_price": 2.25,
+                },
+            ]
+        )
+    )
+
+    workbench = build_estimating_workbench(recommendation, data)
+    foam = workbench["insulation_foam_template_decisions"][0]
+
+    assert foam["resolved_template_option"] == "Gaco 0.5 lb."
+    assert foam["yield_or_coverage"] == 4500
+    assert foam["yield_or_coverage_source"] == "historical_yield_by_scope"
+    assert foam["yield_history_evidence_count"] == 1
+    assert foam["estimated_units"] == 2720.666667
+
+
 def test_insulation_foam_recalc_treats_persisted_zero_thickness_and_yield_as_missing() -> None:
     recommendation = insulation_recommendation()
     recommendation.parsed_fields.update(
