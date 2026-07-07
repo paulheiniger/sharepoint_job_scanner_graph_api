@@ -197,6 +197,7 @@ INSULATION_DECISION_SECTION_KEYS = (
     "insulation_thermal_barrier_template_decisions",
     "insulation_support_material_template_decisions",
     "insulation_equipment_logistics_template_decisions",
+    "insulation_logistics_expense_template_decisions",
     "insulation_compliance_template_decisions",
     "insulation_labor_template_decisions",
     "insulation_pricing_template_decisions",
@@ -320,12 +321,16 @@ INSULATION_EQUIPMENT_LOGISTICS_DECISION_SPECS: list[dict[str, Any]] = [
         "formula": "travel",
     },
     {"decision_id": "insulation_truck_expense", "template_bucket": "truck_expense", "label": "Truck Expense", "workbook_row": "70", "formula": "travel"},
+]
+
+INSULATION_LOGISTICS_EXPENSE_DECISION_SPECS: list[dict[str, Any]] = [
     {
         "decision_id": "insulation_labor_loading",
         "template_bucket": "labor_loading",
         "label": "Loading",
         "workbook_row": "95",
         "formula": "hours_people_rate_trip_count",
+        "default_include": True,
         "notes": "Loading is an expense-style row: hours/day x people/rate basis x trip count.",
     },
     {
@@ -334,6 +339,7 @@ INSULATION_EQUIPMENT_LOGISTICS_DECISION_SPECS: list[dict[str, Any]] = [
         "label": "Traveling",
         "workbook_row": "97",
         "formula": "hours_people_rate_trip_count",
+        "default_include": True,
         "notes": "Traveling is an expense-style row: hours x people x rate x trip count.",
     },
     {
@@ -5425,7 +5431,7 @@ def _build_insulation_decision_rows(
         existing = existing_index.get(str(spec.get("workbook_row"))) or existing_index.get(str(spec.get("template_bucket"))) or existing_index.get(str(spec.get("decision_id"))) or {}
         bucket = str(spec.get("template_bucket") or "")
         workbook_row = str(spec.get("workbook_row") or "")
-        include_default = bool(source.get("include"))
+        include_default = bool(source.get("include")) or bool(spec.get("default_include"))
         auto_include = include_default
         trigger_terms = _package_aliases(bucket)
         if any(term and term in notes_text for term in trigger_terms):
@@ -10805,6 +10811,7 @@ def build_estimating_workbench(
     insulation_thermal_barrier_template_decisions = []
     insulation_support_material_template_decisions = []
     insulation_equipment_logistics_template_decisions = []
+    insulation_logistics_expense_template_decisions = []
     insulation_compliance_template_decisions = []
     insulation_labor_template_decisions = []
     insulation_pricing_template_decisions = []
@@ -10854,6 +10861,13 @@ def build_estimating_workbench(
             data=data,
             dependencies=insulation_dependencies,
         )
+        insulation_logistics_expense_template_decisions = _build_insulation_decision_rows(
+            section="insulation_logistics_expense_template_decisions",
+            specs=INSULATION_LOGISTICS_EXPENSE_DECISION_SPECS,
+            scope=scope,
+            data=data,
+            dependencies=insulation_dependencies,
+        )
         insulation_compliance_template_decisions = _build_insulation_decision_rows(
             section="insulation_compliance_template_decisions",
             specs=INSULATION_COMPLIANCE_DECISION_SPECS,
@@ -10875,6 +10889,7 @@ def build_estimating_workbench(
                 "insulation_thermal_barrier_template_decisions": insulation_thermal_barrier_template_decisions,
                 "insulation_support_material_template_decisions": insulation_support_material_template_decisions,
                 "insulation_equipment_logistics_template_decisions": insulation_equipment_logistics_template_decisions,
+                "insulation_logistics_expense_template_decisions": insulation_logistics_expense_template_decisions,
                 "insulation_compliance_template_decisions": insulation_compliance_template_decisions,
                 "insulation_labor_template_decisions": insulation_labor_template_decisions,
             },
@@ -10925,6 +10940,7 @@ def build_estimating_workbench(
         "insulation_thermal_barrier_template_decisions": insulation_thermal_barrier_template_decisions,
         "insulation_support_material_template_decisions": insulation_support_material_template_decisions,
         "insulation_equipment_logistics_template_decisions": insulation_equipment_logistics_template_decisions,
+        "insulation_logistics_expense_template_decisions": insulation_logistics_expense_template_decisions,
         "insulation_compliance_template_decisions": insulation_compliance_template_decisions,
         "insulation_labor_template_decisions": insulation_labor_template_decisions,
         "insulation_pricing_template_decisions": insulation_pricing_template_decisions,
@@ -10978,6 +10994,7 @@ def build_estimating_workbench(
         "insulation_thermal_barrier_template_decisions": insulation_thermal_barrier_template_decisions,
         "insulation_support_material_template_decisions": insulation_support_material_template_decisions,
         "insulation_equipment_logistics_template_decisions": insulation_equipment_logistics_template_decisions,
+        "insulation_logistics_expense_template_decisions": insulation_logistics_expense_template_decisions,
         "insulation_compliance_template_decisions": insulation_compliance_template_decisions,
         "insulation_labor_template_decisions": insulation_labor_template_decisions,
         "insulation_pricing_template_decisions": insulation_pricing_template_decisions,
@@ -11211,6 +11228,13 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
             existing_rows=updated.get("insulation_equipment_logistics_template_decisions") or None,
             dependencies=insulation_dependencies,
         )
+        updated["insulation_logistics_expense_template_decisions"] = _build_insulation_decision_rows(
+            section="insulation_logistics_expense_template_decisions",
+            specs=INSULATION_LOGISTICS_EXPENSE_DECISION_SPECS,
+            scope=scope,
+            existing_rows=updated.get("insulation_logistics_expense_template_decisions") or None,
+            dependencies=insulation_dependencies,
+        )
         updated["insulation_compliance_template_decisions"] = _build_insulation_decision_rows(
             section="insulation_compliance_template_decisions",
             specs=INSULATION_COMPLIANCE_DECISION_SPECS,
@@ -11230,6 +11254,7 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
                 "insulation_thermal_barrier_template_decisions": updated.get("insulation_thermal_barrier_template_decisions") or [],
                 "insulation_support_material_template_decisions": updated.get("insulation_support_material_template_decisions") or [],
                 "insulation_equipment_logistics_template_decisions": updated.get("insulation_equipment_logistics_template_decisions") or [],
+                "insulation_logistics_expense_template_decisions": updated.get("insulation_logistics_expense_template_decisions") or [],
                 "insulation_compliance_template_decisions": updated.get("insulation_compliance_template_decisions") or [],
                 "insulation_labor_template_decisions": updated.get("insulation_labor_template_decisions") or [],
             },
@@ -11299,6 +11324,7 @@ def apply_historical_filter_update(previous_workbench: dict[str, Any] | None, fi
         "insulation_thermal_barrier_template_decisions",
         "insulation_support_material_template_decisions",
         "insulation_equipment_logistics_template_decisions",
+        "insulation_logistics_expense_template_decisions",
         "insulation_compliance_template_decisions",
         "insulation_labor_template_decisions",
         "insulation_pricing_template_decisions",
@@ -11428,6 +11454,7 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any]) -> dict[str, A
             "insulation_thermal_barrier_template_decisions",
             "insulation_support_material_template_decisions",
             "insulation_equipment_logistics_template_decisions",
+            "insulation_logistics_expense_template_decisions",
             "insulation_compliance_template_decisions",
             "insulation_pricing_template_decisions",
         )
@@ -11973,7 +12000,10 @@ INSULATION_MATERIAL_TOTAL_DECISION_SECTIONS = (
     "insulation_pricing_template_decisions",
 )
 
-INSULATION_ADDER_TOTAL_DECISION_SECTIONS = ("insulation_equipment_logistics_template_decisions",)
+INSULATION_ADDER_TOTAL_DECISION_SECTIONS = (
+    "insulation_equipment_logistics_template_decisions",
+    "insulation_logistics_expense_template_decisions",
+)
 
 INSULATION_LABOR_TOTAL_DECISION_SECTIONS = ("insulation_labor_template_decisions",)
 

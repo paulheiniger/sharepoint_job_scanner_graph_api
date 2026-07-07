@@ -822,8 +822,16 @@ def test_insulation_workbench_uses_decision_sections_only() -> None:
     assert {"labor_set_up", "labor_foam", "labor_clean_up"}.issubset(included_labor)
     assert "labor_loading" not in included_labor
     assert "labor_traveling" not in included_labor
-    logistics_buckets = {row["template_bucket"] for row in workbench["insulation_equipment_logistics_template_decisions"]}
-    assert {"labor_loading", "labor_traveling", "infrared_scan", "meals_lodging"}.issubset(logistics_buckets)
+    equipment_buckets = {row["template_bucket"] for row in workbench["insulation_equipment_logistics_template_decisions"]}
+    assert not {"labor_loading", "labor_traveling", "infrared_scan", "meals_lodging"}.intersection(equipment_buckets)
+    logistics_expense_rows = {
+        row["template_bucket"]: row for row in workbench["insulation_logistics_expense_template_decisions"]
+    }
+    assert {"labor_loading", "labor_traveling", "infrared_scan", "meals_lodging"}.issubset(logistics_expense_rows)
+    assert logistics_expense_rows["labor_loading"]["include"] is True
+    assert logistics_expense_rows["labor_traveling"]["include"] is True
+    assert logistics_expense_rows["infrared_scan"]["include"] is False
+    assert logistics_expense_rows["meals_lodging"]["include"] is False
 
     draft = workbench_to_draft_workbook_inputs(workbench)
     assert set(draft) == {"template_type", "header", "pricing", "workbook_decisions"}
@@ -831,6 +839,7 @@ def test_insulation_workbench_uses_decision_sections_only() -> None:
     assert "material_rows" not in draft
     assert "labor_rows" not in draft
     assert any(row["row_type"] == "material" and row["template_bucket"] == "foam" for row in draft["workbook_decisions"])
+    assert any(row["row_type"] == "material" and row["template_bucket"] == "labor_loading" for row in draft["workbook_decisions"])
     assert any(row["row_type"] == "labor" and row["template_bucket"] == "labor_foam" for row in draft["workbook_decisions"])
 
 
@@ -2021,7 +2030,7 @@ def test_insulation_loading_travel_scan_and_lodging_are_logistics_expense_rows()
     workbench = build_estimating_workbench(recommendation, data)
     logistics = {
         row["template_bucket"]: row
-        for row in workbench["insulation_equipment_logistics_template_decisions"]
+        for row in workbench["insulation_logistics_expense_template_decisions"]
     }
 
     assert "labor_loading" not in {row["template_bucket"] for row in workbench["insulation_labor_template_decisions"]}
@@ -2049,7 +2058,7 @@ def test_insulation_travel_note_does_not_check_truck_expense_without_mileage_bas
     )
     traveling = next(
         row
-        for row in workbench["insulation_equipment_logistics_template_decisions"]
+        for row in workbench["insulation_logistics_expense_template_decisions"]
         if row["template_bucket"] == "labor_traveling"
     )
 

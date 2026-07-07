@@ -161,6 +161,13 @@ def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
     assert result.scope_overrides["estimated_sqft"] == 2226
     assert result.workbook_decision_preferences[0]["template_bucket"] == "foam"
 
+    context = json.loads(calls[0][0][1]["content"])["estimator_context"]
+    loading = next(row for row in context["decision_menu"] if row["template_bucket"] == "labor_loading")
+    traveling = next(row for row in context["decision_menu"] if row["template_bucket"] == "labor_traveling")
+    assert loading["section"] == "insulation_logistics_expense_template_decisions"
+    assert traveling["section"] == "insulation_logistics_expense_template_decisions"
+    assert "hours_per_day" in loading["editable_fields"]
+
 
 def test_estimator_chat_context_includes_thickness_matched_foam_yield_digest() -> None:
     data = EstimatorData(

@@ -159,6 +159,8 @@ WORKBENCH_MATERIAL_SECTIONS = (
     "insulation_thermal_barrier_template_decisions",
     "insulation_support_material_template_decisions",
     "insulation_equipment_logistics_template_decisions",
+    "insulation_logistics_expense_template_decisions",
+    "insulation_compliance_template_decisions",
 )
 
 REFERENCE_PROJECT_OVERRIDE_FIELDS = {
@@ -1408,8 +1410,10 @@ def _insulation_scope_proposals(scope: dict[str, Any], notes: str) -> list[Decis
         ("insulation_lift_equipment_row_47", "lift", "47", "insulation_equipment_logistics_template_decisions", ["lift", "access", "equipment"]),
         ("insulation_truck_expense_row_70", "truck_expense", "70", "insulation_equipment_logistics_template_decisions", ["truck", "truck expense", "miles", "mileage", "round trip"]),
         ("insulation_labor_mask_row_80", "labor_mask", "80", "insulation_labor_template_decisions", ["masking", "mask"]),
-        ("insulation_labor_loading_row_95", "labor_loading", "95", "insulation_labor_template_decisions", ["loading", "setup", "set up"]),
-        ("insulation_labor_traveling_row_97", "labor_traveling", "97", "insulation_labor_template_decisions", ["travel"]),
+        ("insulation_labor_loading_row_95", "labor_loading", "95", "insulation_logistics_expense_template_decisions", ["loading", "setup", "set up"]),
+        ("insulation_labor_traveling_row_97", "labor_traveling", "97", "insulation_logistics_expense_template_decisions", ["travel"]),
+        ("insulation_infrared_scan_row_99", "infrared_scan", "99", "insulation_logistics_expense_template_decisions", ["infrared", "ir scan", "thermal scan"]),
+        ("insulation_meals_lodging_row_100", "meals_lodging", "100", "insulation_logistics_expense_template_decisions", ["meals", "lodging", "hotel"]),
     ):
         if any(term in text for term in terms):
             proposals.append(_proposal(template_type, section, decision_id, bucket, row, include=True, confidence=0.7, note=_snippet(notes, terms)))

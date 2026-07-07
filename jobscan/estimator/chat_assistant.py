@@ -136,12 +136,39 @@ CHAT_DECISION_MENU: dict[str, list[dict[str, Any]]] = {
         },
         {
             "decision_id": "insulation_labor_loading",
-            "section": "insulation_labor_template_decisions",
+            "section": "insulation_logistics_expense_template_decisions",
             "template_bucket": "labor_loading",
-            "workbook_row": "82",
-            "label": "Loading/setup labor",
-            "editable_fields": ["include", "total_hours", "days", "crew_size", "hourly_rate", "daily_rate"],
-            "formula_requirements": ["total_hours and hourly_rate", "or days and daily_rate"],
+            "workbook_row": "95",
+            "label": "Loading",
+            "editable_fields": ["include", "hours_per_day", "people_count", "trip_count", "unit_price"],
+            "formula_requirements": ["hours_per_day", "people_count", "unit_price", "optional trip_count"],
+        },
+        {
+            "decision_id": "insulation_labor_traveling",
+            "section": "insulation_logistics_expense_template_decisions",
+            "template_bucket": "labor_traveling",
+            "workbook_row": "97",
+            "label": "Traveling",
+            "editable_fields": ["include", "hours_per_day", "people_count", "trip_count", "unit_price"],
+            "formula_requirements": ["hours_per_day", "people_count", "unit_price", "optional trip_count"],
+        },
+        {
+            "decision_id": "insulation_infrared_scan",
+            "section": "insulation_logistics_expense_template_decisions",
+            "template_bucket": "infrared_scan",
+            "workbook_row": "99",
+            "label": "Infrared Scan",
+            "editable_fields": ["include", "hours_per_day", "unit_price"],
+            "formula_requirements": ["hours_per_day", "unit_price"],
+        },
+        {
+            "decision_id": "insulation_meals_lodging",
+            "section": "insulation_logistics_expense_template_decisions",
+            "template_bucket": "meals_lodging",
+            "workbook_row": "100",
+            "label": "Meals / Lodging",
+            "editable_fields": ["include", "days", "people_count", "unit_price"],
+            "formula_requirements": ["days", "people_count", "unit_price"],
         },
         {
             "decision_id": "pricing_overhead",
@@ -560,6 +587,8 @@ def _section_for_template_row(template_type: str, line_item_kind: str, bucket: s
     if bucket_key in {"overhead", "profit"} or line_item_kind == "pricing":
         return "pricing_markup_decisions"
     if template_type == "insulation":
+        if bucket_key in {"labor_loading", "labor_traveling", "infrared_scan", "meals_lodging", "labor_meals_lodging"}:
+            return "insulation_logistics_expense_template_decisions"
         if line_item_kind == "labor":
             return "insulation_labor_template_decisions"
         if "thermal" in bucket_key:
@@ -1107,7 +1136,10 @@ def _chat_prompt_messages(
         "workbook_decision_preferences should be a list of decisions with decision_id, template_bucket, include, proposed_values, "
         "evidence, confidence, and review_required. Include section and workbook_row when known. "
         "Use proposed_values for editable workbook fields such as basis_sqft, thickness_inches, gal_per_100_sqft, unit_price, "
-        "estimated_units, linear_ft, days, crew_size, daily_rate, hourly_rate, total_hours, editable_total_hours, and formula_mode. "
+        "estimated_units, linear_ft, days, hours_per_day, people_count, trip_count, crew_size, daily_rate, hourly_rate, "
+        "total_hours, editable_total_hours, and formula_mode. "
+        "For insulation jobs, include Loading and Traveling as normal checked logistics expense decisions unless evidence says otherwise; "
+        "fill hours_per_day, people_count, trip_count, and unit_price from history or reasonable reviewed assumptions. "
         "For insulation foam yield_or_coverage, prefer foam_yield_history_digest entries matching foam type, product/template option, "
         "and thickness band; include that evidence and set review_required when the historical range is wide or evidence is thin. "
         "You may do takeoff math from explicit dimensions and deductions. Do not invent hidden warranty years, exact proprietary products, "
