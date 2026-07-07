@@ -4,6 +4,7 @@ import importlib
 import inspect
 
 import pandas as pd
+import pytest
 
 from jobscan.repair_estimator.vsimple_loader import RepairTables
 
@@ -239,6 +240,18 @@ def test_estimator_page_exposes_optional_row_option_editor() -> None:
     assert "render_decision_row_option_editor" in source
 
 
+def test_estimator_chat_panel_supports_multi_turn_replies() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    source = inspect.getsource(app.render_estimator_chat_draft_panel)
+
+    assert "st.chat_input" in source
+    assert "estimator_chat_history_" in source
+    assert "existing_scope=existing_scope" in source
+    assert "estimator_chat_assistant_history_content" in source
+    assert "Start a new estimate chat" in source
+
+
 def test_estimator_workbench_uses_compact_columns_by_default() -> None:
     app = importlib.import_module("dashboard.app")
 
@@ -304,6 +317,38 @@ def test_project_display_frame_removes_hidden_compact_columns() -> None:
     assert list(projected.columns) == ["include", "workbook_row", "labor_task", "total_hours", "labor_driver_summary"]
     assert "gal_per_100_sqft" not in projected.columns
     assert "feet_per_unit" not in projected.columns
+
+
+def test_display_safe_dataframe_handles_mixed_proposed_values_for_streamlit() -> None:
+    app = importlib.import_module("dashboard.app")
+    pa = pytest.importorskip("pyarrow")
+
+    frame = app.display_safe_dataframe(
+        [
+            {
+                "decision_id": "foam_type",
+                "proposed_values": 2,
+                "proposal_confidence": 0.8,
+            },
+            {
+                "decision_id": "foam_system",
+                "proposed_values": "Closed-cell spray foam",
+                "proposal_confidence": 0.7,
+            },
+            {
+                "decision_id": "scope",
+                "proposed_values": {"surface": "walls", "area_sqft": 1200},
+                "proposal_confidence": 0.9,
+            },
+        ]
+    )
+
+    assert frame["proposed_values"].tolist() == [
+        "2",
+        "Closed-cell spray foam",
+        '{"area_sqft": 1200, "surface": "walls"}',
+    ]
+    pa.Table.from_pandas(frame)
 
 
 def test_auto_detect_classifies_pipe_boot_leak_as_repair() -> None:

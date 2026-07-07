@@ -45,12 +45,25 @@ def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
             ]
         ),
         pricing=pd.DataFrame([{"item_name": "Open Cell SPF"}]),
+        estimator_decision_recommendations=pd.DataFrame(
+            [
+                {
+                    "template_type": "insulation",
+                    "template_bucket": "foam",
+                    "decision_id": "insulation_foam_system",
+                    "decision_value": "open_cell",
+                    "evidence_count": 14,
+                    "confidence": "high",
+                }
+            ]
+        ),
     )
     calls = []
 
     def provider(messages, model):
         calls.append((messages, model))
         assert "common_template_buckets" in messages[1]["content"]
+        assert "decision_recommendation_examples" in messages[1]["content"]
         return {
             "assistant_message": "Drafted the insulation estimate.",
             "estimator_notes": "30x40 metal building, open-cell foam, 2226 sq ft.",
@@ -85,3 +98,52 @@ def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
     assert result.confidence == 0.82
     assert result.scope_overrides["estimated_sqft"] == 2226
     assert result.workbook_decision_preferences[0]["template_bucket"] == "foam"
+
+
+def test_estimator_chat_sends_multi_turn_history_and_existing_scope_to_provider() -> None:
+    calls = []
+
+    def provider(messages, model):
+        calls.append((messages, model))
+        payload = messages[1]["content"]
+        assert "Confirm target R-value" in payload
+        assert "closed cell at R-21" in payload
+        assert '"existing_scope"' in payload
+        assert '"foam_type": "open_cell"' in payload
+        return {
+            "assistant_message": "Updated the foam selection and marked thickness for review.",
+            "estimator_notes": "Use closed cell at R-21; thickness should be verified by product R-value.",
+            "scope_overrides": {
+                "template_type": "insulation",
+                "foam_type": "closed_cell",
+                "target_r_value": 21,
+            },
+            "workbook_decision_preferences": [
+                {
+                    "decision_id": "insulation_foam_system",
+                    "template_bucket": "foam",
+                    "include": True,
+                    "proposed_values": {"foam_type": "closed_cell", "target_r_value": 21},
+                    "confidence": 0.74,
+                    "review_required": True,
+                }
+            ],
+            "missing_questions": ["Confirm thermal barrier requirements."],
+            "confidence": 0.74,
+        }
+
+    result = run_estimator_chat_turn(
+        [
+            {"role": "user", "content": "30x40 metal building, outside walls and ceiling."},
+            {"role": "assistant", "content": "Questions to confirm:\n- Confirm target R-value or foam thickness."},
+            {"role": "user", "content": "closed cell at R-21"},
+        ],
+        template_type_hint="insulation",
+        existing_scope={"template_type": "insulation", "foam_type": "open_cell"},
+        provider=provider,
+        model="test-model",
+    )
+
+    assert calls
+    assert result.scope_overrides["foam_type"] == "closed_cell"
+    assert result.workbook_decision_preferences[0]["review_required"] is True

@@ -103,6 +103,23 @@ def estimator_context_summary(data: EstimatorData | None) -> dict[str, Any]:
             for column in name_columns:
                 names.extend(str(value).strip() for value in data.pricing[column].dropna().head(20) if str(value).strip())
             summary["pricing_name_examples"] = list(dict.fromkeys(names))[:20]
+    if isinstance(data.estimator_decision_recommendations, pd.DataFrame) and not data.estimator_decision_recommendations.empty:
+        summary["decision_recommendation_examples"] = _context_records(
+            data.estimator_decision_recommendations,
+            [
+                "template_type",
+                "template_bucket",
+                "decision_id",
+                "decision_value",
+                "resolved_item_name",
+                "selector_code",
+                "evidence_count",
+                "source_jobs",
+                "confidence",
+                "history_table",
+            ],
+            limit=25,
+        )
     return summary
 
 
@@ -221,6 +238,9 @@ def _chat_prompt_messages(
         "You are a senior Spray-Tec estimator working inside an estimating assistant. "
         "Use the conversation, historical/template context, and product/pricing context to produce an estimator-ready draft. "
         "Think like an estimator: extract takeoff, infer likely template decisions, explain assumptions, and ask only material missing questions. "
+        "When historical/template context supports a normal choice, make the best reviewed guess instead of leaving the decision blank; "
+        "set review_required true, lower confidence, and explain the evidence if the prompt did not explicitly confirm it. "
+        "Ask questions only when the answer materially changes scope, safety/code compliance, system selection, warranty eligibility, or price. "
         "Return strict JSON only with keys: assistant_message, estimator_notes, scope_overrides, workbook_decision_preferences, "
         "missing_questions, assumptions, warnings, confidence. "
         "scope_overrides should use workbook-facing field names such as template_type, division, project_type, foam_type, "
@@ -328,6 +348,16 @@ def _bounded_confidence(value: Any) -> float:
 
 def _frame_len(frame: Any) -> int:
     return int(len(frame)) if isinstance(frame, pd.DataFrame) else 0
+
+
+def _context_records(frame: pd.DataFrame, preferred_columns: list[str], *, limit: int) -> list[dict[str, Any]]:
+    columns = [column for column in preferred_columns if column in frame.columns]
+    if not columns:
+        columns = list(frame.columns[:8])
+    if not columns:
+        return []
+    rows = frame[columns].head(limit).fillna("").to_dict(orient="records")
+    return [{str(key): value for key, value in row.items() if value not in ("", None, [], {})} for row in rows]
 
 
 def _parse_footprint(text: str) -> tuple[float | None, float | None]:

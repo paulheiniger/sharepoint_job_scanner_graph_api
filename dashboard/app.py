@@ -4576,6 +4576,40 @@ def display_safe_records(records: list[dict[str, Any]], *, editable_fields: set[
     return rows
 
 
+def display_safe_dataframe(records: list[dict[str, Any]]) -> pd.DataFrame:
+    """Build a read-only Streamlit dataframe without mixed Arrow object columns."""
+
+    df = pd.DataFrame(display_safe_records(records))
+    for column in df.columns:
+        if df[column].dtype != "object":
+            continue
+        df[column] = df[column].map(lambda value: "" if value is None else str(value))
+    return df
+
+
+def estimator_chat_assistant_history_content(result: Any) -> str:
+    payload = result.to_dict() if hasattr(result, "to_dict") else result
+    if not isinstance(payload, dict):
+        return ""
+    lines = [str(payload.get("assistant_message") or "I drafted a first pass from the project information.")]
+    questions = payload.get("missing_questions") or []
+    if questions:
+        lines.append("")
+        lines.append("Questions to confirm:")
+        lines.extend(f"- {question}" for question in questions)
+    assumptions = payload.get("assumptions") or []
+    if assumptions:
+        lines.append("")
+        lines.append("Assumptions:")
+        lines.extend(f"- {assumption}" for assumption in assumptions)
+    warnings = payload.get("warnings") or []
+    if warnings:
+        lines.append("")
+        lines.append("Review flags:")
+        lines.extend(f"- {warning}" for warning in warnings)
+    return "\n".join(lines)
+
+
 def unique_columns(columns: Iterable[str]) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
@@ -4853,70 +4887,74 @@ def render_estimator_chat_draft_panel(
     estimate_type: str,
     data: EstimatorData,
 ) -> dict[str, Any] | None:
-    chat_key_source = f"{estimate_type}|{notes}|{current_estimator_session_id() or 'draft'}"
-    chat_key = hashlib.sha1(chat_key_source.encode("utf-8")).hexdigest()[:16]
+    thread_id = st.session_state.get("estimator_chat_thread_id")
+    if not thread_id:
+        thread_id = hashlib.sha1(os.urandom(16)).hexdigest()[:16]
+        st.session_state["estimator_chat_thread_id"] = thread_id
+    chat_key = str(thread_id)
     history_key = f"estimator_chat_history_{chat_key}"
-    chat_history = st.session_state.get(history_key) or []
-    for message in chat_history[-8:]:
-        role = str(message.get("role") or "assistant")
-        with st.chat_message("user" if role == "user" else "assistant"):
-            st.write(str(message.get("content") or ""))
+    result_key = f"estimator_chat_result_{chat_key}"
+    if st.button("Start a new estimate chat", key=f"estimator_chat_reset_{chat_key}"):
+        st.session_state.pop(history_key, None)
+        st.session_state.pop(result_key, None)
+        st.session_state.pop("estimator_notes", None)
+        st.session_state["estimator_chat_thread_id"] = hashlib.sha1(os.urandom(16)).hexdigest()[:16]
+        st.rerun()
+
+    chat_history = [dict(message) for message in (st.session_state.get(history_key) or [])]
     prompt_placeholder = (
-        "Paste an email, field notes, measurements, or a question. Example: "
+        "Paste field notes, measurements, photos summary, or answer the questions above. Example: "
         "30x40 metal building, 9 ft walls, outside walls and ceiling, two 9x9 doors, "
         "two walk doors, five windows, wants open-cell foam this fall."
     )
-    prompt = st.text_area(
-        "Describe the project and what you want estimated",
-        height=170,
-        placeholder=prompt_placeholder,
-        key="estimator_notes",
+    prompt = st.chat_input(
+        prompt_placeholder,
+        key=f"estimator_chat_input_{chat_key}",
     )
-    c1, c2 = st.columns([1, 3])
-    run_chat = c1.button(
-        "Draft Estimate",
-        key=f"estimator_chat_run_{chat_key}",
-        help="Drafts parsed scope, estimator questions, and workbook-facing decisions.",
-    )
-    use_chat_draft = c2.checkbox(
+    pending_message = str(st.session_state.pop("estimator_chat_pending_message", "") or "").strip()
+    user_message = pending_message or str(prompt or "").strip()
+    use_chat_draft = st.checkbox(
         "Use this draft when building the workbook",
         value=True,
         key=f"estimator_chat_use_{chat_key}",
     )
-    if run_chat:
+    if user_message:
         messages = [dict(message) for message in chat_history]
-        messages.append({"role": "user", "content": prompt or notes})
+        messages.append({"role": "user", "content": user_message})
+        previous_result = st.session_state.get(result_key)
+        existing_scope = (
+            previous_result.get("scope_overrides")
+            if isinstance(previous_result, dict) and isinstance(previous_result.get("scope_overrides"), dict)
+            else {}
+        )
         with st.spinner("Drafting estimate intake..."):
             result = run_estimator_chat_turn(
                 messages,
                 data=data,
                 template_type_hint=estimate_type,
-        )
-        messages.append({"role": "assistant", "content": result.assistant_message})
+                existing_scope=existing_scope,
+            )
+        messages.append({"role": "assistant", "content": estimator_chat_assistant_history_content(result)})
         st.session_state[history_key] = messages
-        st.session_state[f"estimator_chat_result_{chat_key}"] = result.to_dict()
+        result_payload = result.to_dict()
+        st.session_state[result_key] = result_payload
+        st.session_state["estimator_notes"] = result.estimator_notes or user_message
+        chat_history = messages
 
-    result_payload = st.session_state.get(f"estimator_chat_result_{chat_key}")
+    result_payload = st.session_state.get(result_key)
     if not result_payload:
+        if not chat_history:
+            st.caption("Paste field notes or answer follow-up questions in the message box.")
         return None
     result = result_payload if isinstance(result_payload, dict) else {}
+    if not chat_history and result:
+        chat_history = [{"role": "assistant", "content": estimator_chat_assistant_history_content(result)}]
+    for message in chat_history[-10:]:
+        role = str(message.get("role") or "assistant")
+        with st.chat_message("user" if role == "user" else "assistant"):
+            st.write(str(message.get("content") or ""))
     source = str(result.get("source") or "")
     confidence = float(result.get("confidence") or 0)
-    with st.chat_message("assistant"):
-        if result.get("assistant_message"):
-            st.write(str(result.get("assistant_message")))
-        else:
-            st.write("I drafted a first pass from the project information.")
-        missing_questions = result.get("missing_questions") or []
-        if missing_questions:
-            st.markdown("**Questions to confirm**")
-            for question in missing_questions:
-                st.write(f"- {question}")
-        warnings = result.get("warnings") or []
-        if warnings:
-            st.markdown("**Review flags**")
-            for warning in warnings:
-                st.write(f"- {warning}")
     metric_row(
         [
             ("Confidence", f"{confidence:.2f}"),
@@ -4928,7 +4966,7 @@ def render_estimator_chat_draft_panel(
     scope_overrides = result.get("scope_overrides") if isinstance(result.get("scope_overrides"), dict) else {}
     if scope_overrides:
         with st.expander("Parsed scope and workbook inputs", expanded=False):
-            st.dataframe(pd.DataFrame([scope_overrides]), use_container_width=True, hide_index=True)
+            st.dataframe(display_safe_dataframe([scope_overrides]), use_container_width=True, hide_index=True)
             if result.get("estimator_notes"):
                 st.text_area(
                     "Generated estimator notes",
@@ -4939,7 +4977,7 @@ def render_estimator_chat_draft_panel(
     decision_preferences = result.get("workbook_decision_preferences") or []
     if decision_preferences:
         with st.expander("Workbook decision cues", expanded=False):
-            st.dataframe(pd.DataFrame(decision_preferences), use_container_width=True, hide_index=True)
+            st.dataframe(display_safe_dataframe(decision_preferences), use_container_width=True, hide_index=True)
     return result if use_chat_draft else None
 
 
@@ -5387,6 +5425,7 @@ def estimator_prototype_page() -> None:
         for column, (label, sample) in zip(sample_cols, ESTIMATOR_SAMPLE_NOTES.items()):
             if column.button(label, key=f"estimator_sample_{label}"):
                 st.session_state["estimator_notes"] = sample
+                st.session_state["estimator_chat_pending_message"] = sample
         st.write("Files used:", data.source_files_used or [])
         if data.warnings:
             st.warning("\n".join(data.warnings))
