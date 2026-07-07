@@ -2068,6 +2068,49 @@ def test_insulation_travel_note_does_not_check_truck_expense_without_mileage_bas
     assert truck["estimated_cost"] == 0
 
 
+def test_insulation_loading_travel_default_include_recovers_from_stale_auto_uncheck() -> None:
+    workbench = build_estimating_workbench(insulation_recommendation(), EstimatorData())
+    loading = next(
+        row
+        for row in workbench["insulation_logistics_expense_template_decisions"]
+        if row["template_bucket"] == "labor_loading"
+    )
+    traveling = next(
+        row
+        for row in workbench["insulation_logistics_expense_template_decisions"]
+        if row["template_bucket"] == "labor_traveling"
+    )
+    loading["include"] = False
+    loading["formula_source"] = "not_included"
+    traveling["include"] = False
+    traveling["formula_source"] = "not_included"
+
+    recalculated = recalculate_workbench_tables(workbench)
+    rows = {row["template_bucket"]: row for row in recalculated["insulation_logistics_expense_template_decisions"]}
+
+    assert rows["labor_loading"]["include"] is True
+    assert rows["labor_traveling"]["include"] is True
+    assert rows["labor_loading"]["formula_source"] == "insufficient_formula_inputs"
+    assert rows["labor_traveling"]["formula_source"] == "insufficient_formula_inputs"
+
+
+def test_insulation_loading_travel_manual_uncheck_is_preserved() -> None:
+    workbench = build_estimating_workbench(insulation_recommendation(), EstimatorData())
+    for row in workbench["insulation_logistics_expense_template_decisions"]:
+        if row["template_bucket"] in {"labor_loading", "labor_traveling"}:
+            row["include"] = False
+            row["manual_override"] = True
+            row["include_source"] = "estimator_edit"
+
+    recalculated = recalculate_workbench_tables(workbench)
+    rows = {row["template_bucket"]: row for row in recalculated["insulation_logistics_expense_template_decisions"]}
+
+    assert rows["labor_loading"]["include"] is False
+    assert rows["labor_traveling"]["include"] is False
+    assert rows["labor_loading"]["manual_override"] is True
+    assert rows["labor_traveling"]["manual_override"] is True
+
+
 def test_insulation_stale_markup_proposal_unchecked_without_percentage_basis() -> None:
     recommendation = insulation_recommendation()
     recommendation.parsed_fields["notes"] = "Spray foam insulation. Deduct two overhead door openings."

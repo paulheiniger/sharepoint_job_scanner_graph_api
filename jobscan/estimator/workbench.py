@@ -5440,7 +5440,12 @@ def _build_insulation_decision_rows(
         if bucket in {"drum_disposal"} and any(safe_number(deps.get(key), 0.0) > 0 for key in ("foam_units", "thermal_gallons", "primer_units", "thinner_units")):
             include_default = True
             auto_include = True
-        if "include" in existing:
+        stale_default_uncheck = (
+            bool(spec.get("default_include"))
+            and existing.get("include") is False
+            and not _manual_include_locked(existing)
+        )
+        if "include" in existing and not stale_default_uncheck:
             include = bool(existing["include"])
         elif include_default and auto_include and bucket in auto_included_buckets:
             include = False
