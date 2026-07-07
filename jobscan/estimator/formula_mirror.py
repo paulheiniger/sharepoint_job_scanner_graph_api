@@ -541,6 +541,103 @@ def calculate_insulation_travel_cost(
     return result
 
 
+def calculate_insulation_hours_people_rate_cost(
+    *,
+    hours: Any,
+    people_count: Any,
+    unit_price: Any = None,
+    trip_count: Any = 1,
+    include: bool = True,
+) -> dict[str, Any]:
+    """Mirror insulation loading/travel labor-expense rows: hours * people * rate * trips."""
+
+    hour_count = safe_number(hours, 0.0)
+    people = safe_number(people_count, 0.0)
+    trips = safe_number(trip_count, 0.0) or 1.0
+    price = safe_number(unit_price, 0.0)
+    if include and hour_count > 0 and people > 0 and price > 0:
+        estimated_units = hour_count * people * trips
+        estimated_cost = estimated_units * price
+        formula_source = "hours_people_rate_trip_count"
+    else:
+        estimated_units = 0.0
+        estimated_cost = 0.0
+        formula_source = "insufficient_formula_inputs" if include else "not_included"
+    return {
+        "formula_model": "insulation_hours_people_rate_trip_count",
+        "formula_source": formula_source,
+        "hours_per_day": round(hour_count, 6),
+        "people_count": round(people, 6),
+        "trip_count": round(trips, 6),
+        "unit_price": round(price, 6) if price else 0.0,
+        "estimated_units": round(estimated_units, 6),
+        "estimated_cost": round(estimated_cost, 2),
+        "cost_source": "current_pricing" if estimated_cost > 0 else ("not_included" if not include else "current_pricing_missing"),
+        "calculated_output": round(estimated_cost, 2),
+    }
+
+
+def calculate_insulation_hours_rate_cost(
+    *,
+    hours: Any,
+    unit_price: Any = None,
+    include: bool = True,
+) -> dict[str, Any]:
+    """Mirror insulation hourly expense rows such as infrared scan: hours * rate."""
+
+    hour_count = safe_number(hours, 0.0)
+    price = safe_number(unit_price, 0.0)
+    if include and hour_count > 0 and price > 0:
+        estimated_cost = hour_count * price
+        formula_source = "hours_rate"
+    else:
+        estimated_cost = 0.0
+        formula_source = "insufficient_formula_inputs" if include else "not_included"
+    return {
+        "formula_model": "insulation_hours_rate_cost",
+        "formula_source": formula_source,
+        "hours_per_day": round(hour_count, 6),
+        "unit_price": round(price, 6) if price else 0.0,
+        "estimated_units": round(hour_count, 6) if estimated_cost > 0 else 0.0,
+        "estimated_cost": round(estimated_cost, 2),
+        "cost_source": "current_pricing" if estimated_cost > 0 else ("not_included" if not include else "current_pricing_missing"),
+        "calculated_output": round(estimated_cost, 2),
+    }
+
+
+def calculate_insulation_days_people_rate_cost(
+    *,
+    days: Any,
+    people_count: Any,
+    unit_price: Any = None,
+    include: bool = True,
+) -> dict[str, Any]:
+    """Mirror insulation meals/lodging expense rows: days * people * daily amount."""
+
+    day_count = safe_number(days, 0.0)
+    people = safe_number(people_count, 0.0)
+    price = safe_number(unit_price, 0.0)
+    if include and day_count > 0 and people > 0 and price > 0:
+        estimated_units = day_count * people
+        estimated_cost = estimated_units * price
+        formula_source = "days_people_rate"
+    else:
+        estimated_units = 0.0
+        estimated_cost = 0.0
+        formula_source = "insufficient_formula_inputs" if include else "not_included"
+    return {
+        "formula_model": "insulation_days_people_rate_cost",
+        "formula_source": formula_source,
+        "days": round(day_count, 6),
+        "people_count": round(people, 6),
+        "unit_price": round(price, 6) if price else 0.0,
+        "estimated_units": round(estimated_units, 6),
+        "estimated_cost": round(estimated_cost, 2),
+        "cost_source": "current_pricing" if estimated_cost > 0 else ("not_included" if not include else "current_pricing_missing"),
+        "calculated_output": round(estimated_cost, 2),
+    }
+
+
 def calculate_insulation_direct_cost(*, amount: Any, include: bool = True) -> dict[str, Any]:
     """Mirror direct insulation adders such as freight/misc/manual fees."""
 

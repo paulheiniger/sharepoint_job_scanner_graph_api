@@ -404,6 +404,139 @@ def test_workbench_prefers_approved_template_pricing_link_for_material_candidate
     assert "Approved mapping" in selected_candidate["why_suggested"]
 
 
+def test_open_cell_scope_does_not_select_closed_cell_template_pricing_link() -> None:
+    recommendation = insulation_recommendation()
+    recommendation.parsed_fields.update(
+        {
+            "foam_type": "open_cell",
+            "notes": "30x40 metal building with 9 ft walls. Use open cell foam at R21.",
+        }
+    )
+    data = EstimatorData(
+        template_product_options=pd.DataFrame(
+            [
+                {
+                    "template_product_option_id": "tpl_gaco_2",
+                    "template_type": "insulation",
+                    "template_bucket": "foam",
+                    "row_number": 21,
+                    "product_name": "Gaco 2.0 lb.",
+                    "unit": "unit",
+                    "unit_price": 0,
+                },
+                {
+                    "template_product_option_id": "tpl_gaco_half",
+                    "template_type": "insulation",
+                    "template_bucket": "foam",
+                    "row_number": 19,
+                    "product_name": "Gaco 0.5 lb.",
+                    "unit": "unit",
+                    "unit_price": 2.15,
+                },
+            ]
+        ),
+        template_pricing_option_links=pd.DataFrame(
+            [
+                {
+                    "link_id": "map_gaco_2_enverge",
+                    "template_product_option_id": "tpl_gaco_2",
+                    "pricing_candidate_key": "price_enverge",
+                    "template_type": "insulation",
+                    "template_bucket": "foam",
+                    "row_number": 21,
+                    "template_product_name": "Gaco 2.0 lb.",
+                    "canonical_template_option": "Enverge OnePass",
+                    "pricing_product_name": "Enverge Closed Cell OnePass",
+                    "confidence": 0.96,
+                    "reason": "Approved mapping from LLM review.",
+                    "review_status": "approved",
+                }
+            ]
+        ),
+        pricing_catalog=pd.DataFrame(
+            [
+                {
+                    "pricing_item_id": "price-current-enverge",
+                    "product_name": "Enverge Closed Cell OnePass",
+                    "product_name_normalized": "enverge closed cell onepass",
+                    "unit_price": 2.05,
+                    "is_current": True,
+                    "status": "active",
+                },
+                {
+                    "pricing_item_id": "price-open-cell",
+                    "product_name": "Gaco 0.5 lb. Open Cell",
+                    "product_name_normalized": "gaco 0.5 lb open cell",
+                    "unit_price": 2.15,
+                    "is_current": True,
+                    "status": "active",
+                },
+            ]
+        ),
+    )
+
+    workbench = build_estimating_workbench(recommendation, data)
+    foam = workbench["insulation_foam_template_decisions"][0]
+
+    assert foam["resolved_template_option"] == "Gaco 0.5 lb."
+    assert "Closed Cell" not in foam["selected_pricing_candidate"]
+    assert foam["selected_pricing_candidate"] in {"Gaco 0.5 lb.", "Gaco 0.5 lb. Open Cell"}
+    assert foam["unit_price"] == 2.15
+    assert not any(
+        candidate["item_name"] == "Enverge Closed Cell OnePass" and candidate["compatibility_status"] == "compatible"
+        for candidate in foam["pricing_candidates"]
+    )
+
+
+def test_open_cell_scope_prefers_same_family_historical_selector_before_gaco_default() -> None:
+    recommendation = insulation_recommendation()
+    recommendation.parsed_fields.update(
+        {
+            "foam_type": "open_cell",
+            "notes": "30x40 metal building with 9 ft walls. Use open cell foam at R21.",
+        }
+    )
+    data = EstimatorData(
+        estimator_decision_recommendations=pd.DataFrame(
+            [
+                {
+                    "decision_id": "insulation_foam_system",
+                    "field_name": "selector_code",
+                    "recommended_value": "22",
+                    "evidence_count": 5,
+                    "source_jobs_count": 5,
+                    "confidence": "medium",
+                    "history_table": "test",
+                },
+                {
+                    "decision_id": "insulation_foam_system",
+                    "field_name": "resolved_item_name",
+                    "recommended_value": "NCFI 0.5 lb.",
+                    "evidence_count": 5,
+                    "source_jobs_count": 5,
+                    "confidence": "medium",
+                    "history_table": "test",
+                },
+                {
+                    "decision_id": "insulation_foam_system",
+                    "field_name": "unit_price",
+                    "recommended_value": 1.95,
+                    "evidence_count": 5,
+                    "source_jobs_count": 5,
+                    "confidence": "medium",
+                    "history_table": "test",
+                },
+            ]
+        )
+    )
+
+    workbench = build_estimating_workbench(recommendation, data)
+    foam = workbench["insulation_foam_template_decisions"][0]
+
+    assert foam["editable_selector_code"] == "22"
+    assert foam["resolved_template_option"] == "NCFI 0.5 lb."
+
+
 def test_workbench_uses_materials_lookup_pricing_for_board_and_fabric() -> None:
     data = EstimatorData(
         template_lookup_tables=pd.DataFrame(
@@ -686,7 +819,11 @@ def test_insulation_workbench_uses_decision_sections_only() -> None:
         for row in workbench["insulation_labor_template_decisions"]
         if row.get("include")
     }
-    assert {"labor_set_up", "labor_foam", "labor_clean_up", "labor_loading", "labor_traveling"}.issubset(included_labor)
+    assert {"labor_set_up", "labor_foam", "labor_clean_up"}.issubset(included_labor)
+    assert "labor_loading" not in included_labor
+    assert "labor_traveling" not in included_labor
+    logistics_buckets = {row["template_bucket"] for row in workbench["insulation_equipment_logistics_template_decisions"]}
+    assert {"labor_loading", "labor_traveling", "infrared_scan", "meals_lodging"}.issubset(logistics_buckets)
 
     draft = workbench_to_draft_workbook_inputs(workbench)
     assert set(draft) == {"template_type", "header", "pricing", "workbook_decisions"}
@@ -1716,9 +1853,9 @@ def test_insulation_foam_prefers_current_family_pricing_over_unrelated_history()
     assert "Mapped product family" in foam["product_guidance"]
 
 
-def test_insulation_loading_and_travel_labor_use_default_hourly_rate_when_rate_missing() -> None:
+def test_insulation_loading_travel_scan_and_lodging_are_logistics_expense_rows() -> None:
     recommendation = insulation_recommendation()
-    recommendation.parsed_fields["notes"] = "Spray foam insulation. Include loading and travel."
+    recommendation.parsed_fields["notes"] = "Spray foam insulation. Include loading, travel, infrared scan, and lodging."
     data = EstimatorData(
         estimator_decision_recommendations=pd.DataFrame(
             [
@@ -1732,9 +1869,27 @@ def test_insulation_loading_and_travel_labor_use_default_hourly_rate_when_rate_m
                     "history_table": "test",
                 },
                 {
+                    "decision_id": "insulation_labor_loading",
+                    "field_name": "crew_size",
+                    "recommended_value": 1,
+                    "evidence_count": 4,
+                    "source_jobs_count": 4,
+                    "confidence": "medium",
+                    "history_table": "test",
+                },
+                {
+                    "decision_id": "insulation_labor_loading",
+                    "field_name": "unit_price",
+                    "recommended_value": 25.5,
+                    "evidence_count": 4,
+                    "source_jobs_count": 4,
+                    "confidence": "medium",
+                    "history_table": "test",
+                },
+                {
                     "decision_id": "insulation_labor_traveling",
                     "field_name": "days",
-                    "recommended_value": 1.5,
+                    "recommended_value": 2.5,
                     "evidence_count": 4,
                     "source_jobs_count": 4,
                     "confidence": "medium",
@@ -1743,7 +1898,61 @@ def test_insulation_loading_and_travel_labor_use_default_hourly_rate_when_rate_m
                 {
                     "decision_id": "insulation_labor_traveling",
                     "field_name": "crew_size",
-                    "recommended_value": 3,
+                    "recommended_value": 4,
+                    "evidence_count": 4,
+                    "source_jobs_count": 4,
+                    "confidence": "medium",
+                    "history_table": "test",
+                },
+                {
+                    "decision_id": "insulation_labor_traveling",
+                    "field_name": "unit_price",
+                    "recommended_value": 13,
+                    "evidence_count": 4,
+                    "source_jobs_count": 4,
+                    "confidence": "medium",
+                    "history_table": "test",
+                },
+                {
+                    "decision_id": "insulation_infrared_scan",
+                    "field_name": "hours",
+                    "recommended_value": 2,
+                    "evidence_count": 4,
+                    "source_jobs_count": 4,
+                    "confidence": "medium",
+                    "history_table": "test",
+                },
+                {
+                    "decision_id": "insulation_infrared_scan",
+                    "field_name": "unit_price",
+                    "recommended_value": 75,
+                    "evidence_count": 4,
+                    "source_jobs_count": 4,
+                    "confidence": "medium",
+                    "history_table": "test",
+                },
+                {
+                    "decision_id": "insulation_meals_lodging",
+                    "field_name": "days",
+                    "recommended_value": 2,
+                    "evidence_count": 4,
+                    "source_jobs_count": 4,
+                    "confidence": "medium",
+                    "history_table": "test",
+                },
+                {
+                    "decision_id": "insulation_meals_lodging",
+                    "field_name": "crew_size",
+                    "recommended_value": 2,
+                    "evidence_count": 4,
+                    "source_jobs_count": 4,
+                    "confidence": "medium",
+                    "history_table": "test",
+                },
+                {
+                    "decision_id": "insulation_meals_lodging",
+                    "field_name": "unit_price",
+                    "recommended_value": 125,
                     "evidence_count": 4,
                     "source_jobs_count": 4,
                     "confidence": "medium",
@@ -1754,15 +1963,22 @@ def test_insulation_loading_and_travel_labor_use_default_hourly_rate_when_rate_m
     )
 
     workbench = build_estimating_workbench(recommendation, data)
-    loading = next(row for row in workbench["insulation_labor_template_decisions"] if row["template_bucket"] == "labor_loading")
-    traveling = next(row for row in workbench["insulation_labor_template_decisions"] if row["template_bucket"] == "labor_traveling")
+    logistics = {
+        row["template_bucket"]: row
+        for row in workbench["insulation_equipment_logistics_template_decisions"]
+    }
 
-    assert loading["estimated_cost"] > 0
-    assert loading["hourly_rate"] == 72
-    assert loading["total_hours"] > 0
-    assert traveling["estimated_cost"] > 0
-    assert traveling["hourly_rate"] == 72
-    assert traveling["total_hours"] > 0
+    assert "labor_loading" not in {row["template_bucket"] for row in workbench["insulation_labor_template_decisions"]}
+    assert logistics["labor_loading"]["estimated_cost"] == 25.5
+    assert logistics["labor_loading"]["formula_model"] == "insulation_hours_people_rate_trip_count"
+    assert logistics["labor_traveling"]["estimated_cost"] == 130
+    assert logistics["infrared_scan"]["estimated_cost"] == 150
+    assert logistics["infrared_scan"]["formula_model"] == "insulation_hours_rate_cost"
+    assert logistics["meals_lodging"]["estimated_cost"] == 500
+    assert logistics["meals_lodging"]["formula_model"] == "insulation_days_people_rate_cost"
+    assert {"hours_per_day", "people_count", "unit_price", "estimated_cost"}.issubset(
+        {entry["field"] for entry in logistics["labor_traveling"]["workbook_cell_write_preview"]}
+    )
 
 
 def test_insulation_travel_note_does_not_check_truck_expense_without_mileage_basis() -> None:
@@ -1775,10 +1991,14 @@ def test_insulation_travel_note_does_not_check_truck_expense_without_mileage_bas
         for row in workbench["insulation_equipment_logistics_template_decisions"]
         if row["template_bucket"] == "truck_expense"
     )
-    traveling = next(row for row in workbench["insulation_labor_template_decisions"] if row["template_bucket"] == "labor_traveling")
+    traveling = next(
+        row
+        for row in workbench["insulation_equipment_logistics_template_decisions"]
+        if row["template_bucket"] == "labor_traveling"
+    )
 
     assert traveling["include"] is True
-    assert "Labor formula preview needs days, hours, or rate input" in " ".join(traveling["compatibility_warnings"])
+    assert "Formula preview needs estimator input before it can calculate cost." in " ".join(traveling["compatibility_warnings"])
     assert truck["include"] is False
     assert truck["estimated_cost"] == 0
 

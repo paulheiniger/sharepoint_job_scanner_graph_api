@@ -28,6 +28,9 @@ from .formula_mirror import (
     calculate_insulation_drum_disposal,
     calculate_insulation_equipment_cost,
     calculate_insulation_membrane,
+    calculate_insulation_days_people_rate_cost,
+    calculate_insulation_hours_people_rate_cost,
+    calculate_insulation_hours_rate_cost,
     calculate_insulation_primer,
     calculate_insulation_thermal_barrier,
     calculate_insulation_thinner,
@@ -147,9 +150,6 @@ INSULATION_LABOR_PACKAGES: list[dict[str, Any]] = [
     {"package": "labor_dc_315", "label": "DC 315", "workbook_row": "88"},
     {"package": "labor_misc", "label": "Misc.", "workbook_row": "90"},
     {"package": "labor_clean_up", "label": "Clean Up", "workbook_row": "92"},
-    {"package": "labor_loading", "label": "Loading", "workbook_row": "95"},
-    {"package": "labor_traveling", "label": "Traveling", "workbook_row": "97"},
-    {"package": "meals_lodging", "label": "Meals / Lodging", "workbook_row": "100"},
 ]
 
 INSULATION_LABOR_DRIVER_SPECS: dict[str, dict[str, Any]] = {
@@ -189,8 +189,6 @@ INSULATION_LABOR_DRIVER_SPECS: dict[str, dict[str, Any]] = {
     "labor_mask": {"driver_type": "project_sqft", "driver_unit": "sqft", "rate_unit": "hours_per_1000_sqft"},
     "labor_misc": {"driver_type": "project_sqft", "driver_unit": "sqft", "rate_unit": "hours_per_1000_sqft"},
     "labor_clean_up": {"driver_type": "project_sqft", "driver_unit": "sqft", "rate_unit": "hours_per_1000_sqft"},
-    "labor_loading": {"driver_type": "project_sqft", "driver_unit": "sqft", "rate_unit": "hours_per_1000_sqft"},
-    "labor_traveling": {"driver_type": "project_sqft", "driver_unit": "sqft", "rate_unit": "hours_per_1000_sqft"},
 }
 
 INSULATION_DECISION_SECTION_KEYS = (
@@ -321,6 +319,38 @@ INSULATION_EQUIPMENT_LOGISTICS_DECISION_SPECS: list[dict[str, Any]] = [
         "formula": "travel",
     },
     {"decision_id": "insulation_truck_expense", "template_bucket": "truck_expense", "label": "Truck Expense", "workbook_row": "70", "formula": "travel"},
+    {
+        "decision_id": "insulation_labor_loading",
+        "template_bucket": "labor_loading",
+        "label": "Loading",
+        "workbook_row": "95",
+        "formula": "hours_people_rate_trip_count",
+        "notes": "Loading is an expense-style row: hours/day x people/rate basis x trip count.",
+    },
+    {
+        "decision_id": "insulation_labor_traveling",
+        "template_bucket": "labor_traveling",
+        "label": "Traveling",
+        "workbook_row": "97",
+        "formula": "hours_people_rate_trip_count",
+        "notes": "Traveling is an expense-style row: hours x people x rate x trip count.",
+    },
+    {
+        "decision_id": "insulation_infrared_scan",
+        "template_bucket": "infrared_scan",
+        "label": "Infrared Scan",
+        "workbook_row": "99",
+        "formula": "hours_rate",
+        "notes": "Infrared scan is an hourly expense row.",
+    },
+    {
+        "decision_id": "insulation_meals_lodging",
+        "template_bucket": "meals_lodging",
+        "label": "Meals / Lodging",
+        "workbook_row": "100",
+        "formula": "days_people_rate",
+        "notes": "Meals/lodging is an expense row: days x people x daily amount.",
+    },
 ]
 
 INSULATION_COMPLIANCE_DECISION_SPECS: list[dict[str, Any]] = [
@@ -391,9 +421,11 @@ PACKAGE_ALIASES: dict[str, set[str]] = {
     "labor_caulk": {"labor_caulk", "caulk", "caulk_sealant"},
     "labor_cleanup": {"labor_cleanup", "clean_up", "cleanup", "touch_cleanup", "touch up"},
     "labor_loading": {"labor_loading", "loading"},
-    "labor_traveling": {"labor_traveling", "traveling", "travel labor"},
+    "labor_traveling": {"labor_traveling", "traveling", "travel", "travel labor"},
     "labor_meals_lodging": {"labor_meals_lodging", "meals_lodging", "meals lodging", "hotel", "lodging"},
     "labor_infrared_scan": {"labor_infrared_scan", "infrared_scan", "infrared", "ir scan", "thermal scan"},
+    "meals_lodging": {"meals_lodging", "meals lodging", "meals", "hotel", "lodging"},
+    "infrared_scan": {"infrared_scan", "infrared", "ir scan", "thermal scan"},
     "labor_set_up": {"labor_set_up", "set_up", "setup", "set up"},
     "labor_mask": {"labor_mask", "mask", "masking"},
     "labor_membrane": {"labor_membrane", "membrane"},
@@ -2499,6 +2531,83 @@ def _foam_traits(*values: Any) -> dict[str, str]:
     return {"foam_type": foam_type, "density_class": density, "application": application}
 
 
+def _requested_scope_foam_type(scope: dict[str, Any] | None) -> str:
+    scope = scope or {}
+    direct = str(scope.get("foam_type") or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if direct in {"open_cell", "closed_cell"}:
+        return direct
+    text = _normalized(
+        " ".join(
+            str(scope.get(key) or "")
+            for key in ("notes", "raw_input_notes", "project_type", "scope_of_work", "building_type")
+        )
+    )
+    if "open cell" in text or "open-cell" in text:
+        return "open_cell"
+    if "closed cell" in text or "closed-cell" in text:
+        return "closed_cell"
+    return ""
+
+
+def _default_insulation_foam_selector_code_for_scope(scope: dict[str, Any] | None) -> str:
+    requested = _requested_scope_foam_type(scope)
+    if not requested:
+        return ""
+    for code, label in sorted(FOAM_SELECTOR_MAP.items(), key=lambda item: int(item[0])):
+        if _foam_traits(label).get("foam_type") == requested:
+            return str(code)
+    if requested == "open_cell":
+        return "12"
+    if requested == "closed_cell":
+        return "11"
+    return ""
+
+
+def _insulation_foam_selector_code_matches_scope(selector_code: Any, scope: dict[str, Any] | None) -> bool:
+    code = str(selector_code or "").strip()
+    if code.endswith(".0"):
+        code = code[:-2]
+    if not code:
+        return False
+    requested = _requested_scope_foam_type(scope)
+    if not requested:
+        return True
+    resolved = _resolved_selector_option(code)
+    if not resolved:
+        return False
+    return _foam_traits(resolved).get("foam_type") == requested
+
+
+def _scope_compatible_insulation_foam_selector_code(scope: dict[str, Any] | None, *values: Any) -> str:
+    for value in values:
+        code = str(value or "").strip()
+        if code.endswith(".0"):
+            code = code[:-2]
+        if code not in FOAM_SELECTOR_MAP:
+            code = _selector_code_for_option(value)
+        if code and _insulation_foam_selector_code_matches_scope(code, scope):
+            return str(code)
+    return ""
+
+
+def _foam_candidate_matches_scope(candidate: dict[str, Any], scope: dict[str, Any] | None) -> bool:
+    requested = _requested_scope_foam_type(scope)
+    if not requested:
+        return True
+    traits = candidate.get("candidate_traits") if isinstance(candidate.get("candidate_traits"), dict) else {}
+    candidate_type = str(traits.get("foam_type") or "").strip()
+    if not candidate_type or candidate_type == "unknown":
+        candidate_type = _foam_traits(
+            candidate.get("item_name"),
+            candidate.get("unit"),
+            candidate.get("category"),
+            candidate.get("product_name"),
+            candidate.get("product_guidance"),
+            candidate.get("product_family"),
+        ).get("foam_type", "unknown")
+    return candidate_type in {"", "unknown", requested}
+
+
 def _foam_candidate_compatibility(
     *,
     template_option: str,
@@ -2521,6 +2630,13 @@ def _foam_candidate_compatibility(
         warnings.append(
             "Foam type mismatch: template option is "
             f"{template_traits['foam_type'].replace('_', '-')} but pricing candidate appears "
+            f"{candidate_traits['foam_type'].replace('_', '-')}."
+        )
+    requested_scope_type = _requested_scope_foam_type(scope)
+    if requested_scope_type and candidate_traits["foam_type"] != "unknown" and candidate_traits["foam_type"] != requested_scope_type:
+        warnings.append(
+            "Foam type mismatch: scope calls for "
+            f"{requested_scope_type.replace('_', '-')} but pricing candidate appears "
             f"{candidate_traits['foam_type'].replace('_', '-')}."
         )
     if template_traits["density_class"] and candidate_traits["density_class"] and template_traits["density_class"] != candidate_traits["density_class"]:
@@ -4080,7 +4196,13 @@ def _is_implausible_foam_formula_unit_price(candidate: dict[str, Any]) -> bool:
     return safe_number(candidate.get("unit_price"), 0.0) > 100
 
 
-def _selected_foam_candidate(candidates: list[dict[str, Any]], selected_name: Any, *, preserve_bad_selection: bool = False) -> dict[str, Any]:
+def _selected_foam_candidate(
+    candidates: list[dict[str, Any]],
+    selected_name: Any,
+    *,
+    scope: dict[str, Any] | None = None,
+    preserve_bad_selection: bool = False,
+) -> dict[str, Any]:
     normalized = _normalized(selected_name)
     requested: dict[str, Any] | None = None
     if normalized:
@@ -4094,6 +4216,7 @@ def _selected_foam_candidate(candidates: list[dict[str, Any]], selected_name: An
         if _candidate_source_rank(candidate.get("source") or candidate.get("item_source")) >= _candidate_source_rank("template_pricing_option_link")
         and safe_number(candidate.get("unit_price"), 0.0) > 0
         and not _is_bad_default_foam_candidate(candidate)
+        and _foam_candidate_matches_scope(candidate, scope)
     ]
     if approved_priced:
         approved_priced.sort(
@@ -4116,17 +4239,18 @@ def _selected_foam_candidate(candidates: list[dict[str, Any]], selected_name: An
         best_family_score >= 80
         and best_family_score > requested_family_score
         and not _is_bad_default_foam_candidate(best_family_candidate)
+        and _foam_candidate_matches_scope(best_family_candidate, scope)
         and not _is_implausible_foam_formula_unit_price(best_family_candidate)
     ):
         return best_family_candidate
-    if requested and (preserve_bad_selection or not _is_bad_default_foam_candidate(requested)):
+    if requested and (preserve_bad_selection or (not _is_bad_default_foam_candidate(requested) and _foam_candidate_matches_scope(requested, scope))):
         return requested
     for candidate in candidates:
-        if not _is_bad_default_foam_candidate(candidate):
+        if not _is_bad_default_foam_candidate(candidate) and _foam_candidate_matches_scope(candidate, scope):
             return candidate
-    if requested:
+    if requested and _foam_candidate_matches_scope(requested, scope):
         return requested
-    return candidates[0] if candidates else {}
+    return {}
 
 
 def _weighted_insulation_foam_thickness_from_scope(scope: dict[str, Any], foam_row: dict[str, Any] | None = None) -> float:
@@ -4173,9 +4297,23 @@ def _build_insulation_foam_template_decisions(
         _resolved_selector_option(foam_row.get("selector_code")),
         "Gaco 2.0 lb.",
     )
+    explicit_existing_selector = first_nonblank(existing.get("editable_selector_code"), existing.get("selector_code"))
+    explicit_existing_is_manual = bool(existing.get("manual_override")) or str(
+        first_nonblank(existing.get("include_source"), existing.get("proposal_source"), "")
+    ).strip().lower() in {"estimator_edit", "manual_override"}
+    scope_compatible_selector = _scope_compatible_insulation_foam_selector_code(
+        scope,
+        "" if explicit_existing_is_manual else explicit_existing_selector,
+        foam_row.get("selector_code"),
+        defaults.get("selector_code"),
+        defaults.get("resolved_item_name"),
+        historical_option,
+    )
     selector_code = first_nonblank(
-        existing.get("editable_selector_code"),
-        existing.get("selector_code"),
+        explicit_existing_selector if explicit_existing_is_manual else "",
+        scope_compatible_selector,
+        _default_insulation_foam_selector_code_for_scope(scope),
+        explicit_existing_selector,
         foam_row.get("selector_code"),
         defaults.get("selector_code"),
         _selector_code_for_option(historical_option),
@@ -4260,6 +4398,7 @@ def _build_insulation_foam_template_decisions(
     selected_candidate = _selected_foam_candidate(
         candidates,
         selected_candidate_name,
+        scope=scope,
         preserve_bad_selection=bool(first_nonblank(existing.get("selected_pricing_candidate"))),
     )
     selected_candidate_changed = bool(
@@ -4583,6 +4722,57 @@ def _source_for_insulation_decision(
     return _row_for_bucket(materials, bucket) or _row_for_bucket(adders, bucket) or {}
 
 
+def _historical_source_for_insulation_decision(
+    spec: dict[str, Any],
+    *,
+    data: Any,
+    scope: dict[str, Any],
+) -> dict[str, Any]:
+    if data is None:
+        return {}
+    decision_id = str(spec.get("decision_id") or "")
+    if not decision_id:
+        return {}
+    decisions = _decision_recommendation_lookup(data, historical_filters_from_scope(scope))
+    fields = (
+        "amount",
+        "basis_sqft",
+        "crew_size",
+        "days",
+        "editable_days",
+        "feet_per_unit",
+        "gal_per_100_sqft",
+        "hours",
+        "hours_per_day",
+        "linear_ft",
+        "margin_pct",
+        "people_count",
+        "period",
+        "quantity",
+        "round_trip_miles",
+        "selector_code",
+        "trip_count",
+        "unit_price",
+        "waste_factor_pct",
+    )
+    values = {field: _decision_value(decisions, decision_id, field, "") for field in fields}
+    values = {key: value for key, value in values.items() if value not in (None, "")}
+    meta = _decision_meta(decisions, decision_id, fields)
+    if meta:
+        values.update(
+            {
+                "historical_recommendation": meta.get("decision_recommendation_json"),
+                "decision_evidence_count": meta.get("decision_evidence_count"),
+                "decision_source_jobs_count": meta.get("decision_source_jobs_count"),
+                "decision_confidence": meta.get("decision_confidence"),
+                "decision_source_tables": meta.get("decision_source_tables"),
+                "decision_filters_applied": meta.get("decision_filters_applied"),
+                "decision_filters_relaxed": meta.get("decision_filters_relaxed"),
+            }
+        )
+    return values
+
+
 def _insulation_product_context_for_row(
     *,
     data: Any,
@@ -4859,20 +5049,29 @@ def _insulation_material_preview(row: dict[str, Any]) -> list[dict[str, Any]]:
     preview: list[dict[str, Any]] = []
     if row.get("editable_selector_code"):
         preview.append({"cell": f"Estimate!A{first_row}", "field": "selector_code", "value": row.get("editable_selector_code")})
-    field_to_cell = {
-        "basis_sqft": "C",
-        "linear_ft": "C",
-        "quantity": "C",
-        "days": "C",
-        "period": "D" if row.get("template_bucket") == "lift" else "C",
-        "gal_per_100_sqft": "D",
-        "feet_per_unit": "D",
-        "unit_price": "E",
-        "margin_pct": "F",
-        "estimated_units": "G",
-        "estimated_gallons": "G",
-        "estimated_cost": "H",
-    }
+    if row.get("template_bucket") in {"labor_loading", "labor_traveling", "infrared_scan", "meals_lodging"}:
+        field_to_cell = {
+            "hours_per_day": "C",
+            "days": "C",
+            "people_count": "E",
+            "unit_price": "G",
+            "estimated_cost": "H",
+        }
+    else:
+        field_to_cell = {
+            "basis_sqft": "C",
+            "linear_ft": "C",
+            "quantity": "C",
+            "days": "C",
+            "period": "D" if row.get("template_bucket") == "lift" else "C",
+            "gal_per_100_sqft": "D",
+            "feet_per_unit": "D",
+            "unit_price": "E",
+            "margin_pct": "F",
+            "estimated_units": "G",
+            "estimated_gallons": "G",
+            "estimated_cost": "H",
+        }
     for field, column in field_to_cell.items():
         if row.get(field) not in (None, ""):
             preview.append({"cell": f"Estimate!{column}{first_row}", "field": field, "value": row.get(field)})
@@ -4902,6 +5101,28 @@ def _calculate_insulation_decision_formula(
     quantity = safe_number(first_nonblank(existing.get("quantity"), source_row.get("quantity"), source_row.get("calculated_quantity"), amount), 0.0)
     days = safe_number(first_nonblank(existing.get("days"), source_row.get("days"), source_row.get("editable_days"), 0), 0.0)
     period = safe_number(first_nonblank(existing.get("period"), existing.get("rental_period"), source_row.get("period"), source_row.get("rental_period"), days), 0.0)
+    hours_per_day = safe_number(
+        first_nonblank(
+            existing.get("hours_per_day"),
+            existing.get("hours"),
+            existing.get("total_hours"),
+            source_row.get("hours_per_day"),
+            source_row.get("hours"),
+            source_row.get("total_hours"),
+            days,
+        ),
+        0.0,
+    )
+    people_count = safe_number(
+        first_nonblank(
+            existing.get("people_count"),
+            existing.get("crew_size"),
+            source_row.get("people_count"),
+            source_row.get("crew_size"),
+            quantity,
+        ),
+        0.0,
+    )
     margin_pct = safe_number(first_nonblank(existing.get("margin_pct"), source_row.get("margin_pct"), spec.get("default_margin_pct"), 0), 0.0)
     gal_per_100 = safe_number(first_nonblank(existing.get("gal_per_100_sqft"), source_row.get("gal_per_100_sqft"), spec.get("default_gal_per_100"), 0), 0.0)
     waste_pct = safe_number(first_nonblank(existing.get("waste_factor_pct"), source_row.get("waste_factor_pct"), source_row.get("margin_pct"), spec.get("default_waste_pct"), 0), 0.0)
@@ -4935,6 +5156,24 @@ def _calculate_insulation_decision_formula(
         formula = calculate_insulation_days_rate_cost(days=days or period, unit_price=unit_price, include=include)
     elif formula_kind == "travel":
         formula = calculate_insulation_travel_cost(trip_count=trip_count, round_trip_miles=round_trip_miles, unit_price=unit_price, include=include)
+    elif formula_kind == "hours_people_rate_trip_count":
+        formula = calculate_insulation_hours_people_rate_cost(
+            hours=hours_per_day,
+            people_count=people_count,
+            unit_price=unit_price,
+            trip_count=trip_count or 1,
+            include=include,
+        )
+        trip_count = safe_number(formula.get("trip_count"), trip_count)
+    elif formula_kind == "hours_rate":
+        formula = calculate_insulation_hours_rate_cost(hours=hours_per_day, unit_price=unit_price, include=include)
+    elif formula_kind == "days_people_rate":
+        formula = calculate_insulation_days_people_rate_cost(
+            days=days,
+            people_count=people_count,
+            unit_price=unit_price,
+            include=include,
+        )
     elif formula_kind == "units_cost":
         formula = calculate_roofing_units_cost(units=quantity, unit_price=unit_price, include=include, formula_model="insulation_units_cost")
     elif formula_kind == "abaa_fee":
@@ -4955,6 +5194,8 @@ def _calculate_insulation_decision_formula(
         "linear_ft": round(linear_ft, 4),
         "quantity": round(quantity, 4),
         "days": round(days, 4),
+        "hours_per_day": round(hours_per_day, 4),
+        "people_count": round(people_count, 4),
         "period": round(period, 4),
         "unit_price": round(unit_price, 4),
         "margin_pct": round(margin_pct, 4),
@@ -5124,7 +5365,11 @@ def _build_insulation_decision_rows(
     deps = dict(dependencies or {})
     auto_included_buckets: set[str] = set()
     for spec in specs:
-        source = _source_for_insulation_decision(spec, materials=materials, adders=adders)
+        historical_source = _historical_source_for_insulation_decision(spec, data=data, scope=scope)
+        source = {
+            **historical_source,
+            **_source_for_insulation_decision(spec, materials=materials, adders=adders),
+        }
         existing = existing_index.get(str(spec.get("workbook_row"))) or existing_index.get(str(spec.get("template_bucket"))) or existing_index.get(str(spec.get("decision_id"))) or {}
         bucket = str(spec.get("template_bucket") or "")
         workbook_row = str(spec.get("workbook_row") or "")
@@ -5241,6 +5486,8 @@ def _build_insulation_decision_rows(
             "linear_ft": inputs.get("linear_ft"),
             "quantity": inputs.get("quantity"),
             "days": inputs.get("days"),
+            "hours_per_day": inputs.get("hours_per_day"),
+            "people_count": inputs.get("people_count"),
             "period": inputs.get("period"),
             "margin_pct": inputs.get("margin_pct"),
             "gal_per_100_sqft": inputs.get("gal_per_100_sqft"),
@@ -11204,6 +11451,8 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any]) -> dict[str, A
                 "feet_per_unit": safe_number(row.get("feet_per_unit"), 0.0),
                 "period": safe_number(row.get("period"), 0.0),
                 "days": safe_number(row.get("days"), 0.0),
+                "hours_per_day": safe_number(row.get("hours_per_day"), 0.0),
+                "people_count": safe_number(row.get("people_count"), 0.0),
                 "margin_pct": safe_number(row.get("margin_pct"), 0.0),
                 "trip_count": safe_number(row.get("trip_count"), 0.0),
                 "round_trip_miles": safe_number(row.get("round_trip_miles"), 0.0),
