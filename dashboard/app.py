@@ -4853,41 +4853,45 @@ def render_estimator_chat_draft_panel(
     estimate_type: str,
     data: EstimatorData,
 ) -> dict[str, Any] | None:
-    st.subheader("Estimator Chat Draft")
-    st.caption(
-        "Use this when the notes need estimator-style reasoning before the workbook is filled. "
-        "The chat creates a structured draft and scope overrides; workbook formulas still calculate the estimate."
-    )
     chat_key_source = f"{estimate_type}|{notes}|{current_estimator_session_id() or 'draft'}"
     chat_key = hashlib.sha1(chat_key_source.encode("utf-8")).hexdigest()[:16]
     history_key = f"estimator_chat_history_{chat_key}"
-    default_history = [{"role": "user", "content": f"Project notes:\n{notes}"}]
-    chat_history = st.session_state.get(history_key) or default_history
-    if chat_history:
-        with st.expander("Estimator chat history", expanded=False):
-            for message in chat_history[-8:]:
-                role = str(message.get("role") or "assistant")
-                with st.chat_message("user" if role == "user" else "assistant"):
-                    st.write(str(message.get("content") or ""))
-    prompt = st.text_area(
-        "Message to estimator chat",
-        value="Turn these notes into an estimator-ready draft and fill the workbook-facing scope as far as the evidence supports.",
-        height=80,
-        key=f"estimator_chat_instruction_{chat_key}",
+    chat_history = st.session_state.get(history_key) or []
+    for message in chat_history[-8:]:
+        role = str(message.get("role") or "assistant")
+        with st.chat_message("user" if role == "user" else "assistant"):
+            st.write(str(message.get("content") or ""))
+    prompt_placeholder = (
+        "Paste an email, field notes, measurements, or a question. Example: "
+        "30x40 metal building, 9 ft walls, outside walls and ceiling, two 9x9 doors, "
+        "two walk doors, five windows, wants open-cell foam this fall."
     )
-    if st.button(
-        "Send to Estimator Chat",
+    prompt = st.text_area(
+        "Describe the project and what you want estimated",
+        height=170,
+        placeholder=prompt_placeholder,
+        key="estimator_notes",
+    )
+    c1, c2 = st.columns([1, 3])
+    run_chat = c1.button(
+        "Draft Estimate",
         key=f"estimator_chat_run_{chat_key}",
-        help="Runs an AI chat draft when OpenAI is configured; otherwise uses a deterministic fallback.",
-    ):
+        help="Drafts parsed scope, estimator questions, and workbook-facing decisions.",
+    )
+    use_chat_draft = c2.checkbox(
+        "Use this draft when building the workbook",
+        value=True,
+        key=f"estimator_chat_use_{chat_key}",
+    )
+    if run_chat:
         messages = [dict(message) for message in chat_history]
-        messages.append({"role": "user", "content": prompt})
-        with st.spinner("Drafting estimator chat response..."):
+        messages.append({"role": "user", "content": prompt or notes})
+        with st.spinner("Drafting estimate intake..."):
             result = run_estimator_chat_turn(
                 messages,
                 data=data,
                 template_type_hint=estimate_type,
-            )
+        )
         messages.append({"role": "assistant", "content": result.assistant_message})
         st.session_state[history_key] = messages
         st.session_state[f"estimator_chat_result_{chat_key}"] = result.to_dict()
@@ -4898,41 +4902,43 @@ def render_estimator_chat_draft_panel(
     result = result_payload if isinstance(result_payload, dict) else {}
     source = str(result.get("source") or "")
     confidence = float(result.get("confidence") or 0)
+    with st.chat_message("assistant"):
+        if result.get("assistant_message"):
+            st.write(str(result.get("assistant_message")))
+        else:
+            st.write("I drafted a first pass from the project information.")
+        missing_questions = result.get("missing_questions") or []
+        if missing_questions:
+            st.markdown("**Questions to confirm**")
+            for question in missing_questions:
+                st.write(f"- {question}")
+        warnings = result.get("warnings") or []
+        if warnings:
+            st.markdown("**Review flags**")
+            for warning in warnings:
+                st.write(f"- {warning}")
     metric_row(
         [
-            ("Source", source.replace("_", " ").title()),
             ("Confidence", f"{confidence:.2f}"),
             ("Questions", str(len(result.get("missing_questions") or []))),
             ("Decision Cues", str(len(result.get("workbook_decision_preferences") or []))),
+            ("Source", source.replace("_", " ").title()),
         ]
     )
-    if result.get("assistant_message"):
-        st.info(str(result.get("assistant_message")))
-    if result.get("warnings"):
-        st.warning("\n".join(str(item) for item in result.get("warnings") or []))
-    use_chat_draft = st.checkbox(
-        "Use chat draft to build the workbook",
-        value=True,
-        key=f"estimator_chat_use_{chat_key}",
-        help="Uses the chat-expanded notes and scope overrides when Build Filled Estimate Template is clicked.",
-    )
-    with st.expander("Chat-filled estimator notes", expanded=True):
-        st.text_area(
-            "Estimator notes from chat",
-            value=str(result.get("estimator_notes") or ""),
-            height=220,
-            key=f"estimator_chat_notes_preview_{chat_key}",
-        )
     scope_overrides = result.get("scope_overrides") if isinstance(result.get("scope_overrides"), dict) else {}
     if scope_overrides:
-        with st.expander("Workbook-facing scope overrides", expanded=False):
+        with st.expander("Parsed scope and workbook inputs", expanded=False):
             st.dataframe(pd.DataFrame([scope_overrides]), use_container_width=True, hide_index=True)
-    missing_questions = result.get("missing_questions") or []
-    if missing_questions:
-        st.warning("Missing questions: " + "; ".join(str(item) for item in missing_questions))
+            if result.get("estimator_notes"):
+                st.text_area(
+                    "Generated estimator notes",
+                    value=str(result.get("estimator_notes") or ""),
+                    height=180,
+                    key=f"estimator_chat_notes_preview_{chat_key}",
+                )
     decision_preferences = result.get("workbook_decision_preferences") or []
     if decision_preferences:
-        with st.expander("Chat decision preferences", expanded=False):
+        with st.expander("Workbook decision cues", expanded=False):
             st.dataframe(pd.DataFrame(decision_preferences), use_container_width=True, hide_index=True)
     return result if use_chat_draft else None
 
@@ -5366,18 +5372,21 @@ def render_repair_estimate_result(result_payload: dict[str, Any], *, notes: str,
 
 def estimator_prototype_page() -> None:
     st.title("Estimating Assistant")
-    st.caption("Estimator review is required before quoting. Incomplete notes return questions and next actions instead of fabricated estimate ranges.")
-
-    estimate_type_selection = st.selectbox(
-        "Estimate Type",
-        ESTIMATE_TYPE_OPTIONS,
-        index=0,
-        help="Auto-detect uses deterministic keywords to route notes to repair, restoration/coating, or insulation estimating.",
-        key="estimator_estimate_type",
-    )
+    st.caption("Describe the job, review what was parsed, then build the workbook draft. Estimator review is required before quoting.")
 
     data = load_estimator_data_cached()
-    with st.expander("Source staging files", expanded=False):
+    with st.expander("Examples, routing, and data status", expanded=False):
+        estimate_type_selection = st.selectbox(
+            "Estimate Type",
+            ESTIMATE_TYPE_OPTIONS,
+            index=0,
+            help="Auto-detect uses deterministic keywords to route notes to repair, restoration/coating, or insulation estimating.",
+            key="estimator_estimate_type",
+        )
+        sample_cols = st.columns(len(ESTIMATOR_SAMPLE_NOTES))
+        for column, (label, sample) in zip(sample_cols, ESTIMATOR_SAMPLE_NOTES.items()):
+            if column.button(label, key=f"estimator_sample_{label}"):
+                st.session_state["estimator_notes"] = sample
         st.write("Files used:", data.source_files_used or [])
         if data.warnings:
             st.warning("\n".join(data.warnings))
@@ -5394,35 +5403,22 @@ def estimator_prototype_page() -> None:
             }
         )
 
-    st.subheader("Project Notes")
-    sample_cols = st.columns(len(ESTIMATOR_SAMPLE_NOTES))
-    for column, (label, sample) in zip(sample_cols, ESTIMATOR_SAMPLE_NOTES.items()):
-        if column.button(label, key=f"estimator_sample_{label}"):
-            st.session_state["estimator_notes"] = sample
-
-    notes = st.text_area(
-        "Rough project notes",
-        key="estimator_notes",
-        height=120,
-        placeholder="Metal roof, about 12,000 sqft, rusted fasteners, restaurant in Louisville, silicone coating, medium access.",
-    )
-    st.caption("Paste notes here, then build a filled estimate template. Command+Enter only updates the text box; it does not build the draft.")
+    notes = str(st.session_state.get("estimator_notes") or "")
     resolved_estimate_type = resolve_estimate_type(estimate_type_selection, notes)
     if estimate_type_selection == ESTIMATE_TYPE_AUTO:
         st.caption(f"Auto-detected estimate type: {resolved_estimate_type}")
     else:
         st.caption(f"Selected estimate type: {resolved_estimate_type}")
-    active_photo_context = render_estimator_photo_upload_panel(notes=notes, estimate_type=resolved_estimate_type)
-    photo_augmented_notes = combine_notes_with_photo_context(notes, active_photo_context)
     active_chat_context = render_estimator_chat_draft_panel(
-        notes=photo_augmented_notes,
+        notes=notes,
         estimate_type=resolved_estimate_type,
         data=data,
     )
-    estimator_input_notes = (
-        str(active_chat_context.get("estimator_notes") or photo_augmented_notes)
+    latest_notes = str(st.session_state.get("estimator_notes") or notes)
+    chat_augmented_notes = (
+        str(active_chat_context.get("estimator_notes") or latest_notes)
         if active_chat_context
-        else photo_augmented_notes
+        else latest_notes
     )
     estimator_chat_scope_overrides = (
         active_chat_context.get("scope_overrides")
@@ -5441,22 +5437,16 @@ def estimator_prototype_page() -> None:
     repair_urgency_override = ""
     overrides: dict[str, Any] = {}
 
-    st.subheader("Scope Interpreter")
     field_estimator_fn, field_estimator_import_warning = optional_field_notes_estimator()
     if field_estimator_import_warning and resolved_estimate_type != ESTIMATE_TYPE_REPAIR:
         st.warning(field_estimator_import_warning)
     if resolved_estimate_type == ESTIMATE_TYPE_REPAIR:
-        st.info("Repair mode uses VSimple repair history tables and does not run the sqft-based roof coating estimator.")
         use_historical_calibration = False
     else:
-        use_historical_calibration = st.checkbox(
-            "Debug: run full historical calibration inside parser",
-            value=False,
-            help="Default workbench mode uses precomputed relationship tables for editable defaults. Enable this only when debugging the older automatic calibration path.",
-            key="use_historical_calibration",
-        )
+        use_historical_calibration = False
     field_notes_data = data if use_historical_calibration else EstimatorData()
-    with st.expander("Optional job header", expanded=False):
+    with st.expander("Photos, job header, and advanced options", expanded=False):
+        active_photo_context = render_estimator_photo_upload_panel(notes=chat_augmented_notes, estimate_type=resolved_estimate_type)
         f1, f2 = st.columns(2)
         with f1:
             field_job_name = st.text_input("Job name", key="field_estimator_job_name")
@@ -5464,6 +5454,17 @@ def estimator_prototype_page() -> None:
         with f2:
             field_city = st.text_input("City", value="", key="field_estimator_city")
             field_state = st.text_input("State", value="", key="field_estimator_state")
+        if resolved_estimate_type == ESTIMATE_TYPE_REPAIR:
+            st.caption("Repair mode uses VSimple repair history tables and does not run the sqft-based roof coating estimator.")
+        else:
+            use_historical_calibration = st.checkbox(
+                "Debug: run full historical calibration inside parser",
+                value=False,
+                help="Default workbench mode uses precomputed relationship tables for editable defaults. Enable this only when debugging the older automatic calibration path.",
+                key="use_historical_calibration",
+            )
+            field_notes_data = data if use_historical_calibration else EstimatorData()
+    estimator_input_notes = combine_notes_with_photo_context(chat_augmented_notes, active_photo_context)
     if st.button("Build Filled Estimate Template", key="generate_field_estimate_recommendation"):
         try:
             photo_file_ids = (active_photo_context or {}).get("selected_image_ids") or []
