@@ -244,23 +244,63 @@ def test_estimator_chat_panel_supports_multi_turn_replies() -> None:
     app = importlib.import_module("dashboard.app")
 
     source = inspect.getsource(app.render_estimator_chat_draft_panel)
+    page_source = inspect.getsource(app.estimator_prototype_page)
 
     assert "st.chat_input" in source
     assert "estimator_chat_history_" in source
     assert "existing_scope=existing_scope" in source
     assert "estimator_chat_assistant_history_content" in source
     assert "Start a new estimate chat" in source
+    assert "Workbook row changes proposed by chat" in source
+    assert "Build / Rebuild Filled Estimate Template" in page_source
+
+
+def test_estimator_chat_decision_change_rows_summarize_structured_patches() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    rows = app.estimator_chat_decision_change_rows(
+        [
+            {
+                "decision_id": "roofing_fabric_row_79",
+                "section": "roofing_detail_template_decisions",
+                "template_bucket": "fabric",
+                "workbook_row": "79",
+                "include": False,
+                "confidence": 0.82,
+                "review_required": True,
+                "review_reasons": ["Only include fabric where seams are open."],
+            },
+            {
+                "decision_id": "roofing_labor_seam_sealer_row_120",
+                "template_bucket": "labor_seam_sealer",
+                "workbook_row": "120",
+                "include": True,
+                "proposed_values": {"days": 0.5, "crew_size": 2},
+                "confidence": 0.7,
+            },
+        ]
+    )
+
+    assert rows[0]["action"] == "remove"
+    assert rows[0]["workbook_row"] == "79"
+    assert "fabric" in rows[0]["target"]
+    assert "Only include fabric" in rows[0]["why"]
+    assert rows[1]["action"] == "include"
+    assert "days=0.5" in rows[1]["field_changes"]
+    assert "crew_size=2" in rows[1]["field_changes"]
 
 
 def test_estimator_workbench_uses_compact_columns_by_default() -> None:
     app = importlib.import_module("dashboard.app")
 
-    assert {"include", "workbook_row", "package", "estimated_cost", "decision_evidence_count", "product_guidance", "notes"}.issubset(
+    assert {"include", "workbook_row", "package", "estimated_cost", app.CHOICE_SUMMARY_COLUMN, "product_guidance"}.issubset(
         set(app.MATERIAL_WORKBENCH_COMPACT_COLUMNS)
     )
-    assert {"include", "workbook_row", "labor_package", "calculated_hours", "estimated_cost", "decision_evidence_count", "notes"}.issubset(
+    assert {"include", "workbook_row", "labor_package", "calculated_hours", "estimated_cost", app.CHOICE_SUMMARY_COLUMN}.issubset(
         set(app.LABOR_WORKBENCH_COMPACT_COLUMNS)
     )
+    assert "decision_evidence_count" not in app.MATERIAL_WORKBENCH_COMPACT_COLUMNS
+    assert "decision_evidence_count" not in app.LABOR_WORKBENCH_COMPACT_COLUMNS
     assert app.ADDER_WORKBENCH_COMPACT_COLUMNS == [
         "include",
         "workbook_row",
@@ -268,6 +308,7 @@ def test_estimator_workbench_uses_compact_columns_by_default() -> None:
         "editable_value",
         "evidence_count",
         "confidence",
+        app.CHOICE_SUMMARY_COLUMN,
         "notes",
     ]
     source = inspect.getsource(app.estimator_prototype_page)
@@ -277,6 +318,7 @@ def test_estimator_workbench_uses_compact_columns_by_default() -> None:
         "include",
         "workbook_row",
         "labor_task",
+        app.CHOICE_SUMMARY_COLUMN,
         "days",
         "crew_size",
         "daily_rate",
@@ -286,7 +328,6 @@ def test_estimator_workbench_uses_compact_columns_by_default() -> None:
         "formula_mode",
         "estimated_cost",
         "compatibility_status",
-        "compatibility_warnings",
         "notes",
     ]
     assert "gal_per_100_sqft" not in app.INSULATION_DECISION_SECTION_COLUMNS["insulation_labor_template_decisions"]
@@ -317,6 +358,38 @@ def test_project_display_frame_removes_hidden_compact_columns() -> None:
     assert list(projected.columns) == ["include", "workbook_row", "labor_task", "total_hours", "labor_driver_summary"]
     assert "gal_per_100_sqft" not in projected.columns
     assert "feet_per_unit" not in projected.columns
+
+
+def test_project_display_frame_keeps_calculation_and_choice_summary_not_raw_evidence() -> None:
+    app = importlib.import_module("dashboard.app")
+    records = app.display_safe_records(
+        [
+            {
+                "include": True,
+                "workbook_row": "42",
+                "resolved_template_option": "Gaco Silicone",
+                "basis_sqft": 10000,
+                "gal_per_100_sqft": 1.5,
+                "unit_price": 1200,
+                "estimated_cost": 18000,
+                "decision_evidence_summary": "Included because coating path was requested.",
+                "historical_selector_evidence_count": 12,
+                "compatibility_warnings": "Verify substrate qualification.",
+                "product_guidance": "Confirm adhesion and dry substrate.",
+            }
+        ]
+    )
+    frame = pd.DataFrame(records)
+
+    projected = app.project_display_frame(frame, app.ROOFING_COATING_TEMPLATE_COMPACT_COLUMNS)
+
+    assert app.CHOICE_SUMMARY_COLUMN in projected.columns
+    assert "decision_evidence_summary" not in projected.columns
+    assert "historical_selector_evidence_count" not in projected.columns
+    assert "compatibility_warnings" not in projected.columns
+    assert {"basis_sqft", "gal_per_100_sqft", "unit_price", "estimated_cost", "product_guidance"}.issubset(projected.columns)
+    assert "Included because coating path was requested." in projected[app.CHOICE_SUMMARY_COLUMN].iloc[0]
+    assert "Verify substrate qualification." in projected[app.CHOICE_SUMMARY_COLUMN].iloc[0]
 
 
 def test_display_safe_dataframe_handles_mixed_proposed_values_for_streamlit() -> None:

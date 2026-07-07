@@ -99,6 +99,24 @@ DECISION_EVIDENCE_DISPLAY_COLUMNS = [
     "proposal_review_required",
     "proposal_review_reasons",
 ]
+CHOICE_SUMMARY_COLUMN = "why_this_choice"
+COMPACT_DIAGNOSTIC_COLUMNS = set(DECISION_EVIDENCE_DISPLAY_COLUMNS) | {
+    "decision_evidence_count",
+    "decision_confidence",
+    "evidence_count",
+    "confidence",
+    "historical_selector_recommendation",
+    "historical_selector_evidence_count",
+    "historical_selector_confidence",
+    "historical_recommendation",
+    "historical_markup_pct",
+    "historical_markup_p25",
+    "historical_markup_p75",
+    "row_traceability",
+    "product_match_score",
+    "product_name",
+    "compatibility_warnings",
+}
 
 MATERIAL_WORKBENCH_COMPACT_COLUMNS = [
     "include",
@@ -116,13 +134,9 @@ MATERIAL_WORKBENCH_COMPACT_COLUMNS = [
     "unit",
     "current_unit_price",
     "estimated_cost",
-    "decision_evidence_count",
-    "decision_confidence",
-    *DECISION_EVIDENCE_DISPLAY_COLUMNS,
+    CHOICE_SUMMARY_COLUMN,
     "product_guidance",
     "product_warning_summary",
-    "row_traceability",
-    "notes",
 ]
 
 AREA_TRACE_COMPACT_COLUMNS = [
@@ -189,9 +203,7 @@ INSULATION_FOAM_TEMPLATE_COMPACT_COLUMNS = [
     "workbook_row",
     "editable_selector_code",
     "resolved_template_option",
-    "historical_selector_recommendation",
-    "historical_selector_evidence_count",
-    *DECISION_EVIDENCE_DISPLAY_COLUMNS,
+    CHOICE_SUMMARY_COLUMN,
     "basis_sqft",
     "thickness_inches",
     "yield_or_coverage",
@@ -201,10 +213,7 @@ INSULATION_FOAM_TEMPLATE_COMPACT_COLUMNS = [
     "estimated_cost",
     "selected_pricing_candidate",
     "compatibility_status",
-    "compatibility_warnings",
     "product_guidance_status",
-    "product_name",
-    "product_match_score",
     "product_guidance",
     "notes",
 ]
@@ -216,6 +225,7 @@ INSULATION_DECISION_TEMPLATE_COMPACT_COLUMNS = [
     "labor_task",
     "editable_selector_code",
     "resolved_template_option",
+    CHOICE_SUMMARY_COLUMN,
     "basis_sqft",
     "linear_ft",
     "quantity",
@@ -239,9 +249,7 @@ INSULATION_DECISION_TEMPLATE_COMPACT_COLUMNS = [
     "estimated_cost",
     "selected_pricing_candidate",
     "compatibility_status",
-    "compatibility_warnings",
     "product_guidance_status",
-    "product_name",
     "product_guidance",
     "notes",
 ]
@@ -253,6 +261,7 @@ INSULATION_DECISION_SECTION_COLUMNS = {
         "template_line",
         "editable_selector_code",
         "resolved_template_option",
+        CHOICE_SUMMARY_COLUMN,
         "basis_sqft",
         "linear_ft",
         "quantity",
@@ -262,9 +271,7 @@ INSULATION_DECISION_SECTION_COLUMNS = {
         "estimated_cost",
         "selected_pricing_candidate",
         "compatibility_status",
-        "compatibility_warnings",
         "product_guidance_status",
-        "product_name",
         "product_guidance",
         "notes",
     ],
@@ -274,6 +281,7 @@ INSULATION_DECISION_SECTION_COLUMNS = {
         "template_line",
         "editable_selector_code",
         "resolved_template_option",
+        CHOICE_SUMMARY_COLUMN,
         "basis_sqft",
         "gal_per_100_sqft",
         "waste_factor_pct",
@@ -282,9 +290,7 @@ INSULATION_DECISION_SECTION_COLUMNS = {
         "estimated_cost",
         "selected_pricing_candidate",
         "compatibility_status",
-        "compatibility_warnings",
         "product_guidance_status",
-        "product_name",
         "product_guidance",
         "notes",
     ],
@@ -294,6 +300,7 @@ INSULATION_DECISION_SECTION_COLUMNS = {
         "template_line",
         "editable_selector_code",
         "resolved_template_option",
+        CHOICE_SUMMARY_COLUMN,
         "quantity",
         "estimated_drums",
         "unit_price",
@@ -301,9 +308,7 @@ INSULATION_DECISION_SECTION_COLUMNS = {
         "estimated_cost",
         "selected_pricing_candidate",
         "compatibility_status",
-        "compatibility_warnings",
         "product_guidance_status",
-        "product_name",
         "product_guidance",
         "notes",
     ],
@@ -313,6 +318,7 @@ INSULATION_DECISION_SECTION_COLUMNS = {
         "template_line",
         "editable_selector_code",
         "resolved_template_option",
+        CHOICE_SUMMARY_COLUMN,
         "days",
         "period",
         "trip_count",
@@ -323,7 +329,6 @@ INSULATION_DECISION_SECTION_COLUMNS = {
         "estimated_cost",
         "selected_pricing_candidate",
         "compatibility_status",
-        "compatibility_warnings",
         "notes",
     ],
     "insulation_compliance_template_decisions": [
@@ -331,18 +336,19 @@ INSULATION_DECISION_SECTION_COLUMNS = {
         "workbook_row",
         "template_line",
         "resolved_template_option",
+        CHOICE_SUMMARY_COLUMN,
         "quantity",
         "unit_price",
         "estimated_units",
         "estimated_cost",
         "compatibility_status",
-        "compatibility_warnings",
         "notes",
     ],
     "insulation_labor_template_decisions": [
         "include",
         "workbook_row",
         "labor_task",
+        CHOICE_SUMMARY_COLUMN,
         "days",
         "crew_size",
         "daily_rate",
@@ -352,7 +358,6 @@ INSULATION_DECISION_SECTION_COLUMNS = {
         "formula_mode",
         "estimated_cost",
         "compatibility_status",
-        "compatibility_warnings",
         "notes",
     ],
     "insulation_pricing_template_decisions": [
@@ -360,12 +365,12 @@ INSULATION_DECISION_SECTION_COLUMNS = {
         "workbook_row",
         "template_line",
         "resolved_template_option",
+        CHOICE_SUMMARY_COLUMN,
         "quantity",
         "unit_price",
         "margin_pct",
         "estimated_cost",
         "compatibility_status",
-        "compatibility_warnings",
         "notes",
     ],
 }
@@ -385,9 +390,7 @@ ROOFING_FOAM_TEMPLATE_COMPACT_COLUMNS = [
     "workbook_row",
     "editable_selector_code",
     "resolved_template_option",
-    "historical_selector_recommendation",
-    "historical_selector_evidence_count",
-    *DECISION_EVIDENCE_DISPLAY_COLUMNS,
+    CHOICE_SUMMARY_COLUMN,
     "basis_sqft",
     "thickness_inches",
     "yield_or_coverage",
@@ -397,7 +400,6 @@ ROOFING_FOAM_TEMPLATE_COMPACT_COLUMNS = [
     "estimated_cost",
     "selected_pricing_candidate",
     "compatibility_status",
-    "compatibility_warnings",
     "product_guidance",
     "notes",
 ]
@@ -407,9 +409,7 @@ ROOFING_COATING_TEMPLATE_COMPACT_COLUMNS = [
     "workbook_row",
     "editable_selector_code",
     "resolved_template_option",
-    "historical_selector_recommendation",
-    "historical_selector_evidence_count",
-    *DECISION_EVIDENCE_DISPLAY_COLUMNS,
+    CHOICE_SUMMARY_COLUMN,
     "basis_sqft",
     "gal_per_100_sqft",
     "waste_factor_pct",
@@ -419,7 +419,6 @@ ROOFING_COATING_TEMPLATE_COMPACT_COLUMNS = [
     "estimated_cost",
     "selected_pricing_candidate",
     "compatibility_status",
-    "compatibility_warnings",
     "product_guidance",
     "notes",
 ]
@@ -429,9 +428,7 @@ ROOFING_PRIMER_TEMPLATE_COMPACT_COLUMNS = [
     "workbook_row",
     "editable_selector_code",
     "resolved_template_option",
-    "historical_selector_recommendation",
-    "historical_selector_evidence_count",
-    *DECISION_EVIDENCE_DISPLAY_COLUMNS,
+    CHOICE_SUMMARY_COLUMN,
     "basis_sqft",
     "coverage_sqft_per_unit",
     "unit_price",
@@ -439,7 +436,6 @@ ROOFING_PRIMER_TEMPLATE_COMPACT_COLUMNS = [
     "estimated_cost",
     "selected_pricing_candidate",
     "compatibility_status",
-    "compatibility_warnings",
     "product_guidance",
     "notes",
 ]
@@ -449,9 +445,7 @@ ROOFING_DETAIL_TEMPLATE_COMPACT_COLUMNS = [
     "workbook_row",
     "editable_selector_code",
     "resolved_template_option",
-    "historical_selector_recommendation",
-    "historical_selector_evidence_count",
-    *DECISION_EVIDENCE_DISPLAY_COLUMNS,
+    CHOICE_SUMMARY_COLUMN,
     "units",
     "linear_ft",
     "unit_price",
@@ -459,7 +453,6 @@ ROOFING_DETAIL_TEMPLATE_COMPACT_COLUMNS = [
     "estimated_cost",
     "selected_pricing_candidate",
     "compatibility_status",
-    "compatibility_warnings",
     "product_guidance",
     "notes",
 ]
@@ -468,13 +461,13 @@ ROOFING_DETAIL_QUANTITY_TEMPLATE_COMPACT_COLUMNS = [
     "include",
     "workbook_row",
     "resolved_template_option",
+    CHOICE_SUMMARY_COLUMN,
     "linear_ft",
     "units",
     "estimated_units",
     "amount",
     "estimated_cost",
     "compatibility_status",
-    "compatibility_warnings",
     "notes",
 ]
 
@@ -483,9 +476,7 @@ ROOFING_BOARD_FASTENER_TEMPLATE_COMPACT_COLUMNS = [
     "workbook_row",
     "editable_selector_code",
     "resolved_template_option",
-    "historical_selector_recommendation",
-    "historical_selector_evidence_count",
-    *DECISION_EVIDENCE_DISPLAY_COLUMNS,
+    CHOICE_SUMMARY_COLUMN,
     "basis_sqft",
     "board_area_sqft",
     "thickness_inches",
@@ -496,7 +487,6 @@ ROOFING_BOARD_FASTENER_TEMPLATE_COMPACT_COLUMNS = [
     "estimated_cost",
     "selected_pricing_candidate",
     "compatibility_status",
-    "compatibility_warnings",
     "product_guidance",
     "notes",
 ]
@@ -506,9 +496,7 @@ ROOFING_GRANULES_TEMPLATE_COMPACT_COLUMNS = [
     "workbook_row",
     "editable_selector_code",
     "resolved_template_option",
-    "historical_selector_recommendation",
-    "historical_selector_evidence_count",
-    *DECISION_EVIDENCE_DISPLAY_COLUMNS,
+    CHOICE_SUMMARY_COLUMN,
     "basis_sqft",
     "coverage_lbs_per_100_sqft",
     "bag_weight_lbs",
@@ -517,7 +505,6 @@ ROOFING_GRANULES_TEMPLATE_COMPACT_COLUMNS = [
     "estimated_cost",
     "selected_pricing_candidate",
     "compatibility_status",
-    "compatibility_warnings",
     "product_guidance",
     "notes",
 ]
@@ -527,9 +514,7 @@ ROOFING_EQUIPMENT_TEMPLATE_COMPACT_COLUMNS = [
     "workbook_row",
     "editable_selector_code",
     "resolved_template_option",
-    "historical_selector_recommendation",
-    "historical_selector_evidence_count",
-    *DECISION_EVIDENCE_DISPLAY_COLUMNS,
+    CHOICE_SUMMARY_COLUMN,
     "basis_sqft",
     "thickness_inches",
     "size",
@@ -540,7 +525,6 @@ ROOFING_EQUIPMENT_TEMPLATE_COMPACT_COLUMNS = [
     "estimated_units",
     "estimated_cost",
     "compatibility_status",
-    "compatibility_warnings",
     "notes",
 ]
 
@@ -555,8 +539,7 @@ ROOFING_TRAVEL_FREIGHT_TEMPLATE_COMPACT_COLUMNS = [
     "unit_price",
     "estimated_cost",
     "compatibility_status",
-    "compatibility_warnings",
-    *DECISION_EVIDENCE_DISPLAY_COLUMNS,
+    CHOICE_SUMMARY_COLUMN,
     "notes",
 ]
 
@@ -565,6 +548,7 @@ ROOFING_ACCESSORY_TEMPLATE_COMPACT_COLUMNS = [
     "workbook_row",
     "editable_selector_code",
     "resolved_template_option",
+    CHOICE_SUMMARY_COLUMN,
     "total_coating_gallons",
     "linear_ft",
     "estimated_units",
@@ -572,7 +556,6 @@ ROOFING_ACCESSORY_TEMPLATE_COMPACT_COLUMNS = [
     "unit_price",
     "estimated_cost",
     "compatibility_status",
-    "compatibility_warnings",
     "notes",
 ]
 
@@ -590,12 +573,8 @@ ROOFING_LABOR_TEMPLATE_COMPACT_COLUMNS = [
     "total_hours",
     "formula_mode",
     "estimated_cost",
-    "historical_selector_evidence_count",
-    "decision_confidence",
-    *DECISION_EVIDENCE_DISPLAY_COLUMNS,
+    CHOICE_SUMMARY_COLUMN,
     "compatibility_status",
-    "compatibility_warnings",
-    "notes",
 ]
 
 PRICING_MARKUP_COMPACT_COLUMNS = [
@@ -608,11 +587,8 @@ PRICING_MARKUP_COMPACT_COLUMNS = [
     "historical_markup_p75",
     "base_total",
     "estimated_cost",
-    "historical_selector_evidence_count",
-    "decision_confidence",
+    CHOICE_SUMMARY_COLUMN,
     "compatibility_status",
-    "compatibility_warnings",
-    "notes",
 ]
 
 LABOR_WORKBENCH_COMPACT_COLUMNS = [
@@ -633,11 +609,7 @@ LABOR_WORKBENCH_COMPACT_COLUMNS = [
     "crew_size",
     "labor_rate",
     "estimated_cost",
-    "decision_evidence_count",
-    "decision_confidence",
-    *DECISION_EVIDENCE_DISPLAY_COLUMNS,
-    "row_traceability",
-    "notes",
+    CHOICE_SUMMARY_COLUMN,
 ]
 
 ADDER_WORKBENCH_COMPACT_COLUMNS = [
@@ -647,6 +619,7 @@ ADDER_WORKBENCH_COMPACT_COLUMNS = [
     "editable_value",
     "evidence_count",
     "confidence",
+    CHOICE_SUMMARY_COLUMN,
     "notes",
 ]
 
@@ -4565,12 +4538,43 @@ def display_safe_cell_value(value: Any) -> Any:
     return value
 
 
+def choice_summary_for_row(row: dict[str, Any]) -> str:
+    reason_parts: list[str] = []
+    if text_value(row.get("manual_override")) in {"True", "true", "1", "yes"} or text_value(row.get("proposal_source")) == "estimator_edit":
+        reason_parts.append("Estimator edited this row.")
+    if text_value(row.get("why_included")):
+        reason_parts.append(text_value(row.get("why_included")))
+    elif text_value(row.get("decision_evidence_summary")):
+        reason_parts.append(text_value(row.get("decision_evidence_summary")))
+    elif text_value(row.get("historical_evidence_summary")):
+        reason_parts.append(text_value(row.get("historical_evidence_summary")))
+    elif text_value(row.get("historical_selector_recommendation")):
+        evidence = text_value(row.get("historical_selector_evidence_count"))
+        suffix = f" from {evidence} historical rows" if evidence else ""
+        reason_parts.append(f"Historical default: {text_value(row.get('historical_selector_recommendation'))}{suffix}.")
+    elif text_value(row.get("historical_recommendation")):
+        reason_parts.append(f"Historical default: {text_value(row.get('historical_recommendation'))}.")
+    if text_value(row.get("pricing_evidence_summary")):
+        reason_parts.append(text_value(row.get("pricing_evidence_summary")))
+    if text_value(row.get("formula_evidence_summary")):
+        reason_parts.append(text_value(row.get("formula_evidence_summary")))
+    warning = text_value(row.get("proposal_review_reasons")) or text_value(row.get("compatibility_warnings"))
+    if warning:
+        reason_parts.append(f"Review: {warning}")
+    if not reason_parts and text_value(row.get("notes")):
+        reason_parts.append(text_value(row.get("notes")))
+    summary = " ".join(dict.fromkeys(part.strip() for part in reason_parts if part.strip()))
+    return summary[:500]
+
+
 def display_safe_records(records: list[dict[str, Any]], *, editable_fields: set[str] | None = None) -> list[dict[str, Any]]:
     editable_fields = editable_fields or set()
     rows: list[dict[str, Any]] = []
     for row in records or []:
         safe_row: dict[str, Any] = {}
-        for key, value in row.items():
+        enriched_row = dict(row)
+        enriched_row.setdefault(CHOICE_SUMMARY_COLUMN, choice_summary_for_row(enriched_row))
+        for key, value in enriched_row.items():
             safe_row[key] = value if key in editable_fields else display_safe_cell_value(value)
         rows.append(safe_row)
     return rows
@@ -4592,6 +4596,16 @@ def estimator_chat_assistant_history_content(result: Any) -> str:
     if not isinstance(payload, dict):
         return ""
     lines = [str(payload.get("assistant_message") or "I drafted a first pass from the project information.")]
+    change_rows = estimator_chat_decision_change_rows(payload.get("workbook_decision_preferences") or [])
+    if change_rows:
+        lines.append("")
+        lines.append("Workbook changes proposed:")
+        for row in change_rows[:6]:
+            target = row.get("target") or row.get("decision_id") or "decision"
+            action = row.get("action") or "update"
+            fields = row.get("field_changes") or ""
+            suffix = f": {fields}" if fields else ""
+            lines.append(f"- {action} {target}{suffix}")
     questions = payload.get("missing_questions") or []
     if questions:
         lines.append("")
@@ -4608,6 +4622,61 @@ def estimator_chat_assistant_history_content(result: Any) -> str:
         lines.append("Review flags:")
         lines.extend(f"- {warning}" for warning in warnings)
     return "\n".join(lines)
+
+
+def estimator_chat_decision_change_rows(preferences: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in preferences if isinstance(preferences, list) else []:
+        if not isinstance(item, dict):
+            continue
+        values = item.get("proposed_values") if isinstance(item.get("proposed_values"), dict) else {}
+        direct_values = {
+            key: value
+            for key, value in item.items()
+            if key
+            in {
+                "basis_sqft",
+                "thickness_inches",
+                "foam_thickness_inches",
+                "gal_per_100_sqft",
+                "unit_price",
+                "estimated_units",
+                "linear_ft",
+                "days",
+                "crew_size",
+                "daily_rate",
+                "hourly_rate",
+                "total_hours",
+                "editable_total_hours",
+                "formula_mode",
+            }
+            and value not in (None, "")
+        }
+        merged_values = {**direct_values, **values}
+        target_parts = [
+            str(item.get("template_bucket") or item.get("package") or item.get("section") or "").replace("_", " ").strip(),
+            f"row {item.get('workbook_row') or item.get('row_number')}" if item.get("workbook_row") or item.get("row_number") else "",
+        ]
+        include_value = item.get("include")
+        action = "update"
+        if include_value is True:
+            action = "include"
+        elif include_value is False:
+            action = "remove"
+        rows.append(
+            {
+                "action": action,
+                "target": " ".join(part for part in target_parts if part).strip() or item.get("decision_id") or "workbook decision",
+                "decision_id": item.get("decision_id") or "",
+                "template_bucket": item.get("template_bucket") or item.get("package") or "",
+                "workbook_row": item.get("workbook_row") or item.get("row_number") or "",
+                "field_changes": ", ".join(f"{key}={value}" for key, value in merged_values.items())[:500],
+                "confidence": item.get("confidence") or "",
+                "review_required": item.get("review_required") if item.get("review_required") is not None else "",
+                "why": text_value(item.get("reason") or item.get("evidence") or item.get("review_reasons") or item.get("review_flags"))[:500],
+            }
+        )
+    return rows
 
 
 def unique_columns(columns: Iterable[str]) -> list[str]:
@@ -4632,16 +4701,13 @@ COMPACT_ALWAYS_SHOW_COLUMNS = {
     "estimator_decision",
     "editable_selector_code",
     "resolved_template_option",
-    "historical_recommendation",
-    "historical_selector_recommendation",
     "selected_pricing_candidate",
     "unit_price",
     "estimated_cost",
     "compatibility_status",
-    "compatibility_warnings",
     "product_guidance_status",
     "product_guidance",
-    "notes",
+    CHOICE_SUMMARY_COLUMN,
 }
 
 
@@ -4666,12 +4732,30 @@ def compact_column_has_value(series: pd.Series) -> bool:
 
 def project_display_frame(frame: pd.DataFrame, columns: Iterable[str]) -> pd.DataFrame:
     available = [column for column in unique_columns(columns) if column in frame.columns]
+    if CHOICE_SUMMARY_COLUMN in frame.columns and CHOICE_SUMMARY_COLUMN not in available:
+        insert_after = next(
+            (
+                available.index(column) + 1
+                for column in (
+                    "resolved_template_option",
+                    "labor_task",
+                    "template_line",
+                    "package",
+                    "adder",
+                    "workbook_row",
+                )
+                if column in available
+            ),
+            len(available),
+        )
+        available.insert(insert_after, CHOICE_SUMMARY_COLUMN)
     if not available:
         return frame.copy()
     compact_columns = [
         column
         for column in available
-        if column in COMPACT_ALWAYS_SHOW_COLUMNS or compact_column_has_value(frame[column])
+        if column not in COMPACT_DIAGNOSTIC_COLUMNS
+        and (column in COMPACT_ALWAYS_SHOW_COLUMNS or compact_column_has_value(frame[column]))
     ]
     return frame[compact_columns or available].copy()
 
@@ -4963,6 +5047,29 @@ def render_estimator_chat_draft_panel(
             ("Source", source.replace("_", " ").title()),
         ]
     )
+    decision_preferences = result.get("workbook_decision_preferences") or []
+    change_rows = estimator_chat_decision_change_rows(decision_preferences)
+    if change_rows:
+        st.caption("Workbook row changes proposed by chat. Build or rebuild the template to apply them through the normal workbook calculation path.")
+        change_df = display_safe_dataframe(change_rows)
+        st.dataframe(
+            change_df[
+                [
+                    column
+                    for column in [
+                        "action",
+                        "target",
+                        "field_changes",
+                        "confidence",
+                        "review_required",
+                        "why",
+                    ]
+                    if column in change_df.columns
+                ]
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
     scope_overrides = result.get("scope_overrides") if isinstance(result.get("scope_overrides"), dict) else {}
     if scope_overrides:
         with st.expander("Parsed scope and workbook inputs", expanded=False):
@@ -4974,7 +5081,6 @@ def render_estimator_chat_draft_panel(
                     height=180,
                     key=f"estimator_chat_notes_preview_{chat_key}",
                 )
-    decision_preferences = result.get("workbook_decision_preferences") or []
     if decision_preferences:
         with st.expander("Workbook decision cues", expanded=False):
             st.dataframe(display_safe_dataframe(decision_preferences), use_container_width=True, hide_index=True)
@@ -5504,7 +5610,7 @@ def estimator_prototype_page() -> None:
             )
             field_notes_data = data if use_historical_calibration else EstimatorData()
     estimator_input_notes = combine_notes_with_photo_context(chat_augmented_notes, active_photo_context)
-    if st.button("Build Filled Estimate Template", key="generate_field_estimate_recommendation"):
+    if st.button("Build / Rebuild Filled Estimate Template", key="generate_field_estimate_recommendation"):
         try:
             photo_file_ids = (active_photo_context or {}).get("selected_image_ids") or []
             session_id = capture_estimator_session_event(

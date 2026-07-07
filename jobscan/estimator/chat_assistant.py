@@ -131,11 +131,17 @@ def normalize_chat_payload(payload: dict[str, Any], *, source: str) -> Estimator
         notes = assistant_message
     if not assistant_message:
         assistant_message = notes or "I drafted estimator notes from the conversation."
+    decision_preferences = _clean_decision_preferences(
+        payload.get("workbook_decision_preferences")
+        or payload.get("decision_patches")
+        or payload.get("row_updates")
+        or payload.get("workbook_row_updates")
+    )
     return EstimatorChatResult(
         assistant_message=assistant_message,
         estimator_notes=notes,
         scope_overrides=_clean_scope(scope),
-        workbook_decision_preferences=_clean_decision_preferences(payload.get("workbook_decision_preferences")),
+        workbook_decision_preferences=decision_preferences,
         missing_questions=_clean_list(payload.get("missing_questions")),
         assumptions=_clean_list(payload.get("assumptions")),
         confidence=_bounded_confidence(payload.get("confidence")),
@@ -241,6 +247,8 @@ def _chat_prompt_messages(
         "When historical/template context supports a normal choice, make the best reviewed guess instead of leaving the decision blank; "
         "set review_required true, lower confidence, and explain the evidence if the prompt did not explicitly confirm it. "
         "Ask questions only when the answer materially changes scope, safety/code compliance, system selection, warranty eligibility, or price. "
+        "If the user gives a command such as remove fabric, use closed cell R-21, make labor 2.5 days, change units, or change price, "
+        "treat it as a workbook decision patch and return it in workbook_decision_preferences. "
         "Return strict JSON only with keys: assistant_message, estimator_notes, scope_overrides, workbook_decision_preferences, "
         "missing_questions, assumptions, warnings, confidence. "
         "scope_overrides should use workbook-facing field names such as template_type, division, project_type, foam_type, "
@@ -249,7 +257,9 @@ def _chat_prompt_messages(
         "insulation_r_value_targets, coating_type, warranty_target_years, substrate, roof_condition, access_complexity, "
         "scope_triggers, and reference_job_ids. "
         "workbook_decision_preferences should be a list of decisions with decision_id, template_bucket, include, proposed_values, "
-        "evidence, confidence, and review_required. "
+        "evidence, confidence, and review_required. Include section and workbook_row when known. "
+        "Use proposed_values for editable workbook fields such as basis_sqft, thickness_inches, gal_per_100_sqft, unit_price, "
+        "estimated_units, linear_ft, days, crew_size, daily_rate, hourly_rate, total_hours, editable_total_hours, and formula_mode. "
         "You may do takeoff math from explicit dimensions and deductions. Do not invent hidden warranty years, exact proprietary products, "
         "or final quote totals when evidence is weak. Use review_required for assumptions. "
         "Workbook formulas remain authoritative for final costs."

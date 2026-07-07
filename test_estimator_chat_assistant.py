@@ -147,3 +147,46 @@ def test_estimator_chat_sends_multi_turn_history_and_existing_scope_to_provider(
     assert calls
     assert result.scope_overrides["foam_type"] == "closed_cell"
     assert result.workbook_decision_preferences[0]["review_required"] is True
+
+
+def test_estimator_chat_normalizes_decision_patch_aliases() -> None:
+    def provider(messages, model):
+        return {
+            "assistant_message": "Removed fabric and updated seam labor.",
+            "estimator_notes": "No fabric unless open seams are confirmed.",
+            "scope_overrides": {"template_type": "roofing"},
+            "decision_patches": [
+                {
+                    "decision_id": "roofing_fabric_row_79",
+                    "template_bucket": "fabric",
+                    "workbook_row": "79",
+                    "include": False,
+                    "confidence": 0.81,
+                    "review_required": False,
+                },
+                {
+                    "decision_id": "roofing_labor_seam_sealer_row_120",
+                    "template_bucket": "labor_seam_sealer",
+                    "workbook_row": "120",
+                    "include": True,
+                    "proposed_values": {"days": 0.5},
+                    "confidence": 0.7,
+                    "review_required": True,
+                },
+            ],
+            "confidence": 0.78,
+        }
+
+    result = run_estimator_chat_turn(
+        [{"role": "user", "content": "Remove fabric but keep half day for seam sealer."}],
+        template_type_hint="roofing",
+        provider=provider,
+        model="test-model",
+    )
+
+    assert [row["decision_id"] for row in result.workbook_decision_preferences] == [
+        "roofing_fabric_row_79",
+        "roofing_labor_seam_sealer_row_120",
+    ]
+    assert result.workbook_decision_preferences[0]["include"] is False
+    assert result.workbook_decision_preferences[1]["proposed_values"]["days"] == 0.5
