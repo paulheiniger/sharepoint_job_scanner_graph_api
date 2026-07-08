@@ -2355,11 +2355,16 @@ def test_insulation_loading_travel_scan_and_lodging_are_logistics_expense_rows()
     )
 
 
-def test_insulation_travel_note_does_not_check_truck_expense_without_mileage_basis() -> None:
+def test_insulation_spray_foam_defaults_truck_sales_and_generator_with_review_if_miles_missing() -> None:
     recommendation = insulation_recommendation()
     recommendation.parsed_fields["notes"] = "Spray foam insulation. Include setup, loading, and travel."
 
     workbench = build_estimating_workbench(recommendation, EstimatorData())
+    equipment = {
+        row["template_bucket"]: row
+        for row in workbench["insulation_equipment_logistics_template_decisions"]
+    }
+    sales = equipment["sales_inspection_trips"]
     truck = next(
         row
         for row in workbench["insulation_equipment_logistics_template_decisions"]
@@ -2372,9 +2377,81 @@ def test_insulation_travel_note_does_not_check_truck_expense_without_mileage_bas
     )
 
     assert traveling["include"] is True
-    assert "Formula preview needs estimator input before it can calculate cost." in " ".join(traveling["compatibility_warnings"])
-    assert truck["include"] is False
+    assert traveling["unit_price"] == 13
+    assert traveling["estimated_cost"] > 0
+    assert equipment["generator"]["include"] is True
+    assert equipment["generator"]["days"] >= 1
+    assert equipment["generator"]["unit_price"] == 40
+    assert equipment["generator"]["estimated_cost"] > 0
+    assert sales["include"] is True
+    assert sales["trip_count"] >= 1
+    assert sales["unit_price"] == 0.75
+    assert truck["include"] is True
+    assert truck["trip_count"] >= 1
+    assert truck["unit_price"] == 0.75
     assert truck["estimated_cost"] == 0
+
+
+def test_insulation_spray_foam_travel_uses_round_trip_miles_from_address() -> None:
+    recommendation = insulation_recommendation()
+    recommendation.parsed_fields["address"] = "Cincinnati, OH"
+
+    workbench = build_estimating_workbench(recommendation, EstimatorData())
+    equipment = {
+        row["template_bucket"]: row
+        for row in workbench["insulation_equipment_logistics_template_decisions"]
+    }
+
+    assert equipment["sales_inspection_trips"]["round_trip_miles"] == 200
+    assert equipment["truck_expense"]["round_trip_miles"] == 200
+    assert equipment["truck_expense"]["estimated_cost"] > 0
+
+
+def test_insulation_logistics_recalc_replaces_stale_daily_rate_sized_unit_prices() -> None:
+    workbench = build_estimating_workbench(insulation_recommendation(), EstimatorData())
+    for row in workbench["insulation_logistics_expense_template_decisions"]:
+        if row["template_bucket"] in {"labor_loading", "labor_traveling"}:
+            row["unit_price"] = 1685.775
+
+    recalculated = recalculate_workbench_tables(workbench)
+    rows = {row["template_bucket"]: row for row in recalculated["insulation_logistics_expense_template_decisions"]}
+
+    assert rows["labor_loading"]["unit_price"] == 25.5
+    assert rows["labor_traveling"]["unit_price"] == 13
+    assert rows["labor_loading"]["estimated_cost"] < 1000
+    assert rows["labor_traveling"]["estimated_cost"] < 1000
+
+
+def test_insulation_mask_labor_included_when_openings_need_masking() -> None:
+    recommendation = insulation_recommendation()
+    recommendation.parsed_fields.update(
+        {
+            "opening_area_known_sqft": 234,
+            "openings": [
+                {"quantity": 2, "width_ft": 9, "height_ft": 9, "opening_type": "rollup door"},
+                {"quantity": 5, "width_ft": 2, "height_ft": 3, "opening_type": "window"},
+            ],
+        }
+    )
+
+    workbench = build_estimating_workbench(recommendation, EstimatorData())
+    mask = next(row for row in workbench["insulation_labor_template_decisions"] if row["template_bucket"] == "labor_mask")
+
+    assert mask["include"] is True
+
+
+def test_insulation_foam_missing_type_and_thickness_is_review_required_not_roof_default() -> None:
+    recommendation = insulation_recommendation()
+    recommendation.parsed_fields.pop("foam_type", None)
+    recommendation.parsed_fields["notes"] = "Spray foam insulation for apartment walls."
+
+    workbench = build_estimating_workbench(recommendation, EstimatorData())
+    foam = workbench["insulation_foam_template_decisions"][0]
+
+    assert foam["yield_or_coverage"] == 0
+    assert foam["unit_price"] == 0
+    assert foam["compatibility_status"] == "review"
+    assert any("Foam type is not evidenced" in warning for warning in foam["compatibility_warnings"])
 
 
 def test_insulation_loading_travel_default_include_recovers_from_stale_auto_uncheck() -> None:
@@ -2399,8 +2476,8 @@ def test_insulation_loading_travel_default_include_recovers_from_stale_auto_unch
 
     assert rows["labor_loading"]["include"] is True
     assert rows["labor_traveling"]["include"] is True
-    assert rows["labor_loading"]["formula_source"] == "insufficient_formula_inputs"
-    assert rows["labor_traveling"]["formula_source"] == "insufficient_formula_inputs"
+    assert rows["labor_loading"]["formula_source"] == "hours_people_rate_trip_count"
+    assert rows["labor_traveling"]["formula_source"] == "hours_people_rate_trip_count"
 
 
 def test_insulation_loading_travel_manual_uncheck_is_preserved() -> None:

@@ -57,6 +57,7 @@ from .formula_mirror import (
     positive_number,
 )
 from .foam_yield_history import best_foam_yield_history
+from .labor import estimate_one_way_miles
 from .insulation_surfaces import (
     apply_thickness_decisions,
     aggregate_surface_foam_outputs,
@@ -75,6 +76,13 @@ from .template_intelligence import FOAM_SELECTOR_MAP
 from jobscan.products.product_matching import product_context_for_decision
 
 DEFAULT_HOURLY_RATE = 72.0
+DEFAULT_LOADING_HOURLY_RATE = 25.5
+DEFAULT_TRAVELING_HOURLY_RATE = 13.0
+DEFAULT_TRAVEL_COST_PER_MILE = 0.75
+DEFAULT_INSULATION_GENERATOR_DAILY_RATE = 40.0
+DEFAULT_SPRAY_FOAM_SETS_PER_DAY = 3.0
+INSULATION_TEMPLATE_FOAM_YIELD_OR_COVERAGE = 2600.0
+INSULATION_TEMPLATE_FOAM_UNIT_PRICE = 2.25
 DEFAULT_MIN_EVIDENCE_COUNT = 3
 HIGH_VARIABILITY_THRESHOLD = 1.0
 ADDER_MIN_RELIABLE_EVIDENCE = 5
@@ -355,7 +363,14 @@ INSULATION_EQUIPMENT_LOGISTICS_DECISION_SPECS: list[dict[str, Any]] = [
         "default_margin_pct": 0.0,
     },
     {"decision_id": "insulation_delivery_fee", "template_bucket": "delivery_fee", "label": "Delivery Fee", "workbook_row": "50", "formula": "direct"},
-    {"decision_id": "insulation_generator", "template_bucket": "generator", "label": "Generator", "workbook_row": "53", "formula": "days_rate"},
+    {
+        "decision_id": "insulation_generator",
+        "template_bucket": "generator",
+        "label": "Generator",
+        "workbook_row": "53",
+        "formula": "days_rate",
+        "default_unit_price": DEFAULT_INSULATION_GENERATOR_DAILY_RATE,
+    },
     {"decision_id": "insulation_space_heater", "template_bucket": "space_heater", "label": "Space Heater", "workbook_row": "55", "formula": "days_rate"},
     {"decision_id": "insulation_freight", "template_bucket": "freight", "label": "Freight", "workbook_row": "59", "formula": "direct"},
     {
@@ -364,8 +379,16 @@ INSULATION_EQUIPMENT_LOGISTICS_DECISION_SPECS: list[dict[str, Any]] = [
         "label": "Sales / Inspection Trips",
         "workbook_row": "68",
         "formula": "travel",
+        "default_unit_price": DEFAULT_TRAVEL_COST_PER_MILE,
     },
-    {"decision_id": "insulation_truck_expense", "template_bucket": "truck_expense", "label": "Truck Expense", "workbook_row": "70", "formula": "travel"},
+    {
+        "decision_id": "insulation_truck_expense",
+        "template_bucket": "truck_expense",
+        "label": "Truck Expense",
+        "workbook_row": "70",
+        "formula": "travel",
+        "default_unit_price": DEFAULT_TRAVEL_COST_PER_MILE,
+    },
 ]
 
 INSULATION_LOGISTICS_EXPENSE_DECISION_SPECS: list[dict[str, Any]] = [
@@ -376,6 +399,9 @@ INSULATION_LOGISTICS_EXPENSE_DECISION_SPECS: list[dict[str, Any]] = [
         "workbook_row": "95",
         "formula": "hours_people_rate_trip_count",
         "default_include": True,
+        "default_hours_per_day": 1.0,
+        "default_people_count": 1.0,
+        "default_unit_price": DEFAULT_LOADING_HOURLY_RATE,
         "notes": "Loading is an expense-style row: hours/day x people/rate basis x trip count.",
     },
     {
@@ -385,6 +411,9 @@ INSULATION_LOGISTICS_EXPENSE_DECISION_SPECS: list[dict[str, Any]] = [
         "workbook_row": "97",
         "formula": "hours_people_rate_trip_count",
         "default_include": True,
+        "default_hours_per_day": 2.5,
+        "default_people_count": 4.0,
+        "default_unit_price": DEFAULT_TRAVELING_HOURLY_RATE,
         "notes": "Traveling is an expense-style row: hours x people x rate x trip count.",
     },
     {
@@ -4491,13 +4520,19 @@ def _build_insulation_foam_template_decisions(
             historical_yield_match = parsed_yield_match if isinstance(parsed_yield_match, dict) else {}
     matched_historical_yield_or_coverage = positive_number(historical_yield_match.get("median_yield_or_coverage"), default=0.0)
     matched_historical_unit_price = positive_number(historical_yield_match.get("median_unit_price"), default=0.0)
+    foam_basis_evidenced = bool(
+        _requested_scope_foam_type(scope)
+        or provided_thickness > 0
+        or weighted_scope_thickness > 0
+        or scope.get("insulation_r_value_targets")
+    )
     historical_yield_or_coverage = positive_number(
         defaults.get("yield_or_coverage"),
         foam_row.get("median_foam_yield"),
         existing.get("yield_or_coverage") if existing_yield_source == "historical_default" else "",
         default=0.0,
     )
-    template_yield_or_coverage = positive_number(ROOFING_FOAM_DEFAULTS.get(19, {}).get("yield_or_coverage"), default=0.0)
+    template_yield_or_coverage = INSULATION_TEMPLATE_FOAM_YIELD_OR_COVERAGE if foam_basis_evidenced else 0.0
     existing_yield_value = positive_number(existing.get("yield_or_coverage"), default=0.0)
     calculated_yield_values = [
         value
@@ -4591,7 +4626,7 @@ def _build_insulation_foam_template_decisions(
         foam_row.get("current_unit_price"),
         matched_historical_unit_price,
         defaults.get("unit_price"),
-        ROOFING_FOAM_DEFAULTS.get(19, {}).get("unit_price"),
+        INSULATION_TEMPLATE_FOAM_UNIT_PRICE if foam_basis_evidenced else "",
         default=0.0,
     )
     if existing_unit_price_value > 0 and existing_unit_price_is_auto:
@@ -4629,6 +4664,10 @@ def _build_insulation_foam_template_decisions(
     )
     compatibility = _foam_candidate_compatibility(template_option=resolved_option, candidate=selected_candidate, scope=scope, product_context=selected_candidate)
     warnings = list(dict.fromkeys([*(selected_candidate.get("compatibility_warnings") or []), *(compatibility.get("compatibility_warnings") or [])]))
+    if not _requested_scope_foam_type(scope):
+        warnings.append("Foam type is not evidenced in the notes; estimator must confirm open-cell vs closed-cell before quoting.")
+    if provided_thickness <= 0 and weighted_scope_thickness <= 0:
+        warnings.append("Foam thickness/R-value is not evidenced in the notes; estimator must confirm thickness before quoting.")
     if yield_or_coverage <= 0:
         warnings.append("Yield/coverage is missing; template formula output requires estimator review.")
     elif yield_or_coverage_source == "historical_yield_by_scope":
@@ -4669,6 +4708,8 @@ def _build_insulation_foam_template_decisions(
         "matched" if selected_candidate.get("product_id") else "",
         "missing",
     )
+    if unit_price <= 0:
+        warnings.append("Foam unit price is missing; cost preview requires pricing or historical evidence.")
     selected_candidate_for_summary = next(
         (
             candidate
@@ -5309,6 +5350,7 @@ def _calculate_insulation_decision_formula(
     spec: dict[str, Any],
     *,
     include: bool,
+    scope: dict[str, Any],
     source_row: dict[str, Any],
     existing: dict[str, Any],
     area: float,
@@ -5320,8 +5362,16 @@ def _calculate_insulation_decision_formula(
         source_row.get("current_unit_price"),
         source_row.get("current_price"),
         source_row.get("unit_price"),
+        spec.get("default_unit_price"),
         default=0.0,
     )
+    if (
+        formula_kind == "hours_people_rate_trip_count"
+        and str(spec.get("template_bucket") or "") in {"labor_loading", "labor_traveling"}
+        and unit_price > 100
+        and not _manual_include_locked(existing)
+    ):
+        unit_price = positive_number(spec.get("default_unit_price"), default=0.0)
     amount = safe_number(first_nonblank(existing.get("amount"), existing.get("editable_value"), source_row.get("editable_value"), source_row.get("estimated_cost")), 0.0)
     basis_sqft = safe_number(first_nonblank(existing.get("basis_sqft"), source_row.get("editable_basis_sqft"), source_row.get("default_basis_sqft"), area), 0.0)
     linear_ft = safe_number(first_nonblank(existing.get("linear_ft"), source_row.get("linear_ft"), source_row.get("calculated_quantity")), 0.0)
@@ -5336,6 +5386,7 @@ def _calculate_insulation_decision_formula(
             source_row.get("hours_per_day"),
             source_row.get("hours"),
             source_row.get("total_hours"),
+            spec.get("default_hours_per_day"),
             days,
         ),
         0.0,
@@ -5346,6 +5397,7 @@ def _calculate_insulation_decision_formula(
             existing.get("crew_size"),
             source_row.get("people_count"),
             source_row.get("crew_size"),
+            spec.get("default_people_count"),
             quantity,
         ),
         0.0,
@@ -5354,7 +5406,8 @@ def _calculate_insulation_decision_formula(
     gal_per_100 = safe_number(first_nonblank(existing.get("gal_per_100_sqft"), source_row.get("gal_per_100_sqft"), spec.get("default_gal_per_100"), 0), 0.0)
     waste_pct = safe_number(first_nonblank(existing.get("waste_factor_pct"), source_row.get("waste_factor_pct"), source_row.get("margin_pct"), spec.get("default_waste_pct"), 0), 0.0)
     feet_per_unit = safe_number(first_nonblank(existing.get("feet_per_unit"), source_row.get("feet_per_unit"), spec.get("default_feet_per_unit"), 0), 0.0)
-    trip_count = safe_number(first_nonblank(existing.get("trip_count"), source_row.get("trip_count"), 0), 0.0)
+    spray_foam_days = _estimated_spray_foam_work_days(scope, dependencies)
+    trip_count = safe_number(first_nonblank(existing.get("trip_count"), source_row.get("trip_count"), spray_foam_days if formula_kind == "travel" else 0), 0.0)
     round_trip_miles = safe_number(first_nonblank(existing.get("round_trip_miles"), source_row.get("round_trip_miles"), 0), 0.0)
     coverage = safe_number(first_nonblank(existing.get("coverage_sqft_per_unit"), source_row.get("coverage_sqft_per_unit"), spec.get("default_coverage"), 250), 250.0)
 
@@ -5448,6 +5501,83 @@ def _insulation_explicit_travel_basis(row: dict[str, Any]) -> bool:
         or positive_number(row.get("round_trip_miles"), default=0.0) > 0
         or positive_number(row.get("unit_price"), row.get("current_unit_price"), row.get("current_price"), default=0.0) > 0
     )
+
+
+def _is_spray_foam_scope(scope: dict[str, Any] | None) -> bool:
+    scope = scope or {}
+    text = _normalized(
+        " ".join(
+            str(scope.get(key) or "")
+            for key in ("project_type", "template_type", "division", "notes", "raw_input_notes", "scope_of_work", "building_type")
+        )
+    )
+    return _is_insulation_scope(scope) and any(term in text for term in ("spray foam", "foam", "insulation"))
+
+
+def _estimated_round_trip_miles_from_scope(scope: dict[str, Any] | None) -> float:
+    scope = scope or {}
+    explicit = positive_number(
+        scope.get("round_trip_miles"),
+        scope.get("estimated_round_trip_miles"),
+        scope.get("travel_round_trip_miles"),
+        default=0.0,
+    )
+    if explicit > 0:
+        return round(explicit, 4)
+    mileage_scope = {
+        **scope,
+        "destination_address": first_nonblank(
+            scope.get("destination_address"),
+            scope.get("site_address"),
+            scope.get("address"),
+            scope.get("location"),
+            scope.get("city"),
+        ),
+    }
+    one_way = estimate_one_way_miles(mileage_scope)
+    if one_way is None or one_way <= 0:
+        return 0.0
+    return round(one_way * 2.0, 1)
+
+
+def _estimated_spray_foam_work_days(scope: dict[str, Any] | None, dependencies: dict[str, Any] | None = None) -> float:
+    scope = scope or {}
+    dependencies = dependencies or {}
+    explicit = positive_number(
+        scope.get("estimated_work_days"),
+        scope.get("estimated_days"),
+        scope.get("project_days"),
+        scope.get("job_days"),
+        dependencies.get("spray_foam_work_days"),
+        default=0.0,
+    )
+    if explicit > 0:
+        return max(1.0, math.ceil(explicit))
+    foam_sets = positive_number(dependencies.get("foam_sets"), default=0.0)
+    if foam_sets > 0:
+        return max(1.0, math.ceil(foam_sets / DEFAULT_SPRAY_FOAM_SETS_PER_DAY))
+    area = _estimate_area(scope)
+    if area > 0:
+        return max(1.0, math.ceil(area / 1500.0))
+    return 1.0
+
+
+def _scope_has_openings_to_mask(scope: dict[str, Any] | None) -> bool:
+    scope = scope or {}
+    if safe_number(scope.get("opening_area_known_sqft"), 0.0) > 0:
+        return True
+    openings = scope.get("openings")
+    if isinstance(openings, list) and any(isinstance(row, dict) for row in openings):
+        return True
+    deductions = scope.get("insulation_deductions")
+    if isinstance(deductions, list) and any(isinstance(row, dict) for row in deductions):
+        return True
+    text = _normalized(" ".join(str(scope.get(key) or "") for key in ("notes", "raw_input_notes")))
+    return any(term in text for term in ("door", "doors", "window", "windows", "opening", "openings", "rollup", "roll up", "overhead door"))
+
+
+def _is_insulation_expense_formula(formula_kind: str) -> bool:
+    return formula_kind in {"hours_people_rate_trip_count", "hours_rate", "days_people_rate"}
 
 
 def _insulation_should_include_decision(
@@ -5602,6 +5732,20 @@ def _build_insulation_decision_rows(
         workbook_row = str(spec.get("workbook_row") or "")
         include_default = bool(source.get("include")) or bool(spec.get("default_include"))
         auto_include = include_default
+        spray_foam_scope = _is_spray_foam_scope(scope)
+        spray_foam_days = _estimated_spray_foam_work_days(scope, deps)
+        round_trip_miles = _estimated_round_trip_miles_from_scope(scope)
+        if spray_foam_scope and bucket in {"generator", "sales_inspection_trips", "truck_expense"}:
+            include_default = True
+            auto_include = True
+            source.setdefault("days", spray_foam_days)
+            source.setdefault("period", spray_foam_days)
+            source.setdefault("trip_count", spray_foam_days)
+            source.setdefault("round_trip_miles", round_trip_miles)
+            if bucket in {"sales_inspection_trips", "truck_expense"}:
+                source.setdefault("unit_price", spec.get("default_unit_price", DEFAULT_TRAVEL_COST_PER_MILE))
+                source.setdefault("current_unit_price", spec.get("default_unit_price", DEFAULT_TRAVEL_COST_PER_MILE))
+                source.setdefault("current_price", spec.get("default_unit_price", DEFAULT_TRAVEL_COST_PER_MILE))
         trigger_terms = _package_aliases(bucket)
         if any(term and term in notes_text for term in trigger_terms):
             include_default = True
@@ -5643,26 +5787,30 @@ def _build_insulation_decision_rows(
             resolved_option,
             spec.get("label"),
         )
-        pricing_candidates = _insulation_material_pricing_candidates(
-            spec=spec,
-            source=source,
-            existing=existing,
-            scope=scope,
-            data=data,
-            item_name=item_name,
-        )
-        selected_pricing_candidate = _selected_insulation_material_pricing_candidate(
-            candidates=pricing_candidates,
-            preferred_names=[
-                existing.get("selected_pricing_candidate"),
-                source.get("item_name"),
-                source.get("current_item"),
-                resolved_option,
-                spec.get("label"),
-            ],
-            package=bucket,
-            scope=scope,
-        )
+        if _is_insulation_expense_formula(str(spec.get("formula") or "")):
+            pricing_candidates = []
+            selected_pricing_candidate = {}
+        else:
+            pricing_candidates = _insulation_material_pricing_candidates(
+                spec=spec,
+                source=source,
+                existing=existing,
+                scope=scope,
+                data=data,
+                item_name=item_name,
+            )
+            selected_pricing_candidate = _selected_insulation_material_pricing_candidate(
+                candidates=pricing_candidates,
+                preferred_names=[
+                    existing.get("selected_pricing_candidate"),
+                    source.get("item_name"),
+                    source.get("current_item"),
+                    resolved_option,
+                    spec.get("label"),
+                ],
+                package=bucket,
+                scope=scope,
+            )
         priced_source = dict(source)
         if selected_pricing_candidate and positive_number(existing.get("unit_price"), source.get("current_unit_price"), source.get("current_price"), source.get("unit_price"), default=0.0) <= 0:
             priced_source["current_unit_price"] = selected_pricing_candidate.get("unit_price")
@@ -5676,7 +5824,15 @@ def _build_insulation_decision_rows(
             if sealant_linear_ft > 0:
                 priced_source["linear_ft"] = sealant_linear_ft
                 priced_source["calculated_quantity"] = sealant_linear_ft
-        formula, inputs = _calculate_insulation_decision_formula(spec, include=include, source_row=priced_source, existing=existing, area=area, dependencies=deps)
+        formula, inputs = _calculate_insulation_decision_formula(
+            spec,
+            include=include,
+            scope=scope,
+            source_row=priced_source,
+            existing=existing,
+            area=area,
+            dependencies=deps,
+        )
         product_context = _insulation_product_context_for_row(
             data=data,
             decision_id=str(spec.get("decision_id")),
@@ -6035,6 +6191,8 @@ def _build_insulation_labor_template_decisions(
         labor = _row_for_bucket(labor_rows, package) or historical_labor
         existing = existing_by_key.get(package) or existing_by_key.get(workbook_row) or {}
         include_default = bool(labor.get("include")) or package in baseline or (package == "labor_traveling" and bool(notes))
+        if package == "labor_mask" and _is_spray_foam_scope(scope) and _scope_has_openings_to_mask(scope):
+            include_default = True
         include = bool(existing["include"]) if "include" in existing else include_default
         crew_size = int(safe_number(first_nonblank(existing.get("crew_size"), labor.get("crew_size"), 3), 3) or 3)
         days = safe_number(first_nonblank(existing.get("days"), existing.get("editable_days"), labor.get("days"), labor.get("editable_days"), 0), 0.0)
