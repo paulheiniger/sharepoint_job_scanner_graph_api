@@ -221,6 +221,30 @@ def test_job_board_dashboard_rows_project_business_fields() -> None:
     assert row["labor_plan"] == "5 days / 4 crew / 160 hrs"
 
 
+def test_operations_dashboard_dates_normalize_timezone_aware_values() -> None:
+    app = importlib.import_module("dashboard.app")
+    jobs = pd.DataFrame(
+        [
+            {
+                "job_id": "J1",
+                "customer": "ABC Church",
+                "job_name": "Completed roof",
+                "pipeline_status": "Completed",
+                "estimated_value": 1000,
+                "completion_date": "2026-07-08T12:30:00+00:00",
+                "estimated_start_date": "2026-07-07T08:00:00-04:00",
+                "estimated_end_date": "2026-07-08T17:00:00-04:00",
+            }
+        ]
+    )
+
+    ops = app.normalize_operations_jobs(jobs)
+    today = pd.Timestamp("2026-07-08")
+
+    assert str(ops["completion_date"].dtype) == "datetime64[ns]"
+    assert bool((ops["completion_date"].notna() & (ops["completion_date"] >= today - pd.Timedelta(days=30))).iloc[0])
+
+
 def test_recalculate_workbench_ui_helper_tolerates_legacy_recalculate_signature(monkeypatch) -> None:
     app = importlib.import_module("dashboard.app")
     calls = []

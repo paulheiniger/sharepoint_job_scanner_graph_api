@@ -80,6 +80,7 @@ from jobscan.estimator.photo_evidence import (
     stage_uploaded_images,
 )
 from jobscan.estimator.chat_assistant import run_estimator_chat_turn
+from jobscan.estimator.note_images import extract_notes_from_images_with_ai, stage_note_images
 
 try:
     from streamlit_calendar import calendar
@@ -3015,7 +3016,7 @@ def date_column_series(df: pd.DataFrame, columns: Iterable[str]) -> pd.Series:
     values = pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns]")
     for column in columns:
         if column in df.columns:
-            parsed = pd.to_datetime(df[column], errors="coerce")
+            parsed = pd.to_datetime(df[column], errors="coerce", utc=True).dt.tz_convert(None)
             values = values.combine_first(parsed)
     return values
 
@@ -3076,8 +3077,8 @@ def normalize_operations_jobs(jobs: pd.DataFrame, schedule: pd.DataFrame | None 
         out,
         ["completion_date", "date_of_completion", "completed_date", "invoice_date", "updated_at", "last_scanned_at"],
     )
-    out["estimated_start_date_parsed"] = pd.to_datetime(out["estimated_start_date"], errors="coerce") if "estimated_start_date" in out.columns else pd.NaT
-    out["estimated_end_date_parsed"] = pd.to_datetime(out["estimated_end_date"], errors="coerce") if "estimated_end_date" in out.columns else pd.NaT
+    out["estimated_start_date_parsed"] = date_column_series(out, ["estimated_start_date"]) if "estimated_start_date" in out.columns else pd.NaT
+    out["estimated_end_date_parsed"] = date_column_series(out, ["estimated_end_date"]) if "estimated_end_date" in out.columns else pd.NaT
     today = pd.Timestamp(date.today())
     out["days_waiting"] = (today.normalize() - out["ready_date"].dt.normalize()).dt.days
     out.loc[out["days_waiting"].isna() | (out["days_waiting"] < 0), "days_waiting"] = 0
@@ -6158,6 +6159,94 @@ def render_estimator_photo_upload_panel(*, notes: str, estimate_type: str) -> di
     return photo_context if use_photo_evidence else None
 
 
+def render_estimator_note_image_upload(*, chat_key: str, estimate_type: str) -> dict[str, Any] | None:
+    try:
+        max_note_images = max(1, int(os.getenv("OPENAI_ESTIMATOR_NOTE_IMAGE_MAX_IMAGES", "3")))
+    except (TypeError, ValueError):
+        max_note_images = 3
+    uploaded_files = st.file_uploader(
+        "Upload handwritten or printed notes",
+        type=["jpg", "jpeg", "png", "webp", "bmp", "tif", "tiff", "heic", "heif"],
+        accept_multiple_files=True,
+        key=f"estimator_note_image_uploads_{chat_key}",
+        help=(
+            "Uploaded note images are parsed automatically, capped at a small image count, and cached by image hash. "
+            "HEIC works when pillow-heif is installed in the runtime."
+        ),
+    )
+    if not uploaded_files:
+        return None
+    upload_key = hashlib.sha1(
+        (
+            chat_key
+            + "|"
+            + estimate_type
+            + "|"
+            + "|".join(str(getattr(file, "name", "") or "") for file in uploaded_files)
+        ).encode("utf-8")
+    ).hexdigest()[:16]
+    records = stage_note_images(uploaded_files, upload_key=upload_key)
+    if not records:
+        st.warning("No readable note images were uploaded.")
+        return None
+    image_hash_key = hashlib.sha1(
+        "|".join(str(record.get("content_hash") or "") for record in records).encode("utf-8")
+    ).hexdigest()[:16]
+    result_key = f"estimator_note_image_extraction_{chat_key}_{image_hash_key}"
+    result = st.session_state.get(result_key)
+    if result is None:
+        if not os.getenv("OPENAI_API_KEY"):
+            st.warning("OPENAI_API_KEY is not configured, so uploaded note images cannot be parsed automatically.")
+            return {
+                "records": records,
+                "normalized_estimator_notes": "",
+                "warnings": ["OPENAI_API_KEY is not configured."],
+                "confidence": 0.0,
+                "image_hash_key": image_hash_key,
+            }
+        try:
+            with st.spinner("Reading uploaded notes..."):
+                result = extract_notes_from_images_with_ai(records, max_images=max_note_images)
+            st.session_state[result_key] = result
+        except Exception as exc:
+            result = {
+                "records": records,
+                "normalized_estimator_notes": "",
+                "warnings": [f"Note image parsing failed: {type(exc).__name__}: {exc}"],
+                "confidence": 0.0,
+                "image_hash_key": image_hash_key,
+            }
+            st.session_state[result_key] = result
+    result = dict(result)
+    result["records"] = records
+    result["image_hash_key"] = image_hash_key
+    notes_text = str(result.get("normalized_estimator_notes") or "").strip()
+    confidence = float(result.get("confidence") or 0.0)
+    if notes_text:
+        st.caption(
+            f"Uploaded notes parsed from {min(len(records), max_note_images)} image(s)"
+            + (" using cached extraction." if result.get("cache_hit") else ".")
+            + f" Confidence: {confidence:.2f}"
+        )
+        with st.expander("Review extracted note text", expanded=False):
+            reviewed_notes = st.text_area(
+                "Extracted notes",
+                value=notes_text,
+                height=180,
+                key=f"estimator_note_image_text_{chat_key}_{image_hash_key}",
+            )
+            result["normalized_estimator_notes"] = str(reviewed_notes or "").strip()
+            questions = result.get("questions") or []
+            unreadable = result.get("unreadable_regions") or []
+            if questions:
+                st.write("Questions:", "; ".join(str(item) for item in questions))
+            if unreadable:
+                st.write("Unreadable:", "; ".join(str(item) for item in unreadable))
+    for warning in result.get("warnings") or []:
+        st.warning(str(warning))
+    return result
+
+
 def render_estimator_chat_draft_panel(
     *,
     notes: str,
@@ -6179,6 +6268,9 @@ def render_estimator_chat_draft_panel(
         st.rerun()
 
     chat_history = [dict(message) for message in (st.session_state.get(history_key) or [])]
+    note_image_result = render_estimator_note_image_upload(chat_key=chat_key, estimate_type=estimate_type)
+    extracted_note_text = str((note_image_result or {}).get("normalized_estimator_notes") or "").strip()
+    extracted_note_key = str((note_image_result or {}).get("image_hash_key") or "")
     prompt_placeholder = (
         "Paste field notes, measurements, photos summary, or answer the questions above. Example: "
         "30x40 metal building, 9 ft walls, outside walls and ceiling, two 9x9 doors, "
@@ -6189,7 +6281,12 @@ def render_estimator_chat_draft_panel(
         key=f"estimator_chat_input_{chat_key}",
     )
     pending_message = str(st.session_state.pop("estimator_chat_pending_message", "") or "").strip()
-    user_message = pending_message or str(prompt or "").strip()
+    typed_message = pending_message or str(prompt or "").strip()
+    image_message_applied_key = f"estimator_note_image_chat_applied_{chat_key}_{extracted_note_key}"
+    image_message = ""
+    if extracted_note_text and not st.session_state.get(image_message_applied_key):
+        image_message = "Notes extracted from uploaded note image(s):\n" + extracted_note_text
+    user_message = "\n\n".join(part for part in [typed_message, image_message] if part)
     use_chat_draft = st.checkbox(
         "Use this draft when building the workbook",
         value=True,
@@ -6217,6 +6314,8 @@ def render_estimator_chat_draft_panel(
         result_payload = result.to_dict()
         st.session_state[result_key] = result_payload
         st.session_state["estimator_notes"] = result.estimator_notes or user_message
+        if image_message:
+            st.session_state[image_message_applied_key] = True
         chat_history = messages
 
     result_payload = st.session_state.get(result_key)
