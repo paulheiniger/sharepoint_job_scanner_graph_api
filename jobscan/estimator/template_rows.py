@@ -13,7 +13,7 @@ import pandas as pd
 from sqlalchemy import bindparam, create_engine, text
 from sqlalchemy.engine import Connection, Engine
 
-PARSER_VERSION = "document-content-template-v2"
+PARSER_VERSION = "document-content-template-v3"
 TEMPLATE_TYPE_ROOFING = "roofing"
 TEMPLATE_TYPE_INSULATION = "insulation"
 TEMPLATE_TYPE_UNKNOWN = "unknown"
@@ -879,10 +879,35 @@ TEMPLATE_ROW_COLUMNS = [
     "unit_price",
     "estimated_units",
     "estimated_cost",
+    "selector_code",
+    "resolved_item_name",
+    "area_sqft",
+    "thickness_inches",
+    "yield_or_coverage",
+    "yield_factor",
+    "estimated_sets",
+    "foam_brand",
+    "foam_density_lb",
+    "units_per_sqft_per_inch",
+    "sets_per_sqft_per_inch",
+    "cost_per_sqft_per_inch",
+    "gal_per_100_sqft",
+    "gal_per_sqft",
+    "estimated_gallons",
+    "linear_ft",
+    "ft_per_unit",
+    "margin_pct",
+    "waste_margin_cell",
+    "quantity_cell_role",
+    "formula_model",
     "days",
     "crew_size",
     "total_hours",
     "daily_rate",
+    "crew_selector_code",
+    "hourly_rate",
+    "calculated_cost",
+    "formula_mode",
     "trips",
     "round_trip_miles",
     "cost_per_mile",
@@ -902,57 +927,18 @@ def db_row(row: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+_UPSERT_COLUMNS = ", ".join(TEMPLATE_ROW_COLUMNS)
+_UPSERT_VALUES = ", ".join(f":{column}" for column in TEMPLATE_ROW_COLUMNS)
+_UPSERT_ASSIGNMENTS = ",\n        ".join(
+    f"{column} = excluded.{column}" for column in TEMPLATE_ROW_COLUMNS if column != "template_row_id"
+)
+
 UPSERT_TEMPLATE_ROW_SQL = text(
-    """
-    INSERT INTO estimate_template_rows (
-        template_row_id, document_id, job_id, source_file, template_type, sheet_name, row_number,
-        cell_range, template_bucket, template_section, line_item_kind, row_label,
-        raw_text, cell_values, formula_cells, selected_item_name, quantity, unit,
-        unit_price, estimated_units, estimated_cost, days, crew_size, total_hours,
-        daily_rate, trips, round_trip_miles, cost_per_mile, warranty_years,
-        overhead_pct, profit_pct, parsed_confidence, needs_review, parser_version
-    )
-    VALUES (
-        :template_row_id, :document_id, :job_id, :source_file, :template_type, :sheet_name, :row_number,
-        :cell_range, :template_bucket, :template_section, :line_item_kind, :row_label,
-        :raw_text, :cell_values, :formula_cells, :selected_item_name, :quantity, :unit,
-        :unit_price, :estimated_units, :estimated_cost, :days, :crew_size, :total_hours,
-        :daily_rate, :trips, :round_trip_miles, :cost_per_mile, :warranty_years,
-        :overhead_pct, :profit_pct, :parsed_confidence, :needs_review, :parser_version
-    )
+    f"""
+    INSERT INTO estimate_template_rows ({_UPSERT_COLUMNS})
+    VALUES ({_UPSERT_VALUES})
     ON CONFLICT (template_row_id) DO UPDATE SET
-        job_id = excluded.job_id,
-        source_file = excluded.source_file,
-        template_type = excluded.template_type,
-        sheet_name = excluded.sheet_name,
-        row_number = excluded.row_number,
-        cell_range = excluded.cell_range,
-        template_bucket = excluded.template_bucket,
-        template_section = excluded.template_section,
-        line_item_kind = excluded.line_item_kind,
-        row_label = excluded.row_label,
-        raw_text = excluded.raw_text,
-        cell_values = excluded.cell_values,
-        formula_cells = excluded.formula_cells,
-        selected_item_name = excluded.selected_item_name,
-        quantity = excluded.quantity,
-        unit = excluded.unit,
-        unit_price = excluded.unit_price,
-        estimated_units = excluded.estimated_units,
-        estimated_cost = excluded.estimated_cost,
-        days = excluded.days,
-        crew_size = excluded.crew_size,
-        total_hours = excluded.total_hours,
-        daily_rate = excluded.daily_rate,
-        trips = excluded.trips,
-        round_trip_miles = excluded.round_trip_miles,
-        cost_per_mile = excluded.cost_per_mile,
-        warranty_years = excluded.warranty_years,
-        overhead_pct = excluded.overhead_pct,
-        profit_pct = excluded.profit_pct,
-        parsed_confidence = excluded.parsed_confidence,
-        needs_review = excluded.needs_review,
-        parser_version = excluded.parser_version,
+        {_UPSERT_ASSIGNMENTS},
         updated_at = CURRENT_TIMESTAMP
     """
 )

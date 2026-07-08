@@ -77,10 +77,35 @@ def create_sqlite_schema(engine) -> None:
                     unit_price NUMERIC,
                     estimated_units NUMERIC,
                     estimated_cost NUMERIC,
+                    selector_code NUMERIC,
+                    resolved_item_name TEXT,
+                    area_sqft NUMERIC,
+                    thickness_inches NUMERIC,
+                    yield_or_coverage NUMERIC,
+                    yield_factor NUMERIC,
+                    estimated_sets NUMERIC,
+                    foam_brand TEXT,
+                    foam_density_lb NUMERIC,
+                    units_per_sqft_per_inch NUMERIC,
+                    sets_per_sqft_per_inch NUMERIC,
+                    cost_per_sqft_per_inch NUMERIC,
+                    gal_per_100_sqft NUMERIC,
+                    gal_per_sqft NUMERIC,
+                    estimated_gallons NUMERIC,
+                    linear_ft NUMERIC,
+                    ft_per_unit NUMERIC,
+                    margin_pct NUMERIC,
+                    waste_margin_cell TEXT,
+                    quantity_cell_role TEXT,
+                    formula_model TEXT,
                     days NUMERIC,
                     crew_size NUMERIC,
                     total_hours NUMERIC,
                     daily_rate NUMERIC,
+                    crew_selector_code NUMERIC,
+                    hourly_rate NUMERIC,
+                    calculated_cost NUMERIC,
+                    formula_mode TEXT,
                     trips NUMERIC,
                     round_trip_miles NUMERIC,
                     cost_per_mile NUMERIC,
@@ -376,6 +401,105 @@ def test_idempotent_upsert_preserves_document_content() -> None:
     assert content_count == 1
     assert template_count == 1
     assert "Pwash/Prep" in raw_text
+
+
+def test_parse_existing_persists_insulation_foam_formula_fields() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    create_sqlite_schema(engine)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO documents (document_id, job_id, file_name, file_extension, document_type)
+                VALUES ('DOC1', 'JOB1', 'Estimate Insulation.xlsx', '.xlsx', 'estimate')
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO document_content (
+                    content_id, document_id, job_id, sheet_name, row_number, cell_range, text_content
+                )
+                VALUES (
+                    'CONTENT1', 'DOC1', 'JOB1', 'Estimate', 19, 'A19:H19',
+                    'A19: 12 | B19: Gaco 0.5 lb. Open Cell Spray Foam | C19: 2226 | D19: 3.68 | E19: 1.6 | F19: 4500 | G19: 1820.16 | H19: 2912.26'
+                )
+                """
+            )
+        )
+
+    summary = tr.parse_existing_document_content(engine)
+
+    assert summary["rows_upserted"] == 1
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT template_type, template_bucket, area_sqft, thickness_inches, yield_or_coverage,
+                       yield_factor, estimated_units, estimated_sets, unit_price, formula_model
+                FROM estimate_template_rows
+                WHERE document_id = 'DOC1'
+                """
+            )
+        ).mappings().one()
+
+    assert row["template_type"] == "insulation"
+    assert row["template_bucket"] == "foam"
+    assert row["area_sqft"] == 2226
+    assert row["thickness_inches"] == 3.68
+    assert row["yield_or_coverage"] == 4500
+    assert row["yield_factor"] == 4500
+    assert row["estimated_units"] == 1820.16
+    assert row["estimated_sets"] == 1.82016
+    assert row["unit_price"] == 1.6
+    assert row["formula_model"] == "foam_sets_from_area_thickness_yield"
+
+
+def test_parse_existing_persists_insulation_waste_margin_cell_reference() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    create_sqlite_schema(engine)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO documents (document_id, job_id, file_name, file_extension, document_type)
+                VALUES ('DOC1', 'JOB1', 'Estimate Insulation.xlsx', '.xlsx', 'estimate')
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO document_content (
+                    content_id, document_id, job_id, sheet_name, row_number, cell_range, text_content
+                )
+                VALUES (
+                    'CONTENT1', 'DOC1', 'JOB1', 'Estimate', 30, 'A30:H30',
+                    'A30: 11 | B30: DC315 | C30: 1000 | D30: 1.25 | E30: 42 | G30: 12.5 | H30: 525'
+                )
+                """
+            )
+        )
+
+    summary = tr.parse_existing_document_content(engine)
+
+    assert summary["rows_upserted"] == 1
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT template_bucket, waste_margin_cell, quantity_cell_role, formula_model
+                FROM estimate_template_rows
+                WHERE document_id = 'DOC1'
+                """
+            )
+        ).mappings().one()
+
+    assert row["template_bucket"] == "thermal_barrier_coating"
+    assert row["waste_margin_cell"] == "A34"
+    assert row["quantity_cell_role"] == "area_sqft"
+    assert row["formula_model"] == "coating_gallons_from_area_rate_waste"
 
 
 def test_parse_existing_is_bounded_visible_and_xlsx_only(capsys) -> None:

@@ -4520,11 +4520,15 @@ def _build_insulation_foam_template_decisions(
             historical_yield_match = parsed_yield_match if isinstance(parsed_yield_match, dict) else {}
     matched_historical_yield_or_coverage = positive_number(historical_yield_match.get("median_yield_or_coverage"), default=0.0)
     matched_historical_unit_price = positive_number(historical_yield_match.get("median_unit_price"), default=0.0)
-    foam_basis_evidenced = bool(
-        _requested_scope_foam_type(scope)
-        or provided_thickness > 0
-        or weighted_scope_thickness > 0
-        or scope.get("insulation_r_value_targets")
+    notes_text = _normalized(" ".join(str(scope.get(key) or "") for key in ("notes", "raw_input_notes", "project_type", "scope_of_work")))
+    foam_scope = bool(
+        foam_row.get("include")
+        or scope.get("foam_requested")
+        or scope.get("foam_type")
+        or basis_sqft > 0
+        or "foam" in notes_text
+        or "spray foam" in notes_text
+        or "insulation" in notes_text
     )
     historical_yield_or_coverage = positive_number(
         defaults.get("yield_or_coverage"),
@@ -4532,7 +4536,7 @@ def _build_insulation_foam_template_decisions(
         existing.get("yield_or_coverage") if existing_yield_source == "historical_default" else "",
         default=0.0,
     )
-    template_yield_or_coverage = INSULATION_TEMPLATE_FOAM_YIELD_OR_COVERAGE if foam_basis_evidenced else 0.0
+    template_yield_or_coverage = INSULATION_TEMPLATE_FOAM_YIELD_OR_COVERAGE if foam_scope else 0.0
     existing_yield_value = positive_number(existing.get("yield_or_coverage"), default=0.0)
     calculated_yield_values = [
         value
@@ -4626,7 +4630,7 @@ def _build_insulation_foam_template_decisions(
         foam_row.get("current_unit_price"),
         matched_historical_unit_price,
         defaults.get("unit_price"),
-        INSULATION_TEMPLATE_FOAM_UNIT_PRICE if foam_basis_evidenced else "",
+        INSULATION_TEMPLATE_FOAM_UNIT_PRICE if foam_scope else "",
         default=0.0,
     )
     if existing_unit_price_value > 0 and existing_unit_price_is_auto:
@@ -4645,15 +4649,6 @@ def _build_insulation_foam_template_decisions(
         unit_price_source = "template_default"
     else:
         unit_price_source = "missing"
-    notes_text = _normalized(" ".join(str(scope.get(key) or "") for key in ("notes", "raw_input_notes", "project_type", "scope_of_work")))
-    foam_scope = bool(
-        foam_row.get("include")
-        or scope.get("foam_requested")
-        or scope.get("foam_type")
-        or "foam" in notes_text
-        or "spray foam" in notes_text
-        or "insulation" in notes_text
-    )
     include = bool(existing["include"]) if "include" in existing else bool(foam_scope and basis_sqft > 0)
     formula = calculate_insulation_foam(
         area_sqft=basis_sqft,

@@ -6,6 +6,7 @@ import inspect
 import pandas as pd
 import pytest
 
+from jobscan.products.product_catalog import ProductKnowledge
 from jobscan.repair_estimator.vsimple_loader import RepairTables
 
 
@@ -279,6 +280,129 @@ def test_pricing_catalog_and_vsimple_tables_are_visible_in_dashboard_views() -> 
     assert "pricing_catalog" in app.VIEWS
     assert "vsimple_projects" in app.VIEWS
     assert "vsimple_sharepoint_job_matches_accepted" in app.VIEWS
+
+
+def test_pricing_catalog_normalizes_product_name_for_edits() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    assert app.pricing_product_name_normalized("  GacoFlex S20 - 55 Gal. ") == "gacoflex s20 55 gal"
+
+
+def test_create_pricing_catalog_row_uses_manual_source_and_stable_id(monkeypatch) -> None:
+    app = importlib.import_module("dashboard.app")
+    captured = {}
+
+    class FakeConnection:
+        def execute(self, statement, params=None):
+            captured["sql"] = str(statement)
+            captured["params"] = params
+
+    class FakeBegin:
+        def __enter__(self):
+            return FakeConnection()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeEngine:
+        def begin(self):
+            return FakeBegin()
+
+    monkeypatch.setattr(app, "get_engine", lambda: FakeEngine())
+
+    pricing_item_id = app.create_pricing_catalog_row(
+        {
+            "product_name": "GacoFlex S20",
+            "vendor": "Gaco",
+            "category": "Roof Coating",
+            "unit_price": 42.5,
+            "unit_of_measure": "gal",
+            "package_size": "55 gal",
+            "effective_date": "2026-07-08",
+            "is_current": True,
+            "needs_review": False,
+        }
+    )
+
+    assert pricing_item_id.startswith("price-")
+    assert "INSERT INTO pricing_catalog" in captured["sql"]
+    assert captured["params"]["source_type"] == "manual"
+    assert captured["params"]["source_file"] == "dashboard_manual_entry"
+    assert captured["params"]["product_name_normalized"] == "gacoflex s20"
+    assert captured["params"]["unit_price"] == 42.5
+    assert captured["params"]["price_per_unit"] == 42.5
+
+
+def test_product_knowledge_upload_can_be_retargeted_to_catalog_product() -> None:
+    app = importlib.import_module("dashboard.app")
+    knowledge = ProductKnowledge(
+        product_catalog=[
+            {
+                "product_id": "parsed_product",
+                "manufacturer": "Parsed",
+                "product_name": "Parsed PDS Name",
+                "aliases": ["Parsed Alias"],
+            }
+        ],
+        product_aliases=[
+            {
+                "alias_id": "parsed_alias",
+                "product_id": "parsed_product",
+                "alias": "Parsed Alias",
+                "alias_type": "parsed",
+                "confidence": 0.8,
+            }
+        ],
+        product_documents=[
+            {
+                "document_id": "doc1",
+                "product_id": "parsed_product",
+                "document_type": "PDS",
+            }
+        ],
+        product_properties=[
+            {
+                "property_id": "prop1",
+                "product_id": "parsed_product",
+                "property_name": "coverage",
+            }
+        ],
+        product_rules=[
+            {
+                "rule_id": "rule1",
+                "product_id": "parsed_product",
+                "rule_type": "limitation",
+            }
+        ],
+        product_decision_links=[
+            {
+                "link_id": "link1",
+                "product_id": "parsed_product",
+                "decision_id": "roofing_coating",
+            }
+        ],
+    )
+
+    retargeted = app.retarget_product_knowledge_to_catalog_product(
+        knowledge,
+        {
+            "product_id": "gaco_s20",
+            "manufacturer": "Gaco",
+            "product_name": "GacoFlex S20",
+            "product_family": "GacoFlex Silicone",
+            "category": "roof_coating",
+            "active": True,
+        },
+    )
+
+    assert retargeted.product_catalog[0]["product_id"] == "gaco_s20"
+    assert retargeted.product_catalog[0]["product_name"] == "GacoFlex S20"
+    assert "Parsed Alias" in retargeted.product_catalog[0]["aliases"]
+    assert retargeted.product_documents[0]["product_id"] == "gaco_s20"
+    assert retargeted.product_properties[0]["product_id"] == "gaco_s20"
+    assert retargeted.product_rules[0]["product_id"] == "gaco_s20"
+    assert retargeted.product_decision_links[0]["product_id"] == "gaco_s20"
+    assert retargeted.product_aliases[0]["product_id"] == "gaco_s20"
 
 
 def test_operations_dashboard_dates_normalize_timezone_aware_values() -> None:

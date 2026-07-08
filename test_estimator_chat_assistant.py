@@ -125,6 +125,7 @@ def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
         assert "product_guidance_digest" in messages[1]["content"]
         assert "companion_relationships" in messages[1]["content"]
         assert "foam_yield_history_digest" in messages[1]["content"]
+        assert "template_fallback_defaults" in messages[1]["content"]
         assert "yield_or_coverage" in messages[1]["content"]
         return {
             "assistant_message": "Drafted the insulation estimate.",
@@ -162,6 +163,8 @@ def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
     assert result.workbook_decision_preferences[0]["template_bucket"] == "foam"
 
     context = json.loads(calls[0][0][1]["content"])["estimator_context"]
+    assert context["template_fallback_defaults"]["insulation_foam"]["yield_or_coverage"] == 2600
+    assert context["template_fallback_defaults"]["insulation_foam"]["unit_price"] == 2.25
     loading = next(row for row in context["decision_menu"] if row["template_bucket"] == "labor_loading")
     traveling = next(row for row in context["decision_menu"] if row["template_bucket"] == "labor_traveling")
     assert loading["section"] == "insulation_logistics_expense_template_decisions"

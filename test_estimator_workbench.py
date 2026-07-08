@@ -2448,8 +2448,11 @@ def test_insulation_foam_missing_type_and_thickness_is_review_required_not_roof_
     workbench = build_estimating_workbench(recommendation, EstimatorData())
     foam = workbench["insulation_foam_template_decisions"][0]
 
-    assert foam["yield_or_coverage"] == 0
-    assert foam["unit_price"] == 0
+    assert foam["yield_or_coverage"] == 2600
+    assert foam["yield_or_coverage_source"] == "template_default"
+    assert foam["unit_price"] == 2.25
+    assert foam["unit_price_source"] == "template_default"
+    assert foam["estimated_cost"] == 0
     assert foam["compatibility_status"] == "review"
     assert any("Foam type is not evidenced" in warning for warning in foam["compatibility_warnings"])
 

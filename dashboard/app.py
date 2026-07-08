@@ -2101,11 +2101,369 @@ def load_pricing_filter_options() -> dict[str, list[str]]:
         "vendor": options.get("vendor", []),
         "category": options.get("category", []),
         "status": options.get("status", []),
+        "source_file": options.get("source_file", []),
+        "source_type": options.get("source_type", []),
     }
 
 
 def pricing_export_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     return df[[column for column in PRICING_EXPORT_COLUMNS if column in df.columns]].copy()
+
+
+PRICING_EDITABLE_COLUMNS = [
+    "vendor",
+    "category",
+    "product_name",
+    "description",
+    "unit_price",
+    "unit_of_measure",
+    "package_size",
+    "price_basis",
+    "price_per_gallon",
+    "price_per_sqft",
+    "price_per_unit",
+    "effective_date",
+    "status",
+    "is_current",
+    "needs_review",
+    "vendor_item_no",
+    "notes",
+]
+
+
+def pricing_product_name_normalized(value: Any) -> str:
+    text = re.sub(r"[^a-z0-9]+", " ", str(value or "").lower())
+    return " ".join(text.split())
+
+
+def _db_blank_to_none(value: Any) -> Any:
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+    return value
+
+
+def _db_float_or_none(value: Any) -> float | None:
+    value = _db_blank_to_none(value)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _db_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "y", "checked"}
+
+
+def _db_date_or_none(value: Any) -> str | None:
+    value = _db_blank_to_none(value)
+    if value is None:
+        return None
+    parsed = pd.to_datetime(value, errors="coerce")
+    if pd.isna(parsed):
+        return None
+    return parsed.date().isoformat()
+
+
+def save_pricing_catalog_edits(original: pd.DataFrame, edited: pd.DataFrame) -> int:
+    if original.empty or edited.empty or "pricing_item_id" not in edited.columns:
+        return 0
+    original_by_id = original.set_index("pricing_item_id", drop=False)
+    updates: list[dict[str, Any]] = []
+    for _, row in edited.iterrows():
+        pricing_item_id = text_value(row.get("pricing_item_id"))
+        if not pricing_item_id or pricing_item_id not in original_by_id.index:
+            continue
+        original_row = original_by_id.loc[pricing_item_id]
+        changed = False
+        for column in PRICING_EDITABLE_COLUMNS:
+            if column not in edited.columns:
+                continue
+            old = _db_blank_to_none(original_row.get(column))
+            new = _db_blank_to_none(row.get(column))
+            if column in {"unit_price", "price_per_gallon", "price_per_sqft", "price_per_unit"}:
+                old = _db_float_or_none(old)
+                new = _db_float_or_none(new)
+            elif column == "effective_date":
+                old = _db_date_or_none(old)
+                new = _db_date_or_none(new)
+            elif column in {"is_current", "needs_review"}:
+                old = _db_bool(old)
+                new = _db_bool(new)
+            if old != new:
+                changed = True
+                break
+        if not changed:
+            continue
+        updates.append(
+            {
+                "pricing_item_id": pricing_item_id,
+                "vendor": _db_blank_to_none(row.get("vendor")),
+                "category": _db_blank_to_none(row.get("category")),
+                "product_name": _db_blank_to_none(row.get("product_name")) or pricing_item_id,
+                "product_name_normalized": pricing_product_name_normalized(row.get("product_name")),
+                "description": _db_blank_to_none(row.get("description")),
+                "unit_price": _db_float_or_none(row.get("unit_price")),
+                "unit_of_measure": _db_blank_to_none(row.get("unit_of_measure")),
+                "package_size": _db_blank_to_none(row.get("package_size")),
+                "price_basis": _db_blank_to_none(row.get("price_basis")),
+                "price_per_gallon": _db_float_or_none(row.get("price_per_gallon")),
+                "price_per_sqft": _db_float_or_none(row.get("price_per_sqft")),
+                "price_per_unit": _db_float_or_none(row.get("price_per_unit")),
+                "effective_date": _db_date_or_none(row.get("effective_date")),
+                "status": _db_blank_to_none(row.get("status")) or "active",
+                "is_current": _db_bool(row.get("is_current")),
+                "needs_review": _db_bool(row.get("needs_review")),
+                "vendor_item_no": _db_blank_to_none(row.get("vendor_item_no")),
+                "notes": _db_blank_to_none(row.get("notes")),
+            }
+        )
+    if not updates:
+        return 0
+    statement = text(
+        """
+        UPDATE pricing_catalog
+        SET
+            vendor = :vendor,
+            category = :category,
+            product_name = :product_name,
+            product_name_normalized = :product_name_normalized,
+            description = :description,
+            unit_price = :unit_price,
+            unit_of_measure = :unit_of_measure,
+            package_size = :package_size,
+            price_basis = :price_basis,
+            price_per_gallon = :price_per_gallon,
+            price_per_sqft = :price_per_sqft,
+            price_per_unit = :price_per_unit,
+            effective_date = :effective_date,
+            status = :status,
+            is_current = :is_current,
+            needs_review = :needs_review,
+            vendor_item_no = :vendor_item_no,
+            notes = :notes,
+            updated_at = now()
+        WHERE pricing_item_id = :pricing_item_id
+        """
+    )
+    with get_engine().begin() as connection:
+        connection.execute(statement, updates)
+    load_pricing_health.clear()
+    load_pricing_catalog_filtered.clear()
+    load_current_pricing_catalog_export.clear()
+    load_pricing_filter_options.clear()
+    load_estimator_data_cached.clear()
+    return len(updates)
+
+
+def create_pricing_catalog_row(row: dict[str, Any]) -> str:
+    from jobscan.pricing_loader import stable_pricing_item_id
+
+    product_name = _db_blank_to_none(row.get("product_name"))
+    if not product_name:
+        raise ValueError("Product name is required.")
+    prepared = {
+        "vendor": _db_blank_to_none(row.get("vendor")),
+        "category": _db_blank_to_none(row.get("category")),
+        "product_name": product_name,
+        "product_name_normalized": pricing_product_name_normalized(product_name),
+        "description": _db_blank_to_none(row.get("description")),
+        "unit_price": _db_float_or_none(row.get("unit_price")),
+        "unit_of_measure": _db_blank_to_none(row.get("unit_of_measure")),
+        "package_size": _db_blank_to_none(row.get("package_size")),
+        "price_basis": _db_blank_to_none(row.get("price_basis")),
+        "price_per_gallon": _db_float_or_none(row.get("price_per_gallon")),
+        "price_per_sqft": _db_float_or_none(row.get("price_per_sqft")),
+        "price_per_unit": _db_float_or_none(row.get("price_per_unit") or row.get("unit_price")),
+        "vendor_item_no": _db_blank_to_none(row.get("vendor_item_no")),
+        "source_file": _db_blank_to_none(row.get("source_file")) or "dashboard_manual_entry",
+        "source_type": "manual",
+        "source_sheet": None,
+        "source_page": None,
+        "effective_date": _db_date_or_none(row.get("effective_date")) or date.today().isoformat(),
+        "expiration_date": None,
+        "is_current": _db_bool(row.get("is_current", True)),
+        "status": _db_blank_to_none(row.get("status")) or "active",
+        "needs_review": _db_bool(row.get("needs_review", False)),
+        "review_notes": _db_blank_to_none(row.get("review_notes")),
+        "notes": _db_blank_to_none(row.get("notes")),
+    }
+    if prepared["unit_price"] is None:
+        prepared["needs_review"] = True
+        if not prepared["status"] or prepared["status"] == "active":
+            prepared["status"] = "review"
+    prepared["pricing_item_id"] = stable_pricing_item_id(prepared)
+    prepared["raw_row_json"] = json.dumps(
+        {
+            "source": "dashboard_manual_entry",
+            "created_from": {key: value for key, value in prepared.items() if key != "raw_row_json"},
+        },
+        default=str,
+        sort_keys=True,
+    )
+    statement = text(
+        """
+        INSERT INTO pricing_catalog (
+            pricing_item_id, vendor, category, product_name, product_name_normalized, description,
+            unit_price, unit_of_measure, package_size, price_basis, price_per_gallon, price_per_sqft,
+            price_per_unit, vendor_item_no, source_file, source_type, source_sheet, source_page,
+            effective_date, expiration_date, is_current, status, needs_review, review_notes, notes,
+            raw_row_json, created_at, updated_at
+        )
+        VALUES (
+            :pricing_item_id, :vendor, :category, :product_name, :product_name_normalized, :description,
+            :unit_price, :unit_of_measure, :package_size, :price_basis, :price_per_gallon, :price_per_sqft,
+            :price_per_unit, :vendor_item_no, :source_file, :source_type, :source_sheet, :source_page,
+            :effective_date, :expiration_date, :is_current, :status, :needs_review, :review_notes, :notes,
+            CAST(:raw_row_json AS JSONB), now(), now()
+        )
+        ON CONFLICT (pricing_item_id) DO UPDATE SET
+            vendor = EXCLUDED.vendor,
+            category = EXCLUDED.category,
+            product_name = EXCLUDED.product_name,
+            product_name_normalized = EXCLUDED.product_name_normalized,
+            description = EXCLUDED.description,
+            unit_price = EXCLUDED.unit_price,
+            unit_of_measure = EXCLUDED.unit_of_measure,
+            package_size = EXCLUDED.package_size,
+            price_basis = EXCLUDED.price_basis,
+            price_per_gallon = EXCLUDED.price_per_gallon,
+            price_per_sqft = EXCLUDED.price_per_sqft,
+            price_per_unit = EXCLUDED.price_per_unit,
+            vendor_item_no = EXCLUDED.vendor_item_no,
+            source_file = EXCLUDED.source_file,
+            source_type = EXCLUDED.source_type,
+            source_sheet = EXCLUDED.source_sheet,
+            source_page = EXCLUDED.source_page,
+            effective_date = EXCLUDED.effective_date,
+            expiration_date = EXCLUDED.expiration_date,
+            is_current = EXCLUDED.is_current,
+            status = EXCLUDED.status,
+            needs_review = EXCLUDED.needs_review,
+            review_notes = EXCLUDED.review_notes,
+            notes = EXCLUDED.notes,
+            raw_row_json = EXCLUDED.raw_row_json,
+            updated_at = now()
+        """
+    )
+    with get_engine().begin() as connection:
+        connection.execute(statement, prepared)
+    load_pricing_health.clear()
+    load_pricing_catalog_filtered.clear()
+    load_current_pricing_catalog_export.clear()
+    load_pricing_filter_options.clear()
+    load_estimator_data_cached.clear()
+    return prepared["pricing_item_id"]
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_product_catalog_options() -> pd.DataFrame:
+    result = load_df_uncached(
+        """
+        SELECT product_id, manufacturer, product_name, product_family, category, active
+        FROM product_catalog
+        ORDER BY COALESCE(manufacturer, ''), product_name
+        LIMIT 5000
+        """
+    )
+    if result.ok:
+        return result.value
+    return pd.DataFrame()
+
+
+def product_catalog_option_label(row: dict[str, Any]) -> str:
+    manufacturer = text_value(row.get("manufacturer"))
+    name = text_value(row.get("product_name")) or text_value(row.get("product_id"))
+    category = text_value(row.get("category"))
+    prefix = f"{manufacturer} - " if manufacturer else ""
+    suffix = f" ({category})" if category else ""
+    return f"{prefix}{name}{suffix}"
+
+
+def stage_product_document_upload(uploaded_file: Any) -> Path:
+    raw = bytes(uploaded_file.getbuffer())
+    digest = hashlib.sha256(raw).hexdigest()[:16]
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", str(uploaded_file.name or "product_document"))
+    out_dir = Path("output/product_uploads")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"{digest}_{safe_name}"
+    path.write_bytes(raw)
+    return path
+
+
+def retarget_product_knowledge_to_catalog_product(knowledge: Any, product_row: dict[str, Any]) -> Any:
+    product_id = text_value(product_row.get("product_id"))
+    if not product_id:
+        return knowledge
+    parsed_products = list(getattr(knowledge, "product_catalog", []) or [])
+    parsed_aliases = []
+    for product in parsed_products:
+        if text_value(product.get("product_name")):
+            parsed_aliases.append(text_value(product.get("product_name")))
+        parsed_aliases.extend(str(alias) for alias in (product.get("aliases") or []) if str(alias).strip())
+    catalog_product = {
+        "product_id": product_id,
+        "manufacturer": _db_blank_to_none(product_row.get("manufacturer")),
+        "product_family": _db_blank_to_none(product_row.get("product_family")),
+        "product_name": _db_blank_to_none(product_row.get("product_name")) or product_id,
+        "sku": "",
+        "category": _db_blank_to_none(product_row.get("category")),
+        "subcategory": "",
+        "unit": "",
+        "aliases": sorted(set(alias for alias in parsed_aliases if alias)),
+        "active": _db_bool(product_row.get("active")) if "active" in product_row else True,
+        "extraction_method": "dashboard_upload_linked",
+        "extraction_warnings": ["Uploaded document was linked to an existing product catalog item by the user."],
+    }
+    knowledge.product_catalog = [catalog_product]
+    for collection_name in ("product_documents", "product_properties", "product_rules", "product_decision_links"):
+        for row in getattr(knowledge, collection_name, []) or []:
+            row["product_id"] = product_id
+    for alias in getattr(knowledge, "product_aliases", []) or []:
+        alias["product_id"] = product_id
+        alias_text = text_value(alias.get("alias"))
+        alias["alias_id"] = re.sub(r"[^a-z0-9]+", "_", f"{product_id}_{alias_text}".lower()).strip("_")
+    return knowledge
+
+
+def ingest_uploaded_product_document(
+    uploaded_file: Any,
+    *,
+    selected_product: dict[str, Any] | None = None,
+    use_ai: bool = False,
+    manufacturer_hint: str = "",
+) -> dict[str, Any]:
+    from jobscan.products.catalog_db import apply_product_knowledge_schema, upsert_product_knowledge
+    from jobscan.products.product_catalog import write_product_catalog_json
+    from jobscan.products.product_ingest import ingest_product_document
+
+    staged_path = stage_product_document_upload(uploaded_file)
+    knowledge = ingest_product_document(
+        staged_path,
+        use_ai=use_ai,
+        manufacturer_hint=manufacturer_hint or None,
+    )
+    if selected_product:
+        knowledge = retarget_product_knowledge_to_catalog_product(knowledge, selected_product)
+    json_path = staged_path.with_suffix(staged_path.suffix + ".product_knowledge.json")
+    write_product_catalog_json(knowledge, json_path)
+    apply_product_knowledge_schema(DATABASE_URL)
+    counts = upsert_product_knowledge(DATABASE_URL, knowledge, catalog_path=json_path, update_queue=False)
+    load_estimator_data_cached.clear()
+    load_product_catalog_options.clear()
+    return {"file_path": str(staged_path), "json_path": str(json_path), "counts": counts, "knowledge": knowledge.to_dict()}
 
 
 def numeric_series(df: pd.DataFrame, column: str) -> pd.Series:
@@ -5334,13 +5692,71 @@ def pricing_catalog_page() -> None:
         show_database_error(exc)
         st.stop()
 
-    st.caption(f"Showing {fmt_count(len(pricing))} pricing rows")
-    if pricing.empty:
-        show_empty("No pricing rows match the current filters.")
-    else:
-        show_table(
-            pricing,
-            [
+    catalog_tab, product_docs_tab = st.tabs(["Pricing Catalog", "Product Data Sheets"])
+
+    with catalog_tab:
+        with st.expander("Add pricing row", expanded=False):
+            with st.form("add_pricing_catalog_row_form", clear_on_submit=True):
+                a1, a2, a3 = st.columns(3)
+                with a1:
+                    new_product_name = st.text_input("Product name")
+                    new_vendor = st.text_input("Vendor")
+                    new_category = st.text_input("Category")
+                    new_vendor_item_no = st.text_input("Vendor item no.")
+                with a2:
+                    new_unit_price = st.number_input("Unit price", min_value=0.0, value=0.0, step=1.0, format="%.4f")
+                    new_unit = st.text_input("Unit of measure", value="unit")
+                    new_package_size = st.text_input("Package size")
+                    new_price_basis = st.text_input("Price basis")
+                with a3:
+                    new_price_per_gallon = st.number_input("Price per gallon", min_value=0.0, value=0.0, step=1.0, format="%.4f")
+                    new_price_per_sqft = st.number_input("Price per sq ft", min_value=0.0, value=0.0, step=0.01, format="%.4f")
+                    new_price_per_unit = st.number_input("Price per unit", min_value=0.0, value=0.0, step=1.0, format="%.4f")
+                    new_effective_date = st.date_input("Effective date", value=date.today())
+                new_description = st.text_area("Description")
+                new_notes = st.text_area("Notes")
+                s1, s2, s3 = st.columns(3)
+                with s1:
+                    new_status = st.selectbox("Status", ["active", "review", "inactive"], index=0)
+                with s2:
+                    new_is_current = st.checkbox("Current", value=True)
+                with s3:
+                    new_needs_review = st.checkbox("Needs review", value=False)
+                submitted_new_pricing = st.form_submit_button("Create Pricing Row", type="primary")
+                if submitted_new_pricing:
+                    try:
+                        pricing_item_id = create_pricing_catalog_row(
+                            {
+                                "product_name": new_product_name,
+                                "vendor": new_vendor,
+                                "category": new_category,
+                                "vendor_item_no": new_vendor_item_no,
+                                "unit_price": new_unit_price if new_unit_price > 0 else None,
+                                "unit_of_measure": new_unit,
+                                "package_size": new_package_size,
+                                "price_basis": new_price_basis,
+                                "price_per_gallon": new_price_per_gallon if new_price_per_gallon > 0 else None,
+                                "price_per_sqft": new_price_per_sqft if new_price_per_sqft > 0 else None,
+                                "price_per_unit": new_price_per_unit if new_price_per_unit > 0 else None,
+                                "effective_date": new_effective_date,
+                                "description": new_description,
+                                "notes": new_notes,
+                                "status": new_status,
+                                "is_current": new_is_current,
+                                "needs_review": new_needs_review,
+                            }
+                        )
+                        st.success(f"Created pricing row {pricing_item_id}.")
+                        st.rerun()
+                    except Exception as exc:
+                        show_database_error(exc)
+
+        st.caption(f"Showing {fmt_count(len(pricing))} pricing rows")
+        if pricing.empty:
+            show_empty("No pricing rows match the current filters.")
+        else:
+            display_columns = [
+                "pricing_item_id",
                 "product_name",
                 "vendor",
                 "category",
@@ -5349,32 +5765,128 @@ def pricing_catalog_page() -> None:
                 "package_size",
                 "price_basis",
                 "price_per_gallon",
+                "price_per_sqft",
+                "price_per_unit",
                 "effective_date",
                 "status",
+                "is_current",
                 "needs_review",
+                "vendor_item_no",
                 "source_file",
                 "source_type",
                 "notes",
-            ],
-            height=560,
+            ]
+            for column in display_columns:
+                if column not in pricing.columns:
+                    pricing[column] = None
+            edited_pricing = st.data_editor(
+                pricing[display_columns],
+                use_container_width=True,
+                hide_index=True,
+                height=560,
+                key="pricing_catalog_editor",
+                disabled=["pricing_item_id", "source_file", "source_type"],
+                column_config={
+                    "unit_price": st.column_config.NumberColumn("Unit Price", format="$%.4f"),
+                    "price_per_gallon": st.column_config.NumberColumn("Price / Gal", format="$%.4f"),
+                    "price_per_sqft": st.column_config.NumberColumn("Price / Sq Ft", format="$%.4f"),
+                    "price_per_unit": st.column_config.NumberColumn("Price / Unit", format="$%.4f"),
+                    "effective_date": st.column_config.DateColumn("Effective Date"),
+                    "is_current": st.column_config.CheckboxColumn("Current"),
+                    "needs_review": st.column_config.CheckboxColumn("Needs Review"),
+                    "notes": st.column_config.TextColumn("Notes", width="large"),
+                },
+            )
+            save_col, clear_col = st.columns([1, 3])
+            with save_col:
+                if st.button("Save Pricing Edits", type="primary", disabled=pricing.empty):
+                    try:
+                        saved_count = save_pricing_catalog_edits(pricing, edited_pricing)
+                        if saved_count:
+                            st.success(f"Saved {saved_count:,} pricing row edits.")
+                            st.rerun()
+                        else:
+                            st.info("No pricing changes detected.")
+                    except Exception as exc:
+                        show_database_error(exc)
+            with clear_col:
+                st.caption("Existing catalog rows can be corrected here. New product creation still flows through pricing import or product document upload.")
+
+        filtered_export = pricing_export_dataframe(pricing)
+        full_current_export = pricing_export_dataframe(current_pricing_export)
+        c1, c2 = st.columns(2)
+        with c1:
+            st.download_button(
+                "Download filtered pricing CSV",
+                data=filtered_export.to_csv(index=False).encode("utf-8"),
+                file_name="pricing_catalog_filtered.csv",
+                mime="text/csv",
+            )
+        with c2:
+            st.download_button(
+                "Download full current pricing catalog CSV",
+                data=full_current_export.to_csv(index=False).encode("utf-8"),
+                file_name="pricing_catalog_current.csv",
+                mime="text/csv",
+            )
+
+    with product_docs_tab:
+        st.subheader("Upload Product Data Sheets")
+        st.caption("Upload a PDS, SDS, application guide, installation guide, or technical bulletin. Link it to an existing product when possible.")
+        product_options = load_product_catalog_options()
+        selected_product_row: dict[str, Any] | None = None
+        if product_options.empty:
+            st.info("No product catalog rows are available yet. Uploads will create product knowledge rows from the document.")
+        else:
+            option_rows = product_options.to_dict(orient="records")
+            selected_idx = st.selectbox(
+                "Link uploaded sheet to product",
+                options=list(range(len(option_rows) + 1)),
+                index=0,
+                format_func=lambda idx: "Create or infer product from document" if idx == 0 else product_catalog_option_label(option_rows[idx - 1]),
+                key="product_sheet_catalog_link",
+            )
+            if selected_idx:
+                selected_product_row = option_rows[selected_idx - 1]
+        manufacturer_hint = st.text_input("Manufacturer hint", key="product_sheet_manufacturer_hint").strip()
+        use_ai = st.checkbox(
+            "Use AI parser for richer extraction",
+            value=False,
+            key="product_sheet_use_ai",
+            help="When unchecked, the deterministic/regex parser is used and no OpenAI API call is made.",
         )
-    filtered_export = pricing_export_dataframe(pricing)
-    full_current_export = pricing_export_dataframe(current_pricing_export)
-    c1, c2 = st.columns(2)
-    with c1:
-        st.download_button(
-            "Download filtered pricing CSV",
-            data=filtered_export.to_csv(index=False).encode("utf-8"),
-            file_name="pricing_catalog_filtered.csv",
-            mime="text/csv",
+        uploaded_product_files = st.file_uploader(
+            "Product document files",
+            type=["pdf", "txt", "md", "text"],
+            accept_multiple_files=True,
+            key="product_sheet_uploads",
         )
-    with c2:
-        st.download_button(
-            "Download full current pricing catalog CSV",
-            data=full_current_export.to_csv(index=False).encode("utf-8"),
-            file_name="pricing_catalog_current.csv",
-            mime="text/csv",
-        )
+        if uploaded_product_files and st.button("Process Product Sheets", type="primary"):
+            processed_rows = []
+            for uploaded_file in uploaded_product_files:
+                try:
+                    result = ingest_uploaded_product_document(
+                        uploaded_file,
+                        selected_product=selected_product_row,
+                        use_ai=use_ai,
+                        manufacturer_hint=manufacturer_hint,
+                    )
+                    counts = result["counts"]
+                    processed_rows.append(
+                        {
+                            "file": uploaded_file.name,
+                            "products": counts.get("product_catalog", 0),
+                            "documents": counts.get("product_documents", 0),
+                            "properties": counts.get("product_properties", 0),
+                            "rules": counts.get("product_rules", 0),
+                            "linked_product": text_value((selected_product_row or {}).get("product_name")),
+                        }
+                    )
+                except Exception as exc:
+                    processed_rows.append({"file": uploaded_file.name, "error": safe_exception_text(exc)})
+            if processed_rows:
+                st.success(f"Processed {len(processed_rows):,} uploaded product document(s).")
+                st.dataframe(pd.DataFrame(processed_rows), use_container_width=True, hide_index=True)
 
 
 @st.cache_data(ttl=300, show_spinner=False)

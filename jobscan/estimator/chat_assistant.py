@@ -17,6 +17,13 @@ from .schemas import EstimatorData
 
 
 DEFAULT_CHAT_ESTIMATOR_MODEL = "gpt-4o"
+INSULATION_CHAT_TEMPLATE_DEFAULTS = {
+    "foam_yield_or_coverage": 2600.0,
+    "foam_unit_price": 2.25,
+    "loading_hourly_rate": 25.5,
+    "traveling_hourly_rate": 13.0,
+    "generator_daily_rate": 40.0,
+}
 DETERMINISTIC_DIMENSION_FIELDS = {
     "building_footprint_length_ft",
     "building_footprint_width_ft",
@@ -541,6 +548,22 @@ def _build_estimator_context_summary(data: EstimatorData | None, *, scope: dict[
         template_type=template_type,
         limit=8,
     ) if template_type == "insulation" else []
+    summary["template_fallback_defaults"] = (
+        {
+            "insulation_foam": {
+                "yield_or_coverage": INSULATION_CHAT_TEMPLATE_DEFAULTS["foam_yield_or_coverage"],
+                "unit_price": INSULATION_CHAT_TEMPLATE_DEFAULTS["foam_unit_price"],
+                "use_when": "Use only as a review-marked template fallback when scope indicates spray foam but matching history/pricing is missing or thin.",
+            },
+            "insulation_logistics": {
+                "loading_hourly_rate": INSULATION_CHAT_TEMPLATE_DEFAULTS["loading_hourly_rate"],
+                "traveling_hourly_rate": INSULATION_CHAT_TEMPLATE_DEFAULTS["traveling_hourly_rate"],
+                "generator_daily_rate": INSULATION_CHAT_TEMPLATE_DEFAULTS["generator_daily_rate"],
+            },
+        }
+        if template_type == "insulation"
+        else {}
+    )
     summary["pricing_candidates_by_bucket"] = _pricing_candidates_by_bucket(data, template_type=template_type)
     summary["product_guidance_digest"] = _product_guidance_digest(data, template_type=template_type)
     summary["companion_relationships"] = _companion_relationships(data, template_type=template_type)
@@ -564,6 +587,22 @@ def _empty_chat_decision_context(scope: dict[str, Any] | None) -> dict[str, Any]
         ],
         "historical_decision_evidence": [],
         "foam_yield_history_digest": [],
+        "template_fallback_defaults": (
+            {
+                "insulation_foam": {
+                    "yield_or_coverage": INSULATION_CHAT_TEMPLATE_DEFAULTS["foam_yield_or_coverage"],
+                    "unit_price": INSULATION_CHAT_TEMPLATE_DEFAULTS["foam_unit_price"],
+                    "use_when": "Use only as a review-marked template fallback when scope indicates spray foam but matching history/pricing is missing or thin.",
+                },
+                "insulation_logistics": {
+                    "loading_hourly_rate": INSULATION_CHAT_TEMPLATE_DEFAULTS["loading_hourly_rate"],
+                    "traveling_hourly_rate": INSULATION_CHAT_TEMPLATE_DEFAULTS["traveling_hourly_rate"],
+                    "generator_daily_rate": INSULATION_CHAT_TEMPLATE_DEFAULTS["generator_daily_rate"],
+                },
+            }
+            if template_type == "insulation"
+            else {}
+        ),
         "pricing_candidates_by_bucket": [],
         "product_guidance_digest": [],
         "companion_relationships": [],
@@ -1339,6 +1378,10 @@ def _chat_prompt_messages(
         "use only hours_per_day, people_count, trip_count, and unit_price because the workbook formula is hours x people x rate x trips. "
         "For insulation foam yield_or_coverage, prefer foam_yield_history_digest entries matching foam type, product/template option, "
         "and thickness band; include that evidence and set review_required when the historical range is wide or evidence is thin. "
+        "If no matching foam history is available but template_fallback_defaults includes insulation foam yield/unit price, use those as "
+        "review-marked template fallbacks instead of saying yield or unit price is unavailable. "
+        "Do not assume a generic standard foam thickness such as 2 inches; derive thickness from explicit thickness, target R-value with "
+        "product R-per-inch evidence, or matching historical template evidence, otherwise ask or mark thickness review_required. "
         "For roofing jobs, use roofing workbook buckets directly: foam for roof SPF, coating, primer, caulk_detail, fabric, seams_misc, "
         "penetrations, board_stock, fasteners, plates, granules, dumpster, lift, generator, sales_trips, truck_expense, and roofing labor buckets. "
         "Roofing labor rows use the mixed labor formula: daily_rate and days when a daily rate is available, otherwise total_hours and hourly_rate. "
