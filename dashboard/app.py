@@ -2208,6 +2208,8 @@ def apply_filters(
 
 
 def apply_basic_filters(df: pd.DataFrame) -> pd.DataFrame:
+    if not isinstance(df, pd.DataFrame):
+        return pd.DataFrame()
     filtered = df.copy()
     if selected_divisions and "division" in filtered.columns:
         filtered = filtered[filtered["division"].astype(str).isin(selected_divisions)]
@@ -2538,6 +2540,14 @@ JOB_BOARD_FIELDS = [
     "pipeline_status",
     "status",
     "job_type",
+    "project_type",
+    "scope_type",
+    "substrate",
+    "roof_type",
+    "existing_roof_type",
+    "material_system",
+    "product_system",
+    "material_type",
     "site_address",
     "city",
     "state",
@@ -2549,6 +2559,22 @@ JOB_BOARD_FIELDS = [
     "estimated_sqft",
     "price_per_sqft",
     "estimate_date",
+    "completion_date",
+    "date_of_completion",
+    "completed_date",
+    "estimator",
+    "salesperson",
+    "sales_person",
+    "lead_source",
+    "source",
+    "referral_source",
+    "marketing_source",
+    "warranty_years",
+    "warranty_type",
+    "warranty_scope",
+    "warranty_amount",
+    "coating_type",
+    "foam_type",
     "folder_url",
     "folder_path",
     "folder_link_or_path",
@@ -2640,6 +2666,8 @@ def load_job_board_warnings() -> pd.DataFrame:
 
 def load_job_board_df() -> pd.DataFrame:
     jobs = load_job_board_jobs()
+    if not isinstance(jobs, pd.DataFrame):
+        return pd.DataFrame()
     if jobs.empty or "job_id" not in jobs.columns:
         return jobs
     jobs = with_folder_link(jobs)
@@ -2672,6 +2700,505 @@ def first_nonblank(*values: object) -> str:
         if text and text.lower() not in {"nan", "none", "null", "-", "—"}:
             return text
     return ""
+
+
+SALES_PIPELINE_STAGES = [
+    "Lead Received",
+    "Site Visit Scheduled",
+    "Estimate In Progress",
+    "Proposal Submitted",
+    "Follow-Up / Negotiation",
+    "Contract Pending",
+    "Closed Won",
+    "Closed Lost",
+]
+
+READINESS_STATUSES = [
+    "Ready To Schedule",
+    "Customer Hold",
+    "Material Hold",
+    "Permit Hold",
+    "Weather Window",
+    "Scheduled",
+]
+
+
+def row_first_nonblank(row: pd.Series, columns: Iterable[str]) -> str:
+    return first_nonblank(*(row.get(column) for column in columns if column in row.index))
+
+
+def row_first_positive_number(row: pd.Series, columns: Iterable[str]) -> float:
+    for column in columns:
+        if column not in row.index:
+            continue
+        value = pd.to_numeric(pd.Series([row.get(column)]), errors="coerce").iloc[0]
+        if not pd.isna(value) and float(value) > 0:
+            return float(value)
+    return 0.0
+
+
+def normalized_sales_stage(row: pd.Series) -> str:
+    source_text = " ".join(
+        row_first_nonblank(row, [column])
+        for column in [
+            "workflow_status",
+            "pipeline_status",
+            "status",
+            "proposal_status",
+            "contract_status",
+            "followup_status",
+            "stage",
+        ]
+    ).lower()
+    if any(token in source_text for token in ["closed lost", "lost", "dead", "no bid", "declined", "cancelled"]):
+        return "Closed Lost"
+    if any(token in source_text for token in ["closed won", "won", "completed", "complete", "invoiced"]):
+        return "Closed Won"
+    if any(token in source_text for token in ["contract pending", "pending contract", "signed", "contracted", "awarded"]):
+        return "Contract Pending"
+    if any(token in source_text for token in ["follow", "negotiat", "revision", "revised"]):
+        return "Follow-Up / Negotiation"
+    if any(token in source_text for token in ["proposal", "proposed", "submitted", "sent"]):
+        return "Proposal Submitted"
+    if any(token in source_text for token in ["estimate", "pricing", "takeoff", "progress"]):
+        return "Estimate In Progress"
+    if any(token in source_text for token in ["site visit", "visit scheduled", "walkthrough", "walk through", "inspection"]):
+        return "Site Visit Scheduled"
+    if source_text.strip():
+        return "Lead Received"
+    return "Lead Received"
+
+
+def normalized_project_category(row: pd.Series) -> str:
+    source_text = " ".join(
+        row_first_nonblank(row, [column])
+        for column in ["division", "job_type", "project_type", "scope_type", "coating_type", "foam_type", "job_name"]
+    ).lower()
+    if "repair" in source_text:
+        return "Repairs"
+    if any(token in source_text for token in ["metal", "standing seam", "r-panel", "r panel"]):
+        return "Metal Restoration"
+    if any(token in source_text for token in ["insulation", "spray foam", "foam", "open cell", "closed cell"]):
+        return "Spray Foam Insulation"
+    if any(token in source_text for token in ["roof", "coating", "restoration", "silicone", "acrylic"]):
+        return "Roofing Restoration"
+    return "Unclassified"
+
+
+def normalized_project_size(value: float) -> str:
+    if value >= 250000:
+        return "$250k+"
+    if value >= 100000:
+        return "$100k-$250k"
+    if value >= 25000:
+        return "$25k-$100k"
+    if value > 0:
+        return "Under $25k"
+    return "Unknown"
+
+
+def normalize_sales_jobs(df: pd.DataFrame) -> pd.DataFrame:
+    if not isinstance(df, pd.DataFrame):
+        return pd.DataFrame()
+    out = with_folder_link(df).copy()
+    if out.empty:
+        return out
+    out["sales_stage"] = out.apply(normalized_sales_stage, axis=1)
+    out["sales_value"] = out.apply(
+        lambda row: row_first_positive_number(
+            row,
+            ["estimated_value", "final_price", "contract_amount", "contract_value", "proposal_amount", "invoice_amount"],
+        ),
+        axis=1,
+    )
+    out["estimator_display"] = out.apply(
+        lambda row: row_first_nonblank(
+            row,
+            ["estimator", "salesperson", "sales_person", "deal_owner", "assigned_user", "owner", "project_manager"],
+        )
+        or "Not Captured",
+        axis=1,
+    )
+    out["lead_source_display"] = out.apply(
+        lambda row: row_first_nonblank(
+            row,
+            ["lead_source", "source", "referral_source", "marketing_source", "business_development_source"],
+        )
+        or "Not Captured",
+        axis=1,
+    )
+    out["project_category"] = out.apply(normalized_project_category, axis=1)
+    out["project_size"] = out["sales_value"].apply(normalized_project_size)
+    out["win_loss_status"] = out["sales_stage"].map(
+        {
+            "Closed Won": "Won",
+            "Closed Lost": "Lost",
+        }
+    ).fillna("Open")
+    return out
+
+
+def warranty_display_for_row(row: pd.Series) -> str:
+    parts = [
+        row_first_nonblank(row, ["warranty_years", "warranty_duration", "warranty_term"]),
+        row_first_nonblank(row, ["warranty_type", "warranty_provider"]),
+        row_first_nonblank(row, ["warranty_scope", "warranty_area", "warranty_amount"]),
+    ]
+    text = " ".join(part for part in parts if part).strip()
+    if text:
+        return text
+    has_warranty = row.get("has_warranty")
+    has_warranty_text = text_value(has_warranty).lower()
+    if has_warranty_text in {"true", "yes", "y", "1", "available"}:
+        return "Warranty indicated"
+    return "Not Captured"
+
+
+def prepare_job_board_dashboard_rows(jobs: pd.DataFrame) -> pd.DataFrame:
+    if not isinstance(jobs, pd.DataFrame) or jobs.empty:
+        return pd.DataFrame()
+    out = normalize_operations_jobs(normalize_sales_jobs(jobs))
+    if out.empty:
+        return out
+    out["project"] = out.apply(lambda row: row_first_nonblank(row, ["job_name", "customer", "estimate_file"]) or "Untitled job", axis=1)
+    out["customer_display"] = out.apply(lambda row: row_first_nonblank(row, ["customer", "bill_to"]) or "Not Captured", axis=1)
+    out["substrate_display"] = out.apply(
+        lambda row: row_first_nonblank(
+            row,
+            ["substrate", "roof_type", "existing_roof_type", "deck_type", "surface_type", "building_type"],
+        )
+        or "Not Captured",
+        axis=1,
+    )
+    out["material_system_display"] = out.apply(
+        lambda row: row_first_nonblank(
+            row,
+            ["material_system", "product_system", "coating_type", "foam_type", "material_type", "roof_system"],
+        )
+        or "Not Captured",
+        axis=1,
+    )
+    out["warranty_display"] = out.apply(warranty_display_for_row, axis=1)
+    out["completion_date_display"] = date_column_series(
+        out,
+        ["completion_date", "date_of_completion", "completed_date", "invoice_date"],
+    )
+    out["labor_plan"] = out.apply(
+        lambda row: " / ".join(
+            part
+            for part in [
+                f"{format_summary_value(row.get('estimated_duration_days'), kind='number')} days"
+                if row_first_positive_number(row, ["estimated_duration_days"]) > 0
+                else "",
+                f"{format_summary_value(row.get('estimated_crew_size'), kind='number')} crew"
+                if row_first_positive_number(row, ["estimated_crew_size"]) > 0
+                else "",
+                f"{format_summary_value(row.get('estimated_labor_hours'), kind='number')} hrs"
+                if row_first_positive_number(row, ["estimated_labor_hours"]) > 0
+                else "",
+            ]
+            if part
+        )
+        or "Not Captured",
+        axis=1,
+    )
+    out["folder"] = out.get("folder_link_or_path", "")
+    return out
+
+
+def sales_pipeline_rollup(jobs: pd.DataFrame) -> pd.DataFrame:
+    if jobs.empty:
+        return pd.DataFrame(columns=["stage", "job_count", "value"])
+    rollup = (
+        jobs.groupby("sales_stage", dropna=False)
+        .agg(job_count=("sales_stage", "size"), value=("sales_value", "sum"))
+        .reindex(SALES_PIPELINE_STAGES, fill_value=0)
+        .reset_index()
+        .rename(columns={"sales_stage": "stage"})
+    )
+    return rollup
+
+
+def sales_performance_rollup(jobs: pd.DataFrame, group_column: str) -> pd.DataFrame:
+    columns = [
+        "category",
+        "proposal_count",
+        "won_count",
+        "lost_count",
+        "open_count",
+        "proposal_value",
+        "won_value",
+        "win_rate",
+    ]
+    if jobs.empty or group_column not in jobs.columns:
+        return pd.DataFrame(columns=columns)
+    proposed_stages = {"Proposal Submitted", "Follow-Up / Negotiation", "Contract Pending", "Closed Won", "Closed Lost"}
+    rows: list[dict[str, Any]] = []
+    for category, group in jobs.groupby(group_column, dropna=False):
+        stage = group["sales_stage"].fillna("").astype(str)
+        proposed = group[stage.isin(proposed_stages)]
+        won = group[stage == "Closed Won"]
+        lost = group[stage == "Closed Lost"]
+        decided_count = len(won) + len(lost)
+        rows.append(
+            {
+                "category": text_value(category) or "Not Captured",
+                "proposal_count": len(proposed),
+                "won_count": len(won),
+                "lost_count": len(lost),
+                "open_count": len(group[~stage.isin(["Closed Won", "Closed Lost"])]),
+                "proposal_value": float(proposed["sales_value"].sum()),
+                "won_value": float(won["sales_value"].sum()),
+                "win_rate": (len(won) / decided_count) if decided_count else None,
+            }
+        )
+    return pd.DataFrame(rows).sort_values(["won_value", "proposal_value"], ascending=False, na_position="last")
+
+
+def estimator_kpi_rollup(jobs: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "estimator",
+        "site_visits",
+        "site_visit_goal",
+        "proposals_sent",
+        "proposal_goal",
+        "proposal_value",
+        "proposal_value_goal",
+        "followups_completed",
+        "followup_goal",
+        "contracts_won",
+        "contracts_won_goal",
+    ]
+    if jobs.empty:
+        return pd.DataFrame(columns=columns)
+    stage_rank = {stage: index for index, stage in enumerate(SALES_PIPELINE_STAGES)}
+    rows: list[dict[str, Any]] = []
+    for estimator, group in jobs.groupby("estimator_display", dropna=False):
+        ranks = group["sales_stage"].map(stage_rank).fillna(0)
+        proposals = group[group["sales_stage"].isin(["Proposal Submitted", "Follow-Up / Negotiation", "Contract Pending", "Closed Won", "Closed Lost"])]
+        rows.append(
+            {
+                "estimator": text_value(estimator) or "Not Captured",
+                "site_visits": int((ranks >= stage_rank["Site Visit Scheduled"]).sum()),
+                "site_visit_goal": 10,
+                "proposals_sent": int(len(proposals)),
+                "proposal_goal": 5,
+                "proposal_value": float(proposals["sales_value"].sum()),
+                "proposal_value_goal": "$150k+",
+                "followups_completed": int((group["sales_stage"] == "Follow-Up / Negotiation").sum()),
+                "followup_goal": 20,
+                "contracts_won": int((group["sales_stage"] == "Closed Won").sum()),
+                "contracts_won_goal": "1-2",
+            }
+        )
+    return pd.DataFrame(rows).sort_values("proposal_value", ascending=False)
+
+
+def lead_source_rollup(jobs: pd.DataFrame) -> pd.DataFrame:
+    columns = ["source", "job_count", "open_value", "revenue_won"]
+    if jobs.empty:
+        return pd.DataFrame(columns=columns)
+    open_mask = ~jobs["sales_stage"].isin(["Closed Won", "Closed Lost"])
+    won_mask = jobs["sales_stage"] == "Closed Won"
+    rollup = (
+        jobs.assign(open_value=jobs["sales_value"].where(open_mask, 0.0), revenue_won=jobs["sales_value"].where(won_mask, 0.0))
+        .groupby("lead_source_display", dropna=False)
+        .agg(job_count=("lead_source_display", "size"), open_value=("open_value", "sum"), revenue_won=("revenue_won", "sum"))
+        .reset_index()
+        .rename(columns={"lead_source_display": "source"})
+        .sort_values(["revenue_won", "open_value"], ascending=False)
+    )
+    return rollup
+
+
+def date_column_series(df: pd.DataFrame, columns: Iterable[str]) -> pd.Series:
+    values = pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns]")
+    for column in columns:
+        if column in df.columns:
+            parsed = pd.to_datetime(df[column], errors="coerce")
+            values = values.combine_first(parsed)
+    return values
+
+
+def normalize_operations_jobs(jobs: pd.DataFrame, schedule: pd.DataFrame | None = None) -> pd.DataFrame:
+    if not isinstance(jobs, pd.DataFrame):
+        return pd.DataFrame()
+    out = with_folder_link(jobs).copy()
+    if schedule is not None and not schedule.empty and "job_id" in out.columns and "job_id" in schedule.columns:
+        schedule_cols = [
+            column
+            for column in [
+                "job_id",
+                "assigned_crew_leader",
+                "estimated_start_date",
+                "estimated_end_date",
+                "estimated_duration_days",
+                "estimated_labor_hours",
+                "estimated_crew_size",
+                "schedule_status",
+                "blocking_issue",
+                "priority",
+                "schedule_notes",
+            ]
+            if column in schedule.columns
+        ]
+        out = out.merge(schedule[schedule_cols].drop_duplicates("job_id"), on="job_id", how="left", suffixes=("", "_schedule"))
+        for column in [name for name in schedule_cols if name != "job_id"]:
+            schedule_column = f"{column}_schedule"
+            if schedule_column in out.columns:
+                if column in out.columns:
+                    out[column] = out[column].combine_first(out[schedule_column])
+                else:
+                    out[column] = out[schedule_column]
+                out = out.drop(columns=[schedule_column])
+    if out.empty:
+        return out
+    out["operations_value"] = out.apply(
+        lambda row: row_first_positive_number(
+            row,
+            ["estimated_value", "final_price", "contract_amount", "contract_value", "proposal_amount", "invoice_amount"],
+        ),
+        axis=1,
+    )
+    out["project_category"] = out.apply(normalized_project_category, axis=1)
+    out["ready_date"] = date_column_series(
+        out,
+        [
+            "ready_date",
+            "contract_date",
+            "signed_contract_date",
+            "estimate_date",
+            "created_at",
+            "last_scanned_at",
+        ],
+    )
+    out["completion_date"] = date_column_series(
+        out,
+        ["completion_date", "date_of_completion", "completed_date", "invoice_date", "updated_at", "last_scanned_at"],
+    )
+    out["estimated_start_date_parsed"] = pd.to_datetime(out["estimated_start_date"], errors="coerce") if "estimated_start_date" in out.columns else pd.NaT
+    out["estimated_end_date_parsed"] = pd.to_datetime(out["estimated_end_date"], errors="coerce") if "estimated_end_date" in out.columns else pd.NaT
+    today = pd.Timestamp(date.today())
+    out["days_waiting"] = (today.normalize() - out["ready_date"].dt.normalize()).dt.days
+    out.loc[out["days_waiting"].isna() | (out["days_waiting"] < 0), "days_waiting"] = 0
+    out["readiness_status"] = out.apply(normalized_readiness_status, axis=1)
+    out["schedule_health"] = out.apply(normalized_schedule_health, axis=1)
+    out["expected_pct_complete"] = out.apply(expected_percent_complete, axis=1)
+    out["actual_pct_complete"] = out.apply(actual_percent_complete, axis=1)
+    out["production_risk_summary"] = out.apply(production_risk_summary, axis=1)
+    out["material_readiness"] = out.apply(lambda row: readiness_flag(row, ["material", "submittal"], "Material review"), axis=1)
+    out["equipment_readiness"] = out.apply(lambda row: readiness_flag(row, ["equipment", "rig", "lift"], "Equipment review"), axis=1)
+    out["customer_communication"] = out.apply(lambda row: readiness_flag(row, ["customer", "communicat", "expectation", "promise"], "Customer review"), axis=1)
+    return out
+
+
+def normalized_readiness_status(row: pd.Series) -> str:
+    source_text = " ".join(
+        row_first_nonblank(row, [column])
+        for column in ["workflow_status", "schedule_status", "blocking_issue", "schedule_notes", "pipeline_status", "status", "warnings"]
+    ).lower()
+    has_start = not pd.isna(row.get("estimated_start_date_parsed"))
+    if any(token in source_text for token in ["customer hold", "waiting on customer", "customer delay", "owner hold"]):
+        return "Customer Hold"
+    if any(token in source_text for token in ["material", "submittal", "lead time"]):
+        return "Material Hold"
+    if "permit" in source_text:
+        return "Permit Hold"
+    if any(token in source_text for token in ["weather", "temperature", "seasonal", "window"]):
+        return "Weather Window"
+    if has_start or any(token in source_text for token in ["scheduled", "mobilized", "in progress"]):
+        return "Scheduled"
+    return "Ready To Schedule"
+
+
+def normalized_schedule_health(row: pd.Series) -> str:
+    source_text = " ".join(
+        row_first_nonblank(row, [column])
+        for column in ["schedule_status", "status", "pipeline_status", "blocking_issue", "schedule_notes"]
+    ).lower()
+    today = pd.Timestamp(date.today()).normalize()
+    start = row.get("estimated_start_date_parsed")
+    end = row.get("estimated_end_date_parsed")
+    if any(token in source_text for token in ["complete", "closed won", "invoiced"]):
+        return "Completed"
+    if any(token in source_text for token in ["behind", "delayed", "blocked", "hold"]):
+        return "Behind / Blocked"
+    if not pd.isna(end) and today > pd.Timestamp(end).normalize():
+        return "Behind / Blocked"
+    if not pd.isna(start) and pd.Timestamp(start).normalize() > today:
+        return "Starting Soon"
+    if not pd.isna(start):
+        return "On Track"
+    return "Awaiting Schedule"
+
+
+def expected_percent_complete(row: pd.Series) -> float | None:
+    start = row.get("estimated_start_date_parsed")
+    end = row.get("estimated_end_date_parsed")
+    if pd.isna(start) or pd.isna(end):
+        return None
+    start_ts = pd.Timestamp(start).normalize()
+    end_ts = pd.Timestamp(end).normalize()
+    today = pd.Timestamp(date.today()).normalize()
+    total_days = max((end_ts - start_ts).days + 1, 1)
+    elapsed_days = min(max((today - start_ts).days + 1, 0), total_days)
+    return round(elapsed_days / total_days, 2)
+
+
+def actual_percent_complete(row: pd.Series) -> float | None:
+    for column in ["percent_complete", "pct_complete", "progress_pct", "actual_pct_complete"]:
+        if column not in row.index:
+            continue
+        value = pd.to_numeric(pd.Series([row.get(column)]), errors="coerce").iloc[0]
+        if not pd.isna(value):
+            numeric = float(value)
+            return round(numeric / 100, 2) if numeric > 1 else round(numeric, 2)
+    return None
+
+
+def readiness_flag(row: pd.Series, keywords: list[str], default: str) -> str:
+    source_text = " ".join(
+        row_first_nonblank(row, [column])
+        for column in ["schedule_status", "blocking_issue", "schedule_notes", "warnings", "internal_notes"]
+    ).lower()
+    if any(f"{keyword} ready" in source_text or f"{keyword}s ready" in source_text for keyword in keywords):
+        return "Ready"
+    if any(keyword in source_text for keyword in keywords):
+        return default
+    return "Not Captured"
+
+
+def production_risk_summary(row: pd.Series) -> str:
+    notes = " ".join(
+        row_first_nonblank(row, [column])
+        for column in ["blocking_issue", "schedule_notes", "warnings", "warning_summary", "internal_notes"]
+    )
+    if notes.strip():
+        return notes[:240]
+    missing: list[str] = []
+    if pd.isna(row.get("estimated_start_date_parsed")):
+        missing.append("schedule")
+    if not row_first_nonblank(row, ["assigned_crew_leader"]):
+        missing.append("crew")
+    if row_first_positive_number(row, ["estimated_labor_hours"]) <= 0:
+        missing.append("labor estimate")
+    if row_first_positive_number(row, ["estimated_sqft"]) <= 0:
+        missing.append("square footage")
+    return f"Missing {', '.join(missing)}" if missing else "No risk note captured"
+
+
+def readiness_summary(ops: pd.DataFrame) -> pd.DataFrame:
+    columns = ["status", "jobs", "revenue", "avg_days_waiting"]
+    if ops.empty:
+        return pd.DataFrame(columns=columns)
+    unscheduled = ops[ops["readiness_status"].isin(READINESS_STATUSES)]
+    return (
+        unscheduled.groupby("readiness_status", dropna=False)
+        .agg(jobs=("readiness_status", "size"), revenue=("operations_value", "sum"), avg_days_waiting=("days_waiting", "mean"))
+        .reindex(READINESS_STATUSES, fill_value=0)
+        .reset_index()
+        .rename(columns={"readiness_status": "status"})
+    )
 
 
 def first_existing_value(row: pd.Series, columns: list[str]) -> object:
@@ -2807,10 +3334,11 @@ def job_board_page() -> None:
     if selected_job_id:
         st.caption(f"Selected job_id: {selected_job_id}")
 
-    with st.expander("Job Board status debug"):
-        cols = [column for column in ["workflow_status", "pipeline_status", "status", "board_status"] if column in jobs.columns]
-        st.write(jobs[cols].head(50))
-        st.write(jobs["board_status"].value_counts(dropna=False))
+    if st.checkbox("Show Job Board diagnostics", value=False, key="job_board_show_diagnostics"):
+        with st.expander("Job Board status debug", expanded=True):
+            cols = [column for column in ["workflow_status", "pipeline_status", "status", "board_status"] if column in jobs.columns]
+            st.write(jobs[cols].head(50))
+            st.write(jobs["board_status"].value_counts(dropna=False))
 
     st.subheader("Filters")
     f1, f2, f3, f4 = st.columns(4)
@@ -2866,10 +3394,11 @@ def job_board_page() -> None:
         )
         filtered = filtered[~status_text.str.contains("completed|invoiced", case=False, na=False)]
 
-    with st.expander("Job Board selection debug"):
-        st.write("selected_job_board_job_id", st.session_state.get("selected_job_board_job_id"))
-        st.write("Job IDs sample", jobs["job_id"].head(20).tolist())
-        st.write("Filtered rows", len(filtered))
+    if st.session_state.get("job_board_show_diagnostics"):
+        with st.expander("Job Board selection debug"):
+            st.write("selected_job_board_job_id", st.session_state.get("selected_job_board_job_id"))
+            st.write("Job IDs sample", jobs["job_id"].head(20).tolist())
+            st.write("Filtered rows", len(filtered))
 
     metric_row(
         [
@@ -2881,75 +3410,85 @@ def job_board_page() -> None:
         ]
     )
 
-    available_statuses = list(jobs["board_status"].dropna().unique())
-    ordered_statuses = [status for status in JOB_BOARD_STATUS_ORDER if status in available_statuses]
-    ordered_statuses.extend(sorted(status for status in available_statuses if status not in JOB_BOARD_STATUS_ORDER))
-    existing_columns = [status for status in ordered_statuses if status in set(filtered["board_status"])]
-    if not existing_columns and not filtered.empty:
-        existing_columns = ["Other"] if "Other" in ordered_statuses else ordered_statuses[:1]
-    selected_board_columns = st.multiselect(
-        "Board columns",
-        ordered_statuses,
-        default=existing_columns,
-        key="job_board_columns",
+    dashboard_rows = prepare_job_board_dashboard_rows(filtered)
+    st.subheader("Job Board Table")
+    show_table(
+        dashboard_rows,
+        [
+            "customer_display",
+            "project",
+            "division",
+            "sales_stage",
+            "win_loss_status",
+            "sales_value",
+            "project_category",
+            "substrate_display",
+            "material_system_display",
+            "warranty_display",
+            "completion_date_display",
+            "estimator_display",
+            "lead_source_display",
+            "readiness_status",
+            "schedule_health",
+            "estimated_start_date",
+            "labor_plan",
+            "production_risk_summary",
+            "folder",
+        ],
+        height=520,
+        sort_by="sales_value",
     )
 
-    if not selected_board_columns:
-        st.info("Select at least one board column.")
-        return
+    if not dashboard_rows.empty and "job_id" in dashboard_rows.columns:
+        selectable_rows = dashboard_rows[dashboard_rows["job_id"].fillna("").astype(str).str.strip().ne("")]
+        if not selectable_rows.empty:
+            row_lookup = {
+                text_value(row.get("job_id")): row
+                for row in selectable_rows.to_dict(orient="records")
+                if text_value(row.get("job_id"))
+            }
 
-    st.subheader("Pipeline Board")
-    board_columns = st.columns(len(selected_board_columns))
-    for board_status, column in zip(selected_board_columns, board_columns):
-        column_df = filtered[filtered["board_status"] == board_status].sort_values("estimated_value", ascending=False, na_position="last")
-        with column:
-            st.markdown(f"**{board_status}**")
-            st.caption(f"{len(column_df):,} jobs | {fmt_dollar(safe_sum(column_df, 'estimated_value'))}")
-            for row_index, row in column_df.iterrows():
-                job_id = str(row.get("job_id") or "")
-                if not job_id:
-                    continue
-                with st.container(border=True):
-                    title = text_value(row.get("job_name")) or text_value(row.get("customer")) or "Untitled job"
-                    customer = text_value(row.get("customer"))
-                    st.markdown(f"**{title}**")
-                    if customer and customer != title:
-                        st.caption(customer)
-                    badge_parts = [text_value(row.get("division")), text_value(row.get("job_type"))]
-                    st.caption(" / ".join(part for part in badge_parts if part) or "No division / type")
-                    st.write(format_summary_value(row.get("estimated_value"), kind="money"))
-                    st.caption(f"Board: {text_value(row.get('board_status')) or 'Other'}")
-                    pipeline_status = text_value(row.get("pipeline_status"))
-                    row_status_value = text_value(row.get("status"))
-                    if pipeline_status:
-                        st.caption(f"Pipeline: {pipeline_status}")
-                    if row_status_value and row_status_value != pipeline_status:
-                        st.caption(f"Status: {row_status_value}")
-                    workflow_priority = text_value(row.get("priority"))
-                    if workflow_priority:
-                        st.caption(f"Priority: {workflow_priority}")
-                    crew = text_value(row.get("assigned_crew_leader"))
-                    if crew:
-                        st.caption(f"Crew: {crew}")
-                    start = text_value(row.get("estimated_start_date"))
-                    duration = text_value(row.get("estimated_duration_days"))
-                    if start or duration:
-                        st.caption(f"Schedule: {start or 'TBD'} | {duration or '-'} days")
-                    indicators: list[str] = []
-                    if pd.to_numeric(pd.Series([row.get("warning_count")]), errors="coerce").fillna(0).iloc[0] > 0 or text_value(row.get("warnings")):
-                        indicators.append("Action")
-                    if bool(row.get("has_aerial")):
-                        indicators.append("Aerial")
-                    photo_count = pd.to_numeric(pd.Series([row.get("photo_count")]), errors="coerce").fillna(0).iloc[0]
-                    if photo_count:
-                        indicators.append(f"{int(photo_count)} photos")
-                    if indicators:
-                        st.caption(" | ".join(indicators))
-                    safe_job_id = hashlib.sha1(job_id.encode("utf-8")).hexdigest()[:12]
-                    button_key = f"open_job_board_{safe_job_id}_{row_index}"
-                    if st.button("Open", key=button_key):
-                        st.session_state["selected_job_board_job_id"] = job_id
-                        st.rerun()
+            def job_board_select_label(job_id: str) -> str:
+                row = row_lookup.get(job_id, {})
+                value = format_summary_value(row.get("sales_value"), kind="money")
+                return f"{text_value(row.get('customer_display'))} - {text_value(row.get('project'))} ({value})"
+
+            selected_option = st.selectbox(
+                "Open Job Detail",
+                [""] + list(row_lookup.keys()),
+                format_func=lambda value: "Select a job" if not value else job_board_select_label(value),
+                key="job_board_table_selected_job",
+            )
+            if selected_option and selected_option != selected_job_id:
+                st.session_state["selected_job_board_job_id"] = selected_option
+                st.rerun()
+
+    if st.checkbox("Show pipeline board cards", value=False, key="job_board_show_cards"):
+        st.subheader("Pipeline Board")
+        available_statuses = list(jobs["board_status"].dropna().unique())
+        ordered_statuses = [status for status in JOB_BOARD_STATUS_ORDER if status in available_statuses]
+        ordered_statuses.extend(sorted(status for status in available_statuses if status not in JOB_BOARD_STATUS_ORDER))
+        for board_status in ordered_statuses:
+            column_df = filtered[filtered["board_status"] == board_status].sort_values("estimated_value", ascending=False, na_position="last")
+            if column_df.empty:
+                continue
+            with st.expander(f"{board_status}: {len(column_df):,} jobs | {fmt_dollar(safe_sum(column_df, 'estimated_value'))}"):
+                compact_cards = prepare_job_board_dashboard_rows(column_df)
+                show_table(
+                    compact_cards,
+                    [
+                        "customer_display",
+                        "project",
+                        "sales_value",
+                        "project_category",
+                        "readiness_status",
+                        "schedule_health",
+                        "estimator_display",
+                        "folder",
+                    ],
+                    height=260,
+                    sort_by="sales_value",
+                )
 
     if selected_job_id:
         selected_rows = jobs[jobs["job_id"].astype(str) == selected_job_id]
@@ -2960,33 +3499,39 @@ def job_board_page() -> None:
                 st.rerun()
             return
         row = selected_rows.iloc[0]
+        prepared_detail = prepare_job_board_dashboard_rows(pd.DataFrame([row.to_dict()]))
+        display_row = prepared_detail.iloc[0] if not prepared_detail.empty else row
         st.divider()
         st.header("Job Detail")
         detail_cols = st.columns(3)
         detail_items = [
-            ("Job Name", row.get("job_name"), "text"),
-            ("Customer", row.get("customer"), "text"),
+            ("Project", display_row.get("project"), "text"),
+            ("Customer", display_row.get("customer_display"), "text"),
             ("Division", row.get("division"), "text"),
-            ("Workflow Status", row.get("workflow_status") or row.get("pipeline_status") or row.get("status"), "text"),
+            ("Sales Stage", display_row.get("sales_stage"), "text"),
+            ("Win / Loss", display_row.get("win_loss_status"), "text"),
             ("Priority", row.get("priority"), "text"),
             ("Follow Up Date", row.get("follow_up_date"), "text"),
-            ("Deal Owner", row.get("deal_owner"), "text"),
+            ("Estimator / Owner", display_row.get("estimator_display"), "text"),
+            ("Lead Source", display_row.get("lead_source_display"), "text"),
             ("Assigned User", row.get("assigned_user"), "text"),
             ("Pipeline Status", row.get("pipeline_status"), "text"),
             ("Status", row.get("status"), "text"),
-            ("Job Type", row.get("job_type"), "text"),
+            ("Project Category", display_row.get("project_category"), "text"),
+            ("Substrate", display_row.get("substrate_display"), "text"),
+            ("Material / System", display_row.get("material_system_display"), "text"),
+            ("Warranty", display_row.get("warranty_display"), "text"),
             ("Address", " ".join(part for part in [text_value(row.get("site_address")), text_value(row.get("city")), text_value(row.get("state")), text_value(row.get("zip_code"))] if part), "text"),
-            ("Estimated Value", row.get("estimated_value"), "money"),
+            ("Estimated / Proposal Value", display_row.get("sales_value"), "money"),
             ("Estimated Sq Ft", row.get("estimated_sqft"), "number"),
             ("Price / Sq Ft", row.get("price_per_sqft"), "money"),
             ("Final Price", row.get("final_price"), "money"),
             ("Invoice Amount", row.get("invoice_amount"), "money"),
+            ("Completion Date", display_row.get("completion_date_display"), "text"),
             ("Assigned Crew Leader", row.get("assigned_crew_leader"), "text"),
             ("Scheduled Start", row.get("estimated_start_date"), "text"),
             ("Scheduled End", row.get("estimated_end_date"), "text"),
-            ("Duration Days", row.get("estimated_duration_days"), "number"),
-            ("Labor Hours", row.get("estimated_labor_hours"), "number"),
-            ("Crew Size", row.get("estimated_crew_size"), "number"),
+            ("Labor Plan", display_row.get("labor_plan"), "text"),
             ("Warnings", row.get("warning_summary") or row.get("warnings"), "text"),
             ("Last Scanned At", row.get("last_scanned_at"), "text"),
         ]
@@ -3151,6 +3696,139 @@ def owner_overview_page() -> None:
             "warnings",
             "folder_link_or_path",
         ],
+    )
+
+
+def sales_dashboard_page() -> None:
+    st.title("Sales Dashboard")
+    st.caption("Sales rollups are inferred from current job, estimate, workflow, and pipeline fields. Missing estimator, lead-source, or outcome data is shown as Not Captured.")
+
+    base_jobs = load_job_board_df()
+    if not isinstance(base_jobs, pd.DataFrame):
+        base_jobs = pd.DataFrame()
+    jobs = normalize_sales_jobs(apply_basic_filters(base_jobs))
+    if jobs.empty:
+        show_empty("No sales jobs match the current filters.")
+        return
+
+    open_jobs = jobs[~jobs["sales_stage"].isin(["Closed Won", "Closed Lost"])]
+    won_jobs = jobs[jobs["sales_stage"] == "Closed Won"]
+    lost_jobs = jobs[jobs["sales_stage"] == "Closed Lost"]
+    decided_count = len(won_jobs) + len(lost_jobs)
+    win_rate = (len(won_jobs) / decided_count) if decided_count else None
+    metric_row(
+        [
+            ("Open Pipeline", money_metric(open_jobs["sales_value"].sum())),
+            ("Open Jobs", number_metric(len(open_jobs))),
+            ("Closed Won Value", money_metric(won_jobs["sales_value"].sum())),
+            ("Closed Lost Value", money_metric(lost_jobs["sales_value"].sum())),
+            ("Win Rate", f"{win_rate:.0%}" if win_rate is not None else "-"),
+            ("Missing Lead Source", number_metric((jobs["lead_source_display"] == "Not Captured").sum())),
+        ]
+    )
+
+    st.subheader("Current Sales Pipeline")
+    pipeline = sales_pipeline_rollup(jobs)
+    show_table(pipeline, ["stage", "job_count", "value"], height=315)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        bar_chart(pipeline, "stage", "value", "Pipeline Value by Stage")
+    with c2:
+        bar_chart(jobs, "project_category", "sales_value", "Pipeline Value by Category", color="sales_stage")
+
+    st.subheader("Sales Performance")
+    performance_tabs = st.tabs(["By Estimator", "By Division", "By Category", "By Project Size"])
+    performance_sources = [
+        ("estimator_display", performance_tabs[0]),
+        ("division", performance_tabs[1]),
+        ("project_category", performance_tabs[2]),
+        ("project_size", performance_tabs[3]),
+    ]
+    for group_column, tab in performance_sources:
+        with tab:
+            perf = sales_performance_rollup(jobs, group_column)
+            show_table(
+                perf,
+                [
+                    "category",
+                    "win_rate",
+                    "proposal_count",
+                    "won_count",
+                    "lost_count",
+                    "open_count",
+                    "proposal_value",
+                    "won_value",
+                ],
+                height=320,
+                sort_by="proposal_value",
+            )
+
+    st.subheader("Estimator Weekly KPI Proxy")
+    st.caption("Until activity tracking is wired in, these counts use pipeline-stage evidence as a proxy for visits, proposals, follow-ups, and wins.")
+    show_table(
+        estimator_kpi_rollup(jobs),
+        [
+            "estimator",
+            "site_visits",
+            "site_visit_goal",
+            "proposals_sent",
+            "proposal_goal",
+            "proposal_value",
+            "proposal_value_goal",
+            "followups_completed",
+            "followup_goal",
+            "contracts_won",
+            "contracts_won_goal",
+        ],
+        height=360,
+        sort_by="proposal_value",
+    )
+
+    st.subheader("Business Development / Lead Sources")
+    show_table(
+        lead_source_rollup(jobs),
+        ["source", "job_count", "open_value", "revenue_won"],
+        height=300,
+        sort_by="revenue_won",
+    )
+
+    st.subheader("Sales Data Gaps")
+    gap_mask = (
+        (jobs["estimator_display"] == "Not Captured")
+        | (jobs["lead_source_display"] == "Not Captured")
+        | (jobs["sales_value"] <= 0)
+        | (jobs["sales_stage"].fillna("").astype(str) == "Lead Received")
+    )
+    gap_df = jobs[gap_mask].copy()
+    gap_df["gap_summary"] = gap_df.apply(
+        lambda row: ", ".join(
+            label
+            for label, missing in [
+                ("estimator", row.get("estimator_display") == "Not Captured"),
+                ("lead source", row.get("lead_source_display") == "Not Captured"),
+                ("value", float(row.get("sales_value") or 0) <= 0),
+                ("pipeline stage", row.get("sales_stage") == "Lead Received"),
+            ]
+            if missing
+        ),
+        axis=1,
+    )
+    show_table(
+        gap_df,
+        [
+            "gap_summary",
+            "customer",
+            "job_name",
+            "division",
+            "sales_stage",
+            "sales_value",
+            "estimator_display",
+            "lead_source_display",
+            "folder_link_or_path",
+        ],
+        height=340,
+        sort_by="sales_value",
     )
 
 
@@ -3342,6 +4020,185 @@ def contracted_backlog_scheduling_page() -> None:
             "folder_link_or_path",
         ],
         sort_by="estimated_value",
+    )
+
+
+def operations_dashboard_page() -> None:
+    st.title("Operations Dashboard")
+    st.caption(
+        "Production rollups use contracted backlog, schedule records, extracted estimate fields, and warning notes. "
+        "QuickBooks-only metrics and true field progress are flagged where source data is not captured yet."
+    )
+
+    base_jobs = load_job_board_df()
+    if not isinstance(base_jobs, pd.DataFrame):
+        base_jobs = pd.DataFrame()
+    all_jobs = normalize_sales_jobs(apply_basic_filters(base_jobs))
+    schedule = load_schedule_df() if relation_columns("crew_schedule") else pd.DataFrame()
+    backlog = apply_basic_filters(query_view("dashboard_contracted_backlog"))
+    backlog_source = backlog if not backlog.empty else all_jobs
+    ops = normalize_operations_jobs(backlog_source, schedule=schedule)
+
+    if all_jobs.empty and ops.empty:
+        show_empty("No operational jobs match the current filters.")
+        return
+
+    today = pd.Timestamp(date.today()).normalize()
+    month_start = pd.Timestamp(date.today().replace(day=1))
+    won_jobs = all_jobs[all_jobs["sales_stage"] == "Closed Won"] if not all_jobs.empty else pd.DataFrame()
+    open_proposals = (
+        all_jobs[all_jobs["sales_stage"].isin(["Proposal Submitted", "Follow-Up / Negotiation", "Contract Pending"])]
+        if not all_jobs.empty
+        else pd.DataFrame()
+    )
+    completed_recent = ops[
+        (ops["schedule_health"] == "Completed")
+        | (ops["completion_date"].notna() & (ops["completion_date"] >= (today - pd.Timedelta(days=30))))
+    ] if not ops.empty and "completion_date" in ops.columns else pd.DataFrame()
+    completed_mtd = completed_recent[
+        completed_recent["completion_date"].notna() & (completed_recent["completion_date"] >= month_start)
+    ] if not completed_recent.empty and "completion_date" in completed_recent.columns else pd.DataFrame()
+
+    metric_row(
+        [
+            ("Contracted Backlog", money_metric(ops["operations_value"].sum()) if not ops.empty else "$0"),
+            ("Sales Closed MTD", money_metric(won_jobs["sales_value"].sum()) if not won_jobs.empty else "$0"),
+            ("Open Proposal Value", money_metric(open_proposals["sales_value"].sum()) if not open_proposals.empty else "$0"),
+            ("Sq Ft Completed MTD", number_metric(safe_sum(completed_mtd, "estimated_sqft"))),
+            ("Recently Completed", number_metric(len(completed_recent))),
+            ("AR Over 60", "Needs QB"),
+        ]
+    )
+
+    st.subheader("Operational KPI Coverage")
+    coverage_rows = pd.DataFrame(
+        [
+            {"metric": "Revenue MTD vs Goal", "current_source": "QuickBooks goal not connected", "status": "Needs QB / goal source"},
+            {"metric": "Gross Profit % MTD", "current_source": "Estimate costs available on some jobs", "status": "Needs QB actuals"},
+            {"metric": "Labor Efficiency %", "current_source": "Estimated labor captured; actual hours not connected", "status": "Needs time tracking"},
+            {"metric": "Material Usage vs Estimate", "current_source": "Estimated materials captured; actual usage not connected", "status": "Needs field/job-cost data"},
+            {"metric": "AR Over 60 Days", "current_source": "Not in current dashboard marts", "status": "Needs QuickBooks"},
+        ]
+    )
+    show_table(coverage_rows, ["metric", "current_source", "status"], height=230)
+
+    st.subheader("Projects Waiting To Be Scheduled")
+    if ops.empty:
+        show_empty("No contracted backlog rows are available.")
+    else:
+        waiting = ops[ops["readiness_status"].isin(["Ready To Schedule", "Customer Hold", "Material Hold", "Permit Hold", "Weather Window"])].copy()
+        waiting = waiting[waiting["estimated_start_date_parsed"].isna()]
+        metric_row(
+            [
+                ("Ready Jobs", number_metric((waiting["readiness_status"] == "Ready To Schedule").sum())),
+                ("Ready Value", money_metric(waiting.loc[waiting["readiness_status"] == "Ready To Schedule", "operations_value"].sum())),
+                ("Hold Jobs", number_metric((waiting["readiness_status"] != "Ready To Schedule").sum())),
+                ("Hold Value", money_metric(waiting.loc[waiting["readiness_status"] != "Ready To Schedule", "operations_value"].sum())),
+            ]
+        )
+        show_table(readiness_summary(waiting), ["status", "jobs", "revenue", "avg_days_waiting"], height=250)
+        show_table(
+            waiting,
+            [
+                "customer",
+                "job_name",
+                "division",
+                "project_category",
+                "operations_value",
+                "ready_date",
+                "days_waiting",
+                "readiness_status",
+                "production_risk_summary",
+                "estimated_duration_days",
+                "estimated_labor_hours",
+                "estimated_crew_size",
+                "folder_link_or_path",
+            ],
+            height=400,
+            sort_by="operations_value",
+        )
+
+    st.subheader("Production Status / Risk")
+    active = ops[ops["readiness_status"].eq("Scheduled") | ops["estimated_start_date_parsed"].notna()].copy() if not ops.empty else pd.DataFrame()
+    if not active.empty:
+        c1, c2 = st.columns(2)
+        with c1:
+            bar_chart(active, "schedule_health", "operations_value", "Scheduled Value by Health")
+        with c2:
+            bar_chart(active, "assigned_crew_leader", "operations_value", "Scheduled Value by Crew")
+    show_table(
+        active,
+        [
+            "schedule_health",
+            "customer",
+            "job_name",
+            "division",
+            "operations_value",
+            "assigned_crew_leader",
+            "estimated_start_date",
+            "estimated_end_date",
+            "expected_pct_complete",
+            "actual_pct_complete",
+            "estimated_sqft",
+            "estimated_labor_hours",
+            "estimated_crew_size",
+            "material_readiness",
+            "equipment_readiness",
+            "customer_communication",
+            "production_risk_summary",
+            "folder_link_or_path",
+        ],
+        height=430,
+    )
+
+    st.subheader("Jobs Starting Soon")
+    if not ops.empty:
+        starting_soon = ops[
+            ops["estimated_start_date_parsed"].notna()
+            & (ops["estimated_start_date_parsed"] >= today)
+            & (ops["estimated_start_date_parsed"] <= today + pd.Timedelta(days=14))
+        ].copy()
+    else:
+        starting_soon = pd.DataFrame()
+    show_table(
+        starting_soon,
+        [
+            "customer",
+            "job_name",
+            "division",
+            "operations_value",
+            "estimated_start_date",
+            "assigned_crew_leader",
+            "estimated_duration_days",
+            "estimated_labor_hours",
+            "material_readiness",
+            "equipment_readiness",
+            "customer_communication",
+            "production_risk_summary",
+            "folder_link_or_path",
+        ],
+        height=330,
+    )
+
+    st.subheader("Recently Completed / Warranty")
+    completed = completed_recent.copy()
+    if not completed.empty and "has_warranty" not in completed.columns:
+        completed["has_warranty"] = "Not Captured"
+    show_table(
+        completed,
+        [
+            "customer",
+            "job_name",
+            "division",
+            "operations_value",
+            "completion_date",
+            "has_warranty",
+            "warranty_amount",
+            "estimated_sqft",
+            "project_category",
+            "folder_link_or_path",
+        ],
+        height=330,
     )
 
 
@@ -8003,33 +8860,40 @@ def main() -> None:
     with st.sidebar:
         render_database_target_debug()
         filters = sidebar_filters(jobs_for_filters)
+        core_pages = [
+            "Owner Overview",
+            "Sales Dashboard",
+            "Operations Dashboard",
+            "Job Board",
+            "Schedule Calendar",
+            "Estimating Assistant",
+            "Ask Spray-Tec",
+            "BidScope AI",
+            "Admin / Health",
+        ]
+        legacy_pages = [
+            "Pipeline / Money",
+            "Sales Follow-Up",
+            "Contracted Backlog / Scheduling",
+            "Project Scheduling",
+            "Daily Crew Dispatch",
+            "Jobs Needing Action",
+            "Closeout / Billing Risk",
+            "Documentation Risk",
+            "Job Warnings",
+            "Estimate Analytics",
+            "Estimate Quality Issues",
+            "Line Item Analysis",
+            "Estimate Adders",
+            "STAMP Tracking",
+            "Pricing Catalog",
+            "Raw Tables",
+        ]
+        show_legacy_pages = st.checkbox("Show legacy/raw dashboard pages", value=False)
+        page_options = core_pages + (legacy_pages if show_legacy_pages else [])
         page = st.radio(
             "Page",
-            [
-                "Owner Overview",
-                "Ask Spray-Tec",
-                "Job Board",
-                "Schedule Calendar",
-                "Estimating Assistant",
-                "BidScope AI",
-                "Admin / Health",
-                "Pipeline / Money",
-                "Sales Follow-Up",
-                "Contracted Backlog / Scheduling",
-                "Project Scheduling",
-                "Daily Crew Dispatch",
-                "Jobs Needing Action",
-                "Closeout / Billing Risk",
-                "Documentation Risk",
-                "Job Warnings",
-                "Estimate Analytics",
-                "Estimate Quality Issues",
-                "Line Item Analysis",
-                "Estimate Adders",
-                "STAMP Tracking",
-                "Pricing Catalog",
-                "Raw Tables",
-            ],
+            page_options,
         )
 
     if database_startup_error and page not in {"Estimating Assistant", "Admin / Health"}:
@@ -8042,6 +8906,10 @@ def main() -> None:
         ask_spraytec_page()
     elif page == "Job Board":
         job_board_page()
+    elif page == "Sales Dashboard":
+        sales_dashboard_page()
+    elif page == "Operations Dashboard":
+        operations_dashboard_page()
     elif page == "Schedule Calendar":
         schedule_calendar_page()
     elif page == "Estimating Assistant":

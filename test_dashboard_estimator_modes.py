@@ -83,6 +83,142 @@ def test_dashboard_imports_safely() -> None:
     assert hasattr(app, "estimator_prototype_page")
     assert hasattr(app, "classify_estimate_type_from_notes")
     assert hasattr(app, "route_estimator_request")
+    assert hasattr(app, "sales_dashboard_page")
+    assert hasattr(app, "operations_dashboard_page")
+
+
+def test_sales_dashboard_rollups_classify_pipeline_and_gaps() -> None:
+    app = importlib.import_module("dashboard.app")
+    jobs = pd.DataFrame(
+        [
+            {
+                "job_id": "J1",
+                "customer": "ABC Church",
+                "job_name": "Roof coating",
+                "division": "Roofing",
+                "pipeline_status": "Proposal Submitted",
+                "estimated_value": 125000,
+                "estimator": "Haley",
+                "lead_source": "Referral",
+            },
+            {
+                "job_id": "J2",
+                "customer": "XYZ Manufacturing",
+                "job_name": "Metal restoration",
+                "division": "Roofing",
+                "pipeline_status": "Closed Won",
+                "final_price": 380000,
+                "deal_owner": "Paul",
+                "lead_source": "Existing Customers",
+            },
+            {
+                "job_id": "J3",
+                "customer": "School System",
+                "job_name": "Repair",
+                "division": "Repairs",
+                "pipeline_status": "Closed Lost",
+                "estimated_value": 18000,
+            },
+        ]
+    )
+
+    normalized = app.normalize_sales_jobs(jobs)
+    pipeline = app.sales_pipeline_rollup(normalized)
+    performance = app.sales_performance_rollup(normalized, "project_category")
+    kpis = app.estimator_kpi_rollup(normalized)
+
+    assert pipeline.loc[pipeline["stage"] == "Proposal Submitted", "value"].iloc[0] == 125000
+    assert pipeline.loc[pipeline["stage"] == "Closed Won", "value"].iloc[0] == 380000
+    assert set(normalized["project_category"]) >= {"Roofing Restoration", "Metal Restoration", "Repairs"}
+    assert performance.loc[performance["category"] == "Metal Restoration", "win_rate"].iloc[0] == 1
+    assert "Not Captured" in set(normalized["lead_source_display"])
+    assert kpis.loc[kpis["estimator"] == "Haley", "proposals_sent"].iloc[0] == 1
+
+
+def test_operations_dashboard_rollups_classify_readiness_and_schedule_health() -> None:
+    app = importlib.import_module("dashboard.app")
+    jobs = pd.DataFrame(
+        [
+            {
+                "job_id": "J1",
+                "customer": "ABC Church",
+                "job_name": "Roof coating",
+                "division": "Roofing",
+                "pipeline_status": "Contracted",
+                "estimated_value": 125000,
+                "estimate_date": "2026-06-10",
+                "schedule_notes": "Ready to schedule",
+            },
+            {
+                "job_id": "J2",
+                "customer": "XYZ Manufacturing",
+                "job_name": "SPF Roof",
+                "division": "Roofing",
+                "pipeline_status": "Contracted",
+                "estimated_value": 380000,
+                "estimate_date": "2026-06-12",
+                "blocking_issue": "Waiting on materials",
+            },
+            {
+                "job_id": "J3",
+                "customer": "School System",
+                "job_name": "Repairs",
+                "division": "Repairs",
+                "pipeline_status": "Contracted",
+                "estimated_value": 18000,
+                "estimate_date": "2026-06-14",
+                "estimated_start_date": "2026-07-09",
+                "estimated_end_date": "2026-07-10",
+                "assigned_crew_leader": "Crew A",
+            },
+        ]
+    )
+
+    ops = app.normalize_operations_jobs(jobs)
+    summary = app.readiness_summary(ops)
+
+    assert ops.loc[ops["job_id"] == "J1", "readiness_status"].iloc[0] == "Ready To Schedule"
+    assert ops.loc[ops["job_id"] == "J2", "readiness_status"].iloc[0] == "Material Hold"
+    assert ops.loc[ops["job_id"] == "J3", "schedule_health"].iloc[0] in {"Starting Soon", "On Track"}
+    assert summary.loc[summary["status"] == "Ready To Schedule", "revenue"].iloc[0] == 125000
+    assert summary.loc[summary["status"] == "Material Hold", "jobs"].iloc[0] == 1
+
+
+def test_job_board_dashboard_rows_project_business_fields() -> None:
+    app = importlib.import_module("dashboard.app")
+    jobs = pd.DataFrame(
+        [
+            {
+                "job_id": "J1",
+                "customer": "ABC Church",
+                "job_name": "Sanctuary roof restoration",
+                "division": "Roofing",
+                "pipeline_status": "Closed Won",
+                "estimated_value": 125000,
+                "estimator": "Haley",
+                "lead_source": "Referral",
+                "substrate": "Metal",
+                "coating_type": "Silicone",
+                "warranty_years": "15",
+                "warranty_type": "Gaco",
+                "estimated_duration_days": 5,
+                "estimated_crew_size": 4,
+                "estimated_labor_hours": 160,
+            }
+        ]
+    )
+
+    rows = app.prepare_job_board_dashboard_rows(jobs)
+    row = rows.iloc[0]
+
+    assert row["customer_display"] == "ABC Church"
+    assert row["project"] == "Sanctuary roof restoration"
+    assert row["sales_stage"] == "Closed Won"
+    assert row["win_loss_status"] == "Won"
+    assert row["substrate_display"] == "Metal"
+    assert row["material_system_display"] == "Silicone"
+    assert row["warranty_display"] == "15 Gaco"
+    assert row["labor_plan"] == "5 days / 4 crew / 160 hrs"
 
 
 def test_recalculate_workbench_ui_helper_tolerates_legacy_recalculate_signature(monkeypatch) -> None:
