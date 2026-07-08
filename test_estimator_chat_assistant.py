@@ -169,6 +169,48 @@ def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
     assert "hours_per_day" in loading["editable_fields"]
 
 
+def test_estimator_chat_normalizes_loading_travel_to_logistics_formula_fields() -> None:
+    def provider(_messages, _model):
+        return {
+            "assistant_message": "Drafted logistics decisions.",
+            "estimator_notes": "Open cell insulation job with loading and travel.",
+            "scope_overrides": {"template_type": "insulation"},
+            "workbook_decision_preferences": [
+                {
+                    "template_bucket": "labor_loading",
+                    "workbook_row": "95",
+                    "include": True,
+                    "proposed_values": {"days": 1, "crew_size": 2, "daily_rate": 1685.775},
+                },
+                {
+                    "template_bucket": "labor_traveling",
+                    "workbook_row": "97",
+                    "include": True,
+                    "days": 2,
+                    "crew_size": 5,
+                    "daily_rate": 1685.775,
+                },
+            ],
+            "confidence": 0.7,
+        }
+
+    result = run_estimator_chat_turn(
+        [{"role": "user", "content": "30x40 metal building, open cell foam, include loading and travel."}],
+        template_type_hint="insulation",
+        provider=provider,
+        model="test-model",
+    )
+
+    loading, traveling = result.workbook_decision_preferences
+
+    assert loading["section"] == "insulation_logistics_expense_template_decisions"
+    assert loading["proposed_values"] == {"hours_per_day": 1, "people_count": 2}
+    assert "daily_rate" not in loading
+    assert traveling["section"] == "insulation_logistics_expense_template_decisions"
+    assert traveling["proposed_values"] == {"hours_per_day": 2, "people_count": 5}
+    assert "daily_rate" not in traveling
+
+
 def test_estimator_chat_context_includes_thickness_matched_foam_yield_digest() -> None:
     data = EstimatorData(
         template_rows=pd.DataFrame(

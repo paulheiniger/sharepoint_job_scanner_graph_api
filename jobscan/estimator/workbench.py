@@ -1161,6 +1161,9 @@ def _labor_specs_for_scope(scope: dict[str, Any] | None) -> list[dict[str, Any]]
 
 
 def _decision_recommendation_lookup(data: Any, filters: dict[str, Any] | None) -> dict[tuple[str, str], dict[str, Any]]:
+    existing_recommendations = getattr(data, "estimator_decision_recommendations", pd.DataFrame()) if data is not None else pd.DataFrame()
+    if isinstance(existing_recommendations, pd.DataFrame) and not existing_recommendations.empty:
+        return recommendation_lookup(existing_recommendations)
     try:
         recommendations = build_decision_recommendations(data, filters=filters, min_count=DEFAULT_MIN_EVIDENCE_COUNT)
     except Exception:
@@ -5107,9 +5110,21 @@ def _insulation_material_preview(row: dict[str, Any]) -> list[dict[str, Any]]:
     preview: list[dict[str, Any]] = []
     if row.get("editable_selector_code"):
         preview.append({"cell": f"Estimate!A{first_row}", "field": "selector_code", "value": row.get("editable_selector_code")})
-    if row.get("template_bucket") in {"labor_loading", "labor_traveling", "infrared_scan", "meals_lodging"}:
+    if row.get("template_bucket") in {"labor_loading", "labor_traveling"}:
         field_to_cell = {
             "hours_per_day": "C",
+            "people_count": "E",
+            "unit_price": "G",
+            "estimated_cost": "H",
+        }
+    elif row.get("template_bucket") == "infrared_scan":
+        field_to_cell = {
+            "hours_per_day": "C",
+            "unit_price": "G",
+            "estimated_cost": "H",
+        }
+    elif row.get("template_bucket") == "meals_lodging":
+        field_to_cell = {
             "days": "C",
             "people_count": "E",
             "unit_price": "G",
@@ -9064,6 +9079,8 @@ def _scope_from_recommendation(recommendation: Any) -> dict[str, Any]:
         "insulation_deductions",
         "insulation_r_value_targets",
         "area_calculation_explanation",
+        "estimator_chat",
+        "workbook_decision_preferences",
         "photo_evidence",
         "photo_decision_proposals",
         "photo_scope_updates",
@@ -11395,6 +11412,8 @@ def apply_historical_filter_update(previous_workbench: dict[str, Any] | None, fi
                 "linear_ft",
                 "feet_per_unit",
                 "days",
+                "hours_per_day",
+                "people_count",
                 "crew_size",
                 "daily_rate",
                 "hourly_rate",

@@ -77,6 +77,44 @@ def test_estimator_chat_preferences_create_canonical_foam_proposal() -> None:
     assert foam["evidence"]["chat_estimator"][0]["assistant_message"].startswith("Use 5 inch")
 
 
+def test_estimator_chat_loading_travel_preferences_target_logistics_expense_rows() -> None:
+    proposals = build_decision_proposals(
+        {
+            "template_type": "insulation",
+            "division": "Insulation",
+            "estimator_chat": {
+                "source": "ai_chat",
+                "confidence": 0.7,
+                "assistant_message": "Use loading and travel.",
+                "workbook_decision_preferences": [
+                    {
+                        "template_bucket": "labor_loading",
+                        "workbook_row": "95",
+                        "include": True,
+                        "proposed_values": {"days": 1, "crew_size": 2, "daily_rate": 1685.775},
+                    },
+                    {
+                        "template_bucket": "labor_traveling",
+                        "workbook_row": "97",
+                        "include": True,
+                        "proposed_values": {"hours_per_day": 2.5, "people_count": 4, "unit_price": 13},
+                    },
+                ],
+            },
+        }
+    )
+
+    loading = next(row for row in proposals if row["template_bucket"] == "labor_loading")
+    traveling = next(row for row in proposals if row["template_bucket"] == "labor_traveling")
+
+    assert loading["section"] == "insulation_logistics_expense_template_decisions"
+    assert loading["workbook_row"] == "95"
+    assert loading["proposed_values"] == {"hours_per_day": 1, "people_count": 2}
+    assert traveling["section"] == "insulation_logistics_expense_template_decisions"
+    assert traveling["workbook_row"] == "97"
+    assert traveling["proposed_values"] == {"hours_per_day": 2.5, "people_count": 4, "unit_price": 13}
+
+
 def test_historical_only_warranty_is_not_invented_without_prompt_evidence() -> None:
     proposals = build_decision_proposals(
         {

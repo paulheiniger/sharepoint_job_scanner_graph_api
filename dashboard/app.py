@@ -4733,29 +4733,43 @@ def estimator_chat_decision_change_rows(preferences: Any) -> list[dict[str, Any]
         if not isinstance(item, dict):
             continue
         values = item.get("proposed_values") if isinstance(item.get("proposed_values"), dict) else {}
+        template_bucket = str(item.get("template_bucket") or item.get("package") or "").strip().lower().replace(" ", "_")
+        workbook_row = str(item.get("workbook_row") or item.get("row_number") or "").strip()
+        logistics_expense_row = template_bucket in {"labor_loading", "labor_traveling", "infrared_scan", "meals_lodging"} or workbook_row in {"95", "97", "99", "100"}
+        direct_field_names = {
+            "basis_sqft",
+            "thickness_inches",
+            "foam_thickness_inches",
+            "gal_per_100_sqft",
+            "unit_price",
+            "estimated_units",
+            "linear_ft",
+            "days",
+            "hours_per_day",
+            "people_count",
+            "trip_count",
+            "round_trip_miles",
+            "crew_size",
+            "daily_rate",
+            "hourly_rate",
+            "total_hours",
+            "editable_total_hours",
+            "formula_mode",
+        }
+        if logistics_expense_row:
+            if template_bucket in {"labor_loading", "labor_traveling"} or workbook_row in {"95", "97"}:
+                direct_field_names = {"hours_per_day", "people_count", "trip_count", "unit_price", "round_trip_miles"}
+            elif template_bucket == "infrared_scan" or workbook_row == "99":
+                direct_field_names = {"hours_per_day", "unit_price"}
+            elif template_bucket == "meals_lodging" or workbook_row == "100":
+                direct_field_names = {"days", "people_count", "unit_price"}
         direct_values = {
             key: value
             for key, value in item.items()
-            if key
-            in {
-                "basis_sqft",
-                "thickness_inches",
-                "foam_thickness_inches",
-                "gal_per_100_sqft",
-                "unit_price",
-                "estimated_units",
-                "linear_ft",
-                "days",
-                "crew_size",
-                "daily_rate",
-                "hourly_rate",
-                "total_hours",
-                "editable_total_hours",
-                "formula_mode",
-            }
+            if key in direct_field_names
             and value not in (None, "")
         }
-        merged_values = {**direct_values, **values}
+        merged_values = {key: value for key, value in {**direct_values, **values}.items() if key in direct_field_names}
         target_parts = [
             str(item.get("template_bucket") or item.get("package") or item.get("section") or "").replace("_", " ").strip(),
             f"row {item.get('workbook_row') or item.get('row_number')}" if item.get("workbook_row") or item.get("row_number") else "",

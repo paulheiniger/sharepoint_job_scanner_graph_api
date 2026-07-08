@@ -1191,7 +1191,8 @@ def _chat_prompt_messages(
         "estimated_units, linear_ft, days, hours_per_day, people_count, trip_count, crew_size, daily_rate, hourly_rate, "
         "total_hours, editable_total_hours, and formula_mode. "
         "For insulation jobs, include Loading and Traveling as normal checked logistics expense decisions unless evidence says otherwise; "
-        "fill hours_per_day, people_count, trip_count, and unit_price from history or reasonable reviewed assumptions. "
+        "for Loading row 95 and Traveling row 97 do not use days, crew_size, daily_rate, hourly_rate, or total_hours; "
+        "use only hours_per_day, people_count, trip_count, and unit_price because the workbook formula is hours x people x rate x trips. "
         "For insulation foam yield_or_coverage, prefer foam_yield_history_digest entries matching foam type, product/template option, "
         "and thickness band; include that evidence and set review_required when the historical range is wide or evidence is thin. "
         "You may do takeoff math from explicit dimensions and deductions. Do not invent hidden warranty years, exact proprietary products, "
@@ -1266,7 +1267,90 @@ def _clean_scope(scope: dict[str, Any]) -> dict[str, Any]:
 
 def _clean_decision_preferences(value: Any) -> list[dict[str, Any]]:
     rows = value if isinstance(value, list) else []
-    return [row for row in rows if isinstance(row, dict)]
+    cleaned_rows: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        cleaned = dict(row)
+        proposed_values = dict(cleaned.get("proposed_values") or {})
+        for key in (
+            "basis_sqft",
+            "thickness_inches",
+            "foam_thickness_inches",
+            "yield_or_coverage",
+            "gal_per_100_sqft",
+            "unit_price",
+            "estimated_units",
+            "linear_ft",
+            "days",
+            "hours",
+            "hours_per_day",
+            "people_count",
+            "trip_count",
+            "crew_size",
+            "daily_rate",
+            "hourly_rate",
+            "total_hours",
+            "editable_total_hours",
+            "formula_mode",
+        ):
+            if key in cleaned and cleaned.get(key) not in (None, ""):
+                proposed_values.setdefault(key, cleaned.get(key))
+        bucket = _clean_string(cleaned.get("template_bucket") or cleaned.get("package") or cleaned.get("category")).lower()
+        bucket = bucket.replace(" ", "_").replace("-", "_")
+        row_number = _safe_row_number(cleaned.get("workbook_row") or cleaned.get("row_number"))
+        if bucket in {"labor_loading", "labor_traveling"} or row_number in {"95", "97"}:
+            if proposed_values.get("hours_per_day") in (None, ""):
+                proposed_values["hours_per_day"] = _first_present(proposed_values, "hours", "total_hours", "days")
+            if proposed_values.get("people_count") in (None, ""):
+                proposed_values["people_count"] = _first_present(proposed_values, "crew_size")
+            proposed_values = {
+                key: proposed_values.get(key)
+                for key in ("hours_per_day", "people_count", "trip_count", "unit_price", "round_trip_miles")
+                if proposed_values.get(key) not in (None, "")
+            }
+            cleaned["section"] = "insulation_logistics_expense_template_decisions"
+            cleaned["template_bucket"] = bucket or ("labor_loading" if row_number == "95" else "labor_traveling")
+            cleaned["workbook_row"] = row_number or ("95" if cleaned["template_bucket"] == "labor_loading" else "97")
+            for stale_key in ("days", "crew_size", "daily_rate", "hourly_rate", "total_hours", "editable_total_hours"):
+                cleaned.pop(stale_key, None)
+        elif bucket == "infrared_scan" or row_number == "99":
+            if proposed_values.get("hours_per_day") in (None, ""):
+                proposed_values["hours_per_day"] = _first_present(proposed_values, "hours", "total_hours", "days")
+            proposed_values = {
+                key: proposed_values.get(key)
+                for key in ("hours_per_day", "unit_price")
+                if proposed_values.get(key) not in (None, "")
+            }
+            cleaned["section"] = "insulation_logistics_expense_template_decisions"
+            cleaned["template_bucket"] = "infrared_scan"
+            cleaned["workbook_row"] = "99"
+            for stale_key in ("days", "crew_size", "daily_rate", "hourly_rate", "total_hours", "editable_total_hours"):
+                cleaned.pop(stale_key, None)
+        elif bucket in {"meals_lodging", "labor_meals_lodging"} or row_number == "100":
+            if proposed_values.get("people_count") in (None, ""):
+                proposed_values["people_count"] = _first_present(proposed_values, "crew_size")
+            proposed_values = {
+                key: proposed_values.get(key)
+                for key in ("days", "people_count", "unit_price")
+                if proposed_values.get(key) not in (None, "")
+            }
+            cleaned["section"] = "insulation_logistics_expense_template_decisions"
+            cleaned["template_bucket"] = "meals_lodging"
+            cleaned["workbook_row"] = "100"
+            for stale_key in ("crew_size", "daily_rate", "hourly_rate", "total_hours", "editable_total_hours"):
+                cleaned.pop(stale_key, None)
+        cleaned["proposed_values"] = proposed_values
+        cleaned_rows.append(cleaned)
+    return cleaned_rows
+
+
+def _first_present(row: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = row.get(key)
+        if value not in (None, ""):
+            return value
+    return None
 
 
 def _clean_list(value: Any) -> list[str]:

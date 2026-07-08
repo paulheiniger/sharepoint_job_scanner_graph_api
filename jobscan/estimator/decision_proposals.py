@@ -218,6 +218,10 @@ CHAT_ESTIMATOR_OVERRIDE_FIELDS = {
     "units",
     "days",
     "editable_days",
+    "hours_per_day",
+    "people_count",
+    "trip_count",
+    "round_trip_miles",
     "crew_size",
     "crew_people_selection",
     "crew_selector_code",
@@ -369,6 +373,21 @@ def row_proposal_key(template_type: Any, row: dict[str, Any], section: str) -> t
     )
 
 
+def row_proposal_alias_keys(template_type: Any, row: dict[str, Any], section: str) -> list[tuple[str, str, str, str]]:
+    keys = [row_proposal_key(template_type, row, section)]
+    for decision_id in (row.get("source_decision_id"), row.get("template_bucket")):
+        if decision_id:
+            keys.append(
+                proposal_key(
+                    template_type,
+                    row.get("section") or section,
+                    decision_id,
+                    row.get("workbook_row"),
+                )
+            )
+    return list(dict.fromkeys(keys))
+
+
 def merge_decision_proposals(proposals: Iterable[DecisionProposal | dict[str, Any]]) -> list[dict[str, Any]]:
     merged: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     for proposal in proposals:
@@ -483,7 +502,14 @@ def apply_decision_proposals_to_workbench(
         seen: dict[tuple[str, str, str, str], dict[str, Any]] = {}
         for row in rows:
             key = row_proposal_key(template_type, row, section)
-            proposal = proposal_by_key.get(key)
+            proposal = next(
+                (
+                    proposal_by_key[alias]
+                    for alias in row_proposal_alias_keys(template_type, row, section)
+                    if alias in proposal_by_key
+                ),
+                None,
+            )
             annotated = _annotate_row(row, proposal)
             if key in seen:
                 duplicate_rows.append(
@@ -895,6 +921,29 @@ def _chat_target_for_preference(template_type: str, item: dict[str, Any]) -> dic
                 "template_bucket": "caulk_sealant",
                 "workbook_row": workbook_row if workbook_row in {"41", "43"} else "41",
             }
+        if bucket in {"labor_loading", "labor_traveling", "infrared_scan", "meals_lodging", "labor_meals_lodging"}:
+            row_defaults = {
+                "labor_loading": "95",
+                "labor_traveling": "97",
+                "infrared_scan": "99",
+                "meals_lodging": "100",
+                "labor_meals_lodging": "100",
+            }
+            decision_defaults = {
+                "labor_loading": "insulation_labor_loading_row_95",
+                "labor_traveling": "insulation_labor_traveling_row_97",
+                "infrared_scan": "insulation_infrared_scan_row_99",
+                "meals_lodging": "insulation_meals_lodging_row_100",
+                "labor_meals_lodging": "insulation_meals_lodging_row_100",
+            }
+            normalized_bucket = "meals_lodging" if bucket == "labor_meals_lodging" else bucket
+            resolved_row = workbook_row if workbook_row in {"95", "97", "99", "100"} else row_defaults[normalized_bucket]
+            return {
+                "section": "insulation_logistics_expense_template_decisions",
+                "decision_id": decision_id or decision_defaults[bucket],
+                "template_bucket": normalized_bucket,
+                "workbook_row": resolved_row,
+            }
         if bucket.startswith("labor_") and workbook_row:
             return {
                 "section": "insulation_labor_template_decisions",
@@ -946,6 +995,23 @@ def _clean_chat_proposed_values(item: dict[str, Any]) -> dict[str, Any]:
     for field in CHAT_ESTIMATOR_OVERRIDE_FIELDS:
         if field in item and item.get(field) not in (None, ""):
             values.setdefault(field, item.get(field))
+    bucket = _canonical_package(item.get("template_bucket") or item.get("package") or item.get("category"))
+    workbook_row = str(item.get("workbook_row") or item.get("row_number") or "").strip()
+    if bucket in {"labor_loading", "labor_traveling"} or workbook_row in {"95", "97"}:
+        if values.get("hours_per_day") in (None, ""):
+            values["hours_per_day"] = _first_value(values, "hours", "total_hours", "days")
+        if values.get("people_count") in (None, ""):
+            values["people_count"] = _first_value(values, "crew_size")
+        allowed = {"hours_per_day", "people_count", "trip_count", "unit_price", "round_trip_miles"}
+        return {key: value for key, value in values.items() if key in allowed and value is not None}
+    if bucket in {"infrared_scan"} or workbook_row == "99":
+        if values.get("hours_per_day") in (None, ""):
+            values["hours_per_day"] = _first_value(values, "hours", "total_hours", "days")
+        return {key: value for key, value in values.items() if key in {"hours_per_day", "unit_price"} and value is not None}
+    if bucket in {"meals_lodging", "labor_meals_lodging"} or workbook_row == "100":
+        if values.get("people_count") in (None, ""):
+            values["people_count"] = _first_value(values, "crew_size")
+        return {key: value for key, value in values.items() if key in {"days", "people_count", "unit_price"} and value is not None}
     return {key: value for key, value in values.items() if value is not None}
 
 

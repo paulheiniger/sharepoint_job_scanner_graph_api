@@ -312,6 +312,45 @@ def test_relationship_package_payload_filters_to_companion_eligible_rows() -> No
     assert rows[0]["job_count"] == 12
 
 
+def test_chat_loading_travel_preferences_apply_to_logistics_expense_rows() -> None:
+    recommendation = insulation_recommendation()
+    recommendation.parsed_fields.update(
+        {
+            "estimator_chat": {
+                "source": "ai_chat",
+                "confidence": 0.7,
+                "assistant_message": "Use loading and travel.",
+                "workbook_decision_preferences": [
+                    {
+                        "template_bucket": "labor_loading",
+                        "workbook_row": "95",
+                        "include": True,
+                        "proposed_values": {"days": 1, "crew_size": 2, "daily_rate": 1685.775},
+                    },
+                    {
+                        "template_bucket": "labor_traveling",
+                        "workbook_row": "97",
+                        "include": True,
+                        "proposed_values": {"hours_per_day": 2.5, "people_count": 4, "unit_price": 13},
+                    },
+                ],
+            }
+        }
+    )
+
+    workbench = build_estimating_workbench(recommendation, EstimatorData())
+    rows = {row["template_bucket"]: row for row in workbench["insulation_logistics_expense_template_decisions"]}
+
+    assert rows["labor_loading"]["include"] is True
+    assert rows["labor_loading"]["hours_per_day"] == 1
+    assert rows["labor_loading"]["people_count"] == 2
+    assert not rows["labor_loading"].get("daily_rate")
+    assert rows["labor_loading"]["proposal_source"] == "chat_estimator"
+    assert rows["labor_traveling"]["hours_per_day"] == 2.5
+    assert rows["labor_traveling"]["people_count"] == 4
+    assert rows["labor_traveling"]["unit_price"] == 13
+
+
 def test_workbench_enriches_row_options_from_template_catalogs() -> None:
     data = EstimatorData(
         template_selector_maps=pd.DataFrame(
