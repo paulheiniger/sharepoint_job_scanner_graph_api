@@ -1870,8 +1870,12 @@ def test_insulation_foam_uses_thickness_matched_yield_history_before_template_de
     assert foam["resolved_template_option"] == "Gaco 0.5 lb."
     assert foam["yield_or_coverage"] == 4500
     assert foam["yield_or_coverage_source"] == "historical_yield_by_scope"
+    assert foam["unit_price"] == 1.9
+    assert foam["unit_price_source"] in {"estimate_template_rows_formula_compatible", "historical_foam_yield_history"}
+    assert foam["cost_source"] in {"historical_formula_unit_price", "historical_foam_yield_unit_price"}
     assert foam["yield_history_evidence_count"] == 1
     assert foam["estimated_units"] == 2720.666667
+    assert foam["estimated_cost"] > 0
 
 
 def test_insulation_foam_recalc_treats_persisted_zero_thickness_and_yield_as_missing() -> None:

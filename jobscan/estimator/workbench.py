@@ -2698,6 +2698,8 @@ def _cost_source_for_candidate(formula: dict[str, Any], candidate: dict[str, Any
     candidate_source = str(candidate.get("source") or candidate.get("item_source") or "")
     if cost_source == "current_pricing" and candidate_source == "estimate_template_rows_formula_compatible":
         return "historical_formula_unit_price"
+    if cost_source == "current_pricing" and candidate_source == "historical_foam_yield_history":
+        return "historical_foam_yield_unit_price"
     if cost_source == "current_pricing" and candidate_source in {"template_pricing_option_link", "template_lookup_materials"}:
         return candidate_source
     return cost_source
@@ -4379,6 +4381,7 @@ def _build_insulation_foam_template_decisions(
                 parsed_yield_match = {}
             historical_yield_match = parsed_yield_match if isinstance(parsed_yield_match, dict) else {}
     matched_historical_yield_or_coverage = positive_number(historical_yield_match.get("median_yield_or_coverage"), default=0.0)
+    matched_historical_unit_price = positive_number(historical_yield_match.get("median_unit_price"), default=0.0)
     historical_yield_or_coverage = positive_number(
         defaults.get("yield_or_coverage"),
         foam_row.get("median_foam_yield"),
@@ -4447,18 +4450,57 @@ def _build_insulation_foam_template_decisions(
         scope=scope,
         preserve_bad_selection=bool(first_nonblank(existing.get("selected_pricing_candidate"))),
     )
+    if not selected_candidate and matched_historical_unit_price > 0:
+        selected_candidate = {
+            "item_name": first_nonblank(historical_yield_match.get("template_option"), resolved_option, "Historical foam"),
+            "unit": "unit",
+            "unit_price": matched_historical_unit_price,
+            "source": "historical_foam_yield_history",
+            "selected_item_reason": "Unit price from thickness-matched historical foam template rows.",
+            "why_suggested": "Unit price from thickness-matched historical foam template rows.",
+            "evidence_count": historical_yield_match.get("evidence_count"),
+            "source_jobs_count": historical_yield_match.get("source_jobs_count"),
+        }
     selected_candidate_changed = bool(
         first_nonblank(existing.get("selected_pricing_candidate"))
         and _normalized(existing.get("selected_pricing_candidate")) != _normalized(selected_candidate.get("item_name"))
     )
+    existing_unit_price_source = str(existing.get("unit_price_source") or "").strip()
+    existing_unit_price_value = positive_number(existing.get("unit_price"), default=0.0)
+    existing_unit_price_is_auto = existing_unit_price_source in {
+        "historical_foam_yield_history",
+        "estimate_template_rows_formula_compatible",
+        "historical_default",
+        "template_default",
+        "template_pricing_option_link",
+        "template_lookup_materials",
+        "pricing_candidate",
+    }
     unit_price = positive_number(
-        "" if selected_candidate_changed else existing.get("unit_price"),
+        "" if selected_candidate_changed or existing_unit_price_is_auto else existing.get("unit_price"),
         selected_candidate.get("unit_price"),
         foam_row.get("current_unit_price"),
+        matched_historical_unit_price,
         defaults.get("unit_price"),
         ROOFING_FOAM_DEFAULTS.get(19, {}).get("unit_price"),
         default=0.0,
     )
+    if existing_unit_price_value > 0 and existing_unit_price_is_auto:
+        unit_price_source = existing_unit_price_source
+    elif positive_number("" if selected_candidate_changed else existing.get("unit_price"), default=0.0) > 0:
+        unit_price_source = "provided"
+    elif positive_number(selected_candidate.get("unit_price"), default=0.0) > 0:
+        unit_price_source = selected_candidate.get("source") or selected_candidate.get("item_source") or "pricing_candidate"
+    elif matched_historical_unit_price > 0:
+        unit_price_source = "historical_foam_yield_history"
+    elif positive_number(foam_row.get("current_unit_price"), default=0.0) > 0:
+        unit_price_source = "current_material_row"
+    elif positive_number(defaults.get("unit_price"), default=0.0) > 0:
+        unit_price_source = "historical_default"
+    elif unit_price > 0:
+        unit_price_source = "template_default"
+    else:
+        unit_price_source = "missing"
     notes_text = _normalized(" ".join(str(scope.get(key) or "") for key in ("notes", "raw_input_notes", "project_type", "scope_of_work")))
     foam_scope = bool(
         foam_row.get("include")
@@ -4587,6 +4629,7 @@ def _build_insulation_foam_template_decisions(
             "yield_history_evidence_count": int(safe_number(historical_yield_match.get("evidence_count"), 0)),
             "yield_history_source_jobs_count": int(safe_number(historical_yield_match.get("source_jobs_count"), 0)),
             "unit_price": round(unit_price, 4),
+            "unit_price_source": unit_price_source,
             "estimated_units": formula.get("estimated_units"),
             "estimated_sets": formula.get("estimated_sets"),
             "estimated_cost": formula.get("estimated_cost"),
@@ -4626,6 +4669,7 @@ def _build_insulation_foam_template_decisions(
                 "yield_or_coverage_source": yield_or_coverage_source,
                 "yield_history_match": historical_yield_match,
                 "unit_price": round(unit_price, 4),
+                "unit_price_source": unit_price_source,
             },
             "editable_decision_value": {
                 "selector_code": str(selector_code),
@@ -4638,6 +4682,7 @@ def _build_insulation_foam_template_decisions(
                 "yield_or_coverage_source": yield_or_coverage_source,
                 "yield_history_match": historical_yield_match,
                 "unit_price": round(unit_price, 4),
+                "unit_price_source": unit_price_source,
             },
             "recommended_decision_value": {
                 "selector_code": _selector_code_for_option(historical_option),
