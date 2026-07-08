@@ -369,6 +369,57 @@ def test_roofing_spf_patch_uses_catalog_materials_and_people_sheet_labor_drivers
     assert labor["labor_seam_sealer"]["include"] is False
 
 
+def test_roofing_chat_preferences_fill_rows_without_exact_workbook_metadata() -> None:
+    recommendation = roofing_recommendation()
+    data = roofing_catalog_pricing_and_people_data()
+
+    workbench = build_estimating_workbench(
+        recommendation,
+        data,
+        scope_override={
+            "estimated_sqft": 96,
+            "net_sqft": 96,
+            "foam_required": True,
+            "coating_required": True,
+            "raw_input_notes": "Foam blister, saturated needs to be torn out. Foam on 96 sqft of roof, 4 inch thickness, need coating.",
+            "estimator_chat": {
+                "source": "ai_chat",
+                "confidence": 0.78,
+                "assistant_message": "Include roof foam, coating, truck expense, and loading labor.",
+                "workbook_decision_preferences": [
+                    {"template_bucket": "foam", "include": True, "proposed_values": {"basis_sqft": 96, "thickness_inches": 4}},
+                    {"template_bucket": "coating", "include": True, "proposed_values": {"basis_sqft": 96}},
+                    {"template_bucket": "truck_expense", "include": True, "proposed_values": {"trip_count": 1, "round_trip_miles": 50, "unit_price": 0.75}},
+                    {"template_bucket": "labor_loading", "include": True, "proposed_values": {"days": 0.25, "crew_size": 4}},
+                ],
+            },
+        },
+    )
+
+    foam = next(row for row in workbench["roofing_foam_template_decisions"] if row["workbook_row"] == "19")
+    coating = next(row for row in workbench["roofing_coating_template_decisions"] if row["workbook_row"] == "26")
+    truck = next(row for row in workbench["roofing_travel_freight_template_decisions"] if row["template_bucket"] == "truck_expense")
+    loading = next(row for row in workbench["roofing_labor_template_decisions"] if row["template_bucket"] == "labor_loading")
+
+    assert foam["proposal_source"] == "chat_estimator"
+    assert foam["include"] is True
+    assert foam["basis_sqft"] == 96
+    assert foam["thickness_inches"] == 4
+    assert foam["unit_price"] == 1.99
+    assert foam["estimated_cost"] > 0
+    assert coating["include"] is True
+    assert coating["estimated_cost"] > 0
+    assert truck["include"] is True
+    assert truck["trip_count"] == 1
+    assert truck["round_trip_miles"] == 50
+    assert truck["estimated_cost"] == 37.5
+    assert loading["include"] is True
+    assert loading["workbook_row"] == "136"
+    assert loading["days"] == 0.25
+    assert loading["daily_rate"] == 1000
+    assert loading["estimated_cost"] == 250
+
+
 def test_workbench_to_draft_inputs_can_skip_recalculation(monkeypatch) -> None:
     recalculated = recalculate_workbench_tables(build_estimating_workbench(roofing_recommendation(), EstimatorData()))
 

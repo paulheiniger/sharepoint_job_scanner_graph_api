@@ -85,6 +85,22 @@ def test_dashboard_imports_safely() -> None:
     assert hasattr(app, "route_estimator_request")
 
 
+def test_recalculate_workbench_ui_helper_tolerates_legacy_recalculate_signature(monkeypatch) -> None:
+    app = importlib.import_module("dashboard.app")
+    calls = []
+
+    def legacy_recalculate(workbench):
+        calls.append(workbench)
+        return {"scope": workbench.get("scope", {}), "legacy": True}
+
+    monkeypatch.setattr(app, "recalculate_workbench_tables", legacy_recalculate)
+
+    result = app.recalculate_workbench_tables_with_optional_data({"scope": {"template_type": "roofing"}}, data=app.EstimatorData())
+
+    assert result["legacy"] is True
+    assert calls == [{"scope": {"template_type": "roofing"}}]
+
+
 def test_merge_editable_rows_marks_labor_hour_override() -> None:
     app = importlib.import_module("dashboard.app")
 

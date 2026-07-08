@@ -115,6 +115,46 @@ def test_estimator_chat_loading_travel_preferences_target_logistics_expense_rows
     assert traveling["proposed_values"] == {"hours_per_day": 2.5, "people_count": 4, "unit_price": 13}
 
 
+def test_estimator_chat_roofing_preferences_target_workbook_rows_without_row_numbers() -> None:
+    proposals = build_decision_proposals(
+        {
+            "template_type": "roofing",
+            "division": "Roofing",
+            "estimated_sqft": 96,
+            "estimator_chat": {
+                "source": "ai_chat",
+                "confidence": 0.78,
+                "assistant_message": "Patch roof SPF, coat it, add fabric, plates, truck expense, and loading labor.",
+                "workbook_decision_preferences": [
+                    {"template_bucket": "foam", "include": True, "proposed_values": {"basis_sqft": 96, "thickness_inches": 4}},
+                    {"template_bucket": "coating", "include": True, "proposed_values": {"basis_sqft": 96}},
+                    {"template_bucket": "fabric", "include": True},
+                    {"template_bucket": "seams_misc", "include": True},
+                    {"template_bucket": "fasteners", "include": True},
+                    {"template_bucket": "plates", "include": True},
+                    {"template_bucket": "truck_expense", "include": True, "proposed_values": {"trip_count": 1}},
+                    {"template_bucket": "labor_loading", "include": True, "proposed_values": {"days": 0.25, "crew_size": 4}},
+                ],
+            },
+        }
+    )
+
+    by_bucket = {row["template_bucket"]: row for row in proposals}
+
+    assert by_bucket["foam"]["section"] == "roofing_foam_template_decisions"
+    assert by_bucket["foam"]["workbook_row"] == "19"
+    assert by_bucket["coating"]["workbook_row"] == "26"
+    assert by_bucket["fabric"]["section"] == "roofing_detail_template_decisions"
+    assert by_bucket["seams_misc"]["section"] == "roofing_detail_quantity_template_decisions"
+    assert by_bucket["fasteners"]["workbook_row"] == "63"
+    assert by_bucket["plates"]["workbook_row"] == "65"
+    assert by_bucket["truck_expense"]["section"] == "roofing_travel_freight_template_decisions"
+    assert by_bucket["truck_expense"]["workbook_row"] == "108"
+    assert by_bucket["labor_loading"]["section"] == "roofing_labor_template_decisions"
+    assert by_bucket["labor_loading"]["workbook_row"] == "136"
+    assert by_bucket["labor_loading"]["proposed_values"]["days"] == 0.25
+
+
 def test_historical_only_warranty_is_not_invented_without_prompt_evidence() -> None:
     proposals = build_decision_proposals(
         {

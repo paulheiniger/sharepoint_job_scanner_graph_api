@@ -193,6 +193,15 @@ CHAT_DECISION_MENU: dict[str, list[dict[str, Any]]] = {
     ],
     "roofing": [
         {
+            "decision_id": "roofing_foam_row_19",
+            "section": "roofing_foam_template_decisions",
+            "template_bucket": "foam",
+            "workbook_row": "19",
+            "label": "Roof SPF foam",
+            "editable_fields": ["include", "basis_sqft", "thickness_inches", "yield_or_coverage", "unit_price"],
+            "formula_requirements": ["basis_sqft", "thickness_inches", "yield_or_coverage", "unit_price"],
+        },
+        {
             "decision_id": "roofing_coating_system_row_26",
             "section": "roofing_coating_template_decisions",
             "template_bucket": "coating",
@@ -229,6 +238,24 @@ CHAT_DECISION_MENU: dict[str, list[dict[str, Any]]] = {
             "formula_requirements": ["linear_ft or basis_sqft", "coverage_sqft_per_unit", "unit_price"],
         },
         {
+            "decision_id": "roofing_seams_misc_row_47",
+            "section": "roofing_detail_quantity_template_decisions",
+            "template_bucket": "seams_misc",
+            "workbook_row": "47",
+            "label": "Seam quantity",
+            "editable_fields": ["include", "linear_ft", "unit_price", "estimated_units"],
+            "formula_requirements": ["linear_ft or estimated_units"],
+        },
+        {
+            "decision_id": "roofing_penetrations_row_49",
+            "section": "roofing_detail_quantity_template_decisions",
+            "template_bucket": "penetrations",
+            "workbook_row": "49",
+            "label": "Penetration/detail quantity",
+            "editable_fields": ["include", "estimated_units", "unit_price"],
+            "formula_requirements": ["estimated_units"],
+        },
+        {
             "decision_id": "roofing_board_stock_row_58",
             "section": "roofing_board_fastener_template_decisions",
             "template_bucket": "board_stock",
@@ -236,6 +263,33 @@ CHAT_DECISION_MENU: dict[str, list[dict[str, Any]]] = {
             "label": "Board stock",
             "editable_fields": ["include", "basis_sqft", "thickness_inches", "price_per_square"],
             "formula_requirements": ["basis_sqft", "price_per_square"],
+        },
+        {
+            "decision_id": "roofing_fasteners_row_63",
+            "section": "roofing_board_fastener_template_decisions",
+            "template_bucket": "fasteners",
+            "workbook_row": "63",
+            "label": "Fasteners",
+            "editable_fields": ["include", "board_area_sqft", "unit_price_per_thousand", "estimated_units"],
+            "formula_requirements": ["board_area_sqft", "unit_price_per_thousand"],
+        },
+        {
+            "decision_id": "roofing_plates_row_65",
+            "section": "roofing_board_fastener_template_decisions",
+            "template_bucket": "plates",
+            "workbook_row": "65",
+            "label": "Plates",
+            "editable_fields": ["include", "board_area_sqft", "unit_price_per_thousand", "estimated_units"],
+            "formula_requirements": ["board_area_sqft", "unit_price_per_thousand"],
+        },
+        {
+            "decision_id": "roofing_granules_row_36",
+            "section": "roofing_granules_template_decisions",
+            "template_bucket": "granules",
+            "workbook_row": "36",
+            "label": "Granules",
+            "editable_fields": ["include", "basis_sqft", "unit_price"],
+            "formula_requirements": ["basis_sqft", "unit_price"],
         },
         {
             "decision_id": "roofing_dumpsters_row_69",
@@ -247,11 +301,101 @@ CHAT_DECISION_MENU: dict[str, list[dict[str, Any]]] = {
             "formula_requirements": ["basis_sqft", "thickness_inches", "unit_price"],
         },
         {
+            "decision_id": "roofing_lift_equipment_row_73",
+            "section": "roofing_equipment_template_decisions",
+            "template_bucket": "lift",
+            "workbook_row": "73",
+            "label": "Lift/equipment access",
+            "editable_fields": ["include", "period", "unit_price", "margin_pct"],
+            "formula_requirements": ["period", "unit_price"],
+        },
+        {
+            "decision_id": "roofing_generator_row_99",
+            "section": "roofing_equipment_template_decisions",
+            "template_bucket": "generator",
+            "workbook_row": "99",
+            "label": "Generator",
+            "editable_fields": ["include", "days", "unit_price"],
+            "formula_requirements": ["days", "unit_price"],
+        },
+        {
+            "decision_id": "roofing_sales_trips_row_106",
+            "section": "roofing_travel_freight_template_decisions",
+            "template_bucket": "sales_trips",
+            "workbook_row": "106",
+            "label": "Sales / inspection trips",
+            "editable_fields": ["include", "trip_count", "round_trip_miles", "unit_price"],
+            "formula_requirements": ["trip_count", "round_trip_miles", "unit_price"],
+        },
+        {
+            "decision_id": "roofing_truck_expense_row_108",
+            "section": "roofing_travel_freight_template_decisions",
+            "template_bucket": "truck_expense",
+            "workbook_row": "108",
+            "label": "Truck expense",
+            "editable_fields": ["include", "trip_count", "round_trip_miles", "unit_price"],
+            "formula_requirements": ["trip_count", "round_trip_miles", "unit_price"],
+        },
+        {
+            "decision_id": "roofing_labor_prep_row_116",
+            "section": "roofing_labor_template_decisions",
+            "template_bucket": "labor_prep",
+            "workbook_row": "116",
+            "label": "Prep labor",
+            "editable_fields": ["include", "days", "crew_size", "daily_rate", "hourly_rate", "total_hours"],
+            "formula_requirements": ["daily_rate and days", "or total_hours and hourly_rate"],
+        },
+        {
+            "decision_id": "roofing_labor_seam_sealer_row_120",
+            "section": "roofing_labor_template_decisions",
+            "template_bucket": "labor_seam_sealer",
+            "workbook_row": "120",
+            "label": "Seam/detail labor",
+            "editable_fields": ["include", "days", "crew_size", "daily_rate", "hourly_rate", "total_hours"],
+            "formula_requirements": ["daily_rate and days", "or total_hours and hourly_rate"],
+        },
+        {
             "decision_id": "roofing_labor_base_row_122",
             "section": "roofing_labor_template_decisions",
             "template_bucket": "labor_base",
             "workbook_row": "122",
             "label": "Base roofing labor",
+            "editable_fields": ["include", "days", "crew_size", "daily_rate", "hourly_rate", "total_hours"],
+            "formula_requirements": ["daily_rate and days", "or total_hours and hourly_rate"],
+        },
+        {
+            "decision_id": "roofing_labor_top_coat_row_124",
+            "section": "roofing_labor_template_decisions",
+            "template_bucket": "labor_top_coat",
+            "workbook_row": "124",
+            "label": "Top coat labor",
+            "editable_fields": ["include", "days", "crew_size", "daily_rate", "hourly_rate", "total_hours"],
+            "formula_requirements": ["daily_rate and days", "or total_hours and hourly_rate"],
+        },
+        {
+            "decision_id": "roofing_labor_cleanup_row_132",
+            "section": "roofing_labor_template_decisions",
+            "template_bucket": "labor_cleanup",
+            "workbook_row": "132",
+            "label": "Cleanup labor",
+            "editable_fields": ["include", "days", "crew_size", "daily_rate", "hourly_rate", "total_hours"],
+            "formula_requirements": ["daily_rate and days", "or total_hours and hourly_rate"],
+        },
+        {
+            "decision_id": "roofing_labor_loading_row_136",
+            "section": "roofing_labor_template_decisions",
+            "template_bucket": "labor_loading",
+            "workbook_row": "136",
+            "label": "Loading labor",
+            "editable_fields": ["include", "days", "crew_size", "daily_rate", "hourly_rate", "total_hours"],
+            "formula_requirements": ["daily_rate and days", "or total_hours and hourly_rate"],
+        },
+        {
+            "decision_id": "roofing_labor_traveling_row_138",
+            "section": "roofing_labor_template_decisions",
+            "template_bucket": "labor_traveling",
+            "workbook_row": "138",
+            "label": "Travel labor",
             "editable_fields": ["include", "days", "crew_size", "daily_rate", "hourly_rate", "total_hours"],
             "formula_requirements": ["daily_rate and days", "or total_hours and hourly_rate"],
         },
@@ -1195,6 +1339,10 @@ def _chat_prompt_messages(
         "use only hours_per_day, people_count, trip_count, and unit_price because the workbook formula is hours x people x rate x trips. "
         "For insulation foam yield_or_coverage, prefer foam_yield_history_digest entries matching foam type, product/template option, "
         "and thickness band; include that evidence and set review_required when the historical range is wide or evidence is thin. "
+        "For roofing jobs, use roofing workbook buckets directly: foam for roof SPF, coating, primer, caulk_detail, fabric, seams_misc, "
+        "penetrations, board_stock, fasteners, plates, granules, dumpster, lift, generator, sales_trips, truck_expense, and roofing labor buckets. "
+        "Roofing labor rows use the mixed labor formula: daily_rate and days when a daily rate is available, otherwise total_hours and hourly_rate. "
+        "Roofing sales/truck travel rows use trip_count x round_trip_miles x unit_price. "
         "You may do takeoff math from explicit dimensions and deductions. Do not invent hidden warranty years, exact proprietary products, "
         "or final quote totals when evidence is weak. Use review_required for assumptions. "
         "Workbook formulas remain authoritative for final costs."
@@ -1279,14 +1427,19 @@ def _clean_decision_preferences(value: Any) -> list[dict[str, Any]]:
             "foam_thickness_inches",
             "yield_or_coverage",
             "gal_per_100_sqft",
+            "coverage_sqft_per_unit",
             "unit_price",
+            "price_per_square",
             "estimated_units",
             "linear_ft",
+            "period",
+            "margin_pct",
             "days",
             "hours",
             "hours_per_day",
             "people_count",
             "trip_count",
+            "round_trip_miles",
             "crew_size",
             "daily_rate",
             "hourly_rate",
@@ -1299,7 +1452,7 @@ def _clean_decision_preferences(value: Any) -> list[dict[str, Any]]:
         bucket = _clean_string(cleaned.get("template_bucket") or cleaned.get("package") or cleaned.get("category")).lower()
         bucket = bucket.replace(" ", "_").replace("-", "_")
         row_number = _safe_row_number(cleaned.get("workbook_row") or cleaned.get("row_number"))
-        if bucket in {"labor_loading", "labor_traveling"} or row_number in {"95", "97"}:
+        if row_number in {"95", "97"}:
             if proposed_values.get("hours_per_day") in (None, ""):
                 proposed_values["hours_per_day"] = _first_present(proposed_values, "hours", "total_hours", "days")
             if proposed_values.get("people_count") in (None, ""):
@@ -1314,7 +1467,7 @@ def _clean_decision_preferences(value: Any) -> list[dict[str, Any]]:
             cleaned["workbook_row"] = row_number or ("95" if cleaned["template_bucket"] == "labor_loading" else "97")
             for stale_key in ("days", "crew_size", "daily_rate", "hourly_rate", "total_hours", "editable_total_hours"):
                 cleaned.pop(stale_key, None)
-        elif bucket == "infrared_scan" or row_number == "99":
+        elif row_number == "99" and bucket in {"infrared_scan", ""}:
             if proposed_values.get("hours_per_day") in (None, ""):
                 proposed_values["hours_per_day"] = _first_present(proposed_values, "hours", "total_hours", "days")
             proposed_values = {
@@ -1327,7 +1480,7 @@ def _clean_decision_preferences(value: Any) -> list[dict[str, Any]]:
             cleaned["workbook_row"] = "99"
             for stale_key in ("days", "crew_size", "daily_rate", "hourly_rate", "total_hours", "editable_total_hours"):
                 cleaned.pop(stale_key, None)
-        elif bucket in {"meals_lodging", "labor_meals_lodging"} or row_number == "100":
+        elif row_number == "100":
             if proposed_values.get("people_count") in (None, ""):
                 proposed_values["people_count"] = _first_present(proposed_values, "crew_size")
             proposed_values = {

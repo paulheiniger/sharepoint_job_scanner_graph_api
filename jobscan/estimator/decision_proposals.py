@@ -212,10 +212,14 @@ CHAT_ESTIMATOR_OVERRIDE_FIELDS = {
     "waste_factor_pct",
     "wet_mils_estimate",
     "unit_price",
+    "price_per_square",
+    "unit_price_per_thousand",
     "estimated_units",
     "estimated_sets",
     "linear_ft",
     "units",
+    "period",
+    "margin_pct",
     "days",
     "editable_days",
     "hours_per_day",
@@ -865,7 +869,7 @@ def _chat_estimator_proposals(template_type: str, scope: dict[str, Any]) -> list
         target = _chat_target_for_preference(template_type, item)
         if not target:
             continue
-        values = _clean_chat_proposed_values(item)
+        values = _clean_chat_proposed_values(item, template_type=template_type)
         confidence = _safe_number(item.get("confidence"), _safe_number(chat_payload.get("confidence"), 0.62))
         review_required = bool(item.get("review_required", confidence < 0.75))
         reasons = list(item.get("review_reasons") or item.get("review_flags") or [])
@@ -957,12 +961,21 @@ def _chat_target_for_preference(template_type: str, item: dict[str, Any]) -> dic
                 "workbook_row": workbook_row,
             }
     if template_type == "roofing":
+        if bucket in {"foam", "roofing_foam"}:
+            resolved_row = workbook_row if workbook_row in {"19", "20", "21"} else "19"
+            return {
+                "section": "roofing_foam_template_decisions",
+                "decision_id": decision_id or f"roofing_foam_row_{resolved_row}",
+                "template_bucket": "foam",
+                "workbook_row": resolved_row,
+            }
         if bucket == "coating":
+            resolved_row = workbook_row if workbook_row in {"26", "27", "28"} else "26"
             return {
                 "section": "roofing_coating_template_decisions",
-                "decision_id": decision_id or f"roofing_coating_system_row_{workbook_row or '26'}",
+                "decision_id": decision_id or f"roofing_coating_system_row_{resolved_row}",
                 "template_bucket": "coating",
-                "workbook_row": workbook_row if workbook_row in {"26", "27", "28"} else "26",
+                "workbook_row": resolved_row,
             }
         if bucket == "primer":
             return {
@@ -978,13 +991,151 @@ def _chat_target_for_preference(template_type: str, item: dict[str, Any]) -> dic
                 "template_bucket": "caulk_detail",
                 "workbook_row": workbook_row if workbook_row in {"43", "45"} else "43",
             }
+        if bucket == "fabric":
+            return {
+                "section": "roofing_detail_template_decisions",
+                "decision_id": decision_id or "roofing_fabric_row_79",
+                "template_bucket": "fabric",
+                "workbook_row": "79",
+            }
+        if bucket in {"seams_misc", "seam_treatment"}:
+            return {
+                "section": "roofing_detail_quantity_template_decisions",
+                "decision_id": decision_id or "roofing_seams_misc_row_47",
+                "template_bucket": "seams_misc",
+                "workbook_row": "47",
+            }
+        if bucket == "penetrations":
+            return {
+                "section": "roofing_detail_quantity_template_decisions",
+                "decision_id": decision_id or "roofing_penetrations_row_49",
+                "template_bucket": "penetrations",
+                "workbook_row": "49",
+            }
+        if bucket == "board_stock":
+            resolved_row = workbook_row if workbook_row in {"58", "59", "60"} else "58"
+            return {
+                "section": "roofing_board_fastener_template_decisions",
+                "decision_id": decision_id or f"roofing_board_stock_row_{resolved_row}",
+                "template_bucket": "board_stock",
+                "workbook_row": resolved_row,
+            }
+        if bucket == "fasteners":
+            return {
+                "section": "roofing_board_fastener_template_decisions",
+                "decision_id": decision_id or "roofing_fasteners_row_63",
+                "template_bucket": "fasteners",
+                "workbook_row": "63",
+            }
+        if bucket == "plates":
+            return {
+                "section": "roofing_board_fastener_template_decisions",
+                "decision_id": decision_id or "roofing_plates_row_65",
+                "template_bucket": "plates",
+                "workbook_row": "65",
+            }
+        if bucket == "granules":
+            return {
+                "section": "roofing_granules_template_decisions",
+                "decision_id": decision_id or "roofing_granules_row_36",
+                "template_bucket": "granules",
+                "workbook_row": "36",
+            }
+        if bucket in {"dumpster", "disposal"}:
+            return {
+                "section": "roofing_equipment_template_decisions",
+                "decision_id": decision_id or "roofing_dumpsters_row_69",
+                "template_bucket": "dumpster",
+                "workbook_row": "69",
+            }
+        if bucket == "lift":
+            resolved_row = workbook_row if workbook_row in {"73", "74"} else "73"
+            return {
+                "section": "roofing_equipment_template_decisions",
+                "decision_id": decision_id or f"roofing_lift_equipment_row_{resolved_row}",
+                "template_bucket": "lift",
+                "workbook_row": resolved_row,
+            }
+        if bucket == "generator":
+            return {
+                "section": "roofing_equipment_template_decisions",
+                "decision_id": decision_id or "roofing_generator_row_99",
+                "template_bucket": "generator",
+                "workbook_row": "99",
+            }
+        if bucket == "delivery_fee":
+            return {
+                "section": "roofing_travel_freight_template_decisions",
+                "decision_id": decision_id or "roofing_delivery_fee_row_76",
+                "template_bucket": "delivery_fee",
+                "workbook_row": "76",
+            }
+        if bucket == "freight":
+            return {
+                "section": "roofing_travel_freight_template_decisions",
+                "decision_id": decision_id or "roofing_freight_row_103",
+                "template_bucket": "freight",
+                "workbook_row": "103",
+            }
+        if bucket in {"sales_trips", "sales_inspection_trips"}:
+            return {
+                "section": "roofing_travel_freight_template_decisions",
+                "decision_id": decision_id or "roofing_sales_trips_row_106",
+                "template_bucket": "sales_trips",
+                "workbook_row": "106",
+            }
+        if bucket == "truck_expense":
+            return {
+                "section": "roofing_travel_freight_template_decisions",
+                "decision_id": decision_id or "roofing_truck_expense_row_108",
+                "template_bucket": "truck_expense",
+                "workbook_row": "108",
+            }
         if bucket.startswith("labor_") and workbook_row:
+            labor_row_defaults = {
+                "labor_prep": "116",
+                "labor_prime": "118",
+                "labor_seam_sealer": "120",
+                "labor_base": "122",
+                "labor_top_coat": "124",
+                "labor_caulk": "126",
+                "labor_details": "128",
+                "labor_cleanup": "132",
+                "labor_loading": "136",
+                "labor_traveling": "138",
+                "labor_infrared_scan": "141",
+                "labor_meals_lodging": "144",
+            }
+            resolved_row = workbook_row or labor_row_defaults.get(bucket, workbook_row)
             return {
                 "section": "roofing_labor_template_decisions",
-                "decision_id": decision_id or f"roofing_{bucket}_row_{workbook_row}",
+                "decision_id": decision_id or f"roofing_{bucket}_row_{resolved_row}",
                 "template_bucket": bucket,
-                "workbook_row": workbook_row,
+                "workbook_row": resolved_row,
             }
+        if bucket.startswith("labor_"):
+            labor_row_defaults = {
+                "labor_prep": "116",
+                "labor_prime": "118",
+                "labor_seam_sealer": "120",
+                "labor_base": "122",
+                "labor_top_coat": "124",
+                "labor_caulk": "126",
+                "labor_details": "128",
+                "labor_cleanup": "132",
+                "labor_loading": "136",
+                "labor_traveling": "138",
+                "labor_infrared_scan": "141",
+                "labor_meals_lodging": "144",
+            }
+            resolved_row = labor_row_defaults.get(bucket)
+            if resolved_row:
+                return {
+                    "section": "roofing_labor_template_decisions",
+                    "decision_id": decision_id or f"roofing_{bucket}_row_{resolved_row}",
+                    "template_bucket": bucket,
+                    "workbook_row": resolved_row,
+                }
     if decision_id and workbook_row and item.get("section"):
         return {
             "section": str(item.get("section")),
@@ -995,25 +1146,27 @@ def _chat_target_for_preference(template_type: str, item: dict[str, Any]) -> dic
     return None
 
 
-def _clean_chat_proposed_values(item: dict[str, Any]) -> dict[str, Any]:
+def _clean_chat_proposed_values(item: dict[str, Any], *, template_type: str = "") -> dict[str, Any]:
     values = dict(item.get("proposed_values") or {})
     for field in CHAT_ESTIMATOR_OVERRIDE_FIELDS:
         if field in item and item.get(field) not in (None, ""):
             values.setdefault(field, item.get(field))
     bucket = _canonical_package(item.get("template_bucket") or item.get("package") or item.get("category"))
     workbook_row = str(item.get("workbook_row") or item.get("row_number") or "").strip()
-    if bucket in {"labor_loading", "labor_traveling"} or workbook_row in {"95", "97"}:
+    if (template_type == "insulation" and bucket in {"labor_loading", "labor_traveling"}) or workbook_row in {"95", "97"}:
         if values.get("hours_per_day") in (None, ""):
             values["hours_per_day"] = _first_value(values, "hours", "total_hours", "days")
         if values.get("people_count") in (None, ""):
             values["people_count"] = _first_value(values, "crew_size")
         allowed = {"hours_per_day", "people_count", "trip_count", "unit_price", "round_trip_miles"}
         return {key: value for key, value in values.items() if key in allowed and value is not None}
-    if bucket in {"infrared_scan"} or workbook_row == "99":
+    if template_type == "insulation" and (bucket in {"infrared_scan"} or (workbook_row == "99" and bucket in {"", "infrared_scan"})):
         if values.get("hours_per_day") in (None, ""):
             values["hours_per_day"] = _first_value(values, "hours", "total_hours", "days")
         return {key: value for key, value in values.items() if key in {"hours_per_day", "unit_price"} and value is not None}
-    if bucket in {"meals_lodging", "labor_meals_lodging"} or workbook_row == "100":
+    if template_type == "insulation" and (
+        bucket in {"meals_lodging", "labor_meals_lodging"} or (workbook_row == "100" and bucket in {"", "meals_lodging", "labor_meals_lodging"})
+    ):
         if values.get("people_count") in (None, ""):
             values["people_count"] = _first_value(values, "crew_size")
         return {key: value for key, value in values.items() if key in {"days", "people_count", "unit_price"} and value is not None}
@@ -1440,8 +1593,8 @@ def _roofing_scope_proposals(scope: dict[str, Any], notes: str) -> list[Decision
         proposals.append(_proposal(template_type, "roofing_equipment_template_decisions", "roofing_lift_equipment_row_73", "lift", "73", include=True, confidence=0.65, review_reasons=["Access equipment type/period requires estimator confirmation."], note=_snippet(notes, ["lift", "access", "equipment"])))
     for decision_id, bucket, row, terms in (
         ("roofing_truck_expense_row_108", "truck_expense", "108", ["truck", "truck expense", "miles", "mileage", "round trip"]),
-        ("roofing_labor_loading_row_137", "labor_loading", "137", ["loading", "setup", "set up"]),
-        ("roofing_labor_traveling_row_139", "labor_traveling", "139", ["travel"]),
+        ("roofing_labor_loading_row_136", "labor_loading", "136", ["loading", "setup", "set up"]),
+        ("roofing_labor_traveling_row_138", "labor_traveling", "138", ["travel"]),
         ("roofing_labor_details_row_128", "labor_details", "128", ["details", "detail"]),
         ("roofing_labor_cleanup_row_132", "labor_cleanup", "132", ["cleanup", "clean up"]),
     ):

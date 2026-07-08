@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -4904,6 +4905,13 @@ def stable_payload_hash(payload: Any) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()
 
 
+def recalculate_workbench_tables_with_optional_data(workbench: dict[str, Any], data: EstimatorData | None = None) -> dict[str, Any]:
+    signature = inspect.signature(recalculate_workbench_tables)
+    if "data" in signature.parameters:
+        return recalculate_workbench_tables(workbench, data=data)
+    return recalculate_workbench_tables(workbench)
+
+
 def recalculate_workbench_tables_for_ui(workbench: dict[str, Any], data: EstimatorData | None = None) -> dict[str, Any]:
     cache_key = stable_payload_hash({"workbench": workbench, "data": estimator_data_signature(data) if data is not None else {}})
     state_key = "estimator_recalculated_workbench_cache"
@@ -4911,7 +4919,7 @@ def recalculate_workbench_tables_for_ui(workbench: dict[str, Any], data: Estimat
     if isinstance(cached, dict) and cached.get("key") == cache_key and isinstance(cached.get("workbench"), dict):
         return copy.deepcopy(cached["workbench"])
     with estimator_perf_step("workbench recalculation"):
-        recalculated = recalculate_workbench_tables(workbench, data=data)
+        recalculated = recalculate_workbench_tables_with_optional_data(workbench, data=data)
     st.session_state[state_key] = {"key": cache_key, "workbench": copy.deepcopy(recalculated)}
     return recalculated
 
