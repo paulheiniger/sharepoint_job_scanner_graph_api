@@ -4928,6 +4928,63 @@ def draft_workbook_inputs_for_ui(workbench: dict[str, Any]) -> dict[str, Any]:
     return draft
 
 
+def estimator_data_signature(data: EstimatorData) -> dict[str, Any]:
+    return {
+        "source_files_used": list(data.source_files_used or []),
+        "template_rows": len(data.template_rows),
+        "pricing": len(data.pricing),
+        "product_catalog": len(data.product_catalog),
+        "product_properties": len(data.product_properties),
+        "template_product_options": len(data.template_product_options),
+        "estimator_decision_recommendations": len(data.estimator_decision_recommendations),
+    }
+
+
+def recommendation_cache_payload(recommendation: Any) -> dict[str, Any]:
+    return {
+        "parsed_fields": getattr(recommendation, "parsed_fields", {}) or {},
+        "review_flags": getattr(recommendation, "review_flags", []) or [],
+        "estimate_status": getattr(recommendation, "estimate_status", ""),
+        "estimate_reason": getattr(recommendation, "estimate_reason", ""),
+        "required_questions": getattr(recommendation, "required_questions", []) or [],
+    }
+
+
+def build_estimating_workbench_for_ui(
+    recommendation: Any,
+    data: EstimatorData,
+    *,
+    scope_override: dict[str, Any] | None = None,
+    historical_filters: dict[str, Any] | None = None,
+    timing_label: str = "workbench build",
+) -> dict[str, Any]:
+    cache_payload = {
+        "recommendation": recommendation_cache_payload(recommendation),
+        "data": estimator_data_signature(data),
+        "scope_override": scope_override or {},
+        "historical_filters": historical_filters or {},
+    }
+    cache_key = stable_payload_hash(cache_payload)
+    state_key = "estimator_build_workbench_cache"
+    cache = st.session_state.setdefault(state_key, {})
+    if isinstance(cache, dict) and cache_key in cache and isinstance(cache[cache_key], dict):
+        return copy.deepcopy(cache[cache_key])
+    with estimator_perf_step(timing_label):
+        workbench = build_estimating_workbench(
+            recommendation,
+            data,
+            scope_override=scope_override,
+            historical_filters=historical_filters,
+        )
+    if not isinstance(cache, dict):
+        cache = {}
+        st.session_state[state_key] = cache
+    cache[cache_key] = copy.deepcopy(workbench)
+    while len(cache) > 6:
+        cache.pop(next(iter(cache)))
+    return workbench
+
+
 def estimator_reference_job_options(data: EstimatorData, *, template_type: str = "") -> tuple[list[str], dict[str, str]]:
     jobs = getattr(data, "jobs", pd.DataFrame())
     template_rows = getattr(data, "template_rows", pd.DataFrame())
@@ -5907,6 +5964,7 @@ def estimator_prototype_page() -> None:
                             "site_address": field_site_address,
                             "city": field_city,
                             "state": field_state,
+                            "disable_ai_scope_interpreter": True,
                         },
                         data=field_notes_data,
                     )
@@ -6088,8 +6146,11 @@ def estimator_prototype_page() -> None:
                 )
             st.info("Estimate generation stopped before material selection, labor calibration, similar jobs, pricing, workbook export, and evidence export.")
             return
-        with estimator_perf_step("initial workbench build"):
-            parsed_workbench = build_estimating_workbench(field_recommendation, data)
+        parsed_workbench = build_estimating_workbench_for_ui(
+            field_recommendation,
+            data,
+            timing_label="initial workbench build",
+        )
         workbench_key = str(parsed_workbench.get("estimate_id") or "current")
         debug_mode = st.checkbox(
             "Debug Mode",
@@ -6215,13 +6276,13 @@ def estimator_prototype_page() -> None:
             "Reset all unedited rows to filtered historical defaults",
             key=f"wb_reset_filtered_defaults_{workbench_key}_{historical_filters_key}",
         )
-        with estimator_perf_step("filtered workbench build"):
-            filtered_default_workbench = build_estimating_workbench(
-                field_recommendation,
-                data,
-                scope_override=edited_scope,
-                historical_filters=historical_filters,
-            )
+        filtered_default_workbench = build_estimating_workbench_for_ui(
+            field_recommendation,
+            data,
+            scope_override=edited_scope,
+            historical_filters=historical_filters,
+            timing_label="filtered workbench build",
+        )
         previous_workbench_key = f"wb_last_edited_{workbench_key}"
         previous_workbench = None if reset_filtered_defaults else st.session_state.get(previous_workbench_key)
         original_workbench = apply_historical_filter_update(previous_workbench, filtered_default_workbench)

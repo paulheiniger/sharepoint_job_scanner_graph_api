@@ -1344,6 +1344,38 @@ def test_insulation_email_routes_and_parses_building_dimensions() -> None:
     assert not recommendation.material_plan or all(row.get("category") != "coating" for row in recommendation.material_plan)
 
 
+def test_insulation_email_with_r_target_and_assumed_rollup_height_computes_area_and_thickness() -> None:
+    notes = (
+        INSULATION_EMAIL
+        + " Assume 7ft door height, 9ft rolling door height, r14 target, open-cell 3.8 R/in* "
+        + "Address is 314 E Aberdeen Drive, Trenton, OH"
+    )
+
+    recommendation = estimate_from_field_notes(
+        notes,
+        {"disable_ai_scope_interpreter": True},
+        data=EstimatorData(),
+    )
+    parsed = recommendation.parsed_fields
+
+    assert parsed["foam_type"] == "open_cell"
+    assert parsed["foam_thickness_inches"] == pytest.approx(14 / 3.8, abs=0.0001)
+    assert parsed["r_value_per_inch"] == pytest.approx(3.8)
+    assert parsed["opening_area_known_sqft"] == 234
+    assert parsed["opening_area_missing"] is False
+    assert parsed["net_insulation_area_sqft"] == 2226
+    assert parsed["estimated_sqft"] == 2226
+    rollup = next(opening for opening in parsed["openings"] if opening["opening_type"] == "rollup_door")
+    assert rollup["width_ft"] == 9
+    assert rollup["height_ft"] == 9
+    assert rollup["known_area_sqft"] == 162
+    targets = {row["surface_type"]: row["target_r_value"] for row in parsed["insulation_r_value_targets"]}
+    assert targets == {"walls": 14.0, "ceiling": 14.0}
+    assert not any("Rollup door width" in question for question in recommendation.required_questions)
+    assert not any("foam type" in question.lower() for question in recommendation.required_questions)
+    assert not any("thickness or R-value" in question for question in recommendation.required_questions)
+
+
 def test_reviewed_insulation_generated_formula_notes_parse_wall_and_ceiling_area() -> None:
     cases = [
         (

@@ -3294,6 +3294,8 @@ def parsed_fields_for_result(
         "insulation_foam_type",
         "insulation_product_selection",
         "insulation_thickness_calculation",
+        "target_r_value",
+        "r_value_per_inch",
         "assumptions",
         "requested_timing",
         "building_installation_timing",
@@ -3395,7 +3397,8 @@ def estimate_from_field_notes(
     scope["net_area_sqft"] = scope.get("net_area_sqft") or _dimension_summary_value(dimension_summary, "net_area_sqft")
     deterministic_parsed_scope = asdict(parsed)
     deterministic_scope = dict(scope)
-    ai_enabled = ai_scope_interpreter.ai_scope_interpreter_enabled()
+    disable_ai_scope_interpreter = bool(optional_overrides.get("disable_ai_scope_interpreter"))
+    ai_enabled = ai_scope_interpreter.ai_scope_interpreter_enabled() and not disable_ai_scope_interpreter
     ai_parsed_scope: dict[str, Any] = {}
     ai_merge_decisions: list[dict[str, Any]] = []
     ai_review_flags: list[str] = []

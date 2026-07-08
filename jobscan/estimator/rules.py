@@ -54,11 +54,18 @@ def parse_sqft(text: str, *, wall: bool = False) -> float | None:
 
 def parse_foam_thickness(text: str) -> float | None:
     match = re.search(
-        r"(\d+(?:\.\d+)?)\s*(?:in|inch|inches|[\"”])\s*"
-        r"(?:thick|thickness|foam|spf|spray foam|closed[- ]cell|open[- ]cell)?",
+        r"\b(?:foam|spray foam|spf|thickness|target|closed[- ]cell|open[- ]cell)\b[^.;,\n]{0,30}?"
+        r"(\d+(?:\.\d+)?)\s*(?:in|inch|inches|[\"”])\b",
         text,
         re.I,
     )
+    if not match:
+        match = re.search(
+            r"\b(\d+(?:\.\d+)?)\s*(?:in|inch|inches|[\"”])\s*"
+            r"(?:thick|thickness|foam|spf|spray foam|closed[- ]cell|open[- ]cell)\b",
+            text,
+            re.I,
+        )
     if match:
         return to_float(match.group(1))
     return None

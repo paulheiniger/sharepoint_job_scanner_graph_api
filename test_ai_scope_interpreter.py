@@ -218,6 +218,25 @@ def test_ai_interpreter_explicit_false_overrides_openai_key(monkeypatch) -> None
     assert ai_scope_interpreter.ai_scope_interpreter_enabled() is False
 
 
+def test_estimator_can_disable_ai_scope_interpreter_per_call(monkeypatch) -> None:
+    monkeypatch.delenv("ENABLE_AI_SCOPE_INTERPRETER", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    def fail_if_called(_notes: str, _scope: dict | None = None) -> str:
+        raise AssertionError("legacy AI scope interpreter should not be called")
+
+    monkeypatch.setattr(ai_scope_interpreter, "_call_openai_scope_interpreter", fail_if_called)
+
+    recommendation = estimate_from_field_notes(
+        "30x40 metal building with 9 ft walls, outside walls and ceiling, open-cell R14.",
+        {"disable_ai_scope_interpreter": True},
+        data=field_data(),
+    )
+
+    assert recommendation.debug["ai_scope_interpreter"]["enabled"] is False
+    assert recommendation.parsed_fields["template_type"] == "insulation"
+
+
 def test_estimator_merges_ai_scope_with_deterministic_guardrails(monkeypatch) -> None:
     monkeypatch.setenv("ENABLE_AI_SCOPE_INTERPRETER", "true")
 

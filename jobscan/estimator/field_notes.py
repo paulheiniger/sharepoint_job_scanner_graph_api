@@ -6,7 +6,12 @@ from dataclasses import asdict
 from typing import Any
 
 from .dimensions import parse_dimensions
-from .insulation_surfaces import build_insulation_deductions, build_insulation_surface_area_rows, parse_r_value_targets
+from .insulation_surfaces import (
+    DEFAULT_R_VALUE_PER_INCH_BY_FOAM_TYPE,
+    build_insulation_deductions,
+    build_insulation_surface_area_rows,
+    parse_r_value_targets,
+)
 from .rules import clean_text, extract_scope, first_nonblank, to_float
 from .schemas import FieldNotesInput, ParsedFieldNotes
 
@@ -217,6 +222,54 @@ def _opening_area(quantity: int, width_ft: float | None, height_ft: float | None
     return round(quantity * width_ft * height_ft, 2)
 
 
+def _parse_general_target_r_value(text: str) -> float | None:
+    patterns = [
+        r"\bR[-\s]?(?P<value>\d+(?:\.\d+)?)\s*(?:target|desired|specified|requested)\b",
+        r"\b(?:target|desired|specified|requested)\s*R[-\s]?(?P<value>\d+(?:\.\d+)?)\b",
+        r"\bR[-\s]?(?P<value>\d+(?:\.\d+)?)\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.I)
+        if not match:
+            continue
+        value = to_float(match.group("value"))
+        if value and 1 <= value <= 100:
+            return value
+    return None
+
+
+def _parse_r_value_per_inch(text: str) -> float | None:
+    patterns = [
+        r"\b(?P<value>\d+(?:\.\d+)?)\s*R\s*/\s*in(?:ch)?\b",
+        r"\b(?P<value>\d+(?:\.\d+)?)\s*R[-\s]?per[-\s]?in(?:ch)?\b",
+        r"\bR[- ]?value\s+per\s+inch\s+(?:is|=|of)?\s*(?P<value>\d+(?:\.\d+)?)\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.I)
+        if not match:
+            continue
+        value = to_float(match.group("value"))
+        if value and 1 <= value <= 10:
+            return value
+    return None
+
+
+def _parse_assumed_rollup_door_height(text: str) -> float | None:
+    patterns = [
+        r"\bassume\s+(?P<height>\d+(?:\.\d+)?)\s*(?:ft|feet|foot|')\s+(?:rolling|roll[- ]?up|overhead)\s+door\s+height\b",
+        r"\b(?P<height>\d+(?:\.\d+)?)\s*(?:ft|feet|foot|')\s+(?:rolling|roll[- ]?up|overhead)\s+door\s+height\b",
+        r"\b(?:rolling|roll[- ]?up|overhead)\s+door\s+height\s+(?:is|=|assume|assumed)?\s*(?P<height>\d+(?:\.\d+)?)\s*(?:ft|feet|foot|')\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.I)
+        if not match:
+            continue
+        height = to_float(match.group("height"))
+        if height and 4 <= height <= 30:
+            return height
+    return None
+
+
 def _parse_formula_insulation_areas(text: str) -> dict[str, Any]:
     lowered = clean_text(text).lower()
     result: dict[str, Any] = {}
@@ -405,6 +458,7 @@ def parse_insulation_quote_scope(notes: str) -> dict[str, Any]:
     dimension_unit = r"(?:ft|feet|foot|'|’|\"|“|”|in|inch|inches)"
     count_pattern = r"\(?\s*(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2})\s*\)?"
     consumed_spans: list[tuple[int, int]] = []
+    assumed_rollup_height_ft = _parse_assumed_rollup_door_height(text)
 
     def span_consumed(match: re.Match[str]) -> bool:
         return any(not (match.end() <= start or match.start() >= end) for start, end in consumed_spans)
@@ -486,19 +540,36 @@ def parse_insulation_quote_scope(notes: str) -> dict[str, Any]:
         if span_consumed(match):
             continue
         count = _count_from_match(match.group("count")) or 1
-        height = to_float(match.group("height"))
-        openings.append(
-            {
-                "opening_type": "rollup_door",
-                "quantity": count,
-                "height_ft": height,
-                "width_ft": None,
-                "known_area_sqft": None,
-                "missing_dimensions": ["width_ft"],
-                "source_text": match.group(0),
-            }
-        )
-        result["opening_area_missing"] = True
+        single_dimension = to_float(match.group("height"))
+        if single_dimension and assumed_rollup_height_ft:
+            area = _opening_area(count, single_dimension, assumed_rollup_height_ft)
+            if area:
+                opening_area_known += area
+            openings.append(
+                {
+                    "opening_type": "rollup_door",
+                    "quantity": count,
+                    "height_ft": round(assumed_rollup_height_ft, 3),
+                    "width_ft": round(single_dimension, 3),
+                    "known_area_sqft": area,
+                    "missing_dimensions": [] if area else ["width_ft", "height_ft"],
+                    "assumptions": [f"Rollup door height assumed {assumed_rollup_height_ft:g} ft from notes."],
+                    "source_text": match.group(0),
+                }
+            )
+        else:
+            openings.append(
+                {
+                    "opening_type": "rollup_door",
+                    "quantity": count,
+                    "height_ft": single_dimension,
+                    "width_ft": None,
+                    "known_area_sqft": None,
+                    "missing_dimensions": ["width_ft"],
+                    "source_text": match.group(0),
+                }
+            )
+            result["opening_area_missing"] = True
 
     for match in re.finditer(
         r"(?<!\w)(?P<count>\(?\s*(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2})\s*\)?)\s+"
@@ -614,10 +685,53 @@ def parse_insulation_quote_scope(notes: str) -> dict[str, Any]:
         result["confidence_by_field"]["openings"] = "medium" if result["opening_area_missing"] else "high"
 
     r_value_targets = parse_r_value_targets(text)
+    general_target_r_value = _parse_general_target_r_value(text)
+    if general_target_r_value and not r_value_targets:
+        target_surfaces: list[str] = []
+        if result.get("outside_walls_included") or result.get("gross_wall_area_sqft"):
+            target_surfaces.append("walls")
+        if result.get("ceiling_included") and result.get("ceiling_area_sqft"):
+            target_surfaces.append("ceiling")
+        if result.get("roof_underside_included") and result.get("roof_underside_area_sqft"):
+            target_surfaces.append("roof_underside")
+        if not target_surfaces:
+            target_surfaces.append("general")
+        r_value_targets = [
+            {
+                "surface_type": surface,
+                "target_r_value": round(general_target_r_value, 4),
+                "source_text": f"R{general_target_r_value:g} target",
+                "confidence": "medium",
+            }
+            for surface in target_surfaces
+        ]
+        result["target_r_value"] = round(general_target_r_value, 4)
     if r_value_targets:
         result["insulation_r_value_targets"] = r_value_targets
         result["evidence_by_field"]["insulation_r_value_targets"] = [row.get("source_text") for row in r_value_targets]
         result["confidence_by_field"]["insulation_r_value_targets"] = "high"
+    if not first_nonblank(result.get("foam_type")):
+        if re.search(r"\bopen[- ]cell\b", lowered, re.I):
+            result["foam_type"] = "open_cell"
+            result["insulation_foam_type"] = "open_cell"
+        elif re.search(r"\bclosed[- ]cell\b", lowered, re.I):
+            result["foam_type"] = "closed_cell"
+            result["insulation_foam_type"] = "closed_cell"
+    r_value_per_inch = _parse_r_value_per_inch(text)
+    if r_value_per_inch:
+        result["r_value_per_inch"] = round(r_value_per_inch, 4)
+        result["evidence_by_field"]["r_value_per_inch"] = f"{r_value_per_inch:g} R/in"
+        result["confidence_by_field"]["r_value_per_inch"] = "medium"
+    elif result.get("foam_type"):
+        r_value_per_inch = DEFAULT_R_VALUE_PER_INCH_BY_FOAM_TYPE.get(str(result.get("foam_type")))
+    if general_target_r_value and r_value_per_inch and not to_float(result.get("foam_thickness_inches")):
+        result["foam_thickness_inches"] = round(general_target_r_value / r_value_per_inch, 4)
+        result["insulation_thickness_calculation"] = {
+            "target_r_value": round(general_target_r_value, 4),
+            "r_value_per_inch": round(r_value_per_inch, 4),
+            "foam_thickness_inches": result["foam_thickness_inches"],
+            "formula": "target_r_value / r_value_per_inch",
+        }
     result["insulation_deductions"] = build_insulation_deductions(result)
     result["insulation_surface_areas"] = build_insulation_surface_area_rows(result, text)
 
@@ -742,6 +856,16 @@ def parse_field_notes(field_input: FieldNotesInput | str, overrides: dict[str, A
     dimension_dict = dimension_summary.to_dict()
     insulation_scope = parse_insulation_quote_scope(notes)
     if insulation_scope:
+        for key in (
+            "foam_type",
+            "foam_thickness_inches",
+            "target_r_value",
+            "r_value_per_inch",
+            "insulation_foam_type",
+            "insulation_thickness_calculation",
+        ):
+            if insulation_scope.get(key) not in (None, "", [], {}):
+                scope[key] = insulation_scope.get(key)
         dimension_dict["insulation_scope"] = insulation_scope
         for area_key in ("gross_area_sqft", "deduction_area_sqft", "net_area_sqft"):
             if insulation_scope.get(area_key) is not None:

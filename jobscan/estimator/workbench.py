@@ -810,8 +810,17 @@ def _product_context(
     catalog = _frame(data, "product_catalog")
     if catalog.empty or not item_name:
         return {}
+    cache_key = (
+        _normalized(item_name),
+        _normalized(decision_id),
+        _normalized(package),
+        str(template_product_option_id or "").strip(),
+    )
+    cache = getattr(data, "_estimator_product_context_cache", None) if data is not None else None
+    if isinstance(cache, dict) and cache_key in cache:
+        return dict(cache[cache_key])
     try:
-        return product_context_for_decision(
+        context = product_context_for_decision(
             product_name=item_name,
             decision_id=decision_id,
             product_catalog=catalog,
@@ -824,6 +833,16 @@ def _product_context(
             template_product_option_id=template_product_option_id,
             category=package,
         )
+        if data is not None:
+            if not isinstance(cache, dict):
+                cache = {}
+                try:
+                    setattr(data, "_estimator_product_context_cache", cache)
+                except Exception:
+                    cache = None
+            if isinstance(cache, dict):
+                cache[cache_key] = dict(context)
+        return context
     except Exception:
         return {}
 
@@ -6747,6 +6766,13 @@ def _build_roofing_primer_template_decisions(
         re.search(r"\b(include|included|add|apply)\s+(?:\w+\s+){0,4}(primer|priming)\b", notes)
         or re.search(r"\b(primer|priming)\s+(?:is\s+)?included\b", notes)
     )
+    conditional_primer_review_signal = bool(
+        scope.get("coating_path_review")
+        and _has_positive_note_signal(
+            notes,
+            ["primer", "prime", "priming", "rust", "oxidation", "adhesion", "metal roof"],
+        )
+    )
     default_include = bool(
         primer_row.get("include")
         or primer_row.get("review_required")
@@ -6754,6 +6780,7 @@ def _build_roofing_primer_template_decisions(
         or safe_number(first_nonblank(primer_row.get("estimated_quantity"), primer_row.get("quantity")), 0.0) > 0
         or str(primer_row.get("suggested_by_notes_rules") or "").lower() == "yes"
         or explicit_include_signal
+        or conditional_primer_review_signal
     )
     include = bool(existing["include"]) if "include" in existing else default_include
     primer_source_priced = bool(
@@ -6763,7 +6790,7 @@ def _build_roofing_primer_template_decisions(
     )
     review_only_primer = bool(
         include
-        and existing.get("proposal_review_required")
+        and (existing.get("proposal_review_required") or conditional_primer_review_signal)
         and not primer_source_priced
         and not explicit_include_signal
     )
@@ -6854,6 +6881,14 @@ def _build_roofing_primer_template_decisions(
         warnings.append("Primer is review-only from notes; cost is held at zero until primer scope and product are confirmed.")
     if include and safe_number(formula.get("estimated_cost"), 0.0) <= 0:
         warnings.append("Primer material cost is missing; current pricing or historical cost/sqft is required.")
+    proposal_review_reasons = list(existing.get("proposal_review_reasons") or [])
+    if review_only_primer:
+        proposal_review_reasons.append(
+            "Conditional coating/restoration path references primer/rust/adhesion, but primer product and scope are not confirmed."
+        )
+    if include and safe_number(formula.get("estimated_cost"), 0.0) <= 0:
+        proposal_review_reasons.append("Primer cost is missing or intentionally held at zero for estimator review.")
+    proposal_review_reasons = list(dict.fromkeys(str(reason) for reason in proposal_review_reasons if reason))
     product_context_status = "matched" if selected_candidate.get("product_id") else "missing"
     selected_name = selected_candidate.get("item_name") or str(first_nonblank(primer_row.get("item_name"), primer_row.get("current_item"), ""))
     return [
@@ -6875,6 +6910,17 @@ def _build_roofing_primer_template_decisions(
             "historical_selector_confidence": primer_row.get("decision_confidence") or primer_row.get("confidence") or "",
             "decision_evidence_count": evidence_count,
             "decision_confidence": primer_row.get("decision_confidence") or primer_row.get("confidence") or "",
+            "proposal_source": (
+                existing.get("proposal_source")
+                or ("deterministic_rule" if conditional_primer_review_signal else "")
+            ),
+            "proposal_confidence": existing.get("proposal_confidence") or (0.65 if conditional_primer_review_signal else ""),
+            "proposal_review_required": bool(
+                existing.get("proposal_review_required")
+                or review_only_primer
+                or proposal_review_reasons
+            ),
+            "proposal_review_reasons": proposal_review_reasons,
             "basis_sqft": round(basis_sqft, 2),
             "coverage_sqft_per_unit": round(coverage, 4),
             "unit_price": round(unit_price, 4),
