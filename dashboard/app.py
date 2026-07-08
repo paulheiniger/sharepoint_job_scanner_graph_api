@@ -8,8 +8,11 @@ import hashlib
 import json
 import logging
 import os
+import copy
 import re
 import sys
+import time
+from contextlib import contextmanager
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Iterable
@@ -4313,8 +4316,8 @@ def pricing_catalog_page() -> None:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def load_estimator_data_cached():
-    return load_estimator_data(Path.cwd(), database_url=DATABASE_URL, prefer_database=True)
+def load_estimator_data_cached(load_profile: str = "interactive"):
+    return load_estimator_data(Path.cwd(), database_url=DATABASE_URL, prefer_database=True, load_profile=load_profile)
 
 
 def optional_field_notes_estimator():
@@ -4598,6 +4601,88 @@ def display_safe_records(records: list[dict[str, Any]], *, editable_fields: set[
     return rows
 
 
+def _compact_cell_has_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, float) and pd.isna(value):
+        return False
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value) != 0.0
+    text = str(value).strip()
+    return bool(text and text.lower() not in {"0", "0.0", "nan", "none", "null", "[]", "{}"})
+
+
+def projected_display_records(
+    records: list[dict[str, Any]],
+    columns: Iterable[str],
+    *,
+    editable_fields: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Build a compact display payload without serializing hidden row metadata."""
+
+    editable_fields = editable_fields or set()
+    requested = unique_columns(columns)
+    if CHOICE_SUMMARY_COLUMN not in requested:
+        insert_after = next(
+            (
+                requested.index(column) + 1
+                for column in (
+                    "resolved_template_option",
+                    "labor_task",
+                    "template_line",
+                    "package",
+                    "adder",
+                    "workbook_row",
+                )
+                if column in requested
+            ),
+            len(requested),
+        )
+        requested.insert(insert_after, CHOICE_SUMMARY_COLUMN)
+    available = [
+        column
+        for column in requested
+        if column == CHOICE_SUMMARY_COLUMN or any(isinstance(row, dict) and column in row for row in records or [])
+    ]
+    compact_columns = [
+        column
+        for column in available
+        if column not in COMPACT_DIAGNOSTIC_COLUMNS
+        and (
+            column in COMPACT_ALWAYS_SHOW_COLUMNS
+            or column in editable_fields
+            or column == CHOICE_SUMMARY_COLUMN
+            or any(_compact_cell_has_value((row or {}).get(column)) for row in records or [])
+        )
+    ]
+    selected_columns = compact_columns or available
+    rows: list[dict[str, Any]] = []
+    for row in records or []:
+        enriched_row = dict(row)
+        enriched_row.setdefault(CHOICE_SUMMARY_COLUMN, choice_summary_for_row(enriched_row))
+        safe_row: dict[str, Any] = {}
+        for key in selected_columns:
+            value = enriched_row.get(key)
+            safe_row[key] = value if key in editable_fields else display_safe_cell_value(value)
+        rows.append(safe_row)
+    return rows
+
+
+def workbench_display_frame_from_records(
+    records: list[dict[str, Any]],
+    compact_columns: Iterable[str],
+    *,
+    editable_fields: set[str] | None = None,
+    show_row_details: bool = False,
+) -> tuple[pd.DataFrame, list[str]]:
+    if show_row_details:
+        df = pd.DataFrame(display_safe_records(records, editable_fields=editable_fields))
+        return df, list(df.columns)
+    projected = projected_display_records(records, compact_columns, editable_fields=editable_fields)
+    df = pd.DataFrame(projected)
+    return df, list(df.columns)
+
+
 def display_safe_dataframe(records: list[dict[str, Any]]) -> pd.DataFrame:
     """Build a read-only Streamlit dataframe without mixed Arrow object columns."""
 
@@ -4778,6 +4863,57 @@ def project_display_frame(frame: pd.DataFrame, columns: Iterable[str]) -> pd.Dat
     return frame[compact_columns or available].copy()
 
 
+@contextmanager
+def estimator_perf_step(name: str):
+    start = time.perf_counter()
+    try:
+        yield
+    finally:
+        timings = st.session_state.setdefault("estimator_perf_timings", [])
+        timings.append({"step": name, "seconds": round(time.perf_counter() - start, 4)})
+
+
+def reset_estimator_perf_timings() -> None:
+    st.session_state["estimator_perf_timings"] = []
+
+
+def render_estimator_perf_timings() -> None:
+    timings = st.session_state.get("estimator_perf_timings") or []
+    if not timings:
+        return
+    with st.expander("Performance timings", expanded=False):
+        st.dataframe(pd.DataFrame(timings), use_container_width=True, hide_index=True, height=220)
+
+
+def stable_payload_hash(payload: Any) -> str:
+    text = json.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
+
+def recalculate_workbench_tables_for_ui(workbench: dict[str, Any]) -> dict[str, Any]:
+    cache_key = stable_payload_hash(workbench)
+    state_key = "estimator_recalculated_workbench_cache"
+    cached = st.session_state.get(state_key)
+    if isinstance(cached, dict) and cached.get("key") == cache_key and isinstance(cached.get("workbench"), dict):
+        return copy.deepcopy(cached["workbench"])
+    with estimator_perf_step("workbench recalculation"):
+        recalculated = recalculate_workbench_tables(workbench)
+    st.session_state[state_key] = {"key": cache_key, "workbench": copy.deepcopy(recalculated)}
+    return recalculated
+
+
+def draft_workbook_inputs_for_ui(workbench: dict[str, Any]) -> dict[str, Any]:
+    cache_key = stable_payload_hash(workbench)
+    state_key = "estimator_draft_workbook_inputs_cache"
+    cached = st.session_state.get(state_key)
+    if isinstance(cached, dict) and cached.get("key") == cache_key and isinstance(cached.get("draft"), dict):
+        return copy.deepcopy(cached["draft"])
+    with estimator_perf_step("draft workbook input build"):
+        draft = workbench_to_draft_workbook_inputs(workbench, recalculate=False)
+    st.session_state[state_key] = {"key": cache_key, "draft": copy.deepcopy(draft)}
+    return draft
+
+
 def estimator_reference_job_options(data: EstimatorData, *, template_type: str = "") -> tuple[list[str], dict[str, str]]:
     jobs = getattr(data, "jobs", pd.DataFrame())
     template_rows = getattr(data, "template_rows", pd.DataFrame())
@@ -4819,6 +4955,109 @@ def estimator_reference_job_options(data: EstimatorData, *, template_type: str =
     options = [str(row["job_id"]) for row in sorted_rows]
     labels = {str(row["job_id"]): label(row) for row in sorted_rows}
     return options, labels
+
+
+def render_workbench_selected_row_details(
+    workbench: dict[str, Any],
+    *,
+    workbench_key: str,
+    scope_key: str,
+    historical_filters_key: str,
+) -> None:
+    sections: list[tuple[str, str, list[dict[str, Any]]]] = []
+    for section_key, section_label in [
+        ("insulation_foam_template_decisions", "Insulation Foam"),
+        *INSULATION_DECISION_SECTIONS,
+        ("roofing_foam_template_decisions", "Roofing Foam"),
+        ("roofing_coating_template_decisions", "Roof Coating"),
+        ("roofing_primer_template_decisions", "Roof Primer"),
+        ("roofing_detail_template_decisions", "Roof Detail Materials"),
+        ("roofing_detail_quantity_template_decisions", "Roof Detail Quantities"),
+        ("roofing_board_fastener_template_decisions", "Roof Board / Fasteners"),
+        ("roofing_granules_template_decisions", "Roof Granules"),
+        ("roofing_equipment_template_decisions", "Roof Equipment"),
+        ("roofing_travel_freight_template_decisions", "Roof Travel / Freight"),
+        ("roofing_accessory_template_decisions", "Roof Accessories"),
+        ("roofing_labor_template_decisions", "Roof Labor"),
+        ("pricing_markup_decisions", "Pricing Markup"),
+    ]:
+        rows = [row for row in workbench.get(section_key) or [] if isinstance(row, dict)]
+        if rows:
+            sections.append((section_key, section_label, rows))
+    if not sections:
+        return
+    with st.expander("Selected row details", expanded=False):
+        section_labels = [label for _, label, _ in sections]
+        selected_label = st.selectbox(
+            "Section",
+            section_labels,
+            key=f"wb_row_detail_section_{workbench_key}_{scope_key}_{historical_filters_key}",
+        )
+        section_key, _, rows = next(item for item in sections if item[1] == selected_label)
+
+        def row_label(row: dict[str, Any]) -> str:
+            name = text_value(
+                row.get("resolved_template_option")
+                or row.get("template_line")
+                or row.get("labor_task")
+                or row.get("package")
+                or row.get("decision_id")
+            )
+            row_number = text_value(row.get("workbook_row"))
+            return f"Row {row_number} - {name}" if row_number else name or "Decision row"
+
+        row_options = list(range(len(rows)))
+        selected_idx = st.selectbox(
+            "Row",
+            row_options,
+            format_func=lambda idx: row_label(rows[int(idx)]),
+            key=f"wb_row_detail_row_{section_key}_{workbench_key}_{scope_key}_{historical_filters_key}",
+        )
+        selected_row = rows[int(selected_idx)]
+        summary_columns = [
+            "include",
+            "workbook_row",
+            "resolved_template_option",
+            "template_line",
+            "labor_task",
+            "basis_sqft",
+            "quantity",
+            "unit_price",
+            "estimated_units",
+            "estimated_cost",
+            "compatibility_status",
+            CHOICE_SUMMARY_COLUMN,
+        ]
+        summary = projected_display_records([selected_row], summary_columns)
+        if summary:
+            st.dataframe(pd.DataFrame(summary), use_container_width=True, hide_index=True)
+        detail_keys = [
+            key
+            for key in (
+                "decision_evidence_summary",
+                "why_included",
+                "historical_evidence_summary",
+                "pricing_evidence_summary",
+                "product_evidence_summary",
+                "formula_evidence_summary",
+                "proposal_source",
+                "proposal_confidence",
+                "proposal_review_required",
+                "proposal_review_reasons",
+                "compatibility_warnings",
+                "product_guidance",
+                "product_guidance_status",
+                "selected_pricing_candidate",
+                "pricing_candidates",
+                "selector_options",
+                "workbook_cell_write_preview",
+                "notes",
+            )
+            if key in selected_row and text_value(display_safe_cell_value(selected_row.get(key)))
+        ]
+        if detail_keys:
+            detail_rows = [{"field": key, "value": display_safe_cell_value(selected_row.get(key))} for key in detail_keys]
+            st.dataframe(pd.DataFrame(detail_rows), use_container_width=True, hide_index=True, height=260)
 
 
 def parse_reference_job_ids(value: Any) -> list[str]:
@@ -5030,12 +5269,13 @@ def render_estimator_chat_draft_panel(
             else {}
         )
         with st.spinner("Drafting estimate intake..."):
-            result = run_estimator_chat_turn(
-                messages,
-                data=data,
-                template_type_hint=estimate_type,
-                existing_scope=existing_scope,
-            )
+            with estimator_perf_step("chat context and response"):
+                result = run_estimator_chat_turn(
+                    messages,
+                    data=data,
+                    template_type_hint=estimate_type,
+                    existing_scope=existing_scope,
+                )
         messages.append({"role": "assistant", "content": estimator_chat_assistant_history_content(result)})
         st.session_state[history_key] = messages
         result_payload = result.to_dict()
@@ -5486,10 +5726,12 @@ def render_repair_estimate_result(result_payload: dict[str, Any], *, notes: str,
 
 
 def estimator_prototype_page() -> None:
+    reset_estimator_perf_timings()
     st.title("Estimating Assistant")
     st.caption("Describe the job, review what was parsed, then build the workbook draft. Estimator review is required before quoting.")
 
-    data = load_estimator_data_cached()
+    with estimator_perf_step("interactive estimator data load"):
+        data = load_estimator_data_cached("interactive")
     with st.expander("Examples, routing, and data status", expanded=False):
         estimate_type_selection = st.selectbox(
             "Estimate Type",
@@ -5508,6 +5750,7 @@ def estimator_prototype_page() -> None:
             st.warning("\n".join(data.warnings))
         st.write(
             {
+                "load_profile": "interactive",
                 "jobs": len(data.jobs),
                 "estimates": len(data.estimates),
                 "line_items": len(data.line_items),
@@ -5579,7 +5822,11 @@ def estimator_prototype_page() -> None:
                 help="Default workbench mode uses precomputed relationship tables for editable defaults. Enable this only when debugging the older automatic calibration path.",
                 key="use_historical_calibration",
             )
-            field_notes_data = data if use_historical_calibration else EstimatorData()
+            if use_historical_calibration:
+                with estimator_perf_step("full estimator data load"):
+                    field_notes_data = load_estimator_data_cached("full")
+            else:
+                field_notes_data = EstimatorData()
     estimator_input_notes = combine_notes_with_photo_context(chat_augmented_notes, active_photo_context)
     if st.button("Build / Rebuild Filled Estimate Template", key="generate_field_estimate_recommendation"):
         try:
@@ -5638,16 +5885,17 @@ def estimator_prototype_page() -> None:
             elif field_estimator_fn is None:
                 st.warning("Field notes estimator is not available in this deployment yet.")
             else:
-                recommendation = field_estimator_fn(
-                    estimator_input_notes,
-                    {
-                        "job_name": field_job_name,
-                        "site_address": field_site_address,
-                        "city": field_city,
-                        "state": field_state,
-                    },
-                    data=field_notes_data,
-                )
+                with estimator_perf_step("field notes parser"):
+                    recommendation = field_estimator_fn(
+                        estimator_input_notes,
+                        {
+                            "job_name": field_job_name,
+                            "site_address": field_site_address,
+                            "city": field_city,
+                            "state": field_state,
+                        },
+                        data=field_notes_data,
+                    )
                 if active_photo_context:
                     recommendation.parsed_fields = apply_photo_scope_context(recommendation.parsed_fields or {}, active_photo_context)
                     recommendation.review_flags = list(
@@ -5826,7 +6074,8 @@ def estimator_prototype_page() -> None:
                 )
             st.info("Estimate generation stopped before material selection, labor calibration, similar jobs, pricing, workbook export, and evidence export.")
             return
-        parsed_workbench = build_estimating_workbench(field_recommendation, data)
+        with estimator_perf_step("initial workbench build"):
+            parsed_workbench = build_estimating_workbench(field_recommendation, data)
         workbench_key = str(parsed_workbench.get("estimate_id") or "current")
         debug_mode = st.checkbox(
             "Debug Mode",
@@ -5952,12 +6201,13 @@ def estimator_prototype_page() -> None:
             "Reset all unedited rows to filtered historical defaults",
             key=f"wb_reset_filtered_defaults_{workbench_key}_{historical_filters_key}",
         )
-        filtered_default_workbench = build_estimating_workbench(
-            field_recommendation,
-            data,
-            scope_override=edited_scope,
-            historical_filters=historical_filters,
-        )
+        with estimator_perf_step("filtered workbench build"):
+            filtered_default_workbench = build_estimating_workbench(
+                field_recommendation,
+                data,
+                scope_override=edited_scope,
+                historical_filters=historical_filters,
+            )
         previous_workbench_key = f"wb_last_edited_{workbench_key}"
         previous_workbench = None if reset_filtered_defaults else st.session_state.get(previous_workbench_key)
         original_workbench = apply_historical_filter_update(previous_workbench, filtered_default_workbench)
@@ -6003,15 +6253,18 @@ def estimator_prototype_page() -> None:
             st.markdown("#### Surface Areas / Dimensions")
             st.caption("Review the parsed components once here. Target R and edited thickness feed the insulation foam decision; detailed formula trace stays in diagnostics.")
             surface_area_editable_fields = {"target_r_value", "edited_thickness_inches"}
-            surface_area_df = pd.DataFrame(display_safe_records(surface_review_rows, editable_fields=surface_area_editable_fields))
             surface_area_column_order = (
-                [column for column in SURFACE_AREA_DETAIL_COLUMNS if column in surface_area_df.columns]
+                SURFACE_AREA_DETAIL_COLUMNS
                 if show_row_details
-                else [column for column in SURFACE_AREA_REVIEW_COLUMNS if column in surface_area_df.columns]
+                else SURFACE_AREA_REVIEW_COLUMNS
             )
-            surface_area_display_df = (
-                surface_area_df if show_row_details else project_display_frame(surface_area_df, surface_area_column_order)
-            )
+            with estimator_perf_step("surface table prep"):
+                surface_area_display_df, surface_area_column_order = workbench_display_frame_from_records(
+                    surface_review_rows,
+                    surface_area_column_order,
+                    editable_fields=surface_area_editable_fields,
+                    show_row_details=show_row_details,
+                )
             edited_surface_area_df = st.data_editor(
                 surface_area_display_df,
                 use_container_width=True,
@@ -6076,15 +6329,18 @@ def estimator_prototype_page() -> None:
                 "selected_pricing_candidate",
             }
             foam_template_rows = original_workbench.get("insulation_foam_template_decisions") or []
-            foam_template_df = pd.DataFrame(display_safe_records(foam_template_rows, editable_fields=foam_template_editable_fields))
             foam_template_column_order = (
-                list(foam_template_df.columns)
+                []
                 if show_row_details
-                else [column for column in INSULATION_FOAM_TEMPLATE_COMPACT_COLUMNS if column in foam_template_df.columns]
+                else INSULATION_FOAM_TEMPLATE_COMPACT_COLUMNS
             )
-            foam_template_display_df = (
-                foam_template_df if show_row_details else project_display_frame(foam_template_df, foam_template_column_order)
-            )
+            with estimator_perf_step("insulation foam table prep"):
+                foam_template_display_df, foam_template_column_order = workbench_display_frame_from_records(
+                    foam_template_rows,
+                    foam_template_column_order,
+                    editable_fields=foam_template_editable_fields,
+                    show_row_details=show_row_details,
+                )
             edited_foam_template_df = st.data_editor(
                 foam_template_display_df,
                 use_container_width=True,
@@ -6160,17 +6416,22 @@ def estimator_prototype_page() -> None:
                 continue
             st.markdown(f"#### {section_label}")
             section_rows = original_workbench.get(section_key) or []
-            section_df = pd.DataFrame(display_safe_records(section_rows, editable_fields=insulation_template_editable_fields))
             section_compact_columns = INSULATION_DECISION_SECTION_COLUMNS.get(
                 section_key,
                 INSULATION_DECISION_TEMPLATE_COMPACT_COLUMNS,
             )
             section_column_order = (
-                list(section_df.columns)
+                []
                 if show_row_details
-                else [column for column in section_compact_columns if column in section_df.columns]
+                else section_compact_columns
             )
-            section_display_df = section_df if show_row_details else project_display_frame(section_df, section_column_order)
+            with estimator_perf_step(f"{section_label} table prep"):
+                section_display_df, section_column_order = workbench_display_frame_from_records(
+                    section_rows,
+                    section_column_order,
+                    editable_fields=insulation_template_editable_fields,
+                    show_row_details=show_row_details,
+                )
             edited_section_df = st.data_editor(
                 section_display_df,
                 use_container_width=True,
@@ -6245,19 +6506,18 @@ def estimator_prototype_page() -> None:
                 "selected_pricing_candidate",
             }
             roofing_foam_template_rows = original_workbench.get("roofing_foam_template_decisions") or []
-            roofing_foam_template_df = pd.DataFrame(
-                display_safe_records(roofing_foam_template_rows, editable_fields=roofing_foam_template_editable_fields)
-            )
             roofing_foam_template_column_order = (
-                list(roofing_foam_template_df.columns)
+                []
                 if show_row_details
-                else [column for column in ROOFING_FOAM_TEMPLATE_COMPACT_COLUMNS if column in roofing_foam_template_df.columns]
+                else ROOFING_FOAM_TEMPLATE_COMPACT_COLUMNS
             )
-            roofing_foam_template_display_df = (
-                roofing_foam_template_df
-                if show_row_details
-                else project_display_frame(roofing_foam_template_df, roofing_foam_template_column_order)
-            )
+            with estimator_perf_step("roofing foam table prep"):
+                roofing_foam_template_display_df, roofing_foam_template_column_order = workbench_display_frame_from_records(
+                    roofing_foam_template_rows,
+                    roofing_foam_template_column_order,
+                    editable_fields=roofing_foam_template_editable_fields,
+                    show_row_details=show_row_details,
+                )
             edited_roofing_foam_template_df = st.data_editor(
                 roofing_foam_template_display_df,
                 use_container_width=True,
@@ -6318,15 +6578,18 @@ def estimator_prototype_page() -> None:
                 "selected_pricing_candidate",
             }
             coating_template_rows = original_workbench.get("roofing_coating_template_decisions") or []
-            coating_template_df = pd.DataFrame(display_safe_records(coating_template_rows, editable_fields=coating_template_editable_fields))
             coating_template_column_order = (
-                list(coating_template_df.columns)
+                []
                 if show_row_details
-                else [column for column in ROOFING_COATING_TEMPLATE_COMPACT_COLUMNS if column in coating_template_df.columns]
+                else ROOFING_COATING_TEMPLATE_COMPACT_COLUMNS
             )
-            coating_template_display_df = (
-                coating_template_df if show_row_details else project_display_frame(coating_template_df, coating_template_column_order)
-            )
+            with estimator_perf_step("roof coating table prep"):
+                coating_template_display_df, coating_template_column_order = workbench_display_frame_from_records(
+                    coating_template_rows,
+                    coating_template_column_order,
+                    editable_fields=coating_template_editable_fields,
+                    show_row_details=show_row_details,
+                )
             edited_coating_template_df = st.data_editor(
                 coating_template_display_df,
                 use_container_width=True,
@@ -6384,15 +6647,18 @@ def estimator_prototype_page() -> None:
                 "selected_pricing_candidate",
             }
             primer_template_rows = original_workbench.get("roofing_primer_template_decisions") or []
-            primer_template_df = pd.DataFrame(display_safe_records(primer_template_rows, editable_fields=primer_template_editable_fields))
             primer_template_column_order = (
-                list(primer_template_df.columns)
+                []
                 if show_row_details
-                else [column for column in ROOFING_PRIMER_TEMPLATE_COMPACT_COLUMNS if column in primer_template_df.columns]
+                else ROOFING_PRIMER_TEMPLATE_COMPACT_COLUMNS
             )
-            primer_template_display_df = (
-                primer_template_df if show_row_details else project_display_frame(primer_template_df, primer_template_column_order)
-            )
+            with estimator_perf_step("roof primer table prep"):
+                primer_template_display_df, primer_template_column_order = workbench_display_frame_from_records(
+                    primer_template_rows,
+                    primer_template_column_order,
+                    editable_fields=primer_template_editable_fields,
+                    show_row_details=show_row_details,
+                )
             edited_primer_template_df = st.data_editor(
                 primer_template_display_df,
                 use_container_width=True,
@@ -6448,15 +6714,18 @@ def estimator_prototype_page() -> None:
                 "selected_pricing_candidate",
             }
             detail_template_rows = original_workbench.get("roofing_detail_template_decisions") or []
-            detail_template_df = pd.DataFrame(display_safe_records(detail_template_rows, editable_fields=detail_template_editable_fields))
             detail_template_column_order = (
-                list(detail_template_df.columns)
+                []
                 if show_row_details
-                else [column for column in ROOFING_DETAIL_TEMPLATE_COMPACT_COLUMNS if column in detail_template_df.columns]
+                else ROOFING_DETAIL_TEMPLATE_COMPACT_COLUMNS
             )
-            detail_template_display_df = (
-                detail_template_df if show_row_details else project_display_frame(detail_template_df, detail_template_column_order)
-            )
+            with estimator_perf_step("roof detail material table prep"):
+                detail_template_display_df, detail_template_column_order = workbench_display_frame_from_records(
+                    detail_template_rows,
+                    detail_template_column_order,
+                    editable_fields=detail_template_editable_fields,
+                    show_row_details=show_row_details,
+                )
             edited_detail_template_df = st.data_editor(
                 detail_template_display_df,
                 use_container_width=True,
@@ -6511,19 +6780,18 @@ def estimator_prototype_page() -> None:
                 "amount",
             }
             detail_quantity_template_rows = original_workbench.get("roofing_detail_quantity_template_decisions") or []
-            detail_quantity_template_df = pd.DataFrame(
-                display_safe_records(detail_quantity_template_rows, editable_fields=detail_quantity_template_editable_fields)
-            )
             detail_quantity_template_column_order = (
-                list(detail_quantity_template_df.columns)
+                []
                 if show_row_details
-                else [column for column in ROOFING_DETAIL_QUANTITY_TEMPLATE_COMPACT_COLUMNS if column in detail_quantity_template_df.columns]
+                else ROOFING_DETAIL_QUANTITY_TEMPLATE_COMPACT_COLUMNS
             )
-            detail_quantity_template_display_df = (
-                detail_quantity_template_df
-                if show_row_details
-                else project_display_frame(detail_quantity_template_df, detail_quantity_template_column_order)
-            )
+            with estimator_perf_step("roof detail quantity table prep"):
+                detail_quantity_template_display_df, detail_quantity_template_column_order = workbench_display_frame_from_records(
+                    detail_quantity_template_rows,
+                    detail_quantity_template_column_order,
+                    editable_fields=detail_quantity_template_editable_fields,
+                    show_row_details=show_row_details,
+                )
             edited_detail_quantity_template_df = st.data_editor(
                 detail_quantity_template_display_df,
                 use_container_width=True,
@@ -6581,15 +6849,18 @@ def estimator_prototype_page() -> None:
                 "selected_pricing_candidate",
             }
             board_template_rows = original_workbench.get("roofing_board_fastener_template_decisions") or []
-            board_template_df = pd.DataFrame(display_safe_records(board_template_rows, editable_fields=board_template_editable_fields))
             board_template_column_order = (
-                list(board_template_df.columns)
+                []
                 if show_row_details
-                else [column for column in ROOFING_BOARD_FASTENER_TEMPLATE_COMPACT_COLUMNS if column in board_template_df.columns]
+                else ROOFING_BOARD_FASTENER_TEMPLATE_COMPACT_COLUMNS
             )
-            board_template_display_df = (
-                board_template_df if show_row_details else project_display_frame(board_template_df, board_template_column_order)
-            )
+            with estimator_perf_step("roof board fastener table prep"):
+                board_template_display_df, board_template_column_order = workbench_display_frame_from_records(
+                    board_template_rows,
+                    board_template_column_order,
+                    editable_fields=board_template_editable_fields,
+                    show_row_details=show_row_details,
+                )
             edited_board_template_df = st.data_editor(
                 board_template_display_df,
                 use_container_width=True,
@@ -6650,15 +6921,18 @@ def estimator_prototype_page() -> None:
                 "selected_pricing_candidate",
             }
             granules_template_rows = original_workbench.get("roofing_granules_template_decisions") or []
-            granules_template_df = pd.DataFrame(display_safe_records(granules_template_rows, editable_fields=granules_template_editable_fields))
             granules_template_column_order = (
-                list(granules_template_df.columns)
+                []
                 if show_row_details
-                else [column for column in ROOFING_GRANULES_TEMPLATE_COMPACT_COLUMNS if column in granules_template_df.columns]
+                else ROOFING_GRANULES_TEMPLATE_COMPACT_COLUMNS
             )
-            granules_template_display_df = (
-                granules_template_df if show_row_details else project_display_frame(granules_template_df, granules_template_column_order)
-            )
+            with estimator_perf_step("roof granules table prep"):
+                granules_template_display_df, granules_template_column_order = workbench_display_frame_from_records(
+                    granules_template_rows,
+                    granules_template_column_order,
+                    editable_fields=granules_template_editable_fields,
+                    show_row_details=show_row_details,
+                )
             edited_granules_template_df = st.data_editor(
                 granules_template_display_df,
                 use_container_width=True,
@@ -6718,15 +6992,18 @@ def estimator_prototype_page() -> None:
                 "margin_pct",
             }
             equipment_template_rows = original_workbench.get("roofing_equipment_template_decisions") or []
-            equipment_template_df = pd.DataFrame(display_safe_records(equipment_template_rows, editable_fields=equipment_template_editable_fields))
             equipment_template_column_order = (
-                list(equipment_template_df.columns)
+                []
                 if show_row_details
-                else [column for column in ROOFING_EQUIPMENT_TEMPLATE_COMPACT_COLUMNS if column in equipment_template_df.columns]
+                else ROOFING_EQUIPMENT_TEMPLATE_COMPACT_COLUMNS
             )
-            equipment_template_display_df = (
-                equipment_template_df if show_row_details else project_display_frame(equipment_template_df, equipment_template_column_order)
-            )
+            with estimator_perf_step("roof equipment table prep"):
+                equipment_template_display_df, equipment_template_column_order = workbench_display_frame_from_records(
+                    equipment_template_rows,
+                    equipment_template_column_order,
+                    editable_fields=equipment_template_editable_fields,
+                    show_row_details=show_row_details,
+                )
             edited_equipment_template_df = st.data_editor(
                 equipment_template_display_df,
                 use_container_width=True,
@@ -6785,19 +7062,18 @@ def estimator_prototype_page() -> None:
                 "unit_price",
             }
             travel_freight_template_rows = original_workbench.get("roofing_travel_freight_template_decisions") or []
-            travel_freight_template_df = pd.DataFrame(
-                display_safe_records(travel_freight_template_rows, editable_fields=travel_freight_template_editable_fields)
-            )
             travel_freight_template_column_order = (
-                list(travel_freight_template_df.columns)
+                []
                 if show_row_details
-                else [column for column in ROOFING_TRAVEL_FREIGHT_TEMPLATE_COMPACT_COLUMNS if column in travel_freight_template_df.columns]
+                else ROOFING_TRAVEL_FREIGHT_TEMPLATE_COMPACT_COLUMNS
             )
-            travel_freight_template_display_df = (
-                travel_freight_template_df
-                if show_row_details
-                else project_display_frame(travel_freight_template_df, travel_freight_template_column_order)
-            )
+            with estimator_perf_step("roof travel freight table prep"):
+                travel_freight_template_display_df, travel_freight_template_column_order = workbench_display_frame_from_records(
+                    travel_freight_template_rows,
+                    travel_freight_template_column_order,
+                    editable_fields=travel_freight_template_editable_fields,
+                    show_row_details=show_row_details,
+                )
             edited_travel_freight_template_df = st.data_editor(
                 travel_freight_template_display_df,
                 use_container_width=True,
@@ -6856,15 +7132,18 @@ def estimator_prototype_page() -> None:
                 "unit_price",
             }
             accessory_template_rows = original_workbench.get("roofing_accessory_template_decisions") or []
-            accessory_template_df = pd.DataFrame(display_safe_records(accessory_template_rows, editable_fields=accessory_template_editable_fields))
             accessory_template_column_order = (
-                list(accessory_template_df.columns)
+                []
                 if show_row_details
-                else [column for column in ROOFING_ACCESSORY_TEMPLATE_COMPACT_COLUMNS if column in accessory_template_df.columns]
+                else ROOFING_ACCESSORY_TEMPLATE_COMPACT_COLUMNS
             )
-            accessory_template_display_df = (
-                accessory_template_df if show_row_details else project_display_frame(accessory_template_df, accessory_template_column_order)
-            )
+            with estimator_perf_step("roof accessory table prep"):
+                accessory_template_display_df, accessory_template_column_order = workbench_display_frame_from_records(
+                    accessory_template_rows,
+                    accessory_template_column_order,
+                    editable_fields=accessory_template_editable_fields,
+                    show_row_details=show_row_details,
+                )
             edited_accessory_template_df = st.data_editor(
                 accessory_template_display_df,
                 use_container_width=True,
@@ -6923,15 +7202,18 @@ def estimator_prototype_page() -> None:
                 "formula_mode",
             }
             labor_template_rows = original_workbench.get("roofing_labor_template_decisions") or []
-            labor_template_df = pd.DataFrame(display_safe_records(labor_template_rows, editable_fields=labor_template_editable_fields))
             labor_template_column_order = (
-                list(labor_template_df.columns)
+                []
                 if show_row_details
-                else [column for column in ROOFING_LABOR_TEMPLATE_COMPACT_COLUMNS if column in labor_template_df.columns]
+                else ROOFING_LABOR_TEMPLATE_COMPACT_COLUMNS
             )
-            labor_template_display_df = (
-                labor_template_df if show_row_details else project_display_frame(labor_template_df, labor_template_column_order)
-            )
+            with estimator_perf_step("roof labor table prep"):
+                labor_template_display_df, labor_template_column_order = workbench_display_frame_from_records(
+                    labor_template_rows,
+                    labor_template_column_order,
+                    editable_fields=labor_template_editable_fields,
+                    show_row_details=show_row_details,
+                )
             edited_labor_template_df = st.data_editor(
                 labor_template_display_df,
                 use_container_width=True,
@@ -6988,17 +7270,18 @@ def estimator_prototype_page() -> None:
                 "markup_pct",
             }
             pricing_markup_rows = original_workbench.get("pricing_markup_decisions") or []
-            pricing_markup_df = pd.DataFrame(display_safe_records(pricing_markup_rows, editable_fields=pricing_markup_editable_fields))
             pricing_markup_column_order = (
-                list(pricing_markup_df.columns)
+                []
                 if show_row_details
-                else [column for column in PRICING_MARKUP_COMPACT_COLUMNS if column in pricing_markup_df.columns]
+                else PRICING_MARKUP_COMPACT_COLUMNS
             )
-            pricing_markup_display_df = (
-                pricing_markup_df
-                if show_row_details
-                else project_display_frame(pricing_markup_df, pricing_markup_column_order)
-            )
+            with estimator_perf_step("pricing markup table prep"):
+                pricing_markup_display_df, pricing_markup_column_order = workbench_display_frame_from_records(
+                    pricing_markup_rows,
+                    pricing_markup_column_order,
+                    editable_fields=pricing_markup_editable_fields,
+                    show_row_details=show_row_details,
+                )
             edited_pricing_markup_df = st.data_editor(
                 pricing_markup_display_df,
                 use_container_width=True,
@@ -7030,7 +7313,7 @@ def estimator_prototype_page() -> None:
                 pricing_markup_editable_fields,
             )
 
-        edited_workbench = recalculate_workbench_tables(edited_workbench)
+        edited_workbench = recalculate_workbench_tables_for_ui(edited_workbench)
         st.session_state[previous_workbench_key] = edited_workbench
         totals = summarize_workbench_totals(edited_workbench)
         labor_metric_rows = (
@@ -7085,8 +7368,16 @@ def estimator_prototype_page() -> None:
             st.caption("Suggested rules are collected for future approval dashboards. They are not applied automatically.")
             show_table(dataframe_from_records(original_workbench.get("suggested_rules") or []), ["rule", "status", "applied_automatically"], height=160)
 
+        if not show_row_details:
+            render_workbench_selected_row_details(
+                edited_workbench,
+                workbench_key=workbench_key,
+                scope_key=scope_key,
+                historical_filters_key=historical_filters_key,
+            )
+
         with st.expander("Draft workbook input preview", expanded=False):
-            st.json(workbench_to_draft_workbook_inputs(edited_workbench))
+            st.json(draft_workbook_inputs_for_ui(edited_workbench))
 
         st.markdown("**Excel Estimate Draft**")
         workbook_path_key = f"field_notes_excel_workbook_path_{workbench_key}"
@@ -7100,7 +7391,7 @@ def estimator_prototype_page() -> None:
                 st.warning(message)
             else:
                 try:
-                    edited_workbook_inputs = workbench_to_draft_workbook_inputs(edited_workbench)
+                    edited_workbook_inputs = draft_workbook_inputs_for_ui(edited_workbench)
                     output_path = generate_estimate_workbook(
                         edited_workbook_inputs,
                         template_path,
@@ -7164,18 +7455,22 @@ def estimator_prototype_page() -> None:
                     st.session_state.get(workbook_error_key)
                     or "Workbook was not included. Use Generate Excel Estimate Draft first if the package needs the workbook."
                 )
-                package_path = export_workbench_review_package(
-                    workbench=edited_workbench,
-                    input_notes=recommendation_notes,
-                    output_dir=DEFAULT_WORKBENCH_EXPORT_DIR,
-                    workbook_path=workbook_path_for_package,
-                    workbook_export_error=workbook_error_for_package,
-                    runtime=getattr(field_recommendation, "runtime_seconds_by_stage", None)
-                    or field_recommendation.parsed_fields.get("runtime_seconds_by_stage")
-                    or {},
-                    run_id=str(edited_workbench.get("estimate_id") or workbench_key),
-                    include_debug=False,
-                )
+                with estimator_perf_step("review package export"):
+                    draft_inputs_for_package = draft_workbook_inputs_for_ui(edited_workbench)
+                    package_path = export_workbench_review_package(
+                        workbench=edited_workbench,
+                        input_notes=recommendation_notes,
+                        output_dir=DEFAULT_WORKBENCH_EXPORT_DIR,
+                        workbook_path=workbook_path_for_package,
+                        workbook_export_error=workbook_error_for_package,
+                        runtime=getattr(field_recommendation, "runtime_seconds_by_stage", None)
+                        or field_recommendation.parsed_fields.get("runtime_seconds_by_stage")
+                        or {},
+                        run_id=str(edited_workbench.get("estimate_id") or workbench_key),
+                        include_debug=False,
+                        workbench_is_recalculated=True,
+                        draft_workbook_inputs=draft_inputs_for_package,
+                    )
                 session_id = current_estimator_session_id()
                 if session_id:
                     edit_rows = build_edit_history_rows(feedback_baseline, edited_workbench, reason_map=reason_map)
@@ -7185,7 +7480,7 @@ def estimator_prototype_page() -> None:
                         edit_rows,
                         edited_by="estimator",
                     )
-                    edited_workbook_inputs_for_capture = workbench_to_draft_workbook_inputs(edited_workbench)
+                    edited_workbook_inputs_for_capture = draft_inputs_for_package
                     final_id = capture_estimator_session_event(
                         estimator_sessions.save_final_decisions,
                         session_id,
@@ -7240,7 +7535,7 @@ def estimator_prototype_page() -> None:
                         edit_rows,
                         edited_by="estimator",
                     )
-                    edited_workbook_inputs_for_session = workbench_to_draft_workbook_inputs(edited_workbench)
+                    edited_workbook_inputs_for_session = draft_workbook_inputs_for_ui(edited_workbench)
                     workbook_path_for_session = st.session_state.get(workbook_path_key)
                     capture_estimator_session_event(
                         estimator_sessions.save_final_decisions,
@@ -7253,12 +7548,13 @@ def estimator_prototype_page() -> None:
                         workbook_cell_writes=estimator_sessions.workbook_cell_writes_from_inputs(edited_workbook_inputs_for_session),
                         workbook_export_path=workbook_path_for_session,
                     )
-                    session_package_path = estimator_sessions.export_estimator_session_package(
-                        get_engine(),
-                        session_id,
-                        DEFAULT_WORKBENCH_EXPORT_DIR / f"estimator_session_{session_id}.zip",
-                        include_full_payload=False,
-                    )
+                    with estimator_perf_step("session package export"):
+                        session_package_path = estimator_sessions.export_estimator_session_package(
+                            get_engine(),
+                            session_id,
+                            DEFAULT_WORKBENCH_EXPORT_DIR / f"estimator_session_{session_id}.zip",
+                            include_full_payload=False,
+                        )
                     st.session_state[f"estimator_session_review_package_path_{session_id}"] = str(session_package_path)
                     st.session_state[f"estimator_session_review_package_bytes_{session_id}"] = cached_download_bytes(session_package_path)
                     st.success(f"Estimator session review package created: {session_package_path}")
@@ -7280,6 +7576,7 @@ def estimator_prototype_page() -> None:
                     )
         else:
             st.caption("Build a filled estimate template to start a persisted estimating session.")
+        render_estimator_perf_timings()
         if debug_mode:
             with st.expander("Debug Evidence and Legacy Calibration", expanded=False):
                 st.dataframe(pd.DataFrame([field_recommendation.historical_calibration]), use_container_width=True, hide_index=True)

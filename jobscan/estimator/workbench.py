@@ -8856,6 +8856,27 @@ def _build_roofing_labor_template_decisions(
             }
         )
     return decisions
+
+
+def _relationship_package_cooccurrence_payload(data: Any, *, limit: int = 5000) -> list[dict[str, Any]]:
+    rows = _frame(data, "relationship_package_cooccurrence")
+    if rows.empty:
+        return []
+    rows = rows.copy()
+    rate_column = next((column for column in ("co_occurrence_rate", "cooccurrence_rate", "support", "rate") if column in rows.columns), "")
+    count_column = next((column for column in ("job_count", "evidence_count", "supporting_job_count", "count") if column in rows.columns), "")
+    if rate_column:
+        rate = pd.to_numeric(rows[rate_column], errors="coerce")
+        rows = rows[rate.fillna(0.0) >= 0.5].copy()
+    if count_column:
+        count = pd.to_numeric(rows[count_column], errors="coerce")
+        rows = rows[count.fillna(0.0) >= 3].copy()
+    sort_columns = [column for column in (count_column, rate_column) if column]
+    if sort_columns:
+        rows = rows.sort_values(sort_columns, ascending=False, na_position="last")
+    return _records(rows.head(limit))
+
+
 def _ai_scope_debug_context(recommendation: Any | None) -> dict[str, Any]:
     debug = _rec_value(recommendation, "debug", {}) or {}
     if not isinstance(debug, dict):
@@ -11027,7 +11048,7 @@ def build_estimating_workbench(
                 "applied_automatically": False,
             }
         ],
-        "relationship_package_cooccurrence": _records(_frame(data, "relationship_package_cooccurrence")) if data is not None else [],
+        "relationship_package_cooccurrence": _relationship_package_cooccurrence_payload(data) if data is not None else [],
     }
     workbench["decision_proposals"] = build_decision_proposals(scope, recommendation=recommendation, data=data)
     return recalculate_workbench_tables(workbench)
@@ -11401,8 +11422,9 @@ def apply_historical_filter_update(previous_workbench: dict[str, Any] | None, fi
             row["manual_override"] = True
 
     return recalculate_workbench_tables(updated)
-def workbench_to_draft_workbook_inputs(workbench: dict[str, Any]) -> dict[str, Any]:
-    workbench = recalculate_workbench_tables(workbench)
+def workbench_to_draft_workbook_inputs(workbench: dict[str, Any], *, recalculate: bool = True) -> dict[str, Any]:
+    if recalculate:
+        workbench = recalculate_workbench_tables(workbench)
     scope = workbench.get("scope") or {}
     material_rows = []
     roofing_foam_decision_rows = [

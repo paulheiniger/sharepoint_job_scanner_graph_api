@@ -63,8 +63,9 @@ def test_load_estimator_data_strict_database_mode_does_not_fall_back(tmp_path: P
 def test_load_estimator_data_strict_database_mode_prefers_neon_env(monkeypatch, tmp_path: Path) -> None:
     captured = {}
 
-    def fake_load_from_database(database_url: str) -> EstimatorData:
+    def fake_load_from_database(database_url: str, *, load_profile: str = "full") -> EstimatorData:
         captured["database_url"] = database_url
+        captured["load_profile"] = load_profile
         data = EstimatorData()
         data.source_files_used.append("database: fake")
         return data
@@ -76,6 +77,34 @@ def test_load_estimator_data_strict_database_mode_prefers_neon_env(monkeypatch, 
     load_estimator_data(tmp_path, prefer_database=True)
 
     assert captured["database_url"] == "postgresql://neon.example/prod"
+    assert captured["load_profile"] == "full"
+
+
+def test_load_estimator_data_passes_interactive_profile_to_database_loader(monkeypatch, tmp_path: Path) -> None:
+    captured = {}
+
+    def fake_load_from_database(database_url: str, *, load_profile: str = "full") -> EstimatorData:
+        captured["database_url"] = database_url
+        captured["load_profile"] = load_profile
+        data = EstimatorData()
+        data.source_files_used.append("database: fake")
+        return data
+
+    monkeypatch.setattr(estimator_data_loader, "load_estimator_data_from_database", fake_load_from_database)
+
+    load_estimator_data(
+        tmp_path,
+        database_url="postgresql://example/db",
+        prefer_database=True,
+        load_profile="interactive",
+    )
+
+    assert captured == {"database_url": "postgresql://example/db", "load_profile": "interactive"}
+
+
+def test_load_estimator_data_rejects_unknown_profile(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="Unknown estimator load profile"):
+        load_estimator_data(tmp_path, database_url=None, load_profile="everything")
 
 
 def test_load_estimator_data_loads_template_rows_and_pricing_from_database(tmp_path: Path) -> None:

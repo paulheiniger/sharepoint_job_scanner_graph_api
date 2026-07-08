@@ -5,6 +5,7 @@ from copy import deepcopy
 
 import pandas as pd
 
+import jobscan.estimator.workbench as workbench_module
 from jobscan.estimator.schemas import EstimateRecommendation, EstimatorData
 from jobscan.estimator.workbench import (
     build_edit_history_rows,
@@ -276,6 +277,39 @@ def test_roofing_workbench_uses_decision_sections_only() -> None:
     coating_decisions = [row for row in draft["workbook_decisions"] if row["template_bucket"] == "coating"]
     assert [row["workbook_row"] for row in coating_decisions] == ["26"]
     assert all(row["row_type"] == "material" for row in coating_decisions)
+
+
+def test_workbench_to_draft_inputs_can_skip_recalculation(monkeypatch) -> None:
+    recalculated = recalculate_workbench_tables(build_estimating_workbench(roofing_recommendation(), EstimatorData()))
+
+    def fail_recalculate(_workbench):
+        raise AssertionError("workbench_to_draft_workbook_inputs recalculated despite recalculate=False")
+
+    monkeypatch.setattr(workbench_module, "recalculate_workbench_tables", fail_recalculate)
+
+    draft = workbench_to_draft_workbook_inputs(recalculated, recalculate=False)
+
+    assert draft["template_type"] == "roofing"
+    assert any(row["template_bucket"] == "coating" for row in draft["workbook_decisions"])
+
+
+def test_relationship_package_payload_filters_to_companion_eligible_rows() -> None:
+    data = EstimatorData(
+        relationship_package_cooccurrence=pd.DataFrame(
+            [
+                {"package_a": "coating", "package_b": "primer", "co_occurrence_rate": 0.8, "job_count": 12},
+                {"package_a": "coating", "package_b": "weak", "co_occurrence_rate": 0.2, "job_count": 40},
+                {"package_a": "coating", "package_b": "thin", "co_occurrence_rate": 0.9, "job_count": 1},
+                {"package_a": "coating", "package_b": "sealant", "co_occurrence_rate": 0.7, "job_count": 8},
+            ]
+        )
+    )
+
+    rows = workbench_module._relationship_package_cooccurrence_payload(data, limit=1)
+
+    assert len(rows) == 1
+    assert rows[0]["package_b"] == "primer"
+    assert rows[0]["job_count"] == 12
 
 
 def test_workbench_enriches_row_options_from_template_catalogs() -> None:

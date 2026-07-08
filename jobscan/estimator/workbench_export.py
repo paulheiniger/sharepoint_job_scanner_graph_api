@@ -386,14 +386,19 @@ def build_workbench_review_payloads(
     run_id: str | None = None,
     timestamp: str | None = None,
     include_debug: bool = True,
+    workbench_is_recalculated: bool = False,
+    draft_workbook_inputs: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     """Build JSON/XLSX payloads for an estimator workbench review package."""
 
-    recalculated = recalculate_workbench_tables(workbench)
+    recalculated = workbench if workbench_is_recalculated else recalculate_workbench_tables(workbench)
     resolved_run_id = run_id or str(recalculated.get("estimate_id") or "workbench")
     resolved_timestamp = timestamp or datetime.now(UTC).isoformat()
     totals = summarize_workbench_totals(recalculated)
-    draft_inputs = workbench_to_draft_workbook_inputs(recalculated)
+    draft_inputs = draft_workbook_inputs or workbench_to_draft_workbook_inputs(
+        recalculated,
+        recalculate=not workbench_is_recalculated,
+    )
     workbook_decisions = list(draft_inputs.get("workbook_decisions") or [])
     performance_specs = list(recalculated.get("insulation_performance_specs") or [])
     foam_template_decisions = list(recalculated.get("insulation_foam_template_decisions") or [])
@@ -402,6 +407,7 @@ def build_workbench_review_payloads(
         "insulation_thermal_barrier_template_decisions": list(recalculated.get("insulation_thermal_barrier_template_decisions") or []),
         "insulation_support_material_template_decisions": list(recalculated.get("insulation_support_material_template_decisions") or []),
         "insulation_equipment_logistics_template_decisions": list(recalculated.get("insulation_equipment_logistics_template_decisions") or []),
+        "insulation_logistics_expense_template_decisions": list(recalculated.get("insulation_logistics_expense_template_decisions") or []),
         "insulation_compliance_template_decisions": list(recalculated.get("insulation_compliance_template_decisions") or []),
         "insulation_labor_template_decisions": list(recalculated.get("insulation_labor_template_decisions") or []),
         "insulation_pricing_template_decisions": list(recalculated.get("insulation_pricing_template_decisions") or []),
@@ -960,6 +966,8 @@ def export_workbench_review_package(
     runtime: dict[str, Any] | None = None,
     run_id: str | None = None,
     include_debug: bool = True,
+    workbench_is_recalculated: bool = False,
+    draft_workbook_inputs: dict[str, Any] | None = None,
 ) -> Path:
     """Create a timestamped Estimator Workbench review ZIP package."""
 
@@ -979,6 +987,8 @@ def export_workbench_review_package(
         run_id=resolved_run_id,
         timestamp=datetime.now(UTC).isoformat(),
         include_debug=include_debug,
+        workbench_is_recalculated=workbench_is_recalculated,
+        draft_workbook_inputs=draft_workbook_inputs,
     )
 
     (package_dir / "workbench_summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")

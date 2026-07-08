@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import copy
+import hashlib
 import os
 import re
 from dataclasses import asdict, dataclass, field
@@ -275,7 +277,57 @@ CHAT_DECISION_MENU: dict[str, list[dict[str, Any]]] = {
 }
 
 
+_ESTIMATOR_CONTEXT_CACHE: dict[str, dict[str, Any]] = {}
+
+
+def _frame_signature(frame: Any) -> tuple[int, tuple[str, ...]]:
+    if not isinstance(frame, pd.DataFrame):
+        return (0, ())
+    return (len(frame), tuple(str(column) for column in frame.columns))
+
+
+def _estimator_data_signature(data: EstimatorData | None) -> str:
+    if data is None:
+        return "none"
+    signature = {
+        "id": id(data),
+        "source_files": tuple(str(value) for value in (getattr(data, "source_files_used", None) or [])),
+        "template_rows": _frame_signature(getattr(data, "template_rows", None)),
+        "template_row_catalog": _frame_signature(getattr(data, "template_row_catalog", None)),
+        "template_formula_models": _frame_signature(getattr(data, "template_formula_models", None)),
+        "template_product_options": _frame_signature(getattr(data, "template_product_options", None)),
+        "pricing": _frame_signature(getattr(data, "pricing", None)),
+        "pricing_catalog": _frame_signature(getattr(data, "pricing_catalog", None)),
+        "product_catalog": _frame_signature(getattr(data, "product_catalog", None)),
+        "product_properties": _frame_signature(getattr(data, "product_properties", None)),
+        "decision_recommendations": _frame_signature(getattr(data, "estimator_decision_recommendations", None)),
+        "relationships": _frame_signature(getattr(data, "relationship_package_cooccurrence", None)),
+    }
+    return hashlib.sha1(json.dumps(signature, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def _context_cache_key(data: EstimatorData | None, scope: dict[str, Any] | None) -> str:
+    payload = {
+        "data": _estimator_data_signature(data),
+        "scope": scope or {},
+        "template_type": _template_type_for_scope(scope or {}),
+    }
+    return hashlib.sha1(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
 def estimator_context_summary(data: EstimatorData | None, *, scope: dict[str, Any] | None = None) -> dict[str, Any]:
+    key = _context_cache_key(data, scope)
+    cached = _ESTIMATOR_CONTEXT_CACHE.get(key)
+    if cached is not None:
+        return copy.deepcopy(cached)
+    summary = _build_estimator_context_summary(data, scope=scope)
+    if len(_ESTIMATOR_CONTEXT_CACHE) > 24:
+        _ESTIMATOR_CONTEXT_CACHE.clear()
+    _ESTIMATOR_CONTEXT_CACHE[key] = copy.deepcopy(summary)
+    return summary
+
+
+def _build_estimator_context_summary(data: EstimatorData | None, *, scope: dict[str, Any] | None = None) -> dict[str, Any]:
     if data is None:
         return _empty_chat_decision_context(scope)
     scope = scope or {}
