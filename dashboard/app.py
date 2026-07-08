@@ -4904,14 +4904,14 @@ def stable_payload_hash(payload: Any) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()
 
 
-def recalculate_workbench_tables_for_ui(workbench: dict[str, Any]) -> dict[str, Any]:
-    cache_key = stable_payload_hash(workbench)
+def recalculate_workbench_tables_for_ui(workbench: dict[str, Any], data: EstimatorData | None = None) -> dict[str, Any]:
+    cache_key = stable_payload_hash({"workbench": workbench, "data": estimator_data_signature(data) if data is not None else {}})
     state_key = "estimator_recalculated_workbench_cache"
     cached = st.session_state.get(state_key)
     if isinstance(cached, dict) and cached.get("key") == cache_key and isinstance(cached.get("workbench"), dict):
         return copy.deepcopy(cached["workbench"])
     with estimator_perf_step("workbench recalculation"):
-        recalculated = recalculate_workbench_tables(workbench)
+        recalculated = recalculate_workbench_tables(workbench, data=data)
     st.session_state[state_key] = {"key": cache_key, "workbench": copy.deepcopy(recalculated)}
     return recalculated
 
@@ -7388,7 +7388,7 @@ def estimator_prototype_page() -> None:
                 pricing_markup_editable_fields,
             )
 
-        edited_workbench = recalculate_workbench_tables_for_ui(edited_workbench)
+        edited_workbench = recalculate_workbench_tables_for_ui(edited_workbench, data=data)
         st.session_state[previous_workbench_key] = edited_workbench
         totals = summarize_workbench_totals(edited_workbench)
         labor_metric_rows = (

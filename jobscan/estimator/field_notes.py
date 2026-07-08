@@ -1039,7 +1039,13 @@ def parsed_to_scope(parsed: ParsedFieldNotes, field_input: FieldNotesInput) -> d
             "warranty_target": parsed.warranty_target_years,
             "coating_required": False
             if insulation_scope
-            else bool(parsed.coating_type or parsed.warranty_target_years or _has_conditional_coating_path(field_input.raw_notes)),
+            else bool(
+                parsed.coating_type
+                or parsed.warranty_target_years
+                or _has_conditional_coating_path(field_input.raw_notes)
+                or re.search(r"\b(?:need|needs|include|apply|coat|coating)\s+(?:a\s+)?(?:roof\s+)?coating\b", field_input.raw_notes, re.I)
+                or re.search(r"\bcoating\b", field_input.raw_notes, re.I)
+            ),
             "coating_path_review": False if insulation_scope else _has_conditional_coating_path(field_input.raw_notes),
             "location": ", ".join(part for part in (parsed.city, parsed.state) if part),
             "site_address": first_nonblank(field_input.site_address, insulation_scope.get("address")),

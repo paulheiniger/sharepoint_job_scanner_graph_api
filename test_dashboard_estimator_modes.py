@@ -317,7 +317,7 @@ def test_estimator_workbench_uses_compact_columns_by_default() -> None:
     ]
     source = inspect.getsource(app.estimator_prototype_page)
     assert "Show detailed row diagnostics" in source
-    assert "project_display_frame" in source
+    assert "workbench_display_frame_from_records" in source
     assert app.INSULATION_DECISION_SECTION_COLUMNS["insulation_labor_template_decisions"] == [
         "include",
         "workbook_row",

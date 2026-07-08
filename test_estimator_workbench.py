@@ -6,6 +6,7 @@ from copy import deepcopy
 import pandas as pd
 
 import jobscan.estimator.workbench as workbench_module
+from jobscan.estimator.field_estimator import estimate_from_field_notes
 from jobscan.estimator.schemas import EstimateRecommendation, EstimatorData
 from jobscan.estimator.workbench import (
     build_edit_history_rows,
@@ -137,6 +138,63 @@ def roofing_companion_data() -> EstimatorData:
                 },
             ]
         )
+    )
+
+
+def roofing_catalog_pricing_and_people_data() -> EstimatorData:
+    active_components = [
+        {"role": "Foreman", "hourly_wage": 40, "burden_rate": 1.0, "component_formula": "=B3*C3"},
+        {"role": "Sprayer", "hourly_wage": 30, "burden_rate": 1.0, "component_formula": "=B4*C4"},
+        {"role": "Laborer", "hourly_wage": 20, "burden_rate": 1.0, "component_formula": "=B5*C5"},
+        {"role": "Laborer", "hourly_wage": 10, "burden_rate": 1.0, "component_formula": "=B6*C6"},
+    ]
+    labor_rows = []
+    for row_number, package in (
+        (116, "labor_prep"),
+        (122, "labor_base"),
+        (124, "labor_top_coat"),
+        (132, "labor_cleanup"),
+        (136, "labor_loading"),
+        (120, "labor_seam_sealer"),
+    ):
+        labor_rows.append(
+            {
+                "template_type": "roofing",
+                "row_number": row_number,
+                "labor_package": package,
+                "lookup_key": "4",
+                "source_values_json": {
+                    "crew_size": 4,
+                    "hours_per_day": 10,
+                    "crew_components": active_components,
+                },
+            }
+        )
+    return EstimatorData(
+        pricing_catalog=pd.DataFrame(
+            [
+                {
+                    "pricing_item_id": "foam",
+                    "product_name": "Gaco Roof Foam 2733",
+                    "category": "Roof Spray Foam",
+                    "unit_price": 1.99,
+                    "status": "active",
+                    "is_current": True,
+                    "needs_review": False,
+                },
+                {
+                    "pricing_item_id": "coating",
+                    "product_name": "Gaco Silicone",
+                    "category": "Coatings",
+                    "price_per_gallon": 42,
+                    "unit_price": 210,
+                    "status": "active",
+                    "is_current": True,
+                    "needs_review": False,
+                },
+            ]
+        ),
+        template_labor_options=pd.DataFrame(labor_rows),
     )
 
 
@@ -277,6 +335,38 @@ def test_roofing_workbench_uses_decision_sections_only() -> None:
     coating_decisions = [row for row in draft["workbook_decisions"] if row["template_bucket"] == "coating"]
     assert [row["workbook_row"] for row in coating_decisions] == ["26"]
     assert all(row["row_type"] == "material" for row in coating_decisions)
+
+
+def test_roofing_spf_patch_uses_catalog_materials_and_people_sheet_labor_drivers() -> None:
+    notes = "Foam blister, saturated needs to be torn out. Foam on 96 sqft of roof, 4inch thickness, need coating"
+    data = roofing_catalog_pricing_and_people_data()
+    recommendation = estimate_from_field_notes(notes, {"disable_ai_scope_interpreter": True}, data=data)
+
+    workbench = recalculate_workbench_tables(build_estimating_workbench(recommendation, data))
+
+    assert recommendation.parsed_fields["coating_required"] is True
+    foam = next(row for row in workbench["roofing_foam_template_decisions"] if row["workbook_row"] == "19")
+    coating = next(row for row in workbench["roofing_coating_template_decisions"] if row["workbook_row"] == "26")
+    assert foam["include"] is True
+    assert foam["basis_sqft"] == 96
+    assert foam["thickness_inches"] == 4
+    assert foam["unit_price"] == 1.99
+    assert foam["estimated_cost"] > 0
+    assert coating["include"] is True
+    assert coating["basis_sqft"] == 96
+    assert coating["unit_price"] == 42
+    assert coating["estimated_cost"] > 0
+
+    labor = {row["template_bucket"]: row for row in workbench["roofing_labor_template_decisions"]}
+    for bucket in ("labor_prep", "labor_base", "labor_top_coat", "labor_cleanup", "labor_loading"):
+        assert labor[bucket]["include"] is True
+        assert labor[bucket]["daily_rate"] == 1000
+        assert labor[bucket]["days"] == 0.25
+        assert labor[bucket]["estimated_cost"] == 250
+        assert labor[bucket]["labor_driver_applied"] is True
+    assert labor["labor_base"]["labor_driver_quantity"] == coating["estimated_gallons"]
+    assert labor["labor_top_coat"]["labor_driver_quantity"] == coating["estimated_gallons"]
+    assert labor["labor_seam_sealer"]["include"] is False
 
 
 def test_workbench_to_draft_inputs_can_skip_recalculation(monkeypatch) -> None:
@@ -993,6 +1083,97 @@ def test_estimator_chat_foam_preference_fills_thickness_and_estimated_units() ->
     assert foam["estimated_sets"] == 2.473333
     assert foam["estimated_cost"] > 0
     assert "chat_estimator" in foam["decision_evidence_types"]
+
+
+def test_estimator_chat_foam_recalculation_restores_pricing_and_yield_from_template_data() -> None:
+    recommendation = insulation_recommendation()
+    data = EstimatorData(
+        template_product_options=pd.DataFrame(
+            [
+                {
+                    "template_product_option_id": "tpl_gaco_half",
+                    "template_type": "insulation",
+                    "template_bucket": "foam",
+                    "row_number": 19,
+                    "product_name": "Gaco 0.5 lb.",
+                    "unit": "unit",
+                    "unit_price": 0,
+                }
+            ]
+        ),
+        template_pricing_option_links=pd.DataFrame(
+            [
+                {
+                    "link_id": "map_gaco_half_open_cell",
+                    "template_product_option_id": "tpl_gaco_half",
+                    "pricing_candidate_key": "price_open_cell",
+                    "template_type": "insulation",
+                    "template_bucket": "foam",
+                    "row_number": 19,
+                    "template_product_name": "Gaco 0.5 lb.",
+                    "canonical_template_option": "Gaco 0.5 lb.",
+                    "pricing_product_name": "Enverge Open Cell EasySeal",
+                    "confidence": 0.98,
+                    "reason": "Approved open-cell successor mapping.",
+                    "review_status": "approved",
+                }
+            ]
+        ),
+        pricing_catalog=pd.DataFrame(
+            [
+                {
+                    "pricing_item_id": "price_open_cell",
+                    "product_name": "Enverge Open Cell EasySeal",
+                    "product_name_normalized": "enverge open cell easyseal",
+                    "unit_price": 1.6,
+                    "is_current": True,
+                    "status": "active",
+                }
+            ]
+        ),
+    )
+    workbench = build_estimating_workbench(
+        recommendation,
+        data,
+        scope_override={
+            "estimated_sqft": 2226,
+            "net_sqft": 2226,
+            "net_insulation_area_sqft": 2226,
+            "foam_type": "open_cell",
+            "foam_thickness_inches": 3.68,
+            "estimator_chat": {
+                "source": "ai_chat",
+                "confidence": 0.82,
+                "assistant_message": "Use open-cell foam for the 2,226 sq ft metal building.",
+                "workbook_decision_preferences": [
+                    {
+                        "decision_id": "insulation_foam_template_selector",
+                        "template_bucket": "foam",
+                        "include": True,
+                        "proposed_values": {
+                            "basis_sqft": 2226,
+                            "thickness_inches": 3.68,
+                            "resolved_template_option": "Gaco 0.5 lb.",
+                        },
+                        "confidence": 0.82,
+                    }
+                ],
+            },
+        },
+    )
+
+    workbench["insulation_foam_template_decisions"][0]["yield_or_coverage"] = 0
+    workbench["insulation_foam_template_decisions"][0]["unit_price"] = 0
+    recalculated = recalculate_workbench_tables(workbench, data=data)
+    foam = recalculated["insulation_foam_template_decisions"][0]
+
+    assert foam["proposal_source"] == "chat_estimator"
+    assert foam["resolved_template_option"] == "Gaco 0.5 lb."
+    assert foam["selected_pricing_candidate"] == "Enverge Open Cell EasySeal"
+    assert foam["yield_or_coverage"] == 2600
+    assert foam["unit_price"] == 1.6
+    assert foam["estimated_units"] == 3150.646154
+    assert foam["estimated_cost"] == 5041.03
 
 
 def test_insulation_driver_labor_preserves_estimator_hour_override() -> None:

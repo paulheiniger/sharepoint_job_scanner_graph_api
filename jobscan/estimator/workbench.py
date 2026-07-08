@@ -192,6 +192,51 @@ INSULATION_LABOR_DRIVER_SPECS: dict[str, dict[str, Any]] = {
     "labor_clean_up": {"driver_type": "project_sqft", "driver_unit": "sqft", "rate_unit": "hours_per_1000_sqft"},
 }
 
+ROOFING_LABOR_DRIVER_SPECS: dict[str, dict[str, Any]] = {
+    "labor_prep": {
+        "driver_type": "project_sqft",
+        "driver_unit": "sqft",
+        "rate_unit": "hours_per_1000_sqft",
+        "default_hours_per_1000_sqft": 6.0,
+        "minimum_hours": 1.0,
+        "minimum_days": 0.25,
+    },
+    "labor_base": {
+        "driver_type": "material_quantity",
+        "driver_unit": "gal",
+        "rate_unit": "hours_per_coating_gallon",
+        "dependency_fields": ("coating_gallons",),
+        "default_hours_per_unit": 0.35,
+        "minimum_hours": 1.0,
+        "minimum_days": 0.25,
+    },
+    "labor_top_coat": {
+        "driver_type": "material_quantity",
+        "driver_unit": "gal",
+        "rate_unit": "hours_per_coating_gallon",
+        "dependency_fields": ("coating_gallons",),
+        "default_hours_per_unit": 0.3,
+        "minimum_hours": 1.0,
+        "minimum_days": 0.25,
+    },
+    "labor_cleanup": {
+        "driver_type": "project_sqft",
+        "driver_unit": "sqft",
+        "rate_unit": "hours_per_1000_sqft",
+        "default_hours_per_1000_sqft": 3.0,
+        "minimum_hours": 0.5,
+        "minimum_days": 0.25,
+    },
+    "labor_loading": {
+        "driver_type": "project_sqft",
+        "driver_unit": "sqft",
+        "rate_unit": "hours_per_1000_sqft",
+        "default_hours_per_1000_sqft": 2.0,
+        "minimum_hours": 0.5,
+        "minimum_days": 0.25,
+    },
+}
+
 INSULATION_DECISION_SECTION_KEYS = (
     "insulation_detail_material_template_decisions",
     "insulation_thermal_barrier_template_decisions",
@@ -1109,7 +1154,13 @@ def _labor_options_from_catalog(
                 "",
             )
         ).strip()
-        daily_rate = first_nonblank(source_row.get("daily_rate"), values.get("daily_rate"), values.get("rate"), "")
+        daily_rate = first_nonblank(
+            source_row.get("daily_rate"),
+            values.get("daily_rate"),
+            values.get("rate"),
+            _daily_rate_from_labor_option_values(values),
+            "",
+        )
         if daily_rate and "rate" not in _normalized(label):
             label = f"{label} - {daily_rate}".strip(" -")
         if not selector_code and not label:
@@ -1127,6 +1178,30 @@ def _labor_options_from_catalog(
             }
         )
     return options
+
+
+def _daily_rate_from_labor_option_values(values: dict[str, Any]) -> float:
+    explicit = safe_number(first_nonblank(values.get("daily_rate"), values.get("rate")), 0.0)
+    if explicit > 0:
+        return explicit
+    components = values.get("crew_components")
+    if not isinstance(components, list):
+        return 0.0
+    hours_per_day = safe_number(values.get("hours_per_day"), 0.0)
+    if hours_per_day <= 0:
+        return 0.0
+    hourly_total = 0.0
+    for component in components:
+        if not isinstance(component, dict):
+            continue
+        # In extracted People-sheet selector rows, only the active crew members
+        # have a component formula in the selected daily-rate column.
+        if not component.get("component_formula"):
+            continue
+        wage = safe_number(component.get("hourly_wage"), 0.0)
+        burden = safe_number(component.get("burden_rate"), 1.0) or 1.0
+        hourly_total += wage * burden
+    return round(hourly_total * hours_per_day, 6) if hourly_total > 0 else 0.0
 
 
 def enrich_workbench_template_options(workbench: dict[str, Any]) -> dict[str, Any]:
@@ -3473,7 +3548,22 @@ def _roofing_coating_pricing_candidates(
     template_option: str = "",
 ) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
-    for option in _candidate_options_with_historical_templates(row, package="coating", scope=scope, data=data, default_unit="gal"):
+    option_sources = _candidate_options_with_historical_templates(row, package="coating", scope=scope, data=data, default_unit="gal")
+    if data is not None:
+        option_sources = _merge_option_lists(
+            option_sources,
+            _pricing_options_for_package(
+                _frame(data, "pricing_catalog"),
+                {
+                    "package": "coating",
+                    "keywords": ["roof coating", "coating", "silicone", "gaco", "acrylic"],
+                    "default_unit": "gal",
+                },
+                scope,
+            ),
+            identity_fields=("item_name", "pricing_item_id", "source"),
+        )
+    for option in option_sources:
         item_name = str(option.get("item_name") or "").strip()
         if not item_name:
             continue
@@ -6235,7 +6325,22 @@ def _build_roofing_foam_template_decisions(
             )
         )
     )
-    foam_scope = _contains_any_text(note_text, ["roof foam", "roofing foam", "spf", "spray polyurethane foam", "spray foam roof", "foam roof"])
+    foam_scope = bool(
+        scope.get("foam_required")
+        and _contains_any_text(note_text, ["roof", "rooftop", "coating", "saturated", "blister", "torn out"])
+    ) or _contains_any_text(
+        note_text,
+        [
+            "roof foam",
+            "roofing foam",
+            "spf",
+            "spray polyurethane foam",
+            "spray foam roof",
+            "foam roof",
+            "foam on roof",
+            "foam on",
+        ],
+    )
     default_area = safe_number(_estimate_area(scope), 0.0)
     historical_option = first_nonblank(
         defaults.get("resolved_item_name"),
@@ -6279,6 +6384,8 @@ def _build_roofing_foam_template_decisions(
         )
         thickness = positive_number(
             existing.get("thickness_inches"),
+            scope.get("foam_thickness_inches"),
+            scope.get("thickness_inches"),
             defaults.get("thickness_inches"),
             template_defaults.get("thickness_inches"),
             default=0.0,
@@ -8679,12 +8786,136 @@ def _roofing_labor_daily_rate_cell(crew_size: Any) -> str:
     return ""
 
 
+def _roofing_labor_daily_rate_from_template_options(data: Any, *, crew_size: Any, workbook_row: Any, package: str) -> float:
+    rows = _frame(data, "template_labor_options")
+    if rows.empty:
+        return 0.0
+    scoped = rows.copy()
+    if "template_type" in scoped.columns:
+        roofing = scoped[scoped["template_type"].map(_normalized).eq("roofing")].copy()
+        if not roofing.empty:
+            scoped = roofing
+    row_number = int(safe_number(workbook_row, 0))
+    if row_number and "row_number" in scoped.columns:
+        by_row = scoped[_numeric_series(scoped, "row_number").eq(row_number)].copy()
+        if not by_row.empty:
+            scoped = by_row
+    if package and "labor_package" in scoped.columns:
+        by_package = scoped[scoped["labor_package"].map(_normalized).eq(_normalized(package))].copy()
+        if not by_package.empty:
+            scoped = by_package
+    crew = int(safe_number(crew_size, 0))
+    if crew:
+        for column in ("lookup_key", "selector_code", "crew_size"):
+            if column not in scoped.columns:
+                continue
+            by_crew = scoped[scoped[column].map(lambda value: int(safe_number(value, -1)) == crew)].copy()
+            if not by_crew.empty:
+                scoped = by_crew
+                break
+    for row in scoped.to_dict(orient="records"):
+        values = _json_object(row.get("source_values_json"))
+        rate = safe_number(
+            first_nonblank(
+                row.get("daily_rate"),
+                values.get("daily_rate"),
+                values.get("rate"),
+                _daily_rate_from_labor_option_values(values),
+            ),
+            0.0,
+        )
+        if rate > 0:
+            return rate
+    return 0.0
+
+
+def _roofing_dependency_totals(workbench_rows: dict[str, list[dict[str, Any]]]) -> dict[str, float]:
+    deps = {
+        "roofing_foam_units": 0.0,
+        "roofing_foam_sets": 0.0,
+        "coating_gallons": 0.0,
+        "primer_units": 0.0,
+    }
+    for row in workbench_rows.get("roofing_foam_template_decisions") or []:
+        if isinstance(row, dict) and row.get("include"):
+            deps["roofing_foam_units"] += safe_number(row.get("estimated_units"), 0.0)
+            deps["roofing_foam_sets"] += safe_number(row.get("estimated_sets"), 0.0)
+    for row in workbench_rows.get("roofing_coating_template_decisions") or []:
+        if isinstance(row, dict) and row.get("include"):
+            deps["coating_gallons"] += safe_number(row.get("estimated_gallons"), 0.0)
+    for row in workbench_rows.get("roofing_primer_template_decisions") or []:
+        if isinstance(row, dict) and row.get("include"):
+            deps["primer_units"] += safe_number(row.get("estimated_units"), 0.0)
+    return deps
+
+
+def _apply_roofing_labor_driver(
+    *,
+    package: str,
+    scope: dict[str, Any],
+    dependencies: dict[str, Any] | None,
+    include: bool,
+    total_hours: float,
+    days: float,
+    crew_size: int,
+    preserve_existing_sizing: bool = False,
+) -> tuple[float, float, dict[str, Any]]:
+    spec = ROOFING_LABOR_DRIVER_SPECS.get(package) or {}
+    if not include or not spec or preserve_existing_sizing:
+        return total_hours, days, {}
+    driver_type = str(spec.get("driver_type") or "project_sqft")
+    quantity = 0.0
+    source = ""
+    rate = 0.0
+    if driver_type == "material_quantity":
+        for field in spec.get("dependency_fields") or ():
+            quantity = safe_number((dependencies or {}).get(field), 0.0)
+            if quantity > 0:
+                source = f"workbench_dependency.{field}"
+                break
+        rate = safe_number(spec.get("default_hours_per_unit"), 0.0)
+        computed_hours = quantity * rate if quantity > 0 and rate > 0 else 0.0
+    else:
+        quantity = _estimate_area(scope)
+        source = "scope_area"
+        rate = safe_number(spec.get("default_hours_per_1000_sqft"), 0.0)
+        computed_hours = quantity / 1000.0 * rate if quantity > 0 and rate > 0 else 0.0
+    minimum_hours = safe_number(spec.get("minimum_hours"), 0.0)
+    if computed_hours > 0 or minimum_hours > 0:
+        total_hours = max(computed_hours, minimum_hours)
+    minimum_days = safe_number(spec.get("minimum_days"), 0.0)
+    if total_hours > 0 and crew_size > 0:
+        days = max(total_hours / max(crew_size * 10.0, 1.0), minimum_days)
+    review_required = quantity <= 0 or rate <= 0
+    driver = {
+        "labor_driver_type": driver_type,
+        "labor_driver_quantity": round(quantity, 4),
+        "labor_driver_unit": spec.get("driver_unit"),
+        "labor_driver_source": source or "missing_driver_quantity",
+        "labor_driver_rate_unit": spec.get("rate_unit"),
+        "historical_driver_rate": rate,
+        "historical_driver_evidence_count": 0,
+        "historical_driver_source": "roofing_template_driver_default",
+        "labor_driver_applied": total_hours > 0,
+        "labor_driver_confidence": "low",
+        "labor_driver_review_required": review_required,
+        "labor_driver_review_reason": "Roofing labor driver quantity or rate is missing." if review_required else "",
+        "labor_driver_summary": (
+            f"{quantity:g} {spec.get('driver_unit')} x {rate:g} {spec.get('rate_unit')} with minimum {minimum_hours:g} hours."
+            if quantity > 0 and rate > 0
+            else "Roofing labor sized from minimum review default."
+        ),
+    }
+    return total_hours, days, driver
+
+
 def _build_roofing_labor_template_decisions(
     *,
     scope: dict[str, Any],
     labor_rows: list[dict[str, Any]] | None = None,
     source_labor_rows: list[dict[str, Any]] | None = None,
     existing_rows: list[dict[str, Any]] | None = None,
+    dependencies: dict[str, Any] | None = None,
     data: Any = None,
 ) -> list[dict[str, Any]]:
     if _is_insulation_scope(scope):
@@ -8808,7 +9039,19 @@ def _build_roofing_labor_template_decisions(
             0.0,
         )
         hourly_rate = safe_number(first_nonblank(existing.get("hourly_rate"), existing.get("labor_rate"), labor.get("hourly_rate"), labor.get("labor_rate")), 0.0)
-        daily_rate = safe_number(first_nonblank(existing.get("daily_rate"), labor.get("daily_rate")), 0.0)
+        daily_rate = safe_number(
+            first_nonblank(
+                existing.get("daily_rate"),
+                labor.get("daily_rate"),
+                _roofing_labor_daily_rate_from_template_options(
+                    data,
+                    crew_size=crew_size,
+                    workbook_row=workbook_row,
+                    package=package,
+                ),
+            ),
+            0.0,
+        )
         formula_mode = str(first_nonblank(existing.get("formula_mode"), labor.get("formula_mode"), "mixed_formula"))
         hourly_rate_source = str(first_nonblank(existing.get("hourly_rate_source"), labor.get("hourly_rate_source"), ""))
         if hourly_rate <= 0 and daily_rate <= 0 and total_hours > 0:
@@ -8816,6 +9059,26 @@ def _build_roofing_labor_template_decisions(
             if evidence_cost > 0:
                 hourly_rate = evidence_cost / total_hours
                 hourly_rate_source = "derived_from_labor_cost_and_hours"
+        existing_sizing_without_driver = bool(existing) and not _labor_driver_owns_total_hours(existing, labor) and (
+            safe_number(first_nonblank(existing.get("days"), existing.get("editable_days")), 0.0) > 0
+            or safe_number(first_nonblank(existing.get("total_hours"), existing.get("editable_total_hours")), 0.0) > 0
+            or safe_number(first_nonblank(existing.get("daily_rate"), existing.get("hourly_rate")), 0.0) > 0
+        )
+        total_hours, days, driver_fields = _apply_roofing_labor_driver(
+            package=package,
+            scope=scope,
+            dependencies=dependencies,
+            include=include,
+            total_hours=total_hours,
+            days=days,
+            crew_size=crew_size,
+            preserve_existing_sizing=bool(
+                source_labor
+                or days_was_explicit
+                or _labor_hours_manually_overridden(existing)
+                or existing_sizing_without_driver
+            ),
+        )
         total_hours, total_hours_source = _populate_expected_mixed_labor_hours(
             include=include,
             formula_mode=formula_mode,
@@ -8855,6 +9118,8 @@ def _build_roofing_labor_template_decisions(
             warnings.append("Labor days or total hours are missing.")
         if include and calculated_hourly_rate <= 0 and calculated_daily_rate <= 0:
             warnings.append("Labor rate is missing.")
+        if include and driver_fields.get("labor_driver_review_required"):
+            warnings.append(str(driver_fields.get("labor_driver_review_reason") or "Labor driver requires estimator review."))
         decisions.append(
             {
                 "include": include,
@@ -8889,19 +9154,19 @@ def _build_roofing_labor_template_decisions(
                 "formula_mode": str(formula.get("formula_mode") or formula_mode),
                 "formula_model": str(formula.get("formula_model") or "labor_cost_from_days_crew_rate"),
                 "formula_source": str(formula.get("formula_source") or ""),
-                "labor_driver_type": labor.get("labor_driver_type"),
-                "labor_driver_quantity": labor.get("labor_driver_quantity"),
-                "labor_driver_unit": labor.get("labor_driver_unit"),
-                "labor_driver_source": labor.get("labor_driver_source"),
-                "labor_driver_rate_unit": labor.get("labor_driver_rate_unit"),
-                "historical_driver_rate": labor.get("historical_driver_rate"),
-                "historical_driver_evidence_count": labor.get("historical_driver_evidence_count"),
-                "historical_driver_source": labor.get("historical_driver_source"),
-                "labor_driver_applied": labor.get("labor_driver_applied"),
-                "labor_driver_confidence": labor.get("labor_driver_confidence"),
-                "labor_driver_summary": labor.get("labor_driver_summary"),
-                "labor_driver_review_required": labor.get("labor_driver_review_required"),
-                "labor_driver_review_reason": labor.get("labor_driver_review_reason"),
+                "labor_driver_type": driver_fields.get("labor_driver_type", labor.get("labor_driver_type")),
+                "labor_driver_quantity": driver_fields.get("labor_driver_quantity", labor.get("labor_driver_quantity")),
+                "labor_driver_unit": driver_fields.get("labor_driver_unit", labor.get("labor_driver_unit")),
+                "labor_driver_source": driver_fields.get("labor_driver_source", labor.get("labor_driver_source")),
+                "labor_driver_rate_unit": driver_fields.get("labor_driver_rate_unit", labor.get("labor_driver_rate_unit")),
+                "historical_driver_rate": driver_fields.get("historical_driver_rate", labor.get("historical_driver_rate")),
+                "historical_driver_evidence_count": driver_fields.get("historical_driver_evidence_count", labor.get("historical_driver_evidence_count")),
+                "historical_driver_source": driver_fields.get("historical_driver_source", labor.get("historical_driver_source")),
+                "labor_driver_applied": driver_fields.get("labor_driver_applied", labor.get("labor_driver_applied")),
+                "labor_driver_confidence": driver_fields.get("labor_driver_confidence", labor.get("labor_driver_confidence")),
+                "labor_driver_summary": driver_fields.get("labor_driver_summary", labor.get("labor_driver_summary")),
+                "labor_driver_review_required": driver_fields.get("labor_driver_review_required", labor.get("labor_driver_review_required")),
+                "labor_driver_review_reason": driver_fields.get("labor_driver_review_reason", labor.get("labor_driver_review_reason")),
                 "estimated_cost": formula.get("estimated_cost"),
                 "days_was_explicit": days_was_explicit,
                 "calculated_output": formula.get("estimated_cost"),
@@ -8926,6 +9191,7 @@ def _build_roofing_labor_template_decisions(
                 "compatibility_status": "review" if warnings else "compatible",
                 "compatibility_warnings": warnings,
                 "notes": "Labor decision mirrors the workbook mixed formula: if daily rate is present, cost uses days x daily rate; otherwise cost uses hourly rate x total hours. "
+                + (str(driver_fields.get("labor_driver_summary") or "") + " " if driver_fields else "")
                 + ("Expected total hours were filled from days x crew x 10." if total_hours_source == "estimated_from_days_crew" else "")
                 + (" " + " ".join(warnings) if warnings else ""),
                 "decision_values": {
@@ -11057,10 +11323,18 @@ def build_estimating_workbench(
         if not _is_insulation_scope(scope)
         else []
     )
+    roofing_dependencies = _roofing_dependency_totals(
+        {
+            "roofing_foam_template_decisions": roofing_foam_template_decisions,
+            "roofing_coating_template_decisions": roofing_coating_template_decisions,
+            "roofing_primer_template_decisions": roofing_primer_template_decisions,
+        }
+    )
     roofing_labor_template_decisions = (
         _build_roofing_labor_template_decisions(
             scope=scope,
             source_labor_rows=source_labor_plan,
+            dependencies=roofing_dependencies,
             data=data,
         )
         if not _is_insulation_scope(scope)
@@ -11159,7 +11433,7 @@ def build_estimating_workbench(
         "relationship_package_cooccurrence": _relationship_package_cooccurrence_payload(data) if data is not None else [],
     }
     workbench["decision_proposals"] = build_decision_proposals(scope, recommendation=recommendation, data=data)
-    return recalculate_workbench_tables(workbench)
+    return recalculate_workbench_tables(workbench, data=data)
 
 
 def _records_from_editor(value: Any) -> list[dict[str, Any]]:
@@ -11210,7 +11484,7 @@ def _restore_manual_include_overrides(workbench: dict[str, Any], overrides: dict
     return workbench
 
 
-def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float = DEFAULT_HOURLY_RATE) -> dict[str, Any]:
+def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float = DEFAULT_HOURLY_RATE, data: Any = None) -> dict[str, Any]:
     updated = deepcopy(workbench)
     scope = updated.setdefault("scope", {})
     source_material_plan = _records(updated.get("source_material_plan") or [])
@@ -11239,6 +11513,7 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
         updated["insulation_foam_template_decisions"] = _build_insulation_foam_template_decisions(
             scope=scope,
             existing_rows=updated.get("insulation_foam_template_decisions") or None,
+            data=data,
         )
     if not _is_insulation_scope(scope):
         coating_plan_row = _material_plan_row_for_category_from_rows(source_material_plan, scope, "coating")
@@ -11249,17 +11524,20 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
             updated["roofing_foam_template_decisions"] = _build_roofing_foam_template_decisions(
                 scope=scope,
                 existing_rows=updated.get("roofing_foam_template_decisions") or None,
+                data=data,
             )
         updated["roofing_coating_template_decisions"] = _build_roofing_coating_template_decisions(
             scope=scope,
             coating_row=coating_plan_row,
             existing_rows=updated.get("roofing_coating_template_decisions") or None,
+            data=data,
         )
         if "roofing_primer_template_decisions" in updated:
             updated["roofing_primer_template_decisions"] = _build_roofing_primer_template_decisions(
                 scope=scope,
                 primer_row=primer_plan_row,
                 existing_rows=updated.get("roofing_primer_template_decisions") or None,
+                data=data,
             )
         if "roofing_detail_template_decisions" in updated:
             updated["roofing_detail_template_decisions"] = _build_roofing_detail_template_decisions(
@@ -11267,6 +11545,7 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
                 caulk_row=caulk_plan_row,
                 fabric_row=fabric_plan_row,
                 existing_rows=updated.get("roofing_detail_template_decisions") or None,
+                data=data,
             )
         if "roofing_detail_quantity_template_decisions" in updated:
             updated["roofing_detail_quantity_template_decisions"] = _build_roofing_detail_quantity_template_decisions(
@@ -11281,12 +11560,14 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
                 fastener_row=None,
                 plates_row=None,
                 existing_rows=updated.get("roofing_board_fastener_template_decisions") or None,
+                data=data,
             )
         if "roofing_granules_template_decisions" in updated:
             updated["roofing_granules_template_decisions"] = _build_roofing_granules_template_decisions(
                 scope=scope,
                 granules_row=None,
                 existing_rows=updated.get("roofing_granules_template_decisions") or None,
+                data=data,
             )
         if "roofing_equipment_template_decisions" in updated:
             updated["roofing_equipment_template_decisions"] = _build_roofing_equipment_template_decisions(
@@ -11305,10 +11586,19 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
                 existing_rows=updated.get("roofing_accessory_template_decisions") or None,
             )
         if "roofing_labor_template_decisions" in updated:
+            roofing_dependencies = _roofing_dependency_totals(
+                {
+                    "roofing_foam_template_decisions": updated.get("roofing_foam_template_decisions") or [],
+                    "roofing_coating_template_decisions": updated.get("roofing_coating_template_decisions") or [],
+                    "roofing_primer_template_decisions": updated.get("roofing_primer_template_decisions") or [],
+                }
+            )
             updated["roofing_labor_template_decisions"] = _build_roofing_labor_template_decisions(
                 scope=scope,
                 source_labor_rows=source_labor_plan,
                 existing_rows=updated.get("roofing_labor_template_decisions") or None,
+                dependencies=roofing_dependencies,
+                data=data,
             )
     if _is_insulation_scope(scope):
         if not updated.get("area_calculation_trace"):
@@ -11320,18 +11610,21 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
         updated["insulation_foam_template_decisions"] = _build_insulation_foam_template_decisions(
             scope=scope,
             existing_rows=updated.get("insulation_foam_template_decisions") or None,
+            data=data,
         )
         updated["insulation_detail_material_template_decisions"] = _build_insulation_decision_rows(
             section="insulation_detail_material_template_decisions",
             specs=INSULATION_DETAIL_DECISION_SPECS,
             scope=scope,
             existing_rows=updated.get("insulation_detail_material_template_decisions") or None,
+            data=data,
         )
         updated["insulation_thermal_barrier_template_decisions"] = _build_insulation_decision_rows(
             section="insulation_thermal_barrier_template_decisions",
             specs=INSULATION_THERMAL_DECISION_SPECS,
             scope=scope,
             existing_rows=updated.get("insulation_thermal_barrier_template_decisions") or None,
+            data=data,
         )
         insulation_dependencies = _insulation_dependency_totals(
             updated,
@@ -11346,6 +11639,7 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
             scope=scope,
             existing_rows=updated.get("insulation_support_material_template_decisions") or None,
             dependencies=insulation_dependencies,
+            data=data,
         )
         insulation_dependencies = _insulation_dependency_totals(
             updated,
@@ -11361,6 +11655,7 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
             scope=scope,
             existing_rows=updated.get("insulation_equipment_logistics_template_decisions") or None,
             dependencies=insulation_dependencies,
+            data=data,
         )
         updated["insulation_logistics_expense_template_decisions"] = _build_insulation_decision_rows(
             section="insulation_logistics_expense_template_decisions",
@@ -11368,6 +11663,7 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
             scope=scope,
             existing_rows=updated.get("insulation_logistics_expense_template_decisions") or None,
             dependencies=insulation_dependencies,
+            data=data,
         )
         updated["insulation_compliance_template_decisions"] = _build_insulation_decision_rows(
             section="insulation_compliance_template_decisions",
@@ -11375,6 +11671,7 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
             scope=scope,
             existing_rows=updated.get("insulation_compliance_template_decisions") or None,
             dependencies=insulation_dependencies,
+            data=data,
         )
         updated["insulation_labor_template_decisions"] = _build_insulation_labor_template_decisions(
             scope=scope,

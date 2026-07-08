@@ -479,6 +479,11 @@ def build_material_companion_proposals(workbench: dict[str, Any], data: Any = No
             if anchor not in included_packages or target in included_packages:
                 continue
             for target_spec in MATERIAL_COMPANION_TARGETS.get(target, []):
+                if (
+                    target_spec.get("section") == "roofing_labor_template_decisions"
+                    and anchor not in {"fabric", "seam_treatment", "caulk_detail"}
+                ):
+                    continue
                 proposals.append(_companion_proposal(target_spec, anchor=anchor, target=target, row=row, rate=rate, job_count=job_count))
     return merge_decision_proposals(proposals)
 
