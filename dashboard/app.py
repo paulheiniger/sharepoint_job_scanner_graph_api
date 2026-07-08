@@ -774,6 +774,9 @@ VIEWS = [
     "dashboard_sales_followup",
     "dashboard_documentation_risk",
     "pricing_catalog",
+    "vsimple_projects",
+    "vsimple_sharepoint_job_matches_accepted",
+    "vsimple_sharepoint_job_matches",
 ]
 
 HEALTH_TABLES = [
@@ -2616,6 +2619,200 @@ def load_job_board_jobs() -> pd.DataFrame:
     return safe_load(f"SELECT {', '.join(select_parts)} FROM dashboard_jobs j")
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def load_job_board_vsimple_enrichment() -> pd.DataFrame:
+    match_cols = relation_columns("vsimple_sharepoint_job_matches_accepted")
+    project_cols = relation_columns("vsimple_projects")
+    if not {"job_id", "vsimple_id"}.issubset(match_cols) or "vsimple_id" not in project_cols:
+        return pd.DataFrame()
+    select_parts = [
+        "m.job_id",
+        f"{sql_column('p', project_cols, 'project_type')} AS vsimple_project_type",
+        f"{sql_column('p', project_cols, 'deal_type')} AS vsimple_deal_type",
+        f"{sql_column('p', project_cols, 'lead_source')} AS vsimple_lead_source",
+        f"{sql_column('p', project_cols, 'referral_source')} AS vsimple_referral_source",
+        f"{sql_column('p', project_cols, 'deal_owner')} AS vsimple_deal_owner",
+        f"{sql_column('p', project_cols, 'estimator_salesperson')} AS vsimple_estimator",
+        f"{sql_column('p', project_cols, 'bid_amount')} AS vsimple_bid_amount",
+        f"{sql_column('p', project_cols, 'billing_amount')} AS vsimple_billing_amount",
+        f"{sql_column('p', project_cols, 'gross_profit')} AS vsimple_gross_profit",
+        f"{sql_column('p', project_cols, 'all_costs')} AS vsimple_all_costs",
+        f"{sql_column('p', project_cols, 'estimated_sqft')} AS vsimple_estimated_sqft",
+        f"{sql_column('p', project_cols, 'roof_deck_sqft')} AS vsimple_roof_deck_sqft",
+        f"{sql_column('p', project_cols, 'completion_date')} AS vsimple_completion_date",
+        f"{sql_column('p', project_cols, 'closed_date')} AS vsimple_closed_date",
+        f"{sql_column('p', project_cols, 'spray_tec_system')} AS vsimple_spray_tec_system",
+        f"{sql_column('p', project_cols, 'roof_type')} AS vsimple_roof_type",
+        f"{sql_column('p', project_cols, 'construction_type')} AS vsimple_construction_type",
+        f"{sql_column('p', project_cols, 'building_use')} AS vsimple_building_use",
+        f"{sql_column('p', project_cols, 'scope_summary')} AS vsimple_scope_summary",
+    ]
+    try:
+        return safe_load(
+            f"""
+            SELECT {', '.join(select_parts)}
+            FROM vsimple_sharepoint_job_matches_accepted m
+            LEFT JOIN vsimple_projects p ON p.vsimple_id = m.vsimple_id
+            WHERE m.job_id IS NOT NULL
+            """
+        ).drop_duplicates("job_id", keep="first")
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_job_board_template_enrichment() -> pd.DataFrame:
+    cols = relation_columns("estimate_template_rows")
+    if "job_id" not in cols:
+        return pd.DataFrame()
+    selected_item = sql_nonblank_column("t", cols, "selected_item_name", "NULL::TEXT")
+    bucket = sql_column("t", cols, "template_bucket", "''")
+    line_kind = sql_column("t", cols, "line_item_kind", "''")
+    warranty_years = sql_column("t", cols, "warranty_years", "NULL::NUMERIC")
+    try:
+        return safe_load(
+            f"""
+            SELECT
+                t.job_id,
+                MAX({warranty_years}) AS template_warranty_years,
+                STRING_AGG(DISTINCT {selected_item}, ', ' ORDER BY {selected_item})
+                    FILTER (
+                        WHERE {selected_item} IS NOT NULL
+                          AND (
+                            LOWER(COALESCE({bucket}, '')) IN (
+                                'coating', 'foam', 'roofing_foam', 'thermal_barrier_coating',
+                                'primer', 'fabric', 'caulk_sealant', 'membrane'
+                            )
+                            OR LOWER(COALESCE({line_kind}, '')) = 'material'
+                          )
+                    ) AS template_material_system
+            FROM estimate_template_rows t
+            WHERE t.job_id IS NOT NULL
+            GROUP BY t.job_id
+            """
+        )
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_job_board_document_signal_enrichment() -> pd.DataFrame:
+    cols = relation_columns("document_content")
+    if not {"job_id", "text_content"}.issubset(cols):
+        return pd.DataFrame()
+    text_expr = f"LOWER(COALESCE({sql_column('d', cols, 'normalized_text')}, d.text_content, ''))"
+    try:
+        return safe_load(
+            f"""
+            WITH signals AS (
+                SELECT
+                    d.job_id,
+                    CASE
+                        WHEN {text_expr} LIKE '%metal roof%' OR {text_expr} LIKE '%metal panel%' OR {text_expr} LIKE '%standing seam%' THEN 'Metal'
+                        WHEN {text_expr} LIKE '%epdm%' THEN 'EPDM'
+                        WHEN {text_expr} LIKE '%tpo%' THEN 'TPO'
+                        WHEN {text_expr} LIKE '%concrete%' THEN 'Concrete'
+                        WHEN {text_expr} LIKE '%spray foam%' OR {text_expr} LIKE '%spf%' THEN 'SPF'
+                        ELSE NULL
+                    END AS substrate_signal,
+                    CASE
+                        WHEN {text_expr} LIKE '%silicone%' THEN 'Silicone'
+                        WHEN {text_expr} LIKE '%acrylic%' THEN 'Acrylic'
+                        WHEN {text_expr} LIKE '%open cell%' OR {text_expr} LIKE '%open-cell%' THEN 'Open-cell spray foam'
+                        WHEN {text_expr} LIKE '%closed cell%' OR {text_expr} LIKE '%closed-cell%' THEN 'Closed-cell spray foam'
+                        WHEN {text_expr} LIKE '%spray foam%' OR {text_expr} LIKE '%spf%' THEN 'Spray foam'
+                        ELSE NULL
+                    END AS material_signal,
+                    CASE
+                        WHEN {text_expr} LIKE '%gaco%warranty%' THEN 'Gaco'
+                        WHEN {text_expr} LIKE '%spray-tec%warranty%' OR {text_expr} LIKE '%spray tec%warranty%' THEN 'Spray-Tec'
+                        ELSE NULL
+                    END AS warranty_type_signal,
+                    NULLIF(SUBSTRING({text_expr} FROM '([0-9]{{1,2}})[ -]?year'), '')::NUMERIC AS warranty_year_signal
+                FROM document_content d
+                WHERE d.job_id IS NOT NULL
+                  AND (
+                    {text_expr} LIKE '%metal%'
+                    OR {text_expr} LIKE '%tpo%'
+                    OR {text_expr} LIKE '%epdm%'
+                    OR {text_expr} LIKE '%concrete%'
+                    OR {text_expr} LIKE '%silicone%'
+                    OR {text_expr} LIKE '%acrylic%'
+                    OR {text_expr} LIKE '%spray foam%'
+                    OR {text_expr} LIKE '%closed cell%'
+                    OR {text_expr} LIKE '%open cell%'
+                    OR {text_expr} LIKE '%warranty%'
+                  )
+            )
+            SELECT
+                job_id,
+                STRING_AGG(DISTINCT substrate_signal, ', ') FILTER (WHERE substrate_signal IS NOT NULL) AS document_substrate,
+                STRING_AGG(DISTINCT material_signal, ', ') FILTER (WHERE material_signal IS NOT NULL) AS document_material_system,
+                STRING_AGG(DISTINCT warranty_type_signal, ', ') FILTER (WHERE warranty_type_signal IS NOT NULL) AS document_warranty_type,
+                MAX(warranty_year_signal) AS document_warranty_years
+            FROM signals
+            GROUP BY job_id
+            """
+        )
+    except Exception:
+        return pd.DataFrame()
+
+
+def merge_job_board_enrichments(jobs: pd.DataFrame, *enrichments: pd.DataFrame) -> pd.DataFrame:
+    if not isinstance(jobs, pd.DataFrame) or jobs.empty or "job_id" not in jobs.columns:
+        return jobs
+    out = jobs.copy()
+    for enrichment in enrichments:
+        if not isinstance(enrichment, pd.DataFrame) or enrichment.empty or "job_id" not in enrichment.columns:
+            continue
+        out = out.merge(enrichment.drop_duplicates("job_id", keep="first"), on="job_id", how="left")
+
+    text_targets = {
+        "project_type": ["vsimple_project_type", "vsimple_deal_type"],
+        "job_type": ["vsimple_deal_type", "vsimple_project_type"],
+        "lead_source": ["vsimple_lead_source"],
+        "referral_source": ["vsimple_referral_source"],
+        "estimator": ["vsimple_estimator", "vsimple_deal_owner"],
+        "salesperson": ["vsimple_deal_owner", "vsimple_estimator"],
+        "substrate": ["vsimple_roof_type", "vsimple_construction_type", "document_substrate"],
+        "roof_type": ["vsimple_roof_type", "document_substrate"],
+        "building_type": ["vsimple_construction_type", "vsimple_building_use"],
+        "material_system": ["vsimple_spray_tec_system", "template_material_system", "document_material_system"],
+        "product_system": ["vsimple_spray_tec_system", "template_material_system", "document_material_system"],
+        "warranty_type": ["document_warranty_type"],
+        "completion_date": ["vsimple_completion_date", "vsimple_closed_date"],
+    }
+    numeric_targets = {
+        "estimated_value": ["vsimple_bid_amount", "vsimple_billing_amount"],
+        "final_price": ["vsimple_billing_amount"],
+        "total_job_cost": ["vsimple_all_costs"],
+        "estimated_sqft": ["vsimple_estimated_sqft", "vsimple_roof_deck_sqft"],
+        "warranty_years": ["template_warranty_years", "document_warranty_years"],
+    }
+    for target, sources in text_targets.items():
+        if target not in out.columns:
+            out[target] = ""
+        for source in sources:
+            if source not in out.columns:
+                continue
+            target_text = out[target].fillna("").astype(str).str.strip()
+            source_text = out[source].fillna("").astype(str).str.strip()
+            mask = target_text.isin(["", "nan", "None", "null", "-"]) & ~source_text.isin(["", "nan", "None", "null", "-"])
+            out.loc[mask, target] = out.loc[mask, source]
+    for target, sources in numeric_targets.items():
+        if target not in out.columns:
+            out[target] = pd.NA
+        target_num = pd.to_numeric(out[target], errors="coerce")
+        for source in sources:
+            if source not in out.columns:
+                continue
+            source_num = pd.to_numeric(out[source], errors="coerce")
+            mask = (target_num.isna() | target_num.eq(0)) & source_num.notna() & source_num.ne(0)
+            out.loc[mask, target] = source_num[mask]
+            target_num = pd.to_numeric(out[target], errors="coerce")
+    return out
+
+
 def load_job_board_schedule() -> pd.DataFrame:
     cols = relation_columns("crew_schedule")
     if not cols or "job_id" not in cols:
@@ -2672,6 +2869,12 @@ def load_job_board_df() -> pd.DataFrame:
     if jobs.empty or "job_id" not in jobs.columns:
         return jobs
     jobs = with_folder_link(jobs)
+    jobs = merge_job_board_enrichments(
+        jobs,
+        load_job_board_vsimple_enrichment(),
+        load_job_board_template_enrichment(),
+        load_job_board_document_signal_enrichment(),
+    )
     overrides = load_job_workflow_overrides()
     if "job_id" in overrides.columns:
         jobs = jobs.merge(overrides, on="job_id", how="left")
@@ -8856,7 +9059,14 @@ def repair_estimator_page() -> None:
 
 def raw_tables_page() -> None:
     st.title("Raw Tables")
-    view_name = st.selectbox("View", VIEWS)
+    available_views = [view for view in VIEWS if relation_columns(view)]
+    missing_views = [view for view in VIEWS if view not in available_views]
+    if not available_views:
+        show_empty("No dashboard views or raw tables are available.")
+        return
+    view_name = st.selectbox("View", available_views)
+    if missing_views:
+        st.caption(f"Hidden missing relations: {', '.join(missing_views[:6])}" + ("..." if len(missing_views) > 6 else ""))
     df = query_view(view_name)
     st.metric("Rows", fmt_count(len(df)))
     if df.empty:
@@ -8966,6 +9176,7 @@ def main() -> None:
             "Job Board",
             "Schedule Calendar",
             "Estimating Assistant",
+            "Pricing Catalog",
             "Ask Spray-Tec",
             "BidScope AI",
             "Admin / Health",
@@ -8985,7 +9196,6 @@ def main() -> None:
             "Line Item Analysis",
             "Estimate Adders",
             "STAMP Tracking",
-            "Pricing Catalog",
             "Raw Tables",
         ]
         show_legacy_pages = st.checkbox("Show legacy/raw dashboard pages", value=False)

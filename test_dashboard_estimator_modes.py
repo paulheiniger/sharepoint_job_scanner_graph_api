@@ -221,6 +221,66 @@ def test_job_board_dashboard_rows_project_business_fields() -> None:
     assert row["labor_plan"] == "5 days / 4 crew / 160 hrs"
 
 
+def test_job_board_enrichment_fills_business_fields_from_vsimple_and_documents() -> None:
+    app = importlib.import_module("dashboard.app")
+    jobs = pd.DataFrame(
+        [
+            {
+                "job_id": "J1",
+                "customer": "ABC Church",
+                "job_name": "Sanctuary roof restoration",
+                "division": "Roofing",
+                "pipeline_status": "Proposed",
+                "estimated_value": None,
+                "substrate": "",
+                "material_system": "",
+                "warranty_years": None,
+                "lead_source": "",
+            }
+        ]
+    )
+    vsimple = pd.DataFrame(
+        [
+            {
+                "job_id": "J1",
+                "vsimple_deal_type": "Coating System over Existing Roof",
+                "vsimple_lead_source": "Referral",
+                "vsimple_bid_amount": 125000,
+                "vsimple_spray_tec_system": "Gaco Silicone",
+            }
+        ]
+    )
+    docs = pd.DataFrame(
+        [
+            {
+                "job_id": "J1",
+                "document_substrate": "Metal",
+                "document_material_system": "Silicone",
+                "document_warranty_type": "Gaco",
+                "document_warranty_years": 15,
+            }
+        ]
+    )
+
+    enriched = app.merge_job_board_enrichments(jobs, vsimple, docs)
+    rows = app.prepare_job_board_dashboard_rows(enriched)
+    row = rows.iloc[0]
+
+    assert row["estimated_value"] == 125000
+    assert row["lead_source"] == "Referral"
+    assert row["substrate_display"] == "Metal"
+    assert row["material_system_display"] == "Gaco Silicone"
+    assert row["warranty_display"] == "15 Gaco"
+
+
+def test_pricing_catalog_and_vsimple_tables_are_visible_in_dashboard_views() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    assert "pricing_catalog" in app.VIEWS
+    assert "vsimple_projects" in app.VIEWS
+    assert "vsimple_sharepoint_job_matches_accepted" in app.VIEWS
+
+
 def test_operations_dashboard_dates_normalize_timezone_aware_values() -> None:
     app = importlib.import_module("dashboard.app")
     jobs = pd.DataFrame(
