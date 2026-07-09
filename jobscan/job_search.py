@@ -186,7 +186,27 @@ def interpret_search_request(query: str) -> dict[str, Any]:
 
     search_text = normalized
     remove_terms = set(DOCUMENT_KEYWORDS.keys()) | set(DIVISIONS.keys()) | set(STATUS_TERMS.keys())
-    stopwords = {"find", "show", "me", "the", "for", "what", "do", "we", "have", "open", "give", "job", "jobs"}
+    stopwords = {
+        "all",
+        "about",
+        "find",
+        "from",
+        "give",
+        "have",
+        "job",
+        "jobs",
+        "me",
+        "of",
+        "on",
+        "open",
+        "please",
+        "show",
+        "the",
+        "what",
+        "we",
+        "for",
+        "do",
+    }
     words = [word for word in search_text.split() if word not in remove_terms and word not in stopwords]
     if city:
         city_words = set(normalize_search_text(city).split())

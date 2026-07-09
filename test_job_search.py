@@ -30,6 +30,14 @@ def test_interpret_search_request_detects_document_intents() -> None:
     assert interpret_search_request("Open the job folder for Goodwin")["document_type"] == "folder"
 
 
+def test_interpret_search_request_removes_document_filler_words() -> None:
+    interpreted = interpret_search_request("all documents on Canadian Solar")
+
+    assert interpreted["document_type"] == "all"
+    assert interpreted["search_text"] == "canadian solar"
+    assert interpreted["tokens"] == ["canadian", "solar"]
+
+
 def test_interpret_search_request_detects_filters_and_keeps_unknown_status_searchable() -> None:
     interpreted = interpret_search_request("find completed flooring jobs in Jeffersonville")
     assert interpreted["division"] == "Flooring"

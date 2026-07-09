@@ -405,6 +405,223 @@ def test_product_knowledge_upload_can_be_retargeted_to_catalog_product() -> None
     assert retargeted.product_aliases[0]["product_id"] == "gaco_s20"
 
 
+def test_ask_spraytec_formats_indexed_document_matches_directly() -> None:
+    app = importlib.import_module("dashboard.app")
+    interpreted = {"document_type": "all", "search_text": "canadian solar"}
+
+    response = app.indexed_documents_response(
+        [
+            {
+                "document_id": "D1",
+                "job_id": "CANADIAN-SOLAR",
+                "document_type": "estimate",
+                "file_name": "Canadian Solar Estimate.xlsx",
+                "sharepoint_url": "https://sharepoint.example/estimate.xlsx",
+                "folder_path": "Jobs/Canadian Solar",
+                "classification_reason": "Excel estimate file",
+            }
+        ],
+        interpreted=interpreted,
+        query="all documents on Canadian Solar",
+    )
+
+    assert "I found 1 indexed documents match" in response
+    assert "[Canadian Solar Estimate.xlsx](https://sharepoint.example/estimate.xlsx)" in response
+    assert "CANADIAN-SOLAR" in response
+
+
+def test_ask_spraytec_caps_weak_job_candidates() -> None:
+    app = importlib.import_module("dashboard.app")
+    interpreted = {"document_type": "all", "search_text": "canadian solar"}
+    results = [
+        {"job_id": f"J{i}", "customer": f"Customer {i}", "job_name": f"Weak Job {i}", "match_score": 20, "match_reason": "Weak similarity"}
+        for i in range(6)
+    ]
+
+    response = app.concise_job_candidates_response(results, interpreted)
+
+    assert response.count("Weak Job") == 3
+    assert "not showing broader weak matches" in response
+    assert "Weak Job 5" not in response
+
+
+def test_ask_spraytec_ranks_document_chunks_and_preserves_source_labels() -> None:
+    app = importlib.import_module("dashboard.app")
+    chunks = app.rank_document_content_chunks(
+        [
+            {
+                "document_id": "D1",
+                "file_name": "General Notes.pdf",
+                "page_number": 1,
+                "text_content": "Generic project notes.",
+            },
+            {
+                "document_id": "D2",
+                "file_name": "Canadian Solar Warranty.pdf",
+                "page_number": 3,
+                "text_content": "Canadian Solar warranty coating terms and roof restoration scope.",
+            },
+        ],
+        "Canadian Solar warranty",
+        limit=1,
+    )
+
+    assert len(chunks) == 1
+    assert chunks[0]["document_id"] == "D2"
+    assert app.source_label_for_chunk(chunks[0], 1) == "S1: Canadian Solar Warranty.pdf, page 3"
+
+
+def test_ask_spraytec_document_answer_falls_back_without_openai(monkeypatch) -> None:
+    app = importlib.import_module("dashboard.app")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    answer = app.llm_grounded_document_answer(
+        "Summarize Canadian Solar warranty.",
+        [
+            {
+                "document_id": "D1",
+                "file_name": "Canadian Solar Warranty.pdf",
+                "page_number": 2,
+                "sharepoint_url": "https://sharepoint.example/warranty.pdf",
+                "text_content": "Warranty term is referenced but signed warranty document is missing.",
+            }
+        ],
+    )
+
+    assert "AI summarization is not available" in answer
+    assert "[S1]" in answer
+    assert "Canadian Solar Warranty.pdf" in answer
+
+
+def test_ask_spraytec_fallback_includes_structured_evidence(monkeypatch) -> None:
+    app = importlib.import_module("dashboard.app")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    answer = app.llm_grounded_document_answer(
+        "What is the estimate value?",
+        [],
+        {
+            "facts": {
+                "jobs": [
+                    {
+                        "job_id": "J1",
+                        "customer": "Canadian Solar",
+                        "final_price": 125000,
+                    }
+                ],
+                "estimates": [
+                    {
+                        "estimate_file": "Estimate.xlsx",
+                        "total_job_cost": 90000,
+                    }
+                ],
+            }
+        },
+    )
+
+    assert "Structured evidence" in answer
+    assert "**jobs**" in answer
+    assert "Canadian Solar" in answer
+    assert "final_price" in answer
+
+
+def test_ask_spraytec_structured_evidence_lines_are_compact() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    lines = app.structured_evidence_lines(
+        {
+            "facts": {
+                "pricing_catalog": [
+                    {
+                        "product_name": "GacoFlex S20",
+                        "unit_price": 42.5,
+                        "empty": "",
+                    }
+                ]
+            }
+        }
+    )
+
+    assert lines[0] == "**pricing_catalog**"
+    assert "GacoFlex S20" in lines[1]
+    assert "empty" not in lines[1]
+
+
+def test_ask_spraytec_detects_structured_data_answer_prompts() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    assert app.is_data_answer_request("what was the final price for Canadian Solar?")
+    assert app.is_data_answer_request("Canadian Solar warranty")
+    assert not app.is_data_answer_request("Canadian Solar")
+
+
+def test_ask_spraytec_query_planner_routes_document_lookup() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    interpreted = app.interpret_search_request("all documents on Canadian Solar")
+    plan = app.plan_ask_spraytec_query("all documents on Canadian Solar", interpreted)
+
+    assert plan["mode"] == "document_lookup"
+    assert "documents" in plan["targets"]
+    assert "document_content" in plan["targets"]
+    assert "jobs" in plan["targets"]
+    assert "pricing_catalog" not in plan["targets"]
+
+
+def test_ask_spraytec_query_planner_routes_product_pricing_without_job_search() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    interpreted = app.interpret_search_request("what is the current unit price and PDS for Gaco S20?")
+    plan = app.plan_ask_spraytec_query("what is the current unit price and PDS for Gaco S20?", interpreted)
+
+    assert plan["mode"] == "structured_answer"
+    assert "pricing_catalog" in plan["targets"]
+    assert "product_catalog" in plan["targets"]
+    assert "jobs" not in plan["targets"]
+    assert plan["use_llm_answer"] is True
+
+
+def test_ask_spraytec_query_planner_routes_schedule_questions() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    interpreted = app.interpret_search_request("when is Canadian Solar scheduled to start?")
+    plan = app.plan_ask_spraytec_query("when is Canadian Solar scheduled to start?", interpreted)
+
+    assert "crew_schedule" in plan["targets"]
+    assert "jobs" in plan["targets"]
+    assert plan["requires_job_context"] is True
+
+
+def test_ask_spraytec_structured_pack_respects_targets(monkeypatch) -> None:
+    app = importlib.import_module("dashboard.app")
+    queried_sql: list[str] = []
+
+    def fake_columns(_connection, table_name):
+        if table_name == "pricing_catalog":
+            return {"product_name", "vendor", "category", "unit_price", "is_current"}
+        if table_name == "jobs":
+            return {"job_id", "customer", "job_name"}
+        return set()
+
+    def fake_query_rows(_connection, sql, params=None):
+        queried_sql.append(str(sql))
+        return [{"product_name": "GacoFlex S20", "unit_price": 42.5}]
+
+    monkeypatch.setattr(app, "_connection_table_columns", fake_columns)
+    monkeypatch.setattr(app, "_query_rows", fake_query_rows)
+
+    evidence = app.build_structured_evidence_pack(
+        object(),
+        query="Gaco S20 price",
+        interpreted={"search_text": "Gaco S20 price"},
+        targets={"pricing_catalog"},
+    )
+
+    assert list(evidence["facts"]) == ["pricing_catalog"]
+    assert any("FROM pricing_catalog" in sql for sql in queried_sql)
+    assert not any("FROM jobs" in sql for sql in queried_sql)
+
+
 def test_operations_dashboard_dates_normalize_timezone_aware_values() -> None:
     app = importlib.import_module("dashboard.app")
     jobs = pd.DataFrame(

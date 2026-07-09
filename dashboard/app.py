@@ -25,7 +25,7 @@ if str(REPO_ROOT) not in sys.path:
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from jobscan.env import load_project_env
@@ -40,11 +40,13 @@ from jobscan.db_connections import (
     execute_read_with_retry,
 )
 from jobscan.document_extraction import search_extracted_text
+from jobscan.document_index import search_documents
 from jobscan.job_search import (
     get_preferred_job_documents,
     interpret_search_request,
     requested_document_label,
     search_jobs,
+    tokenize_search_text,
 )
 try:
     from jobscan.estimator import estimate_from_field_notes, load_estimator_data
@@ -2705,6 +2707,895 @@ def job_result_markdown(job: dict[str, Any], interpreted: dict[str, Any], *, inc
     return "\n".join(lines)
 
 
+def is_document_lookup_request(interpreted: dict[str, Any]) -> bool:
+    return interpreted.get("document_type") not in (None, "")
+
+
+def is_data_answer_request(prompt: str) -> bool:
+    normalized = " " + " ".join(str(prompt or "").lower().split()) + " "
+    question_markers = (
+        " what ",
+        " when ",
+        " where ",
+        " which ",
+        " who ",
+        " how ",
+        " why ",
+        " tell me ",
+        " summarize ",
+        " summary ",
+        " do we ",
+        " did we ",
+        " does ",
+        " is there ",
+        " are there ",
+    )
+    business_markers = (
+        " cost",
+        " price",
+        " final ",
+        " warranty",
+        " substrate",
+        " material",
+        " system",
+        " status",
+        " estimate",
+        " labor",
+        " crew",
+        " profit",
+        " overhead",
+        " invoice",
+        " contract",
+        " proposal",
+        " completed",
+        " schedule",
+        " square",
+        " sqft",
+        " sq ft",
+    )
+    return any(marker in normalized for marker in question_markers) or any(marker in normalized for marker in business_markers)
+
+
+ASK_SPRAYTEC_STRUCTURED_TARGETS = {
+    "jobs",
+    "estimates",
+    "estimate_line_items",
+    "estimate_template_rows",
+    "pricing_catalog",
+    "product_catalog",
+    "crew_schedule",
+}
+
+
+def _prompt_has_any(normalized: str, markers: Iterable[str]) -> bool:
+    return any(marker in normalized for marker in markers)
+
+
+def plan_ask_spraytec_query(prompt: str, interpreted: dict[str, Any]) -> dict[str, Any]:
+    normalized = " " + " ".join(str(prompt or "").lower().split()) + " "
+    document_type = interpreted.get("document_type")
+    search_text = text_value(interpreted.get("search_text"))
+    targets: set[str] = {"jobs"}
+    reasons: list[str] = []
+
+    document_markers = (
+        " document ",
+        " documents ",
+        " file ",
+        " files ",
+        " folder ",
+        " folders ",
+        " estimate ",
+        " proposal ",
+        " contract ",
+        " invoice ",
+        " warranty ",
+        " aerial ",
+        " drawing ",
+        " drawings ",
+        " photo ",
+        " photos ",
+        " notes ",
+        " spec ",
+        " specs ",
+        " submittal ",
+    )
+    estimate_markers = (
+        " estimate ",
+        " estimated ",
+        " final price ",
+        " price per ",
+        " job cost ",
+        " material subtotal ",
+        " labor subtotal ",
+        " overhead ",
+        " profit ",
+        " sqft ",
+        " sq ft ",
+        " square feet ",
+        " warranty ",
+        " substrate ",
+        " material system ",
+        " scope ",
+    )
+    pricing_markers = (
+        " price ",
+        " pricing ",
+        " unit price ",
+        " unit cost ",
+        " cost per ",
+        " catalog ",
+        " rate ",
+        " material cost ",
+    )
+    product_markers = (
+        " product ",
+        " pds ",
+        " sds ",
+        " technical data ",
+        " application guide ",
+        " coverage ",
+        " yield ",
+        " r-value ",
+        " r value ",
+        " thickness ",
+        " foam ",
+        " silicone ",
+        " coating ",
+        " primer ",
+        " sealant ",
+        " fabric ",
+        " gaco ",
+        " enverge ",
+        " dc315 ",
+        " noburn ",
+        " accufoam ",
+    )
+    schedule_markers = (
+        " schedule ",
+        " scheduled ",
+        " start date ",
+        " starts ",
+        " crew ",
+        " dispatch ",
+        " duration ",
+        " backlog ",
+        " ready ",
+        " waiting ",
+        " hold ",
+        " permit ",
+        " weather ",
+        " equipment allocation ",
+    )
+
+    if document_type not in (None, "") or _prompt_has_any(normalized, document_markers):
+        targets.update({"documents", "document_content"})
+        reasons.append("document terms")
+    if _prompt_has_any(normalized, estimate_markers):
+        targets.update({"estimates", "estimate_line_items", "estimate_template_rows"})
+        reasons.append("estimate/job financial terms")
+    if _prompt_has_any(normalized, pricing_markers):
+        targets.add("pricing_catalog")
+        reasons.append("pricing terms")
+    if _prompt_has_any(normalized, product_markers):
+        targets.add("product_catalog")
+        reasons.append("product/system terms")
+    if _prompt_has_any(normalized, schedule_markers):
+        targets.add("crew_schedule")
+        reasons.append("schedule terms")
+
+    if document_type not in (None, "", "all"):
+        targets.update({"documents", "document_content"})
+        reasons.append(f"requested {requested_document_label(document_type).lower()}")
+
+    if targets == {"jobs"} and is_data_answer_request(prompt):
+        targets.update({"estimates", "estimate_template_rows"})
+        reasons.append("general data question")
+    if targets <= {"jobs", "pricing_catalog", "product_catalog"} and targets & {"pricing_catalog", "product_catalog"}:
+        targets.discard("jobs")
+
+    needs_clarification = bool({"documents", "document_content"} & targets) and not search_text and not interpreted.get("is_follow_up")
+    mode = "job_lookup"
+    if {"documents", "document_content"} & targets and targets - {"jobs", "documents", "document_content"}:
+        mode = "mixed_answer"
+    elif {"documents", "document_content"} & targets:
+        mode = "document_lookup"
+    elif targets & {"estimates", "estimate_line_items", "estimate_template_rows", "pricing_catalog", "product_catalog", "crew_schedule"}:
+        mode = "structured_answer"
+
+    return {
+        "mode": mode,
+        "targets": sorted(targets),
+        "requires_job_context": bool(targets & {"jobs", "documents", "document_content", "estimates", "estimate_line_items", "estimate_template_rows", "crew_schedule"}),
+        "needs_clarification": needs_clarification,
+        "clarification": "Which job, customer, project, product, or file should I search for?" if needs_clarification else "",
+        "use_llm_answer": mode in {"mixed_answer", "structured_answer"} or is_data_answer_request(prompt),
+        "reason": "; ".join(dict.fromkeys(reasons)) or "job lookup",
+    }
+
+
+def indexed_document_markdown(doc: dict[str, Any]) -> str:
+    file_name = text_value(doc.get("file_name")) or text_value(doc.get("document_id")) or "Document"
+    label = str(doc.get("document_type") or "document").replace("_", " ").title()
+    url = text_value(doc.get("sharepoint_url"))
+    title = markdown_link(file_name, url) if url else file_name
+    context_parts = [
+        text_value(doc.get("job_id")),
+        text_value(doc.get("folder_path")) or text_value(doc.get("relative_path")),
+        text_value(doc.get("classification_reason")),
+    ]
+    context = " · ".join(part for part in context_parts if part)
+    return f"- **{label}:** {title}" + (f"\n  {context}" if context else "")
+
+
+def indexed_documents_response(
+    docs: list[dict[str, Any]],
+    *,
+    interpreted: dict[str, Any],
+    query: str,
+    limit: int = 20,
+) -> str:
+    requested = requested_document_label(interpreted.get("document_type"))
+    search_text = text_value(interpreted.get("search_text")) or query
+    if not docs:
+        return ""
+    shown = docs[:limit]
+    lines = [
+        f"I found {len(docs):,} indexed {requested.lower()} match{'es' if len(docs) != 1 else ''} for **{search_text}**.",
+        "",
+    ]
+    lines.extend(indexed_document_markdown(doc) for doc in shown)
+    if len(docs) > len(shown):
+        lines.append(f"\nShowing the first {len(shown):,}. Add a document type, year, location, or file name to narrow this down.")
+    return "\n".join(lines)
+
+
+ASK_DOCUMENT_CHUNK_LIMIT = 24
+ASK_DOCUMENT_FETCH_LIMIT = 250
+ASK_DOCUMENT_CHUNK_CHAR_LIMIT = 1400
+ASK_DOCUMENT_TOTAL_CHAR_LIMIT = 18000
+
+
+def source_label_for_chunk(chunk: dict[str, Any], index: int) -> str:
+    file_name = text_value(chunk.get("file_name")) or text_value(chunk.get("document_id")) or "Document"
+    parts = [file_name]
+    if text_value(chunk.get("page_number")):
+        parts.append(f"page {text_value(chunk.get('page_number'))}")
+    if text_value(chunk.get("sheet_name")):
+        parts.append(f"sheet {text_value(chunk.get('sheet_name'))}")
+    if text_value(chunk.get("row_number")):
+        parts.append(f"row {text_value(chunk.get('row_number'))}")
+    if text_value(chunk.get("source_locator")) and len(parts) == 1:
+        parts.append(text_value(chunk.get("source_locator")))
+    return f"S{index}: " + ", ".join(parts)
+
+
+def score_document_chunk(chunk: dict[str, Any], tokens: list[str]) -> float:
+    text_blob = " ".join(
+        text_value(chunk.get(field))
+        for field in ("text_content", "file_name", "document_type", "sheet_name", "section_name", "source_locator")
+    ).lower()
+    if not tokens:
+        return 1.0
+    matched = sum(1 for token in tokens if token.lower() in text_blob)
+    phrase_bonus = 2.0 if " ".join(tokens).lower() in text_blob else 0.0
+    location_bonus = 0.5 if any(text_value(chunk.get(field)) for field in ("page_number", "sheet_name", "row_number")) else 0.0
+    return matched * 2.0 + phrase_bonus + location_bonus
+
+
+def rank_document_content_chunks(rows: list[dict[str, Any]], query: str, *, limit: int = ASK_DOCUMENT_CHUNK_LIMIT) -> list[dict[str, Any]]:
+    tokens = tokenize_search_text(query)
+    ranked = sorted(
+        rows,
+        key=lambda row: (
+            score_document_chunk(row, tokens),
+            text_value(row.get("file_name")),
+            -int(float(row.get("page_number") or row.get("row_number") or 0)),
+        ),
+        reverse=True,
+    )
+    seen: set[tuple[str, str, str]] = set()
+    out: list[dict[str, Any]] = []
+    total_chars = 0
+    for row in ranked:
+        text_content = " ".join(text_value(row.get("text_content")).split())
+        if not text_content:
+            continue
+        key = (
+            text_value(row.get("document_id")),
+            text_value(row.get("source_locator")),
+            text_content[:120],
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        clipped = text_content[:ASK_DOCUMENT_CHUNK_CHAR_LIMIT]
+        total_chars += len(clipped)
+        chunk = dict(row)
+        chunk["text_content"] = clipped
+        out.append(chunk)
+        if len(out) >= limit or total_chars >= ASK_DOCUMENT_TOTAL_CHAR_LIMIT:
+            break
+    return out
+
+
+def fetch_document_content_chunks(
+    connection: Any,
+    *,
+    query: str,
+    document_ids: list[str] | None = None,
+    job_id: str | None = None,
+    document_type: str | None = None,
+    limit: int = ASK_DOCUMENT_CHUNK_LIMIT,
+) -> list[dict[str, Any]]:
+    clauses = []
+    params: dict[str, Any] = {"fetch_limit": ASK_DOCUMENT_FETCH_LIMIT}
+    statement = """
+        SELECT
+            c.content_id,
+            c.document_id,
+            c.job_id,
+            d.file_name,
+            d.document_type,
+            d.sharepoint_url,
+            d.folder_path,
+            d.relative_path,
+            c.content_type,
+            c.source_locator,
+            c.page_number,
+            c.sheet_name,
+            c.cell_range,
+            c.row_number,
+            c.section_name,
+            c.text_content
+        FROM document_content c
+        LEFT JOIN documents d ON d.document_id = c.document_id
+    """
+    bindparams = []
+    clean_document_ids = [doc_id for doc_id in (document_ids or []) if text_value(doc_id)]
+    if clean_document_ids:
+        clauses.append("c.document_id IN :document_ids")
+        params["document_ids"] = clean_document_ids[:50]
+        bindparams.append(bindparam("document_ids", expanding=True))
+    if job_id:
+        clauses.append("c.job_id = :job_id")
+        params["job_id"] = str(job_id)
+    if document_type and document_type != "all":
+        clauses.append("d.document_type = :document_type")
+        params["document_type"] = document_type
+    if clauses:
+        statement += " WHERE " + " AND ".join(clauses)
+    statement += """
+        ORDER BY d.file_name, c.page_number NULLS LAST, c.sheet_name NULLS LAST, c.row_number NULLS LAST
+        LIMIT :fetch_limit
+    """
+    sql = text(statement)
+    if bindparams:
+        sql = sql.bindparams(*bindparams)
+    rows = [dict(row) for row in connection.execute(sql, params).mappings().all()]
+    return rank_document_content_chunks(rows, query, limit=limit)
+
+
+def source_lines_for_document_chunks(chunks: list[dict[str, Any]]) -> list[str]:
+    lines = []
+    for index, chunk in enumerate(chunks, start=1):
+        label = source_label_for_chunk(chunk, index)
+        url = text_value(chunk.get("sharepoint_url"))
+        source = markdown_link(label, url) if url else label
+        excerpt = text_value(chunk.get("text_content"))
+        lines.append(f"- [{label.split(':', 1)[0]}] {source}: {excerpt[:320]}")
+    return lines
+
+
+def _connection_table_columns(connection: Any, table_name: str) -> set[str]:
+    try:
+        rows = connection.execute(
+            text(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = :table_name
+                """
+            ),
+            {"table_name": table_name},
+        ).fetchall()
+    except Exception:
+        return set()
+    return {str(row[0]) for row in rows}
+
+
+def _select_columns(table_columns: set[str], requested: list[str]) -> list[str]:
+    return [column for column in requested if column in table_columns]
+
+
+def _json_ready_record(row: dict[str, Any]) -> dict[str, Any]:
+    out = {}
+    for key, value in row.items():
+        if value is None:
+            continue
+        if isinstance(value, float) and pd.isna(value):
+            continue
+        out[key] = value
+    return out
+
+
+def _query_rows(connection: Any, sql: Any, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    return [_json_ready_record(dict(row)) for row in connection.execute(sql, params or {}).mappings().all()]
+
+
+def build_structured_evidence_pack(
+    connection: Any,
+    *,
+    query: str,
+    interpreted: dict[str, Any],
+    job_ids: list[str] | None = None,
+    max_rows: int = 12,
+    targets: Iterable[str] | None = None,
+) -> dict[str, Any]:
+    tokens = tokenize_search_text(text_value(interpreted.get("search_text")) or query)
+    clean_job_ids = list(dict.fromkeys(job_id for job_id in (job_ids or []) if text_value(job_id)))[:20]
+    target_set = set(targets or ASK_SPRAYTEC_STRUCTURED_TARGETS)
+    evidence: dict[str, Any] = {
+        "query": query,
+        "search_text": text_value(interpreted.get("search_text")),
+        "tokens": tokens,
+        "job_ids": clean_job_ids,
+        "targets": sorted(target_set),
+        "facts": {},
+        "skipped_sources": [],
+    }
+
+    def wants(source_name: str) -> bool:
+        return source_name in target_set
+
+    def add_job_filter(sql_where: list[str], params: dict[str, Any]) -> Any:
+        if clean_job_ids:
+            sql_where.append("job_id IN :job_ids")
+            params["job_ids"] = clean_job_ids
+            return bindparam("job_ids", expanding=True)
+        return None
+
+    job_columns = _connection_table_columns(connection, "jobs")
+    if wants("jobs") and job_columns:
+        selected = _select_columns(
+            job_columns,
+            [
+                "job_id",
+                "division",
+                "pipeline_status",
+                "status",
+                "customer",
+                "job_name",
+                "job_type",
+                "site_address",
+                "city",
+                "state",
+                "estimated_sqft",
+                "material_subtotal",
+                "labor_subtotal",
+                "total_job_cost",
+                "final_price",
+                "price_per_sqft",
+                "has_signed_contract",
+                "has_invoice",
+                "has_warranty",
+                "has_proposal",
+                "has_job_spec",
+                "folder_url",
+                "estimate_file",
+                "warnings",
+                "source_year",
+            ],
+        )
+        where: list[str] = []
+        params: dict[str, Any] = {"limit": max_rows}
+        bind = add_job_filter(where, params)
+        if not clean_job_ids and tokens:
+            token_clauses = []
+            for index, token_value in enumerate(tokens[:4]):
+                key = f"token_{index}"
+                params[key] = f"%{token_value}%"
+                token_clauses.append(
+                    f"(LOWER(COALESCE(customer, '')) LIKE :{key} OR LOWER(COALESCE(job_name, '')) LIKE :{key} OR LOWER(COALESCE(folder_name, '')) LIKE :{key})"
+                )
+            where.extend(token_clauses)
+        if selected:
+            statement = text(
+                f"SELECT {', '.join(selected)} FROM jobs"
+                + (" WHERE " + " AND ".join(where) if where else "")
+                + " ORDER BY updated_at DESC NULLS LAST LIMIT :limit"
+            )
+            if bind is not None:
+                statement = statement.bindparams(bind)
+            evidence["facts"]["jobs"] = _query_rows(connection, statement, params)
+    elif wants("jobs"):
+        evidence["skipped_sources"].append("jobs table unavailable")
+
+    estimates_columns = _connection_table_columns(connection, "estimates")
+    if wants("estimates") and estimates_columns:
+        selected = _select_columns(
+            estimates_columns,
+            [
+                "estimate_id",
+                "job_id",
+                "estimate_file",
+                "estimate_role",
+                "estimate_scope_type",
+                "division",
+                "pipeline_status",
+                "customer",
+                "job_name",
+                "job_type",
+                "estimated_sqft",
+                "material_subtotal",
+                "labor_subtotal",
+                "equipment_subtotal",
+                "travel_lodging",
+                "total_job_cost",
+                "overhead_pct",
+                "profit_pct",
+                "worksheet_price",
+                "final_price",
+                "price_per_sqft",
+                "estimated_duration_days",
+                "estimated_labor_hours",
+                "estimated_crew_size",
+                "adders_subtotal",
+                "warranty_amount",
+                "source_path",
+                "extraction_warnings",
+            ],
+        )
+        if selected:
+            where = []
+            params = {"limit": max_rows}
+            bind = add_job_filter(where, params)
+            statement = text(
+                f"SELECT {', '.join(selected)} FROM estimates"
+                + (" WHERE " + " AND ".join(where) if where else "")
+                + " ORDER BY updated_at DESC NULLS LAST LIMIT :limit"
+            )
+            if bind is not None:
+                statement = statement.bindparams(bind)
+            evidence["facts"]["estimates"] = _query_rows(connection, statement, params)
+    elif wants("estimates"):
+        evidence["skipped_sources"].append("estimates table unavailable")
+
+    line_item_columns = _connection_table_columns(connection, "estimate_line_items")
+    if wants("estimate_line_items") and line_item_columns and clean_job_ids:
+        selected = _select_columns(
+            line_item_columns,
+            [
+                "job_id",
+                "estimate_file",
+                "section",
+                "line_item_category",
+                "line_item_name",
+                "description",
+                "quantity",
+                "unit",
+                "unit_cost",
+                "unit_price",
+                "extended_cost",
+                "labor_days",
+                "crew_size",
+                "labor_hours",
+                "vendor",
+                "notes",
+                "source_sheet",
+                "source_row",
+            ],
+        )
+        if selected:
+            statement = text(
+                f"""
+                SELECT {', '.join(selected)}
+                FROM estimate_line_items
+                WHERE job_id IN :job_ids
+                ORDER BY ABS(COALESCE(extended_cost, 0)) DESC NULLS LAST
+                LIMIT :limit
+                """
+            ).bindparams(bindparam("job_ids", expanding=True))
+            evidence["facts"]["estimate_line_items"] = _query_rows(
+                connection,
+                statement,
+                {"job_ids": clean_job_ids, "limit": max_rows},
+            )
+
+    template_columns = _connection_table_columns(connection, "estimate_template_rows")
+    if wants("estimate_template_rows") and template_columns and clean_job_ids:
+        selected = _select_columns(
+            template_columns,
+            [
+                "job_id",
+                "source_file",
+                "template_type",
+                "template_bucket",
+                "template_section",
+                "line_item_kind",
+                "row_number",
+                "row_label",
+                "selected_item_name",
+                "quantity",
+                "unit_price",
+                "estimated_units",
+                "estimated_cost",
+                "area_sqft",
+                "thickness_inches",
+                "yield_or_coverage",
+                "estimated_sets",
+                "gal_per_100_sqft",
+                "linear_ft",
+                "days",
+                "crew_size",
+                "total_hours",
+                "daily_rate",
+                "hourly_rate",
+                "formula_model",
+                "warranty_years",
+                "overhead_pct",
+                "profit_pct",
+                "needs_review",
+            ],
+        )
+        if selected:
+            template_cost_expr = "COALESCE(estimated_cost, calculated_cost, 0)" if "calculated_cost" in template_columns else "COALESCE(estimated_cost, 0)"
+            statement = text(
+                f"""
+                SELECT {', '.join(selected)}
+                FROM estimate_template_rows
+                WHERE job_id IN :job_ids
+                  AND COALESCE(template_section, '') NOT IN ('job_header', 'totals')
+                ORDER BY ABS({template_cost_expr}) DESC NULLS LAST, row_number
+                LIMIT :limit
+                """
+            ).bindparams(bindparam("job_ids", expanding=True))
+            evidence["facts"]["estimate_template_rows"] = _query_rows(
+                connection,
+                statement,
+                {"job_ids": clean_job_ids, "limit": max_rows * 2},
+            )
+
+    pricing_columns = _connection_table_columns(connection, "pricing_catalog")
+    if wants("pricing_catalog") and pricing_columns and tokens:
+        selected = _select_columns(
+            pricing_columns,
+            [
+                "pricing_item_id",
+                "vendor",
+                "category",
+                "product_name",
+                "description",
+                "unit_price",
+                "unit_of_measure",
+                "package_size",
+                "price_basis",
+                "price_per_gallon",
+                "price_per_sqft",
+                "price_per_unit",
+                "effective_date",
+                "status",
+                "is_current",
+                "needs_review",
+                "notes",
+            ],
+        )
+        if selected:
+            where = ["COALESCE(is_current, false) IS TRUE"]
+            params = {"limit": 8}
+            for index, token_value in enumerate(tokens[:4]):
+                key = f"pricing_token_{index}"
+                params[key] = f"%{token_value}%"
+                where.append(
+                    f"(LOWER(COALESCE(product_name, '')) LIKE :{key} OR LOWER(COALESCE(description, '')) LIKE :{key} OR LOWER(COALESCE(vendor, '')) LIKE :{key} OR LOWER(COALESCE(category, '')) LIKE :{key})"
+                )
+            statement = text(
+                f"SELECT {', '.join(selected)} FROM pricing_catalog WHERE {' AND '.join(where)} ORDER BY product_name LIMIT :limit"
+            )
+            evidence["facts"]["pricing_catalog"] = _query_rows(connection, statement, params)
+
+    product_columns = _connection_table_columns(connection, "product_catalog")
+    if wants("product_catalog") and product_columns and tokens:
+        selected = _select_columns(
+            product_columns,
+            ["product_id", "manufacturer", "product_family", "product_name", "sku", "category", "subcategory", "unit", "active"],
+        )
+        if selected:
+            where = ["COALESCE(active, true) IS TRUE"] if "active" in product_columns else ["1 = 1"]
+            params = {"limit": 8}
+            for index, token_value in enumerate(tokens[:4]):
+                key = f"product_token_{index}"
+                params[key] = f"%{token_value}%"
+                where.append(
+                    f"(LOWER(COALESCE(product_name, '')) LIKE :{key} OR LOWER(COALESCE(product_family, '')) LIKE :{key} OR LOWER(COALESCE(manufacturer, '')) LIKE :{key} OR LOWER(COALESCE(category, '')) LIKE :{key})"
+                )
+            products = _query_rows(
+                connection,
+                text(f"SELECT {', '.join(selected)} FROM product_catalog WHERE {' AND '.join(where)} ORDER BY product_name LIMIT :limit"),
+                params,
+            )
+            evidence["facts"]["product_catalog"] = products
+            product_ids = [text_value(row.get("product_id")) for row in products if text_value(row.get("product_id"))]
+            if product_ids and _connection_table_columns(connection, "product_properties"):
+                evidence["facts"]["product_properties"] = _query_rows(
+                    connection,
+                    text(
+                        """
+                        SELECT product_id, property_name, property_value, numeric_value, numeric_min, numeric_max, unit, confidence
+                        FROM product_properties
+                        WHERE product_id IN :product_ids
+                        ORDER BY product_id, property_name
+                        LIMIT :limit
+                        """
+                    ).bindparams(bindparam("product_ids", expanding=True)),
+                    {"product_ids": product_ids, "limit": 20},
+                )
+            if product_ids and _connection_table_columns(connection, "product_rules"):
+                evidence["facts"]["product_rules"] = _query_rows(
+                    connection,
+                    text(
+                        """
+                        SELECT product_id, rule_type, rule_value, severity, confidence
+                        FROM product_rules
+                        WHERE product_id IN :product_ids
+                        ORDER BY product_id, rule_type
+                        LIMIT :limit
+                        """
+                    ).bindparams(bindparam("product_ids", expanding=True)),
+                    {"product_ids": product_ids, "limit": 20},
+                )
+
+    schedule_columns = _connection_table_columns(connection, "crew_schedule")
+    if wants("crew_schedule") and schedule_columns:
+        selected = _select_columns(
+            schedule_columns,
+            [
+                "schedule_id",
+                "job_id",
+                "assigned_crew_leader",
+                "suggested_crew_type",
+                "suggested_crew_reason",
+                "scheduled_sequence",
+                "estimated_start_date",
+                "estimated_duration_days",
+                "estimated_end_date",
+                "schedule_status",
+                "ready_to_schedule",
+                "blocking_issue",
+                "priority",
+                "schedule_notes",
+                "updated_by",
+                "updated_at",
+            ],
+        )
+        if selected:
+            where = []
+            params = {"limit": max_rows}
+            bind = add_job_filter(where, params)
+            statement = text(
+                f"SELECT {', '.join(selected)} FROM crew_schedule"
+                + (" WHERE " + " AND ".join(where) if where else "")
+                + " ORDER BY estimated_start_date NULLS LAST, scheduled_sequence NULLS LAST, updated_at DESC NULLS LAST LIMIT :limit"
+            )
+            if bind is not None:
+                statement = statement.bindparams(bind)
+            evidence["facts"]["crew_schedule"] = _query_rows(connection, statement, params)
+    elif wants("crew_schedule"):
+        evidence["skipped_sources"].append("crew_schedule table unavailable")
+
+    evidence["facts"] = {key: value for key, value in evidence["facts"].items() if value}
+    return evidence
+
+
+def structured_evidence_lines(evidence: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    facts = evidence.get("facts") if isinstance(evidence.get("facts"), dict) else {}
+    for source_name, rows in facts.items():
+        if not rows:
+            continue
+        lines.append(f"**{source_name}**")
+        for row in rows[:5]:
+            compact = {key: value for key, value in row.items() if value not in (None, "", [], {})}
+            lines.append(f"- {json.dumps(compact, default=str)[:500]}")
+    return lines
+
+
+def fallback_document_answer(prompt: str, chunks: list[dict[str, Any]], structured_evidence: dict[str, Any] | None = None) -> str:
+    evidence_lines = structured_evidence_lines(structured_evidence or {})
+    if not chunks and not evidence_lines:
+        return "I found indexed records, but no extracted text chunks or structured evidence are available to summarize yet."
+    lines = [
+        "AI summarization is not available in this runtime. Here is the retrieved evidence:",
+        "",
+    ]
+    if chunks:
+        lines.append("Document excerpts:")
+        lines.extend(source_lines_for_document_chunks(chunks[:8]))
+    if evidence_lines:
+        lines.append("")
+        lines.append("Structured evidence:")
+        lines.extend(evidence_lines[:25])
+    return "\n".join(lines)
+
+
+def llm_grounded_document_answer(prompt: str, chunks: list[dict[str, Any]], structured_evidence: dict[str, Any] | None = None) -> str:
+    structured_evidence = structured_evidence or {}
+    if not chunks and not structured_evidence.get("facts"):
+        return ""
+    if not os.getenv("OPENAI_API_KEY"):
+        return fallback_document_answer(prompt, chunks, structured_evidence)
+    try:
+        from openai import OpenAI  # type: ignore
+    except ImportError:
+        return fallback_document_answer(prompt, chunks, structured_evidence)
+    sources = []
+    for index, chunk in enumerate(chunks, start=1):
+        sources.append(
+            {
+                "source_id": f"S{index}",
+                "label": source_label_for_chunk(chunk, index),
+                "job_id": text_value(chunk.get("job_id")),
+                "document_type": text_value(chunk.get("document_type")),
+                "file_name": text_value(chunk.get("file_name")),
+                "url": text_value(chunk.get("sharepoint_url")),
+                "text": text_value(chunk.get("text_content")),
+            }
+        )
+    system = (
+        "You are Ask Spray-Tec, a grounded assistant for Spray-Tec operational data. "
+        "Answer only from the provided extracted document sources and structured database evidence. Cite document claims with source ids like [S1]. "
+        "For structured database facts, name the source table such as jobs, estimates, estimate_template_rows, pricing_catalog, or product_catalog. "
+        "If the sources do not answer the question, say what is missing. Do not invent facts, totals, dates, warranty terms, or scope."
+    )
+    user_payload = {
+        "question": prompt,
+        "sources": sources,
+        "structured_evidence": structured_evidence,
+        "instructions": [
+            "Start with a concise answer.",
+            "Use bullets when useful.",
+            "Include a Sources section listing the source ids used.",
+            "Include a Data checked line naming structured tables used when relevant.",
+            "Mention uncertainty or missing documents when the evidence is weak.",
+        ],
+    }
+    try:
+        client = OpenAI(timeout=float(os.getenv("OPENAI_ASK_SPRAYTEC_TIMEOUT_SECONDS", "30")))
+        response = client.chat.completions.create(
+            model=os.getenv("OPENAI_ASK_SPRAYTEC_MODEL") or os.getenv("OPENAI_MODEL") or "gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": json.dumps(user_payload, indent=2, default=str)},
+            ],
+            temperature=0.1,
+        )
+        content = response.choices[0].message.content if response.choices else ""
+        return text_value(content) or fallback_document_answer(prompt, chunks, structured_evidence)
+    except Exception as exc:
+        logger.exception("Ask Spray-Tec document answer failed")
+        return fallback_document_answer(prompt, chunks, structured_evidence) + f"\n\nAI summary failed: {safe_exception_text(exc)}"
+
+
+def concise_job_candidates_response(results: list[dict[str, Any]], interpreted: dict[str, Any]) -> str:
+    if not results:
+        return "I could not find a confident job or document match. Try a customer name, job name, city, year, or document type."
+    strong = [result for result in results if float(result.get("match_score") or 0) >= 45]
+    display = (strong or results)[:3]
+    intro = (
+        f"I found {len(strong):,} possible job match{'es' if len(strong) != 1 else ''}:"
+        if strong
+        else "I did not find a confident match. The closest job candidates are:"
+    )
+    chunks = [intro, ""]
+    for index, job in enumerate(display, start=1):
+        chunks.append(f"{index}. " + job_result_markdown(job, interpreted, include_documents=True, connection=None))
+        chunks.append("")
+    if not strong:
+        chunks.append("I’m not showing broader weak matches by default. Add more detail or ask to broaden the search.")
+    return "\n".join(chunks).strip()
+
+
 def ask_spraytec_page() -> None:
     st.title("Ask Spray-Tec")
     st.caption("Conversational job and document finder. This searches structured job data, stored document links, and any extracted document text.")
@@ -2767,79 +3658,216 @@ def ask_spraytec_page() -> None:
     with st.chat_message("user"):
         st.markdown(prompt)
     interpreted = interpret_search_request(prompt)
-    debug_payload: dict[str, Any] = {"interpreted": interpreted, "ranked_matches": []}
+    query_plan = plan_ask_spraytec_query(prompt, interpreted)
+    plan_targets = set(query_plan.get("targets") or [])
+    debug_payload: dict[str, Any] = {"interpreted": interpreted, "query_plan": query_plan, "ranked_matches": []}
     response = ""
 
-    if interpreted.get("is_follow_up") and selected_job:
+    if query_plan.get("needs_clarification") and not (selected_job or selected_job_id):
+        response = text_value(query_plan.get("clarification")) or "What should I search for?"
+        st.session_state["ask_spraytec_messages"].append({"role": "assistant", "content": response})
+        with st.chat_message("assistant"):
+            st.markdown(response)
+            with st.expander("Search details"):
+                st.write("query plan", query_plan)
+                st.write("interpreted search text", interpreted.get("search_text"))
+                st.write("detected document type", interpreted.get("document_type"))
+        return
+
+    if interpreted.get("is_follow_up") and (selected_job or selected_job_id):
         requested_type = interpreted.get("document_type")
+        active_job = selected_job if isinstance(selected_job, dict) else {"job_id": selected_job_id}
         try:
             with get_engine().connect() as conn:
-                docs = get_preferred_job_documents(conn, selected_job, requested_type)
+                docs = get_preferred_job_documents(conn, active_job, requested_type) if "documents" in plan_targets else []
+                document_chunks = []
+                if "document_content" in plan_targets:
+                    document_chunks = fetch_document_content_chunks(
+                        conn,
+                        query=prompt,
+                        job_id=str(selected_job_id or active_job.get("job_id") or ""),
+                        document_type=requested_type,
+                        limit=ASK_DOCUMENT_CHUNK_LIMIT,
+                    )
+                structured_evidence = build_structured_evidence_pack(
+                    conn,
+                    query=prompt,
+                    interpreted=interpreted,
+                    job_ids=[str(selected_job_id or active_job.get("job_id") or "")],
+                    targets=plan_targets & ASK_SPRAYTEC_STRUCTURED_TARGETS,
+                )
         except Exception as exc:
             show_database_error(exc)
             return
-        response = f"Using selected job: **{text_value(selected_job.get('job_name')) or text_value(selected_job.get('customer'))}**\n\n"
-        if requested_type not in (None, "all") and not any(doc.get("type") == requested_type for doc in docs):
+        active_job_label = text_value(active_job.get("job_name")) or text_value(active_job.get("customer")) or text_value(active_job.get("job_id"))
+        response = f"Using selected job: **{active_job_label}**\n\n"
+        if document_chunks or structured_evidence.get("facts"):
+            response += llm_grounded_document_answer(prompt, document_chunks, structured_evidence) + "\n\n"
+        if "documents" in plan_targets and requested_type not in (None, "all") and not any(doc.get("type") == requested_type for doc in docs):
             response += f"{requested_document_label(requested_type)}: not indexed\n\n"
         if docs:
+            response += "Indexed document links:\n"
             response += "\n".join(
                 f"- {doc['label']}: {markdown_link(text_value(doc.get('file_name')) or 'Open ' + doc['label'].lower(), doc['url'])}"
                 for doc in docs
             )
-        else:
+        elif "documents" in plan_targets:
             response += "I do not see any indexed document links for the selected job."
-        debug_payload["ranked_matches"] = [{"job_id": selected_job.get("job_id"), "score": selected_job.get("match_score"), "reason": selected_job.get("match_reason")}]
+        debug_payload["ranked_matches"] = [{"job_id": active_job.get("job_id"), "score": active_job.get("match_score"), "reason": active_job.get("match_reason")}]
+        debug_payload["document_chunks"] = [
+            {
+                "source": source_label_for_chunk(chunk, index),
+                "document_id": chunk.get("document_id"),
+                "job_id": chunk.get("job_id"),
+                "file_name": chunk.get("file_name"),
+            }
+            for index, chunk in enumerate(document_chunks[:10], start=1)
+        ]
+        debug_payload["structured_evidence"] = {
+            key: len(value)
+            for key, value in (structured_evidence.get("facts") or {}).items()
+        }
     else:
         try:
             with get_engine().connect() as conn:
-                results = search_jobs(conn, prompt, limit=10)
+                document_matches: list[dict[str, Any]] = []
+                document_chunks: list[dict[str, Any]] = []
+                structured_evidence: dict[str, Any] = {}
+                if "documents" in plan_targets and interpreted.get("search_text"):
+                    document_matches = search_documents(
+                        conn,
+                        str(interpreted.get("search_text") or ""),
+                        document_type=interpreted.get("document_type"),
+                        limit=50,
+                    )
+                    if document_matches and "document_content" in plan_targets:
+                        document_chunks = fetch_document_content_chunks(
+                            conn,
+                            query=prompt,
+                            document_ids=[text_value(doc.get("document_id")) for doc in document_matches],
+                            document_type=interpreted.get("document_type"),
+                            limit=ASK_DOCUMENT_CHUNK_LIMIT,
+                        )
+                matched_job_ids = [text_value(doc.get("job_id")) for doc in document_matches if text_value(doc.get("job_id"))]
+                results = [] if document_matches or "jobs" not in plan_targets else search_jobs(conn, prompt, limit=10)
                 for result in results:
                     result["_documents"] = get_preferred_job_documents(conn, result, interpreted.get("document_type"))
+                if not matched_job_ids:
+                    matched_job_ids = [text_value(result.get("job_id")) for result in results[:3] if text_value(result.get("job_id"))]
+                structured_evidence = build_structured_evidence_pack(
+                    conn,
+                    query=prompt,
+                    interpreted=interpreted,
+                    job_ids=matched_job_ids,
+                    targets=plan_targets & ASK_SPRAYTEC_STRUCTURED_TARGETS,
+                )
         except Exception as exc:
             show_database_error(exc)
             return
-        debug_payload["ranked_matches"] = [
-            {
-                "job_id": result.get("job_id"),
-                "customer": result.get("customer"),
-                "job_name": result.get("job_name"),
-                "score": result.get("match_score"),
-                "reason": result.get("match_reason"),
-            }
-            for result in results
-        ]
-        strong_results = [result for result in results if float(result.get("match_score") or 0) >= 45]
-        display_results = strong_results or results[:5]
-        if not display_results:
-            response = "No confident match was found. Try adding a customer name, location, division, or approximate year."
-        elif len(strong_results) == 1 and float(strong_results[0].get("match_score") or 0) >= 75:
-            job = strong_results[0]
-            st.session_state["ask_spraytec_selected_job"] = job
-            st.session_state["ask_spraytec_selected_job_id"] = str(job.get("job_id") or "")
-            response = "I found a strong match.\n\n" + job_result_markdown(job, interpreted, connection=None)
-            alternatives = results[1:4]
-            if alternatives:
-                response += "\n\nLower-ranked alternatives are available in Search details."
-        else:
-            if strong_results:
-                response = f"I found {len(strong_results)} possible matches. The strongest results are:\n\n"
+        if "document_matches" in locals() and document_matches:
+            if document_chunks:
+                response = llm_grounded_document_answer(prompt, document_chunks, structured_evidence)
+                response += "\n\nIndexed document links:\n"
+                response += "\n".join(indexed_document_markdown(doc) for doc in document_matches[:12])
             else:
-                response = "No confident match was found, but these weaker suggestions may help:\n\n"
-            chunks = []
-            for index, job in enumerate(display_results[:5], start=1):
-                chunks.append(f"{index}. " + job_result_markdown(job, interpreted, connection=None))
-            response += "\n\n".join(chunks)
-            if display_results:
-                job = display_results[0]
-                st.session_state["ask_spraytec_selected_job"] = job
-                st.session_state["ask_spraytec_selected_job_id"] = str(job.get("job_id") or "")
-            if not strong_results:
-                response += "\n\nTry adding customer, location, division, or approximate year to narrow this down."
+                summary = llm_grounded_document_answer(prompt, [], structured_evidence)
+                response = summary + "\n\n" if summary else ""
+                response += indexed_documents_response(document_matches, interpreted=interpreted, query=prompt)
+                response += "\n\nI found matching document metadata, but no extracted text chunks were available to summarize."
+            debug_payload["document_matches"] = [
+                {
+                    "document_id": doc.get("document_id"),
+                    "job_id": doc.get("job_id"),
+                    "document_type": doc.get("document_type"),
+                    "file_name": doc.get("file_name"),
+                    "folder_path": doc.get("folder_path"),
+                }
+                for doc in document_matches[:25]
+            ]
+            debug_payload["document_chunks"] = [
+                {
+                    "source": source_label_for_chunk(chunk, index),
+                    "document_id": chunk.get("document_id"),
+                    "job_id": chunk.get("job_id"),
+                    "file_name": chunk.get("file_name"),
+                }
+                for index, chunk in enumerate(document_chunks[:10], start=1)
+            ]
+            debug_payload["structured_evidence"] = {
+                key: len(value)
+                for key, value in (structured_evidence.get("facts") or {}).items()
+            }
+            job_ids = [text_value(doc.get("job_id")) for doc in document_matches if text_value(doc.get("job_id"))]
+            if job_ids:
+                st.session_state["ask_spraytec_selected_job_id"] = job_ids[0]
+                st.session_state.pop("ask_spraytec_selected_job", None)
+        else:
+            if is_document_lookup_request(interpreted) and not interpreted.get("search_text"):
+                response = "Which job, customer, or project should I search documents for?"
+            else:
+                debug_payload["ranked_matches"] = [
+                    {
+                        "job_id": result.get("job_id"),
+                        "customer": result.get("customer"),
+                        "job_name": result.get("job_name"),
+                        "score": result.get("match_score"),
+                        "reason": result.get("match_reason"),
+                    }
+                    for result in results
+                ]
+                debug_payload["structured_evidence"] = {
+                    key: len(value)
+                    for key, value in (structured_evidence.get("facts") or {}).items()
+                }
+                strong_results = [result for result in results if float(result.get("match_score") or 0) >= 45]
+                if query_plan.get("use_llm_answer") and structured_evidence.get("facts"):
+                    response = llm_grounded_document_answer(prompt, [], structured_evidence)
+                    related = strong_results or results[:3]
+                    if related:
+                        response += "\n\nRelated job matches:\n"
+                        response += "\n\n".join(
+                            f"{index}. " + job_result_markdown(job, interpreted, include_documents=True, connection=None)
+                            for index, job in enumerate(related[:3], start=1)
+                        )
+                elif "jobs" not in plan_targets and query_plan.get("mode") == "structured_answer":
+                    requested_sources = ", ".join(
+                        target for target in query_plan.get("targets", []) if target in ASK_SPRAYTEC_STRUCTURED_TARGETS
+                    )
+                    response = (
+                        "I did not find matching structured records for that question"
+                        + (f" in {requested_sources}." if requested_sources else ".")
+                        + " Try a more specific product, system, customer, job, or document name."
+                    )
+                elif len(strong_results) == 1 and float(strong_results[0].get("match_score") or 0) >= 75:
+                    job = strong_results[0]
+                    st.session_state["ask_spraytec_selected_job"] = job
+                    st.session_state["ask_spraytec_selected_job_id"] = str(job.get("job_id") or "")
+                    response = "I found a strong match.\n\n" + job_result_markdown(job, interpreted, connection=None)
+                    alternatives = results[1:4]
+                    if alternatives:
+                        response += "\n\nLower-ranked alternatives are available in Search details."
+                else:
+                    response = concise_job_candidates_response(results, interpreted)
+                display_results = strong_results or results[:3]
+                if display_results:
+                    job = display_results[0]
+                    st.session_state["ask_spraytec_selected_job"] = job
+                    st.session_state["ask_spraytec_selected_job_id"] = str(job.get("job_id") or "")
+                if structured_evidence.get("facts") and not strong_results:
+                    response += "\n\nI also checked structured data tables; details are in Search details."
+
+            if is_document_lookup_request(interpreted) and interpreted.get("search_text") and not response.startswith("Which"):
+                response = (
+                    f"I did not find indexed {requested_document_label(interpreted.get('document_type')).lower()} "
+                    f"documents matching **{text_value(interpreted.get('search_text'))}**.\n\n"
+                    + response
+                )
 
     st.session_state["ask_spraytec_messages"].append({"role": "assistant", "content": response})
     with st.chat_message("assistant"):
         st.markdown(response)
         with st.expander("Search details"):
+            st.write("query plan", debug_payload.get("query_plan"))
             st.write("interpreted search text", interpreted.get("search_text"))
             st.write("detected document type", interpreted.get("document_type"))
             st.write(
@@ -2851,7 +3879,14 @@ def ask_spraytec_page() -> None:
                     "state": interpreted.get("state"),
                 },
             )
-            st.write(debug_payload["ranked_matches"])
+            if debug_payload.get("document_matches"):
+                st.write("document matches", debug_payload["document_matches"])
+            if debug_payload.get("document_chunks"):
+                st.write("document chunks sent to answer model", debug_payload["document_chunks"])
+            if debug_payload.get("structured_evidence"):
+                st.write("structured evidence row counts", debug_payload["structured_evidence"])
+            if debug_payload.get("ranked_matches"):
+                st.write("ranked job matches", debug_payload["ranked_matches"])
 
 
 JOB_BOARD_STATUS_ORDER = [
