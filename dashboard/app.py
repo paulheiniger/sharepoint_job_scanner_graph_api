@@ -9548,7 +9548,9 @@ def merge_dynamic_free_adder_rows(
         if not isinstance(edited, dict):
             continue
         has_label = str(edited.get("template_line") or "").strip()
-        has_amount = safe_number(edited.get("amount"), 0.0) > 0 or safe_number(edited.get("estimated_cost"), 0.0) > 0
+        has_amount = optional_positive_number(edited.get("amount")) is not None or optional_positive_number(
+            edited.get("estimated_cost")
+        ) is not None
         if not (has_label or has_amount or bool(edited.get("include"))):
             continue
         workbook_row = str(edited.get("workbook_row") or f"manual-{idx + 1}")
