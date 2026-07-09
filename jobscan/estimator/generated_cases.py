@@ -6,6 +6,7 @@ import math
 import os
 import random
 import re
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -78,6 +79,28 @@ PROMPT_CONTEXT_EXCLUDED_BUCKETS = {
     "worksheet_price_adjusted",
 }
 PROMPT_CONTEXT_EXCLUDED_KINDS = {"header", "total", "subtotal", "other"}
+EXPECTED_DECISION_EXCLUDED_KINDS = {"header", "total", "subtotal", "metadata"}
+EXPECTED_DECISION_EXCLUDED_BUCKETS = {
+    "estimated_square_feet",
+    "estimate_adder",
+    "overhead",
+    "permits",
+    "profit",
+    "sales_tax",
+    "total_job_cost",
+    "worksheet_price",
+    "worksheet_price_adjusted",
+}
+PROPOSAL_SCOPE_MAX_CHARS = 5200
+PROPOSAL_SCOPE_KEYWORDS = (
+    "scope of work",
+    "project scope",
+    "work to be performed",
+    "work included",
+    "description of work",
+    "project description",
+    "proposal",
+)
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -343,11 +366,15 @@ def _expected_decisions_from_rows(group: pd.DataFrame, template_type: str) -> li
         bucket = _clean_text(row.get("template_bucket"))
         if not bucket or bucket == "unknown":
             continue
+        if bucket.lower() in EXPECTED_DECISION_EXCLUDED_BUCKETS:
+            continue
+        line_kind = _lower(row.get("line_item_kind"))
+        if line_kind in EXPECTED_DECISION_EXCLUDED_KINDS:
+            continue
         if not _reference_row_compatible(row.to_dict(), template_type):
             continue
         if not _row_has_decision(row):
             continue
-        line_kind = _lower(row.get("line_item_kind"))
         payload = {
             "decision_id": _decision_id_for_row(template_type, bucket, line_kind),
             "template_bucket": bucket,
@@ -363,6 +390,108 @@ def _expected_decisions_from_rows(group: pd.DataFrame, template_type: str) -> li
                     payload[field] = value
         decisions.append(payload)
     return _dedupe_expected_decisions(decisions)
+
+
+def _scope_excerpt(scope_text: Any, *, max_chars: int = PROPOSAL_SCOPE_MAX_CHARS) -> str:
+    text = _clean_text(scope_text)
+    if len(text) <= max_chars:
+        return text
+    lower = text.lower()
+    starts = [lower.find(keyword) for keyword in PROPOSAL_SCOPE_KEYWORDS if lower.find(keyword) >= 0]
+    start = max(0, min(starts) - 120) if starts else 0
+    excerpt = text[start : start + max_chars].strip()
+    if start > 0:
+        excerpt = "... " + excerpt
+    if start + max_chars < len(text):
+        excerpt = excerpt.rstrip() + " ..."
+    return excerpt
+
+
+def _proposal_scope_score(row: pd.Series | dict[str, Any], template_type: str) -> float:
+    getter = row.get if isinstance(row, dict) else row.get
+    text = _clean_text(getter("scope_text"))
+    file_name = _lower(getter("file_name"))
+    document_type = _lower(getter("document_type"))
+    score = min(len(text) / 500.0, 12.0)
+    if document_type == "proposal":
+        score += 8
+    if any(token in file_name for token in ("proposal", "quote", "bid")):
+        score += 5
+    if any(keyword in text.lower() for keyword in PROPOSAL_SCOPE_KEYWORDS):
+        score += 5
+    if template_type == "roofing" and any(token in text.lower() for token in ("roof", "coating", "silicone", "repair")):
+        score += 3
+    if template_type == "insulation" and any(token in text.lower() for token in ("foam", "insulat", "r-", "r value", "walls")):
+        score += 3
+    return score
+
+
+def _proposal_scope_matches_template_type(row: pd.Series | dict[str, Any], template_type: str) -> bool:
+    getter = row.get if isinstance(row, dict) else row.get
+    text = _lower(getter("scope_text"))
+    file_name = _lower(getter("file_name"))
+    combined = f"{file_name} {text}"
+    if template_type == "insulation":
+        positive = (
+            "spray foam",
+            "foam insulation",
+            "insulat",
+            "open cell",
+            "closed cell",
+            "dc315",
+            "thermal barrier",
+        )
+        negative = ("plastic sheeting", "poly sheeting", "sheeting over existing")
+        return any(token in combined for token in positive) and not any(token in combined for token in negative)
+    if template_type == "roofing":
+        positive = ("roof", "coating", "silicone", "urethane", "spf", "membrane", "tear-off", "tear off", "fastener")
+        return any(token in combined for token in positive)
+    return True
+
+
+def _scope_rows_for_job(scope_rows: pd.DataFrame, job_id: Any) -> pd.DataFrame:
+    if scope_rows.empty or "job_id" not in scope_rows.columns:
+        return pd.DataFrame()
+    job_key = _clean_text(job_id)
+    if not job_key:
+        return pd.DataFrame()
+    keys = scope_rows["job_id"].fillna("").astype(str).map(_clean_text)
+    return scope_rows[keys.eq(job_key)].copy()
+
+
+def _best_scope_row(scope_rows: pd.DataFrame, template_type: str) -> dict[str, Any] | None:
+    if scope_rows.empty:
+        return None
+    rows = scope_rows.copy()
+    rows = rows[rows.apply(lambda row: _proposal_scope_matches_template_type(row, template_type), axis=1)].copy()
+    if rows.empty:
+        return None
+    rows["_scope_score"] = rows.apply(lambda row: _proposal_scope_score(row, template_type), axis=1)
+    rows = rows.sort_values(["_scope_score", "content_row_count"], ascending=[False, False], na_position="last")
+    first = rows.iloc[0].to_dict()
+    if not _clean_text(first.get("scope_text")):
+        return None
+    first.pop("_scope_score", None)
+    return first
+
+
+def _proposal_notes_from_scope(candidate: dict[str, Any]) -> str:
+    customer = _clean_text(candidate.get("customer"))
+    job_name = _clean_text(candidate.get("job_name")) or _clean_text(candidate.get("source_job_id") or candidate.get("job_id"))
+    address = _clean_text(candidate.get("site_address") or candidate.get("address"))
+    source_file = _clean_text(candidate.get("proposal_file_name") or candidate.get("source_file"))
+    scope_text = _scope_excerpt(candidate.get("proposal_scope_text"))
+    lines = []
+    header_parts = [part for part in (customer, job_name) if part]
+    if header_parts:
+        lines.append(" / ".join(header_parts))
+    if address:
+        lines.append(f"Site address: {address}")
+    if source_file:
+        lines.append(f"Historical proposal/source: {source_file}")
+    lines.append("Field notes reconstructed from historical proposal scope:")
+    lines.append(scope_text)
+    return "\n".join(line for line in lines if line).strip()
 
 
 def select_historical_candidates(
@@ -454,6 +583,72 @@ def select_historical_candidates(
         if candidate["candidate_id"] not in selected_ids:
             selected.append(candidate)
             selected_ids.add(candidate["candidate_id"])
+    return selected[:limit]
+
+
+def select_historical_proposal_candidates(
+    data: EstimatorData | Any,
+    *,
+    template_types: list[str] | tuple[str, ...] = ("roofing", "insulation"),
+    limit: int = 10,
+    min_decision_count: int = 2,
+    seed: int = 0,
+) -> list[dict[str, Any]]:
+    scope_rows = _frame(data, "historical_scope_texts")
+    if scope_rows.empty or "job_id" not in scope_rows.columns or "scope_text" not in scope_rows.columns:
+        return []
+    candidate_pool = select_historical_candidates(
+        data,
+        template_types=template_types,
+        limit=max(limit * 8, 50),
+        min_decision_count=min_decision_count,
+        seed=seed,
+    )
+    proposal_candidates: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for candidate in candidate_pool:
+        template_type = str(candidate.get("template_type") or "")
+        scope_row = _best_scope_row(_scope_rows_for_job(scope_rows, candidate.get("job_id")), template_type)
+        if not scope_row:
+            continue
+        key = (
+            str(candidate.get("template_type") or ""),
+            str(candidate.get("job_id") or ""),
+            str(scope_row.get("document_id") or ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        enriched = dict(candidate)
+        enriched.update(
+            {
+                "proposal_document_id": _clean_text(scope_row.get("document_id")),
+                "proposal_file_name": _clean_text(scope_row.get("file_name")),
+                "proposal_document_type": _clean_text(scope_row.get("document_type")),
+                "proposal_url": _clean_text(scope_row.get("sharepoint_url")),
+                "proposal_scope_text": _clean_text(scope_row.get("scope_text")),
+                "proposal_content_row_count": int(_safe_float(scope_row.get("content_row_count"), 0.0)),
+                "score": float(candidate.get("score") or 0.0) + _proposal_scope_score(scope_row, template_type),
+            }
+        )
+        proposal_candidates.append(enriched)
+    proposal_candidates.sort(key=lambda item: (-float(item.get("score") or 0.0), item.get("candidate_id") or ""))
+    wanted = {_normalize_template_type(value) for value in template_types}
+    selected: list[dict[str, Any]] = []
+    selected_ids: set[str] = set()
+    by_type = {template_type: [item for item in proposal_candidates if item["template_type"] == template_type] for template_type in wanted}
+    per_type = max(1, limit // max(1, len(wanted)))
+    for template_type in sorted(wanted):
+        for candidate in by_type.get(template_type, [])[:per_type]:
+            selected.append(candidate)
+            selected_ids.add(str(candidate.get("candidate_id")))
+    for candidate in proposal_candidates:
+        if len(selected) >= limit:
+            break
+        candidate_id = str(candidate.get("candidate_id"))
+        if candidate_id not in selected_ids:
+            selected.append(candidate)
+            selected_ids.add(candidate_id)
     return selected[:limit]
 
 
@@ -624,6 +819,42 @@ def build_case_facts(candidate: dict[str, Any], *, seed: int = 0) -> dict[str, A
         "protected_numbers": protected_numbers,
         "seed": seed,
     }
+
+
+def build_proposal_scope_case_facts(candidate: dict[str, Any], *, seed: int = 0) -> dict[str, Any]:
+    facts = build_case_facts(candidate, seed=seed)
+    template_type = str(candidate.get("template_type") or "")
+    case_id = _slug(
+        f"hist_proposal_{template_type}_{candidate.get('job_id') or candidate.get('candidate_id')}_{candidate.get('proposal_document_id')}"
+    )[:90]
+    notes = _proposal_notes_from_scope(candidate)
+    expected_scope = {
+        "project_type_contains": ["insulation", "foam"] if template_type == "insulation" else ["roof"],
+    }
+    area = _safe_float(candidate.get("area_sqft"), 0.0)
+    if area > 0:
+        expected_scope["estimated_sqft"] = area
+    facts.update(
+        {
+            "case_id": case_id,
+            "case_source": "historical_proposal_scope",
+            "proposal_document_id": candidate.get("proposal_document_id"),
+            "proposal_file_name": candidate.get("proposal_file_name"),
+            "proposal_url": candidate.get("proposal_url"),
+            "proposal_scope_text_excerpt": _scope_excerpt(candidate.get("proposal_scope_text")),
+            "generated_notes": notes,
+            "expected_scope_fields": expected_scope,
+            "ai_generation_metadata": {
+                "generation_method": "historical_proposal_scope",
+                "prompt": "",
+                "source_document_id": candidate.get("proposal_document_id"),
+                "source_file": candidate.get("proposal_file_name"),
+            },
+            "ai_generation_warnings": [],
+            "ai_generation_errors": [],
+        }
+    )
+    return facts
 
 
 def build_ai_case_prompt(case_facts: dict[str, Any]) -> str:
@@ -888,15 +1119,46 @@ def generate_cases(
     return cases
 
 
+def generate_proposal_scope_cases(
+    data: EstimatorData | Any,
+    *,
+    limit: int = 10,
+    template_types: list[str] | tuple[str, ...] = ("roofing", "insulation"),
+    min_decision_count: int = 2,
+    seed: int = 0,
+    validate: bool = True,
+) -> list[dict[str, Any]]:
+    candidates = select_historical_proposal_candidates(
+        data,
+        template_types=template_types,
+        limit=limit,
+        min_decision_count=min_decision_count,
+        seed=seed,
+    )
+    cases: list[dict[str, Any]] = []
+    for index, candidate in enumerate(candidates, start=1):
+        case = build_proposal_scope_case_facts(candidate, seed=seed + index)
+        case["promotion_status"] = "needs_review"
+        if validate:
+            case["validation_result"] = validate_generated_case(case, data)
+        else:
+            case["validation_result"] = {"status": "not_validated", "failures": [], "warnings": []}
+        case["promotion_status"] = case["validation_result"].get("status") or "needs_review"
+        cases.append(case)
+    return cases
+
+
 def _case_summary_row(case: dict[str, Any]) -> dict[str, Any]:
     return {
         "case_id": case.get("case_id"),
+        "case_source": case.get("case_source") or (case.get("ai_generation_metadata") or {}).get("generation_method"),
         "promotion_status": case.get("promotion_status"),
         "template_type": case.get("template_type"),
         "source_job_id": case.get("source_job_id"),
         "customer": case.get("customer"),
         "job_name": case.get("job_name"),
         "source_file": case.get("source_file"),
+        "proposal_file_name": case.get("proposal_file_name"),
         "generated_notes": case.get("generated_notes"),
         "expected_decision_count": len(case.get("expected_decisions") or []),
         "expected_workbook_rows": ",".join(str(row) for row in case.get("expected_workbook_rows") or []),
@@ -955,6 +1217,8 @@ def write_generated_case_outputs(cases: list[dict[str, Any]], out_dir: str | Pat
         )
         pd.DataFrame(warning_rows).to_excel(writer, sheet_name="Generation Warnings", index=False)
     cases_dir = out / "cases"
+    if cases_dir.exists():
+        shutil.rmtree(cases_dir)
     cases_dir.mkdir(exist_ok=True)
     for case in cases:
         case_dir = cases_dir / _slug(case.get("case_id"))
@@ -1000,6 +1264,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reasoning-effort", default=os.getenv("OPENAI_GENERATED_CASES_REASONING_EFFORT") or DEFAULT_REASONING_EFFORT)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--dry-run", action="store_true", help="Generate deterministic notes without OpenAI.")
+    parser.add_argument(
+        "--case-source",
+        choices=("historical-proposals", "synthetic-decisions"),
+        default=os.getenv("ESTIMATOR_GENERATED_CASE_SOURCE") or "historical-proposals",
+        help="Use real historical proposal scope text when available, or synthesize notes from decision rows.",
+    )
     parser.add_argument("--min-decision-count", type=int, default=2)
     parser.add_argument("--skip-validation", action="store_true", help="Skip estimator/workbench validation.")
     args = parser.parse_args(argv)
@@ -1007,17 +1277,33 @@ def main(argv: list[str] | None = None) -> int:
     if not args.db_url:
         raise SystemExit("--db-url is required unless tests provide a monkeypatched data loader.")
     data = load_estimator_data(database_url=args.db_url, prefer_database=True)
-    cases = generate_cases(
-        data,
-        limit=args.limit,
-        template_types=_parse_template_types(args.template_types),
-        min_decision_count=args.min_decision_count,
-        seed=args.seed,
-        use_ai=bool(args.use_ai and not args.dry_run),
-        model=args.model,
-        reasoning_effort=args.reasoning_effort,
-        validate=not args.skip_validation,
-    )
+    template_types = _parse_template_types(args.template_types)
+    cases: list[dict[str, Any]]
+    if args.case_source == "historical-proposals":
+        cases = generate_proposal_scope_cases(
+            data,
+            limit=args.limit,
+            template_types=template_types,
+            min_decision_count=args.min_decision_count,
+            seed=args.seed,
+            validate=not args.skip_validation,
+        )
+        if not cases:
+            print("No historical proposal-scope cases were available; falling back to synthetic decision-row notes.")
+    else:
+        cases = []
+    if not cases:
+        cases = generate_cases(
+            data,
+            limit=args.limit,
+            template_types=template_types,
+            min_decision_count=args.min_decision_count,
+            seed=args.seed,
+            use_ai=bool(args.use_ai and not args.dry_run),
+            model=args.model,
+            reasoning_effort=args.reasoning_effort,
+            validate=not args.skip_validation,
+        )
     paths = write_generated_case_outputs(cases, args.out_dir)
     status_counts = pd.Series([case.get("promotion_status") for case in cases]).value_counts().to_dict() if cases else {}
     print(f"Generated {len(cases)} live-review estimator cases")

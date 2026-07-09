@@ -36,6 +36,7 @@ class EstimatorData:
     template_formula_models: pd.DataFrame = field(default_factory=pd.DataFrame)
     template_product_options: pd.DataFrame = field(default_factory=pd.DataFrame)
     template_labor_options: pd.DataFrame = field(default_factory=pd.DataFrame)
+    historical_scope_texts: pd.DataFrame = field(default_factory=pd.DataFrame)
     decision_history_tables: dict[str, pd.DataFrame] = field(default_factory=dict)
     estimator_decision_recommendations: pd.DataFrame = field(default_factory=pd.DataFrame)
     estimator_memory: pd.DataFrame = field(default_factory=pd.DataFrame)

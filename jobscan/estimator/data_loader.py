@@ -343,6 +343,60 @@ def load_current_pricing(connection: Any, data: EstimatorData) -> pd.DataFrame:
     return pricing
 
 
+def load_historical_scope_texts(connection: Any, *, limit: int | None = None) -> pd.DataFrame:
+    if not relation_exists(connection, "documents") or not relation_exists(connection, "document_content"):
+        return pd.DataFrame()
+    row_limit = int(limit or os.getenv("ESTIMATOR_HISTORICAL_SCOPE_TEXT_LIMIT", "2000"))
+    return _read_sql_dataframe(
+        connection,
+        f"""
+        SELECT
+            d.job_id,
+            d.document_id,
+            d.file_name,
+            d.document_type,
+            d.sharepoint_url,
+            d.folder_path,
+            d.relative_path,
+            d.source_year,
+            LEFT(
+                STRING_AGG(
+                    c.text_content,
+                    E'\n'
+                    ORDER BY c.page_number NULLS LAST,
+                             c.sheet_name NULLS LAST,
+                             c.row_number NULLS LAST,
+                             c.source_locator NULLS LAST
+                ),
+                12000
+            ) AS scope_text,
+            COUNT(*) AS content_row_count
+        FROM documents d
+        JOIN document_content c ON c.document_id = d.document_id
+        WHERE COALESCE(d.job_id, '') <> ''
+          AND COALESCE(c.text_content, '') <> ''
+          AND (
+            LOWER(COALESCE(d.document_type, '')) = 'proposal'
+            OR LOWER(COALESCE(d.file_name, '')) LIKE '%proposal%'
+            OR LOWER(COALESCE(d.file_name, '')) LIKE '%quote%'
+            OR LOWER(COALESCE(d.file_name, '')) LIKE '%bid%'
+          )
+        GROUP BY
+            d.job_id,
+            d.document_id,
+            d.file_name,
+            d.document_type,
+            d.sharepoint_url,
+            d.folder_path,
+            d.relative_path,
+            d.source_year
+        HAVING LENGTH(STRING_AGG(c.text_content, E'\n')) >= 80
+        ORDER BY d.source_year DESC NULLS LAST, d.file_name
+        LIMIT {row_limit}
+        """,
+    )
+
+
 def load_estimator_data_from_database(database_url: str, *, load_profile: str = ESTIMATOR_LOAD_PROFILE_FULL) -> EstimatorData:
     if load_profile not in ESTIMATOR_LOAD_PROFILES:
         raise ValueError(f"Unknown estimator load profile: {load_profile}")
@@ -477,6 +531,11 @@ def load_estimator_data_from_database(database_url: str, *, load_profile: str = 
                 """,
             )
             data.source_files_used.append("database: estimator_memory")
+
+        if not interactive:
+            data.historical_scope_texts = load_historical_scope_texts(connection)
+            if not data.historical_scope_texts.empty:
+                data.source_files_used.append("database: historical proposal scope text")
 
         data.pricing_catalog = load_current_pricing(connection, data)
         data.pricing = data.pricing_catalog

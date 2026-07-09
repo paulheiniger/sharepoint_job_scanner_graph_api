@@ -8,7 +8,10 @@ from jobscan.estimator import generated_cases
 from jobscan.estimator.generated_cases import (
     build_ai_case_prompt,
     build_case_facts,
+    build_proposal_scope_case_facts,
     generate_cases,
+    generate_proposal_scope_cases,
+    select_historical_proposal_candidates,
     select_historical_candidates,
     validate_ai_case_output,
     write_generated_case_outputs,
@@ -158,6 +161,84 @@ def generated_case_data() -> EstimatorData:
     return EstimatorData(template_rows=pd.DataFrame(rows), jobs=pd.DataFrame(jobs))
 
 
+def generated_case_data_with_proposal_scopes() -> EstimatorData:
+    data = generated_case_data()
+    extra_rows = pd.DataFrame(
+        [
+            {
+                "job_id": "R0",
+                "source_file": "sharepoint/roofing/R0.xlsx",
+                "template_type": "roofing",
+                "division": "Roofing",
+                "sheet_name": "Estimate",
+                "row_number": 1,
+                "template_bucket": "job_name",
+                "line_item_kind": "header",
+                "row_label": "Job Name",
+                "selected_item_name": "Roof Job 0",
+            },
+            {
+                "job_id": "R0",
+                "source_file": "sharepoint/roofing/R0.xlsx",
+                "template_type": "roofing",
+                "division": "Roofing",
+                "sheet_name": "Estimate",
+                "row_number": 163,
+                "template_bucket": "total_job_cost",
+                "line_item_kind": "total",
+                "row_label": "Total Job Cost",
+                "estimated_cost": 20000,
+            },
+        ]
+    )
+    data.template_rows = pd.concat([data.template_rows, extra_rows], ignore_index=True)
+    data.historical_scope_texts = pd.DataFrame(
+        [
+            {
+                "job_id": "R0",
+                "document_id": "proposal-r0",
+                "file_name": "Proposal - Roof Job 0.pdf",
+                "document_type": "proposal",
+                "sharepoint_url": "https://example.invalid/proposal-r0",
+                "source_year": 2025,
+                "content_row_count": 4,
+                "scope_text": (
+                    "Scope of Work: Clean and prepare the existing metal roof. Treat rusted fasteners, "
+                    "open seams, and penetrations. Apply primer where needed and install a silicone roof "
+                    "restoration coating system over the prepared roof surface."
+                ),
+            },
+            {
+                "job_id": "I0",
+                "document_id": "proposal-i0-plastic",
+                "file_name": "Proposal - Plastic Sheeting.pdf",
+                "document_type": "proposal",
+                "sharepoint_url": "https://example.invalid/proposal-i0-plastic",
+                "source_year": 2025,
+                "content_row_count": 8,
+                "scope_text": (
+                    "Scope: Provide labor, materials, and equipment to install 6mil plastic sheeting "
+                    "to cover exterior masonry walls along entire perimeter."
+                ),
+            },
+            {
+                "job_id": "I0",
+                "document_id": "proposal-i0",
+                "file_name": "Insulation Proposal I0.pdf",
+                "document_type": "proposal",
+                "sharepoint_url": "https://example.invalid/proposal-i0",
+                "source_year": 2025,
+                "content_row_count": 3,
+                "scope_text": (
+                    "Project Description: Spray foam insulation at the metal building walls and roof deck. "
+                    "Owner wants foam on exterior walls and ceiling with normal jobsite access."
+                ),
+            },
+        ]
+    )
+    return data
+
+
 def test_candidate_selection_returns_roofing_insulation_mix() -> None:
     candidates = select_historical_candidates(generated_case_data(), limit=10, seed=1)
 
@@ -167,6 +248,101 @@ def test_candidate_selection_returns_roofing_insulation_mix() -> None:
     assert counts["insulation"] == 5
     assert all(candidate["expected_decisions"] for candidate in candidates)
     assert all(candidate["source_file"] for candidate in candidates)
+
+
+def test_historical_proposal_candidates_require_scope_text_and_decisions() -> None:
+    candidates = select_historical_proposal_candidates(generated_case_data_with_proposal_scopes(), limit=4, seed=1)
+
+    assert {candidate["template_type"] for candidate in candidates} == {"roofing", "insulation"}
+    assert all(candidate["proposal_scope_text"] for candidate in candidates)
+    assert all(candidate["proposal_document_id"] for candidate in candidates)
+    assert all(candidate["expected_decisions"] for candidate in candidates)
+
+
+def test_proposal_scope_case_uses_real_scope_text_and_address_not_synthetic_dimensions() -> None:
+    candidate = select_historical_proposal_candidates(
+        generated_case_data_with_proposal_scopes(),
+        limit=1,
+        template_types=("roofing",),
+        seed=1,
+    )[0]
+
+    facts = build_proposal_scope_case_facts(candidate)
+
+    assert facts["case_source"] == "historical_proposal_scope"
+    assert "Site address: 100 Metal Roof Way" in facts["generated_notes"]
+    assert "Scope of Work: Clean and prepare" in facts["generated_notes"]
+    assert "Roof dimensions:" not in facts["generated_notes"]
+    assert facts["ai_generation_metadata"]["generation_method"] == "historical_proposal_scope"
+
+
+def test_proposal_scope_candidate_rejects_non_foam_insulation_proposals() -> None:
+    candidate = select_historical_proposal_candidates(
+        generated_case_data_with_proposal_scopes(),
+        limit=1,
+        template_types=("insulation",),
+        seed=1,
+    )[0]
+
+    assert candidate["proposal_document_id"] == "proposal-i0"
+    assert "plastic sheeting" not in candidate["proposal_scope_text"].lower()
+
+
+def test_proposal_scope_answer_key_excludes_headers_and_totals() -> None:
+    cases = generate_proposal_scope_cases(
+        generated_case_data_with_proposal_scopes(),
+        limit=1,
+        template_types=("roofing",),
+        seed=2,
+        validate=False,
+    )
+
+    assert len(cases) == 1
+    row_kinds = {row.get("line_item_kind") for row in cases[0]["expected_decisions"]}
+    workbook_rows = {row.get("workbook_row") for row in cases[0]["expected_decisions"]}
+    assert "header" not in row_kinds
+    assert "total" not in row_kinds
+    assert 1 not in workbook_rows
+    assert 163 not in workbook_rows
+
+
+def test_proposal_scope_answer_key_excludes_overhead_profit_buckets() -> None:
+    data = generated_case_data_with_proposal_scopes()
+    overhead_rows = pd.DataFrame(
+        [
+            {
+                "job_id": "R0",
+                "source_file": "sharepoint/roofing/R0.xlsx",
+                "template_type": "roofing",
+                "division": "Roofing",
+                "sheet_name": "Estimate",
+                "row_number": 177,
+                "template_bucket": "overhead",
+                "line_item_kind": "other",
+                "selected_item_name": "Overhead",
+                "estimated_cost": 1200,
+            },
+            {
+                "job_id": "R0",
+                "source_file": "sharepoint/roofing/R0.xlsx",
+                "template_type": "roofing",
+                "division": "Roofing",
+                "sheet_name": "Estimate",
+                "row_number": 178,
+                "template_bucket": "profit",
+                "line_item_kind": "other",
+                "selected_item_name": "Profit",
+                "estimated_cost": 2500,
+            },
+        ]
+    )
+    data.template_rows = pd.concat([data.template_rows, overhead_rows], ignore_index=True)
+
+    cases = generate_proposal_scope_cases(data, limit=1, template_types=("roofing",), seed=2, validate=False)
+    buckets = {str(row.get("template_bucket") or "").lower() for row in cases[0]["expected_decisions"]}
+
+    assert "overhead" not in buckets
+    assert "profit" not in buckets
 
 
 def test_deterministic_area_synthesis_matches_source_area() -> None:
@@ -338,6 +514,18 @@ def test_outputs_include_jsonl_xlsx_and_per_case_files(tmp_path) -> None:
     assert (first_dir / "notes.txt").exists()
     assert (first_dir / "source_decisions.json").exists()
     assert (first_dir / "validation.json").exists()
+
+
+def test_outputs_clear_stale_case_directories(tmp_path) -> None:
+    cases = generate_cases(generated_case_data(), limit=1, seed=4, use_ai=False, validate=False)
+    stale_dir = tmp_path / "cases" / "stale_case"
+    stale_dir.mkdir(parents=True)
+    (stale_dir / "notes.txt").write_text("old", encoding="utf-8")
+
+    paths = write_generated_case_outputs(cases, tmp_path)
+
+    assert paths["cases_dir"].exists()
+    assert not stale_dir.exists()
 
 
 def test_reviewed_notes_evaluator_filters_decision_row_overlap_from_scaffolding() -> None:
