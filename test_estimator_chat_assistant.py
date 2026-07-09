@@ -36,7 +36,13 @@ Labor / Subcontractor	134	Misc. / Clean Up	0.50 days; 5 people	$1,605.50 daily r
 Labor / Subcontractor	137	Loading	2.00 hours; 1 person	$25.50	$153.00	Multiplied by truck trips
 Labor / Subcontractor	139	Traveling	5.00 hours; 5 people	$13.00	$975.00	Multiplied by truck trips
 Labor / Subcontractor	145	Meals, Lodging Expenses	3 days; 5 people	$175.00	$2,625.00
+Materials Tax	111	Sales Tax	6% of subtotal materials	6%	$396.87	Calculated on Estimate!H110
 Additional Amount w/o Markup	173	Warranty			$600.00	Added after worksheet price
+Additional Amount w/o Markup	174	Misc. Miles			$250.00	Added after worksheet price
+Additional Amount w/o Markup	175	Misc. Materials / Misc. Insurance / Equipment Rental			$1,500.00	Added after worksheet price
+Additional Amount w/o Markup	176	Dumpster - 800			$800.00	Added after worksheet price
+Additional Amount w/o Markup	177	1/2 in HD Board = $1514 + tax & ST Mark Up			$1,800.00	Added after worksheet price
+Additional Amount w/o Markup	178	3 in ISO Board - $2340 + tax & ST Mark Up			$2,700.00	Added after worksheet price
 """
 
 
@@ -684,11 +690,23 @@ def test_estimator_chat_parses_pasted_roofing_reference_template_summary(monkeyp
     meals = by_id["roofing_meals_lodging_row_144"]
     assert meals["proposed_values"] == {"days": 3.0, "people_count": 5.0, "unit_price": 175.0}
 
+    sales_tax = by_id["roofing_free_adder_row_111_sales_tax"]
+    assert sales_tax["section"] == "roofing_free_adder_template_decisions"
+    assert sales_tax["template_bucket"] == "sales_tax"
+    assert sales_tax["proposed_values"]["amount"] == 396.87
+    assert sales_tax["proposed_values"]["markup_treatment"] == "post_markup"
+
+    warranty = by_id["roofing_free_adder_row_173_warranty"]
+    assert warranty["proposed_values"]["amount"] == 600.0
+    assert warranty["proposed_values"]["template_line"] == "Warranty"
+    assert warranty["workbook_row"] == "173"
+    assert by_id["roofing_free_adder_row_178_3_in_iso_board_2340_tax_st_mark_up"]["proposed_values"]["estimated_cost"] == 2700.0
+
     assert by_id["roofing_labor_base_row_122"]["proposed_values"]["days"] == 1.25
     assert by_id["roofing_labor_base_row_122"]["proposed_values"]["crew_size"] == 5.0
     assert by_id["roofing_labor_base_row_122"]["proposed_values"]["daily_rate"] == 1605.5
     assert by_id["roofing_labor_top_coat_row_124"]["workbook_row"] == "124"
-    assert any("Warranty" in warning for warning in result.warnings)
+    assert not any("Warranty" in warning for warning in result.warnings)
 
 
 def test_estimator_chat_merges_pasted_reference_summary_after_ai_payload() -> None:

@@ -176,6 +176,8 @@ REFERENCE_PROJECT_OVERRIDE_FIELDS = {
     "waste_factor_pct",
     "wet_mils_estimate",
     "unit_price",
+    "amount",
+    "estimated_cost",
     "price_per_square",
     "unit_price_per_thousand",
     "thickness_inches",
@@ -195,6 +197,8 @@ REFERENCE_PROJECT_OVERRIDE_FIELDS = {
     "total_hours",
     "editable_total_hours",
     "formula_mode",
+    "markup_treatment",
+    "template_line",
 }
 
 CHAT_ESTIMATOR_OVERRIDE_FIELDS = {
@@ -213,6 +217,8 @@ CHAT_ESTIMATOR_OVERRIDE_FIELDS = {
     "waste_factor_pct",
     "wet_mils_estimate",
     "unit_price",
+    "amount",
+    "estimated_cost",
     "price_per_square",
     "unit_price_per_thousand",
     "estimated_units",
@@ -236,6 +242,8 @@ CHAT_ESTIMATOR_OVERRIDE_FIELDS = {
     "hourly_rate",
     "labor_rate",
     "formula_mode",
+    "markup_treatment",
+    "template_line",
 }
 
 INSULATION_REFERENCE_ALLOWED_ROWS: dict[str, set[str]] = {
@@ -985,6 +993,16 @@ def _chat_target_for_preference(template_type: str, item: dict[str, Any]) -> dic
                 "workbook_row": workbook_row,
             }
     if template_type == "roofing":
+        if bucket in {"free_adder", "manual_adder", "sales_tax", "warranty", "misc_miles", "misc_materials", "misc_materials_misc_insurance_equipment_rental"} or (
+            item.get("section") == "roofing_free_adder_template_decisions"
+        ):
+            resolved_row = workbook_row or "173"
+            return {
+                "section": "roofing_free_adder_template_decisions",
+                "decision_id": decision_id or f"roofing_free_adder_row_{resolved_row}",
+                "template_bucket": bucket or "free_adder",
+                "workbook_row": resolved_row,
+            }
         if bucket in {"foam", "roofing_foam"}:
             resolved_row = workbook_row if workbook_row in {"19", "20", "21"} else "19"
             return {

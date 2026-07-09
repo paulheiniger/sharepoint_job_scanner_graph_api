@@ -1148,6 +1148,17 @@ def test_reference_template_memory_capture_skips_when_helper_unavailable(monkeyp
     )
 
 
+def test_estimator_assistant_exposes_memory_review_and_persistent_chat_state() -> None:
+    app = importlib.import_module("dashboard.app")
+    source = inspect.getsource(app.estimator_prototype_page)
+    chat_source = inspect.getsource(app.render_estimator_chat_draft_panel)
+
+    assert "Estimator Memory Review" in source
+    assert "render_estimator_memory_admin()" in source
+    assert "estimator_chat_history_active" in chat_source
+    assert "estimator_chat_result_active" in chat_source
+
+
 def test_estimator_workbench_uses_compact_columns_by_default() -> None:
     app = importlib.import_module("dashboard.app")
 

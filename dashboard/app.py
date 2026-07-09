@@ -618,6 +618,19 @@ ROOFING_LOGISTICS_EXPENSE_TEMPLATE_COMPACT_COLUMNS = [
     "notes",
 ]
 
+ROOFING_FREE_ADDER_TEMPLATE_COMPACT_COLUMNS = [
+    "include",
+    "workbook_row",
+    "template_line",
+    "amount",
+    "estimated_cost",
+    "markup_treatment",
+    CHOICE_SUMMARY_COLUMN,
+    "compatibility_status",
+    "compatibility_warnings",
+    "notes",
+]
+
 ROOFING_LABOR_TEMPLATE_COMPACT_COLUMNS = [
     "include",
     "workbook_row",
@@ -8627,6 +8640,7 @@ def render_workbench_selected_row_details(
         ("roofing_travel_freight_template_decisions", "Roof Travel / Freight"),
         ("roofing_accessory_template_decisions", "Roof Accessories"),
         ("roofing_logistics_expense_template_decisions", "Roof Loading / Travel / Lodging"),
+        ("roofing_free_adder_template_decisions", "Roof Free Adders"),
         ("roofing_labor_template_decisions", "Roof Labor"),
         ("pricing_markup_decisions", "Pricing Markup"),
     ]:
@@ -9098,14 +9112,21 @@ def render_estimator_chat_draft_panel(
     chat_key = str(thread_id)
     history_key = f"estimator_chat_history_{chat_key}"
     result_key = f"estimator_chat_result_{chat_key}"
+    active_history_key = "estimator_chat_history_active"
+    active_result_key = "estimator_chat_result_active"
     if st.button("Start a new estimate chat", key=f"estimator_chat_reset_{chat_key}"):
         st.session_state.pop(history_key, None)
         st.session_state.pop(result_key, None)
+        st.session_state.pop(active_history_key, None)
+        st.session_state.pop(active_result_key, None)
         st.session_state.pop("estimator_notes", None)
         st.session_state["estimator_chat_thread_id"] = hashlib.sha1(os.urandom(16)).hexdigest()[:16]
         st.rerun()
 
     chat_history = [dict(message) for message in (st.session_state.get(history_key) or [])]
+    if not chat_history and isinstance(st.session_state.get(active_history_key), list):
+        chat_history = [dict(message) for message in (st.session_state.get(active_history_key) or [])]
+        st.session_state[history_key] = chat_history
     note_image_result = render_estimator_note_image_upload(chat_key=chat_key, estimate_type=estimate_type)
     extracted_note_text = str((note_image_result or {}).get("normalized_estimator_notes") or "").strip()
     extracted_note_key = str((note_image_result or {}).get("image_hash_key") or "")
@@ -9170,10 +9191,12 @@ def render_estimator_chat_draft_panel(
                 )
         messages.append({"role": "assistant", "content": estimator_chat_assistant_history_content(result)})
         st.session_state[history_key] = messages
+        st.session_state[active_history_key] = messages
         result_payload = result.to_dict()
         if uploaded_photo_context:
             result_payload["photo_context"] = uploaded_photo_context
         st.session_state[result_key] = result_payload
+        st.session_state[active_result_key] = result_payload
         st.session_state["estimator_notes"] = result.estimator_notes or user_message
         if image_message:
             st.session_state[image_message_applied_key] = True
@@ -9181,16 +9204,28 @@ def render_estimator_chat_draft_panel(
             st.session_state[photo_message_applied_key] = True
         chat_history = messages
 
-    result_payload = st.session_state.get(result_key)
+    result_payload = st.session_state.get(result_key) or st.session_state.get(active_result_key)
     if not result_payload:
         if not chat_history:
             st.caption("Paste field notes or answer follow-up questions in the message box.")
         return None
     result = result_payload if isinstance(result_payload, dict) else {}
+    if result and not st.session_state.get("estimator_notes"):
+        fallback_notes = str(result.get("estimator_notes") or "").strip()
+        if not fallback_notes:
+            fallback_notes = "\n\n".join(
+                str(message.get("content") or "")
+                for message in chat_history
+                if str(message.get("role") or "") == "user"
+            ).strip()
+        if fallback_notes:
+            st.session_state["estimator_notes"] = fallback_notes
     if uploaded_photo_context:
         result["photo_context"] = uploaded_photo_context
     if not chat_history and result:
         chat_history = [{"role": "assistant", "content": estimator_chat_assistant_history_content(result)}]
+        st.session_state[history_key] = chat_history
+        st.session_state[active_history_key] = chat_history
     for message in chat_history[-10:]:
         role = str(message.get("role") or "assistant")
         with st.chat_message("user" if role == "user" else "assistant"):
@@ -9503,6 +9538,45 @@ def merge_editable_rows(
     return merged
 
 
+def merge_dynamic_free_adder_rows(
+    original_rows: list[dict[str, Any]],
+    edited_rows: list[dict[str, Any]],
+    editable_fields: set[str],
+) -> list[dict[str, Any]]:
+    merged = merge_editable_rows(original_rows, edited_rows, editable_fields)
+    for idx, edited in enumerate(edited_rows[len(original_rows or []):], start=len(original_rows or [])):
+        if not isinstance(edited, dict):
+            continue
+        has_label = str(edited.get("template_line") or "").strip()
+        has_amount = safe_number(edited.get("amount"), 0.0) > 0 or safe_number(edited.get("estimated_cost"), 0.0) > 0
+        if not (has_label or has_amount or bool(edited.get("include"))):
+            continue
+        workbook_row = str(edited.get("workbook_row") or f"manual-{idx + 1}")
+        template_line = str(edited.get("template_line") or "Manual adder").strip()
+        row = {
+            "include": bool(edited.get("include", True)),
+            "section": "roofing_free_adder_template_decisions",
+            "decision_id": str(edited.get("decision_id") or f"roofing_free_adder_manual_{idx + 1}"),
+            "template_bucket": str(edited.get("template_bucket") or "free_adder"),
+            "workbook_row": workbook_row,
+            "template_line": template_line,
+            "resolved_template_option": template_line,
+            "amount": edited.get("amount"),
+            "estimated_cost": edited.get("estimated_cost") or edited.get("amount"),
+            "markup_treatment": edited.get("markup_treatment") or "post_markup",
+            "compatibility_status": "review",
+            "compatibility_warnings": ["Manual free adder; verify amount and markup treatment."],
+            "notes": edited.get("notes") or "Manual free adder from estimator UI.",
+            "manual_override": True,
+            "include_source": "estimator_edit",
+        }
+        for field in editable_fields:
+            if field in edited:
+                row[field] = edited[field]
+        merged.append(row)
+    return merged
+
+
 def render_repair_estimate_result(
     result_payload: dict[str, Any],
     *,
@@ -9808,6 +9882,12 @@ def estimator_prototype_page() -> None:
                 "pricing": len(data.pricing),
             }
         )
+    with st.expander("Estimator Memory Review", expanded=False):
+        st.caption(
+            "Approve answer-key or edit-derived memory here. Approved rows are loaded back into the chat context; "
+            "pending rows are not used for future recommendations."
+        )
+        render_estimator_memory_admin()
 
     notes = str(st.session_state.get("estimator_notes") or "")
     resolved_estimate_type = resolve_estimate_type(estimate_type_selection, notes)
@@ -11385,6 +11465,73 @@ def estimator_prototype_page() -> None:
                 roofing_logistics_expense_rows,
                 edited_roofing_logistics_expense_df.to_dict(orient="records"),
                 roofing_logistics_expense_editable_fields,
+            )
+
+        if not is_insulation:
+            st.markdown("#### Roofing Free Adders")
+            roofing_free_adder_editable_fields = {
+                "include",
+                "workbook_row",
+                "template_line",
+                "amount",
+                "estimated_cost",
+                "markup_treatment",
+                "notes",
+            }
+            roofing_free_adder_rows = original_workbench.get("roofing_free_adder_template_decisions") or []
+            roofing_free_adder_display_rows = roofing_free_adder_rows or [
+                {
+                    "include": False,
+                    "workbook_row": "",
+                    "template_line": "",
+                    "amount": 0.0,
+                    "estimated_cost": 0.0,
+                    "markup_treatment": "post_markup",
+                    "compatibility_status": "review",
+                    "compatibility_warnings": "",
+                    "notes": "",
+                }
+            ]
+            roofing_free_adder_column_order = (
+                []
+                if show_row_details
+                else ROOFING_FREE_ADDER_TEMPLATE_COMPACT_COLUMNS
+            )
+            with estimator_perf_step("roofing free adder table prep"):
+                roofing_free_adder_display_df, roofing_free_adder_column_order = workbench_display_frame_from_records(
+                    roofing_free_adder_display_rows,
+                    roofing_free_adder_column_order,
+                    editable_fields=roofing_free_adder_editable_fields,
+                    show_row_details=show_row_details,
+                )
+            edited_roofing_free_adder_df = st.data_editor(
+                roofing_free_adder_display_df,
+                use_container_width=True,
+                hide_index=True,
+                num_rows="dynamic",
+                key=f"wb_roofing_free_adder_{workbench_key}_{scope_key}_{historical_filters_key}",
+                column_order=roofing_free_adder_column_order,
+                column_config={
+                    "include": "Include",
+                    "workbook_row": "Source Row",
+                    "template_line": "Adder",
+                    "amount": "Amount",
+                    "estimated_cost": "Cost",
+                    "markup_treatment": "Markup Treatment",
+                    "compatibility_status": "Status",
+                    "compatibility_warnings": "Warnings",
+                    "notes": "Notes",
+                },
+                disabled=[
+                    column
+                    for column in roofing_free_adder_column_order
+                    if column not in roofing_free_adder_editable_fields
+                ],
+            )
+            edited_workbench["roofing_free_adder_template_decisions"] = merge_dynamic_free_adder_rows(
+                roofing_free_adder_rows,
+                edited_roofing_free_adder_df.to_dict(orient="records"),
+                roofing_free_adder_editable_fields,
             )
 
         if original_workbench.get("roofing_labor_template_decisions"):

@@ -1568,9 +1568,9 @@ def _reference_summary_target(row: dict[str, Any]) -> dict[str, str] | None:
     section = _clean_string(row.get("section")).lower()
     is_labor_section = "labor" in section
     if "materials tax" in section or "sales tax" in line_item:
-        return None
+        return _reference_summary_free_adder_target(source_row, line_item, template_bucket="sales_tax")
     if "additional amount" in section:
-        return None
+        return _reference_summary_free_adder_target(source_row, line_item)
     if is_labor_section:
         return _reference_summary_labor_target(source_row, line_item)
     if source_row in {"26", "27", "28"} or any(term in line_item for term in ("silicone", "coating", "acrylic")):
@@ -1713,6 +1713,18 @@ def _reference_summary_target(row: dict[str, Any]) -> dict[str, str] | None:
     return None
 
 
+def _reference_summary_free_adder_target(source_row: str, line_item: str, *, template_bucket: str | None = None) -> dict[str, str]:
+    row_number = source_row or "173"
+    normalized_label = re.sub(r"[^a-z0-9]+", "_", line_item).strip("_") or "free_adder"
+    bucket = template_bucket or normalized_label
+    return {
+        "decision_id": f"roofing_free_adder_row_{row_number}_{normalized_label}",
+        "section": "roofing_free_adder_template_decisions",
+        "template_bucket": bucket,
+        "workbook_row": row_number,
+    }
+
+
 def _reference_summary_labor_target(source_row: str, line_item: str) -> dict[str, str] | None:
     if "loading" in line_item:
         return {
@@ -1819,6 +1831,14 @@ def _reference_summary_values(row: dict[str, Any]) -> dict[str, Any]:
         if gallons is not None:
             values["estimated_units"] = gallons
             values["estimated_gallons"] = gallons
+    if "additional amount" in _clean_string(row.get("section")).lower() or "sales tax" in _clean_string(row.get("line_item")).lower():
+        parsed_cost = _parse_reference_money(cost)
+        if parsed_cost is not None:
+            values["amount"] = parsed_cost
+            values["estimated_cost"] = parsed_cost
+            values.setdefault("estimated_units", 1.0)
+        values["template_line"] = _clean_string(row.get("line_item"))
+        values["markup_treatment"] = "post_markup"
     return {key: value for key, value in values.items() if value not in (None, "", 0)}
 
 

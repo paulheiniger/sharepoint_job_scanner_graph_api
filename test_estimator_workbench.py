@@ -556,6 +556,82 @@ def test_roofing_loading_travel_scan_and_meals_are_logistics_expense_rows() -> N
     assert any(row["template_bucket"] == "meals_lodging" and row["workbook_row"] == "144" for row in draft["workbook_decisions"])
 
 
+def test_roofing_free_adders_are_post_markup_decisions_and_export_as_adders() -> None:
+    recommendation = roofing_recommendation()
+    recommendation.parsed_fields["estimator_chat"] = {
+        "source": "ai_chat",
+        "confidence": 0.86,
+        "workbook_decision_preferences": [
+            {
+                "decision_id": "roofing_free_adder_row_173_warranty",
+                "section": "roofing_free_adder_template_decisions",
+                "template_bucket": "warranty",
+                "workbook_row": "173",
+                "include": True,
+                "proposed_values": {
+                    "template_line": "Warranty",
+                    "amount": 600.0,
+                    "estimated_cost": 600.0,
+                    "markup_treatment": "post_markup",
+                },
+                "confidence": 0.86,
+                "review_required": True,
+            }
+        ],
+    }
+
+    workbench = build_estimating_workbench(recommendation, EstimatorData())
+    row = workbench["roofing_free_adder_template_decisions"][0]
+    totals = summarize_workbench_totals(workbench)
+    draft = workbench_to_draft_workbook_inputs(workbench)
+    draft_row = next(row for row in draft["workbook_decisions"] if row.get("row_type") == "adder")
+
+    assert row["include"] is True
+    assert row["template_line"] == "Warranty"
+    assert row["estimated_cost"] == 600.0
+    assert row["markup_treatment"] == "post_markup"
+    assert totals["post_markup_adder_total"] == 600.0
+    assert totals["draft_total"] == totals["worksheet_price"] + 600.0
+    assert draft_row["template_bucket"] == "warranty"
+    assert draft_row["estimated_cost"] == 600.0
+
+
+def test_roofing_reference_quantity_cost_is_preserved_when_area_is_missing() -> None:
+    recommendation = roofing_recommendation()
+    recommendation.parsed_fields.pop("estimated_sqft", None)
+    recommendation.parsed_fields.pop("net_sqft", None)
+    recommendation.parsed_fields["estimator_chat"] = {
+        "source": "ai_chat",
+        "confidence": 0.86,
+        "workbook_decision_preferences": [
+            {
+                "decision_id": "roofing_coating_system_row_26",
+                "section": "roofing_coating_template_decisions",
+                "template_bucket": "coating",
+                "workbook_row": "26",
+                "include": True,
+                "proposed_values": {
+                    "estimated_units": 17.83,
+                    "estimated_gallons": 17.83,
+                    "unit_price": 36.0,
+                    "estimated_cost": 641.70,
+                },
+                "confidence": 0.86,
+                "review_required": True,
+            }
+        ],
+    }
+
+    workbench = build_estimating_workbench(recommendation, EstimatorData())
+    coating = next(row for row in workbench["roofing_coating_template_decisions"] if row["workbook_row"] == "26")
+
+    assert coating["include"] is True
+    assert coating["basis_sqft"] == 0
+    assert coating["estimated_gallons"] == 17.83
+    assert coating["estimated_cost"] == 641.7
+    assert coating["formula_source"] == "reference_direct_quantity"
+
+
 def test_workbench_enriches_row_options_from_template_catalogs() -> None:
     data = EstimatorData(
         template_selector_maps=pd.DataFrame(

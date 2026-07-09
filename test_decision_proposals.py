@@ -115,6 +115,43 @@ def test_estimator_chat_loading_travel_preferences_target_logistics_expense_rows
     assert traveling["proposed_values"] == {"hours_per_day": 2.5, "people_count": 4, "unit_price": 13}
 
 
+def test_estimator_chat_free_adder_preferences_target_roofing_free_adder_rows() -> None:
+    proposals = build_decision_proposals(
+        {
+            "template_type": "roofing",
+            "division": "Roofing",
+            "estimator_chat": {
+                "source": "ai_chat",
+                "confidence": 0.82,
+                "assistant_message": "Add warranty as a post-markup free row.",
+                "workbook_decision_preferences": [
+                    {
+                        "section": "roofing_free_adder_template_decisions",
+                        "decision_id": "roofing_free_adder_row_173_warranty",
+                        "template_bucket": "warranty",
+                        "workbook_row": "173",
+                        "include": True,
+                        "proposed_values": {
+                            "template_line": "Warranty",
+                            "amount": 600,
+                            "estimated_cost": 600,
+                            "markup_treatment": "post_markup",
+                        },
+                        "confidence": 0.82,
+                    }
+                ],
+            },
+        }
+    )
+
+    adder = next(row for row in proposals if row["section"] == "roofing_free_adder_template_decisions")
+
+    assert adder["template_bucket"] == "warranty"
+    assert adder["workbook_row"] == "173"
+    assert adder["proposed_values"]["amount"] == 600
+    assert adder["proposed_values"]["markup_treatment"] == "post_markup"
+
+
 def test_estimator_chat_alias_only_loading_travel_preferences_are_sanitized() -> None:
     proposals = build_decision_proposals(
         {

@@ -852,6 +852,38 @@ def safe_number(value: Any, default: float = 0.0) -> float:
     return float(number)
 
 
+def _apply_direct_quantity_cost_fallback(
+    formula: dict[str, Any],
+    row: dict[str, Any],
+    *,
+    unit_price: Any = None,
+    quantity_fields: tuple[str, ...] = ("estimated_units", "estimated_gallons", "units", "quantity"),
+    quantity_output_field: str = "estimated_units",
+    source: str = "reference_direct_quantity",
+) -> dict[str, Any]:
+    """Preserve explicit answer-key quantities when formula inputs are incomplete."""
+
+    if safe_number(formula.get("estimated_cost"), 0.0) > 0:
+        return formula
+    explicit_cost = safe_number(row.get("estimated_cost"), 0.0)
+    explicit_quantity = positive_number(*(row.get(field) for field in quantity_fields), default=0.0)
+    price = safe_number(first_nonblank(unit_price, row.get("unit_price")), 0.0)
+    if explicit_cost <= 0 and explicit_quantity > 0 and price > 0:
+        explicit_cost = explicit_quantity * price
+    if explicit_cost <= 0:
+        return formula
+    updated = dict(formula)
+    if explicit_quantity > 0:
+        updated[quantity_output_field] = round(explicit_quantity, 6)
+        if quantity_output_field != "estimated_units":
+            updated.setdefault("estimated_units", round(explicit_quantity, 6))
+    updated["estimated_cost"] = round(explicit_cost, 2)
+    updated["calculated_quantity"] = round(explicit_quantity, 6) if explicit_quantity > 0 else updated.get("calculated_quantity")
+    updated["formula_source"] = source
+    updated["cost_source"] = source
+    return updated
+
+
 def _expected_labor_hours_from_days_crew(days: Any, crew_size: Any, *, hours_per_day: float = 10.0) -> float:
     day_count = safe_number(days, 0.0)
     crew = safe_number(crew_size, 0.0)
@@ -6637,6 +6669,14 @@ def _build_roofing_foam_template_decisions(
             unit_price=unit_price,
             include=include,
         )
+        if include:
+            formula = _apply_direct_quantity_cost_fallback(
+                formula,
+                existing,
+                unit_price=unit_price,
+                quantity_fields=("estimated_units", "units", "quantity"),
+                quantity_output_field="estimated_units",
+            )
         compatibility = _roofing_foam_candidate_compatibility(
             template_option=resolved_option,
             candidate=selected_candidate,
@@ -6913,6 +6953,14 @@ def _build_roofing_coating_template_decisions(
             cost_per_sqft=coating_row.get("historical_cost_per_sqft"),
             include=include,
         )
+        if include:
+            formula = _apply_direct_quantity_cost_fallback(
+                formula,
+                existing,
+                unit_price=unit_price,
+                quantity_fields=("estimated_gallons", "estimated_units", "units", "quantity"),
+                quantity_output_field="estimated_gallons",
+            )
         cost_source = _cost_source_for_candidate(formula, selected_candidate)
         compatibility = _roofing_coating_candidate_compatibility(
             template_option=resolved_option,
@@ -7201,6 +7249,14 @@ def _build_roofing_primer_template_decisions(
         cost_per_sqft=source_plan_cost_per_sqft,
         include=include,
     )
+    if include:
+        formula = _apply_direct_quantity_cost_fallback(
+            formula,
+            existing,
+            unit_price=unit_price,
+            quantity_fields=("estimated_units", "units", "quantity"),
+            quantity_output_field="estimated_units",
+        )
     compatibility = _roofing_primer_candidate_compatibility(
         template_option=resolved_option,
         candidate=selected_candidate,
@@ -8926,6 +8982,135 @@ def _build_roofing_accessory_template_decisions(
             }
         )
     return rows
+
+
+def _free_adder_preferences_from_scope(scope: dict[str, Any]) -> list[dict[str, Any]]:
+    chat_payload = scope.get("estimator_chat") if isinstance(scope.get("estimator_chat"), dict) else {}
+    raw_groups = [chat_payload.get("workbook_decision_preferences"), scope.get("workbook_decision_preferences")]
+    rows: list[dict[str, Any]] = []
+    for raw in raw_groups:
+        if not isinstance(raw, list):
+            continue
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            if item.get("section") != "roofing_free_adder_template_decisions":
+                continue
+            rows.append(item)
+    return rows
+
+
+def _free_adder_key(row: dict[str, Any]) -> str:
+    return str(first_nonblank(row.get("decision_id"), row.get("workbook_row"), row.get("template_bucket"), row.get("template_line"))).strip()
+
+
+def _build_roofing_free_adder_template_decisions(
+    *,
+    scope: dict[str, Any],
+    existing_rows: list[dict[str, Any]] | None = None,
+    proposals: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    if _is_insulation_scope(scope):
+        return []
+    source_rows: list[dict[str, Any]] = []
+    source_rows.extend(_free_adder_preferences_from_scope(scope))
+    for proposal in proposals or []:
+        if isinstance(proposal, dict) and proposal.get("section") == "roofing_free_adder_template_decisions":
+            source_rows.append(proposal)
+
+    existing_by_key = {_free_adder_key(row): row for row in existing_rows or [] if isinstance(row, dict)}
+    item_by_key: dict[str, dict[str, Any]] = {}
+    for item in source_rows:
+        key = _free_adder_key(item)
+        if key:
+            item_by_key[key] = item
+    for key, existing in existing_by_key.items():
+        item_by_key.setdefault(key, existing)
+
+    rows: list[dict[str, Any]] = []
+    for key, item in item_by_key.items():
+        existing = existing_by_key.get(key, {})
+        values = item.get("proposed_values") if isinstance(item.get("proposed_values"), dict) else {}
+        workbook_row = str(first_nonblank(existing.get("workbook_row"), item.get("workbook_row"), item.get("row_number"), "")).strip()
+        decision_id = str(
+            first_nonblank(
+                existing.get("decision_id"),
+                item.get("decision_id"),
+                f"roofing_free_adder_row_{workbook_row or len(rows) + 1}",
+            )
+        )
+        bucket = re.sub(
+            r"[^a-z0-9]+",
+            "_",
+            str(first_nonblank(existing.get("template_bucket"), item.get("template_bucket"), "free_adder")).lower(),
+        ).strip("_") or "free_adder"
+        template_line = str(
+            first_nonblank(
+                existing.get("template_line"),
+                values.get("template_line"),
+                item.get("line_item"),
+                item.get("label"),
+                bucket.replace("_", " ").title(),
+            )
+        )
+        include = bool(existing["include"]) if "include" in existing else bool(item.get("include", True))
+        amount = safe_number(
+            first_nonblank(
+                existing.get("amount"),
+                existing.get("estimated_cost"),
+                values.get("amount"),
+                values.get("estimated_cost"),
+                values.get("unit_price"),
+                item.get("amount"),
+                item.get("estimated_cost"),
+            ),
+            0.0,
+        )
+        formula = calculate_roofing_direct_cost(amount=amount, include=include)
+        markup_treatment = str(
+            first_nonblank(existing.get("markup_treatment"), values.get("markup_treatment"), item.get("markup_treatment"), "post_markup")
+        ).strip().lower()
+        warnings = list(existing.get("compatibility_warnings") or [])
+        warnings.extend(str(reason) for reason in (item.get("review_reasons") or []) if reason)
+        if include and amount <= 0:
+            warnings.append("Free adder amount is missing.")
+        warnings = list(dict.fromkeys(warnings))
+        review_required = bool(existing.get("proposal_review_required") or item.get("review_required", True) or warnings)
+        row = {
+            "include": include,
+            "section": "roofing_free_adder_template_decisions",
+            "decision_id": decision_id,
+            "template_bucket": bucket,
+            "workbook_row": workbook_row,
+            "source_workbook_row": workbook_row,
+            "template_line": template_line,
+            "resolved_template_option": template_line,
+            "amount": round(amount, 2),
+            "estimated_units": 1.0 if amount > 0 else 0.0,
+            "unit_price": round(amount, 2) if amount > 0 else 0.0,
+            "estimated_cost": formula.get("estimated_cost"),
+            "markup_treatment": markup_treatment,
+            "formula_model": "direct_post_markup_amount" if markup_treatment == "post_markup" else formula.get("formula_model"),
+            "formula_source": formula.get("formula_source"),
+            "compatibility_status": "review" if review_required else "compatible",
+            "compatibility_warnings": warnings,
+            "notes": first_nonblank(
+                existing.get("notes"),
+                item.get("notes"),
+                "Free adder from pasted/reference template summary. Amount is editable and workbook placement is handled by the current template.",
+            ),
+            "decision_values": {"amount": round(amount, 2), "markup_treatment": markup_treatment, "template_line": template_line},
+            "editable_decision_value": {"amount": round(amount, 2), "markup_treatment": markup_treatment, "template_line": template_line},
+            "recommended_decision_value": {"amount": round(amount, 2), "source": item.get("source") or existing.get("include_source") or "reference_template_summary"},
+            "calculated_output": formula.get("estimated_cost"),
+            "calculated_output_summary": _value_summary({"amount": formula.get("estimated_cost"), "treatment": markup_treatment}),
+            "workbook_cell_write_preview": [
+                {"cell": f"Estimate!A{workbook_row or 'manual'}", "field": "template_line", "value": template_line},
+                {"cell": f"Estimate!F{workbook_row or 'manual'}", "field": "estimated_cost", "value": formula.get("estimated_cost")},
+            ],
+        }
+        rows.append(row)
+    return sorted(rows, key=lambda row: (safe_number(row.get("workbook_row"), 9999), str(row.get("template_line") or "")))
 
 
 def _accessory_cell_preview(
@@ -11566,6 +11751,11 @@ def build_estimating_workbench(
         if not _is_insulation_scope(scope)
         else []
     )
+    roofing_free_adder_template_decisions = (
+        _build_roofing_free_adder_template_decisions(scope=scope)
+        if not _is_insulation_scope(scope)
+        else []
+    )
     roofing_dependencies = _roofing_dependency_totals(
         {
             "roofing_foam_template_decisions": roofing_foam_template_decisions,
@@ -11606,6 +11796,7 @@ def build_estimating_workbench(
         "roofing_travel_freight_template_decisions": roofing_travel_freight_template_decisions,
         "roofing_accessory_template_decisions": roofing_accessory_template_decisions,
         "roofing_logistics_expense_template_decisions": roofing_logistics_expense_template_decisions,
+        "roofing_free_adder_template_decisions": roofing_free_adder_template_decisions,
         "roofing_labor_template_decisions": roofing_labor_template_decisions,
     }
     pricing_markup_decisions = _build_pricing_markup_decisions(
@@ -11661,6 +11852,7 @@ def build_estimating_workbench(
         "roofing_travel_freight_template_decisions": roofing_travel_freight_template_decisions,
         "roofing_accessory_template_decisions": roofing_accessory_template_decisions,
         "roofing_logistics_expense_template_decisions": roofing_logistics_expense_template_decisions,
+        "roofing_free_adder_template_decisions": roofing_free_adder_template_decisions,
         "roofing_labor_template_decisions": roofing_labor_template_decisions,
         "pricing_markup_decisions": pricing_markup_decisions,
         "insulation_performance_specs": [],
@@ -11837,6 +12029,12 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
                 scope=scope,
                 existing_rows=updated.get("roofing_logistics_expense_template_decisions") or None,
                 data=data,
+            )
+        if "roofing_free_adder_template_decisions" in updated:
+            updated["roofing_free_adder_template_decisions"] = _build_roofing_free_adder_template_decisions(
+                scope=scope,
+                existing_rows=updated.get("roofing_free_adder_template_decisions") or None,
+                proposals=base_decision_proposals,
             )
         if "roofing_labor_template_decisions" in updated:
             roofing_dependencies = _roofing_dependency_totals(
@@ -12023,6 +12221,7 @@ def apply_historical_filter_update(previous_workbench: dict[str, Any] | None, fi
         "roofing_travel_freight_template_decisions",
         "roofing_accessory_template_decisions",
         "roofing_logistics_expense_template_decisions",
+        "roofing_free_adder_template_decisions",
         "roofing_labor_template_decisions",
         "pricing_markup_decisions",
     )
@@ -12133,6 +12332,11 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any], *, recalculate
     roofing_logistics_expense_decision_rows = [
         row
         for row in workbench.get("roofing_logistics_expense_template_decisions") or []
+        if isinstance(row, dict) and row.get("include")
+    ]
+    roofing_free_adder_decision_rows = [
+        row
+        for row in workbench.get("roofing_free_adder_template_decisions") or []
         if isinstance(row, dict) and row.get("include")
     ]
     insulation_foam_decision_rows = [
@@ -12555,6 +12759,32 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any], *, recalculate
                 "notes": f"Roofing logistics expense template decision; section={row.get('section')}.",
             }
         )
+    adder_rows = []
+    for row in roofing_free_adder_decision_rows:
+        bucket = str(row.get("template_bucket") or "free_adder").lower()
+        adder_rows.append(
+            {
+                "decision_id": row.get("decision_id"),
+                "template_bucket": bucket,
+                "workbook_row": row.get("workbook_row"),
+                "source_workbook_row": row.get("source_workbook_row") or row.get("workbook_row"),
+                "row_traceability": f"Source/template row {row.get('workbook_row')}",
+                "item": first_nonblank(row.get("template_line"), row.get("resolved_template_option"), bucket),
+                "category": bucket,
+                "quantity": 1.0,
+                "estimated_units": 1.0,
+                "amount": safe_number(row.get("amount"), 0.0),
+                "unit": "amount",
+                "unit_price": safe_number(row.get("unit_price") or row.get("amount"), 0.0),
+                "estimated_cost": safe_number(row.get("estimated_cost"), 0.0),
+                "markup_treatment": row.get("markup_treatment"),
+                "formula_model": row.get("formula_model"),
+                "formula_source": row.get("formula_source"),
+                "calculated_output_summary": row.get("calculated_output_summary"),
+                "workbook_cell_write_preview": row.get("workbook_cell_write_preview") or [],
+                "notes": first_nonblank(row.get("notes"), "Roofing free adder template decision."),
+            }
+        )
     labor_rows = []
     if _is_insulation_scope(scope) and insulation_labor_decision_rows:
         for row in insulation_labor_decision_rows:
@@ -12661,6 +12891,15 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any], *, recalculate
                 "source_section": row.get("section") or "labor_template_decisions",
             }
         )
+    for row in adder_rows:
+        workbook_decisions.append(
+            {
+                **row,
+                "row_type": "adder",
+                "section": "roofing_free_adder_template_decisions",
+                "source_section": "roofing_free_adder_template_decisions",
+            }
+        )
     pricing_markup_rows = [
         row
         for row in workbench.get("pricing_markup_decisions") or []
@@ -12709,6 +12948,8 @@ ROOFING_ADDER_TOTAL_DECISION_SECTIONS = (
     "roofing_logistics_expense_template_decisions",
 )
 
+ROOFING_FREE_ADDER_DECISION_SECTIONS = ("roofing_free_adder_template_decisions",)
+
 ROOFING_LABOR_TOTAL_DECISION_SECTIONS = ("roofing_labor_template_decisions",)
 
 INSULATION_MATERIAL_TOTAL_DECISION_SECTIONS = (
@@ -12734,6 +12975,7 @@ WORKBENCH_DECISION_SECTIONS = (
     *INSULATION_LABOR_TOTAL_DECISION_SECTIONS,
     *ROOFING_MATERIAL_TOTAL_DECISION_SECTIONS,
     *ROOFING_ADDER_TOTAL_DECISION_SECTIONS,
+    *ROOFING_FREE_ADDER_DECISION_SECTIONS,
     *ROOFING_LABOR_TOTAL_DECISION_SECTIONS,
     "pricing_markup_decisions",
 )
@@ -12752,19 +12994,35 @@ def _included_cost_total(rows: Iterable[dict[str, Any]]) -> float:
     return sum(safe_number(row.get("estimated_cost"), 0.0) for row in rows if row.get("include"))
 
 
+def _included_free_adder_total(rows: Iterable[dict[str, Any]], *, post_markup: bool) -> float:
+    total = 0.0
+    for row in rows:
+        if not row.get("include"):
+            continue
+        treatment = str(row.get("markup_treatment") or "post_markup").strip().lower()
+        is_post_markup = treatment in {"post_markup", "after_markup", "without_markup", "w_o_markup", "w/o_markup"}
+        if is_post_markup == post_markup:
+            total += safe_number(row.get("estimated_cost"), 0.0)
+    return total
+
+
 def _pre_markup_total(workbench: dict[str, Any]) -> float:
     if _is_insulation_scope(workbench.get("scope") or {}):
         material_decision_rows, _, _ = _insulation_material_total_rows(workbench)
         labor_decision_rows = _decision_total_rows(workbench, INSULATION_LABOR_TOTAL_DECISION_SECTIONS)
         adder_decision_rows = _decision_total_rows(workbench, INSULATION_ADDER_TOTAL_DECISION_SECTIONS)
+        free_adder_decision_rows = []
+        free_adder_decision_rows = []
     else:
         material_decision_rows = _decision_total_rows(workbench, ROOFING_MATERIAL_TOTAL_DECISION_SECTIONS)
         labor_decision_rows = _decision_total_rows(workbench, ROOFING_LABOR_TOTAL_DECISION_SECTIONS)
         adder_decision_rows = _decision_total_rows(workbench, ROOFING_ADDER_TOTAL_DECISION_SECTIONS)
+        free_adder_decision_rows = _decision_total_rows(workbench, ROOFING_FREE_ADDER_DECISION_SECTIONS)
     return (
         _included_cost_total(material_decision_rows)
         + _included_cost_total(labor_decision_rows)
         + _included_cost_total(adder_decision_rows)
+        + (0.0 if _is_insulation_scope(workbench.get("scope") or {}) else _included_free_adder_total(free_adder_decision_rows, post_markup=False))
     )
 
 
@@ -12833,11 +13091,14 @@ def summarize_workbench_totals(workbench: dict[str, Any]) -> dict[str, float]:
         material_decision_rows = _decision_total_rows(workbench, ROOFING_MATERIAL_TOTAL_DECISION_SECTIONS)
         labor_decision_rows = _decision_total_rows(workbench, ROOFING_LABOR_TOTAL_DECISION_SECTIONS)
         adder_decision_rows = _decision_total_rows(workbench, ROOFING_ADDER_TOTAL_DECISION_SECTIONS)
+        free_adder_decision_rows = _decision_total_rows(workbench, ROOFING_FREE_ADDER_DECISION_SECTIONS)
 
     material_total = _included_cost_total(material_decision_rows)
     labor_total = _included_cost_total(labor_decision_rows)
     adder_total = _included_cost_total(adder_decision_rows)
-    pre_markup_total = material_total + labor_total + adder_total
+    free_adder_pre_markup_total = 0.0 if _is_insulation_scope(workbench.get("scope") or {}) else _included_free_adder_total(free_adder_decision_rows, post_markup=False)
+    post_markup_adder_total = 0.0 if _is_insulation_scope(workbench.get("scope") or {}) else _included_free_adder_total(free_adder_decision_rows, post_markup=True)
+    pre_markup_total = material_total + labor_total + adder_total + free_adder_pre_markup_total
     markup_rows = [
         row
         for row in workbench.get("pricing_markup_decisions") or []
@@ -12854,15 +13115,18 @@ def summarize_workbench_totals(workbench: dict[str, Any]) -> dict[str, float]:
         if str(row.get("template_bucket") or "").lower() == "profit"
     )
     worksheet_price = pre_markup_total + overhead_amount + profit_amount
+    draft_total = worksheet_price + post_markup_adder_total
     return {
         "material_total": round(material_total, 2),
         "labor_total": round(labor_total, 2),
         "adder_total": round(adder_total, 2),
+        "free_adder_pre_markup_total": round(free_adder_pre_markup_total, 2),
+        "post_markup_adder_total": round(post_markup_adder_total, 2),
         "pre_markup_total": round(pre_markup_total, 2),
         "overhead_amount": round(overhead_amount, 2),
         "profit_amount": round(profit_amount, 2),
         "worksheet_price": round(worksheet_price, 2),
-        "draft_total": round(worksheet_price, 2),
+        "draft_total": round(draft_total, 2),
     }
 
 
