@@ -620,6 +620,38 @@ def test_estimator_chat_preserves_full_takeoff_across_followup_answers() -> None
     assert "30x40 metal building" in result.estimator_notes
 
 
+def test_estimator_chat_applies_basis_sqft_multiplier_to_existing_scope() -> None:
+    def provider(messages, model):
+        assert '"estimated_sqft": 9600.0' in messages[1]["content"]
+        return {
+            "assistant_message": "Updated basis square footage for ribs.",
+            "estimator_notes": "Metal roof basis adjusted by 1.2 for ribs.",
+            "scope_overrides": {"template_type": "roofing"},
+            "workbook_decision_preferences": [
+                {
+                    "decision_id": "roofing_coating_row_26",
+                    "template_bucket": "coating",
+                    "include": True,
+                    "proposed_values": {"basis_sqft": 9600},
+                    "confidence": 0.82,
+                }
+            ],
+            "confidence": 0.82,
+        }
+
+    result = run_estimator_chat_turn(
+        [{"role": "user", "content": "Bill Gatti ~8000 sf metal roof. Multiply basis sqft by 1.2 to account for ribs."}],
+        template_type_hint="roofing",
+        existing_scope={"template_type": "roofing", "estimated_sqft": 8000, "net_sqft": 8000},
+        provider=provider,
+        model="test-model",
+    )
+
+    assert result.scope_overrides["estimated_sqft"] == 9600
+    assert result.scope_overrides["net_sqft"] == 9600
+    assert result.scope_overrides["basis_area_multiplier"] == 1.2
+
+
 def test_estimator_chat_normalizes_decision_patch_aliases() -> None:
     def provider(messages, model):
         return {

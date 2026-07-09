@@ -104,7 +104,15 @@ def run_estimator_chat_turn(
             reference_summary,
             template_type_hint=template_type_hint,
         )
-    baseline_scope = _merge_chat_scopes(existing_scope or {}, deterministic_baseline.scope_overrides)
+    deterministic_baseline.scope_overrides = _apply_basis_area_multiplier_from_messages(
+        deterministic_baseline.scope_overrides,
+        raw_message_list,
+    )
+    baseline_scope = _apply_basis_area_multiplier_from_messages(
+        _merge_chat_scopes(existing_scope or {}, deterministic_baseline.scope_overrides),
+        raw_message_list,
+    )
+    deterministic_baseline.scope_overrides = baseline_scope
     context = estimator_context_summary(data, scope=baseline_scope)
     model_name = model or os.getenv("OPENAI_ESTIMATOR_CHAT_MODEL") or DEFAULT_CHAT_ESTIMATOR_MODEL
     prompt_messages = _chat_prompt_messages(
@@ -2255,6 +2263,62 @@ def _clean_scope(scope: dict[str, Any]) -> dict[str, Any]:
             continue
         cleaned[str(key)] = value
     return cleaned
+
+
+def _apply_basis_area_multiplier_from_messages(
+    scope: dict[str, Any],
+    messages: Iterable[dict[str, Any]],
+) -> dict[str, Any]:
+    text = "\n".join(str(message.get("content") or "") for message in messages if isinstance(message, dict))
+    multiplier = _basis_area_multiplier_from_text(text)
+    if multiplier <= 0:
+        return dict(scope or {})
+    current = _safe_positive_number(
+        (scope or {}).get("net_sqft")
+        or (scope or {}).get("estimated_sqft")
+        or (scope or {}).get("gross_sqft")
+    )
+    if current <= 0:
+        return dict(scope or {})
+    adjusted = round(current * multiplier, 2)
+    if adjusted <= 0 or abs(adjusted - current) < 0.01:
+        return dict(scope or {})
+    updated = dict(scope or {})
+    updated["estimated_sqft"] = adjusted
+    updated["net_sqft"] = adjusted
+    updated["basis_sqft"] = adjusted
+    updated["basis_area_multiplier"] = multiplier
+    updated["measured_sqft_before_multiplier"] = current
+    return updated
+
+
+def _basis_area_multiplier_from_text(text: str) -> float:
+    normalized = _clean_string(text).lower().replace("_", " ")
+    if not normalized:
+        return 0.0
+    patterns = [
+        r"\b(?:multiply|multiplied|adjust|adjusted|increase|increased)\b.{0,80}\b(?:basis|area|sq\s*ft|sqft|square\s*feet)\b.{0,40}\b(?:by|x|times)\s*(\d+(?:\.\d+)?)\b",
+        r"\b(?:basis|area|sq\s*ft|sqft|square\s*feet)\b.{0,80}\b(?:multiply|multiplied|adjust|adjusted|increase|increased)\b.{0,40}\b(?:by|x|times)\s*(\d+(?:\.\d+)?)\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, normalized, re.I)
+        if not match:
+            continue
+        multiplier = _safe_positive_number(match.group(1))
+        if 0.1 < multiplier < 10:
+            return multiplier
+    percent_patterns = [
+        r"\b(?:increase|increased|add|added)\b.{0,80}\b(?:basis|area|sq\s*ft|sqft|square\s*feet)\b.{0,40}\b(?:by\s*)?(\d+(?:\.\d+)?)\s*(?:%|percent)\b",
+        r"\b(?:basis|area|sq\s*ft|sqft|square\s*feet)\b.{0,80}\b(?:increase|increased|add|added)\b.{0,40}\b(?:by\s*)?(\d+(?:\.\d+)?)\s*(?:%|percent)\b",
+    ]
+    for pattern in percent_patterns:
+        match = re.search(pattern, normalized, re.I)
+        if not match:
+            continue
+        pct = _safe_positive_number(match.group(1))
+        if 0 < pct < 900:
+            return round(1 + pct / 100.0, 6)
+    return 0.0
 
 
 def _safe_positive_number(value: Any) -> float:

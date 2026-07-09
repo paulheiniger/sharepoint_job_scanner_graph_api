@@ -7405,7 +7405,7 @@ def _build_roofing_detail_template_decisions(
         ],
     )
     caulk_signal = detail_signal or bool((caulk_row or {}).get("include"))
-    fabric_signal = _has_positive_note_signal(notes, ["fabric", "reinforce", "reinforcement", "open seam", "open seams", "seam repair"])
+    fabric_signal = _has_positive_note_signal(notes, ["fabric", "reinforce", "reinforcement"])
     rows: list[dict[str, Any]] = []
 
     for row_number in ROOFING_CAULK_TEMPLATE_ROWS:
@@ -7593,6 +7593,8 @@ def _build_roofing_detail_template_decisions(
         (fabric_row or {}).get("quantity") if fabric_include else "",
         default=0.0,
     )
+    if fabric_include and linear_ft <= 0 and not _manual_include_locked(existing) and not fabric_signal:
+        fabric_include = False
     formula = calculate_roofing_fabric(linear_ft=linear_ft, unit_price=unit_price, include=fabric_include)
     compatibility = _roofing_detail_candidate_compatibility(
         package="fabric",
@@ -8906,8 +8908,12 @@ def _build_roofing_accessory_template_decisions(
         row_key = str(row_number)
         existing = existing_by_row.get(row_key, {})
         material = material_by_key.get(material_key_by_bucket.get(bucket, bucket)) or {}
+        negative_signal = _has_negative_note_signal(notes, spec.get("signals") or [])
         signal = bool((material or {}).get("include") or _has_positive_note_signal(notes, spec.get("signals") or []))
-        include = bool(existing["include"]) if "include" in existing else signal
+        if negative_signal and not _manual_include_locked(existing):
+            include = False
+        else:
+            include = bool(existing["include"]) if "include" in existing else signal
         formula_model = str(spec["formula"])
         unit_price = safe_number(first_nonblank(existing.get("unit_price"), material.get("current_unit_price"), material.get("current_price")), 0.0)
         amount = safe_number(first_nonblank(existing.get("amount"), existing.get("estimated_cost"), material.get("estimated_cost")), 0.0)
@@ -10827,6 +10833,22 @@ def _partial_primer_basis_sqft(notes: str, area: float) -> float:
 def _has_positive_note_signal(notes: str, terms: list[str]) -> bool:
     text = _normalized(notes)
     return any(term in text for term in terms)
+
+
+def _has_negative_note_signal(notes: str, terms: list[str]) -> bool:
+    text = _normalized(notes)
+    for term in terms:
+        normalized_term = _normalized(term)
+        if not normalized_term:
+            continue
+        escaped = re.escape(normalized_term)
+        patterns = [
+            rf"\b(?:no|without|exclude|excluding)\s+(?:\w+\s+){{0,3}}{escaped}\b",
+            rf"\b(?:not|don't|do not|does not)\s+(?:include|need|want|replace|install)\s+(?:\w+\s+){{0,3}}{escaped}\b",
+        ]
+        if any(re.search(pattern, text) for pattern in patterns):
+            return True
+    return False
 
 
 def _is_forbidden_coating_option(option: dict[str, Any]) -> bool:

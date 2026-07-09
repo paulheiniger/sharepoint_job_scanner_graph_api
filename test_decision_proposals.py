@@ -238,6 +238,44 @@ def test_estimator_chat_roofing_preferences_target_workbook_rows_without_row_num
     assert by_bucket["labor_loading"]["proposed_values"]["people_count"] == 4
 
 
+def test_estimator_chat_roofing_shorthand_decision_ids_are_canonicalized() -> None:
+    proposals = build_decision_proposals(
+        {
+            "template_type": "roofing",
+            "division": "Roofing",
+            "estimated_sqft": 8000,
+            "estimator_chat": {
+                "source": "ai_chat",
+                "confidence": 0.8,
+                "assistant_message": "Multiply the metal roof basis by 1.2.",
+                "workbook_decision_preferences": [
+                    {
+                        "decision_id": "roofing_coating_row_27",
+                        "template_bucket": "coating",
+                        "include": True,
+                        "proposed_values": {"basis_sqft": 9600, "unit_price": 36},
+                    },
+                    {
+                        "decision_id": "roofing_primer_row_39",
+                        "template_bucket": "primer",
+                        "include": True,
+                        "proposed_values": {"basis_sqft": 9600},
+                    },
+                ],
+            },
+        }
+    )
+
+    by_row = {(row["section"], row["workbook_row"]): row for row in proposals}
+
+    coating = by_row[("roofing_coating_template_decisions", "27")]
+    primer = by_row[("roofing_primer_template_decisions", "39")]
+    assert coating["decision_id"] == "roofing_coating_system_row_27"
+    assert coating["proposed_values"]["basis_sqft"] == 9600
+    assert primer["decision_id"] == "roofing_primer_system_row_39"
+    assert primer["proposed_values"]["basis_sqft"] == 9600
+
+
 def test_historical_only_warranty_is_not_invented_without_prompt_evidence() -> None:
     proposals = build_decision_proposals(
         {

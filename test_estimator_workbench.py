@@ -975,6 +975,80 @@ def test_fabric_companion_suggests_seam_detail_labor_review_marked() -> None:
     assert "fabric" in seam_labor["proposal_review_reasons"][0]
 
 
+def test_open_seams_do_not_auto_check_fabric_without_quantity_or_explicit_fabric() -> None:
+    workbench = build_estimating_workbench(
+        roofing_recommendation(),
+        EstimatorData(),
+        scope_override={
+            "project_type": "roof coating",
+            "raw_input_notes": "Metal roof with open seams, bad caulk, and penetrations. Seal seams and penetrations.",
+            "net_sqft": 8000,
+            "estimated_sqft": 8000,
+        },
+    )
+
+    fabric = next(row for row in workbench["roofing_detail_template_decisions"] if row["template_bucket"] == "fabric")
+
+    assert fabric["include"] is False
+    assert fabric["estimated_cost"] == 0.0
+
+
+def test_no_gutters_and_no_edge_metal_prevent_auto_checked_zero_cost_accessories() -> None:
+    workbench = build_estimating_workbench(
+        roofing_recommendation(),
+        EstimatorData(),
+        scope_override={
+            "project_type": "roof coating",
+            "raw_input_notes": "Metal roof coating scope. No gutters. No edge metal.",
+            "net_sqft": 8000,
+            "estimated_sqft": 8000,
+        },
+    )
+
+    accessories = {row["template_bucket"]: row for row in workbench["roofing_accessory_template_decisions"]}
+
+    assert accessories["edge_metal"]["include"] is False
+    assert accessories["gutter"]["include"] is False
+
+
+def test_roofing_chat_shorthand_basis_updates_apply_to_workbench_rows() -> None:
+    recommendation = roofing_recommendation()
+    recommendation.parsed_fields = {
+        **recommendation.parsed_fields,
+        "estimated_sqft": 8000,
+        "net_sqft": 8000,
+        "estimator_chat": {
+            "source": "ai_chat",
+            "confidence": 0.8,
+            "assistant_message": "Multiply basis sqft by 1.2 for ribs.",
+            "workbook_decision_preferences": [
+                {
+                    "decision_id": "roofing_coating_row_26",
+                    "template_bucket": "coating",
+                    "include": True,
+                    "proposed_values": {"basis_sqft": 9600, "unit_price": 36},
+                },
+                {
+                    "decision_id": "roofing_primer_row_39",
+                    "template_bucket": "primer",
+                    "include": True,
+                    "proposed_values": {"basis_sqft": 9600},
+                },
+            ],
+        },
+    }
+
+    workbench = build_estimating_workbench(recommendation, EstimatorData())
+    coating = next(row for row in workbench["roofing_coating_template_decisions"] if row["workbook_row"] == "26")
+    primer = next(row for row in workbench["roofing_primer_template_decisions"] if row["workbook_row"] == "39")
+
+    assert coating["basis_sqft"] == 9600
+    assert coating["unit_price"] == 36
+    assert coating["proposal_source"] == "chat_estimator"
+    assert primer["basis_sqft"] == 9600
+    assert primer["proposal_source"] == "chat_estimator"
+
+
 def test_full_tearoff_notes_do_not_auto_include_board_fasteners_and_disposal_rows() -> None:
     workbench = build_estimating_workbench(
         roofing_recommendation(),

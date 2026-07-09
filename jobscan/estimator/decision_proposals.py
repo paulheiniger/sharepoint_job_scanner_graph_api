@@ -937,6 +937,8 @@ def _chat_target_for_preference(template_type: str, item: dict[str, Any]) -> dic
     bucket = _canonical_package(item.get("template_bucket") or item.get("package") or item.get("category"))
     decision_id = str(item.get("decision_id") or "").strip()
     workbook_row = str(item.get("workbook_row") or item.get("row_number") or "").strip()
+    if not workbook_row:
+        workbook_row = _decision_id_row_number(decision_id)
     logistics_alias = _loading_travel_alias(item)
     if not bucket and logistics_alias:
         bucket = logistics_alias
@@ -1007,7 +1009,7 @@ def _chat_target_for_preference(template_type: str, item: dict[str, Any]) -> dic
             resolved_row = workbook_row if workbook_row in {"19", "20", "21"} else "19"
             return {
                 "section": "roofing_foam_template_decisions",
-                "decision_id": decision_id or f"roofing_foam_row_{resolved_row}",
+                "decision_id": f"roofing_foam_row_{resolved_row}",
                 "template_bucket": "foam",
                 "workbook_row": resolved_row,
             }
@@ -1015,14 +1017,14 @@ def _chat_target_for_preference(template_type: str, item: dict[str, Any]) -> dic
             resolved_row = workbook_row if workbook_row in {"26", "27", "28"} else "26"
             return {
                 "section": "roofing_coating_template_decisions",
-                "decision_id": decision_id or f"roofing_coating_system_row_{resolved_row}",
+                "decision_id": f"roofing_coating_system_row_{resolved_row}",
                 "template_bucket": "coating",
                 "workbook_row": resolved_row,
             }
         if bucket == "primer":
             return {
                 "section": "roofing_primer_template_decisions",
-                "decision_id": decision_id or "roofing_primer_system_row_39",
+                "decision_id": "roofing_primer_system_row_39",
                 "template_bucket": "primer",
                 "workbook_row": "39",
             }
@@ -1101,7 +1103,7 @@ def _chat_target_for_preference(template_type: str, item: dict[str, Any]) -> dic
         if bucket == "generator":
             return {
                 "section": "roofing_equipment_template_decisions",
-                "decision_id": decision_id or "roofing_generator_row_99",
+                "decision_id": "roofing_generator_row_99",
                 "template_bucket": "generator",
                 "workbook_row": "99",
             }
@@ -1214,6 +1216,11 @@ def _chat_target_for_preference(template_type: str, item: dict[str, Any]) -> dic
             "workbook_row": workbook_row,
         }
     return None
+
+
+def _decision_id_row_number(decision_id: Any) -> str:
+    match = re.search(r"(?:^|_)row_(\d{2,3})(?:$|_)", str(decision_id or ""))
+    return match.group(1) if match else ""
 
 
 def _clean_chat_proposed_values(item: dict[str, Any], *, template_type: str = "") -> dict[str, Any]:

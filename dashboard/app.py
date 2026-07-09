@@ -92,6 +92,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 DEFAULT_DATABASE_URL = "postgresql+psycopg2://spraytec:spraytec_dev_password@127.0.0.1:5433/spraytec_ops"
+ESTIMATOR_CHAT_SESSION_DIR = Path("output/estimator_chat_sessions")
 DECISION_EVIDENCE_DISPLAY_COLUMNS = [
     "decision_evidence_summary",
     "decision_evidence_types",
@@ -8379,6 +8380,106 @@ def estimator_chat_decision_change_rows(preferences: Any) -> list[dict[str, Any]
     return rows
 
 
+def safe_estimator_chat_thread_id(value: Any) -> str:
+    thread_id = re.sub(r"[^a-zA-Z0-9_-]+", "", str(value or "").strip())
+    if len(thread_id) < 8:
+        return ""
+    return thread_id[:64]
+
+
+def new_estimator_chat_thread_id() -> str:
+    return hashlib.sha1(os.urandom(16)).hexdigest()[:16]
+
+
+def estimator_chat_session_path(thread_id: str) -> Path:
+    safe_thread_id = safe_estimator_chat_thread_id(thread_id)
+    if not safe_thread_id:
+        safe_thread_id = new_estimator_chat_thread_id()
+    return ESTIMATOR_CHAT_SESSION_DIR / f"{safe_thread_id}.json"
+
+
+def load_estimator_chat_session(thread_id: str) -> dict[str, Any]:
+    safe_thread_id = safe_estimator_chat_thread_id(thread_id)
+    if not safe_thread_id:
+        return {}
+    path = estimator_chat_session_path(safe_thread_id)
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        logger.exception("failed to load estimator chat session snapshot")
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    if payload.get("history") is not None and not isinstance(payload.get("history"), list):
+        payload["history"] = []
+    if payload.get("result") is not None and not isinstance(payload.get("result"), dict):
+        payload["result"] = {}
+    payload["thread_id"] = safe_thread_id
+    return payload
+
+
+def save_estimator_chat_session(
+    thread_id: str,
+    *,
+    history: list[dict[str, Any]] | None = None,
+    result: dict[str, Any] | None = None,
+    estimator_notes: str = "",
+    estimate_type: str = "",
+) -> None:
+    safe_thread_id = safe_estimator_chat_thread_id(thread_id)
+    if not safe_thread_id:
+        return
+    payload = {
+        "thread_id": safe_thread_id,
+        "updated_at": pd.Timestamp.utcnow().isoformat(),
+        "estimate_type": str(estimate_type or ""),
+        "estimator_notes": str(estimator_notes or ""),
+        "history": history or [],
+        "result": result or {},
+    }
+    try:
+        ESTIMATOR_CHAT_SESSION_DIR.mkdir(parents=True, exist_ok=True)
+        path = estimator_chat_session_path(safe_thread_id)
+        temp_path = path.with_suffix(".tmp")
+        temp_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+        temp_path.replace(path)
+    except OSError:
+        logger.exception("failed to save estimator chat session snapshot")
+
+
+def current_estimator_chat_thread_id() -> str:
+    thread_id = safe_estimator_chat_thread_id(st.session_state.get("estimator_chat_thread_id"))
+    if not thread_id:
+        try:
+            query_value = st.query_params.get("estimator_chat_thread")
+        except Exception:
+            query_value = ""
+        if isinstance(query_value, list):
+            query_value = query_value[0] if query_value else ""
+        thread_id = safe_estimator_chat_thread_id(query_value)
+    if not thread_id:
+        thread_id = new_estimator_chat_thread_id()
+    st.session_state["estimator_chat_thread_id"] = thread_id
+    try:
+        if st.query_params.get("estimator_chat_thread") != thread_id:
+            st.query_params["estimator_chat_thread"] = thread_id
+    except Exception:
+        logger.debug("could not sync estimator chat thread query parameter", exc_info=True)
+    return thread_id
+
+
+def reset_current_estimator_chat_thread() -> str:
+    thread_id = new_estimator_chat_thread_id()
+    st.session_state["estimator_chat_thread_id"] = thread_id
+    try:
+        st.query_params["estimator_chat_thread"] = thread_id
+    except Exception:
+        logger.debug("could not reset estimator chat thread query parameter", exc_info=True)
+    return thread_id
+
+
 def unique_columns(columns: Iterable[str]) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
@@ -9105,10 +9206,7 @@ def render_estimator_chat_draft_panel(
     estimate_type: str,
     data: EstimatorData,
 ) -> dict[str, Any] | None:
-    thread_id = st.session_state.get("estimator_chat_thread_id")
-    if not thread_id:
-        thread_id = hashlib.sha1(os.urandom(16)).hexdigest()[:16]
-        st.session_state["estimator_chat_thread_id"] = thread_id
+    thread_id = current_estimator_chat_thread_id()
     chat_key = str(thread_id)
     history_key = f"estimator_chat_history_{chat_key}"
     result_key = f"estimator_chat_result_{chat_key}"
@@ -9120,13 +9218,27 @@ def render_estimator_chat_draft_panel(
         st.session_state.pop(active_history_key, None)
         st.session_state.pop(active_result_key, None)
         st.session_state.pop("estimator_notes", None)
-        st.session_state["estimator_chat_thread_id"] = hashlib.sha1(os.urandom(16)).hexdigest()[:16]
+        reset_current_estimator_chat_thread()
         st.rerun()
 
     chat_history = [dict(message) for message in (st.session_state.get(history_key) or [])]
     if not chat_history and isinstance(st.session_state.get(active_history_key), list):
         chat_history = [dict(message) for message in (st.session_state.get(active_history_key) or [])]
         st.session_state[history_key] = chat_history
+    if not chat_history and not st.session_state.get(result_key):
+        saved_chat = load_estimator_chat_session(chat_key)
+        saved_history = saved_chat.get("history") if isinstance(saved_chat.get("history"), list) else []
+        saved_result = saved_chat.get("result") if isinstance(saved_chat.get("result"), dict) else {}
+        if saved_history:
+            chat_history = [dict(message) for message in saved_history if isinstance(message, dict)]
+            st.session_state[history_key] = chat_history
+            st.session_state[active_history_key] = chat_history
+        if saved_result:
+            st.session_state[result_key] = saved_result
+            st.session_state[active_result_key] = saved_result
+        saved_notes = str(saved_chat.get("estimator_notes") or "").strip()
+        if saved_notes and not st.session_state.get("estimator_notes"):
+            st.session_state["estimator_notes"] = saved_notes
     note_image_result = render_estimator_note_image_upload(chat_key=chat_key, estimate_type=estimate_type)
     extracted_note_text = str((note_image_result or {}).get("normalized_estimator_notes") or "").strip()
     extracted_note_key = str((note_image_result or {}).get("image_hash_key") or "")
@@ -9198,6 +9310,13 @@ def render_estimator_chat_draft_panel(
         st.session_state[result_key] = result_payload
         st.session_state[active_result_key] = result_payload
         st.session_state["estimator_notes"] = result.estimator_notes or user_message
+        save_estimator_chat_session(
+            chat_key,
+            history=messages,
+            result=result_payload,
+            estimator_notes=str(st.session_state.get("estimator_notes") or ""),
+            estimate_type=estimate_type,
+        )
         if image_message:
             st.session_state[image_message_applied_key] = True
         if photo_message:
@@ -9226,6 +9345,13 @@ def render_estimator_chat_draft_panel(
         chat_history = [{"role": "assistant", "content": estimator_chat_assistant_history_content(result)}]
         st.session_state[history_key] = chat_history
         st.session_state[active_history_key] = chat_history
+        save_estimator_chat_session(
+            chat_key,
+            history=chat_history,
+            result=result,
+            estimator_notes=str(st.session_state.get("estimator_notes") or ""),
+            estimate_type=estimate_type,
+        )
     for message in chat_history[-10:]:
         role = str(message.get("role") or "assistant")
         with st.chat_message("user" if role == "user" else "assistant"):

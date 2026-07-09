@@ -1165,6 +1165,32 @@ def test_estimator_assistant_exposes_memory_review_and_persistent_chat_state() -
     assert "render_estimator_memory_admin()" in source
     assert "estimator_chat_history_active" in chat_source
     assert "estimator_chat_result_active" in chat_source
+    assert "load_estimator_chat_session(chat_key)" in chat_source
+    assert "save_estimator_chat_session(" in chat_source
+
+
+def test_estimator_chat_session_snapshot_round_trips(tmp_path, monkeypatch) -> None:
+    app = importlib.import_module("dashboard.app")
+    monkeypatch.setattr(app, "ESTIMATOR_CHAT_SESSION_DIR", tmp_path)
+
+    app.save_estimator_chat_session(
+        "thread-abc-123",
+        history=[
+            {"role": "user", "content": "Need open cell foam."},
+            {"role": "assistant", "content": "Drafted insulation decisions."},
+        ],
+        result={"estimator_notes": "open cell foam", "scope_overrides": {"template_type": "insulation"}},
+        estimator_notes="open cell foam",
+        estimate_type="insulation",
+    )
+
+    loaded = app.load_estimator_chat_session("thread-abc-123")
+
+    assert loaded["thread_id"] == "thread-abc-123"
+    assert loaded["history"][0]["content"] == "Need open cell foam."
+    assert loaded["result"]["scope_overrides"]["template_type"] == "insulation"
+    assert loaded["estimator_notes"] == "open cell foam"
+    assert app.load_estimator_chat_session("../bad") == {}
 
 
 def test_roofing_free_adder_section_uses_edited_scope_template_type() -> None:
