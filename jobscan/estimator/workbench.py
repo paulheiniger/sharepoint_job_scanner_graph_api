@@ -150,6 +150,15 @@ LABOR_PACKAGES: list[dict[str, Any]] = [
     {"package": "labor_infrared_scan", "label": "Infrared", "workbook_row": "141"},
 ]
 
+ROOFING_LOGISTICS_EXPENSE_PACKAGES = {
+    "labor_loading",
+    "labor_traveling",
+    "labor_meals_lodging",
+    "labor_infrared_scan",
+    "meals_lodging",
+    "infrared_scan",
+}
+
 INSULATION_LABOR_PACKAGES: list[dict[str, Any]] = [
     {"package": "labor_set_up", "label": "Set Up", "workbook_row": "78"},
     {"package": "labor_mask", "label": "Mask", "workbook_row": "80"},
@@ -431,6 +440,49 @@ INSULATION_LOGISTICS_EXPENSE_DECISION_SPECS: list[dict[str, Any]] = [
         "workbook_row": "100",
         "formula": "days_people_rate",
         "notes": "Meals/lodging is an expense row: days x people x daily amount.",
+    },
+]
+
+ROOFING_LOGISTICS_EXPENSE_DECISION_SPECS: list[dict[str, Any]] = [
+    {
+        "decision_id": "roofing_labor_loading",
+        "template_bucket": "labor_loading",
+        "label": "Loading",
+        "workbook_row": "136",
+        "formula": "hours_people_rate_trip_count",
+        "default_include": True,
+        "default_hours_per_day": 0.5,
+        "default_people_count": 1.0,
+        "default_unit_price": DEFAULT_LOADING_HOURLY_RATE,
+        "notes": "Loading is an expense-style row: hours/day x people/rate basis x trip count.",
+    },
+    {
+        "decision_id": "roofing_labor_traveling",
+        "template_bucket": "labor_traveling",
+        "label": "Traveling",
+        "workbook_row": "138",
+        "formula": "hours_people_rate_trip_count",
+        "default_include": True,
+        "default_hours_per_day": 2.5,
+        "default_people_count": 4.0,
+        "default_unit_price": DEFAULT_TRAVELING_HOURLY_RATE,
+        "notes": "Traveling is an expense-style row: hours x people x rate x trip count.",
+    },
+    {
+        "decision_id": "roofing_infrared_scan",
+        "template_bucket": "infrared_scan",
+        "label": "Infrared Scan",
+        "workbook_row": "141",
+        "formula": "hours_rate",
+        "notes": "Infrared scan is an hourly expense row.",
+    },
+    {
+        "decision_id": "roofing_meals_lodging",
+        "template_bucket": "meals_lodging",
+        "label": "Meals / Hotel",
+        "workbook_row": "144",
+        "formula": "days_people_rate",
+        "notes": "Meals/hotel is an expense row: days x people x daily amount.",
     },
 ]
 
@@ -9111,10 +9163,12 @@ def _build_roofing_labor_template_decisions(
             or penetration_count >= 10
             or any(term in note_text for term in ("many penetration", "lots of penetration", "heavy detail", "heavy penetration", "difficult access", "poor condition", "severe rust"))
         )
-        baseline = {"labor_prep", "labor_base", "labor_top_coat", "labor_cleanup", "labor_loading"}
+        baseline = {"labor_prep", "labor_base", "labor_top_coat", "labor_cleanup"}
         labor_rows = []
         for spec in LABOR_PACKAGES:
             package = str(spec["package"])
+            if package in ROOFING_LOGISTICS_EXPENSE_PACKAGES:
+                continue
             decision_id = f"roofing_{package}"
             meta = _decision_meta(
                 decision_defaults,
@@ -9171,6 +9225,8 @@ def _build_roofing_labor_template_decisions(
         package = str(labor.get("package_key") or labor.get("template_bucket") or "")
         workbook_row = str(labor.get("workbook_row") or "")
         if not package or not workbook_row:
+            continue
+        if package in ROOFING_LOGISTICS_EXPENSE_PACKAGES:
             continue
         source_labor = _row_for_bucket(source_labor_rows, package) or {}
         source_labor_task = first_nonblank(
@@ -11498,6 +11554,16 @@ def build_estimating_workbench(
         if not _is_insulation_scope(scope)
         else []
     )
+    roofing_logistics_expense_template_decisions = (
+        _build_insulation_decision_rows(
+            section="roofing_logistics_expense_template_decisions",
+            specs=ROOFING_LOGISTICS_EXPENSE_DECISION_SPECS,
+            scope=scope,
+            data=data,
+        )
+        if not _is_insulation_scope(scope)
+        else []
+    )
     roofing_dependencies = _roofing_dependency_totals(
         {
             "roofing_foam_template_decisions": roofing_foam_template_decisions,
@@ -11537,6 +11603,7 @@ def build_estimating_workbench(
         "roofing_equipment_template_decisions": roofing_equipment_template_decisions,
         "roofing_travel_freight_template_decisions": roofing_travel_freight_template_decisions,
         "roofing_accessory_template_decisions": roofing_accessory_template_decisions,
+        "roofing_logistics_expense_template_decisions": roofing_logistics_expense_template_decisions,
         "roofing_labor_template_decisions": roofing_labor_template_decisions,
     }
     pricing_markup_decisions = _build_pricing_markup_decisions(
@@ -11591,6 +11658,7 @@ def build_estimating_workbench(
         "roofing_equipment_template_decisions": roofing_equipment_template_decisions,
         "roofing_travel_freight_template_decisions": roofing_travel_freight_template_decisions,
         "roofing_accessory_template_decisions": roofing_accessory_template_decisions,
+        "roofing_logistics_expense_template_decisions": roofing_logistics_expense_template_decisions,
         "roofing_labor_template_decisions": roofing_labor_template_decisions,
         "pricing_markup_decisions": pricing_markup_decisions,
         "insulation_performance_specs": [],
@@ -11759,6 +11827,14 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
                 scope=scope,
                 coating_decisions=updated.get("roofing_coating_template_decisions") or [],
                 existing_rows=updated.get("roofing_accessory_template_decisions") or None,
+            )
+        if updated.get("roofing_logistics_expense_template_decisions"):
+            updated["roofing_logistics_expense_template_decisions"] = _build_insulation_decision_rows(
+                section="roofing_logistics_expense_template_decisions",
+                specs=ROOFING_LOGISTICS_EXPENSE_DECISION_SPECS,
+                scope=scope,
+                existing_rows=updated.get("roofing_logistics_expense_template_decisions") or None,
+                data=data,
             )
         if "roofing_labor_template_decisions" in updated:
             roofing_dependencies = _roofing_dependency_totals(
@@ -11944,6 +12020,7 @@ def apply_historical_filter_update(previous_workbench: dict[str, Any] | None, fi
         "roofing_equipment_template_decisions",
         "roofing_travel_freight_template_decisions",
         "roofing_accessory_template_decisions",
+        "roofing_logistics_expense_template_decisions",
         "roofing_labor_template_decisions",
         "pricing_markup_decisions",
     )
@@ -12049,6 +12126,11 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any], *, recalculate
     roofing_accessory_decision_rows = [
         row
         for row in workbench.get("roofing_accessory_template_decisions") or []
+        if isinstance(row, dict) and row.get("include")
+    ]
+    roofing_logistics_expense_decision_rows = [
+        row
+        for row in workbench.get("roofing_logistics_expense_template_decisions") or []
         if isinstance(row, dict) and row.get("include")
     ]
     insulation_foam_decision_rows = [
@@ -12444,6 +12526,33 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any], *, recalculate
             "notes": f"Roofing accessory/support template decision; template_option={row.get('resolved_template_option')}.",
         }
         material_rows.append(payload)
+    for row in roofing_logistics_expense_decision_rows:
+        bucket = str(row.get("template_bucket") or "").lower()
+        material_rows.append(
+            {
+                "decision_id": row.get("decision_id"),
+                "template_bucket": bucket,
+                "workbook_row": row.get("workbook_row"),
+                "row_traceability": f"Estimate row {row.get('workbook_row')}",
+                "item": first_nonblank(row.get("resolved_template_option"), row.get("template_line"), row.get("label"), bucket),
+                "category": bucket,
+                "quantity": safe_number(first_nonblank(row.get("estimated_units"), row.get("quantity")), 0.0),
+                "estimated_units": safe_number(first_nonblank(row.get("estimated_units"), row.get("quantity")), 0.0),
+                "days": safe_number(row.get("days"), 0.0),
+                "hours_per_day": safe_number(row.get("hours_per_day"), 0.0),
+                "people_count": safe_number(row.get("people_count"), 0.0),
+                "trip_count": safe_number(row.get("trip_count"), 0.0),
+                "round_trip_miles": safe_number(row.get("round_trip_miles"), 0.0),
+                "unit": "hour" if bucket in {"labor_loading", "labor_traveling", "infrared_scan"} else "day",
+                "unit_price": safe_number(row.get("unit_price"), 0.0),
+                "estimated_cost": safe_number(row.get("estimated_cost"), 0.0),
+                "formula_model": row.get("formula_model"),
+                "formula_source": row.get("formula_source"),
+                "calculated_output_summary": row.get("calculated_output_summary"),
+                "workbook_cell_write_preview": row.get("workbook_cell_write_preview") or [],
+                "notes": f"Roofing logistics expense template decision; section={row.get('section')}.",
+            }
+        )
     labor_rows = []
     if _is_insulation_scope(scope) and insulation_labor_decision_rows:
         for row in insulation_labor_decision_rows:
@@ -12595,6 +12704,7 @@ ROOFING_MATERIAL_TOTAL_DECISION_SECTIONS = (
 ROOFING_ADDER_TOTAL_DECISION_SECTIONS = (
     "roofing_equipment_template_decisions",
     "roofing_travel_freight_template_decisions",
+    "roofing_logistics_expense_template_decisions",
 )
 
 ROOFING_LABOR_TOTAL_DECISION_SECTIONS = ("roofing_labor_template_decisions",)

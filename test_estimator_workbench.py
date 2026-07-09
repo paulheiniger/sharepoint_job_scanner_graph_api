@@ -358,12 +358,19 @@ def test_roofing_spf_patch_uses_catalog_materials_and_people_sheet_labor_drivers
     assert coating["estimated_cost"] > 0
 
     labor = {row["template_bucket"]: row for row in workbench["roofing_labor_template_decisions"]}
-    for bucket in ("labor_prep", "labor_base", "labor_top_coat", "labor_cleanup", "labor_loading"):
+    for bucket in ("labor_prep", "labor_base", "labor_top_coat", "labor_cleanup"):
         assert labor[bucket]["include"] is True
         assert labor[bucket]["daily_rate"] == 1000
         assert labor[bucket]["days"] == 0.25
         assert labor[bucket]["estimated_cost"] == 250
         assert labor[bucket]["labor_driver_applied"] is True
+    assert "labor_loading" not in labor
+    logistics = {row["template_bucket"]: row for row in workbench["roofing_logistics_expense_template_decisions"]}
+    assert logistics["labor_loading"]["include"] is True
+    assert logistics["labor_loading"]["workbook_row"] == "136"
+    assert logistics["labor_loading"]["formula_model"] == "insulation_hours_people_rate_trip_count"
+    assert logistics["labor_traveling"]["include"] is True
+    assert logistics["labor_traveling"]["workbook_row"] == "138"
     assert labor["labor_base"]["labor_driver_quantity"] == coating["estimated_gallons"]
     assert labor["labor_top_coat"]["labor_driver_quantity"] == coating["estimated_gallons"]
     assert labor["labor_seam_sealer"]["include"] is False
@@ -399,7 +406,7 @@ def test_roofing_chat_preferences_fill_rows_without_exact_workbook_metadata() ->
     foam = next(row for row in workbench["roofing_foam_template_decisions"] if row["workbook_row"] == "19")
     coating = next(row for row in workbench["roofing_coating_template_decisions"] if row["workbook_row"] == "26")
     truck = next(row for row in workbench["roofing_travel_freight_template_decisions"] if row["template_bucket"] == "truck_expense")
-    loading = next(row for row in workbench["roofing_labor_template_decisions"] if row["template_bucket"] == "labor_loading")
+    loading = next(row for row in workbench["roofing_logistics_expense_template_decisions"] if row["template_bucket"] == "labor_loading")
 
     assert foam["proposal_source"] == "chat_estimator"
     assert foam["include"] is True
@@ -415,9 +422,11 @@ def test_roofing_chat_preferences_fill_rows_without_exact_workbook_metadata() ->
     assert truck["estimated_cost"] == 37.5
     assert loading["include"] is True
     assert loading["workbook_row"] == "136"
-    assert loading["days"] == 0.25
-    assert loading["daily_rate"] == 1000
-    assert loading["estimated_cost"] == 250
+    assert loading["hours_per_day"] == 0.25
+    assert loading["people_count"] == 4
+    assert not loading.get("daily_rate")
+    assert loading["unit_price"] == 25.5
+    assert loading["estimated_cost"] == 25.5
 
 
 def test_workbench_to_draft_inputs_can_skip_recalculation(monkeypatch) -> None:
@@ -490,6 +499,61 @@ def test_chat_loading_travel_preferences_apply_to_logistics_expense_rows() -> No
     assert rows["labor_traveling"]["hours_per_day"] == 2.5
     assert rows["labor_traveling"]["people_count"] == 4
     assert rows["labor_traveling"]["unit_price"] == 13
+
+
+def test_roofing_loading_travel_scan_and_meals_are_logistics_expense_rows() -> None:
+    recommendation = roofing_recommendation()
+    recommendation.parsed_fields["notes"] = "Roof coating project. Include loading, traveling, infrared scan, and meals lodging."
+    recommendation.parsed_fields["raw_input_notes"] = recommendation.parsed_fields["notes"]
+    recommendation.parsed_fields["estimator_chat"] = {
+        "source": "ai_chat",
+        "confidence": 0.72,
+        "workbook_decision_preferences": [
+            {
+                "template_bucket": "labor_loading",
+                "workbook_row": "136",
+                "include": True,
+                "proposed_values": {"days": 8, "crew_size": 2, "daily_rate": 1685},
+            },
+            {
+                "template_bucket": "labor_traveling",
+                "workbook_row": "138",
+                "include": True,
+                "proposed_values": {"hours_per_day": 2.5, "people_count": 2, "unit_price": 13},
+            },
+            {
+                "template_bucket": "infrared_scan",
+                "workbook_row": "141",
+                "include": True,
+                "proposed_values": {"hours_per_day": 1, "unit_price": 75},
+            },
+            {
+                "template_bucket": "meals_lodging",
+                "workbook_row": "144",
+                "include": True,
+                "proposed_values": {"days": 1, "people_count": 2, "unit_price": 125},
+            },
+        ],
+    }
+
+    workbench = build_estimating_workbench(recommendation, EstimatorData())
+    labor_buckets = {row["template_bucket"] for row in workbench["roofing_labor_template_decisions"]}
+    logistics = {row["template_bucket"]: row for row in workbench["roofing_logistics_expense_template_decisions"]}
+
+    assert not {"labor_loading", "labor_traveling", "infrared_scan", "meals_lodging"}.intersection(labor_buckets)
+    assert {"labor_loading", "labor_traveling", "infrared_scan", "meals_lodging"}.issubset(logistics)
+    assert logistics["labor_loading"]["include"] is True
+    assert logistics["labor_loading"]["hours_per_day"] == 0.5
+    assert logistics["labor_loading"]["people_count"] == 2
+    assert logistics["labor_loading"]["unit_price"] == 25.5
+    assert not logistics["labor_loading"].get("daily_rate")
+    assert logistics["labor_traveling"]["estimated_cost"] == 65
+    assert logistics["infrared_scan"]["estimated_cost"] == 75
+    assert logistics["meals_lodging"]["estimated_cost"] == 250
+
+    draft = workbench_to_draft_workbook_inputs(workbench)
+    assert any(row["template_bucket"] == "labor_loading" and row["workbook_row"] == "136" for row in draft["workbook_decisions"])
+    assert any(row["template_bucket"] == "meals_lodging" and row["workbook_row"] == "144" for row in draft["workbook_decisions"])
 
 
 def test_workbench_enriches_row_options_from_template_catalogs() -> None:

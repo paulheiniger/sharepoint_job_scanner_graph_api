@@ -354,6 +354,23 @@ INSULATION_DECISION_SECTION_COLUMNS = {
         "compatibility_warnings",
         "notes",
     ],
+    "roofing_logistics_expense_template_decisions": [
+        "include",
+        "workbook_row",
+        "template_line",
+        CHOICE_SUMMARY_COLUMN,
+        "hours_per_day",
+        "days",
+        "people_count",
+        "trip_count",
+        "unit_price",
+        "estimated_units",
+        "estimated_cost",
+        "formula_model",
+        "compatibility_status",
+        "compatibility_warnings",
+        "notes",
+    ],
     "insulation_compliance_template_decisions": [
         "include",
         "workbook_row",
@@ -8211,7 +8228,14 @@ def estimator_chat_decision_change_rows(preferences: Any) -> list[dict[str, Any]
         values = item.get("proposed_values") if isinstance(item.get("proposed_values"), dict) else {}
         template_bucket = str(item.get("template_bucket") or item.get("package") or "").strip().lower().replace(" ", "_")
         workbook_row = str(item.get("workbook_row") or item.get("row_number") or "").strip()
-        logistics_expense_row = template_bucket in {"labor_loading", "labor_traveling", "infrared_scan", "meals_lodging"} or workbook_row in {"95", "97", "99", "100"}
+        logistics_expense_row = template_bucket in {
+            "labor_loading",
+            "labor_traveling",
+            "infrared_scan",
+            "labor_infrared_scan",
+            "meals_lodging",
+            "labor_meals_lodging",
+        } or workbook_row in {"95", "97", "99", "100", "136", "138", "141", "144"}
         direct_field_names = {
             "basis_sqft",
             "thickness_inches",
@@ -8233,11 +8257,11 @@ def estimator_chat_decision_change_rows(preferences: Any) -> list[dict[str, Any]
             "formula_mode",
         }
         if logistics_expense_row:
-            if template_bucket in {"labor_loading", "labor_traveling"} or workbook_row in {"95", "97"}:
+            if template_bucket in {"labor_loading", "labor_traveling"} or workbook_row in {"95", "97", "136", "138"}:
                 direct_field_names = {"hours_per_day", "people_count", "trip_count", "unit_price", "round_trip_miles"}
-            elif template_bucket == "infrared_scan" or workbook_row == "99":
+            elif template_bucket in {"infrared_scan", "labor_infrared_scan"} or workbook_row in {"99", "141"}:
                 direct_field_names = {"hours_per_day", "unit_price"}
-            elif template_bucket == "meals_lodging" or workbook_row == "100":
+            elif template_bucket in {"meals_lodging", "labor_meals_lodging"} or workbook_row in {"100", "144"}:
                 direct_field_names = {"days", "people_count", "unit_price"}
         direct_values = {
             key: value
@@ -8532,6 +8556,7 @@ def render_workbench_selected_row_details(
         ("roofing_equipment_template_decisions", "Roof Equipment"),
         ("roofing_travel_freight_template_decisions", "Roof Travel / Freight"),
         ("roofing_accessory_template_decisions", "Roof Accessories"),
+        ("roofing_logistics_expense_template_decisions", "Roof Loading / Travel / Lodging"),
         ("roofing_labor_template_decisions", "Roof Labor"),
         ("pricing_markup_decisions", "Pricing Markup"),
     ]:
@@ -11221,6 +11246,64 @@ def estimator_prototype_page() -> None:
                     historical_filters_key=historical_filters_key,
                 )
             edited_workbench["roofing_accessory_template_decisions"] = merged_accessory_template_rows
+
+        if original_workbench.get("roofing_logistics_expense_template_decisions"):
+            st.markdown("#### Roofing Loading / Travel / Lodging")
+            roofing_logistics_expense_editable_fields = {
+                "include",
+                "hours_per_day",
+                "days",
+                "people_count",
+                "trip_count",
+                "unit_price",
+            }
+            roofing_logistics_expense_rows = original_workbench.get("roofing_logistics_expense_template_decisions") or []
+            roofing_logistics_expense_column_order = (
+                []
+                if show_row_details
+                else DECISION_SECTION_COMPACT_COLUMNS.get("roofing_logistics_expense_template_decisions", [])
+            )
+            with estimator_perf_step("roofing logistics expense table prep"):
+                roofing_logistics_expense_display_df, roofing_logistics_expense_column_order = workbench_display_frame_from_records(
+                    roofing_logistics_expense_rows,
+                    roofing_logistics_expense_column_order,
+                    editable_fields=roofing_logistics_expense_editable_fields,
+                    show_row_details=show_row_details,
+                )
+            edited_roofing_logistics_expense_df = st.data_editor(
+                roofing_logistics_expense_display_df,
+                use_container_width=True,
+                hide_index=True,
+                num_rows="fixed",
+                key=f"wb_roofing_logistics_expense_{workbench_key}_{scope_key}_{historical_filters_key}",
+                column_order=roofing_logistics_expense_column_order,
+                column_config={
+                    "include": "Include",
+                    "workbook_row": "Row",
+                    "template_line": "Expense",
+                    "hours_per_day": "Hours",
+                    "days": "Days",
+                    "people_count": "People",
+                    "trip_count": "Trips",
+                    "unit_price": "Rate",
+                    "estimated_units": "Units",
+                    "estimated_cost": "Cost",
+                    "formula_model": "Formula",
+                    "compatibility_status": "Status",
+                    "compatibility_warnings": "Warnings",
+                    "notes": "Notes",
+                },
+                disabled=[
+                    column
+                    for column in roofing_logistics_expense_column_order
+                    if column not in roofing_logistics_expense_editable_fields
+                ],
+            )
+            edited_workbench["roofing_logistics_expense_template_decisions"] = merge_editable_rows(
+                roofing_logistics_expense_rows,
+                edited_roofing_logistics_expense_df.to_dict(orient="records"),
+                roofing_logistics_expense_editable_fields,
+            )
 
         if original_workbench.get("roofing_labor_template_decisions"):
             st.markdown("#### Roofing Labor Planning Decision")

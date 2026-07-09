@@ -395,21 +395,39 @@ CHAT_DECISION_MENU: dict[str, list[dict[str, Any]]] = {
         },
         {
             "decision_id": "roofing_labor_loading_row_136",
-            "section": "roofing_labor_template_decisions",
+            "section": "roofing_logistics_expense_template_decisions",
             "template_bucket": "labor_loading",
             "workbook_row": "136",
-            "label": "Loading labor",
-            "editable_fields": ["include", "days", "crew_size", "daily_rate", "hourly_rate", "total_hours"],
-            "formula_requirements": ["daily_rate and days", "or total_hours and hourly_rate"],
+            "label": "Loading",
+            "editable_fields": ["include", "hours_per_day", "people_count", "trip_count", "unit_price"],
+            "formula_requirements": ["hours_per_day", "people_count", "unit_price", "optional trip_count"],
         },
         {
             "decision_id": "roofing_labor_traveling_row_138",
-            "section": "roofing_labor_template_decisions",
+            "section": "roofing_logistics_expense_template_decisions",
             "template_bucket": "labor_traveling",
             "workbook_row": "138",
-            "label": "Travel labor",
-            "editable_fields": ["include", "days", "crew_size", "daily_rate", "hourly_rate", "total_hours"],
-            "formula_requirements": ["daily_rate and days", "or total_hours and hourly_rate"],
+            "label": "Traveling",
+            "editable_fields": ["include", "hours_per_day", "people_count", "trip_count", "unit_price"],
+            "formula_requirements": ["hours_per_day", "people_count", "unit_price", "optional trip_count"],
+        },
+        {
+            "decision_id": "roofing_infrared_scan_row_141",
+            "section": "roofing_logistics_expense_template_decisions",
+            "template_bucket": "infrared_scan",
+            "workbook_row": "141",
+            "label": "Infrared Scan",
+            "editable_fields": ["include", "hours_per_day", "unit_price"],
+            "formula_requirements": ["hours_per_day", "unit_price"],
+        },
+        {
+            "decision_id": "roofing_meals_lodging_row_144",
+            "section": "roofing_logistics_expense_template_decisions",
+            "template_bucket": "meals_lodging",
+            "workbook_row": "144",
+            "label": "Meals / Hotel",
+            "editable_fields": ["include", "days", "people_count", "unit_price"],
+            "formula_requirements": ["days", "people_count", "unit_price"],
         },
         {
             "decision_id": "pricing_overhead",
@@ -1406,6 +1424,9 @@ def _chat_prompt_messages(
         "product R-per-inch evidence, or matching historical template evidence, otherwise ask or mark thickness review_required. "
         "For roofing jobs, use roofing workbook buckets directly: foam for roof SPF, coating, primer, caulk_detail, fabric, seams_misc, "
         "penetrations, board_stock, fasteners, plates, granules, dumpster, lift, generator, sales_trips, truck_expense, and roofing labor buckets. "
+        "For roofing Loading row 136 and Traveling row 138, do not use days, crew_size, daily_rate, hourly_rate, or total_hours; "
+        "use only hours_per_day, people_count, trip_count, and unit_price because those rows are logistics expense rows. "
+        "For roofing Infrared row 141 use hours_per_day and unit_price; for Meals / Hotel row 144 use days, people_count, and unit_price. "
         "Roofing labor rows use the mixed labor formula: daily_rate and days when a daily rate is available, otherwise total_hours and hourly_rate. "
         "Roofing sales/truck travel rows use trip_count x round_trip_miles x unit_price. "
         "You may do takeoff math from explicit dimensions and deductions. Do not invent hidden warranty years, exact proprietary products, "
@@ -1486,13 +1507,13 @@ def _safe_positive_number(value: Any) -> float:
     return number if number > 0 else 0.0
 
 
-def _sanitize_insulation_logistics_values(values: dict[str, Any], *, row_number: str) -> dict[str, Any]:
+def _sanitize_logistics_loading_travel_values(values: dict[str, Any], *, row_number: str) -> dict[str, Any]:
     cleaned = dict(values or {})
     if cleaned.get("hours_per_day") in (None, ""):
         cleaned["hours_per_day"] = _first_present(cleaned, "hours", "total_hours", "days")
     if cleaned.get("people_count") in (None, ""):
         cleaned["people_count"] = _first_present(cleaned, "crew_size")
-    is_loading = row_number == "95"
+    is_loading = row_number in {"95", "136"}
     default_hours = (
         INSULATION_CHAT_TEMPLATE_DEFAULTS["loading_hours_per_day"]
         if is_loading
@@ -1561,18 +1582,19 @@ def _clean_decision_preferences(value: Any) -> list[dict[str, Any]]:
         bucket = _clean_string(cleaned.get("template_bucket") or cleaned.get("package") or cleaned.get("category")).lower()
         bucket = bucket.replace(" ", "_").replace("-", "_")
         row_number = _safe_row_number(cleaned.get("workbook_row") or cleaned.get("row_number"))
-        if row_number in {"95", "97"}:
-            proposed_values = _sanitize_insulation_logistics_values(proposed_values, row_number=row_number)
-            cleaned["section"] = "insulation_logistics_expense_template_decisions"
-            cleaned["template_bucket"] = bucket or ("labor_loading" if row_number == "95" else "labor_traveling")
-            cleaned["workbook_row"] = row_number or ("95" if cleaned["template_bucket"] == "labor_loading" else "97")
+        if row_number in {"95", "97", "136", "138"}:
+            proposed_values = _sanitize_logistics_loading_travel_values(proposed_values, row_number=row_number)
+            is_roofing_row = row_number in {"136", "138"}
+            cleaned["section"] = "roofing_logistics_expense_template_decisions" if is_roofing_row else "insulation_logistics_expense_template_decisions"
+            cleaned["template_bucket"] = bucket or ("labor_loading" if row_number in {"95", "136"} else "labor_traveling")
+            cleaned["workbook_row"] = row_number
             for stale_key in ("days", "crew_size", "daily_rate", "hourly_rate", "total_hours", "editable_total_hours"):
                 cleaned.pop(stale_key, None)
         elif bucket == "foam" or row_number in {"19", "20", "21"}:
             proposed_values.pop("yield_or_coverage", None)
             proposed_values.pop("foam_yield_or_coverage", None)
             proposed_values.pop("foam_yield", None)
-        elif row_number == "99" and bucket in {"infrared_scan", ""}:
+        elif row_number in {"99", "141"} and bucket in {"infrared_scan", "labor_infrared_scan", ""}:
             if proposed_values.get("hours_per_day") in (None, ""):
                 proposed_values["hours_per_day"] = _first_present(proposed_values, "hours", "total_hours", "days")
             proposed_values = {
@@ -1580,12 +1602,12 @@ def _clean_decision_preferences(value: Any) -> list[dict[str, Any]]:
                 for key in ("hours_per_day", "unit_price")
                 if proposed_values.get(key) not in (None, "")
             }
-            cleaned["section"] = "insulation_logistics_expense_template_decisions"
+            cleaned["section"] = "roofing_logistics_expense_template_decisions" if row_number == "141" else "insulation_logistics_expense_template_decisions"
             cleaned["template_bucket"] = "infrared_scan"
-            cleaned["workbook_row"] = "99"
+            cleaned["workbook_row"] = row_number
             for stale_key in ("days", "crew_size", "daily_rate", "hourly_rate", "total_hours", "editable_total_hours"):
                 cleaned.pop(stale_key, None)
-        elif row_number == "100":
+        elif row_number in {"100", "144"}:
             if proposed_values.get("people_count") in (None, ""):
                 proposed_values["people_count"] = _first_present(proposed_values, "crew_size")
             proposed_values = {
@@ -1593,9 +1615,9 @@ def _clean_decision_preferences(value: Any) -> list[dict[str, Any]]:
                 for key in ("days", "people_count", "unit_price")
                 if proposed_values.get(key) not in (None, "")
             }
-            cleaned["section"] = "insulation_logistics_expense_template_decisions"
+            cleaned["section"] = "roofing_logistics_expense_template_decisions" if row_number == "144" else "insulation_logistics_expense_template_decisions"
             cleaned["template_bucket"] = "meals_lodging"
-            cleaned["workbook_row"] = "100"
+            cleaned["workbook_row"] = row_number
             for stale_key in ("crew_size", "daily_rate", "hourly_rate", "total_hours", "editable_total_hours"):
                 cleaned.pop(stale_key, None)
         cleaned["proposed_values"] = proposed_values

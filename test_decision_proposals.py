@@ -73,7 +73,7 @@ def test_estimator_chat_preferences_create_canonical_foam_proposal() -> None:
     assert foam["source"] == "chat_estimator"
     assert foam["workbook_row"] == "19-21"
     assert foam["proposed_values"]["thickness_inches"] == 5
-    assert foam["proposed_values"]["yield_or_coverage"] == 4500
+    assert "yield_or_coverage" not in foam["proposed_values"]
     assert foam["evidence"]["chat_estimator"][0]["assistant_message"].startswith("Use 5 inch")
 
 
@@ -109,7 +109,7 @@ def test_estimator_chat_loading_travel_preferences_target_logistics_expense_rows
 
     assert loading["section"] == "insulation_logistics_expense_template_decisions"
     assert loading["workbook_row"] == "95"
-    assert loading["proposed_values"] == {"hours_per_day": 1, "people_count": 2}
+    assert loading["proposed_values"] == {"hours_per_day": 1, "people_count": 2, "unit_price": 25.5}
     assert traveling["section"] == "insulation_logistics_expense_template_decisions"
     assert traveling["workbook_row"] == "97"
     assert traveling["proposed_values"] == {"hours_per_day": 2.5, "people_count": 4, "unit_price": 13}
@@ -150,9 +150,10 @@ def test_estimator_chat_roofing_preferences_target_workbook_rows_without_row_num
     assert by_bucket["plates"]["workbook_row"] == "65"
     assert by_bucket["truck_expense"]["section"] == "roofing_travel_freight_template_decisions"
     assert by_bucket["truck_expense"]["workbook_row"] == "108"
-    assert by_bucket["labor_loading"]["section"] == "roofing_labor_template_decisions"
+    assert by_bucket["labor_loading"]["section"] == "roofing_logistics_expense_template_decisions"
     assert by_bucket["labor_loading"]["workbook_row"] == "136"
-    assert by_bucket["labor_loading"]["proposed_values"]["days"] == 0.25
+    assert by_bucket["labor_loading"]["proposed_values"]["hours_per_day"] == 0.25
+    assert by_bucket["labor_loading"]["proposed_values"]["people_count"] == 4
 
 
 def test_historical_only_warranty_is_not_invented_without_prompt_evidence() -> None:

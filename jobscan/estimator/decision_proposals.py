@@ -153,6 +153,7 @@ WORKBENCH_MATERIAL_SECTIONS = (
     "roofing_board_fastener_template_decisions",
     "roofing_granules_template_decisions",
     "roofing_equipment_template_decisions",
+    "roofing_logistics_expense_template_decisions",
     "roofing_accessory_template_decisions",
     "insulation_foam_template_decisions",
     "insulation_detail_material_template_decisions",
@@ -743,6 +744,26 @@ def _reference_target_for_row(row: dict[str, Any], template_type: str) -> dict[s
             return {"section": "roofing_granules_template_decisions", "decision_id": "roofing_granules_row_36", "template_bucket": "granules", "workbook_row": "36"}
         if bucket in {"dumpster", "disposal"}:
             return {"section": "roofing_equipment_template_decisions", "decision_id": "roofing_dumpsters_row_69", "template_bucket": "dumpster", "workbook_row": "69"}
+        if bucket in {"labor_loading", "labor_traveling", "labor_infrared_scan", "infrared_scan", "labor_meals_lodging", "meals_lodging"}:
+            row_defaults = {
+                "labor_loading": "136",
+                "labor_traveling": "138",
+                "labor_infrared_scan": "141",
+                "infrared_scan": "141",
+                "labor_meals_lodging": "144",
+                "meals_lodging": "144",
+            }
+            normalized_bucket = {
+                "labor_infrared_scan": "infrared_scan",
+                "labor_meals_lodging": "meals_lodging",
+            }.get(bucket, bucket)
+            resolved_row = row_number if row_number in {"136", "138", "141", "144"} else row_defaults[bucket]
+            return {
+                "section": "roofing_logistics_expense_template_decisions",
+                "decision_id": f"roofing_{normalized_bucket}_row_{resolved_row}",
+                "template_bucket": normalized_bucket,
+                "workbook_row": resolved_row,
+            }
         if kind == "labor" or bucket.startswith("labor_"):
             if not row_number:
                 return None
@@ -1091,6 +1112,34 @@ def _chat_target_for_preference(template_type: str, item: dict[str, Any]) -> dic
                 "template_bucket": "truck_expense",
                 "workbook_row": "108",
             }
+        if bucket in {"labor_loading", "labor_traveling", "labor_infrared_scan", "infrared_scan", "labor_meals_lodging", "meals_lodging"}:
+            row_defaults = {
+                "labor_loading": "136",
+                "labor_traveling": "138",
+                "labor_infrared_scan": "141",
+                "infrared_scan": "141",
+                "labor_meals_lodging": "144",
+                "meals_lodging": "144",
+            }
+            decision_defaults = {
+                "labor_loading": "roofing_labor_loading_row_136",
+                "labor_traveling": "roofing_labor_traveling_row_138",
+                "labor_infrared_scan": "roofing_infrared_scan_row_141",
+                "infrared_scan": "roofing_infrared_scan_row_141",
+                "labor_meals_lodging": "roofing_meals_lodging_row_144",
+                "meals_lodging": "roofing_meals_lodging_row_144",
+            }
+            normalized_bucket = {
+                "labor_infrared_scan": "infrared_scan",
+                "labor_meals_lodging": "meals_lodging",
+            }.get(bucket, bucket)
+            resolved_row = workbook_row if workbook_row in {"136", "138", "141", "144"} else row_defaults[bucket]
+            return {
+                "section": "roofing_logistics_expense_template_decisions",
+                "decision_id": decision_id or decision_defaults[bucket],
+                "template_bucket": normalized_bucket,
+                "workbook_row": resolved_row,
+            }
         if bucket.startswith("labor_") and workbook_row:
             labor_row_defaults = {
                 "labor_prep": "116",
@@ -1153,16 +1202,22 @@ def _clean_chat_proposed_values(item: dict[str, Any], *, template_type: str = ""
             values.setdefault(field, item.get(field))
     bucket = _canonical_package(item.get("template_bucket") or item.get("package") or item.get("category"))
     workbook_row = str(item.get("workbook_row") or item.get("row_number") or "").strip()
-    if (template_type == "insulation" and bucket in {"labor_loading", "labor_traveling"}) or workbook_row in {"95", "97"}:
+    loading_travel_rows = {"95", "97"} if template_type == "insulation" else {"136", "138"} if template_type == "roofing" else set()
+    if (
+        (template_type in {"insulation", "roofing"} and bucket in {"labor_loading", "labor_traveling"})
+        or workbook_row in loading_travel_rows
+    ):
         row_number = workbook_row or ("95" if bucket == "labor_loading" else "97")
+        if template_type == "roofing" and not workbook_row:
+            row_number = "136" if bucket == "labor_loading" else "138"
         if values.get("hours_per_day") in (None, ""):
             values["hours_per_day"] = _first_value(values, "hours", "total_hours", "days")
         if values.get("people_count") in (None, ""):
             values["people_count"] = _first_value(values, "crew_size")
-        default_hours = 0.5 if row_number == "95" else 2.5
-        default_people = 1.0 if row_number == "95" else 4.0
-        default_rate = 25.5 if row_number == "95" else 13.0
-        max_hours = 2.0 if row_number == "95" else 6.0
+        default_hours = 0.5 if row_number in {"95", "136"} else 2.5
+        default_people = 1.0 if row_number in {"95", "136"} else 4.0
+        default_rate = 25.5 if row_number in {"95", "136"} else 13.0
+        max_hours = 2.0 if row_number in {"95", "136"} else 6.0
         hours = _safe_number(values.get("hours_per_day"), 0.0)
         people = _safe_number(values.get("people_count"), 0.0)
         rate = _safe_number(values.get("unit_price"), 0.0)
@@ -1175,12 +1230,15 @@ def _clean_chat_proposed_values(item: dict[str, Any], *, template_type: str = ""
         values.pop("yield_or_coverage", None)
         values.pop("foam_yield_or_coverage", None)
         values.pop("foam_yield", None)
-    if template_type == "insulation" and (bucket in {"infrared_scan"} or (workbook_row == "99" and bucket in {"", "infrared_scan"})):
+    if template_type in {"insulation", "roofing"} and (
+        bucket in {"infrared_scan", "labor_infrared_scan"}
+        or (workbook_row in {"99", "141"} and bucket in {"", "infrared_scan", "labor_infrared_scan"})
+    ):
         if values.get("hours_per_day") in (None, ""):
             values["hours_per_day"] = _first_value(values, "hours", "total_hours", "days")
         return {key: value for key, value in values.items() if key in {"hours_per_day", "unit_price"} and value is not None}
-    if template_type == "insulation" and (
-        bucket in {"meals_lodging", "labor_meals_lodging"} or (workbook_row == "100" and bucket in {"", "meals_lodging", "labor_meals_lodging"})
+    if template_type in {"insulation", "roofing"} and (
+        bucket in {"meals_lodging", "labor_meals_lodging"} or (workbook_row in {"100", "144"} and bucket in {"", "meals_lodging", "labor_meals_lodging"})
     ):
         if values.get("people_count") in (None, ""):
             values["people_count"] = _first_value(values, "crew_size")
