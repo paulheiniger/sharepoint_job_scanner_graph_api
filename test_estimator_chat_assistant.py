@@ -112,6 +112,19 @@ def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
                 }
             ]
         ),
+        estimator_memory=pd.DataFrame(
+            [
+                {
+                    "status": "approved",
+                    "priority": "high",
+                    "template_type": "insulation",
+                    "template_bucket": "labor_loading",
+                    "guidance": "For spray foam insulation, Loading is normally a short setup item, not a full labor day.",
+                    "rationale": "Estimator correction from prior chat session.",
+                    "source_type": "estimator_correction",
+                }
+            ]
+        ),
     )
     calls = []
 
@@ -126,6 +139,8 @@ def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
         assert "companion_relationships" in messages[1]["content"]
         assert "foam_yield_history_digest" in messages[1]["content"]
         assert "template_fallback_defaults" in messages[1]["content"]
+        assert "estimator_memory_guidance" in messages[1]["content"]
+        assert "Loading is normally a short setup item" in messages[1]["content"]
         assert "yield_or_coverage" in messages[1]["content"]
         return {
             "assistant_message": "Drafted the insulation estimate.",
@@ -163,6 +178,7 @@ def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
     assert result.workbook_decision_preferences[0]["template_bucket"] == "foam"
 
     context = json.loads(calls[0][0][1]["content"])["estimator_context"]
+    assert context["estimator_memory_guidance"][0]["template_bucket"] == "labor_loading"
     assert context["template_fallback_defaults"]["insulation_foam"]["yield_or_coverage"] == 2600
     assert context["template_fallback_defaults"]["insulation_foam"]["unit_price"] == 2.25
     loading = next(row for row in context["decision_menu"] if row["template_bucket"] == "labor_loading")
@@ -207,11 +223,47 @@ def test_estimator_chat_normalizes_loading_travel_to_logistics_formula_fields() 
     loading, traveling = result.workbook_decision_preferences
 
     assert loading["section"] == "insulation_logistics_expense_template_decisions"
-    assert loading["proposed_values"] == {"hours_per_day": 1, "people_count": 2}
+    assert loading["proposed_values"] == {"hours_per_day": 1.0, "people_count": 2.0, "unit_price": 25.5}
     assert "daily_rate" not in loading
     assert traveling["section"] == "insulation_logistics_expense_template_decisions"
-    assert traveling["proposed_values"] == {"hours_per_day": 2, "people_count": 5}
+    assert traveling["proposed_values"] == {"hours_per_day": 2.0, "people_count": 5.0, "unit_price": 13.0}
     assert "daily_rate" not in traveling
+
+
+def test_estimator_chat_caps_bad_loading_travel_values() -> None:
+    def provider(_messages, _model):
+        return {
+            "assistant_message": "Drafted logistics decisions.",
+            "estimator_notes": "Open cell insulation job with loading and travel.",
+            "scope_overrides": {"template_type": "insulation"},
+            "workbook_decision_preferences": [
+                {
+                    "template_bucket": "labor_loading",
+                    "workbook_row": "95",
+                    "include": True,
+                    "proposed_values": {"hours_per_day": 8, "people_count": 2, "unit_price": 50},
+                },
+                {
+                    "template_bucket": "labor_traveling",
+                    "workbook_row": "97",
+                    "include": True,
+                    "proposed_values": {"hours_per_day": 8, "people_count": 2, "unit_price": 50},
+                },
+            ],
+            "confidence": 0.7,
+        }
+
+    result = run_estimator_chat_turn(
+        [{"role": "user", "content": "30x40 metal building, open cell foam, include loading and travel."}],
+        template_type_hint="insulation",
+        provider=provider,
+        model="test-model",
+    )
+
+    loading, traveling = result.workbook_decision_preferences
+
+    assert loading["proposed_values"] == {"hours_per_day": 0.5, "people_count": 2.0, "unit_price": 25.5}
+    assert traveling["proposed_values"] == {"hours_per_day": 2.5, "people_count": 2.0, "unit_price": 13.0}
 
 
 def test_estimator_chat_context_includes_thickness_matched_foam_yield_digest() -> None:

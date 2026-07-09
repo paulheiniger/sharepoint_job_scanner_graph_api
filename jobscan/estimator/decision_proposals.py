@@ -1154,12 +1154,27 @@ def _clean_chat_proposed_values(item: dict[str, Any], *, template_type: str = ""
     bucket = _canonical_package(item.get("template_bucket") or item.get("package") or item.get("category"))
     workbook_row = str(item.get("workbook_row") or item.get("row_number") or "").strip()
     if (template_type == "insulation" and bucket in {"labor_loading", "labor_traveling"}) or workbook_row in {"95", "97"}:
+        row_number = workbook_row or ("95" if bucket == "labor_loading" else "97")
         if values.get("hours_per_day") in (None, ""):
             values["hours_per_day"] = _first_value(values, "hours", "total_hours", "days")
         if values.get("people_count") in (None, ""):
             values["people_count"] = _first_value(values, "crew_size")
+        default_hours = 0.5 if row_number == "95" else 2.5
+        default_people = 1.0 if row_number == "95" else 4.0
+        default_rate = 25.5 if row_number == "95" else 13.0
+        max_hours = 2.0 if row_number == "95" else 6.0
+        hours = _safe_number(values.get("hours_per_day"), 0.0)
+        people = _safe_number(values.get("people_count"), 0.0)
+        rate = _safe_number(values.get("unit_price"), 0.0)
+        values["hours_per_day"] = default_hours if hours <= 0 or hours > max_hours else hours
+        values["people_count"] = default_people if people <= 0 else people
+        values["unit_price"] = default_rate if rate <= 0 or rate > default_rate * 1.5 else rate
         allowed = {"hours_per_day", "people_count", "trip_count", "unit_price", "round_trip_miles"}
         return {key: value for key, value in values.items() if key in allowed and value is not None}
+    if template_type == "insulation" and (bucket == "foam" or workbook_row in {"19", "20", "21", "19-21"}):
+        values.pop("yield_or_coverage", None)
+        values.pop("foam_yield_or_coverage", None)
+        values.pop("foam_yield", None)
     if template_type == "insulation" and (bucket in {"infrared_scan"} or (workbook_row == "99" and bucket in {"", "infrared_scan"})):
         if values.get("hours_per_day") in (None, ""):
             values["hours_per_day"] = _first_value(values, "hours", "total_hours", "days")
@@ -1617,7 +1632,6 @@ def _insulation_scope_proposals(scope: dict[str, Any], notes: str) -> list[Decis
             values={
                 "basis_sqft": _first_positive(scope, "estimated_sqft", "net_insulation_area_sqft", "gross_insulation_area_sqft"),
                 "thickness_inches": _first_positive(scope, "foam_thickness_inches", "thickness_inches"),
-                "yield_or_coverage": _first_positive(scope, "yield_or_coverage", "foam_yield_or_coverage", "foam_yield"),
             },
             confidence=0.85,
             review_reasons=[] if scope.get("foam_type") else ["Foam type was not stated; estimator must confirm open-cell vs closed-cell."],

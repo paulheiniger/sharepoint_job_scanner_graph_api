@@ -38,6 +38,7 @@ class EstimatorData:
     template_labor_options: pd.DataFrame = field(default_factory=pd.DataFrame)
     decision_history_tables: dict[str, pd.DataFrame] = field(default_factory=dict)
     estimator_decision_recommendations: pd.DataFrame = field(default_factory=pd.DataFrame)
+    estimator_memory: pd.DataFrame = field(default_factory=pd.DataFrame)
     warnings: list[str] = field(default_factory=list)
     source_files_used: list[str] = field(default_factory=list)
 

@@ -7,12 +7,13 @@ import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
 from .evidence_export import sanitize_for_export
+from .estimator_memory import normalize_memory_token, upsert_estimator_memory
 from .workbench import recalculate_workbench_tables, summarize_workbench_totals
 
 DEFAULT_SESSION_EXPORT_DIR = Path("output/estimator_session_exports")
@@ -442,6 +443,176 @@ def _decision_id_from_edit(row: dict[str, Any]) -> str:
     if "." in section:
         return section.split(".", 1)[1]
     return section
+
+
+MEMORY_CAPTURE_FIELDS = {
+    "include",
+    "editable_selector_code",
+    "selected_pricing_candidate",
+    "basis_sqft",
+    "thickness_inches",
+    "yield_or_coverage",
+    "unit_price",
+    "estimated_units",
+    "gal_per_100_sqft",
+    "coverage_sqft_per_unit",
+    "feet_per_unit",
+    "days",
+    "hours_per_day",
+    "people_count",
+    "trip_count",
+    "crew_size",
+    "daily_rate",
+    "hourly_rate",
+    "total_hours",
+    "editable_total_hours",
+    "round_trip_miles",
+    "markup_pct",
+}
+
+
+def _memory_template_type_from_edit(row: dict[str, Any], fallback: str = "") -> str:
+    section = normalize_memory_token(row.get("section"))
+    if section.startswith("insulation_"):
+        return "insulation"
+    if section.startswith("roofing_"):
+        return "roofing"
+    if section.startswith("flooring_"):
+        return "flooring"
+    if section.startswith("repair_"):
+        return "repair"
+    return normalize_memory_token(fallback)
+
+
+def _memory_bucket_from_edit(row: dict[str, Any]) -> str:
+    bucket = normalize_memory_token(row.get("package_or_labor_task"))
+    if bucket:
+        return bucket
+    section = normalize_memory_token(row.get("section"))
+    for suffix in ("template_decisions", "decisions"):
+        if section.endswith(suffix):
+            section = section[: -len(suffix)].strip("_")
+    if "." in str(row.get("section") or ""):
+        return normalize_memory_token(str(row.get("section") or "").split(".", 1)[1])
+    return section
+
+
+def _memory_value_text(value: Any) -> str:
+    value = _maybe_json(value)
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, sort_keys=True, default=str)
+    return str(value)
+
+
+def estimator_memory_candidates_from_edits(
+    edit_rows: list[dict[str, Any]],
+    *,
+    session_id: str = "",
+    template_type: str = "",
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in edit_rows or []:
+        if not isinstance(row, dict):
+            continue
+        field_name = normalize_memory_token(row.get("field_name") or row.get("field"))
+        if field_name not in MEMORY_CAPTURE_FIELDS:
+            continue
+        old_value = row.get("suggested_value", row.get("historical_default"))
+        new_value = row.get("final_value")
+        if _memory_value_text(old_value) == _memory_value_text(new_value):
+            continue
+        if new_value in (None, ""):
+            continue
+        decision_id = normalize_memory_token(_decision_id_from_edit(row))
+        bucket = _memory_bucket_from_edit(row)
+        resolved_template_type = _memory_template_type_from_edit(row, template_type)
+        final_text = _memory_value_text(new_value)
+        old_text = _memory_value_text(old_value)
+        reason = str(row.get("reason") or row.get("edit_reason") or "").strip()
+        if field_name == "include":
+            guidance = (
+                f"For {resolved_template_type or 'estimator'} {bucket or decision_id}, estimator set include={final_text}. "
+                "Use this as a reviewed prior for similar jobs, but keep current job evidence authoritative."
+            )
+        else:
+            guidance = (
+                f"For {resolved_template_type or 'estimator'} {bucket or decision_id}, estimator changed {field_name} "
+                f"from {old_text or 'blank'} to {final_text}. Use this as a reviewed prior for similar jobs."
+            )
+        if reason:
+            guidance = f"{guidance} Reason: {reason}"
+        signature = "|".join([session_id, resolved_template_type, decision_id, field_name, final_text])
+        if signature in seen:
+            continue
+        seen.add(signature)
+        candidates.append(
+            {
+                "memory_id": str(uuid5(NAMESPACE_URL, f"spraytec-estimator-memory|{signature}")),
+                "guidance": guidance,
+                "template_type": resolved_template_type,
+                "decision_id": decision_id,
+                "template_bucket": bucket,
+                "applies_when": {
+                    "source_session_id": session_id,
+                    "field_name": field_name,
+                    "previous_value": old_text,
+                    "final_value": final_text,
+                },
+                "rationale": "Pending memory candidate generated from estimator workbook edit.",
+                "source_type": "estimator_edit",
+                "source_session_id": session_id or None,
+                "status": "pending",
+                "priority": "medium",
+            }
+        )
+    return candidates
+
+
+def save_memory_candidates_from_edits(
+    engine: Engine,
+    session_id: str,
+    edit_rows: list[dict[str, Any]],
+    *,
+    template_type: str = "",
+) -> list[str]:
+    if not edit_rows:
+        return []
+    ensure_estimator_session_tables(engine)
+    resolved_template_type = template_type
+    if not resolved_template_type:
+        with engine.connect() as connection:
+            resolved_template_type = str(
+                connection.execute(
+                    text("SELECT template_type FROM estimator_sessions WHERE session_id = :session_id"),
+                    {"session_id": session_id},
+                ).scalar_one_or_none()
+                or ""
+            )
+    candidates = estimator_memory_candidates_from_edits(
+        edit_rows,
+        session_id=session_id,
+        template_type=resolved_template_type,
+    )
+    memory_ids: list[str] = []
+    for candidate in candidates:
+        memory_ids.append(
+            upsert_estimator_memory(
+                engine,
+                memory_id=candidate["memory_id"],
+                guidance=candidate["guidance"],
+                template_type=candidate["template_type"],
+                decision_id=candidate["decision_id"],
+                template_bucket=candidate["template_bucket"],
+                applies_when=candidate["applies_when"],
+                rationale=candidate["rationale"],
+                source_type=candidate["source_type"],
+                source_session_id=candidate["source_session_id"],
+                status=candidate["status"],
+                priority=candidate["priority"],
+            )
+        )
+    return memory_ids
 
 
 def save_decision_edits(

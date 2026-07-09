@@ -57,6 +57,7 @@ except ImportError:
 from jobscan.estimator.schemas import EstimatorData
 from jobscan.estimator.evidence_export import write_estimator_evidence_export
 from jobscan.estimator import session_capture as estimator_sessions
+from jobscan.estimator.estimator_memory import estimator_memory_frame, update_estimator_memory_status
 from jobscan.estimator.workbench import (
     append_edit_history,
     apply_historical_filter_update,
@@ -914,6 +915,19 @@ def capture_estimator_session_event(action: Any, *args: Any, **kwargs: Any) -> A
 
 def current_estimator_session_id() -> str:
     return str(st.session_state.get("estimator_session_id") or "")
+
+
+def capture_estimator_memory_candidates(session_id: str, edit_rows: list[dict[str, Any]], *, template_type: str = "") -> None:
+    if not session_id or not edit_rows:
+        return
+    memory_ids = capture_estimator_session_event(
+        estimator_sessions.save_memory_candidates_from_edits,
+        session_id,
+        edit_rows,
+        template_type=template_type,
+    )
+    if memory_ids:
+        st.session_state["estimator_memory_pending_count"] = int(st.session_state.get("estimator_memory_pending_count") or 0) + len(memory_ids)
 
 
 DAILY_DISPATCH_TABLE_SQL = """
@@ -11429,6 +11443,11 @@ def estimator_prototype_page() -> None:
                             edit_rows,
                             edited_by="estimator",
                         )
+                        capture_estimator_memory_candidates(
+                            session_id,
+                            edit_rows,
+                            template_type=str(edited_scope.get("template_type") or ""),
+                        )
                         workbook_cell_writes = estimator_sessions.workbook_cell_writes_from_inputs(edited_workbook_inputs)
                         final_id = capture_estimator_session_event(
                             estimator_sessions.save_final_decisions,
@@ -11502,6 +11521,11 @@ def estimator_prototype_page() -> None:
                         edit_rows,
                         edited_by="estimator",
                     )
+                    capture_estimator_memory_candidates(
+                        session_id,
+                        edit_rows,
+                        template_type=str(edited_scope.get("template_type") or ""),
+                    )
                     edited_workbook_inputs_for_capture = draft_inputs_for_package
                     final_id = capture_estimator_session_event(
                         estimator_sessions.save_final_decisions,
@@ -11556,6 +11580,11 @@ def estimator_prototype_page() -> None:
                         session_id,
                         edit_rows,
                         edited_by="estimator",
+                    )
+                    capture_estimator_memory_candidates(
+                        session_id,
+                        edit_rows,
+                        template_type=str(edited_scope.get("template_type") or ""),
                     )
                     edited_workbook_inputs_for_session = draft_workbook_inputs_for_ui(edited_workbench)
                     workbook_path_for_session = st.session_state.get(workbook_path_key)
@@ -11861,6 +11890,103 @@ def raw_tables_page() -> None:
     )
 
 
+def render_estimator_memory_admin() -> None:
+    st.subheader("Estimator Memory")
+    st.caption("Pending rows are generated from estimator edits. Only approved memory is exposed back to the Estimating Assistant chat.")
+    try:
+        pending = estimator_memory_frame(get_engine(), status="pending", limit=200)
+        approved = estimator_memory_frame(get_engine(), status="approved", limit=50)
+    except Exception as exc:
+        logger.exception("Estimator memory review load failed")
+        st.warning(f"Estimator memory table is unavailable: {safe_exception_text(exc)}")
+        return
+
+    st.metric("Pending Memory Candidates", fmt_count(len(pending)))
+    if pending.empty:
+        st.caption("No pending estimator memory candidates.")
+    else:
+        review_rows = pending.copy()
+        review_rows.insert(0, "approve", False)
+        review_rows.insert(1, "disable", False)
+        visible_columns = [
+            "approve",
+            "disable",
+            "priority",
+            "template_type",
+            "template_bucket",
+            "decision_id",
+            "guidance",
+            "rationale",
+            "source_type",
+            "memory_id",
+        ]
+        visible_columns = [column for column in visible_columns if column in review_rows.columns]
+        edited = st.data_editor(
+            review_rows[visible_columns],
+            use_container_width=True,
+            hide_index=True,
+            num_rows="fixed",
+            key="estimator_memory_pending_review",
+            column_config={
+                "approve": "Approve",
+                "disable": "Disable",
+                "template_type": "Template",
+                "template_bucket": "Bucket",
+                "decision_id": "Decision",
+                "guidance": st.column_config.TextColumn("Guidance", width="large"),
+                "memory_id": st.column_config.TextColumn("Memory ID", width="small"),
+            },
+            disabled=[column for column in visible_columns if column not in {"approve", "disable"}],
+        )
+        if st.button("Apply Estimator Memory Review", key="apply_estimator_memory_review"):
+            edited_rows = edited.to_dict(orient="records")
+            approve_ids = [str(row.get("memory_id")) for row in edited_rows if row.get("approve")]
+            disable_ids = [str(row.get("memory_id")) for row in edited_rows if row.get("disable") and not row.get("approve")]
+            try:
+                approved_count = update_estimator_memory_status(
+                    get_engine(),
+                    approve_ids,
+                    status="approved",
+                    approved_by="streamlit_admin",
+                )
+                disabled_count = update_estimator_memory_status(
+                    get_engine(),
+                    disable_ids,
+                    status="disabled",
+                    approved_by="streamlit_admin",
+                )
+                load_estimator_data_cached.clear()
+                st.success(f"Approved {approved_count:,} and disabled {disabled_count:,} memory candidate(s).")
+                st.rerun()
+            except Exception as exc:
+                logger.exception("Estimator memory review update failed")
+                st.error(f"Could not update estimator memory: {safe_exception_text(exc)}")
+
+    with st.expander("Approved estimator memory", expanded=False):
+        if approved.empty:
+            st.caption("No approved estimator memory yet.")
+        else:
+            st.dataframe(
+                approved[
+                    [
+                        column
+                        for column in [
+                            "priority",
+                            "template_type",
+                            "template_bucket",
+                            "decision_id",
+                            "guidance",
+                            "source_type",
+                            "updated_at",
+                        ]
+                        if column in approved.columns
+                    ]
+                ],
+                use_container_width=True,
+                hide_index=True,
+            )
+
+
 def admin_health_page() -> None:
     st.title("Admin / Health")
     st.caption("Read-only operational checks for scanner, extraction, parser, estimator data, and relationship profiler outputs.")
@@ -11936,6 +12062,8 @@ def admin_health_page() -> None:
     if query_errors:
         with st.expander("Health query diagnostics"):
             st.dataframe(pd.DataFrame(query_errors), use_container_width=True, hide_index=True)
+
+    render_estimator_memory_admin()
 
 
 def main() -> None:

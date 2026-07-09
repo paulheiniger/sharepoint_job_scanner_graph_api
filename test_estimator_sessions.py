@@ -8,6 +8,7 @@ from sqlalchemy import create_engine, text
 from jobscan.estimator.session_capture import (
     create_estimator_session,
     ensure_estimator_session_tables,
+    estimator_memory_candidates_from_edits,
     export_estimator_session_package,
     export_training_dataset,
     final_decisions_from_workbench,
@@ -16,11 +17,13 @@ from jobscan.estimator.session_capture import (
     save_decision_edits,
     save_decision_proposal,
     save_final_decisions,
+    save_memory_candidates_from_edits,
     save_scope_interpretation,
     save_session_artifact,
     update_estimator_session,
     workbook_cell_writes_from_inputs,
 )
+from jobscan.estimator.estimator_memory import approved_memory_frame, estimator_memory_frame, update_estimator_memory_status
 
 
 def sample_workbench() -> dict:
@@ -189,6 +192,56 @@ def test_workbook_cell_writes_use_decision_native_payload() -> None:
     }
     assert any(row["decision_id"] == "roofing_coating_system_row_26" for row in decision_writes)
     assert not any(row.get("section") == "materials" for row in decision_writes)
+
+
+def test_estimator_memory_candidates_from_edits_are_pending_until_approved() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    ensure_estimator_session_tables(engine)
+    session_id = create_estimator_session(
+        engine,
+        raw_input_notes="Insulation notes.",
+        division="Insulation",
+        template_type="insulation",
+    )
+    edits = [
+        {
+            "section": "insulation_logistics_expense_template_decisions.labor_loading",
+            "field_name": "hours_per_day",
+            "package_or_labor_task": "labor_loading",
+            "suggested_value": 8,
+            "final_value": 0.5,
+            "reason": "Loading is not a full day.",
+        },
+        {
+            "section": "insulation_logistics_expense_template_decisions.labor_loading",
+            "field_name": "hours_per_day",
+            "package_or_labor_task": "labor_loading",
+            "suggested_value": 8,
+            "final_value": 0.5,
+            "reason": "Loading is not a full day.",
+        },
+        {
+            "section": "insulation_logistics_expense_template_decisions.labor_loading",
+            "field_name": "notes",
+            "package_or_labor_task": "labor_loading",
+            "suggested_value": "",
+            "final_value": "Estimator comment",
+        },
+    ]
+
+    candidates = estimator_memory_candidates_from_edits(edits, session_id=session_id, template_type="insulation")
+    assert len(candidates) == 1
+    assert candidates[0]["status"] == "pending"
+    assert candidates[0]["template_bucket"] == "labor_loading"
+    assert "hours_per_day from 8 to 0.5" in candidates[0]["guidance"]
+
+    memory_ids = save_memory_candidates_from_edits(engine, session_id, edits)
+    assert len(memory_ids) == 1
+    assert len(estimator_memory_frame(engine, status="pending")) == 1
+    assert approved_memory_frame(engine).empty
+
+    update_estimator_memory_status(engine, memory_ids, status="approved", approved_by="tester")
+    assert len(approved_memory_frame(engine)) == 1
 
 
 def test_estimator_session_lifecycle_and_exports(tmp_path) -> None:

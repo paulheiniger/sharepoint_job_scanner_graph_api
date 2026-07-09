@@ -1129,9 +1129,10 @@ def test_estimator_chat_foam_preference_fills_thickness_and_estimated_units() ->
     assert foam["proposal_source"] == "chat_estimator"
     assert foam["include"] is True
     assert foam["thickness_inches"] == 5
-    assert foam["yield_or_coverage"] == 4500
-    assert foam["estimated_units"] == 2473.333333
-    assert foam["estimated_sets"] == 2.473333
+    assert foam["yield_or_coverage"] == 2600
+    assert foam["yield_or_coverage_source"] == "template_default"
+    assert foam["estimated_units"] == 4280.769231
+    assert foam["estimated_sets"] == 4.280769
     assert foam["estimated_cost"] > 0
     assert "chat_estimator" in foam["decision_evidence_types"]
 
@@ -2420,6 +2421,30 @@ def test_insulation_logistics_recalc_replaces_stale_daily_rate_sized_unit_prices
     assert rows["labor_traveling"]["unit_price"] == 13
     assert rows["labor_loading"]["estimated_cost"] < 1000
     assert rows["labor_traveling"]["estimated_cost"] < 1000
+
+
+def test_insulation_logistics_recalc_caps_bad_chat_hours_and_rates() -> None:
+    workbench = build_estimating_workbench(insulation_recommendation(), EstimatorData())
+    for row in workbench["insulation_logistics_expense_template_decisions"]:
+        if row["template_bucket"] in {"labor_loading", "labor_traveling"}:
+            row["include"] = True
+            row["include_source"] = "chat_estimator"
+            row["proposal_source"] = "chat_estimator"
+            row["hours_per_day"] = 8
+            row["people_count"] = 2
+            row["unit_price"] = 50
+
+    recalculated = recalculate_workbench_tables(workbench)
+    rows = {row["template_bucket"]: row for row in recalculated["insulation_logistics_expense_template_decisions"]}
+
+    assert rows["labor_loading"]["hours_per_day"] == 0.5
+    assert rows["labor_loading"]["people_count"] == 2
+    assert rows["labor_loading"]["unit_price"] == 25.5
+    assert rows["labor_loading"]["estimated_cost"] == 25.5
+    assert rows["labor_traveling"]["hours_per_day"] == 2.5
+    assert rows["labor_traveling"]["people_count"] == 2
+    assert rows["labor_traveling"]["unit_price"] == 13
+    assert rows["labor_traveling"]["estimated_cost"] == 65
 
 
 def test_insulation_mask_labor_included_when_openings_need_masking() -> None:

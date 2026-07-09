@@ -12,6 +12,7 @@ from typing import Any, Callable, Iterable
 
 import pandas as pd
 
+from .estimator_memory import relevant_memory_rows
 from .foam_yield_history import build_foam_yield_history_digest
 from .schemas import EstimatorData
 
@@ -20,6 +21,10 @@ DEFAULT_CHAT_ESTIMATOR_MODEL = "gpt-4o"
 INSULATION_CHAT_TEMPLATE_DEFAULTS = {
     "foam_yield_or_coverage": 2600.0,
     "foam_unit_price": 2.25,
+    "loading_hours_per_day": 0.5,
+    "traveling_hours_per_day": 2.5,
+    "loading_people_count": 1.0,
+    "traveling_people_count": 4.0,
     "loading_hourly_rate": 25.5,
     "traveling_hourly_rate": 13.0,
     "generator_daily_rate": 40.0,
@@ -453,6 +458,7 @@ def _estimator_data_signature(data: EstimatorData | None) -> str:
         "product_properties": _frame_signature(getattr(data, "product_properties", None)),
         "decision_recommendations": _frame_signature(getattr(data, "estimator_decision_recommendations", None)),
         "relationships": _frame_signature(getattr(data, "relationship_package_cooccurrence", None)),
+        "estimator_memory": _frame_signature(getattr(data, "estimator_memory", None)),
     }
     return hashlib.sha1(json.dumps(signature, sort_keys=True, default=str).encode("utf-8")).hexdigest()
 
@@ -501,6 +507,18 @@ def _build_estimator_context_summary(data: EstimatorData | None, *, scope: dict[
         }
         for row in decision_menu
     ]
+    summary["estimator_memory_guidance"] = relevant_memory_rows(
+        getattr(data, "estimator_memory", pd.DataFrame()),
+        scope=scope,
+        template_type=template_type,
+        decision_buckets=[
+            str(value)
+            for row in decision_menu
+            for value in (row.get("template_bucket"), row.get("decision_id"))
+            if value
+        ],
+        limit=12,
+    )
     if isinstance(data.template_rows, pd.DataFrame) and not data.template_rows.empty:
         rows = data.template_rows.copy()
         for column in ("template_type", "template_bucket"):
@@ -586,6 +604,7 @@ def _empty_chat_decision_context(scope: dict[str, Any] | None) -> dict[str, Any]
             for row in decision_menu
         ],
         "historical_decision_evidence": [],
+        "estimator_memory_guidance": [],
         "foam_yield_history_digest": [],
         "template_fallback_defaults": (
             {
@@ -1356,6 +1375,9 @@ def _chat_prompt_messages(
         "You are a senior Spray-Tec estimator working inside an estimating assistant. "
         "Use the conversation, historical/template context, and product/pricing context to produce an estimator-ready draft. "
         "Think like an estimator: extract takeoff, infer likely template decisions, explain assumptions, and ask only material missing questions. "
+        "If estimator_context.estimator_memory_guidance is present, treat those approved correction notes as shared estimator memory: "
+        "use them to avoid repeating prior bad assumptions, unless the current user message explicitly says otherwise. "
+        "Estimator memory outranks AI inference but does not override current-session user instructions, manual estimator edits, or workbook formulas. "
         "When historical/template context supports a normal choice, make the best reviewed guess instead of leaving the decision blank; "
         "set review_required true, lower confidence, and explain the evidence if the prompt did not explicitly confirm it. "
         "Ask questions only when the answer materially changes scope, safety/code compliance, system selection, warranty eligibility, or price. "
@@ -1456,6 +1478,50 @@ def _clean_scope(scope: dict[str, Any]) -> dict[str, Any]:
     return cleaned
 
 
+def _safe_positive_number(value: Any) -> float:
+    try:
+        number = float(str(value).replace(",", ""))
+    except (TypeError, ValueError):
+        return 0.0
+    return number if number > 0 else 0.0
+
+
+def _sanitize_insulation_logistics_values(values: dict[str, Any], *, row_number: str) -> dict[str, Any]:
+    cleaned = dict(values or {})
+    if cleaned.get("hours_per_day") in (None, ""):
+        cleaned["hours_per_day"] = _first_present(cleaned, "hours", "total_hours", "days")
+    if cleaned.get("people_count") in (None, ""):
+        cleaned["people_count"] = _first_present(cleaned, "crew_size")
+    is_loading = row_number == "95"
+    default_hours = (
+        INSULATION_CHAT_TEMPLATE_DEFAULTS["loading_hours_per_day"]
+        if is_loading
+        else INSULATION_CHAT_TEMPLATE_DEFAULTS["traveling_hours_per_day"]
+    )
+    default_people = (
+        INSULATION_CHAT_TEMPLATE_DEFAULTS["loading_people_count"]
+        if is_loading
+        else INSULATION_CHAT_TEMPLATE_DEFAULTS["traveling_people_count"]
+    )
+    default_rate = (
+        INSULATION_CHAT_TEMPLATE_DEFAULTS["loading_hourly_rate"]
+        if is_loading
+        else INSULATION_CHAT_TEMPLATE_DEFAULTS["traveling_hourly_rate"]
+    )
+    max_hours = 2.0 if is_loading else 6.0
+    hours = _safe_positive_number(cleaned.get("hours_per_day"))
+    people = _safe_positive_number(cleaned.get("people_count"))
+    rate = _safe_positive_number(cleaned.get("unit_price"))
+    cleaned["hours_per_day"] = default_hours if hours <= 0 or hours > max_hours else hours
+    cleaned["people_count"] = default_people if people <= 0 else people
+    cleaned["unit_price"] = default_rate if rate <= 0 or rate > default_rate * 1.5 else rate
+    return {
+        key: cleaned.get(key)
+        for key in ("hours_per_day", "people_count", "trip_count", "unit_price", "round_trip_miles")
+        if cleaned.get(key) not in (None, "")
+    }
+
+
 def _clean_decision_preferences(value: Any) -> list[dict[str, Any]]:
     rows = value if isinstance(value, list) else []
     cleaned_rows: list[dict[str, Any]] = []
@@ -1496,20 +1562,16 @@ def _clean_decision_preferences(value: Any) -> list[dict[str, Any]]:
         bucket = bucket.replace(" ", "_").replace("-", "_")
         row_number = _safe_row_number(cleaned.get("workbook_row") or cleaned.get("row_number"))
         if row_number in {"95", "97"}:
-            if proposed_values.get("hours_per_day") in (None, ""):
-                proposed_values["hours_per_day"] = _first_present(proposed_values, "hours", "total_hours", "days")
-            if proposed_values.get("people_count") in (None, ""):
-                proposed_values["people_count"] = _first_present(proposed_values, "crew_size")
-            proposed_values = {
-                key: proposed_values.get(key)
-                for key in ("hours_per_day", "people_count", "trip_count", "unit_price", "round_trip_miles")
-                if proposed_values.get(key) not in (None, "")
-            }
+            proposed_values = _sanitize_insulation_logistics_values(proposed_values, row_number=row_number)
             cleaned["section"] = "insulation_logistics_expense_template_decisions"
             cleaned["template_bucket"] = bucket or ("labor_loading" if row_number == "95" else "labor_traveling")
             cleaned["workbook_row"] = row_number or ("95" if cleaned["template_bucket"] == "labor_loading" else "97")
             for stale_key in ("days", "crew_size", "daily_rate", "hourly_rate", "total_hours", "editable_total_hours"):
                 cleaned.pop(stale_key, None)
+        elif bucket == "foam" or row_number in {"19", "20", "21"}:
+            proposed_values.pop("yield_or_coverage", None)
+            proposed_values.pop("foam_yield_or_coverage", None)
+            proposed_values.pop("foam_yield", None)
         elif row_number == "99" and bucket in {"infrared_scan", ""}:
             if proposed_values.get("hours_per_day") in (None, ""):
                 proposed_values["hours_per_day"] = _first_present(proposed_values, "hours", "total_hours", "days")

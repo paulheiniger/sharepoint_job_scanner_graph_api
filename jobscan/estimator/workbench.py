@@ -4548,9 +4548,10 @@ def _build_insulation_foam_template_decisions(
         and existing_yield_value > 0
         and any(abs(existing_yield_value - value) < 1e-6 for value in calculated_yield_values)
     )
+    existing_yield_is_chat_or_auto = not explicit_existing_is_manual and _is_chat_estimator_source(existing)
     provided_yield_or_coverage = positive_number(
-        "" if existing_yield_is_calculated else existing_yield_value,
-        foam_row.get("yield_factor"),
+        "" if existing_yield_is_calculated or existing_yield_is_chat_or_auto else existing_yield_value,
+        foam_row.get("yield_factor") if explicit_existing_is_manual else "",
         default=0.0,
     )
     yield_or_coverage = positive_number(
@@ -5360,13 +5361,15 @@ def _calculate_insulation_decision_formula(
         spec.get("default_unit_price"),
         default=0.0,
     )
-    if (
-        formula_kind == "hours_people_rate_trip_count"
-        and str(spec.get("template_bucket") or "") in {"labor_loading", "labor_traveling"}
-        and unit_price > 100
-        and not _manual_include_locked(existing)
-    ):
-        unit_price = positive_number(spec.get("default_unit_price"), default=0.0)
+    if formula_kind == "hours_people_rate_trip_count" and str(spec.get("template_bucket") or "") in {"labor_loading", "labor_traveling"}:
+        default_unit_price = positive_number(spec.get("default_unit_price"), default=0.0)
+        if (
+            default_unit_price > 0
+            and not _manual_include_locked(existing)
+            and _is_chat_or_auto_source(existing)
+            and (unit_price <= 0 or unit_price > default_unit_price * 1.5)
+        ):
+            unit_price = default_unit_price
     amount = safe_number(first_nonblank(existing.get("amount"), existing.get("editable_value"), source_row.get("editable_value"), source_row.get("estimated_cost")), 0.0)
     basis_sqft = safe_number(first_nonblank(existing.get("basis_sqft"), source_row.get("editable_basis_sqft"), source_row.get("default_basis_sqft"), area), 0.0)
     linear_ft = safe_number(first_nonblank(existing.get("linear_ft"), source_row.get("linear_ft"), source_row.get("calculated_quantity")), 0.0)
@@ -5409,6 +5412,7 @@ def _calculate_insulation_decision_formula(
         formula_kind == "hours_people_rate_trip_count"
         and str(spec.get("template_bucket") or "") in {"labor_loading", "labor_traveling"}
         and not _manual_include_locked(existing)
+        and _is_chat_or_auto_source(existing)
     ):
         max_hours = 2.0 if str(spec.get("template_bucket") or "") == "labor_loading" else 6.0
         if hours_per_day > max_hours:
@@ -5496,6 +5500,16 @@ def _calculate_insulation_decision_formula(
 def _manual_include_locked(row: dict[str, Any]) -> bool:
     source = str(first_nonblank(row.get("include_source"), row.get("proposal_source"), "")).strip().lower()
     return bool(row.get("manual_override")) or source in {"estimator_edit", "manual_override"}
+
+
+def _is_chat_or_auto_source(row: dict[str, Any]) -> bool:
+    source = str(first_nonblank(row.get("include_source"), row.get("proposal_source"), "")).strip().lower()
+    return source in {"", "chat_estimator", "ai_chat", "deterministic_rule", "historical_default", "template_default", "selected_item"}
+
+
+def _is_chat_estimator_source(row: dict[str, Any]) -> bool:
+    source = str(first_nonblank(row.get("include_source"), row.get("proposal_source"), "")).strip().lower()
+    return source in {"chat_estimator", "ai_chat"}
 
 
 def _insulation_explicit_travel_basis(row: dict[str, Any]) -> bool:

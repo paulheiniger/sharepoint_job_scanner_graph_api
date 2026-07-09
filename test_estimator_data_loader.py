@@ -51,6 +51,17 @@ def test_normalize_estimator_data_keeps_pricing_and_classification_aliases() -> 
         pricing_catalog=pd.DataFrame([{"product_name": "Silicone", "price_per_gallon": "38", "is_current": True}]),
         template_rows=pd.DataFrame([{"template_bucket": "labor_prep", "crew_size": "bad"}]),
         line_item_classifications=pd.DataFrame([{"template_bucket": "coating", "estimated_cost": "1200"}]),
+        estimator_memory=pd.DataFrame(
+            [
+                {
+                    "status": "Approved",
+                    "priority": "High",
+                    "template_type": "Insulation",
+                    "template_bucket": "Labor Loading",
+                    "guidance": "  Loading should usually be short. ",
+                }
+            ]
+        ),
     )
 
     normalized = normalize_estimator_data(data)
@@ -60,3 +71,7 @@ def test_normalize_estimator_data_keeps_pricing_and_classification_aliases() -> 
     assert pd.isna(normalized.template_rows.iloc[0]["crew_size"])
     assert normalized.classified_line_items.iloc[0]["estimated_cost"] == 1200
     assert normalized.line_item_classifications.iloc[0]["estimated_cost"] == 1200
+    assert normalized.estimator_memory.iloc[0]["status"] == "approved"
+    assert normalized.estimator_memory.iloc[0]["priority"] == "high"
+    assert normalized.estimator_memory.iloc[0]["template_bucket"] == "labor_loading"
+    assert normalized.estimator_memory.iloc[0]["guidance"] == "Loading should usually be short."

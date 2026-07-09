@@ -10,6 +10,7 @@ from sqlalchemy import text
 
 from jobscan.db_connections import create_resilient_engine
 from .decision_history import DECISION_NUMERIC_FIELDS, DECISION_TABLES
+from .estimator_memory import estimator_memory_from_rows
 from .schemas import DEFAULT_STAGE_FILES, PRICING_CANDIDATES, EstimatorData
 
 
@@ -209,6 +210,7 @@ def normalize_estimator_data(data: EstimatorData) -> EstimatorData:
     data.template_formula_models = normalize_estimator_dataframe(data.template_formula_models)
     data.template_product_options = normalize_estimator_dataframe(data.template_product_options)
     data.template_labor_options = normalize_estimator_dataframe(data.template_labor_options)
+    data.estimator_memory = estimator_memory_from_rows(data.estimator_memory)
     data.estimator_decision_recommendations = normalize_numeric_columns(
         data.estimator_decision_recommendations,
         [
@@ -455,6 +457,26 @@ def load_estimator_data_from_database(database_url: str, *, load_profile: str = 
         if relation_exists(connection, recommendation_relation):
             data.estimator_decision_recommendations = _read_sql_dataframe(connection, f"SELECT * FROM {recommendation_relation}")
             data.source_files_used.append(f"database: {recommendation_relation}")
+
+        if relation_exists(connection, "estimator_memory"):
+            data.estimator_memory = _read_sql_dataframe(
+                connection,
+                """
+                SELECT *
+                FROM estimator_memory
+                WHERE status = 'approved'
+                ORDER BY
+                    CASE priority
+                        WHEN 'high' THEN 0
+                        WHEN 'medium' THEN 1
+                        WHEN 'low' THEN 2
+                        ELSE 3
+                    END,
+                    updated_at DESC
+                LIMIT 250
+                """,
+            )
+            data.source_files_used.append("database: estimator_memory")
 
         data.pricing_catalog = load_current_pricing(connection, data)
         data.pricing = data.pricing_catalog
