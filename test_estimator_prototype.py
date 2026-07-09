@@ -262,6 +262,28 @@ def test_round_trip_miles_and_labor_scale_with_crew_not_production_days() -> Non
     assert two["travel_labor_hours"] == pytest.approx(one["travel_labor_hours"] * 2, abs=0.2)
 
 
+def test_address_route_mileage_uses_mapbox_before_city_fallback(monkeypatch) -> None:
+    from jobscan.estimator import labor
+
+    calls = []
+
+    def fake_mapbox_one_way(origin, destination):
+        calls.append((origin, destination))
+        return 123.4
+
+    monkeypatch.setattr(labor, "mapbox_one_way_miles", fake_mapbox_one_way)
+
+    travel = labor.estimate_travel_impact(
+        {"site_address": "314 E Aberdeen Drive, Trenton, OH"},
+        recommended_crew_size=2,
+        estimated_work_days=1,
+    )
+
+    assert calls == [("1132 Equity Street, Shelbyville, KY", "314 E Aberdeen Drive, Trenton, OH")]
+    assert travel["estimated_one_way_miles"] == 123.4
+    assert travel["estimated_round_trip_miles"] == 246.8
+
+
 def test_no_insulation_increases_foam_review() -> None:
     scope = extract_scope("metal roof 10000 sqft no insulation condensation concern silicone coating")
 

@@ -5,6 +5,7 @@ from typing import Any
 
 import pandas as pd
 
+from .mapbox_routing import MapboxRoutingError, mapbox_one_way_miles
 from .rules import default_crew_size, first_nonblank, to_float
 from .schemas import EstimatorAssumptions
 
@@ -106,15 +107,23 @@ def _location_text(scope: dict[str, Any]) -> str:
 
 
 def estimate_one_way_miles(scope: dict[str, Any]) -> float | None:
+    location = _location_text(scope)
+    origin_address = first_nonblank(scope.get("origin_address"), EstimatorAssumptions().origin_address)
+    try:
+        routed_miles = mapbox_one_way_miles(origin_address, location)
+    except MapboxRoutingError:
+        routed_miles = None
+    if routed_miles is not None and routed_miles > 0:
+        return routed_miles
     lat = to_float(scope.get("latitude"))
     lon = to_float(scope.get("longitude"))
     origin_lat = to_float(scope.get("origin_latitude")) or 38.212
     origin_lon = to_float(scope.get("origin_longitude")) or -85.223
     if lat is not None and lon is not None:
         return haversine_miles(origin_lat, origin_lon, lat, lon)
-    location = _location_text(scope).lower()
+    location_lower = location.lower()
     for city, miles in CITY_DISTANCE_MILES.items():
-        if city in location:
+        if city in location_lower:
             return miles
     return None
 

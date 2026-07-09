@@ -2472,6 +2472,27 @@ def test_insulation_spray_foam_travel_uses_round_trip_miles_from_address() -> No
     assert equipment["truck_expense"]["estimated_cost"] > 0
 
 
+def test_insulation_spray_foam_travel_can_use_route_miles_from_site_address(monkeypatch) -> None:
+    import jobscan.estimator.workbench as workbench_module
+
+    def fake_estimate_one_way_miles(scope):
+        assert scope["destination_address"] == "314 E Aberdeen Drive, Trenton, OH"
+        return 86.2
+
+    monkeypatch.setattr(workbench_module, "estimate_one_way_miles", fake_estimate_one_way_miles)
+    recommendation = insulation_recommendation()
+    recommendation.parsed_fields["site_address"] = "314 E Aberdeen Drive, Trenton, OH"
+
+    workbench = build_estimating_workbench(recommendation, EstimatorData())
+    equipment = {
+        row["template_bucket"]: row
+        for row in workbench["insulation_equipment_logistics_template_decisions"]
+    }
+
+    assert equipment["sales_inspection_trips"]["round_trip_miles"] == 172.4
+    assert equipment["truck_expense"]["round_trip_miles"] == 172.4
+
+
 def test_insulation_logistics_recalc_replaces_stale_daily_rate_sized_unit_prices() -> None:
     workbench = build_estimating_workbench(insulation_recommendation(), EstimatorData())
     for row in workbench["insulation_logistics_expense_template_decisions"]:

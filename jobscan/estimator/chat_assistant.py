@@ -1857,6 +1857,11 @@ def deterministic_chat_fallback(
         scope["foam_type"] = "open_cell"
     elif re.search(r"\bclosed[- ]?cell\b", text, re.I):
         scope["foam_type"] = "closed_cell"
+    site_address = _parse_site_address(text)
+    if site_address:
+        scope["site_address"] = site_address
+        scope["address"] = site_address
+        scope["destination_address"] = site_address
 
     length, width = _parse_footprint(text)
     wall_height = _parse_wall_height(text)
@@ -2286,6 +2291,20 @@ def _parse_r_value_per_inch(text: str) -> float | None:
     if not match:
         match = re.search(r"\bR[- ]?value\s+per\s+inch\s+(?:is|=|of)?\s*(\d+(?:\.\d+)?)\b", text, re.I)
     return float(match.group(1)) if match else None
+
+
+def _parse_site_address(text: str) -> str:
+    match = re.search(
+        r"\b(?:site\s+address|address)\s*(?:is|:)?\s*([^\n.;]+(?:,\s*[A-Z]{2})?(?:\s+\d{5}(?:-\d{4})?)?)",
+        text,
+        re.I,
+    )
+    if not match:
+        return ""
+    address = _clean_string(match.group(1))
+    if len(address) < 8 or not re.search(r"\d", address):
+        return ""
+    return address
 
 
 def _parse_openings(text: str) -> tuple[list[dict[str, Any]], float]:
