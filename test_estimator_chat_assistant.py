@@ -15,6 +15,30 @@ COLLINS_NOTE = (
     "The plan is to have the foam done around September or October. Open cell spray foam."
 )
 
+ROOFING_REFERENCE_TEMPLATE_SUMMARY = """Section	Source Row	Line Item	Basis / Units	Unit Price / Rate	Estimated Cost	Notes
+Materials	19	Gaco Roof 2.7	844.44 est. units; 1.50 thickness	$2.10	$1,773.33	Foam
+Materials	26	Gaco Silicone	17.83 gal/sq units	$36.00	$641.70	Coating
+Materials	27	Gaco Silicone	17.83 gal/sq units	$36.00	$641.70	Coating
+Materials	36	3M Granules	7.75 units	$26.00	$201.50	Granules
+Materials	43	Silicone Sausage	32 units	$12.00	$384.00	Caulk / sealant
+Materials	45	Gaco SF-2000	10 units	$40.00	$400.00	Caulk / sealant
+Materials	63	Fasteners	516 units	$250.00 / 1,000	$129.00	5 inch
+Materials	65	Plates	516 units	$200.00 / 1,000	$103.20
+Materials	96	Dumpster	1 unit	$600.00	$600.00
+Materials	99	Generator	3 est. days	$50.00	$150.00
+Materials	106	Sales / Inspect.	2 trips x 315 miles	$1.00	$630.00	Mileage
+Materials	108	Truck Exp.	3 trips x 320 miles	$1.00	$960.00	Mileage
+Labor / Subcontractor	116	Set Up / Safety	0.10 days; 5 people	$1,605.50 daily rate	$160.55
+Labor / Subcontractor	118	Tear-out, Board, Foam & base	1.25 days; 5 people	$1,605.50 daily rate	$2,006.88
+Labor / Subcontractor	122	Walk + Caulk	0.30 days; 5 people	$1,605.50 daily rate	$481.65
+Labor / Subcontractor	126	Top & granules	0.35 days; 5 people	$1,605.50 daily rate	$561.93
+Labor / Subcontractor	134	Misc. / Clean Up	0.50 days; 5 people	$1,605.50 daily rate	$802.75
+Labor / Subcontractor	137	Loading	2.00 hours; 1 person	$25.50	$153.00	Multiplied by truck trips
+Labor / Subcontractor	139	Traveling	5.00 hours; 5 people	$13.00	$975.00	Multiplied by truck trips
+Labor / Subcontractor	145	Meals, Lodging Expenses	3 days; 5 people	$175.00	$2,625.00
+Additional Amount w/o Markup	173	Warranty			$600.00	Added after worksheet price
+"""
+
 
 def test_estimator_chat_fallback_extracts_insulation_takeoff_without_inventing_thickness(monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -563,3 +587,103 @@ def test_estimator_chat_normalizes_decision_patch_aliases() -> None:
     ]
     assert result.workbook_decision_preferences[0]["include"] is False
     assert result.workbook_decision_preferences[1]["proposed_values"]["days"] == 0.5
+
+
+def test_estimator_chat_parses_pasted_roofing_reference_template_summary(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    result = run_estimator_chat_turn(
+        [{"role": "user", "content": ROOFING_REFERENCE_TEMPLATE_SUMMARY}],
+        template_type_hint="roofing",
+    )
+
+    by_id = {row["decision_id"]: row for row in result.workbook_decision_preferences}
+
+    assert result.scope_overrides["template_type"] == "roofing"
+    assert result.scope_overrides["reference_template_summary_present"] is True
+    assert result.scope_overrides["reference_template_summary_mapped_row_count"] >= 20
+
+    foam = by_id["roofing_foam_row_19"]
+    assert foam["source"] == "reference_template_summary"
+    assert foam["proposed_values"]["estimated_units"] == 844.44
+    assert foam["proposed_values"]["thickness_inches"] == 1.5
+    assert foam["proposed_values"]["unit_price"] == 2.1
+    assert foam["evidence"][0]["source_row"] == "19"
+
+    assert by_id["roofing_coating_system_row_26"]["proposed_values"]["estimated_units"] == 17.83
+    assert by_id["roofing_coating_system_row_27"]["workbook_row"] == "27"
+    assert by_id["roofing_caulk_sealant_row_43"]["proposed_values"]["estimated_units"] == 32.0
+    assert by_id["roofing_caulk_sealant_row_45"]["proposed_values"]["unit_price"] == 40.0
+    assert by_id["roofing_fasteners_row_63"]["proposed_values"]["unit_price_per_thousand"] == 250.0
+    assert by_id["roofing_plates_row_65"]["proposed_values"]["unit_price_per_thousand"] == 200.0
+
+    dumpster = by_id["roofing_dumpsters_row_69"]
+    assert dumpster["workbook_row"] == "69"
+    assert "Source row 96 was normalized to current workbook row 69." in dumpster["review_reasons"]
+    assert dumpster["proposed_values"]["estimated_units"] == 1.0
+    assert dumpster["proposed_values"]["unit_price"] == 600.0
+
+    loading = by_id["roofing_labor_loading_row_136"]
+    assert loading["section"] == "roofing_logistics_expense_template_decisions"
+    assert loading["workbook_row"] == "136"
+    assert loading["proposed_values"] == {
+        "hours_per_day": 2.0,
+        "people_count": 1.0,
+        "trip_count": 3.0,
+        "unit_price": 25.5,
+    }
+    assert "Source row 137 was normalized to current workbook row 136." in loading["review_reasons"]
+
+    traveling = by_id["roofing_labor_traveling_row_138"]
+    assert traveling["proposed_values"] == {
+        "hours_per_day": 5.0,
+        "people_count": 5.0,
+        "trip_count": 3.0,
+        "unit_price": 13.0,
+    }
+    meals = by_id["roofing_meals_lodging_row_144"]
+    assert meals["proposed_values"] == {"days": 3.0, "people_count": 5.0, "unit_price": 175.0}
+
+    assert by_id["roofing_labor_base_row_122"]["proposed_values"]["days"] == 1.25
+    assert by_id["roofing_labor_base_row_122"]["proposed_values"]["crew_size"] == 5.0
+    assert by_id["roofing_labor_base_row_122"]["proposed_values"]["daily_rate"] == 1605.5
+    assert by_id["roofing_labor_top_coat_row_124"]["workbook_row"] == "124"
+    assert any("Warranty" in warning for warning in result.warnings)
+
+
+def test_estimator_chat_merges_pasted_reference_summary_after_ai_payload() -> None:
+    def provider(_messages, _model):
+        return {
+            "assistant_message": "Drafted a repair scope.",
+            "estimator_notes": "Use the pasted template as the source of truth for worksheet decisions.",
+            "scope_overrides": {"template_type": "roofing"},
+            "workbook_decision_preferences": [
+                {
+                    "decision_id": "roofing_labor_loading_row_136",
+                    "section": "roofing_logistics_expense_template_decisions",
+                    "template_bucket": "labor_loading",
+                    "workbook_row": "136",
+                    "include": True,
+                    "proposed_values": {"hours_per_day": 8, "people_count": 2, "unit_price": 50},
+                    "confidence": 0.4,
+                }
+            ],
+            "confidence": 0.7,
+        }
+
+    result = run_estimator_chat_turn(
+        [{"role": "user", "content": ROOFING_REFERENCE_TEMPLATE_SUMMARY}],
+        template_type_hint="roofing",
+        provider=provider,
+        model="test-model",
+    )
+
+    by_id = {row["decision_id"]: row for row in result.workbook_decision_preferences}
+    assert result.source == "ai_chat"
+    assert by_id["roofing_foam_row_19"]["proposed_values"]["estimated_units"] == 844.44
+    assert by_id["roofing_labor_loading_row_136"]["proposed_values"] == {
+        "hours_per_day": 2.0,
+        "people_count": 1.0,
+        "trip_count": 3.0,
+        "unit_price": 25.5,
+    }

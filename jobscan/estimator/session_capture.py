@@ -569,6 +569,182 @@ def estimator_memory_candidates_from_edits(
     return candidates
 
 
+REFERENCE_MEMORY_VALUE_FIELDS = {
+    "selector_code",
+    "editable_selector_code",
+    "resolved_template_option",
+    "selected_pricing_candidate",
+    "basis_sqft",
+    "area_sqft",
+    "thickness_inches",
+    "foam_thickness_inches",
+    "yield_or_coverage",
+    "coverage_sqft_per_unit",
+    "gal_per_100_sqft",
+    "gal_per_sqft",
+    "waste_factor_pct",
+    "wet_mils_estimate",
+    "unit_price",
+    "price_per_square",
+    "unit_price_per_thousand",
+    "estimated_units",
+    "estimated_gallons",
+    "estimated_sets",
+    "linear_ft",
+    "units",
+    "period",
+    "margin_pct",
+    "days",
+    "hours_per_day",
+    "people_count",
+    "trip_count",
+    "round_trip_miles",
+    "crew_size",
+    "crew_people_selection",
+    "crew_selector_code",
+    "total_hours",
+    "editable_total_hours",
+    "daily_rate",
+    "hourly_rate",
+    "labor_rate",
+    "formula_mode",
+}
+
+
+def estimator_memory_candidates_from_reference_template(
+    decision_rows: list[dict[str, Any]],
+    *,
+    session_id: str = "",
+    template_type: str = "",
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in decision_rows or []:
+        if not isinstance(row, dict):
+            continue
+        if normalize_memory_token(row.get("source")) != "reference_template_summary":
+            continue
+        if row.get("include") is not True:
+            continue
+        decision_id = normalize_memory_token(row.get("decision_id"))
+        bucket = normalize_memory_token(row.get("template_bucket"))
+        resolved_template_type = _memory_template_type_from_edit(row, template_type)
+        proposed_values = _reference_memory_values(row.get("proposed_values") or {})
+        if not decision_id or not bucket or not proposed_values:
+            continue
+        evidence = row.get("evidence") if isinstance(row.get("evidence"), list) else []
+        source_evidence = evidence[0] if evidence and isinstance(evidence[0], dict) else {}
+        source_row = str(source_evidence.get("source_row") or row.get("workbook_row") or "")
+        line_item = str(source_evidence.get("line_item") or row.get("label") or decision_id)
+        value_text = ", ".join(f"{key}={_memory_value_text(value)}" for key, value in proposed_values.items())
+        normalized_row = str(row.get("workbook_row") or "")
+        guidance = (
+            f"For {resolved_template_type or 'estimator'} {bucket}, a reviewed reference template included "
+            f"{line_item} mapped to workbook row {normalized_row} with {value_text}. "
+            "Use this as historical guidance for similar jobs, but keep current job evidence and workbook formulas authoritative."
+        )
+        signature_payload = {
+            "session_id": session_id,
+            "template_type": resolved_template_type,
+            "decision_id": decision_id,
+            "bucket": bucket,
+            "row": normalized_row,
+            "values": proposed_values,
+            "source_row": source_row,
+            "line_item": line_item,
+        }
+        signature = json.dumps(signature_payload, sort_keys=True, default=str)
+        if signature in seen:
+            continue
+        seen.add(signature)
+        candidates.append(
+            {
+                "memory_id": str(uuid5(NAMESPACE_URL, f"spraytec-reference-template-memory|{signature}")),
+                "guidance": guidance,
+                "template_type": resolved_template_type,
+                "decision_id": decision_id,
+                "template_bucket": bucket,
+                "product_or_system": line_item,
+                "applies_when": {
+                    "source_session_id": session_id,
+                    "source_type": "reference_template_summary",
+                    "source_row": source_row,
+                    "normalized_workbook_row": normalized_row,
+                    "line_item": line_item,
+                    "proposed_values": proposed_values,
+                    "evidence": source_evidence,
+                },
+                "rationale": "Pending memory candidate generated from pasted correct-template summary.",
+                "source_type": "reference_template_summary",
+                "source_session_id": session_id or None,
+                "status": "pending",
+                "priority": "high",
+            }
+        )
+    return candidates
+
+
+def _reference_memory_values(values: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(values, dict):
+        return {}
+    cleaned: dict[str, Any] = {}
+    for key, value in values.items():
+        token = normalize_memory_token(key)
+        if token not in REFERENCE_MEMORY_VALUE_FIELDS:
+            continue
+        if value in (None, "", [], {}):
+            continue
+        cleaned[token] = _maybe_json(value)
+    return cleaned
+
+
+def save_memory_candidates_from_reference_template(
+    engine: Engine,
+    session_id: str,
+    decision_rows: list[dict[str, Any]],
+    *,
+    template_type: str = "",
+) -> list[str]:
+    if not decision_rows:
+        return []
+    ensure_estimator_session_tables(engine)
+    resolved_template_type = template_type
+    if not resolved_template_type:
+        with engine.connect() as connection:
+            resolved_template_type = str(
+                connection.execute(
+                    text("SELECT template_type FROM estimator_sessions WHERE session_id = :session_id"),
+                    {"session_id": session_id},
+                ).scalar_one_or_none()
+                or ""
+            )
+    candidates = estimator_memory_candidates_from_reference_template(
+        decision_rows,
+        session_id=session_id,
+        template_type=resolved_template_type,
+    )
+    memory_ids: list[str] = []
+    for candidate in candidates:
+        memory_ids.append(
+            upsert_estimator_memory(
+                engine,
+                memory_id=candidate["memory_id"],
+                guidance=candidate["guidance"],
+                template_type=candidate["template_type"],
+                decision_id=candidate["decision_id"],
+                template_bucket=candidate["template_bucket"],
+                product_or_system=candidate["product_or_system"],
+                applies_when=candidate["applies_when"],
+                rationale=candidate["rationale"],
+                source_type=candidate["source_type"],
+                source_session_id=candidate["source_session_id"],
+                status=candidate["status"],
+                priority=candidate["priority"],
+            )
+        )
+    return memory_ids
+
+
 def save_memory_candidates_from_edits(
     engine: Engine,
     session_id: str,

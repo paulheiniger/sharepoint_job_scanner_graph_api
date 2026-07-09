@@ -9,6 +9,7 @@ from jobscan.estimator.session_capture import (
     create_estimator_session,
     ensure_estimator_session_tables,
     estimator_memory_candidates_from_edits,
+    estimator_memory_candidates_from_reference_template,
     export_estimator_session_package,
     export_training_dataset,
     final_decisions_from_workbench,
@@ -17,6 +18,7 @@ from jobscan.estimator.session_capture import (
     save_decision_edits,
     save_decision_proposal,
     save_final_decisions,
+    save_memory_candidates_from_reference_template,
     save_memory_candidates_from_edits,
     save_scope_interpretation,
     save_session_artifact,
@@ -242,6 +244,87 @@ def test_estimator_memory_candidates_from_edits_are_pending_until_approved() -> 
 
     update_estimator_memory_status(engine, memory_ids, status="approved", approved_by="tester")
     assert len(approved_memory_frame(engine)) == 1
+
+
+def test_reference_template_summary_decisions_create_pending_memory_candidates() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    ensure_estimator_session_tables(engine)
+    session_id = create_estimator_session(
+        engine,
+        raw_input_notes="Roofing reference template summary.",
+        division="Roofing",
+        template_type="roofing",
+    )
+    decisions = [
+        {
+            "source": "reference_template_summary",
+            "section": "roofing_logistics_expense_template_decisions",
+            "decision_id": "roofing_labor_loading_row_136",
+            "template_bucket": "labor_loading",
+            "workbook_row": "136",
+            "include": True,
+            "proposed_values": {
+                "hours_per_day": 2.0,
+                "people_count": 1.0,
+                "trip_count": 3.0,
+                "unit_price": 25.5,
+            },
+            "evidence": [
+                {
+                    "source": "reference_template_summary",
+                    "source_row": "137",
+                    "line_item": "Loading",
+                    "basis_units": "2.00 hours; 1 person",
+                    "unit_price_rate": "$25.50",
+                }
+            ],
+        },
+        {
+            "source": "reference_template_summary",
+            "section": "roofing_equipment_template_decisions",
+            "decision_id": "roofing_dumpsters_row_69",
+            "template_bucket": "dumpster",
+            "workbook_row": "69",
+            "include": True,
+            "proposed_values": {"estimated_units": 1.0, "unit_price": 600.0},
+            "evidence": [{"source_row": "96", "line_item": "Dumpster"}],
+        },
+        {
+            "source": "ai_chat",
+            "section": "roofing_labor_template_decisions",
+            "decision_id": "roofing_labor_base_row_122",
+            "template_bucket": "labor_base",
+            "workbook_row": "122",
+            "include": True,
+            "proposed_values": {"days": 1.25},
+        },
+    ]
+
+    candidates = estimator_memory_candidates_from_reference_template(
+        decisions,
+        session_id=session_id,
+        template_type="roofing",
+    )
+
+    assert len(candidates) == 2
+    loading = next(candidate for candidate in candidates if candidate["template_bucket"] == "labor_loading")
+    assert loading["status"] == "pending"
+    assert loading["priority"] == "high"
+    assert loading["source_type"] == "reference_template_summary"
+    assert "hours_per_day=2.0" in loading["guidance"]
+    assert loading["applies_when"]["source_row"] == "137"
+    assert loading["applies_when"]["normalized_workbook_row"] == "136"
+    assert loading["applies_when"]["proposed_values"]["trip_count"] == 3.0
+
+    memory_ids = save_memory_candidates_from_reference_template(engine, session_id, decisions)
+    assert len(memory_ids) == 2
+    assert len(estimator_memory_frame(engine, status="pending")) == 2
+    assert approved_memory_frame(engine).empty
+
+    update_estimator_memory_status(engine, memory_ids[:1], status="approved", approved_by="tester")
+    approved = approved_memory_frame(engine)
+    assert len(approved) == 1
+    assert approved.iloc[0]["source_type"] == "reference_template_summary"
 
 
 def test_estimator_session_lifecycle_and_exports(tmp_path) -> None:

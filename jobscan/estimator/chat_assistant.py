@@ -47,6 +47,15 @@ DETERMINISTIC_DIMENSION_FIELDS = {
     "estimated_sqft",
     "area_calculation_explanation",
 }
+REFERENCE_TEMPLATE_SOURCE = "reference_template_summary"
+
+
+@dataclass
+class ParsedReferenceTemplateSummary:
+    workbook_decision_preferences: list[dict[str, Any]] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    row_count: int = 0
+    mapped_row_count: int = 0
 
 
 @dataclass
@@ -75,7 +84,8 @@ def run_estimator_chat_turn(
     provider: Callable[[list[dict[str, Any]], str], Any] | None = None,
     model: str | None = None,
 ) -> EstimatorChatResult:
-    message_list = _clean_messages(messages)
+    raw_message_list = list(messages or [])
+    message_list = _clean_messages(raw_message_list)
     if not message_list:
         return EstimatorChatResult(
             assistant_message="Paste or type project notes and I will turn them into an estimator-ready draft.",
@@ -84,6 +94,16 @@ def run_estimator_chat_turn(
             missing_questions=["Project notes are needed before estimating."],
         )
     deterministic_baseline = deterministic_chat_fallback(message_list, template_type_hint=template_type_hint)
+    reference_summary = _parse_reference_template_summary_from_messages(
+        raw_message_list,
+        template_type_hint=template_type_hint,
+    )
+    if reference_summary.mapped_row_count:
+        deterministic_baseline = _merge_reference_template_summary(
+            deterministic_baseline,
+            reference_summary,
+            template_type_hint=template_type_hint,
+        )
     baseline_scope = _merge_chat_scopes(existing_scope or {}, deterministic_baseline.scope_overrides)
     context = estimator_context_summary(data, scope=baseline_scope)
     model_name = model or os.getenv("OPENAI_ESTIMATOR_CHAT_MODEL") or DEFAULT_CHAT_ESTIMATOR_MODEL
@@ -97,7 +117,7 @@ def run_estimator_chat_turn(
         try:
             raw = provider(prompt_messages, model_name) if provider is not None else _call_openai_chat(prompt_messages, model_name)
             payload = _extract_json_object(raw)
-            return normalize_chat_payload(
+            result = normalize_chat_payload(
                 payload,
                 source="ai_chat",
                 baseline_scope=baseline_scope,
@@ -106,6 +126,11 @@ def run_estimator_chat_turn(
         except Exception as exc:
             deterministic_baseline.warnings.append(f"AI estimator chat failed; used deterministic fallback. {type(exc).__name__}: {exc}")
             return deterministic_baseline
+        return _merge_reference_template_summary(
+            result,
+            reference_summary,
+            template_type_hint=template_type_hint,
+        )
     deterministic_baseline.warnings.append("OPENAI_API_KEY is not configured; used deterministic estimator-chat fallback.")
     return deterministic_baseline
 
@@ -1288,6 +1313,530 @@ def normalize_chat_payload(
         raw_response=payload,
         warnings=_clean_list(payload.get("warnings")),
     )
+
+
+def _merge_reference_template_summary(
+    result: EstimatorChatResult,
+    reference_summary: ParsedReferenceTemplateSummary,
+    *,
+    template_type_hint: str = "",
+) -> EstimatorChatResult:
+    if not reference_summary.mapped_row_count:
+        return result
+    merged_preferences = _merge_decision_preferences(
+        result.workbook_decision_preferences,
+        reference_summary.workbook_decision_preferences,
+    )
+    template_type = "roofing" if _clean_string(template_type_hint).lower() == "roofing" else ""
+    if not template_type:
+        template_type = "roofing"
+    scope = _clean_scope(
+        {
+            **_clean_scope(result.scope_overrides),
+            "template_type": template_type,
+            "division": "Roofing" if template_type == "roofing" else template_type.title(),
+            "project_type": "roofing estimate" if template_type == "roofing" else template_type,
+            "reference_template_summary_present": True,
+            "reference_template_summary_row_count": reference_summary.row_count,
+            "reference_template_summary_mapped_row_count": reference_summary.mapped_row_count,
+        }
+    )
+    warnings = list(result.warnings)
+    for warning in reference_summary.warnings:
+        if warning not in warnings:
+            warnings.append(warning)
+    summary_line = (
+        f"Mapped {reference_summary.mapped_row_count} pasted template-summary rows to current "
+        f"{template_type or 'estimating'} workbook decisions for review."
+    )
+    assistant_message = result.assistant_message
+    if summary_line not in assistant_message:
+        assistant_message = _clean_string(f"{assistant_message}\n\n{summary_line}")
+    return EstimatorChatResult(
+        assistant_message=assistant_message,
+        estimator_notes=result.estimator_notes,
+        scope_overrides=scope,
+        workbook_decision_preferences=merged_preferences,
+        missing_questions=result.missing_questions,
+        assumptions=result.assumptions,
+        confidence=max(result.confidence, 0.72),
+        source=result.source,
+        raw_response=result.raw_response,
+        warnings=warnings,
+    )
+
+
+def _merge_decision_preferences(
+    existing: list[dict[str, Any]],
+    overrides: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    order: list[tuple[str, str, str, str]] = []
+    for preference in list(existing or []) + list(overrides or []):
+        if not isinstance(preference, dict):
+            continue
+        key = (
+            _clean_string(preference.get("section")),
+            _clean_string(preference.get("template_bucket")),
+            _safe_row_number(preference.get("workbook_row")),
+            _clean_string(preference.get("decision_id")),
+        )
+        if key not in merged:
+            merged[key] = dict(preference)
+            order.append(key)
+            continue
+        base = merged[key]
+        proposed_values = dict(base.get("proposed_values") or {})
+        proposed_values.update(dict(preference.get("proposed_values") or {}))
+        evidence = list(base.get("evidence") or [])
+        for item in preference.get("evidence") or []:
+            if item not in evidence:
+                evidence.append(item)
+        review_reasons = list(base.get("review_reasons") or [])
+        for reason in preference.get("review_reasons") or []:
+            if reason not in review_reasons:
+                review_reasons.append(reason)
+        base.update(preference)
+        base["proposed_values"] = proposed_values
+        if evidence:
+            base["evidence"] = evidence
+        if review_reasons:
+            base["review_reasons"] = review_reasons
+    return [merged[key] for key in order]
+
+
+def _parse_reference_template_summary_from_messages(
+    messages: Iterable[dict[str, str]],
+    *,
+    template_type_hint: str = "",
+) -> ParsedReferenceTemplateSummary:
+    user_text = "\n".join(str(message.get("content") or "") for message in messages if message.get("role") == "user")
+    return _parse_reference_template_summary(user_text, template_type_hint=template_type_hint)
+
+
+def _parse_reference_template_summary(text: str, *, template_type_hint: str = "") -> ParsedReferenceTemplateSummary:
+    if not _looks_like_reference_template_summary(text):
+        return ParsedReferenceTemplateSummary()
+    table_rows = _reference_summary_table_rows(text)
+    if not table_rows:
+        return ParsedReferenceTemplateSummary()
+    truck_trip_count = _reference_summary_truck_trip_count(table_rows)
+    preferences: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for table_row in table_rows:
+        mapped = _reference_summary_row_to_preference(table_row, truck_trip_count=truck_trip_count)
+        if mapped:
+            preferences.append(mapped)
+            continue
+        if _clean_string(table_row.get("line_item")):
+            warnings.append(
+                "Pasted template row was not mapped to a current decision row: "
+                f"source row {table_row.get('source_row') or '?'} {_clean_string(table_row.get('line_item'))}."
+            )
+    cleaned = _clean_decision_preferences(preferences)
+    return ParsedReferenceTemplateSummary(
+        workbook_decision_preferences=cleaned,
+        warnings=warnings[:12],
+        row_count=len(table_rows),
+        mapped_row_count=len(cleaned),
+    )
+
+
+def _looks_like_reference_template_summary(text: str) -> bool:
+    lowered = str(text or "").lower()
+    if "source row" in lowered and "line item" in lowered:
+        return True
+    row_markers = len(re.findall(r"(?:^|\n)\s*(?:materials?|labor|labor / subcontractor|additional amount)", lowered))
+    return row_markers >= 3 and any(term in lowered for term in ("unit price", "estimated cost", "basis / units"))
+
+
+def _reference_summary_table_rows(text: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for line in str(text or "").splitlines():
+        columns = _split_reference_summary_line(line)
+        if len(columns) < 5:
+            continue
+        if _reference_summary_is_header(columns):
+            continue
+        section = _clean_string(columns[0])
+        source_row = _safe_row_number(columns[1] if len(columns) > 1 else "")
+        if not section or not source_row:
+            continue
+        line_item = _clean_string(columns[2] if len(columns) > 2 else "")
+        if not line_item:
+            continue
+        row = {
+            "section": section,
+            "source_row": source_row,
+            "line_item": line_item,
+            "basis_units": _clean_string(columns[3] if len(columns) > 3 else ""),
+            "unit_price_rate": _clean_string(columns[4] if len(columns) > 4 else ""),
+            "estimated_cost": _clean_string(columns[5] if len(columns) > 5 else ""),
+            "notes": _clean_string(" ".join(columns[6:]) if len(columns) > 6 else ""),
+        }
+        rows.append(row)
+    return rows
+
+
+def _split_reference_summary_line(line: str) -> list[str]:
+    stripped = str(line or "").strip()
+    if not stripped:
+        return []
+    if re.fullmatch(r"[-:|\s]+", stripped):
+        return []
+    if "\t" in stripped:
+        return [_clean_string(part) for part in stripped.split("\t")]
+    if "|" in stripped:
+        parts = [part for part in stripped.strip("|").split("|")]
+        return [_clean_string(part) for part in parts]
+    return [_clean_string(part) for part in re.split(r"\s{2,}", stripped)]
+
+
+def _reference_summary_is_header(columns: list[str]) -> bool:
+    normalized = " ".join(_clean_string(column).lower() for column in columns[:4])
+    return "source row" in normalized and "line item" in normalized
+
+
+def _reference_summary_truck_trip_count(table_rows: list[dict[str, Any]]) -> float | None:
+    for row in table_rows:
+        line_item = _clean_string(row.get("line_item")).lower()
+        if "truck" not in line_item:
+            continue
+        values = _reference_summary_values(row)
+        trip_count = values.get("trip_count")
+        if isinstance(trip_count, (int, float)) and trip_count > 0:
+            return float(trip_count)
+    return None
+
+
+def _reference_summary_row_to_preference(row: dict[str, Any], *, truck_trip_count: float | None = None) -> dict[str, Any] | None:
+    target = _reference_summary_target(row)
+    if not target:
+        return None
+    values = _reference_summary_values(row)
+    if target["section"] == "roofing_labor_template_decisions":
+        if values.get("people_count") not in (None, "") and values.get("crew_size") in (None, ""):
+            values["crew_size"] = values["people_count"]
+        if values.get("unit_price") not in (None, "") and values.get("daily_rate") in (None, ""):
+            values["daily_rate"] = values["unit_price"]
+        values.pop("people_count", None)
+        values.pop("unit_price", None)
+    if target["template_bucket"] in {"labor_loading", "labor_traveling"} and "trip_count" not in values:
+        if truck_trip_count and "truck trip" in _clean_string(row.get("notes")).lower():
+            values["trip_count"] = truck_trip_count
+        elif truck_trip_count and "multiplied by" in _clean_string(row.get("notes")).lower():
+            values["trip_count"] = truck_trip_count
+    evidence = [
+        {
+            "source": REFERENCE_TEMPLATE_SOURCE,
+            "source_row": row.get("source_row"),
+            "section": row.get("section"),
+            "line_item": row.get("line_item"),
+            "basis_units": row.get("basis_units"),
+            "unit_price_rate": row.get("unit_price_rate"),
+            "estimated_cost": row.get("estimated_cost"),
+            "notes": row.get("notes"),
+        }
+    ]
+    source_row = _safe_row_number(row.get("source_row"))
+    workbook_row = _safe_row_number(target["workbook_row"])
+    review_reasons = ["Mapped from pasted correct-template summary; verify against the current workbook before export."]
+    if source_row and source_row != workbook_row:
+        review_reasons.append(f"Source row {source_row} was normalized to current workbook row {workbook_row}.")
+    return {
+        **target,
+        "include": True,
+        "proposed_values": values,
+        "confidence": 0.86,
+        "review_required": True,
+        "review_reasons": review_reasons,
+        "evidence": evidence,
+        "source": REFERENCE_TEMPLATE_SOURCE,
+    }
+
+
+def _reference_summary_target(row: dict[str, Any]) -> dict[str, str] | None:
+    source_row = _safe_row_number(row.get("source_row"))
+    line_item = _clean_string(row.get("line_item")).lower()
+    section = _clean_string(row.get("section")).lower()
+    is_labor_section = "labor" in section
+    if "materials tax" in section or "sales tax" in line_item:
+        return None
+    if "additional amount" in section:
+        return None
+    if is_labor_section:
+        return _reference_summary_labor_target(source_row, line_item)
+    if source_row in {"26", "27", "28"} or any(term in line_item for term in ("silicone", "coating", "acrylic")):
+        if "sausage" not in line_item and "sf-2000" not in line_item and "seal" not in line_item:
+            row_number = source_row if source_row in {"26", "27", "28"} else "26"
+            return {
+                "decision_id": f"roofing_coating_system_row_{row_number}",
+                "section": "roofing_coating_template_decisions",
+                "template_bucket": "coating",
+                "workbook_row": row_number,
+            }
+    if source_row in {"19", "20", "21"} or any(term in line_item for term in ("roof foam", "roof 2.7", "spf", "foam")):
+        row_number = source_row if source_row in {"19", "20", "21"} else "19"
+        return {
+            "decision_id": f"roofing_foam_row_{row_number}",
+            "section": "roofing_foam_template_decisions",
+            "template_bucket": "foam",
+            "workbook_row": row_number,
+        }
+    if source_row == "36" or "granule" in line_item:
+        return {
+            "decision_id": "roofing_granules_row_36",
+            "section": "roofing_granules_template_decisions",
+            "template_bucket": "granules",
+            "workbook_row": "36",
+        }
+    if source_row in {"43", "45"} or any(term in line_item for term in ("sausage", "sf-2000", "caulk", "sealant", "mastic", "flashing")):
+        row_number = source_row if source_row in {"43", "45"} else "43"
+        return {
+            "decision_id": f"roofing_caulk_sealant_row_{row_number}",
+            "section": "roofing_detail_template_decisions",
+            "template_bucket": "caulk_detail",
+            "workbook_row": row_number,
+        }
+    if source_row == "63" or "fastener" in line_item:
+        return {
+            "decision_id": "roofing_fasteners_row_63",
+            "section": "roofing_board_fastener_template_decisions",
+            "template_bucket": "fasteners",
+            "workbook_row": "63",
+        }
+    if source_row == "65" or "plate" in line_item:
+        return {
+            "decision_id": "roofing_plates_row_65",
+            "section": "roofing_board_fastener_template_decisions",
+            "template_bucket": "plates",
+            "workbook_row": "65",
+        }
+    if "dumpster" in line_item or "disposal" in line_item:
+        return {
+            "decision_id": "roofing_dumpsters_row_69",
+            "section": "roofing_equipment_template_decisions",
+            "template_bucket": "dumpster",
+            "workbook_row": "69",
+        }
+    if "generator" in line_item:
+        return {
+            "decision_id": "roofing_generator_row_99",
+            "section": "roofing_equipment_template_decisions",
+            "template_bucket": "generator",
+            "workbook_row": "99",
+        }
+    if source_row == "106" or "sales" in line_item or "inspect" in line_item:
+        return {
+            "decision_id": "roofing_sales_trips_row_106",
+            "section": "roofing_travel_freight_template_decisions",
+            "template_bucket": "sales_trips",
+            "workbook_row": "106",
+        }
+    if source_row == "108" or "truck" in line_item:
+        return {
+            "decision_id": "roofing_truck_expense_row_108",
+            "section": "roofing_travel_freight_template_decisions",
+            "template_bucket": "truck_expense",
+            "workbook_row": "108",
+        }
+    if "loading" in line_item:
+        return {
+            "decision_id": "roofing_labor_loading_row_136",
+            "section": "roofing_logistics_expense_template_decisions",
+            "template_bucket": "labor_loading",
+            "workbook_row": "136",
+        }
+    if "travel" in line_item:
+        return {
+            "decision_id": "roofing_labor_traveling_row_138",
+            "section": "roofing_logistics_expense_template_decisions",
+            "template_bucket": "labor_traveling",
+            "workbook_row": "138",
+        }
+    if "infrared" in line_item or "ir scan" in line_item:
+        return {
+            "decision_id": "roofing_infrared_scan_row_141",
+            "section": "roofing_logistics_expense_template_decisions",
+            "template_bucket": "infrared_scan",
+            "workbook_row": "141",
+        }
+    if "meal" in line_item or "lodging" in line_item or "hotel" in line_item:
+        return {
+            "decision_id": "roofing_meals_lodging_row_144",
+            "section": "roofing_logistics_expense_template_decisions",
+            "template_bucket": "meals_lodging",
+            "workbook_row": "144",
+        }
+    if "set up" in line_item or "setup" in line_item or "safety" in line_item:
+        return {
+            "decision_id": "roofing_labor_prep_row_116",
+            "section": "roofing_labor_template_decisions",
+            "template_bucket": "labor_prep",
+            "workbook_row": "116",
+        }
+    if "tear-out" in line_item or "tear out" in line_item or "foam & base" in line_item or "foam and base" in line_item:
+        return {
+            "decision_id": "roofing_labor_base_row_122",
+            "section": "roofing_labor_template_decisions",
+            "template_bucket": "labor_base",
+            "workbook_row": "122",
+        }
+    if "walk" in line_item or "caulk" in line_item:
+        return {
+            "decision_id": "roofing_labor_seam_sealer_row_120",
+            "section": "roofing_labor_template_decisions",
+            "template_bucket": "labor_seam_sealer",
+            "workbook_row": "120",
+        }
+    if "top" in line_item or "granule" in line_item:
+        return {
+            "decision_id": "roofing_labor_top_coat_row_124",
+            "section": "roofing_labor_template_decisions",
+            "template_bucket": "labor_top_coat",
+            "workbook_row": "124",
+        }
+    if "clean" in line_item or "misc" in line_item:
+        return {
+            "decision_id": "roofing_labor_cleanup_row_132",
+            "section": "roofing_labor_template_decisions",
+            "template_bucket": "labor_cleanup",
+            "workbook_row": "132",
+        }
+    return None
+
+
+def _reference_summary_labor_target(source_row: str, line_item: str) -> dict[str, str] | None:
+    if "loading" in line_item:
+        return {
+            "decision_id": "roofing_labor_loading_row_136",
+            "section": "roofing_logistics_expense_template_decisions",
+            "template_bucket": "labor_loading",
+            "workbook_row": "136",
+        }
+    if "travel" in line_item:
+        return {
+            "decision_id": "roofing_labor_traveling_row_138",
+            "section": "roofing_logistics_expense_template_decisions",
+            "template_bucket": "labor_traveling",
+            "workbook_row": "138",
+        }
+    if "infrared" in line_item or "ir scan" in line_item:
+        return {
+            "decision_id": "roofing_infrared_scan_row_141",
+            "section": "roofing_logistics_expense_template_decisions",
+            "template_bucket": "infrared_scan",
+            "workbook_row": "141",
+        }
+    if "meal" in line_item or "lodging" in line_item or "hotel" in line_item:
+        return {
+            "decision_id": "roofing_meals_lodging_row_144",
+            "section": "roofing_logistics_expense_template_decisions",
+            "template_bucket": "meals_lodging",
+            "workbook_row": "144",
+        }
+    if "set up" in line_item or "setup" in line_item or "safety" in line_item:
+        return {
+            "decision_id": "roofing_labor_prep_row_116",
+            "section": "roofing_labor_template_decisions",
+            "template_bucket": "labor_prep",
+            "workbook_row": "116",
+        }
+    if "tear-out" in line_item or "tear out" in line_item or "foam & base" in line_item or "foam and base" in line_item:
+        return {
+            "decision_id": "roofing_labor_base_row_122",
+            "section": "roofing_labor_template_decisions",
+            "template_bucket": "labor_base",
+            "workbook_row": "122",
+        }
+    if "walk" in line_item or "caulk" in line_item:
+        return {
+            "decision_id": "roofing_labor_seam_sealer_row_120",
+            "section": "roofing_labor_template_decisions",
+            "template_bucket": "labor_seam_sealer",
+            "workbook_row": "120",
+        }
+    if "top" in line_item or "granule" in line_item:
+        return {
+            "decision_id": "roofing_labor_top_coat_row_124",
+            "section": "roofing_labor_template_decisions",
+            "template_bucket": "labor_top_coat",
+            "workbook_row": "124",
+        }
+    if "clean" in line_item or "misc" in line_item:
+        return {
+            "decision_id": "roofing_labor_cleanup_row_132",
+            "section": "roofing_labor_template_decisions",
+            "template_bucket": "labor_cleanup",
+            "workbook_row": "132",
+        }
+    return None
+
+
+def _reference_summary_values(row: dict[str, Any]) -> dict[str, Any]:
+    basis = _clean_string(row.get("basis_units"))
+    rate = _clean_string(row.get("unit_price_rate"))
+    cost = _clean_string(row.get("estimated_cost"))
+    text = " ".join(part for part in (basis, rate, cost, _clean_string(row.get("notes"))) if part)
+    values: dict[str, Any] = {}
+    for key, pattern in (
+        ("estimated_units", r"(\d+(?:,\d{3})*(?:\.\d+)?)\s*(?:est\.\s*)?units?\b"),
+        ("thickness_inches", r"(\d+(?:,\d{3})*(?:\.\d+)?)\s*(?:inch(?:es)?|in\b|thickness\b)"),
+        ("days", r"(\d+(?:,\d{3})*(?:\.\d+)?)\s*(?:est\.\s*)?days?\b"),
+        ("hours_per_day", r"(\d+(?:,\d{3})*(?:\.\d+)?)\s*hours?\b"),
+        ("people_count", r"(\d+(?:,\d{3})*(?:\.\d+)?)\s*(?:people|person)\b"),
+    ):
+        parsed = _first_number_match(basis, pattern)
+        if parsed is not None:
+            values[key] = parsed
+    trips_miles = re.search(
+        r"(\d+(?:,\d{3})*(?:\.\d+)?)\s*trips?\s*(?:x|\*)\s*(\d+(?:,\d{3})*(?:\.\d+)?)\s*miles?",
+        text,
+        re.I,
+    )
+    if trips_miles:
+        values["trip_count"] = _parse_reference_number(trips_miles.group(1))
+        values["round_trip_miles"] = _parse_reference_number(trips_miles.group(2))
+    unit_price = _parse_reference_money(rate)
+    if unit_price is not None:
+        if "/ 1,000" in rate or "/1,000" in rate or "per 1,000" in rate.lower():
+            values["unit_price_per_thousand"] = unit_price
+        else:
+            values["unit_price"] = unit_price
+    elif _clean_string(row.get("line_item")).lower() in {"warranty", "misc. miles"}:
+        parsed_cost = _parse_reference_money(cost)
+        if parsed_cost is not None:
+            values["unit_price"] = parsed_cost
+    if "gal" in basis.lower():
+        gallons = _first_number_match(basis, r"(\d+(?:,\d{3})*(?:\.\d+)?)\s*gal")
+        if gallons is not None:
+            values["estimated_units"] = gallons
+            values["estimated_gallons"] = gallons
+    return {key: value for key, value in values.items() if value not in (None, "", 0)}
+
+
+def _first_number_match(text: str, pattern: str) -> float | None:
+    match = re.search(pattern, str(text or ""), re.I)
+    if not match:
+        return None
+    return _parse_reference_number(match.group(1))
+
+
+def _parse_reference_money(text: str) -> float | None:
+    match = re.search(r"\$?\s*(-?\d+(?:,\d{3})*(?:\.\d+)?)", str(text or ""))
+    if not match:
+        return None
+    return _parse_reference_number(match.group(1))
+
+
+def _parse_reference_number(value: Any) -> float | None:
+    try:
+        number = float(str(value).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
+    if number != number:
+        return None
+    return round(number, 6)
 
 
 def deterministic_chat_fallback(

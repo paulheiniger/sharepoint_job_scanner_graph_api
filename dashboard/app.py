@@ -947,6 +947,27 @@ def capture_estimator_memory_candidates(session_id: str, edit_rows: list[dict[st
         st.session_state["estimator_memory_pending_count"] = int(st.session_state.get("estimator_memory_pending_count") or 0) + len(memory_ids)
 
 
+def capture_reference_template_memory_candidates(
+    session_id: str,
+    chat_result: dict[str, Any] | None,
+    *,
+    template_type: str = "",
+) -> None:
+    if not session_id or not isinstance(chat_result, dict):
+        return
+    decision_rows = chat_result.get("workbook_decision_preferences")
+    if not isinstance(decision_rows, list) or not decision_rows:
+        return
+    memory_ids = capture_estimator_session_event(
+        estimator_sessions.save_memory_candidates_from_reference_template,
+        session_id,
+        decision_rows,
+        template_type=template_type,
+    )
+    if memory_ids:
+        st.session_state["estimator_memory_pending_count"] = int(st.session_state.get("estimator_memory_pending_count") or 0) + len(memory_ids)
+
+
 DAILY_DISPATCH_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS daily_dispatch (
     dispatch_id TEXT PRIMARY KEY,
@@ -9843,6 +9864,18 @@ def estimator_prototype_page() -> None:
             )
             if session_id:
                 st.session_state["estimator_session_id"] = session_id
+                reference_memory_saved_key = f"estimator_reference_memory_saved_{session_id}"
+                if active_chat_context and not st.session_state.get(reference_memory_saved_key):
+                    capture_reference_template_memory_candidates(
+                        session_id,
+                        active_chat_context,
+                        template_type=str(
+                            estimator_chat_scope_overrides.get("template_type")
+                            or resolved_estimate_type
+                            or ""
+                        ),
+                    )
+                    st.session_state[reference_memory_saved_key] = True
             else:
                 st.session_state.pop("estimator_session_id", None)
             if resolved_estimate_type == ESTIMATE_TYPE_REPAIR:
