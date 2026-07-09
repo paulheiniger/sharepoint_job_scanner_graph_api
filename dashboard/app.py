@@ -2767,8 +2767,158 @@ ASK_SPRAYTEC_STRUCTURED_TARGETS = {
 }
 
 
+ASK_JOB_ATTRIBUTE_CONCEPTS = {
+    "coating": (
+        "coating",
+        "silicone",
+        "acrylic",
+        "urethane",
+        "elastomeric",
+        "gaco s20",
+        "gacoflex s20",
+        "gaco s42",
+        "gacoflex s42",
+        "top coat",
+        "base coat",
+    ),
+    "foam": (
+        "foam",
+        "spf",
+        "spray foam",
+        "roof foam",
+        "polyurethane",
+        "gaco roof",
+        "gacoroof",
+        "f2733",
+        "2.7 lb",
+        "2.8 lb",
+    ),
+    "primer": ("primer", "e5320", "e-5320", "epoxy primer", "rust primer"),
+    "fabric": ("fabric", "reinforcement", "reinforcing", "mesh"),
+    "fasteners": ("fastener", "fasteners", "screw", "screws", "plate", "plates"),
+    "board": ("iso", "polyiso", "cover board", "board stock", "gypsum board"),
+    "tearoff": ("tear off", "tear-off", "tearout", "tear out", "remove existing", "removal"),
+    "sealant": ("sealant", "caulk", "mastic", "flashing", "sausage", "buttergrade"),
+}
+
+
+ASK_JOB_ATTRIBUTE_ACTION_MARKERS = (
+    " find ",
+    " show ",
+    " list ",
+    " which ",
+    " what ",
+    " jobs ",
+    " job ",
+    " with ",
+    " had ",
+    " have ",
+    " used ",
+    " required ",
+    " needed ",
+    " included ",
+    " involving ",
+)
+
+
+ASK_JOB_SUBSTRATE_ALIASES = {
+    "metal": ("metal", "metal roof", "metal roofs", "metal panel", "standing seam", "r panel", "r-panel"),
+    "tpo": ("tpo",),
+    "epdm": ("epdm", "rubber roof"),
+    "concrete": ("concrete",),
+    "spf": ("spf", "spray foam roof", "foam roof"),
+    "mod bit": ("mod bit", "modified bitumen", "mod-bit"),
+    "bur": ("bur", "built up roof", "built-up roof"),
+}
+
+
+ASK_JOB_SYSTEM_ALIASES = {
+    "silicone": ("silicone", "gaco s20", "gacoflex s20", "gaco s42", "gacoflex s42"),
+    "acrylic": ("acrylic",),
+    "urethane": ("urethane", "polyurethane", "u91", "u92"),
+    "gaco": ("gaco", "gacoflex", "gacoroof"),
+}
+
+
 def _prompt_has_any(normalized: str, markers: Iterable[str]) -> bool:
     return any(marker in normalized for marker in markers)
+
+
+def _ask_attribute_normalized(value: object) -> str:
+    return " " + " ".join(re.sub(r"[^a-z0-9.#]+", " ", str(value or "").lower()).split()) + " "
+
+
+def _normalized_contains_phrase(normalized: str, phrase: str) -> bool:
+    phrase_norm = " ".join(re.sub(r"[^a-z0-9.#]+", " ", phrase.lower()).split())
+    if not phrase_norm:
+        return False
+    return f" {phrase_norm} " in normalized
+
+
+def _parse_attribute_number(raw: str) -> float | None:
+    cleaned = raw.replace(",", "").strip().lower()
+    multiplier = 1000 if cleaned.endswith("k") else 1
+    if cleaned.endswith("k"):
+        cleaned = cleaned[:-1]
+    try:
+        return float(cleaned) * multiplier
+    except ValueError:
+        return None
+
+
+def _infer_attribute_sqft_filter(normalized: str) -> dict[str, Any] | None:
+    sqft_words = r"(?:sq\s*ft|sqft|square\s*feet|sf)"
+    number = r"(\d[\d,]*(?:\.\d+)?k?)"
+    between = re.search(rf"\bbetween\s+{number}\s+(?:and|-)\s+{number}\s*{sqft_words}\b", normalized)
+    if between:
+        lower = _parse_attribute_number(between.group(1))
+        upper = _parse_attribute_number(between.group(2))
+        if lower is not None and upper is not None:
+            return {"operator": "between", "min": min(lower, upper), "max": max(lower, upper)}
+    comparisons = [
+        (rf"\b(?:over|above|more than|greater than|at least|>=)\s+{number}\s*{sqft_words}\b", ">="),
+        (rf"\b(?:under|below|less than|no more than|<=)\s+{number}\s*{sqft_words}\b", "<="),
+        (rf"\b{number}\s*\+\s*{sqft_words}\b", ">="),
+    ]
+    for pattern, operator in comparisons:
+        match = re.search(pattern, normalized)
+        if match:
+            value = _parse_attribute_number(match.group(1))
+            if value is not None:
+                return {"operator": operator, "value": value}
+    return None
+
+
+def _infer_attribute_terms(normalized: str, alias_map: dict[str, tuple[str, ...]]) -> list[str]:
+    return [
+        key
+        for key, aliases in alias_map.items()
+        if any(_normalized_contains_phrase(normalized, alias) for alias in aliases)
+    ]
+
+
+def infer_ask_job_attribute_query(prompt: str, interpreted: dict[str, Any]) -> dict[str, Any]:
+    normalized = _ask_attribute_normalized(prompt)
+    concepts = [
+        concept
+        for concept, aliases in ASK_JOB_ATTRIBUTE_CONCEPTS.items()
+        if any(_normalized_contains_phrase(normalized, alias) for alias in aliases)
+    ]
+    has_action = _prompt_has_any(normalized, ASK_JOB_ATTRIBUTE_ACTION_MARKERS)
+    enabled = bool(concepts and has_action and (" job " in normalized or " jobs " in normalized or len(concepts) >= 2))
+    year_match = re.search(r"\b(20\d{2})\b", normalized)
+    warranty_match = re.search(r"\b(\d{1,2})\s*(?:-| )?(?:year|yr)\b", normalized)
+    return {
+        "enabled": enabled,
+        "concepts": concepts,
+        "division": interpreted.get("division"),
+        "status": interpreted.get("status"),
+        "year": int(year_match.group(1)) if year_match else None,
+        "warranty_years": int(warranty_match.group(1)) if warranty_match else None,
+        "substrates": _infer_attribute_terms(normalized, ASK_JOB_SUBSTRATE_ALIASES),
+        "systems": _infer_attribute_terms(normalized, ASK_JOB_SYSTEM_ALIASES),
+        "sqft_filter": _infer_attribute_sqft_filter(normalized),
+    }
 
 
 def plan_ask_spraytec_query(prompt: str, interpreted: dict[str, Any]) -> dict[str, Any]:
@@ -2777,6 +2927,7 @@ def plan_ask_spraytec_query(prompt: str, interpreted: dict[str, Any]) -> dict[st
     search_text = text_value(interpreted.get("search_text"))
     targets: set[str] = {"jobs"}
     reasons: list[str] = []
+    attribute_query = infer_ask_job_attribute_query(prompt, interpreted)
 
     document_markers = (
         " document ",
@@ -2888,6 +3039,16 @@ def plan_ask_spraytec_query(prompt: str, interpreted: dict[str, Any]) -> dict[st
         targets.update({"documents", "document_content"})
         reasons.append(f"requested {requested_document_label(document_type).lower()}")
 
+    if attribute_query.get("enabled"):
+        targets.difference_update({"pricing_catalog", "product_catalog", "documents"})
+        reasons = [
+            reason
+            for reason in reasons
+            if reason not in {"pricing terms", "product/system terms", "document terms"} and not str(reason).startswith("requested ")
+        ]
+        targets.update({"jobs", "estimates", "estimate_line_items", "estimate_template_rows", "document_content"})
+        reasons.append("estimate attribute search")
+
     if targets == {"jobs"} and is_data_answer_request(prompt):
         targets.update({"estimates", "estimate_template_rows"})
         reasons.append("general data question")
@@ -2896,7 +3057,9 @@ def plan_ask_spraytec_query(prompt: str, interpreted: dict[str, Any]) -> dict[st
 
     needs_clarification = bool({"documents", "document_content"} & targets) and not search_text and not interpreted.get("is_follow_up")
     mode = "job_lookup"
-    if {"documents", "document_content"} & targets and targets - {"jobs", "documents", "document_content"}:
+    if attribute_query.get("enabled"):
+        mode = "attribute_job_search"
+    elif {"documents", "document_content"} & targets and targets - {"jobs", "documents", "document_content"}:
         mode = "mixed_answer"
     elif {"documents", "document_content"} & targets:
         mode = "document_lookup"
@@ -2911,6 +3074,7 @@ def plan_ask_spraytec_query(prompt: str, interpreted: dict[str, Any]) -> dict[st
         "clarification": "Which job, customer, project, product, or file should I search for?" if needs_clarification else "",
         "use_llm_answer": mode in {"mixed_answer", "structured_answer"} or is_data_answer_request(prompt),
         "reason": "; ".join(dict.fromkeys(reasons)) or "job lookup",
+        "attribute_query": attribute_query,
     }
 
 
@@ -3122,6 +3286,637 @@ def _json_ready_record(row: dict[str, Any]) -> dict[str, Any]:
 
 def _query_rows(connection: Any, sql: Any, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     return [_json_ready_record(dict(row)) for row in connection.execute(sql, params or {}).mappings().all()]
+
+
+def _attribute_text_expr(alias: str, columns: set[str], fields: list[str]) -> str:
+    present = [field for field in fields if field in columns]
+    if not present:
+        return "LOWER('')"
+    joined = ", ".join(f"COALESCE({alias}.{field}::text, '')" for field in present)
+    return f"LOWER(CONCAT_WS(' ', {joined}))"
+
+
+def _non_informational_attribute_filter(text_expr: str) -> str:
+    blocked = [
+        "total job cost",
+        "worksheet price",
+        "work sheet price",
+        "estimated o/h",
+        "overhead",
+        "profit",
+        "subtotal",
+        "sub total",
+    ]
+    return " AND ".join(f"{text_expr} NOT LIKE '%{term}%'" for term in blocked)
+
+
+def _query_attribute_evidence_table(
+    connection: Any,
+    *,
+    table_name: str,
+    concept: str,
+    aliases: Iterable[str],
+    limit: int,
+) -> list[dict[str, Any]]:
+    columns = _connection_table_columns(connection, table_name)
+    if "job_id" not in columns:
+        return []
+    if table_name == "estimate_template_rows":
+        searchable_fields = [
+            "template_type",
+            "template_bucket",
+            "template_section",
+            "line_item_kind",
+            "row_label",
+            "raw_text",
+            "selected_item_name",
+            "resolved_item_name",
+            "source_file",
+            "sheet_name",
+        ]
+        requested_fields = [
+            "job_id",
+            "source_file",
+            "template_type",
+            "template_bucket",
+            "template_section",
+            "line_item_kind",
+            "row_number",
+            "row_label",
+            "selected_item_name",
+            "resolved_item_name",
+            "quantity",
+            "unit",
+            "unit_price",
+            "estimated_units",
+            "estimated_cost",
+            "area_sqft",
+            "thickness_inches",
+            "yield_or_coverage",
+            "estimated_sets",
+            "estimated_gallons",
+            "warranty_years",
+            "needs_review",
+        ]
+    else:
+        searchable_fields = [
+            "division",
+            "section",
+            "line_item_category",
+            "line_item_name",
+            "description",
+            "vendor",
+            "notes",
+            "estimate_file",
+            "source_sheet",
+        ]
+        requested_fields = [
+            "job_id",
+            "estimate_file",
+            "division",
+            "pipeline_status",
+            "customer",
+            "job_name",
+            "section",
+            "line_item_category",
+            "line_item_name",
+            "description",
+            "quantity",
+            "unit",
+            "unit_cost",
+            "unit_price",
+            "extended_cost",
+            "labor_days",
+            "crew_size",
+            "labor_hours",
+            "vendor",
+            "notes",
+            "source_sheet",
+            "source_row",
+        ]
+    selected = _select_columns(columns, requested_fields)
+    if not selected:
+        return []
+    text_expr = _attribute_text_expr("r", columns, searchable_fields)
+    where = ["r.job_id IS NOT NULL", _non_informational_attribute_filter(text_expr)]
+    params: dict[str, Any] = {"limit": limit}
+    alias_clauses = []
+    for index, alias in enumerate(aliases):
+        key = f"alias_{index}"
+        alias_clauses.append(f"{text_expr} LIKE :{key}")
+        params[key] = f"%{alias.lower()}%"
+    if not alias_clauses:
+        return []
+    where.append("(" + " OR ".join(alias_clauses) + ")")
+    select_sql = ", ".join(f"r.{column}" for column in selected)
+    statement = text(
+        f"""
+        SELECT
+            '{table_name}' AS source_table,
+            :matched_concept AS matched_concept,
+            {select_sql}
+        FROM {table_name} r
+        WHERE {' AND '.join(where)}
+        ORDER BY r.job_id
+        LIMIT :limit
+        """
+    )
+    rows = _query_rows(connection, statement, {**params, "matched_concept": concept})
+    for row in rows:
+        row["matched_concept"] = concept
+        row["source_table"] = table_name
+    return rows
+
+
+def _fetch_ask_job_rows(connection: Any, job_ids: list[str]) -> dict[str, dict[str, Any]]:
+    if not job_ids:
+        return {}
+    columns = _connection_table_columns(connection, "jobs")
+    if "job_id" not in columns:
+        return {}
+    selected = _select_columns(
+        columns,
+        [
+            "job_id",
+            "customer",
+            "job_name",
+            "division",
+            "pipeline_status",
+            "status",
+            "job_type",
+            "site_address",
+            "city",
+            "state",
+            "estimated_sqft",
+            "total_job_cost",
+            "final_price",
+            "price_per_sqft",
+            "folder_url",
+            "estimate_file",
+            "source_year",
+            "updated_at",
+        ],
+    )
+    if not selected:
+        return {}
+    statement = text(
+        f"SELECT {', '.join(selected)} FROM jobs WHERE job_id IN :job_ids"
+    ).bindparams(bindparam("job_ids", expanding=True))
+    rows = _query_rows(connection, statement, {"job_ids": job_ids})
+    return {text_value(row.get("job_id")): row for row in rows}
+
+
+def _fetch_ask_estimate_rows(connection: Any, job_ids: list[str], limit: int) -> dict[str, dict[str, Any]]:
+    if not job_ids:
+        return {}
+    columns = _connection_table_columns(connection, "estimates")
+    if "job_id" not in columns:
+        return {}
+    selected = _select_columns(
+        columns,
+        [
+            "job_id",
+            "estimate_file",
+            "estimate_scope_type",
+            "division",
+            "pipeline_status",
+            "customer",
+            "job_name",
+            "job_type",
+            "estimated_sqft",
+            "material_subtotal",
+            "labor_subtotal",
+            "equipment_subtotal",
+            "total_job_cost",
+            "worksheet_price",
+            "final_price",
+            "price_per_sqft",
+            "estimated_duration_days",
+            "estimated_labor_hours",
+            "estimated_crew_size",
+            "warranty_amount",
+            "updated_at",
+        ],
+    )
+    if not selected:
+        return {}
+    order_sql = "updated_at DESC NULLS LAST" if "updated_at" in columns else "job_id"
+    statement = text(
+        f"""
+        SELECT {', '.join(selected)}
+        FROM estimates
+        WHERE job_id IN :job_ids
+        ORDER BY {order_sql}
+        LIMIT :limit
+        """
+    ).bindparams(bindparam("job_ids", expanding=True))
+    rows = _query_rows(connection, statement, {"job_ids": job_ids, "limit": max(limit, len(job_ids))})
+    out: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        job_id = text_value(row.get("job_id"))
+        if job_id and job_id not in out:
+            out[job_id] = row
+    return out
+
+
+def _fetch_ask_document_signal_rows(connection: Any, job_ids: list[str]) -> dict[str, dict[str, Any]]:
+    if not job_ids:
+        return {}
+    columns = _connection_table_columns(connection, "document_content")
+    if not {"job_id", "text_content"}.issubset(columns):
+        return {}
+    text_expr = "LOWER(COALESCE(d.text_content, ''))"
+    if "normalized_text" in columns:
+        text_expr = "LOWER(COALESCE(d.normalized_text, d.text_content, ''))"
+    statement = text(
+        f"""
+        WITH signals AS (
+            SELECT
+                d.job_id,
+                CASE
+                    WHEN {text_expr} LIKE '%metal roof%' OR {text_expr} LIKE '%metal panel%' OR {text_expr} LIKE '%standing seam%' THEN 'metal'
+                    WHEN {text_expr} LIKE '%tpo%' THEN 'tpo'
+                    WHEN {text_expr} LIKE '%epdm%' THEN 'epdm'
+                    WHEN {text_expr} LIKE '%concrete%' THEN 'concrete'
+                    WHEN {text_expr} LIKE '%spray foam%' OR {text_expr} LIKE '%spf%' THEN 'spf'
+                    WHEN {text_expr} LIKE '%modified bitumen%' OR {text_expr} LIKE '%mod bit%' THEN 'mod bit'
+                    WHEN {text_expr} LIKE '%built up roof%' OR {text_expr} LIKE '%built-up roof%' THEN 'bur'
+                    ELSE NULL
+                END AS substrate_signal,
+                CASE
+                    WHEN {text_expr} LIKE '%silicone%' THEN 'silicone'
+                    WHEN {text_expr} LIKE '%acrylic%' THEN 'acrylic'
+                    WHEN {text_expr} LIKE '%urethane%' THEN 'urethane'
+                    WHEN {text_expr} LIKE '%gaco%' THEN 'gaco'
+                    ELSE NULL
+                END AS material_signal,
+                NULLIF(SUBSTRING({text_expr} FROM '([0-9]{{1,2}})[ -]?year'), '')::NUMERIC AS warranty_year_signal
+            FROM document_content d
+            WHERE d.job_id IN :job_ids
+              AND (
+                {text_expr} LIKE '%metal%'
+                OR {text_expr} LIKE '%tpo%'
+                OR {text_expr} LIKE '%epdm%'
+                OR {text_expr} LIKE '%concrete%'
+                OR {text_expr} LIKE '%spf%'
+                OR {text_expr} LIKE '%spray foam%'
+                OR {text_expr} LIKE '%silicone%'
+                OR {text_expr} LIKE '%acrylic%'
+                OR {text_expr} LIKE '%urethane%'
+                OR {text_expr} LIKE '%gaco%'
+                OR {text_expr} LIKE '%warranty%'
+              )
+        )
+        SELECT
+            job_id,
+            STRING_AGG(DISTINCT substrate_signal, ', ') FILTER (WHERE substrate_signal IS NOT NULL) AS document_substrate,
+            STRING_AGG(DISTINCT material_signal, ', ') FILTER (WHERE material_signal IS NOT NULL) AS document_material_system,
+            MAX(warranty_year_signal) AS document_warranty_years
+        FROM signals
+        GROUP BY job_id
+        """
+    ).bindparams(bindparam("job_ids", expanding=True))
+    rows = _query_rows(connection, statement, {"job_ids": job_ids})
+    return {text_value(row.get("job_id")): row for row in rows}
+
+
+def _attribute_numeric_value(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if pd.isna(number):
+        return None
+    return number
+
+
+def _attribute_max_numeric(rows: Iterable[dict[str, Any]], fields: Iterable[str]) -> float | None:
+    values: list[float] = []
+    for row in rows:
+        for field in fields:
+            number = _attribute_numeric_value(row.get(field))
+            if number is not None:
+                values.append(number)
+    return max(values) if values else None
+
+
+def _attribute_best_sqft(result: dict[str, Any]) -> float | None:
+    direct = _attribute_numeric_value(result.get("estimated_sqft"))
+    if direct is not None and direct > 0:
+        return direct
+    evidence = result.get("match_evidence") if isinstance(result.get("match_evidence"), dict) else {}
+    rows = [row for concept_rows in evidence.values() for row in concept_rows]
+    return _attribute_max_numeric(rows, ("area_sqft", "quantity"))
+
+
+def _attribute_best_warranty_years(result: dict[str, Any]) -> float | None:
+    for field in ("warranty_years", "template_warranty_years", "document_warranty_years"):
+        direct = _attribute_numeric_value(result.get(field))
+        if direct is not None and direct > 0:
+            return direct
+    evidence = result.get("match_evidence") if isinstance(result.get("match_evidence"), dict) else {}
+    rows = [row for concept_rows in evidence.values() for row in concept_rows]
+    return _attribute_max_numeric(rows, ("warranty_years",))
+
+
+def _sqft_filter_matches(value: float | None, sqft_filter: dict[str, Any] | None) -> bool:
+    if not sqft_filter:
+        return True
+    if value is None:
+        return False
+    operator = sqft_filter.get("operator")
+    if operator == "between":
+        return float(sqft_filter.get("min") or 0) <= value <= float(sqft_filter.get("max") or 0)
+    threshold = float(sqft_filter.get("value") or 0)
+    if operator == ">=":
+        return value >= threshold
+    if operator == "<=":
+        return value <= threshold
+    return True
+
+
+def _attribute_result_matches_filter(result: dict[str, Any], interpreted: dict[str, Any], attribute_query: dict[str, Any]) -> bool:
+    division = text_value(attribute_query.get("division") or interpreted.get("division")).lower()
+    status = text_value(attribute_query.get("status") or interpreted.get("status")).lower()
+    year = attribute_query.get("year")
+    warranty_years = attribute_query.get("warranty_years")
+    substrates = [text_value(term).lower() for term in attribute_query.get("substrates") or [] if text_value(term)]
+    systems = [text_value(term).lower() for term in attribute_query.get("systems") or [] if text_value(term)]
+    sqft_filter = attribute_query.get("sqft_filter") if isinstance(attribute_query.get("sqft_filter"), dict) else None
+    haystack = _ask_attribute_normalized(
+        " ".join(
+            text_value(value)
+            for value in [
+                result.get("division"),
+                result.get("job_type"),
+                result.get("estimate_scope_type"),
+                result.get("status"),
+                result.get("pipeline_status"),
+                result.get("source_year"),
+                result.get("estimate_file"),
+                result.get("source_file"),
+                result.get("document_substrate"),
+                result.get("document_material_system"),
+                result.get("match_evidence_text"),
+            ]
+        )
+    )
+    if division and division not in haystack:
+        return False
+    if status and status not in haystack:
+        return False
+    if year and str(year) not in haystack:
+        return False
+    if warranty_years:
+        found_warranty = _attribute_best_warranty_years(result)
+        if found_warranty is None or int(found_warranty) != int(warranty_years):
+            return False
+    if substrates and not any(term in haystack for term in substrates):
+        return False
+    if systems and not any(term in haystack for term in systems):
+        return False
+    if not _sqft_filter_matches(_attribute_best_sqft(result), sqft_filter):
+        return False
+    return True
+
+
+def assemble_attribute_job_matches(
+    evidence_rows: list[dict[str, Any]],
+    *,
+    required_concepts: list[str],
+    job_rows: dict[str, dict[str, Any]] | None = None,
+    estimate_rows: dict[str, dict[str, Any]] | None = None,
+    document_signal_rows: dict[str, dict[str, Any]] | None = None,
+    interpreted: dict[str, Any] | None = None,
+    attribute_query: dict[str, Any] | None = None,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    job_rows = job_rows or {}
+    estimate_rows = estimate_rows or {}
+    document_signal_rows = document_signal_rows or {}
+    interpreted = interpreted or {}
+    attribute_query = attribute_query or {}
+    by_job: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for row in evidence_rows:
+        job_id = text_value(row.get("job_id"))
+        concept = text_value(row.get("matched_concept"))
+        if not job_id or concept not in required_concepts:
+            continue
+        by_job.setdefault(job_id, {}).setdefault(concept, []).append(row)
+
+    results: list[dict[str, Any]] = []
+    for job_id, evidence_by_concept in by_job.items():
+        if not all(evidence_by_concept.get(concept) for concept in required_concepts):
+            continue
+        job = dict(job_rows.get(job_id) or {})
+        estimate = dict(estimate_rows.get(job_id) or {})
+        document_signals = dict(document_signal_rows.get(job_id) or {})
+        merged = {**estimate, **document_signals, **job}
+        merged["job_id"] = job_id
+        merged["matched_concepts"] = required_concepts
+        merged["match_evidence"] = {
+            concept: rows[:4]
+            for concept, rows in evidence_by_concept.items()
+        }
+        template_warranty = _attribute_max_numeric(
+            [row for rows in evidence_by_concept.values() for row in rows],
+            ("warranty_years",),
+        )
+        if template_warranty is not None:
+            merged["template_warranty_years"] = template_warranty
+        merged["match_evidence_count"] = sum(len(rows) for rows in evidence_by_concept.values())
+        merged["match_score"] = 90 + len(required_concepts) * 5 + min(merged["match_evidence_count"], 10)
+        merged["match_reason"] = "Historical estimate rows matched all requested attributes: " + ", ".join(required_concepts)
+        merged["match_evidence_text"] = " ".join(
+            " ".join(text_value(row.get(field)) for field in row)
+            for rows in evidence_by_concept.values()
+            for row in rows[:3]
+        )
+        if _attribute_result_matches_filter(merged, interpreted, attribute_query):
+            results.append(merged)
+    return sorted(
+        results,
+        key=lambda row: (
+            float(row.get("match_score") or 0),
+            float(row.get("final_price") or row.get("worksheet_price") or row.get("total_job_cost") or 0),
+            text_value(row.get("customer")),
+        ),
+        reverse=True,
+    )[:limit]
+
+
+def search_jobs_by_estimate_attributes(
+    connection: Any,
+    *,
+    concepts: list[str],
+    interpreted: dict[str, Any],
+    attribute_query: dict[str, Any],
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    required_concepts = [concept for concept in concepts if concept in ASK_JOB_ATTRIBUTE_CONCEPTS]
+    if not required_concepts:
+        return []
+    evidence_rows: list[dict[str, Any]] = []
+    per_concept_limit = max(limit * 80, 500)
+    for concept in required_concepts:
+        aliases = ASK_JOB_ATTRIBUTE_CONCEPTS[concept]
+        evidence_rows.extend(
+            _query_attribute_evidence_table(
+                connection,
+                table_name="estimate_template_rows",
+                concept=concept,
+                aliases=aliases,
+                limit=per_concept_limit,
+            )
+        )
+        evidence_rows.extend(
+            _query_attribute_evidence_table(
+                connection,
+                table_name="estimate_line_items",
+                concept=concept,
+                aliases=aliases,
+                limit=per_concept_limit,
+            )
+        )
+    candidate_job_ids = list(dict.fromkeys(text_value(row.get("job_id")) for row in evidence_rows if text_value(row.get("job_id"))))
+    job_rows = _fetch_ask_job_rows(connection, candidate_job_ids)
+    estimate_rows = _fetch_ask_estimate_rows(connection, candidate_job_ids, limit=max(len(candidate_job_ids), limit * 3))
+    document_signal_rows = _fetch_ask_document_signal_rows(connection, candidate_job_ids)
+    return assemble_attribute_job_matches(
+        evidence_rows,
+        required_concepts=required_concepts,
+        job_rows=job_rows,
+        estimate_rows=estimate_rows,
+        document_signal_rows=document_signal_rows,
+        interpreted=interpreted,
+        attribute_query=attribute_query,
+        limit=limit,
+    )
+
+
+def _format_attribute_money(value: Any) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if pd.isna(number):
+        return ""
+    return f"${number:,.0f}"
+
+
+def _attribute_evidence_label(row: dict[str, Any]) -> str:
+    label = text_value(
+        row.get("selected_item_name")
+        or row.get("resolved_item_name")
+        or row.get("line_item_name")
+        or row.get("row_label")
+        or row.get("description")
+        or row.get("template_bucket")
+    )
+    source = text_value(row.get("source_file") or row.get("estimate_file") or row.get("source_sheet") or row.get("source_table"))
+    quantity_parts = []
+    for field, label_name in [
+        ("quantity", "qty"),
+        ("area_sqft", "sqft"),
+        ("estimated_gallons", "gal"),
+        ("estimated_sets", "sets"),
+        ("estimated_cost", "cost"),
+        ("extended_cost", "cost"),
+    ]:
+        value = row.get(field)
+        if value not in (None, ""):
+            quantity_parts.append(f"{label_name}={value}")
+    row_ref = text_value(row.get("row_number") or row.get("source_row"))
+    prefix = f"{row.get('source_table')}"
+    if row_ref:
+        prefix += f" row {row_ref}"
+    details = "; ".join(part for part in [label, ", ".join(quantity_parts), source] if part)
+    return f"{prefix}: {details}" if details else prefix
+
+
+def attribute_job_search_response(results: list[dict[str, Any]], attribute_query: dict[str, Any], *, limit: int = 10) -> str:
+    concepts = [text_value(concept) for concept in attribute_query.get("concepts", []) if text_value(concept)]
+    if not results:
+        filters = []
+        if attribute_query.get("division"):
+            filters.append(f"division={attribute_query['division']}")
+        if attribute_query.get("year"):
+            filters.append(f"year={attribute_query['year']}")
+        if attribute_query.get("warranty_years"):
+            filters.append(f"warranty={attribute_query['warranty_years']}-year")
+        if attribute_query.get("substrates"):
+            filters.append("substrate=" + ", ".join(attribute_query["substrates"]))
+        if attribute_query.get("systems"):
+            filters.append("system=" + ", ".join(attribute_query["systems"]))
+        if attribute_query.get("sqft_filter"):
+            filters.append("sqft=" + json.dumps(attribute_query["sqft_filter"], default=str))
+        filter_text = f" with {'; '.join(filters)}" if filters else ""
+        return (
+            "I could not find historical estimate rows that match all requested attributes"
+            f"{filter_text}: {', '.join(concepts) or 'none detected'}."
+        )
+    shown = results[:limit]
+    filter_parts = []
+    if attribute_query.get("division"):
+        filter_parts.append(f"division={attribute_query['division']}")
+    if attribute_query.get("warranty_years"):
+        filter_parts.append(f"{attribute_query['warranty_years']}-year warranty")
+    if attribute_query.get("substrates"):
+        filter_parts.append("substrate " + ", ".join(attribute_query["substrates"]))
+    if attribute_query.get("systems"):
+        filter_parts.append("system " + ", ".join(attribute_query["systems"]))
+    if attribute_query.get("sqft_filter"):
+        filter_parts.append("sqft " + json.dumps(attribute_query["sqft_filter"], default=str))
+    lines = [
+        f"Found {len(results):,} job{'s' if len(results) != 1 else ''} with historical estimate evidence for **{', '.join(concepts)}**.",
+        "",
+    ]
+    if filter_parts:
+        lines.insert(1, "Filters applied: " + "; ".join(filter_parts))
+        lines.insert(2, "")
+    for index, job in enumerate(shown, start=1):
+        title = text_value(job.get("job_name")) or text_value(job.get("customer")) or text_value(job.get("job_id"))
+        if text_value(job.get("folder_url")):
+            title = markdown_link(title, text_value(job.get("folder_url")))
+        meta = " · ".join(
+            part
+            for part in [
+                text_value(job.get("customer")) if text_value(job.get("customer")) != title else "",
+                text_value(job.get("division")),
+                text_value(job.get("pipeline_status") or job.get("status")),
+                _format_attribute_money(job.get("final_price") or job.get("worksheet_price") or job.get("total_job_cost")),
+            ]
+            if part
+        )
+        lines.append(f"{index}. **{title}**")
+        if meta:
+            lines.append(f"   {meta}")
+        lines.append(f"   Match: {text_value(job.get('match_reason'))}")
+        context = []
+        sqft = _attribute_best_sqft(job)
+        warranty_years = _attribute_best_warranty_years(job)
+        if sqft is not None:
+            context.append(f"sqft={sqft:,.0f}")
+        if warranty_years is not None:
+            context.append(f"warranty={warranty_years:g}-year")
+        if text_value(job.get("document_substrate")):
+            context.append(f"substrate={text_value(job.get('document_substrate'))}")
+        if text_value(job.get("document_material_system")):
+            context.append(f"system={text_value(job.get('document_material_system'))}")
+        if context:
+            lines.append("   Context: " + "; ".join(context))
+        evidence_by_concept = job.get("match_evidence") if isinstance(job.get("match_evidence"), dict) else {}
+        for concept in concepts:
+            evidence_rows = evidence_by_concept.get(concept) or []
+            if not evidence_rows:
+                continue
+            lines.append(f"   - {concept}: {_attribute_evidence_label(evidence_rows[0])}")
+            if len(evidence_rows) > 1:
+                lines.append(f"     plus {len(evidence_rows) - 1} more {concept} row{'s' if len(evidence_rows) != 2 else ''}")
+        lines.append("")
+    if len(results) > len(shown):
+        lines.append(f"Showing {len(shown)}. Add a year, customer, warranty, substrate, or size filter to narrow the list.")
+    return "\n".join(lines).strip()
 
 
 def build_structured_evidence_pack(
@@ -3674,7 +4469,39 @@ def ask_spraytec_page() -> None:
                 st.write("detected document type", interpreted.get("document_type"))
         return
 
-    if interpreted.get("is_follow_up") and (selected_job or selected_job_id):
+    if query_plan.get("mode") == "attribute_job_search":
+        attribute_query = query_plan.get("attribute_query") if isinstance(query_plan.get("attribute_query"), dict) else {}
+        try:
+            with get_engine().connect() as conn:
+                attribute_results = search_jobs_by_estimate_attributes(
+                    conn,
+                    concepts=list(attribute_query.get("concepts") or []),
+                    interpreted=interpreted,
+                    attribute_query=attribute_query,
+                    limit=20,
+                )
+                for result in attribute_results[:10]:
+                    result["_documents"] = get_preferred_job_documents(conn, result, interpreted.get("document_type"))
+        except Exception as exc:
+            show_database_error(exc)
+            return
+        response = attribute_job_search_response(attribute_results, attribute_query)
+        debug_payload["attribute_results"] = [
+            {
+                "job_id": result.get("job_id"),
+                "customer": result.get("customer"),
+                "job_name": result.get("job_name"),
+                "matched_concepts": result.get("matched_concepts"),
+                "evidence_count": result.get("match_evidence_count"),
+                "score": result.get("match_score"),
+            }
+            for result in attribute_results[:25]
+        ]
+        if attribute_results:
+            first_result = attribute_results[0]
+            st.session_state["ask_spraytec_selected_job"] = first_result
+            st.session_state["ask_spraytec_selected_job_id"] = str(first_result.get("job_id") or "")
+    elif interpreted.get("is_follow_up") and (selected_job or selected_job_id):
         requested_type = interpreted.get("document_type")
         active_job = selected_job if isinstance(selected_job, dict) else {"job_id": selected_job_id}
         try:
@@ -3885,6 +4712,8 @@ def ask_spraytec_page() -> None:
                 st.write("document chunks sent to answer model", debug_payload["document_chunks"])
             if debug_payload.get("structured_evidence"):
                 st.write("structured evidence row counts", debug_payload["structured_evidence"])
+            if debug_payload.get("attribute_results"):
+                st.write("attribute job matches", debug_payload["attribute_results"])
             if debug_payload.get("ranked_matches"):
                 st.write("ranked job matches", debug_payload["ranked_matches"])
 

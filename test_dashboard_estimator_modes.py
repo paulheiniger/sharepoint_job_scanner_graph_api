@@ -592,6 +592,230 @@ def test_ask_spraytec_query_planner_routes_schedule_questions() -> None:
     assert plan["requires_job_context"] is True
 
 
+def test_ask_spraytec_query_planner_routes_attribute_job_search() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    prompt = "can you find me roofing jobs that required coating and foam?"
+    interpreted = app.interpret_search_request(prompt)
+    plan = app.plan_ask_spraytec_query(prompt, interpreted)
+
+    assert plan["mode"] == "attribute_job_search"
+    assert plan["attribute_query"]["concepts"] == ["coating", "foam"]
+    assert plan["attribute_query"]["division"] == "Roofing"
+    assert "estimate_template_rows" in plan["targets"]
+    assert "estimate_line_items" in plan["targets"]
+
+
+def test_ask_spraytec_query_planner_extracts_rich_attribute_filters() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    prompt = "find roofing jobs with foam and silicone 15-year warranty on metal roofs over 20k sq ft"
+    interpreted = app.interpret_search_request(prompt)
+    plan = app.plan_ask_spraytec_query(prompt, interpreted)
+    attr = plan["attribute_query"]
+
+    assert plan["mode"] == "attribute_job_search"
+    assert attr["concepts"] == ["coating", "foam"]
+    assert attr["division"] == "Roofing"
+    assert attr["warranty_years"] == 15
+    assert attr["substrates"] == ["metal"]
+    assert attr["systems"] == ["silicone"]
+    assert attr["sqft_filter"] == {"operator": ">=", "value": 20000.0}
+
+
+def test_ask_spraytec_attribute_matches_require_all_concepts() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    matches = app.assemble_attribute_job_matches(
+        [
+            {
+                "job_id": "J1",
+                "matched_concept": "coating",
+                "source_table": "estimate_template_rows",
+                "row_label": "Gaco Silicone",
+                "selected_item_name": "Gaco S20",
+                "template_type": "Roofing",
+            },
+            {
+                "job_id": "J1",
+                "matched_concept": "foam",
+                "source_table": "estimate_template_rows",
+                "row_label": "Gaco Roof Foam",
+                "selected_item_name": "Gaco Roof 2.7",
+                "template_type": "Roofing",
+            },
+            {
+                "job_id": "J2",
+                "matched_concept": "coating",
+                "source_table": "estimate_template_rows",
+                "row_label": "Gaco Silicone",
+                "selected_item_name": "Gaco S20",
+                "template_type": "Roofing",
+            },
+        ],
+        required_concepts=["coating", "foam"],
+        job_rows={
+            "J1": {"job_id": "J1", "customer": "Acme", "job_name": "Acme Roof", "division": "Roofing"},
+            "J2": {"job_id": "J2", "customer": "Beta", "job_name": "Beta Roof", "division": "Roofing"},
+        },
+        interpreted={"division": "Roofing"},
+        attribute_query={"division": "Roofing"},
+    )
+
+    assert [match["job_id"] for match in matches] == ["J1"]
+    assert matches[0]["match_evidence_count"] == 2
+
+
+def test_ask_spraytec_attribute_matches_apply_rich_filters() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    evidence = [
+        {
+            "job_id": "J1",
+            "matched_concept": "coating",
+            "source_table": "estimate_template_rows",
+            "row_label": "Gaco Silicone",
+            "selected_item_name": "Gaco S20",
+            "area_sqft": 25000,
+            "warranty_years": 15,
+            "template_type": "Roofing",
+        },
+        {
+            "job_id": "J1",
+            "matched_concept": "foam",
+            "source_table": "estimate_template_rows",
+            "row_label": "Gaco Roof Foam",
+            "selected_item_name": "Gaco Roof 2.7",
+            "area_sqft": 25000,
+            "template_type": "Roofing",
+        },
+        {
+            "job_id": "J2",
+            "matched_concept": "coating",
+            "source_table": "estimate_template_rows",
+            "row_label": "Gaco Silicone",
+            "selected_item_name": "Gaco S20",
+            "area_sqft": 12000,
+            "warranty_years": 15,
+            "template_type": "Roofing",
+        },
+        {
+            "job_id": "J2",
+            "matched_concept": "foam",
+            "source_table": "estimate_template_rows",
+            "row_label": "Gaco Roof Foam",
+            "selected_item_name": "Gaco Roof 2.7",
+            "area_sqft": 12000,
+            "template_type": "Roofing",
+        },
+    ]
+    matches = app.assemble_attribute_job_matches(
+        evidence,
+        required_concepts=["coating", "foam"],
+        job_rows={
+            "J1": {"job_id": "J1", "customer": "Acme", "job_name": "Acme Metal Roof", "division": "Roofing"},
+            "J2": {"job_id": "J2", "customer": "Beta", "job_name": "Beta Metal Roof", "division": "Roofing"},
+        },
+        document_signal_rows={
+            "J1": {"job_id": "J1", "document_substrate": "metal", "document_material_system": "silicone", "document_warranty_years": 15},
+            "J2": {"job_id": "J2", "document_substrate": "metal", "document_material_system": "silicone", "document_warranty_years": 15},
+        },
+        interpreted={"division": "Roofing"},
+        attribute_query={
+            "division": "Roofing",
+            "warranty_years": 15,
+            "substrates": ["metal"],
+            "systems": ["silicone"],
+            "sqft_filter": {"operator": ">=", "value": 20000},
+        },
+    )
+
+    assert [match["job_id"] for match in matches] == ["J1"]
+    assert matches[0]["template_warranty_years"] == 15
+
+
+def test_ask_spraytec_attribute_response_shows_evidence() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    response = app.attribute_job_search_response(
+        [
+            {
+                "job_id": "J1",
+                "customer": "Acme",
+                "job_name": "Acme Roof",
+                "division": "Roofing",
+                "final_price": 125000,
+                "match_reason": "Historical estimate rows matched all requested attributes: coating, foam",
+                "match_evidence": {
+                    "coating": [
+                        {
+                            "source_table": "estimate_template_rows",
+                            "row_number": 22,
+                            "row_label": "Gaco Silicone",
+                            "selected_item_name": "Gaco S20",
+                            "area_sqft": 10000,
+                            "source_file": "Estimate Roofing.xlsx",
+                        }
+                    ],
+                    "foam": [
+                        {
+                            "source_table": "estimate_template_rows",
+                            "row_number": 18,
+                            "row_label": "Gaco Roof Foam",
+                            "selected_item_name": "Gaco Roof 2.7",
+                            "area_sqft": 10000,
+                            "source_file": "Estimate Roofing.xlsx",
+                        }
+                    ],
+                },
+            }
+        ],
+        {"concepts": ["coating", "foam"]},
+    )
+
+    assert "Found 1 job" in response
+    assert "Gaco S20" in response
+    assert "Gaco Roof 2.7" in response
+    assert "$125,000" in response
+
+
+def test_ask_spraytec_attribute_response_shows_rich_filters() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    response = app.attribute_job_search_response(
+        [
+            {
+                "job_id": "J1",
+                "customer": "Acme",
+                "job_name": "Acme Metal Roof",
+                "division": "Roofing",
+                "estimated_sqft": 25000,
+                "document_substrate": "metal",
+                "document_material_system": "silicone",
+                "template_warranty_years": 15,
+                "match_reason": "Historical estimate rows matched all requested attributes: coating, foam",
+                "match_evidence": {
+                    "coating": [{"source_table": "estimate_template_rows", "row_label": "Gaco Silicone", "selected_item_name": "Gaco S20"}],
+                    "foam": [{"source_table": "estimate_template_rows", "row_label": "Gaco Roof Foam", "selected_item_name": "Gaco Roof 2.7"}],
+                },
+            }
+        ],
+        {
+            "concepts": ["coating", "foam"],
+            "division": "Roofing",
+            "warranty_years": 15,
+            "substrates": ["metal"],
+            "systems": ["silicone"],
+            "sqft_filter": {"operator": ">=", "value": 20000},
+        },
+    )
+
+    assert "Filters applied" in response
+    assert "15-year warranty" in response
+    assert "substrate metal" in response
+    assert "sqft=25,000" in response
+
+
 def test_ask_spraytec_structured_pack_respects_targets(monkeypatch) -> None:
     app = importlib.import_module("dashboard.app")
     queried_sql: list[str] = []
