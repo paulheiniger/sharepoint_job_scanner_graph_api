@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import json
 from types import SimpleNamespace
 
 import pandas as pd
@@ -1187,10 +1188,39 @@ def test_estimator_chat_session_snapshot_round_trips(tmp_path, monkeypatch) -> N
     loaded = app.load_estimator_chat_session("thread-abc-123")
 
     assert loaded["thread_id"] == "thread-abc-123"
+    assert loaded["schema_version"] == app.ESTIMATOR_CHAT_SESSION_SCHEMA_VERSION
     assert loaded["history"][0]["content"] == "Need open cell foam."
     assert loaded["result"]["scope_overrides"]["template_type"] == "insulation"
     assert loaded["estimator_notes"] == "open cell foam"
     assert app.load_estimator_chat_session("../bad") == {}
+
+
+def test_estimator_chat_session_drops_stale_assistant_results(tmp_path, monkeypatch) -> None:
+    app = importlib.import_module("dashboard.app")
+    monkeypatch.setattr(app, "ESTIMATOR_CHAT_SESSION_DIR", tmp_path)
+    path = app.estimator_chat_session_path("thread-old-123")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "thread_id": "thread-old-123",
+                "history": [
+                    {"role": "user", "content": "Use the answer key."},
+                    {"role": "assistant", "content": "Review flags: old parser warning"},
+                ],
+                "result": {"warnings": ["old parser warning"]},
+                "estimator_notes": "stale assistant notes",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = app.load_estimator_chat_session("thread-old-123")
+
+    assert loaded["stale_snapshot_discarded"] is True
+    assert loaded["history"] == [{"role": "user", "content": "Use the answer key."}]
+    assert loaded["result"] == {}
+    assert "old parser warning" not in loaded["estimator_notes"]
 
 
 def test_roofing_free_adder_section_uses_edited_scope_template_type() -> None:
@@ -1199,6 +1229,17 @@ def test_roofing_free_adder_section_uses_edited_scope_template_type() -> None:
 
     assert "if not is_insulation:" not in source
     assert "roofing_free_adder_template_decisions" in source
+
+
+def test_estimating_assistant_hides_parser_noise_from_main_flow() -> None:
+    app = importlib.import_module("dashboard.app")
+    source = inspect.getsource(app.estimator_prototype_page)
+
+    assert "Parsed Scope Summary" not in source
+    assert "Show AI evidence and uncertainty" not in source
+    assert "Scope Interpreter - Parsed Scope" not in source
+    assert "Project Inputs" in source
+    assert "Parser diagnostics" in source
     assert 'edited_scope.get("template_type")' in source
 
 

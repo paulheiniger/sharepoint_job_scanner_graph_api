@@ -93,6 +93,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_DATABASE_URL = "postgresql+psycopg2://spraytec:spraytec_dev_password@127.0.0.1:5433/spraytec_ops"
 ESTIMATOR_CHAT_SESSION_DIR = Path("output/estimator_chat_sessions")
+ESTIMATOR_CHAT_SESSION_SCHEMA_VERSION = 2
 DECISION_EVIDENCE_DISPLAY_COLUMNS = [
     "decision_evidence_summary",
     "decision_evidence_types",
@@ -8416,6 +8417,20 @@ def load_estimator_chat_session(thread_id: str) -> dict[str, Any]:
         payload["history"] = []
     if payload.get("result") is not None and not isinstance(payload.get("result"), dict):
         payload["result"] = {}
+    if int(payload.get("schema_version") or 0) != ESTIMATOR_CHAT_SESSION_SCHEMA_VERSION:
+        user_history = [
+            dict(message)
+            for message in payload.get("history") or []
+            if isinstance(message, dict) and str(message.get("role") or "") == "user"
+        ]
+        return {
+            "thread_id": safe_thread_id,
+            "schema_version": ESTIMATOR_CHAT_SESSION_SCHEMA_VERSION,
+            "history": user_history,
+            "result": {},
+            "estimator_notes": "\n\n".join(str(message.get("content") or "") for message in user_history).strip(),
+            "stale_snapshot_discarded": True,
+        }
     payload["thread_id"] = safe_thread_id
     return payload
 
@@ -8433,6 +8448,7 @@ def save_estimator_chat_session(
         return
     payload = {
         "thread_id": safe_thread_id,
+        "schema_version": ESTIMATOR_CHAT_SESSION_SCHEMA_VERSION,
         "updated_at": pd.Timestamp.utcnow().isoformat(),
         "estimate_type": str(estimate_type or ""),
         "estimator_notes": str(estimator_notes or ""),
@@ -10363,12 +10379,7 @@ def estimator_prototype_page() -> None:
                 "Click Build Filled Estimate Template again to refresh it for the current text."
             )
         estimate_status = getattr(field_recommendation, "estimate_status", None) or field_recommendation.parsed_fields.get("estimate_status") or "READY_TO_ESTIMATE"
-        metric_row(
-            [
-                ("Readiness", str(estimate_status).replace("_", " ").title()),
-                ("Review Required", "Yes" if field_recommendation.human_review_required else "No"),
-            ]
-        )
+        parsed_fields = field_recommendation.parsed_fields
         if estimate_status != "READY_TO_ESTIMATE":
             st.warning(getattr(field_recommendation, "estimate_reason", "") or field_recommendation.parsed_fields.get("estimate_reason") or "More information is required before estimating.")
             questions = getattr(field_recommendation, "required_questions", None) or field_recommendation.parsed_fields.get("required_questions") or []
@@ -10380,23 +10391,35 @@ def estimator_prototype_page() -> None:
             with a_col:
                 st.markdown("**Recommended Next Actions**")
                 show_table(dataframe_from_records([{"action": item} for item in actions]), ["action"], height=180)
-        parsed_fields = field_recommendation.parsed_fields
-        st.markdown("**Parsed Scope Summary**")
-        summary_cols = [
-            "project_type",
-            "estimate_mode",
-            "substrate",
-            "coating_type",
-            "warranty_target_years",
-            "estimated_sqft",
-            "roof_condition",
-            "access_complexity",
-            "penetrations_complexity",
-        ]
-        summary_row = {column: parsed_fields.get(column) for column in summary_cols if column in parsed_fields}
-        if summary_row:
-            show_table(dataframe_from_records([summary_row]), list(summary_row.keys()), height=90)
-        with st.expander("Show AI evidence and uncertainty", expanded=False):
+        with st.expander("Parser diagnostics", expanded=False):
+            metric_row(
+                [
+                    ("Readiness", str(estimate_status).replace("_", " ").title()),
+                    ("Review Required", "Yes" if field_recommendation.human_review_required else "No"),
+                ]
+            )
+            summary_cols = [
+                "project_type",
+                "estimate_mode",
+                "substrate",
+                "coating_type",
+                "warranty_target_years",
+                "estimated_sqft",
+                "roof_condition",
+                "access_complexity",
+                "penetrations_complexity",
+            ]
+            summary_row = {column: parsed_fields.get(column) for column in summary_cols if column in parsed_fields}
+            if summary_row:
+                st.caption("Parsed scope")
+                show_table(dataframe_from_records([summary_row]), list(summary_row.keys()), height=90)
+            if field_recommendation.review_flags:
+                st.caption("Review flags")
+                show_table(
+                    dataframe_from_records([{"flag": flag} for flag in field_recommendation.review_flags]),
+                    ["flag"],
+                    height=180,
+                )
             ai_debug = (getattr(field_recommendation, "debug", {}) or {}).get("ai_scope_interpreter") or {}
             evidence = parsed_fields.get("evidence_by_field") or (ai_debug.get("ai_parsed_scope") or {}).get("evidence_by_field") or {}
             confidence = parsed_fields.get("confidence_by_field") or (ai_debug.get("ai_parsed_scope") or {}).get("confidence_by_field") or {}
@@ -10420,8 +10443,6 @@ def estimator_prototype_page() -> None:
                     st.info("Missing questions: " + "; ".join(str(item) for item in missing_questions))
             with st.expander("Raw parser details", expanded=False):
                 st.dataframe(pd.DataFrame([parsed_fields]), use_container_width=True, hide_index=True)
-        if field_recommendation.review_flags:
-            st.warning("\n".join(field_recommendation.review_flags))
         if estimate_status != "READY_TO_ESTIMATE":
             surface_review_rows = build_surface_area_review_rows(parsed_fields)
             if surface_review_rows:
@@ -10446,8 +10467,8 @@ def estimator_prototype_page() -> None:
             key=f"estimator_debug_mode_{workbench_key}",
         )
 
-        st.markdown("### Scope Interpreter - Parsed Scope")
-        st.caption("AI and deterministic parsing turn the notes into editable project facts. These fields drive the historical comparison pool and workbook draft.")
+        st.markdown("### Project Inputs")
+        st.caption("Review the job facts that drive historical defaults and workbook rows.")
         base_scope = parsed_workbench.get("scope") or {}
         s1, s2, s3 = st.columns(3)
         with s1:
