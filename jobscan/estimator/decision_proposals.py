@@ -929,6 +929,9 @@ def _chat_target_for_preference(template_type: str, item: dict[str, Any]) -> dic
     bucket = _canonical_package(item.get("template_bucket") or item.get("package") or item.get("category"))
     decision_id = str(item.get("decision_id") or "").strip()
     workbook_row = str(item.get("workbook_row") or item.get("row_number") or "").strip()
+    logistics_alias = _loading_travel_alias(item)
+    if not bucket and logistics_alias:
+        bucket = logistics_alias
     if template_type == "insulation":
         if bucket == "foam" or decision_id == "insulation_foam_template_selector":
             return {
@@ -1202,6 +1205,9 @@ def _clean_chat_proposed_values(item: dict[str, Any], *, template_type: str = ""
             values.setdefault(field, item.get(field))
     bucket = _canonical_package(item.get("template_bucket") or item.get("package") or item.get("category"))
     workbook_row = str(item.get("workbook_row") or item.get("row_number") or "").strip()
+    logistics_alias = _loading_travel_alias(item)
+    if not bucket and logistics_alias:
+        bucket = logistics_alias
     loading_travel_rows = {"95", "97"} if template_type == "insulation" else {"136", "138"} if template_type == "roofing" else set()
     if (
         (template_type in {"insulation", "roofing"} and bucket in {"labor_loading", "labor_traveling"})
@@ -1279,6 +1285,31 @@ def _included_workbench_packages(workbench: dict[str, Any]) -> set[str]:
                 if package:
                     packages.add(package)
     return packages
+
+
+def _loading_travel_alias(item: dict[str, Any]) -> str:
+    text = _norm(
+        " ".join(
+            str(item.get(key) or "")
+            for key in (
+                "decision_id",
+                "template_bucket",
+                "package",
+                "category",
+                "label",
+                "target",
+                "line_item",
+                "section",
+                "description",
+            )
+        )
+    )
+    tokenized = re.sub(r"[^a-z0-9]+", "_", text).strip("_")
+    if re.search(r"\b(?:labor\s+)?loading\b", text) or "labor_loading" in tokenized:
+        return "labor_loading"
+    if re.search(r"\b(?:labor\s+)?travel(?:ing)?\b", text) or "labor_traveling" in tokenized:
+        return "labor_traveling"
+    return ""
 
 
 def _canonical_package(value: Any) -> str:

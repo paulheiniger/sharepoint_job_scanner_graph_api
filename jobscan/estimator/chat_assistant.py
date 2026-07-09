@@ -1295,16 +1295,23 @@ def normalize_chat_payload(
     notes = _merge_chat_notes(baseline_notes, notes)
     if not assistant_message:
         assistant_message = notes or "I drafted estimator notes from the conversation."
+    cleaned_scope = _clean_scope(scope)
+    template_type = _clean_string(
+        cleaned_scope.get("template_type")
+        or (baseline_scope or {}).get("template_type")
+        or (baseline_scope or {}).get("division")
+    ).lower()
     decision_preferences = _clean_decision_preferences(
         payload.get("workbook_decision_preferences")
         or payload.get("decision_patches")
         or payload.get("row_updates")
-        or payload.get("workbook_row_updates")
+        or payload.get("workbook_row_updates"),
+        template_type=template_type,
     )
     return EstimatorChatResult(
         assistant_message=assistant_message,
         estimator_notes=notes,
-        scope_overrides=_merge_chat_scopes(baseline_scope or {}, _clean_scope(scope)),
+        scope_overrides=_merge_chat_scopes(baseline_scope or {}, cleaned_scope),
         workbook_decision_preferences=decision_preferences,
         missing_questions=_clean_list(payload.get("missing_questions")),
         assumptions=_clean_list(payload.get("assumptions")),
@@ -1433,7 +1440,7 @@ def _parse_reference_template_summary(text: str, *, template_type_hint: str = ""
                 "Pasted template row was not mapped to a current decision row: "
                 f"source row {table_row.get('source_row') or '?'} {_clean_string(table_row.get('line_item'))}."
             )
-    cleaned = _clean_decision_preferences(preferences)
+    cleaned = _clean_decision_preferences(preferences, template_type=template_type_hint)
     return ParsedReferenceTemplateSummary(
         workbook_decision_preferences=cleaned,
         warnings=warnings[:12],
@@ -2097,9 +2104,10 @@ def _sanitize_logistics_loading_travel_values(values: dict[str, Any], *, row_num
     }
 
 
-def _clean_decision_preferences(value: Any) -> list[dict[str, Any]]:
+def _clean_decision_preferences(value: Any, *, template_type: str = "") -> list[dict[str, Any]]:
     rows = value if isinstance(value, list) else []
     cleaned_rows: list[dict[str, Any]] = []
+    normalized_template_type = _clean_string(template_type).lower()
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -2136,6 +2144,14 @@ def _clean_decision_preferences(value: Any) -> list[dict[str, Any]]:
         bucket = _clean_string(cleaned.get("template_bucket") or cleaned.get("package") or cleaned.get("category")).lower()
         bucket = bucket.replace(" ", "_").replace("-", "_")
         row_number = _safe_row_number(cleaned.get("workbook_row") or cleaned.get("row_number"))
+        logistics_alias = _loading_travel_alias(cleaned)
+        if not bucket and logistics_alias:
+            bucket = logistics_alias
+        if not row_number and logistics_alias:
+            if normalized_template_type == "roofing":
+                row_number = "136" if logistics_alias == "labor_loading" else "138"
+            else:
+                row_number = "95" if logistics_alias == "labor_loading" else "97"
         if row_number in {"95", "97", "136", "138"}:
             proposed_values = _sanitize_logistics_loading_travel_values(proposed_values, row_number=row_number)
             is_roofing_row = row_number in {"136", "138"}
@@ -2177,6 +2193,31 @@ def _clean_decision_preferences(value: Any) -> list[dict[str, Any]]:
         cleaned["proposed_values"] = proposed_values
         cleaned_rows.append(cleaned)
     return cleaned_rows
+
+
+def _loading_travel_alias(row: dict[str, Any]) -> str:
+    text = _clean_string(
+        " ".join(
+            str(row.get(key) or "")
+            for key in (
+                "decision_id",
+                "template_bucket",
+                "package",
+                "category",
+                "label",
+                "target",
+                "line_item",
+                "section",
+                "description",
+            )
+        )
+    ).lower()
+    tokenized = re.sub(r"[^a-z0-9]+", "_", text).strip("_")
+    if re.search(r"\b(?:labor\s+)?loading\b", text) or "labor_loading" in tokenized:
+        return "labor_loading"
+    if re.search(r"\b(?:labor\s+)?travel(?:ing)?\b", text) or "labor_traveling" in tokenized:
+        return "labor_traveling"
+    return ""
 
 
 def _first_present(row: dict[str, Any], *keys: str) -> Any:

@@ -290,6 +290,46 @@ def test_estimator_chat_caps_bad_loading_travel_values() -> None:
     assert traveling["proposed_values"] == {"hours_per_day": 2.5, "people_count": 2.0, "unit_price": 13.0}
 
 
+def test_estimator_chat_normalizes_alias_only_loading_travel_rows() -> None:
+    def provider(_messages, _model):
+        return {
+            "assistant_message": "Drafted logistics decisions.",
+            "estimator_notes": "Open cell insulation job with loading and travel.",
+            "scope_overrides": {"template_type": "insulation"},
+            "workbook_decision_preferences": [
+                {
+                    "decision_id": "labor loading",
+                    "include": True,
+                    "proposed_values": {"hours_per_day": 8, "people_count": 2, "trip_count": 1, "unit_price": 1685.775},
+                },
+                {
+                    "decision_id": "labor traveling",
+                    "include": True,
+                    "proposed_values": {"hours_per_day": 8, "people_count": 5, "trip_count": 2, "unit_price": 1685.775},
+                },
+            ],
+            "confidence": 0.7,
+        }
+
+    result = run_estimator_chat_turn(
+        [{"role": "user", "content": "30x40 metal building, open cell foam, include loading and travel."}],
+        template_type_hint="insulation",
+        provider=provider,
+        model="test-model",
+    )
+
+    loading, traveling = result.workbook_decision_preferences
+
+    assert loading["section"] == "insulation_logistics_expense_template_decisions"
+    assert loading["template_bucket"] == "labor_loading"
+    assert loading["workbook_row"] == "95"
+    assert loading["proposed_values"] == {"hours_per_day": 0.5, "people_count": 2.0, "trip_count": 1, "unit_price": 25.5}
+    assert traveling["section"] == "insulation_logistics_expense_template_decisions"
+    assert traveling["template_bucket"] == "labor_traveling"
+    assert traveling["workbook_row"] == "97"
+    assert traveling["proposed_values"] == {"hours_per_day": 2.5, "people_count": 5.0, "trip_count": 2, "unit_price": 13.0}
+
+
 def test_estimator_chat_context_includes_thickness_matched_foam_yield_digest() -> None:
     data = EstimatorData(
         template_rows=pd.DataFrame(

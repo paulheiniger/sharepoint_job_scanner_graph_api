@@ -958,8 +958,12 @@ def capture_reference_template_memory_candidates(
     decision_rows = chat_result.get("workbook_decision_preferences")
     if not isinstance(decision_rows, list) or not decision_rows:
         return
+    save_reference_memory = getattr(estimator_sessions, "save_memory_candidates_from_reference_template", None)
+    if save_reference_memory is None:
+        logger.warning("Reference-template memory capture skipped; session_capture helper is unavailable.")
+        return
     memory_ids = capture_estimator_session_event(
-        estimator_sessions.save_memory_candidates_from_reference_template,
+        save_reference_memory,
         session_id,
         decision_rows,
         template_type=template_type,
@@ -8248,6 +8252,16 @@ def estimator_chat_decision_change_rows(preferences: Any) -> list[dict[str, Any]
             continue
         values = item.get("proposed_values") if isinstance(item.get("proposed_values"), dict) else {}
         template_bucket = str(item.get("template_bucket") or item.get("package") or "").strip().lower().replace(" ", "_")
+        alias_text = " ".join(
+            str(item.get(key) or "")
+            for key in ("decision_id", "template_bucket", "package", "label", "target", "line_item", "section", "description")
+        ).lower()
+        alias_token = re.sub(r"[^a-z0-9]+", "_", alias_text).strip("_")
+        if not template_bucket:
+            if re.search(r"\b(?:labor\s+)?loading\b", alias_text) or "labor_loading" in alias_token:
+                template_bucket = "labor_loading"
+            elif re.search(r"\b(?:labor\s+)?travel(?:ing)?\b", alias_text) or "labor_traveling" in alias_token:
+                template_bucket = "labor_traveling"
         workbook_row = str(item.get("workbook_row") or item.get("row_number") or "").strip()
         logistics_expense_row = template_bucket in {
             "labor_loading",
@@ -8291,8 +8305,25 @@ def estimator_chat_decision_change_rows(preferences: Any) -> list[dict[str, Any]
             and value not in (None, "")
         }
         merged_values = {key: value for key, value in {**direct_values, **values}.items() if key in direct_field_names}
+        if template_bucket in {"labor_loading", "labor_traveling"} or workbook_row in {"95", "97", "136", "138"}:
+            is_loading = template_bucket == "labor_loading" or workbook_row in {"95", "136"}
+            default_hours = 0.5 if is_loading else 2.5
+            default_rate = 25.5 if is_loading else 13.0
+            max_hours = 2.0 if is_loading else 6.0
+            try:
+                hours_value = float(str(merged_values.get("hours_per_day") or "").replace(",", ""))
+            except ValueError:
+                hours_value = 0.0
+            try:
+                rate_value = float(str(merged_values.get("unit_price") or "").replace(",", ""))
+            except ValueError:
+                rate_value = 0.0
+            if hours_value <= 0 or hours_value > max_hours:
+                merged_values["hours_per_day"] = default_hours
+            if rate_value <= 0 or rate_value > default_rate * 1.5:
+                merged_values["unit_price"] = default_rate
         target_parts = [
-            str(item.get("template_bucket") or item.get("package") or item.get("section") or "").replace("_", " ").strip(),
+            str(item.get("template_bucket") or item.get("package") or template_bucket or item.get("section") or "").replace("_", " ").strip(),
             f"row {item.get('workbook_row') or item.get('row_number')}" if item.get("workbook_row") or item.get("row_number") else "",
         ]
         include_value = item.get("include")

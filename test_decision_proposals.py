@@ -115,6 +115,51 @@ def test_estimator_chat_loading_travel_preferences_target_logistics_expense_rows
     assert traveling["proposed_values"] == {"hours_per_day": 2.5, "people_count": 4, "unit_price": 13}
 
 
+def test_estimator_chat_alias_only_loading_travel_preferences_are_sanitized() -> None:
+    proposals = build_decision_proposals(
+        {
+            "template_type": "insulation",
+            "division": "Insulation",
+            "estimator_chat": {
+                "source": "ai_chat",
+                "confidence": 0.7,
+                "assistant_message": "Use loading and travel.",
+                "workbook_decision_preferences": [
+                    {
+                        "decision_id": "labor loading",
+                        "include": True,
+                        "proposed_values": {"hours_per_day": 8, "people_count": 2, "trip_count": 1, "unit_price": 1685.775},
+                    },
+                    {
+                        "decision_id": "labor traveling",
+                        "include": True,
+                        "proposed_values": {"hours_per_day": 8, "people_count": 5, "trip_count": 2, "unit_price": 1685.775},
+                    },
+                ],
+            },
+        }
+    )
+
+    by_bucket = {row["template_bucket"]: row for row in proposals}
+
+    assert by_bucket["labor_loading"]["section"] == "insulation_logistics_expense_template_decisions"
+    assert by_bucket["labor_loading"]["workbook_row"] == "95"
+    assert by_bucket["labor_loading"]["proposed_values"] == {
+        "hours_per_day": 0.5,
+        "people_count": 2.0,
+        "trip_count": 1,
+        "unit_price": 25.5,
+    }
+    assert by_bucket["labor_traveling"]["section"] == "insulation_logistics_expense_template_decisions"
+    assert by_bucket["labor_traveling"]["workbook_row"] == "97"
+    assert by_bucket["labor_traveling"]["proposed_values"] == {
+        "hours_per_day": 2.5,
+        "people_count": 5.0,
+        "trip_count": 2,
+        "unit_price": 13.0,
+    }
+
+
 def test_estimator_chat_roofing_preferences_target_workbook_rows_without_row_numbers() -> None:
     proposals = build_decision_proposals(
         {

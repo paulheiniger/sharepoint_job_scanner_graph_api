@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import inspect
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -1093,6 +1094,58 @@ def test_estimator_chat_decision_change_rows_summarize_structured_patches() -> N
     assert rows[1]["action"] == "include"
     assert "days=0.5" in rows[1]["field_changes"]
     assert "crew_size=2" in rows[1]["field_changes"]
+
+
+def test_estimator_chat_decision_change_rows_sanitize_alias_only_logistics() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    rows = app.estimator_chat_decision_change_rows(
+        [
+            {
+                "decision_id": "labor loading",
+                "include": True,
+                "proposed_values": {"hours_per_day": 8, "people_count": 2, "trip_count": 1, "unit_price": 1685.775},
+            },
+            {
+                "decision_id": "labor traveling",
+                "include": True,
+                "proposed_values": {"hours_per_day": 8, "people_count": 5, "trip_count": 2, "unit_price": 1685.775},
+            },
+        ]
+    )
+
+    assert rows[0]["target"] == "labor loading"
+    assert "hours_per_day=0.5" in rows[0]["field_changes"]
+    assert "people_count=2" in rows[0]["field_changes"]
+    assert "unit_price=25.5" in rows[0]["field_changes"]
+    assert "1685.775" not in rows[0]["field_changes"]
+    assert rows[1]["target"] == "labor traveling"
+    assert "hours_per_day=2.5" in rows[1]["field_changes"]
+    assert "people_count=5" in rows[1]["field_changes"]
+    assert "unit_price=13.0" in rows[1]["field_changes"]
+    assert "1685.775" not in rows[1]["field_changes"]
+
+
+def test_reference_template_memory_capture_skips_when_helper_unavailable(monkeypatch) -> None:
+    app = importlib.import_module("dashboard.app")
+
+    monkeypatch.setattr(app, "estimator_sessions", SimpleNamespace())
+
+    app.capture_reference_template_memory_candidates(
+        "session-1",
+        {
+            "workbook_decision_preferences": [
+                {
+                    "source": "reference_template_summary",
+                    "decision_id": "roofing_labor_loading_row_136",
+                    "template_bucket": "labor_loading",
+                    "include": True,
+                    "proposed_values": {"hours_per_day": 0.5},
+                }
+            ]
+        },
+        template_type="roofing",
+    )
 
 
 def test_estimator_workbench_uses_compact_columns_by_default() -> None:
