@@ -16,6 +16,7 @@ from relationship_profiler import (
     profile_relationships,
     profile_relationships_from_database,
     sanitize_frame_for_sql,
+    write_table,
 )
 
 
@@ -62,6 +63,30 @@ def test_sanitize_generic_object_columns_serializes_nested_values() -> None:
     assert json.loads(cleaned.loc[0, "source_ids"]) == ["L1", "L2"]
     assert isinstance(cleaned.loc[0, "tags"], str)
     assert_no_nested_sql_values(cleaned)
+
+
+def test_write_table_preserves_existing_table_object_dependencies(tmp_path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'writer.db'}")
+    with engine.begin() as conn:
+        conn.exec_driver_sql("CREATE TABLE existing_rows (id TEXT, name TEXT)")
+        conn.exec_driver_sql("CREATE INDEX existing_rows_name_idx ON existing_rows(name)")
+        conn.exec_driver_sql("CREATE VIEW existing_rows_view AS SELECT id, name FROM existing_rows")
+        conn.exec_driver_sql("INSERT INTO existing_rows (id, name) VALUES ('old', 'Old Row')")
+
+    write_table(
+        engine,
+        "existing_rows",
+        pd.DataFrame([{"id": "new", "name": "New Row", "new_metric": 12.5}]),
+    )
+
+    with engine.connect() as conn:
+        rows = conn.exec_driver_sql("SELECT id, name, new_metric FROM existing_rows").fetchall()
+        view_rows = conn.exec_driver_sql("SELECT id, name FROM existing_rows_view").fetchall()
+        index_rows = conn.exec_driver_sql("PRAGMA index_list(existing_rows)").fetchall()
+
+    assert rows == [("new", "New Row", 12.5)]
+    assert view_rows == [("new", "New Row")]
+    assert any(row[1] == "existing_rows_name_idx" for row in index_rows)
 
 
 def test_material_qty_ratios_from_summary_tolerates_missing_warranty_years() -> None:
@@ -562,3 +587,207 @@ def test_database_pipeline_prefers_template_rows_and_preserves_specific_labor_pa
     assert paths["package_normalization_diagnostics.csv"].exists()
     assert paths["missing_job_context.csv"].exists()
     assert paths["labor_rate_diagnostics.csv"].exists()
+
+
+def test_database_pipeline_mines_flooring_template_relationships(tmp_path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'flooring_relationships.db'}")
+    out_dir = tmp_path / "flooring_relationships"
+    pd.DataFrame(
+        [
+            {
+                "job_id": "F1",
+                "source_year": 2026,
+                "division": "Flooring",
+                "pipeline_status": "Completed",
+                "status": "Completed",
+                "customer": "Lee",
+                "job_name": "Lee Sporting Shop flooring",
+                "job_type": "floor system",
+                "estimated_sqft": 2400,
+            },
+            {
+                "job_id": "F2",
+                "source_year": 2026,
+                "division": "Flooring",
+                "pipeline_status": "Completed",
+                "status": "Completed",
+                "customer": "Beta",
+                "job_name": "Beta floor coating",
+                "job_type": "floor system",
+                "estimated_sqft": 3000,
+            },
+        ]
+    ).to_sql("jobs", engine, index=False)
+    pd.DataFrame(
+        [
+            {
+                "template_row_id": "F1_BASE",
+                "document_id": "DF1",
+                "job_id": "F1",
+                "source_file": "Estimate Flooring - Lee Sporting Shop.xlsx",
+                "template_type": "flooring",
+                "sheet_name": "Estimate",
+                "row_number": 26,
+                "template_bucket": "floor_base_coat",
+                "template_section": "materials",
+                "line_item_kind": "material",
+                "selected_item_name": "NPI Epoxy 707 - Black",
+                "quantity": 2400,
+                "estimated_units": 26.4,
+                "unit_price": 45,
+                "estimated_cost": 1188,
+                "needs_review": False,
+            },
+            {
+                "template_row_id": "F1_TOP",
+                "document_id": "DF1",
+                "job_id": "F1",
+                "source_file": "Estimate Flooring - Lee Sporting Shop.xlsx",
+                "template_type": "flooring",
+                "sheet_name": "Estimate",
+                "row_number": 27,
+                "template_bucket": "floor_topcoat",
+                "template_section": "materials",
+                "line_item_kind": "material",
+                "selected_item_name": "Polyaspartic",
+                "quantity": 2400,
+                "estimated_units": 15.84,
+                "unit_price": 77.1,
+                "estimated_cost": 1221.264,
+                "needs_review": False,
+            },
+            {
+                "template_row_id": "F1_FLAKE",
+                "document_id": "DF1",
+                "job_id": "F1",
+                "source_file": "Estimate Flooring - Lee Sporting Shop.xlsx",
+                "template_type": "flooring",
+                "sheet_name": "Estimate",
+                "row_number": 177,
+                "template_bucket": "floor_flake",
+                "template_section": "estimate_adders",
+                "line_item_kind": "material",
+                "selected_item_name": "Flake",
+                "estimated_cost": 1320,
+                "needs_review": False,
+            },
+            {
+                "template_row_id": "F1_LABOR_BASE",
+                "document_id": "DF1",
+                "job_id": "F1",
+                "source_file": "Estimate Flooring - Lee Sporting Shop.xlsx",
+                "template_type": "flooring",
+                "sheet_name": "Estimate",
+                "row_number": 120,
+                "template_bucket": "labor_floor_prep_base",
+                "template_section": "labor",
+                "line_item_kind": "labor",
+                "selected_item_name": "Prep & Base 707",
+                "days": 0.5,
+                "crew_size": 3,
+                "total_hours": 12,
+                "estimated_cost": 2528.66,
+                "needs_review": False,
+            },
+            {
+                "template_row_id": "F1_LABOR_TOP",
+                "document_id": "DF1",
+                "job_id": "F1",
+                "source_file": "Estimate Flooring - Lee Sporting Shop.xlsx",
+                "template_type": "flooring",
+                "sheet_name": "Estimate",
+                "row_number": 130,
+                "template_bucket": "labor_floor_topcoat",
+                "template_section": "labor",
+                "line_item_kind": "labor",
+                "selected_item_name": "Trip #3 Top Coat",
+                "days": 0.5,
+                "crew_size": 3,
+                "total_hours": 12,
+                "estimated_cost": 2528.66,
+                "needs_review": False,
+            },
+            {
+                "template_row_id": "F2_BASE",
+                "document_id": "DF2",
+                "job_id": "F2",
+                "source_file": "Estimate Flooring - Beta.xlsx",
+                "template_type": "flooring",
+                "sheet_name": "Estimate",
+                "row_number": 26,
+                "template_bucket": "floor_base_coat",
+                "template_section": "materials",
+                "line_item_kind": "material",
+                "selected_item_name": "NPI Epoxy 707 - Gray",
+                "quantity": 3000,
+                "estimated_units": 33,
+                "unit_price": 45,
+                "estimated_cost": 1485,
+                "needs_review": False,
+            },
+            {
+                "template_row_id": "F2_TOP",
+                "document_id": "DF2",
+                "job_id": "F2",
+                "source_file": "Estimate Flooring - Beta.xlsx",
+                "template_type": "flooring",
+                "sheet_name": "Estimate",
+                "row_number": 27,
+                "template_bucket": "floor_topcoat",
+                "template_section": "materials",
+                "line_item_kind": "material",
+                "selected_item_name": "Polyaspartic",
+                "quantity": 3000,
+                "estimated_units": 19.8,
+                "unit_price": 77.1,
+                "estimated_cost": 1526.58,
+                "needs_review": False,
+            },
+            {
+                "template_row_id": "F2_LABOR_BASE",
+                "document_id": "DF2",
+                "job_id": "F2",
+                "source_file": "Estimate Flooring - Beta.xlsx",
+                "template_type": "flooring",
+                "sheet_name": "Estimate",
+                "row_number": 120,
+                "template_bucket": "labor_floor_prep_base",
+                "template_section": "labor",
+                "line_item_kind": "labor",
+                "selected_item_name": "Prep & Base 707",
+                "days": 0.75,
+                "crew_size": 3,
+                "total_hours": 18,
+                "estimated_cost": 3792.99,
+                "needs_review": False,
+            },
+        ]
+    ).to_sql("estimate_template_rows", engine, index=False)
+
+    paths = profile_relationships_from_database(
+        engine=engine,
+        out_dir=out_dir,
+        source_year="2026",
+        division="Flooring",
+        status="Completed",
+        min_job_count=1,
+    )
+
+    package_summary = pd.read_sql_table("job_package_summary", engine)
+    assert {"floor_base_coat", "floor_topcoat", "labor_floor_prep_base"}.issubset(set(package_summary["package"]))
+    base = package_summary[(package_summary["job_id"] == "F1") & (package_summary["package"] == "floor_base_coat")].iloc[0]
+    assert base["unit"] == "gal"
+    assert round(base["qty_per_sqft"], 4) == 0.011
+
+    material_ratios = pd.read_csv(paths["relationship_material_qty_ratios.csv"])
+    assert {"floor_base_coat", "floor_topcoat"}.issubset(set(material_ratios["package"]))
+    assert set(material_ratios[material_ratios["package"] == "floor_base_coat"]["template_type"]) == {"flooring"}
+
+    labor_rates = pd.read_csv(paths["relationship_labor_rates.csv"])
+    prep_base = labor_rates[labor_rates["package"] == "labor_floor_prep_base"].iloc[0]
+    assert prep_base["median_hours_per_sqft"] == 0.0055
+    assert prep_base["template_type"] == "flooring"
+
+    cooccurrence = pd.read_csv(paths["relationship_package_cooccurrence.csv"])
+    pairs = {tuple(sorted((row.package_a, row.package_b))) for row in cooccurrence.itertuples()}
+    assert ("floor_base_coat", "floor_topcoat") in pairs

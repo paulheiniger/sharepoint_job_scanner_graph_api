@@ -10,12 +10,13 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from sqlalchemy import bindparam, create_engine, text
+from sqlalchemy import bindparam, create_engine, inspect, text
 from sqlalchemy.engine import Connection, Engine
 
 PARSER_VERSION = "document-content-template-v3"
 TEMPLATE_TYPE_ROOFING = "roofing"
 TEMPLATE_TYPE_INSULATION = "insulation"
+TEMPLATE_TYPE_FLOORING = "flooring"
 TEMPLATE_TYPE_UNKNOWN = "unknown"
 
 ROOFING_HEADER_BUCKETS = {
@@ -167,6 +168,79 @@ INSULATION_TOTAL_BUCKETS = {
     137: "price_per_sqft_estimated_sets",
 }
 
+FLOORING_HEADER_BUCKETS = {
+    1: "estimate_date",
+    2: "job_name",
+    3: "job_type",
+    4: "site_address",
+    5: "city_state_zip",
+    6: "contact",
+    7: "contact_title",
+    8: "email",
+    9: "phone",
+    12: "estimated_square_feet",
+}
+
+FLOORING_MATERIAL_BUCKETS = {
+    19: "foam",
+    20: "foam",
+    21: "foam",
+    26: "floor_base_coat",
+    27: "floor_topcoat",
+    28: "floor_coating",
+    33: "thinner",
+    36: "granules",
+    39: "floor_primer",
+    43: "caulk_sealant",
+    45: "caulk_sealant",
+    47: "seams_misc",
+    49: "penetrations",
+    51: "hvac_units",
+    53: "drains",
+    58: "board_stock",
+    59: "board_stock",
+    60: "board_stock",
+    63: "fasteners",
+    65: "plates",
+    69: "dumpsters",
+    73: "lift",
+    74: "lift",
+    76: "delivery_fee",
+    79: "fabric",
+    99: "generator",
+    103: "freight",
+    106: "sales_inspection_trips",
+    108: "truck_expense",
+}
+
+FLOORING_LABOR_BUCKETS = {
+    116: "labor_floor_grind_patch",
+    118: "labor_floor_pop_off",
+    120: "labor_floor_prep_base",
+    122: "labor_floor_patch_grind",
+    124: "labor_floor_primer",
+    126: "labor_floor_base_coat",
+    128: "labor_floor_details",
+    130: "labor_floor_topcoat",
+    132: "labor_floor_misc",
+    137: "labor_loading",
+    139: "labor_traveling",
+    142: "infrared_scan",
+    145: "meals_lodging",
+}
+
+FLOORING_TOTAL_BUCKETS = {
+    154: "warranty",
+    156: "misc_insurance",
+    158: "permits",
+    163: "total_job_cost",
+    165: "overhead",
+    167: "profit",
+    169: "worksheet_price",
+    170: "worksheet_price_adjusted",
+    184: "price_per_sqft_estimated_sets",
+}
+
 ADDER_ROWS = set(range(173, 181))
 ADDER_BUCKETS = {row_number: "estimate_adder" for row_number in ADDER_ROWS}
 
@@ -228,6 +302,13 @@ def maps_for_template_type(template_type: str) -> dict[str, dict[int, str]]:
             "materials": INSULATION_MATERIAL_BUCKETS,
             "labor": INSULATION_LABOR_BUCKETS,
             "totals": INSULATION_TOTAL_BUCKETS,
+        }
+    if template_type == TEMPLATE_TYPE_FLOORING:
+        return {
+            "header": FLOORING_HEADER_BUCKETS,
+            "materials": FLOORING_MATERIAL_BUCKETS,
+            "labor": FLOORING_LABOR_BUCKETS,
+            "totals": FLOORING_TOTAL_BUCKETS,
         }
     return {
         "header": ROOFING_HEADER_BUCKETS,
@@ -350,6 +431,11 @@ def line_item_kind_for_bucket(bucket: str, template_type: str = TEMPLATE_TYPE_RO
     if bucket in {
         "foam",
         "coating",
+        "floor_base_coat",
+        "floor_topcoat",
+        "floor_coating",
+        "floor_primer",
+        "floor_flake",
         "thermal_barrier_coating",
         "membrane",
         "thinner",
@@ -399,6 +485,8 @@ def line_item_kind_for_bucket(bucket: str, template_type: str = TEMPLATE_TYPE_RO
 
 def classify_estimate_adder(row_label: Any) -> tuple[str, str]:
     label = str(row_label or "").strip().lower()
+    if "flake" in label:
+        return "floor_flake", "material"
     if "lift" in label:
         return "lift", "equipment"
     if "insurance" in label:
@@ -567,12 +655,29 @@ def detect_template_type_from_rows(rows: list[dict[str, Any] | pd.Series]) -> st
         "infrared scan",
         "warranty",
     )
+    flooring_signals = (
+        "estimate flooring",
+        "floor system",
+        "flooring",
+        "concrete floor",
+        "concrete slab",
+        "polyaspartic",
+        "polyspartic",
+        "epoxy floor",
+        "flake broadcast",
+        "grind/patch",
+    )
     insulation_score = sum(1 for signal in insulation_signals if signal in source_text or signal in job_type_text)
     roofing_score = sum(1 for signal in roofing_signals if signal in source_text or signal in job_type_text)
+    flooring_score = sum(1 for signal in flooring_signals if signal in source_text or signal in job_type_text)
     if "insulation" in job_type_text:
         insulation_score += 3
+    if "floor" in job_type_text:
+        flooring_score += 3
     if "roof" in job_type_text or "coating" in job_type_text:
         roofing_score += 3
+    if flooring_score >= 2 and flooring_score > max(insulation_score, roofing_score):
+        return TEMPLATE_TYPE_FLOORING
     if insulation_score >= 2 and insulation_score > roofing_score:
         return TEMPLATE_TYPE_INSULATION
     if 103 in row_numbers and 116 in row_numbers:
@@ -597,8 +702,13 @@ def detect_workbook_template_type(path: Path) -> str:
         return TEMPLATE_TYPE_INSULATION
     ws = workbook["Estimate"]
     job_type = str(ws["C3"].value or "").lower()
+    if "floor" in job_type:
+        return TEMPLATE_TYPE_FLOORING
     if "insulation" in job_type:
         return TEMPLATE_TYPE_INSULATION
+    flooring_labels = " ".join(str(ws.cell(row=row, column=1).value or "") for row in (116, 120, 126, 130, 137, 139)).lower()
+    if any(term in flooring_labels for term in ("grind/patch", "prep & base", "top coat", "traveling")) and "floor" in str(path.name).lower():
+        return TEMPLATE_TYPE_FLOORING
     labels = " ".join(str(ws.cell(row=row, column=1).value or "") for row in (78, 86, 103, 116, 122, 123)).lower()
     if "total job cost" in labels and ("foam" in labels or "total hours" in labels):
         return TEMPLATE_TYPE_INSULATION
@@ -759,12 +869,31 @@ def parse_document_content_row(row: dict[str, Any] | pd.Series, template_type: s
             elif row_number == 37:
                 out["formula_model"] = "thinner_units_from_coating_gallons"
                 out["quantity_cell_role"] = "estimated_units"
+        elif template_type == TEMPLATE_TYPE_FLOORING:
+            out["selector_code"] = numeric_at(cell_values, row_number, "A")
+            out["resolved_item_name"] = selected_item_name
+            if row_number in {26, 27, 28}:
+                out["area_sqft"] = numeric_at(cell_values, row_number, "C")
+                out["gal_per_100_sqft"] = numeric_at(cell_values, row_number, "D")
+                if out["gal_per_100_sqft"] is not None:
+                    out["gal_per_sqft"] = out["gal_per_100_sqft"] / 100
+                out["estimated_gallons"] = numeric_at(cell_values, row_number, "G")
+                out["estimated_units"] = out["estimated_gallons"]
+                out["formula_model"] = "floor_coating_gallons_from_area_rate_margin"
+                out["waste_margin_cell"] = "A30"
+                out["quantity_cell_role"] = "area_sqft"
+            elif row_number == 39:
+                out["area_sqft"] = numeric_at(cell_values, row_number, "C")
+                out["estimated_gallons"] = numeric_at(cell_values, row_number, "G")
+                out["estimated_units"] = out["estimated_gallons"]
+                out["formula_model"] = "floor_primer_gallons_from_area_coverage"
+                out["quantity_cell_role"] = "area_sqft"
     if bucket in {"sales_inspection_trips", "truck_expense"}:
         out["trips"] = numeric_at(cell_values, row_number, "B")
         out["round_trip_miles"] = numeric_at(cell_values, row_number, "C")
         out["cost_per_mile"] = numeric_at(cell_values, row_number, "E")
         out["estimated_cost"] = numeric_at(cell_values, row_number, "H")
-    if template_type == TEMPLATE_TYPE_ROOFING and 116 <= row_number <= 134:
+    if template_type in {TEMPLATE_TYPE_ROOFING, TEMPLATE_TYPE_FLOORING} and 116 <= row_number <= 134:
         out["days"] = numeric_at(cell_values, row_number, "B")
         out["crew_size"] = numeric_at(cell_values, row_number, "C")
         out["crew_selector_code"] = out["crew_size"]
@@ -784,7 +913,7 @@ def parse_document_content_row(row: dict[str, Any] | pd.Series, template_type: s
         out["calculated_cost"] = out["estimated_cost"]
         out["daily_rate"] = numeric_at(cell_values, row_number, "J")
         out["formula_mode"] = "mixed_formula"
-    if (template_type == TEMPLATE_TYPE_ROOFING and row_number in {137, 139}) or (template_type == TEMPLATE_TYPE_INSULATION and row_number in {95, 97}):
+    if (template_type in {TEMPLATE_TYPE_ROOFING, TEMPLATE_TYPE_FLOORING} and row_number in {137, 139}) or (template_type == TEMPLATE_TYPE_INSULATION and row_number in {95, 97}):
         out["days"] = numeric_at(cell_values, row_number, "C")
         out["total_hours"] = numeric_at(cell_values, row_number, "C")
         out["crew_size"] = numeric_at(cell_values, row_number, "E")
@@ -805,15 +934,15 @@ def parse_document_content_row(row: dict[str, Any] | pd.Series, template_type: s
         out["warranty_years"] = numeric_at(cell_values, row_number, "C")
         out["quantity"] = numeric_at(cell_values, row_number, "E")
         out["estimated_cost"] = numeric_at(cell_values, row_number, "H")
-    if (template_type == TEMPLATE_TYPE_ROOFING and row_number == 165) or (template_type == TEMPLATE_TYPE_INSULATION and row_number == 118):
+    if (template_type in {TEMPLATE_TYPE_ROOFING, TEMPLATE_TYPE_FLOORING} and row_number == 165) or (template_type == TEMPLATE_TYPE_INSULATION and row_number == 118):
         out["overhead_pct"] = numeric_at(cell_values, row_number, "F")
         out["estimated_cost"] = numeric_at(cell_values, row_number, "H")
-    if (template_type == TEMPLATE_TYPE_ROOFING and row_number == 167) or (template_type == TEMPLATE_TYPE_INSULATION and row_number == 120):
+    if (template_type in {TEMPLATE_TYPE_ROOFING, TEMPLATE_TYPE_FLOORING} and row_number == 167) or (template_type == TEMPLATE_TYPE_INSULATION and row_number == 120):
         out["profit_pct"] = numeric_at(cell_values, row_number, "F")
         out["estimated_cost"] = numeric_at(cell_values, row_number, "H")
-    if (template_type == TEMPLATE_TYPE_ROOFING and row_number in {163, 169}) or (template_type == TEMPLATE_TYPE_INSULATION and row_number in {72, 73, 103, 116, 122}):
+    if (template_type in {TEMPLATE_TYPE_ROOFING, TEMPLATE_TYPE_FLOORING} and row_number in {163, 169}) or (template_type == TEMPLATE_TYPE_INSULATION and row_number in {72, 73, 103, 116, 122}):
         out["estimated_cost"] = numeric_at(cell_values, row_number, "H")
-    if template_type == TEMPLATE_TYPE_ROOFING and row_number == 170:
+    if template_type in {TEMPLATE_TYPE_ROOFING, TEMPLATE_TYPE_FLOORING} and row_number == 170:
         out["estimated_cost"] = numeric_at(cell_values, row_number, "F") or numeric_at(cell_values, row_number, "H")
     if template_type == TEMPLATE_TYPE_INSULATION and row_number == 123:
         out["estimated_cost"] = numeric_at(cell_values, row_number, "H")
@@ -1106,6 +1235,135 @@ def fetch_document_content_rows(conn: Connection, document_id: str | None = None
     return [dict(row) for row in rows]
 
 
+def fetch_flooring_repair_candidate_documents(conn: Connection, limit_documents: int | None = None) -> list[dict[str, Any]]:
+    params: dict[str, Any] = {"limit_documents": limit_documents}
+    limit_sql = "LIMIT :limit_documents" if limit_documents is not None else ""
+    has_jobs = inspect(conn).has_table("jobs")
+    jobs_join = "LEFT JOIN jobs j ON j.job_id = c.job_id" if has_jobs else ""
+    jobs_signal = "OR LOWER(COALESCE(j.division, '')) = 'flooring'" if has_jobs else ""
+    statement = text(
+        f"""
+        SELECT DISTINCT
+            c.document_id,
+            COALESCE(MAX(d.file_name), MAX(t.source_file), c.document_id) AS source_file
+        FROM document_content c
+        LEFT JOIN documents d ON d.document_id = c.document_id
+        LEFT JOIN estimate_template_rows t ON t.document_id = c.document_id
+        {jobs_join}
+        WHERE LOWER(COALESCE(c.sheet_name, '')) = 'estimate'
+          AND c.row_number IS NOT NULL
+          AND c.text_content ~ '[A-Z]{{1,4}}[0-9]+:'
+          AND LOWER(COALESCE(d.file_extension, '')) IN ('.xlsx', '.xlsm')
+          AND (
+                LOWER(COALESCE(d.file_name, t.source_file, '')) LIKE '%floor%'
+             {jobs_signal}
+             OR LOWER(COALESCE(c.text_content, '')) LIKE '%floor system%'
+             OR LOWER(COALESCE(c.text_content, '')) LIKE '%polyaspartic%'
+             OR LOWER(COALESCE(c.text_content, '')) LIKE '%polyspartic%'
+             OR LOWER(COALESCE(c.text_content, '')) LIKE '%prep & base 707%'
+             OR LOWER(COALESCE(c.text_content, '')) LIKE '%grind/patch%'
+             OR LOWER(COALESCE(c.text_content, '')) LIKE '%npi epoxy%'
+          )
+        GROUP BY c.document_id
+        ORDER BY source_file, c.document_id
+        {limit_sql}
+        """
+    )
+    try:
+        rows = conn.execute(statement, params).mappings().all()
+    except Exception:
+        sqlite_statement = text(
+            f"""
+            SELECT DISTINCT
+                c.document_id,
+                COALESCE(MAX(d.file_name), MAX(t.source_file), c.document_id) AS source_file
+            FROM document_content c
+            LEFT JOIN documents d ON d.document_id = c.document_id
+            LEFT JOIN estimate_template_rows t ON t.document_id = c.document_id
+            {jobs_join}
+            WHERE LOWER(COALESCE(c.sheet_name, '')) = 'estimate'
+              AND c.row_number IS NOT NULL
+              AND c.text_content LIKE '%:%'
+              AND LOWER(COALESCE(d.file_extension, '')) IN ('.xlsx', '.xlsm')
+              AND (
+                    LOWER(COALESCE(d.file_name, t.source_file, '')) LIKE '%floor%'
+                 {jobs_signal}
+                 OR LOWER(COALESCE(c.text_content, '')) LIKE '%floor system%'
+                 OR LOWER(COALESCE(c.text_content, '')) LIKE '%polyaspartic%'
+                 OR LOWER(COALESCE(c.text_content, '')) LIKE '%polyspartic%'
+                 OR LOWER(COALESCE(c.text_content, '')) LIKE '%prep & base 707%'
+                 OR LOWER(COALESCE(c.text_content, '')) LIKE '%grind/patch%'
+                 OR LOWER(COALESCE(c.text_content, '')) LIKE '%npi epoxy%'
+              )
+            GROUP BY c.document_id
+            ORDER BY source_file, c.document_id
+            {limit_sql}
+            """
+        )
+        rows = conn.execute(sqlite_statement, params).mappings().all()
+    return [dict(row) for row in rows]
+
+
+def repair_flooring_template_type(
+    engine: Engine,
+    *,
+    batch_size: int = 1000,
+    limit_documents: int | None = None,
+    progress: bool = False,
+) -> dict[str, Any]:
+    with engine.connect() as conn:
+        candidate_documents = fetch_flooring_repair_candidate_documents(conn, limit_documents=limit_documents)
+
+    documents_considered = len(candidate_documents)
+    if progress:
+        print(f"Flooring template repair: documents considered: {documents_considered}", flush=True)
+
+    rows_read = 0
+    rows_parsed = 0
+    rows_upserted = 0
+    review_rows = 0
+    bucket_counts: Counter[str] = Counter()
+    kind_counts: Counter[str] = Counter()
+
+    for index, document in enumerate(candidate_documents, start=1):
+        current_document_id = str(document.get("document_id") or "")
+        source_file = str(document.get("source_file") or current_document_id)
+        with engine.connect() as conn:
+            source_rows = fetch_document_content_rows(conn, document_id=current_document_id)
+        parsed_rows = [
+            parsed
+            for row in source_rows
+            if (parsed := parse_document_content_row(row, template_type=TEMPLATE_TYPE_FLOORING))
+        ]
+        with engine.begin() as conn:
+            upserted_for_document = upsert_template_rows(conn, parsed_rows, batch_size=batch_size)
+
+        rows_read += len(source_rows)
+        rows_parsed += len(parsed_rows)
+        rows_upserted += upserted_for_document
+        review_rows += sum(1 for row in parsed_rows if row.get("needs_review"))
+        bucket_counts.update(str(row.get("template_bucket")) for row in parsed_rows)
+        kind_counts.update(str(row.get("line_item_kind")) for row in parsed_rows)
+        if progress:
+            print(
+                f"[{index}/{documents_considered}] {source_file} — "
+                f"rows read: {len(source_rows)}, flooring rows upserted: {upserted_for_document}",
+                flush=True,
+            )
+
+    return {
+        "documents_considered": documents_considered,
+        "rows_read": rows_read,
+        "rows_parsed": rows_parsed,
+        "rows_skipped": rows_read - rows_parsed,
+        "rows_upserted": rows_upserted,
+        "placeholder_rows_deleted": 0,
+        "rows_needing_review": review_rows,
+        "by_template_bucket": dict(sorted(bucket_counts.items())),
+        "by_line_item_kind": dict(sorted(kind_counts.items())),
+    }
+
+
 def parse_existing_document_content(
     engine: Engine,
     document_id: str | None = None,
@@ -1294,6 +1552,7 @@ def print_summary(summary: dict[str, Any]) -> None:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Parse document_content XLSX Estimate rows into structured template rows.")
     parser.add_argument("--parse-existing", action="store_true", help="Parse all existing document_content Estimate rows.")
+    parser.add_argument("--repair-flooring-template-type", action="store_true", help="Force likely flooring estimate documents through the flooring template row map.")
     parser.add_argument("--document-id", help="Parse one document_id from document_content.")
     parser.add_argument("--limit-documents", type=int, help="Maximum number of candidate documents to parse.")
     parser.add_argument("--document-type", help="Only parse documents with this documents.document_type value.")
@@ -1302,8 +1561,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--database-url", default=os.getenv("DATABASE_URL") or os.getenv("NEON_DATABASE_URL"))
     parser.add_argument("--batch-size", type=int, default=1000)
     args = parser.parse_args(argv)
-    if not args.parse_existing and not args.document_id:
-        parser.error("Use --parse-existing or --document-id.")
+    if not args.parse_existing and not args.document_id and not args.repair_flooring_template_type:
+        parser.error("Use --parse-existing, --document-id, or --repair-flooring-template-type.")
     return args
 
 
@@ -1312,16 +1571,24 @@ def main(argv: list[str] | None = None) -> int:
     if not args.database_url:
         raise SystemExit("Set --database-url, DATABASE_URL, or NEON_DATABASE_URL.")
     engine = create_engine(args.database_url, future=True)
-    summary = parse_existing_document_content(
-        engine,
-        document_id=args.document_id,
-        batch_size=args.batch_size,
-        limit_documents=args.limit_documents,
-        document_type=args.document_type,
-        xlsx_only=args.xlsx_only,
-        only_unparsed=args.only_unparsed,
-        progress=True,
-    )
+    if args.repair_flooring_template_type:
+        summary = repair_flooring_template_type(
+            engine,
+            batch_size=args.batch_size,
+            limit_documents=args.limit_documents,
+            progress=True,
+        )
+    else:
+        summary = parse_existing_document_content(
+            engine,
+            document_id=args.document_id,
+            batch_size=args.batch_size,
+            limit_documents=args.limit_documents,
+            document_type=args.document_type,
+            xlsx_only=args.xlsx_only,
+            only_unparsed=args.only_unparsed,
+            progress=True,
+        )
     print_summary(summary)
     return 0
 

@@ -96,7 +96,13 @@ AND (
 INTERACTIVE_RELATIONSHIP_COOCCURRENCE_WHERE = """
 WHERE co_occurrence_rate >= 0.5
   AND job_count >= 3
-  AND (project_type ILIKE '%roof%' OR project_type IS NULL OR project_type = '')
+  AND (
+    project_type ILIKE '%roof%'
+    OR project_type ILIKE '%insulation%'
+    OR project_type ILIKE '%floor%'
+    OR project_type IS NULL
+    OR project_type = ''
+  )
 """
 
 INTERACTIVE_RELATIONSHIP_COOCCURRENCE_ORDER_LIMIT = "ORDER BY job_count DESC, co_occurrence_rate DESC LIMIT 5000"

@@ -155,6 +155,60 @@ def test_row_39_maps_to_primer() -> None:
     assert parsed["selected_item_name"] == "Bleed Block"
 
 
+def test_flooring_material_rows_preserve_flooring_formula_inputs() -> None:
+    parsed = tr.parse_document_content_row(
+        content_row(
+            26,
+            "A26: 11 | B26: NPI Epoxy | C26: 2400 | D26: 1 | E26: 45 | F26: 707 - Black | G26: 26.4 | H26: 1188",
+            source_file="Estimate Flooring - Lee Sporting Shop.xlsx",
+        ),
+        template_type=tr.TEMPLATE_TYPE_FLOORING,
+    )
+
+    assert parsed["template_type"] == "flooring"
+    assert parsed["template_bucket"] == "floor_base_coat"
+    assert parsed["line_item_kind"] == "material"
+    assert parsed["area_sqft"] == 2400
+    assert parsed["gal_per_100_sqft"] == 1
+    assert parsed["estimated_gallons"] == 26.4
+    assert parsed["estimated_units"] == 26.4
+    assert parsed["formula_model"] == "floor_coating_gallons_from_area_rate_margin"
+
+
+def test_flooring_labor_rows_preserve_mixed_formula_inputs() -> None:
+    parsed = tr.parse_document_content_row(
+        content_row(
+            120,
+            "A120: Prep & Base 707 | B120: 0.5 | C120: 3 | D120: 12 | H120: 2528.66 | J120: 1685.78",
+            source_file="Estimate Flooring - Lee Sporting Shop.xlsx",
+        ),
+        template_type=tr.TEMPLATE_TYPE_FLOORING,
+    )
+
+    assert parsed["template_bucket"] == "labor_floor_prep_base"
+    assert parsed["line_item_kind"] == "labor"
+    assert parsed["days"] == 0.5
+    assert parsed["crew_size"] == 3
+    assert parsed["total_hours"] == 12
+    assert parsed["daily_rate"] == 1685.78
+    assert parsed["formula_mode"] == "mixed_formula"
+
+
+def test_flooring_flake_adder_classifies_as_material() -> None:
+    parsed = tr.parse_document_content_row(
+        content_row(
+            177,
+            "A177: Additional Amount w/o Markup | G177: Flake (10) | H177: 1320",
+            source_file="Estimate Flooring - Lee Sporting Shop.xlsx",
+        ),
+        template_type=tr.TEMPLATE_TYPE_FLOORING,
+    )
+
+    assert parsed["template_bucket"] == "floor_flake"
+    assert parsed["line_item_kind"] == "material"
+    assert parsed["estimated_cost"] == 1320
+
+
 def test_row_106_sales_inspection_extracts_travel_fields() -> None:
     parsed = tr.parse_document_content_row(content_row(106, "A106: Sales/Inspection | B106: 2 | C106: 180 | E106: .75 | H106: 270"))
 
@@ -502,6 +556,90 @@ def test_parse_existing_persists_insulation_waste_margin_cell_reference() -> Non
     assert row["formula_model"] == "coating_gallons_from_area_rate_waste"
 
 
+def test_repair_flooring_template_type_overwrites_misclassified_rows() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    create_sqlite_schema(engine)
+    row_id = tr.stable_template_row_id("DOCF", "Estimate", 26, "A26:H26")
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO documents (document_id, job_id, file_name, file_extension, document_type)
+                VALUES ('DOCF', 'JOBF', 'Estimate Flooring - Lee Sporting Shop.xlsx', '.xlsx', 'estimate')
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO document_content (
+                    content_id, document_id, job_id, sheet_name, row_number, cell_range, text_content
+                )
+                VALUES
+                    (
+                        'CONTENT1', 'DOCF', 'JOBF', 'Estimate', 3, 'A3:C3',
+                        'A3: Job Type | C3: Floor System'
+                    ),
+                    (
+                        'CONTENT2', 'DOCF', 'JOBF', 'Estimate', 26, 'A26:H26',
+                        'A26: 11 | B26: NPI Epoxy | C26: 2400 | D26: 1 | E26: 45 | G26: 26.4 | H26: 1188'
+                    ),
+                    (
+                        'CONTENT3', 'DOCF', 'JOBF', 'Estimate', 120, 'A120:J120',
+                        'A120: Prep & Base 707 | B120: 0.5 | C120: 3 | D120: 12 | H120: 2528.66 | J120: 1685.78'
+                    )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO estimate_template_rows (
+                    template_row_id, document_id, job_id, source_file, template_type,
+                    sheet_name, row_number, cell_range, template_bucket, line_item_kind,
+                    selected_item_name, needs_review, parser_version
+                )
+                VALUES (
+                    :row_id, 'DOCF', 'JOBF', 'Estimate Flooring - Lee Sporting Shop.xlsx', 'roofing',
+                    'Estimate', 26, 'A26:H26', 'coating', 'material',
+                    'NPI Epoxy', false, :parser_version
+                )
+                """
+            ),
+            {"row_id": row_id, "parser_version": tr.PARSER_VERSION},
+        )
+
+    summary = tr.repair_flooring_template_type(engine)
+
+    assert summary["documents_considered"] == 1
+    assert summary["rows_upserted"] == 3
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT row_number, template_type, template_bucket, line_item_kind, estimated_units, formula_model
+                FROM estimate_template_rows
+                WHERE document_id = 'DOCF'
+                ORDER BY row_number
+                """
+            )
+        ).mappings().all()
+        count = conn.execute(
+            text("SELECT COUNT(*) FROM estimate_template_rows WHERE template_row_id = :row_id"),
+            {"row_id": row_id},
+        ).scalar_one()
+
+    assert count == 1
+    by_row = {row["row_number"]: row for row in rows}
+    assert by_row[26]["template_type"] == "flooring"
+    assert by_row[26]["template_bucket"] == "floor_base_coat"
+    assert by_row[26]["estimated_units"] == 26.4
+    assert by_row[26]["formula_model"] == "floor_coating_gallons_from_area_rate_margin"
+    assert by_row[120]["template_type"] == "flooring"
+    assert by_row[120]["template_bucket"] == "labor_floor_prep_base"
+    assert by_row[120]["line_item_kind"] == "labor"
+
+
 def test_parse_existing_is_bounded_visible_and_xlsx_only(capsys) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     create_sqlite_schema(engine)
@@ -692,6 +830,26 @@ def test_detect_workbook_template_type_insulation(tmp_path) -> None:
     workbook.save(path)
 
     assert tr.detect_workbook_template_type(path) == "insulation"
+
+
+def test_detect_workbook_template_type_flooring(tmp_path) -> None:
+    import openpyxl
+
+    workbook = openpyxl.Workbook()
+    ws = workbook.active
+    ws.title = "Estimate"
+    ws["C3"] = "Floor System"
+    ws["A116"] = "Grind/Patch/"
+    ws["A120"] = "Prep & Base 707"
+    ws["A130"] = "Trip #3 Top Coat"
+    workbook.create_sheet("People")
+    workbook.create_sheet("Materials")
+    workbook.create_sheet("General")
+    workbook.create_sheet("Performance & Payment Bonds")
+    path = tmp_path / "Estimate Flooring - Test.xlsx"
+    workbook.save(path)
+
+    assert tr.detect_workbook_template_type(path) == "flooring"
 
 
 def test_insulation_document_rows_use_insulation_template_map() -> None:

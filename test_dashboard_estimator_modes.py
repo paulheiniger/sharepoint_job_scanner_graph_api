@@ -1258,6 +1258,16 @@ def test_auto_detect_classifies_spray_foam_building_email_as_insulation() -> Non
     assert mode == app.ESTIMATE_TYPE_INSULATION
 
 
+def test_auto_detect_classifies_concrete_floor_coating_as_flooring() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    mode = app.classify_estimate_type_from_notes(
+        "2,400 sq ft concrete floor system, grind and patch prep, epoxy base, polyaspartic top coat, flake broadcast."
+    )
+
+    assert mode == app.ESTIMATE_TYPE_FLOORING
+
+
 def test_mode_selector_routes_to_repair_estimator() -> None:
     app = importlib.import_module("dashboard.app")
 
@@ -1269,6 +1279,19 @@ def test_mode_selector_routes_to_repair_estimator() -> None:
 
     assert route == app.ESTIMATE_TYPE_REPAIR
     assert result.parsed_scope["issue_type"] == "pipe_boot_leak"
+
+
+def test_mode_selector_routes_to_flooring_estimator() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    route, result = app.route_estimator_request(
+        "Flooring job, 2,400 sq ft concrete slab. Grind prep, epoxy base, polyaspartic top coat.",
+        app.ESTIMATE_TYPE_FLOORING,
+    )
+
+    assert route == app.ESTIMATE_TYPE_FLOORING
+    assert result.parsed_scope["template_type"] == "flooring"
+    assert result.parsed_scope["area_sqft"] == 2400
 
 
 def test_repair_mode_does_not_call_roof_coating_estimator() -> None:

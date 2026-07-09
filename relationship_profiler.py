@@ -63,6 +63,15 @@ SPECIFIC_LABOR_BUCKETS = {
     "labor_top_coat",
     "labor_caulk",
     "labor_details",
+    "labor_floor_grind_patch",
+    "labor_floor_pop_off",
+    "labor_floor_prep_base",
+    "labor_floor_patch_grind",
+    "labor_floor_primer",
+    "labor_floor_base_coat",
+    "labor_floor_details",
+    "labor_floor_topcoat",
+    "labor_floor_misc",
 }
 SPECIFIC_MATERIAL_BUCKETS = {
     "coating",
@@ -73,6 +82,11 @@ SPECIFIC_MATERIAL_BUCKETS = {
     "foam",
     "membrane",
     "thermal_barrier_coating",
+    "floor_base_coat",
+    "floor_topcoat",
+    "floor_coating",
+    "floor_primer",
+    "floor_flake",
     "lift",
     "generator",
     "space_heater",
@@ -94,6 +108,11 @@ ESTIMATED_UNITS_PHYSICAL_UNIT_BY_PACKAGE = {
     "foam": "unit",
     "membrane": "unit",
     "thermal_barrier_coating": "gal",
+    "floor_base_coat": "gal",
+    "floor_topcoat": "gal",
+    "floor_coating": "gal",
+    "floor_primer": "gal",
+    "floor_flake": "unit",
 }
 
 JOB_CONTEXT_COLUMNS = [
@@ -269,11 +288,23 @@ def classify_package(row: pd.Series) -> str:
     line_kind = clean_text(row.get("line_item_kind")).lower()
     if bucket.startswith("labor_"):
         return bucket
+    if any(term in text for term in ("grind/patch", "grind patch", "patch/grind", "floor grind")):
+        return "labor_floor_grind_patch"
+    if any(term in text for term in ("prep & base", "prep/base", "floor prep")):
+        return "labor_floor_prep_base"
+    if any(term in text for term in ("trip #3 top coat", "floor top coat", "floor topcoat")):
+        return "labor_floor_topcoat"
     if "labor" in category or "labor" in section or line_kind == "labor":
         labor_package = normalized_template_bucket(row.get("labor_package"))
         return labor_package or bucket or "labor"
     if bucket and bucket not in {"materials", "material", "misc", "other"}:
         return bucket
+    if any(term in text for term in ("polyaspartic", "polyspartic")):
+        return "floor_topcoat"
+    if any(term in text for term in ("707", "base coat", "epoxy base", "npi epoxy")) and any(term in text for term in ("floor", "epoxy", "707", "base")):
+        return "floor_base_coat"
+    if "flake" in text:
+        return "floor_flake"
     if any(term in text for term in ("primer", "prime coat", "epoxy prime")):
         return "primer"
     if any(term in text for term in ("seam", "butter grade", "fabric", "detail tape")):
@@ -816,6 +847,28 @@ def table_exists(engine: Engine, table_name: str) -> bool:
     return inspect(engine).has_table(table_name)
 
 
+def quote_identifier(engine: Engine, identifier: str) -> str:
+    return engine.dialect.identifier_preparer.quote(identifier)
+
+
+def existing_table_columns(engine: Engine, table_name: str) -> set[str]:
+    if not table_exists(engine, table_name):
+        return set()
+    return {column["name"] for column in inspect(engine).get_columns(table_name)}
+
+
+def sql_type_for_series(series: pd.Series, dialect_name: str) -> str:
+    if pd.api.types.is_bool_dtype(series):
+        return "BOOLEAN"
+    if pd.api.types.is_integer_dtype(series):
+        return "BIGINT" if dialect_name == "postgresql" else "INTEGER"
+    if pd.api.types.is_float_dtype(series):
+        return "DOUBLE PRECISION" if dialect_name == "postgresql" else "REAL"
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return "TIMESTAMP"
+    return "TEXT"
+
+
 def read_table(engine: Engine, table_name: str) -> pd.DataFrame:
     if not table_exists(engine, table_name):
         return pd.DataFrame()
@@ -853,7 +906,23 @@ def sanitize_frame_for_sql(frame: pd.DataFrame | None, table_name: str | None = 
 
 def write_table(engine: Engine, table_name: str, frame: pd.DataFrame) -> None:
     frame = sanitize_frame_for_sql(frame, table_name)
-    frame.to_sql(table_name, engine, if_exists="replace", index=False, chunksize=1000)
+    if not table_exists(engine, table_name):
+        frame.to_sql(table_name, engine, if_exists="replace", index=False, chunksize=1000)
+        return
+
+    existing_columns = existing_table_columns(engine, table_name)
+    table_identifier = quote_identifier(engine, table_name)
+    with engine.begin() as connection:
+        for column in frame.columns:
+            if column in existing_columns:
+                continue
+            column_identifier = quote_identifier(engine, column)
+            column_type = sql_type_for_series(frame[column], engine.dialect.name)
+            connection.execute(text(f"ALTER TABLE {table_identifier} ADD COLUMN {column_identifier} {column_type}"))
+            existing_columns.add(column)
+        connection.execute(text(f"DELETE FROM {table_identifier}"))
+        if not frame.empty:
+            frame.to_sql(table_name, connection, if_exists="append", index=False, chunksize=1000)
 
 
 def write_outputs_to_database(engine: Engine, outputs: dict[str, pd.DataFrame]) -> None:

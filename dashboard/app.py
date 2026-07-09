@@ -674,6 +674,7 @@ ESTIMATOR_SAMPLE_NOTES = {
     "Metal roof silicone coating": "Metal roof, about 12,000 sqft, rusted fasteners, restaurant in Louisville, silicone coating, medium access.",
     "Coated polyurethane foam roof": "Existing foam roof, about 18,000 sqft, 1.5 inch foam repairs, silicone top coat, commercial building in Lexington.",
     "Spray foam insulation": "Spray foam insulation for warehouse walls, wall area 8,500 sqft, 2 inch foam, easy access in Shelbyville.",
+    "Floor coating": "Flooring job, 2,400 sq ft concrete slab, grind and patch prep, epoxy base coat, polyaspartic top coat, flake broadcast, generator needed.",
     "Roof repair": "Roof repair, about 3,000 sqft, leaks around penetrations, rusted metal panels, Louisville KY, difficult access.",
     "Wall insulation": "Wall insulation, wall area 10,000 sqft, metal building, 2 inch spray foam, Cincinnati OH.",
 }
@@ -682,11 +683,13 @@ ESTIMATE_TYPE_AUTO = "Auto-detect"
 ESTIMATE_TYPE_RESTORATION = "Roof Restoration / Coating"
 ESTIMATE_TYPE_REPAIR = "Roof Repair"
 ESTIMATE_TYPE_INSULATION = "Insulation"
+ESTIMATE_TYPE_FLOORING = "Flooring"
 ESTIMATE_TYPE_OPTIONS = [
     ESTIMATE_TYPE_AUTO,
     ESTIMATE_TYPE_RESTORATION,
     ESTIMATE_TYPE_REPAIR,
     ESTIMATE_TYPE_INSULATION,
+    ESTIMATE_TYPE_FLOORING,
 ]
 
 REPAIR_MODE_KEYWORDS = [
@@ -729,6 +732,20 @@ INSULATION_MODE_KEYWORDS = [
     "closed-cell",
     "open-cell",
     "insulation",
+]
+FLOORING_MODE_KEYWORDS = [
+    "flooring",
+    "floor coating",
+    "floor system",
+    "concrete floor",
+    "concrete slab",
+    "polyaspartic",
+    "epoxy floor",
+    "epoxy base",
+    "flake broadcast",
+    "grind and patch",
+    "shotblast",
+    "shot blast",
 ]
 
 
@@ -7775,6 +7792,7 @@ def classify_estimate_type_from_notes(notes: str | None) -> str:
     repair_score = keyword_score(text_value, REPAIR_MODE_KEYWORDS)
     restoration_score = keyword_score(text_value, RESTORATION_MODE_KEYWORDS)
     insulation_score = keyword_score(text_value, INSULATION_MODE_KEYWORDS)
+    flooring_score = keyword_score(text_value, FLOORING_MODE_KEYWORDS)
     if re.search(r"\b\d+(?:,\d{3})?\s*(?:sqft|sq ft|sf|square feet)\b", text_value):
         restoration_score += 2
     if any(term in text_value for term in ("10-year", "10 year", "15-year", "15 year", "20-year", "20 year")):
@@ -7783,7 +7801,11 @@ def classify_estimate_type_from_notes(notes: str | None) -> str:
         repair_score += 3
     if any(term in text_value for term in ("walls", "attic", "crawlspace", "r-value", "dc315", "thermal barrier")):
         insulation_score += 3
-    if insulation_score >= max(repair_score, restoration_score) and insulation_score > 0:
+    if any(term in text_value for term in ("polyaspartic", "epoxy floor", "floor system", "concrete floor", "flake broadcast")):
+        flooring_score += 3
+    if flooring_score >= max(repair_score, restoration_score, insulation_score) and flooring_score > 0:
+        return ESTIMATE_TYPE_FLOORING
+    if insulation_score >= max(repair_score, restoration_score, flooring_score) and insulation_score > 0:
         return ESTIMATE_TYPE_INSULATION
     if repair_score > restoration_score and repair_score > 0:
         return ESTIMATE_TYPE_REPAIR
@@ -7812,6 +7834,10 @@ def route_estimator_request(
         if repair_data is None:
             repair_data = load_repair_history_cached()
         return resolved_type, estimate_repair_from_notes(notes, repair_data, overrides=overrides)
+    if resolved_type == ESTIMATE_TYPE_FLOORING:
+        from jobscan.flooring_estimator.estimator import estimate_flooring_from_notes
+
+        return resolved_type, estimate_flooring_from_notes(notes, overrides=overrides, data=field_notes_data)
     if field_estimator_fn is None:
         field_estimator_fn, _ = optional_field_notes_estimator()
     if field_estimator_fn is None:
@@ -9385,6 +9411,107 @@ def render_repair_estimate_result(
         )
 
 
+def render_flooring_estimate_result(
+    result_payload: dict[str, Any],
+    *,
+    notes: str,
+    customer_job_name: str = "",
+    site_address: str = "",
+    city_state_zip: str = "",
+    contact_name: str = "",
+    contact_phone: str = "",
+    contact_email: str = "",
+    estimator: str = "",
+) -> None:
+    flooring_scope = result_payload.get("parsed_scope") or {}
+    decisions = result_payload.get("workbook_decisions") or []
+    metric_row(
+        [
+            ("Area", f"{flooring_scope.get('area_sqft') or 0:,.0f} sq ft"),
+            ("System", str(flooring_scope.get("system") or "-").replace("_", " ").title()),
+            ("Decisions", f"{len(decisions):,}"),
+            ("Confidence", str(result_payload.get("confidence") or "-").title()),
+        ]
+    )
+    st.markdown("**Parsed Flooring Scope**")
+    scope_fields = [
+        "job_type",
+        "area_sqft",
+        "system",
+        "substrate",
+        "prep_required",
+        "flake_broadcast",
+        "primer_required",
+        "generator_required",
+        "access_complexity",
+    ]
+    st.dataframe(
+        pd.DataFrame([{field: flooring_scope.get(field) for field in scope_fields}]),
+        use_container_width=True,
+        hide_index=True,
+    )
+    if result_payload.get("review_flags"):
+        st.warning("\n".join(result_payload.get("review_flags") or []))
+
+    st.markdown("**Workbook Decisions**")
+    show_table(
+        dataframe_from_records(decisions),
+        [
+            "decision_id",
+            "row_type",
+            "template_bucket",
+            "workbook_row",
+            "item",
+            "area_sqft",
+            "gal_per_100_sqft",
+            "unit_price",
+            "days",
+            "crew_size",
+            "estimated_cost",
+            "include_source",
+            "historical_evidence_summary",
+        ],
+        height=300,
+    )
+
+    st.markdown("**Filled Flooring Template**")
+    if st.button("Export Filled Flooring Template", key="export_integrated_flooring_template"):
+        try:
+            from jobscan.flooring_estimator.workbook_writer import generate_flooring_estimate_workbook
+
+            stem = re.sub(
+                r"[^a-zA-Z0-9]+",
+                "_",
+                (customer_job_name or flooring_scope.get("system") or "flooring_estimate"),
+            ).strip("_").lower()
+            output_path = generate_flooring_estimate_workbook(
+                result_payload,
+                job_name=customer_job_name,
+                site_address=site_address,
+                city_state_zip=city_state_zip,
+                contact_name=contact_name,
+                contact_phone=contact_phone,
+                contact_email=contact_email,
+                estimator=estimator,
+                output_filename=f"{stem or 'flooring_estimate'}_filled.xlsx",
+            )
+            st.session_state["integrated_flooring_filled_template_path"] = str(output_path)
+            st.success("Filled flooring template exported.")
+        except Exception as exc:
+            logger.exception("Filled flooring template export failed")
+            st.error(f"Could not export filled flooring template: {safe_exception_text(exc)}")
+    filled_template_text = st.session_state.get("integrated_flooring_filled_template_path")
+    filled_template = Path(filled_template_text) if filled_template_text else None
+    if filled_template and filled_template.exists():
+        st.download_button(
+            "Download Filled Flooring Template",
+            filled_template.read_bytes(),
+            filled_template.name,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_integrated_flooring_template",
+        )
+
+
 def estimator_prototype_page() -> None:
     reset_estimator_perf_timings()
     st.title("Estimating Assistant")
@@ -9397,7 +9524,7 @@ def estimator_prototype_page() -> None:
             "Estimate Type",
             ESTIMATE_TYPE_OPTIONS,
             index=0,
-            help="Auto-detect uses deterministic keywords to route notes to repair, restoration/coating, or insulation estimating.",
+            help="Auto-detect uses deterministic keywords to route notes to repair, restoration/coating, insulation, or flooring estimating.",
             key="estimator_estimate_type",
         )
         sample_cols = st.columns(len(ESTIMATOR_SAMPLE_NOTES))
@@ -9457,9 +9584,9 @@ def estimator_prototype_page() -> None:
     overrides: dict[str, Any] = {}
 
     field_estimator_fn, field_estimator_import_warning = optional_field_notes_estimator()
-    if field_estimator_import_warning and resolved_estimate_type != ESTIMATE_TYPE_REPAIR:
+    if field_estimator_import_warning and resolved_estimate_type not in {ESTIMATE_TYPE_REPAIR, ESTIMATE_TYPE_FLOORING}:
         st.warning(field_estimator_import_warning)
-    if resolved_estimate_type == ESTIMATE_TYPE_REPAIR:
+    if resolved_estimate_type in {ESTIMATE_TYPE_REPAIR, ESTIMATE_TYPE_FLOORING}:
         use_historical_calibration = False
     else:
         use_historical_calibration = False
@@ -9473,8 +9600,11 @@ def estimator_prototype_page() -> None:
         with f2:
             field_city = st.text_input("City", value="", key="field_estimator_city")
             field_state = st.text_input("State", value="", key="field_estimator_state")
-        if resolved_estimate_type == ESTIMATE_TYPE_REPAIR:
-            st.caption("Repair mode uses VSimple repair history tables and does not run the sqft-based roof coating estimator.")
+        if resolved_estimate_type in {ESTIMATE_TYPE_REPAIR, ESTIMATE_TYPE_FLOORING}:
+            if resolved_estimate_type == ESTIMATE_TYPE_REPAIR:
+                st.caption("Repair mode uses VSimple repair history tables and does not run the sqft-based roof coating estimator.")
+            else:
+                st.caption("Flooring mode fills the flooring estimate template and does not run the sqft-based roof coating estimator.")
         else:
             use_historical_calibration = st.checkbox(
                 "Debug: run full historical calibration inside parser",
@@ -9494,8 +9624,20 @@ def estimator_prototype_page() -> None:
             session_id = capture_estimator_session_event(
                 estimator_sessions.create_estimator_session,
                 raw_input_notes=estimator_input_notes,
-                division="Repair" if resolved_estimate_type == ESTIMATE_TYPE_REPAIR else "",
-                template_type="repair" if resolved_estimate_type == ESTIMATE_TYPE_REPAIR else "",
+                division=(
+                    "Repair"
+                    if resolved_estimate_type == ESTIMATE_TYPE_REPAIR
+                    else "Flooring"
+                    if resolved_estimate_type == ESTIMATE_TYPE_FLOORING
+                    else ""
+                ),
+                template_type=(
+                    "repair"
+                    if resolved_estimate_type == ESTIMATE_TYPE_REPAIR
+                    else "flooring"
+                    if resolved_estimate_type == ESTIMATE_TYPE_FLOORING
+                    else ""
+                ),
                 job_name=field_job_name,
                 site_address=field_site_address,
                 input_source_type="manual",
@@ -9524,6 +9666,8 @@ def estimator_prototype_page() -> None:
                 st.session_state["field_estimate_recommendation_notes"] = estimator_input_notes
                 st.session_state.pop("integrated_repair_estimate_audit_paths", None)
                 st.session_state.pop("integrated_repair_filled_template_path", None)
+                st.session_state.pop("integrated_flooring_estimate_result", None)
+                st.session_state.pop("integrated_flooring_filled_template_path", None)
                 if session_id:
                     repair_payload = repair_result.to_dict()
                     capture_estimator_session_event(
@@ -9542,6 +9686,47 @@ def estimator_prototype_page() -> None:
                         missing_questions=repair_payload.get("missing_info") or repair_payload.get("missing_questions") or [],
                         confidence_by_field=repair_payload.get("confidence_by_field") or {},
                         review_flags=repair_payload.get("review_flags") or [],
+                    )
+            elif resolved_estimate_type == ESTIMATE_TYPE_FLOORING:
+                city_state_zip = ", ".join(part for part in [field_city, field_state] if part)
+                route, flooring_result = route_estimator_request(
+                    estimator_input_notes,
+                    resolved_estimate_type,
+                    overrides={
+                        "customer_job_name": field_job_name,
+                        "site_address": field_site_address,
+                        "city_state_zip": city_state_zip,
+                    },
+                    field_notes_data=data,
+                )
+                st.session_state["field_estimate_route"] = route
+                st.session_state["integrated_flooring_estimate_result"] = flooring_result.to_dict()
+                st.session_state["field_estimate_recommendation"] = None
+                st.session_state["field_estimate_recommendation_notes"] = estimator_input_notes
+                st.session_state.pop("integrated_flooring_filled_template_path", None)
+                st.session_state.pop("integrated_repair_estimate_result", None)
+                st.session_state.pop("integrated_repair_estimate_audit_paths", None)
+                st.session_state.pop("integrated_repair_filled_template_path", None)
+                if session_id:
+                    flooring_payload = flooring_result.to_dict()
+                    capture_estimator_session_event(
+                        estimator_sessions.update_estimator_session,
+                        session_id,
+                        division="Flooring",
+                        template_type="flooring",
+                        job_name=field_job_name,
+                        site_address=field_site_address,
+                        estimate_status="READY_TO_ESTIMATE",
+                    )
+                    capture_estimator_session_event(
+                        estimator_sessions.save_scope_interpretation,
+                        session_id,
+                        parsed_scope=flooring_payload.get("parsed_scope") or flooring_payload,
+                        deterministic_scope=flooring_payload.get("parsed_scope") or {},
+                        assumptions={},
+                        missing_questions=flooring_payload.get("missing_info") or [],
+                        confidence_by_field={},
+                        review_flags=flooring_payload.get("review_flags") or [],
                     )
             elif field_estimator_fn is None:
                 st.warning("Field notes estimator is not available in this deployment yet.")
@@ -9599,6 +9784,7 @@ def estimator_prototype_page() -> None:
                 st.session_state["field_estimate_recommendation"] = recommendation
                 st.session_state["field_estimate_route"] = resolved_estimate_type
                 st.session_state.pop("integrated_repair_estimate_result", None)
+                st.session_state.pop("integrated_flooring_estimate_result", None)
                 st.session_state["field_estimate_recommendation_notes"] = estimator_input_notes
                 st.session_state.pop("field_estimator_evidence_export_paths", None)
                 if session_id:
@@ -9646,6 +9832,7 @@ def estimator_prototype_page() -> None:
             st.warning(f"{type(err).__name__}: {safe_exception_text(err)}")
             st.session_state["field_estimate_recommendation"] = None
             st.session_state.pop("integrated_repair_estimate_result", None)
+            st.session_state.pop("integrated_flooring_estimate_result", None)
     if st.session_state.get("field_estimate_route") == ESTIMATE_TYPE_REPAIR:
         repair_payload = st.session_state.get("integrated_repair_estimate_result")
         recommendation_notes = st.session_state.get("field_estimate_recommendation_notes") or estimator_input_notes
@@ -9660,6 +9847,24 @@ def estimator_prototype_page() -> None:
                 notes=recommendation_notes,
                 customer_job_name=field_job_name,
                 site_address=field_site_address,
+            )
+            return
+    if st.session_state.get("field_estimate_route") == ESTIMATE_TYPE_FLOORING:
+        flooring_payload = st.session_state.get("integrated_flooring_estimate_result")
+        recommendation_notes = st.session_state.get("field_estimate_recommendation_notes") or estimator_input_notes
+        if flooring_payload:
+            if recommendation_notes != estimator_input_notes:
+                st.warning(
+                    "The displayed flooring estimate was generated from earlier notes. "
+                    "Click Build Filled Estimate Template again to refresh it for the current text."
+                )
+            city_state_zip = ", ".join(part for part in [field_city, field_state] if part)
+            render_flooring_estimate_result(
+                flooring_payload,
+                notes=recommendation_notes,
+                customer_job_name=field_job_name,
+                site_address=field_site_address,
+                city_state_zip=city_state_zip,
             )
             return
     field_recommendation = st.session_state.get("field_estimate_recommendation")
