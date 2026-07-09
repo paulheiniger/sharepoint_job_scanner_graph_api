@@ -45,6 +45,34 @@ Additional Amount w/o Markup	177	1/2 in HD Board = $1514 + tax & ST Mark Up			$1
 Additional Amount w/o Markup	178	3 in ISO Board - $2340 + tax & ST Mark Up			$2,700.00	Added after worksheet price
 """
 
+ROOFING_COMPACT_REFERENCE_TEMPLATE_SUMMARY = (
+    "Bill Gatti 3700 Klondike Ln Louisville ~8000 sf metal roof (+ ribs) Metal roof restorable. "
+    "Here's how a human estimated this in the past for reference: "
+    "Materials 26 Gaco Silicone 9,600 sq ft @ 1.50 gal/sq; 165.6 est. units $32.00 $5,299.20 Top coat material "
+    "Materials 39 Gaco E-5320 Primer 9,600 sq ft; 38.4 est. units $33.00 $1,267.20 Primer "
+    "Materials 43 Silicone Sausage 96 units $12.00 $1,152.00 Caulk/sealant "
+    "Materials 45 Gaco SF-2000 30.0 units $35.00 $1,050.00 Caulk/sealant "
+    "Materials 63 Fasteners 2,063 units $250.00 $515.63 Fastener allowance "
+    "Materials 99 Generator 7 est. days $50.00 $350.00 Equipment "
+    "Materials 106 Sales/Inspect. 10 trips x 65 miles $0.75 $487.50 Mileage "
+    "Materials 108 Truck Exp. 14 trips x 65 miles $1.25 $1,137.50 Mileage "
+    "Tax 111 Sales Tax 6% of taxable materials 6.00% $675.54 Sales tax "
+    "Labor / Subcontractor 116 Set-Up 0.20 days; 5 people; 10.5 hours $1,835.66 $367.13 Labor "
+    "Labor / Subcontractor 118 Pwash & Prep 1.50 days; 5 people; 78.8 hours $1,835.66 $2,753.49 Labor "
+    "Labor / Subcontractor 120 Prime 1.25 days; 5 people; 65.6 hours $1,835.66 $2,294.58 Labor "
+    "Labor / Subcontractor 122 Fasteners/ caulk&SF 2.00 days; 5 people; 105.0 hours $1,835.66 $3,671.33 Labor "
+    "Labor / Subcontractor 124 Top Coat 1.00 days; 5 people; 52.5 hours $1,835.66 $1,835.66 Labor "
+    "Labor / Subcontractor 130 Misc. 0.50 days; 5 people; 26.3 hours $1,835.66 $917.83 Labor "
+    "Labor / Subcontractor 132 Touch/Clean Up 0.55 days; 5 people; 28.9 hours $1,835.66 $1,009.61 Labor "
+    "Labor / Subcontractor 137 Loading 1.00 hr/day; 1 person $25.50 $357.00 Labor "
+    "Labor / Subcontractor 139 Traveling 2.00 hr/day; 5 people $14.25 $1,995.00 Labor "
+    "Warranty / Insurance 154 Warranty 15 years; renew; 8,000 sq ft $0.11 $840.00 Manufacturer warranty "
+    "Markup / Add-ons 165 Estimated O/H 35.00% of total job cost 35.00% $9,555.23 Overhead markup "
+    "Markup / Add-ons 167 Profit 16.00% after O/H 16.00% $5,896.94 Profit markup "
+    "Add-ons w/o Markup 173 Misc. Materials Additional amount without markup $750.00 Added after worksheet price "
+    "Add-ons w/o Markup 174 Misc. Insurance Additional amount without markup $1,250.00 Added after worksheet price"
+)
+
 
 def test_estimator_chat_fallback_extracts_insulation_takeoff_without_inventing_thickness(monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -707,6 +735,88 @@ def test_estimator_chat_parses_pasted_roofing_reference_template_summary(monkeyp
     assert by_id["roofing_labor_base_row_122"]["proposed_values"]["daily_rate"] == 1605.5
     assert by_id["roofing_labor_top_coat_row_124"]["workbook_row"] == "124"
     assert not any("Warranty" in warning for warning in result.warnings)
+
+
+def test_estimator_chat_parses_compact_roofing_reference_answer_key(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    result = run_estimator_chat_turn(
+        [{"role": "user", "content": ROOFING_COMPACT_REFERENCE_TEMPLATE_SUMMARY}],
+        template_type_hint="roofing",
+    )
+
+    by_id = {row["decision_id"]: row for row in result.workbook_decision_preferences}
+
+    assert result.scope_overrides["reference_template_summary_present"] is True
+    assert result.scope_overrides["reference_template_summary_row_count"] >= 20
+    assert result.scope_overrides["reference_template_summary_mapped_row_count"] >= 20
+    assert not [
+        warning
+        for warning in result.warnings
+        if "OPENAI_API_KEY is not configured" not in warning
+    ]
+
+    coating = by_id["roofing_coating_system_row_26"]
+    assert coating["proposed_values"]["basis_sqft"] == 9600.0
+    assert coating["proposed_values"]["estimated_units"] == 165.6
+    assert coating["proposed_values"]["gal_per_100_sqft"] == 1.5
+    assert coating["proposed_values"]["unit_price"] == 32.0
+
+    primer = by_id["roofing_primer_system_row_39"]
+    assert primer["section"] == "roofing_primer_template_decisions"
+    assert primer["proposed_values"]["basis_sqft"] == 9600.0
+    assert primer["proposed_values"]["estimated_units"] == 38.4
+    assert primer["proposed_values"]["unit_price"] == 33.0
+
+    assert by_id["roofing_caulk_sealant_row_43"]["proposed_values"]["estimated_units"] == 96.0
+    assert by_id["roofing_caulk_sealant_row_45"]["proposed_values"]["unit_price"] == 35.0
+    assert by_id["roofing_fasteners_row_63"]["proposed_values"]["estimated_units"] == 2063.0
+    assert by_id["roofing_generator_row_99"]["proposed_values"] == {"days": 7.0, "unit_price": 50.0}
+    assert by_id["roofing_sales_trips_row_106"]["proposed_values"] == {
+        "trip_count": 10.0,
+        "round_trip_miles": 65.0,
+        "unit_price": 0.75,
+    }
+    assert by_id["roofing_truck_expense_row_108"]["proposed_values"] == {
+        "trip_count": 14.0,
+        "round_trip_miles": 65.0,
+        "unit_price": 1.25,
+    }
+
+    assert by_id["roofing_labor_prep_row_116"]["proposed_values"]["days"] == 1.5
+    assert by_id["roofing_labor_prep_row_116"]["proposed_values"]["crew_size"] == 5.0
+    assert by_id["roofing_labor_prep_row_116"]["proposed_values"]["total_hours"] == 78.8
+    assert by_id["roofing_labor_prep_row_116"]["proposed_values"]["daily_rate"] == 1835.66
+    assert [item["source_row"] for item in by_id["roofing_labor_prep_row_116"]["evidence"]] == ["116", "118"]
+    assert "Source row 118 was normalized to current workbook row 116." in by_id["roofing_labor_prep_row_116"]["review_reasons"]
+    assert by_id["roofing_labor_prime_row_118"]["proposed_values"]["days"] == 1.25
+    assert by_id["roofing_labor_prime_row_118"]["evidence"][0]["source_row"] == "120"
+    assert "Source row 120 was normalized to current workbook row 118." in by_id["roofing_labor_prime_row_118"]["review_reasons"]
+    assert by_id["roofing_labor_loading_row_136"]["proposed_values"] == {
+        "hours_per_day": 1.0,
+        "people_count": 1.0,
+        "unit_price": 25.5,
+    }
+    assert by_id["roofing_labor_traveling_row_138"]["proposed_values"] == {
+        "hours_per_day": 2.0,
+        "people_count": 5.0,
+        "unit_price": 14.25,
+    }
+
+    overhead = by_id["pricing_overhead"]
+    profit = by_id["pricing_profit"]
+    assert overhead["section"] == "pricing_markup_decisions"
+    assert overhead["proposed_values"]["markup_pct"] == 35.0
+    assert overhead["proposed_values"]["overhead_pct"] == 35.0
+    assert profit["proposed_values"]["markup_pct"] == 16.0
+    assert profit["proposed_values"]["profit_pct"] == 16.0
+
+    sales_tax = by_id["roofing_free_adder_row_111_sales_tax"]
+    assert sales_tax["proposed_values"]["amount"] == 675.54
+    assert sales_tax["proposed_values"]["template_line"] == "Sales Tax"
+    assert by_id["roofing_free_adder_row_154_warranty"]["proposed_values"]["amount"] == 840.0
+    assert by_id["roofing_free_adder_row_173_misc_materials"]["proposed_values"]["amount"] == 750.0
+    assert by_id["roofing_free_adder_row_174_misc_insurance"]["proposed_values"]["amount"] == 1250.0
 
 
 def test_estimator_chat_merges_pasted_reference_summary_after_ai_payload() -> None:

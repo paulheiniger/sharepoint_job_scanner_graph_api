@@ -1454,7 +1454,15 @@ def _looks_like_reference_template_summary(text: str) -> bool:
     if "source row" in lowered and "line item" in lowered:
         return True
     row_markers = len(re.findall(r"(?:^|\n)\s*(?:materials?|labor|labor / subcontractor|additional amount)", lowered))
-    return row_markers >= 3 and any(term in lowered for term in ("unit price", "estimated cost", "basis / units"))
+    if row_markers >= 3 and any(term in lowered for term in ("unit price", "estimated cost", "basis / units")):
+        return True
+    compact_markers = len(
+        re.findall(
+            r"\b(?:materials?|tax|labor\s*/\s*subcontractor|warranty\s*/\s*insurance|markup\s*/\s*add-ons|add-ons\s+w/o\s+markup)\s+\d{2,3}\b",
+            lowered,
+        )
+    )
+    return compact_markers >= 3 and any(term in lowered for term in ("estimated", "reference", "human estimated", "answer key"))
 
 
 def _reference_summary_table_rows(text: str) -> list[dict[str, Any]]:
@@ -1482,7 +1490,91 @@ def _reference_summary_table_rows(text: str) -> list[dict[str, Any]]:
             "notes": _clean_string(" ".join(columns[6:]) if len(columns) > 6 else ""),
         }
         rows.append(row)
+    if rows:
+        return rows
+    return _reference_summary_compact_rows(text)
+
+
+REFERENCE_SUMMARY_COMPACT_SECTIONS = (
+    "Labor / Subcontractor",
+    "Warranty / Insurance",
+    "Markup / Add-ons",
+    "Add-ons w/o Markup",
+    "Materials Tax",
+    "Additional Amount w/o Markup",
+    "Materials",
+    "Material",
+    "Tax",
+)
+
+
+def _reference_summary_compact_rows(text: str) -> list[dict[str, Any]]:
+    compact = _clean_string(text)
+    if not compact:
+        return []
+    section_pattern = "|".join(re.escape(section) for section in REFERENCE_SUMMARY_COMPACT_SECTIONS)
+    matches = list(re.finditer(rf"\b(?P<section>{section_pattern})\s+(?P<source_row>\d{{2,3}})\s+", compact, re.I))
+    rows: list[dict[str, Any]] = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(compact)
+        segment = compact[match.end() : end].strip()
+        row = _parse_reference_summary_compact_segment(
+            section=_clean_string(match.group("section")),
+            source_row=_safe_row_number(match.group("source_row")),
+            segment=segment,
+        )
+        if row:
+            rows.append(row)
     return rows
+
+
+def _parse_reference_summary_compact_segment(*, section: str, source_row: str, segment: str) -> dict[str, Any] | None:
+    if not section or not source_row or not segment:
+        return None
+    money_matches = list(re.finditer(r"\$\s*-?\d(?:[\d,]*)(?:\.\d+)?", segment))
+    cost_match = money_matches[-1] if money_matches else None
+    estimated_cost = cost_match.group(0) if cost_match else ""
+    prefix = segment[: cost_match.start()].strip() if cost_match else segment
+    notes = segment[cost_match.end() :].strip() if cost_match else ""
+    rate = ""
+    if len(money_matches) >= 2:
+        rate_match = money_matches[-2]
+        rate = rate_match.group(0)
+        prefix = segment[: rate_match.start()].strip()
+    elif cost_match:
+        percent_matches = list(re.finditer(r"\d+(?:\.\d+)?\s*%", prefix))
+        if percent_matches:
+            rate_match = percent_matches[-1]
+            rate = rate_match.group(0)
+            prefix = prefix[: rate_match.start()].strip()
+    line_item, basis_units = _split_reference_compact_item_and_basis(prefix)
+    if not line_item:
+        return None
+    return {
+        "section": section,
+        "source_row": source_row,
+        "line_item": line_item,
+        "basis_units": basis_units,
+        "unit_price_rate": rate,
+        "estimated_cost": estimated_cost,
+        "notes": notes,
+    }
+
+
+def _split_reference_compact_item_and_basis(prefix: str) -> tuple[str, str]:
+    prefix = _clean_string(prefix)
+    if not prefix:
+        return "", ""
+    basis_match = re.search(
+        r"\b(?:\d(?:[\d,]*)(?:\.\d+)?\s*(?:sq\s*ft|est\.\s*units?|units?|trips?|est\.\s*days?|days?|hours?|hrs?|hr/day|hrs/day|years?|miles?)|additional amount|discount|allowance|\d+(?:\.\d+)?\s*%\s+of)\b",
+        prefix,
+        re.I,
+    )
+    if not basis_match:
+        return prefix, ""
+    line_item = prefix[: basis_match.start()].strip()
+    basis = prefix[basis_match.start() :].strip()
+    return line_item, basis
 
 
 def _split_reference_summary_line(line: str) -> list[str]:
@@ -1521,13 +1613,27 @@ def _reference_summary_row_to_preference(row: dict[str, Any], *, truck_trip_coun
     if not target:
         return None
     values = _reference_summary_values(row)
+    if target["section"] == "pricing_markup_decisions":
+        pct = values.get("markup_pct") or values.get("percentage") or values.get("unit_price")
+        if pct not in (None, ""):
+            values["markup_pct"] = pct
+            values["percentage"] = pct
+            if target["template_bucket"] == "overhead":
+                values["overhead_pct"] = pct
+            elif target["template_bucket"] == "profit":
+                values["profit_pct"] = pct
+        for stale_key in ("unit_price", "estimated_units"):
+            values.pop(stale_key, None)
     if target["section"] == "roofing_labor_template_decisions":
         if values.get("people_count") not in (None, "") and values.get("crew_size") in (None, ""):
             values["crew_size"] = values["people_count"]
         if values.get("unit_price") not in (None, "") and values.get("daily_rate") in (None, ""):
             values["daily_rate"] = values["unit_price"]
+        if values.get("total_hours") in (None, "") and values.get("hours_per_day") not in (None, ""):
+            values["total_hours"] = values.get("hours_per_day")
         values.pop("people_count", None)
         values.pop("unit_price", None)
+        values.pop("hours_per_day", None)
     if target["template_bucket"] in {"labor_loading", "labor_traveling"} and "trip_count" not in values:
         if truck_trip_count and "truck trip" in _clean_string(row.get("notes")).lower():
             values["trip_count"] = truck_trip_count
@@ -1567,10 +1673,20 @@ def _reference_summary_target(row: dict[str, Any]) -> dict[str, str] | None:
     line_item = _clean_string(row.get("line_item")).lower()
     section = _clean_string(row.get("section")).lower()
     is_labor_section = "labor" in section
-    if "materials tax" in section or "sales tax" in line_item:
-        return _reference_summary_free_adder_target(source_row, line_item, template_bucket="sales_tax")
-    if "additional amount" in section:
+    if "warranty" in section:
+        return _reference_summary_free_adder_target(source_row, line_item, template_bucket="warranty")
+    if "add-ons w/o markup" in section or "additional amount" in section:
         return _reference_summary_free_adder_target(source_row, line_item)
+    if "materials tax" in section or section == "tax" or "sales tax" in line_item:
+        return _reference_summary_free_adder_target(source_row, line_item, template_bucket="sales_tax")
+    if "markup" in section or line_item in {"estimated o/h", "estimated oh", "overhead", "o/h"} or line_item == "profit":
+        bucket = "profit" if "profit" in line_item else "overhead"
+        return {
+            "decision_id": f"pricing_{bucket}",
+            "section": "pricing_markup_decisions",
+            "template_bucket": bucket,
+            "workbook_row": "167" if bucket == "profit" else "165",
+        }
     if is_labor_section:
         return _reference_summary_labor_target(source_row, line_item)
     if source_row in {"26", "27", "28"} or any(term in line_item for term in ("silicone", "coating", "acrylic")):
@@ -1589,6 +1705,13 @@ def _reference_summary_target(row: dict[str, Any]) -> dict[str, str] | None:
             "section": "roofing_foam_template_decisions",
             "template_bucket": "foam",
             "workbook_row": row_number,
+        }
+    if source_row == "39" or "primer" in line_item or "e-5320" in line_item or "e5320" in line_item:
+        return {
+            "decision_id": "roofing_primer_system_row_39",
+            "section": "roofing_primer_template_decisions",
+            "template_bucket": "primer",
+            "workbook_row": "39",
         }
     if source_row == "36" or "granule" in line_item:
         return {
@@ -1754,35 +1877,57 @@ def _reference_summary_labor_target(source_row: str, line_item: str) -> dict[str
             "template_bucket": "meals_lodging",
             "workbook_row": "144",
         }
-    if "set up" in line_item or "setup" in line_item or "safety" in line_item:
+    if (
+        source_row == "116"
+        or "set up" in line_item
+        or "setup" in line_item
+        or "safety" in line_item
+        or "pwash" in line_item
+        or "power wash" in line_item
+        or "pressure wash" in line_item
+    ):
         return {
             "decision_id": "roofing_labor_prep_row_116",
             "section": "roofing_labor_template_decisions",
             "template_bucket": "labor_prep",
             "workbook_row": "116",
         }
-    if "tear-out" in line_item or "tear out" in line_item or "foam & base" in line_item or "foam and base" in line_item:
+    if source_row == "118" or "tear-out" in line_item or "tear out" in line_item or "foam & base" in line_item or "foam and base" in line_item:
         return {
             "decision_id": "roofing_labor_base_row_122",
             "section": "roofing_labor_template_decisions",
             "template_bucket": "labor_base",
             "workbook_row": "122",
         }
-    if "walk" in line_item or "caulk" in line_item:
+    if source_row == "120" or "prime" in line_item:
+        return {
+            "decision_id": "roofing_labor_prime_row_118",
+            "section": "roofing_labor_template_decisions",
+            "template_bucket": "labor_prime",
+            "workbook_row": "118",
+        }
+    if source_row == "122" or "walk" in line_item or "caulk" in line_item or "fastener" in line_item or "sf" in line_item:
         return {
             "decision_id": "roofing_labor_seam_sealer_row_120",
             "section": "roofing_labor_template_decisions",
             "template_bucket": "labor_seam_sealer",
             "workbook_row": "120",
         }
-    if "top" in line_item or "granule" in line_item:
+    if source_row == "124" or "top" in line_item or "granule" in line_item:
         return {
             "decision_id": "roofing_labor_top_coat_row_124",
             "section": "roofing_labor_template_decisions",
             "template_bucket": "labor_top_coat",
             "workbook_row": "124",
         }
-    if "clean" in line_item or "misc" in line_item:
+    if source_row == "130" or "misc" in line_item:
+        return {
+            "decision_id": "roofing_labor_details_row_128",
+            "section": "roofing_labor_template_decisions",
+            "template_bucket": "labor_details",
+            "workbook_row": "128",
+        }
+    if source_row == "132" or "clean" in line_item:
         return {
             "decision_id": "roofing_labor_cleanup_row_132",
             "section": "roofing_labor_template_decisions",
@@ -1799,17 +1944,20 @@ def _reference_summary_values(row: dict[str, Any]) -> dict[str, Any]:
     text = " ".join(part for part in (basis, rate, cost, _clean_string(row.get("notes"))) if part)
     values: dict[str, Any] = {}
     for key, pattern in (
+        ("basis_sqft", r"(\d+(?:,\d{3})*(?:\.\d+)?)\s*(?:sq\s*ft|sqft|sf)\b"),
         ("estimated_units", r"(\d+(?:,\d{3})*(?:\.\d+)?)\s*(?:est\.\s*)?units?\b"),
         ("thickness_inches", r"(\d+(?:,\d{3})*(?:\.\d+)?)\s*(?:inch(?:es)?|in\b|thickness\b)"),
         ("days", r"(\d+(?:,\d{3})*(?:\.\d+)?)\s*(?:est\.\s*)?days?\b"),
-        ("hours_per_day", r"(\d+(?:,\d{3})*(?:\.\d+)?)\s*hours?\b"),
+        ("total_hours", r"(\d+(?:,\d{3})*(?:\.\d+)?)\s*hours?\b"),
+        ("hours_per_day", r"(\d+(?:,\d{3})*(?:\.\d+)?)\s*(?:hr/day|hrs/day|hours?/day)\b"),
         ("people_count", r"(\d+(?:,\d{3})*(?:\.\d+)?)\s*(?:people|person)\b"),
+        ("warranty_years", r"(\d+(?:,\d{3})*(?:\.\d+)?)\s*years?\b"),
     ):
         parsed = _first_number_match(basis, pattern)
         if parsed is not None:
             values[key] = parsed
     trips_miles = re.search(
-        r"(\d+(?:,\d{3})*(?:\.\d+)?)\s*trips?\s*(?:x|\*)\s*(\d+(?:,\d{3})*(?:\.\d+)?)\s*miles?",
+        r"(\d+(?:,\d{3})*(?:\.\d+)?)\s*trips?\s*(?:x|×|\*)\s*(\d+(?:,\d{3})*(?:\.\d+)?)\s*miles?",
         text,
         re.I,
     )
@@ -1822,16 +1970,38 @@ def _reference_summary_values(row: dict[str, Any]) -> dict[str, Any]:
             values["unit_price_per_thousand"] = unit_price
         else:
             values["unit_price"] = unit_price
-    elif _clean_string(row.get("line_item")).lower() in {"warranty", "misc. miles"}:
+    else:
+        percent = _parse_reference_percent(rate)
+        if percent is not None:
+            values["markup_pct"] = percent
+            values["percentage"] = percent
+    if _clean_string(row.get("line_item")).lower() in {"warranty", "misc. miles"} and "unit_price" not in values:
         parsed_cost = _parse_reference_money(cost)
         if parsed_cost is not None:
             values["unit_price"] = parsed_cost
     if "gal" in basis.lower():
-        gallons = _first_number_match(basis, r"(\d+(?:,\d{3})*(?:\.\d+)?)\s*gal")
-        if gallons is not None:
+        gallons = values.get("estimated_units")
+        if gallons in (None, ""):
+            gallons = _first_number_match(
+                basis,
+                r"(\d+(?:,\d{3})*(?:\.\d+)?)\s*(?:est\.\s*)?units?\b",
+            )
+        if gallons in (None, "") and "@" not in basis:
+            gallons = _first_number_match(basis, r"(\d+(?:,\d{3})*(?:\.\d+)?)\s*gal")
+        if gallons not in (None, ""):
             values["estimated_units"] = gallons
             values["estimated_gallons"] = gallons
-    if "additional amount" in _clean_string(row.get("section")).lower() or "sales tax" in _clean_string(row.get("line_item")).lower():
+        gal_per = _first_number_match(basis, r"@\s*(\d+(?:,\d{3})*(?:\.\d+)?)\s*gal")
+        if gal_per is not None:
+            values["gal_per_100_sqft"] = gal_per
+    row_section = _clean_string(row.get("section")).lower()
+    row_line_item = _clean_string(row.get("line_item")).lower()
+    if (
+        "additional amount" in row_section
+        or "add-ons w/o markup" in row_section
+        or "warranty" in row_section
+        or "sales tax" in row_line_item
+    ):
         parsed_cost = _parse_reference_money(cost)
         if parsed_cost is not None:
             values["amount"] = parsed_cost
@@ -1851,6 +2021,13 @@ def _first_number_match(text: str, pattern: str) -> float | None:
 
 def _parse_reference_money(text: str) -> float | None:
     match = re.search(r"\$?\s*(-?\d+(?:,\d{3})*(?:\.\d+)?)", str(text or ""))
+    if not match:
+        return None
+    return _parse_reference_number(match.group(1))
+
+
+def _parse_reference_percent(text: str) -> float | None:
+    match = re.search(r"(-?\d+(?:,\d{3})*(?:\.\d+)?)\s*%", str(text or ""))
     if not match:
         return None
     return _parse_reference_number(match.group(1))

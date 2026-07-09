@@ -89,6 +89,14 @@ def test_dashboard_imports_safely() -> None:
     assert hasattr(app, "operations_dashboard_page")
 
 
+def test_estimator_page_uses_loaded_data_for_default_field_parser() -> None:
+    app = importlib.import_module("dashboard.app")
+    source = inspect.getsource(app.estimator_prototype_page)
+
+    assert "field_notes_data = data" in source
+    assert "field_notes_data = EstimatorData()" not in source
+
+
 def test_sales_dashboard_rollups_classify_pipeline_and_gaps() -> None:
     app = importlib.import_module("dashboard.app")
     jobs = pd.DataFrame(

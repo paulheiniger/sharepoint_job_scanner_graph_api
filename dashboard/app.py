@@ -9878,10 +9878,18 @@ def estimator_prototype_page() -> None:
                 "estimates": len(data.estimates),
                 "line_items": len(data.line_items),
                 "template_rows": len(data.template_rows),
+                "template_row_catalog": len(data.template_row_catalog),
+                "template_formula_models": len(data.template_formula_models),
                 "classified_line_items": len(data.classified_line_items),
                 "tracking_summary": len(data.tracking_summary),
                 "tracking_daily": len(data.tracking_daily),
                 "pricing": len(data.pricing),
+                "pricing_catalog": len(data.pricing_catalog),
+                "relationship_labor_rates": len(data.relationship_labor_rates),
+                "relationship_material_qty_ratios": len(data.relationship_material_qty_ratios),
+                "relationship_package_cooccurrence": len(data.relationship_package_cooccurrence),
+                "estimator_decision_recommendations": len(data.estimator_decision_recommendations),
+                "estimator_memory": len(data.estimator_memory),
             }
         )
     with st.expander("Estimator Memory Review", expanded=False):
@@ -9939,7 +9947,7 @@ def estimator_prototype_page() -> None:
         use_historical_calibration = False
     else:
         use_historical_calibration = False
-    field_notes_data = data if use_historical_calibration else EstimatorData()
+    field_notes_data = data
     with st.expander("Job header and advanced options", expanded=False):
         f1, f2 = st.columns(2)
         with f1:
@@ -9957,14 +9965,17 @@ def estimator_prototype_page() -> None:
             use_historical_calibration = st.checkbox(
                 "Debug: run full historical calibration inside parser",
                 value=False,
-                help="Default workbench mode uses precomputed relationship tables for editable defaults. Enable this only when debugging the older automatic calibration path.",
+                help=(
+                    "Default workbench mode uses the compact estimator evidence already loaded for chat and workbook defaults. "
+                    "Enable this only when debugging the older automatic calibration path against the full estimate history."
+                ),
                 key="use_historical_calibration",
             )
             if use_historical_calibration:
                 with estimator_perf_step("full estimator data load"):
                     field_notes_data = load_estimator_data_cached("full")
             else:
-                field_notes_data = EstimatorData()
+                field_notes_data = data
     estimator_input_notes = chat_augmented_notes
     if st.button("Build / Rebuild Filled Estimate Template", key="generate_field_estimate_recommendation"):
         try:

@@ -516,18 +516,6 @@ def test_outputs_include_jsonl_xlsx_and_per_case_files(tmp_path) -> None:
     assert (first_dir / "validation.json").exists()
 
 
-def test_outputs_clear_stale_case_directories(tmp_path) -> None:
-    cases = generate_cases(generated_case_data(), limit=1, seed=4, use_ai=False, validate=False)
-    stale_dir = tmp_path / "cases" / "stale_case"
-    stale_dir.mkdir(parents=True)
-    (stale_dir / "notes.txt").write_text("old", encoding="utf-8")
-
-    paths = write_generated_case_outputs(cases, tmp_path)
-
-    assert paths["cases_dir"].exists()
-    assert not stale_dir.exists()
-
-
 def test_reviewed_notes_evaluator_filters_decision_row_overlap_from_scaffolding() -> None:
     case = {
         "expected_workbook_rows": [1, 26, 27, 116, 163, 173],

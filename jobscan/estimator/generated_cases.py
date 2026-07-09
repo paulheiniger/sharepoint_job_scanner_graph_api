@@ -6,7 +6,6 @@ import math
 import os
 import random
 import re
-import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -1217,8 +1216,6 @@ def write_generated_case_outputs(cases: list[dict[str, Any]], out_dir: str | Pat
         )
         pd.DataFrame(warning_rows).to_excel(writer, sheet_name="Generation Warnings", index=False)
     cases_dir = out / "cases"
-    if cases_dir.exists():
-        shutil.rmtree(cases_dir)
     cases_dir.mkdir(exist_ok=True)
     for case in cases:
         case_dir = cases_dir / _slug(case.get("case_id"))
