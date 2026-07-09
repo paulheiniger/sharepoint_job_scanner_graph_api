@@ -200,6 +200,30 @@ def _labor_defaults(
     }
 
 
+def _logistics_hours_defaults(
+    labor_rows: pd.DataFrame,
+    scope: dict[str, Any],
+    *,
+    packages: list[str],
+    default_hours_per_trip: float,
+    max_reasonable_hours: float,
+) -> dict[str, Any]:
+    row = _select_relationship_row(labor_rows, packages, scope)
+    hours = default_hours_per_trip
+    source = "template_formula_default"
+    if row:
+        historical_hours = number_or_none(row.get("median_total_hours"))
+        if historical_hours and 0 < historical_hours <= max_reasonable_hours:
+            hours = historical_hours
+            source = "historical_labor_rate"
+    return {
+        "hours_per_trip": round(hours, 2),
+        "source": source,
+        "relationship_row": row,
+        "historical_evidence_summary": _historical_summary(row, "Template default; no flooring logistics relationship row found."),
+    }
+
+
 def parse_flooring_area(text: str) -> float | None:
     area_match = re.search(
         r"\b(?P<value>\d+(?:,\d{3})*(?:\.\d+)?)\s*(?:sq\.?\s*ft|sqft|sf|square feet)\b",
@@ -291,6 +315,20 @@ def build_flooring_workbook_decisions(scope: dict[str, Any], data: Any = None) -
         packages=["labor_floor_topcoat", "labor_top_coat"],
         default_days=max(0.5, min(2.0, area / 6000)) if area else 0.5,
         default_crew_size=3 if area >= 1500 else 2,
+    )
+    loading_defaults = _logistics_hours_defaults(
+        labor_rows,
+        scope,
+        packages=["labor_loading"],
+        default_hours_per_trip=0.5,
+        max_reasonable_hours=2.0,
+    )
+    travel_defaults = _logistics_hours_defaults(
+        labor_rows,
+        scope,
+        packages=["labor_traveling"],
+        default_hours_per_trip=1.0,
+        max_reasonable_hours=6.0,
     )
     decisions: list[dict[str, Any]] = []
     if area > 0:
@@ -403,17 +441,18 @@ def build_flooring_workbook_decisions(scope: dict[str, Any], data: Any = None) -
                 "row_type": "labor",
                 "template_bucket": "labor_loading",
                 "workbook_row": 137,
-                "hours_per_trip": 0.5,
+                "hours_per_trip": loading_defaults["hours_per_trip"],
                 "crew_size": 1,
                 "hourly_rate": 33,
-                "include_source": "template_formula_default",
+                "include_source": loading_defaults["source"],
+                "historical_evidence_summary": loading_defaults["historical_evidence_summary"],
             },
             {
                 "decision_id": "flooring_travel",
                 "row_type": "labor",
                 "template_bucket": "labor_traveling",
                 "workbook_row": 139,
-                "hours_per_trip": 1.0,
+                "hours_per_trip": travel_defaults["hours_per_trip"],
                 "crew_size": int(
                     max(
                         number_or_none(prep_labor.get("crew_size")) or 0,
@@ -423,7 +462,8 @@ def build_flooring_workbook_decisions(scope: dict[str, Any], data: Any = None) -
                     )
                 ),
                 "hourly_rate": 13,
-                "include_source": "template_formula_default",
+                "include_source": travel_defaults["source"],
+                "historical_evidence_summary": travel_defaults["historical_evidence_summary"],
             },
         ]
     )

@@ -914,7 +914,6 @@ def parse_document_content_row(row: dict[str, Any] | pd.Series, template_type: s
         out["daily_rate"] = numeric_at(cell_values, row_number, "J")
         out["formula_mode"] = "mixed_formula"
     if (template_type in {TEMPLATE_TYPE_ROOFING, TEMPLATE_TYPE_FLOORING} and row_number in {137, 139}) or (template_type == TEMPLATE_TYPE_INSULATION and row_number in {95, 97}):
-        out["days"] = numeric_at(cell_values, row_number, "C")
         out["total_hours"] = numeric_at(cell_values, row_number, "C")
         out["crew_size"] = numeric_at(cell_values, row_number, "E")
         out["unit_price"] = numeric_at(cell_values, row_number, "G")

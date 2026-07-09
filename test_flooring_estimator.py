@@ -85,6 +85,30 @@ def test_flooring_estimator_uses_historical_relationship_defaults() -> None:
                     "job_count": 4,
                     "confidence": "medium",
                 },
+                {
+                    "division": "Flooring",
+                    "template_type": "roofing",
+                    "project_type": "Floor System",
+                    "substrate": "unknown",
+                    "package": "labor_loading",
+                    "median_total_hours": 0.5,
+                    "median_crew_size": 1,
+                    "median_days": None,
+                    "job_count": 4,
+                    "confidence": "medium",
+                },
+                {
+                    "division": "Flooring",
+                    "template_type": "roofing",
+                    "project_type": "Floor System",
+                    "substrate": "unknown",
+                    "package": "labor_traveling",
+                    "median_total_hours": 1.25,
+                    "median_crew_size": 3,
+                    "median_days": None,
+                    "job_count": 4,
+                    "confidence": "medium",
+                },
             ]
         ),
     )
@@ -104,8 +128,51 @@ def test_flooring_estimator_uses_historical_relationship_defaults() -> None:
     assert by_row[120]["crew_size"] == 4
     assert by_row[120]["days"] == 0.38
     assert by_row[130]["days"] == 0.5
+    assert by_row[137]["hours_per_trip"] == 0.5
+    assert by_row[137]["include_source"] == "historical_labor_rate"
+    assert by_row[139]["hours_per_trip"] == 1.25
+    assert by_row[139]["include_source"] == "historical_labor_rate"
     assert by_row[177]["estimated_cost"] == 800
     assert "Historical coating default" in by_row[26]["historical_evidence_summary"]
+
+
+def test_flooring_logistics_ignores_stale_full_day_history() -> None:
+    data = EstimatorData(
+        relationship_labor_rates=pd.DataFrame(
+            [
+                {
+                    "division": "Flooring",
+                    "template_type": "roofing",
+                    "project_type": "Floor System",
+                    "substrate": "unknown",
+                    "package": "labor_loading",
+                    "median_total_hours": 8,
+                    "median_crew_size": 1,
+                    "job_count": 2,
+                    "confidence": "low",
+                },
+                {
+                    "division": "Flooring",
+                    "template_type": "roofing",
+                    "project_type": "Floor System",
+                    "substrate": "unknown",
+                    "package": "labor_traveling",
+                    "median_total_hours": 8,
+                    "median_crew_size": 3,
+                    "job_count": 2,
+                    "confidence": "low",
+                },
+            ]
+        )
+    )
+
+    result = estimate_flooring_from_notes("Flooring job, 2,000 sq ft concrete slab.", data=data)
+    by_row = {decision["workbook_row"]: decision for decision in result.workbook_decisions}
+
+    assert by_row[137]["hours_per_trip"] == 0.5
+    assert by_row[137]["include_source"] == "template_formula_default"
+    assert by_row[139]["hours_per_trip"] == 1.0
+    assert by_row[139]["include_source"] == "template_formula_default"
 
 
 def test_generate_flooring_estimate_workbook_fills_template_inputs(tmp_path) -> None:

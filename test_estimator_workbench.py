@@ -2235,8 +2235,8 @@ def test_insulation_loading_travel_scan_and_lodging_are_logistics_expense_rows()
             [
                 {
                     "decision_id": "insulation_labor_loading",
-                    "field_name": "days",
-                    "recommended_value": 1,
+                    "field_name": "hours_per_day",
+                    "recommended_value": 0.5,
                     "evidence_count": 4,
                     "source_jobs_count": 4,
                     "confidence": "medium",
@@ -2343,7 +2343,7 @@ def test_insulation_loading_travel_scan_and_lodging_are_logistics_expense_rows()
     }
 
     assert "labor_loading" not in {row["template_bucket"] for row in workbench["insulation_labor_template_decisions"]}
-    assert logistics["labor_loading"]["estimated_cost"] == 25.5
+    assert logistics["labor_loading"]["estimated_cost"] == 12.75
     assert logistics["labor_loading"]["formula_model"] == "insulation_hours_people_rate_trip_count"
     assert logistics["labor_traveling"]["estimated_cost"] == 130
     assert logistics["infrared_scan"]["estimated_cost"] == 150

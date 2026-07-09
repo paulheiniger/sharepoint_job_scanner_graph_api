@@ -399,7 +399,7 @@ INSULATION_LOGISTICS_EXPENSE_DECISION_SPECS: list[dict[str, Any]] = [
         "workbook_row": "95",
         "formula": "hours_people_rate_trip_count",
         "default_include": True,
-        "default_hours_per_day": 1.0,
+        "default_hours_per_day": 0.5,
         "default_people_count": 1.0,
         "default_unit_price": DEFAULT_LOADING_HOURLY_RATE,
         "notes": "Loading is an expense-style row: hours/day x people/rate basis x trip count.",
@@ -5405,6 +5405,14 @@ def _calculate_insulation_decision_formula(
     trip_count = safe_number(first_nonblank(existing.get("trip_count"), source_row.get("trip_count"), spray_foam_days if formula_kind == "travel" else 0), 0.0)
     round_trip_miles = safe_number(first_nonblank(existing.get("round_trip_miles"), source_row.get("round_trip_miles"), 0), 0.0)
     coverage = safe_number(first_nonblank(existing.get("coverage_sqft_per_unit"), source_row.get("coverage_sqft_per_unit"), spec.get("default_coverage"), 250), 250.0)
+    if (
+        formula_kind == "hours_people_rate_trip_count"
+        and str(spec.get("template_bucket") or "") in {"labor_loading", "labor_traveling"}
+        and not _manual_include_locked(existing)
+    ):
+        max_hours = 2.0 if str(spec.get("template_bucket") or "") == "labor_loading" else 6.0
+        if hours_per_day > max_hours:
+            hours_per_day = safe_number(spec.get("default_hours_per_day"), 0.0)
 
     if formula_kind == "membrane":
         formula = calculate_insulation_membrane(linear_ft=linear_ft, unit_price=unit_price, include=include)

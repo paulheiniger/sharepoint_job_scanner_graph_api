@@ -299,9 +299,22 @@ def test_row_139_labor_traveling() -> None:
 
     assert parsed["template_bucket"] == "labor_traveling"
     assert parsed["line_item_kind"] == "travel"
+    assert parsed["days"] is None
     assert parsed["total_hours"] == 16
     assert parsed["crew_size"] == 3
     assert parsed["unit_price"] == 72
+
+
+def test_insulation_loading_row_is_hours_based_not_days() -> None:
+    parsed = tr.parse_document_content_row(
+        content_row(95, "A95: Loading | C95: 0.5 | E95: 1 | G95: 25.5 | H95: 12.75", template_type="insulation")
+    )
+
+    assert parsed["template_bucket"] == "labor_loading"
+    assert parsed["days"] is None
+    assert parsed["total_hours"] == 0.5
+    assert parsed["crew_size"] == 1
+    assert parsed["unit_price"] == 25.5
 
 
 def test_row_154_warranty_extracts_years() -> None:
