@@ -1159,6 +1159,9 @@ def test_estimator_workbench_uses_compact_columns_by_default() -> None:
     )
     assert "decision_evidence_count" not in app.MATERIAL_WORKBENCH_COMPACT_COLUMNS
     assert "decision_evidence_count" not in app.LABOR_WORKBENCH_COMPACT_COLUMNS
+    assert {"include", "workbook_row", "hours_per_day", "people_count", "trip_count", "unit_price"}.issubset(
+        set(app.ROOFING_LOGISTICS_EXPENSE_TEMPLATE_COMPACT_COLUMNS)
+    )
     assert app.ADDER_WORKBENCH_COMPACT_COLUMNS == [
         "include",
         "workbook_row",

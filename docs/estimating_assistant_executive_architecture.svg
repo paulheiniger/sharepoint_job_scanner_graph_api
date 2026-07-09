@@ -1,0 +1,181 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="940" viewBox="0 0 1500 940" role="img" aria-labelledby="title desc">
+  <title id="title">Spray-Tec Estimating Assistant Architecture</title>
+  <desc id="desc">Executive architecture diagram showing input sources, knowledge layers, AI decisioning, workbook calculation, outputs, dashboards, and estimator feedback learning loop.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#3b4758"/>
+    </marker>
+    <style>
+      .title { font: 700 34px Arial, Helvetica, sans-serif; fill: #17202c; }
+      .subtitle { font: 400 17px Arial, Helvetica, sans-serif; fill: #526071; }
+      .laneTitle { font: 700 18px Arial, Helvetica, sans-serif; fill: #263445; letter-spacing: .3px; }
+      .boxTitle { font: 700 16px Arial, Helvetica, sans-serif; fill: #17202c; }
+      .boxText { font: 400 13px Arial, Helvetica, sans-serif; fill: #455365; }
+      .small { font: 400 12px Arial, Helvetica, sans-serif; fill: #596879; }
+      .box { stroke-width: 1.5; rx: 12; ry: 12; }
+      .input { fill: #e8f3ff; stroke: #5b9bd5; }
+      .data { fill: #eef8ef; stroke: #5fa66b; }
+      .decision { fill: #fff5df; stroke: #d99a2b; }
+      .output { fill: #f2ecff; stroke: #8d6adf; }
+      .risk { fill: #fff0f0; stroke: #cc6b6b; }
+      .arrow { stroke: #3b4758; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+      .softArrow { stroke: #697789; stroke-width: 1.7; fill: none; marker-end: url(#arrow); stroke-dasharray: 6 5; }
+      .lane { fill: #f8fafc; stroke: #d5dce5; stroke-width: 1; rx: 16; ry: 16; }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1500" height="940" fill="#ffffff"/>
+  <text x="60" y="58" class="title">Spray-Tec Estimating Assistant Architecture</text>
+  <text x="60" y="88" class="subtitle">Executive view: evidence-backed estimating decisions, trusted Excel calculations, and a learning feedback loop.</text>
+
+  <rect x="45" y="120" width="300" height="710" class="lane"/>
+  <rect x="385" y="120" width="330" height="710" class="lane"/>
+  <rect x="755" y="120" width="360" height="710" class="lane"/>
+  <rect x="1155" y="120" width="300" height="710" class="lane"/>
+
+  <text x="70" y="155" class="laneTitle">Inputs</text>
+  <text x="410" y="155" class="laneTitle">Institutional Knowledge</text>
+  <text x="780" y="155" class="laneTitle">Estimator Decision Flow</text>
+  <text x="1180" y="155" class="laneTitle">Outputs and Learning</text>
+
+  <rect x="70" y="185" width="250" height="74" class="box input"/>
+  <text x="92" y="214" class="boxTitle">Field Notes and Chat</text>
+  <text x="92" y="238" class="boxText">Emails, typed notes, customer</text>
+  <text x="92" y="255" class="boxText">messages, follow-up answers</text>
+
+  <rect x="70" y="282" width="250" height="74" class="box input"/>
+  <text x="92" y="311" class="boxTitle">Photos and Handwritten Notes</text>
+  <text x="92" y="335" class="boxText">Site images, field notes, access,</text>
+  <text x="92" y="352" class="boxText">conditions, visible risks</text>
+
+  <rect x="70" y="379" width="250" height="74" class="box input"/>
+  <text x="92" y="408" class="boxTitle">Correct Template Summaries</text>
+  <text x="92" y="432" class="boxText">Reviewed worksheet decisions</text>
+  <text x="92" y="449" class="boxText">used to teach future guidance</text>
+
+  <rect x="70" y="476" width="250" height="74" class="box input"/>
+  <text x="92" y="505" class="boxTitle">SharePoint History</text>
+  <text x="92" y="529" class="boxText">Estimates, proposals, tracking</text>
+  <text x="92" y="546" class="boxText">forms, extracted documents</text>
+
+  <rect x="70" y="573" width="250" height="74" class="box input"/>
+  <text x="92" y="602" class="boxTitle">Product and Pricing Data</text>
+  <text x="92" y="626" class="boxText">PDS, application guides, pricing</text>
+  <text x="92" y="643" class="boxText">catalog, material options</text>
+
+  <rect x="410" y="185" width="280" height="74" class="box data"/>
+  <text x="432" y="214" class="boxTitle">Extraction Pipeline</text>
+  <text x="432" y="238" class="boxText">Reads documents and templates</text>
+  <text x="432" y="255" class="boxText">into structured operational data</text>
+
+  <rect x="410" y="282" width="280" height="74" class="box data"/>
+  <text x="432" y="311" class="boxTitle">Neon / PostgreSQL Store</text>
+  <text x="432" y="335" class="boxText">Resolved records, extracted text,</text>
+  <text x="432" y="352" class="boxText">template rows, decisions, sessions</text>
+
+  <rect x="410" y="379" width="280" height="74" class="box data"/>
+  <text x="432" y="408" class="boxTitle">Template Intelligence</text>
+  <text x="432" y="432" class="boxText">Rows, selectors, formulas,</text>
+  <text x="432" y="449" class="boxText">materials and people tabs</text>
+
+  <rect x="410" y="476" width="280" height="74" class="box data"/>
+  <text x="432" y="505" class="boxTitle">Historical Decision Mining</text>
+  <text x="432" y="529" class="boxText">What estimators included, priced,</text>
+  <text x="432" y="546" class="boxText">sized, and corrected in the past</text>
+
+  <rect x="410" y="573" width="280" height="74" class="box data"/>
+  <text x="432" y="602" class="boxTitle">Product and Pricing Knowledge</text>
+  <text x="432" y="626" class="boxText">Product guidance, compatibility,</text>
+  <text x="432" y="643" class="boxText">unit prices, yields, coverage</text>
+
+  <rect x="410" y="670" width="280" height="74" class="box data"/>
+  <text x="432" y="699" class="boxTitle">Estimator Memory</text>
+  <text x="432" y="723" class="boxText">Approved corrections and reviewed</text>
+  <text x="432" y="740" class="boxText">reference-template examples</text>
+
+  <rect x="780" y="185" width="310" height="74" class="box decision"/>
+  <text x="802" y="214" class="boxTitle">Estimating Chat Assistant</text>
+  <text x="802" y="238" class="boxText">Interprets notes and asks only</text>
+  <text x="802" y="255" class="boxText">material follow-up questions</text>
+
+  <rect x="780" y="282" width="310" height="74" class="box decision"/>
+  <text x="802" y="311" class="boxTitle">Photo / Note Evidence</text>
+  <text x="802" y="335" class="boxText">Extracts useful field signals</text>
+  <text x="802" y="352" class="boxText">without sending every image to AI</text>
+
+  <rect x="780" y="379" width="310" height="74" class="box decision"/>
+  <text x="802" y="408" class="boxTitle">Takeoff and Validation</text>
+  <text x="802" y="432" class="boxText">Area math, deductions, R-values,</text>
+  <text x="802" y="449" class="boxText">required missing information</text>
+
+  <rect x="780" y="476" width="310" height="74" class="box decision"/>
+  <text x="802" y="505" class="boxTitle">Evidence-Gated Decisions</text>
+  <text x="802" y="529" class="boxText">AI proposes workbook decisions</text>
+  <text x="802" y="546" class="boxText">with evidence and review flags</text>
+
+  <rect x="780" y="573" width="310" height="74" class="box decision"/>
+  <text x="802" y="602" class="boxTitle">Estimator Workbench</text>
+  <text x="802" y="626" class="boxText">Editable decisions, compact tables,</text>
+  <text x="802" y="643" class="boxText">product guidance and evidence</text>
+
+  <rect x="780" y="670" width="310" height="74" class="box decision"/>
+  <text x="802" y="699" class="boxTitle">Excel Formula Engine</text>
+  <text x="802" y="723" class="boxText">Trusted calculations for quantities,</text>
+  <text x="802" y="740" class="boxText">labor, costs, overhead and profit</text>
+
+  <rect x="780" y="767" width="310" height="46" class="box risk"/>
+  <text x="802" y="796" class="boxTitle">Optional Mapbox Route Mileage</text>
+
+  <rect x="1180" y="185" width="250" height="74" class="box output"/>
+  <text x="1202" y="214" class="boxTitle">Filled Estimate Workbook</text>
+  <text x="1202" y="238" class="boxText">Template output ready for</text>
+  <text x="1202" y="255" class="boxText">estimator review/export</text>
+
+  <rect x="1180" y="282" width="250" height="74" class="box output"/>
+  <text x="1202" y="311" class="boxTitle">Review Package</text>
+  <text x="1202" y="335" class="boxText">Session evidence, decisions,</text>
+  <text x="1202" y="352" class="boxText">edits and export history</text>
+
+  <rect x="1180" y="379" width="250" height="74" class="box output"/>
+  <text x="1202" y="408" class="boxTitle">Dashboards</text>
+  <text x="1202" y="432" class="boxText">Job board, sales, operations,</text>
+  <text x="1202" y="449" class="boxText">estimate quality and health</text>
+
+  <rect x="1180" y="476" width="250" height="74" class="box output"/>
+  <text x="1202" y="505" class="boxTitle">Admin / Health</text>
+  <text x="1202" y="529" class="boxText">Memory approval, diagnostics,</text>
+  <text x="1202" y="546" class="boxText">data quality review</text>
+
+  <rect x="1180" y="573" width="250" height="74" class="box output"/>
+  <text x="1202" y="602" class="boxTitle">Learning Loop</text>
+  <text x="1202" y="626" class="boxText">Estimator edits and approved</text>
+  <text x="1202" y="643" class="boxText">examples improve future guidance</text>
+
+  <path class="arrow" d="M320 222 H410"/>
+  <path class="arrow" d="M320 319 H780"/>
+  <path class="arrow" d="M320 416 H780"/>
+  <path class="arrow" d="M320 513 H410"/>
+  <path class="arrow" d="M320 610 H410"/>
+  <path class="arrow" d="M550 259 V282"/>
+  <path class="arrow" d="M550 356 V379"/>
+  <path class="arrow" d="M550 453 V476"/>
+  <path class="arrow" d="M550 550 V573"/>
+  <path class="arrow" d="M550 647 V670"/>
+  <path class="arrow" d="M690 416 H780"/>
+  <path class="arrow" d="M690 513 H780"/>
+  <path class="arrow" d="M690 610 H780"/>
+  <path class="arrow" d="M690 707 H780"/>
+  <path class="arrow" d="M935 259 V282"/>
+  <path class="arrow" d="M935 356 V379"/>
+  <path class="arrow" d="M935 453 V476"/>
+  <path class="arrow" d="M935 550 V573"/>
+  <path class="arrow" d="M935 647 V670"/>
+  <path class="arrow" d="M1090 707 H1180 V222"/>
+  <path class="arrow" d="M1090 610 H1180 V319"/>
+  <path class="arrow" d="M1090 513 H1180 V416"/>
+  <path class="arrow" d="M1090 790 H1180 V513"/>
+  <path class="softArrow" d="M1305 647 C1305 850 550 870 550 744"/>
+
+  <rect x="60" y="855" width="1380" height="50" fill="#f8fafc" stroke="#d5dce5" rx="12" ry="12"/>
+  <text x="82" y="884" class="small">Executive takeaway: the platform captures Spray-Tec institutional knowledge, helps estimators make evidence-backed workbook decisions, keeps Excel as the calculation authority, and turns approved corrections into reusable learning.</text>
+</svg>

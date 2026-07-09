@@ -600,6 +600,24 @@ ROOFING_ACCESSORY_TEMPLATE_COMPACT_COLUMNS = [
     "notes",
 ]
 
+ROOFING_LOGISTICS_EXPENSE_TEMPLATE_COMPACT_COLUMNS = [
+    "include",
+    "workbook_row",
+    "template_line",
+    CHOICE_SUMMARY_COLUMN,
+    "hours_per_day",
+    "days",
+    "people_count",
+    "trip_count",
+    "unit_price",
+    "estimated_units",
+    "estimated_cost",
+    "formula_model",
+    "compatibility_status",
+    "compatibility_warnings",
+    "notes",
+]
+
 ROOFING_LABOR_TEMPLATE_COMPACT_COLUMNS = [
     "include",
     "workbook_row",
@@ -11325,7 +11343,7 @@ def estimator_prototype_page() -> None:
             roofing_logistics_expense_column_order = (
                 []
                 if show_row_details
-                else DECISION_SECTION_COMPACT_COLUMNS.get("roofing_logistics_expense_template_decisions", [])
+                else ROOFING_LOGISTICS_EXPENSE_TEMPLATE_COMPACT_COLUMNS
             )
             with estimator_perf_step("roofing logistics expense table prep"):
                 roofing_logistics_expense_display_df, roofing_logistics_expense_column_order = workbench_display_frame_from_records(
