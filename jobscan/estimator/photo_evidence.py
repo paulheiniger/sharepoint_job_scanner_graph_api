@@ -11,7 +11,13 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
+try:
+    import pillow_heif
+except Exception:  # pragma: no cover - optional HEIC dependency
+    pillow_heif = None  # type: ignore
+
+
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".heic", ".heif"}
 
 DEFAULT_MAX_REPRESENTATIVE_IMAGES = 8
 DEFAULT_MAX_AI_IMAGES = 8
@@ -656,6 +662,10 @@ def _image_metadata(path: Path, thumbnail_path: Path, thumbnail_size: tuple[int,
     except Exception:
         return {"quality_flags": ["pillow_unavailable"]}
     try:
+        if path.suffix.lower() in {".heic", ".heif"}:
+            if pillow_heif is None:
+                return {"quality_flags": ["heic_requires_pillow_heif"]}
+            pillow_heif.register_heif_opener()
         with Image.open(path) as image:
             width, height = image.size
             image = image.convert("RGB")

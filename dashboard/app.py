@@ -75,9 +75,7 @@ from jobscan.estimator.photo_evidence import (
     PHOTO_SIGNAL_OPTIONS,
     analyze_selected_photos_with_ai,
     apply_photo_record_edits,
-    apply_photo_scope_context,
     build_photo_scope_context,
-    combine_notes_with_photo_context,
     merge_photo_ai_analysis,
     stage_uploaded_images,
 )
@@ -8764,19 +8762,59 @@ def render_estimator_photo_upload_panel(*, notes: str, estimate_type: str) -> di
     return photo_context if use_photo_evidence else None
 
 
+NOTE_IMAGE_NAME_HINTS = (
+    "note",
+    "notes",
+    "field",
+    "sketch",
+    "drawing",
+    "measure",
+    "measurement",
+    "scope",
+    "handwritten",
+    "whiteboard",
+)
+
+
+def estimator_upload_default_rows(photo_records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for record in photo_records or []:
+        category = str(record.get("category") or "unknown")
+        signals = [str(signal) for signal in (record.get("signals") or []) if str(signal)]
+        file_name = str(record.get("file_name") or "")
+        file_text = file_name.lower()
+        has_photo_signal = category != "unknown" or bool(signals)
+        note_hint = any(token in file_text for token in NOTE_IMAGE_NAME_HINTS)
+        read_as_notes = bool(note_hint or not has_photo_signal)
+        use_as_site_photo = bool(record.get("selected") and has_photo_signal and not note_hint)
+        rows.append(
+            {
+                "read_as_notes": read_as_notes,
+                "use_as_site_photo": use_as_site_photo,
+                "file_name": file_name,
+                "category": category,
+                "signals": ", ".join(signals),
+                "quality_flags": ", ".join(str(flag) for flag in (record.get("quality_flags") or []) if str(flag)),
+                "image_id": record.get("image_id"),
+                "content_hash": record.get("content_hash"),
+            }
+        )
+    return rows
+
+
 def render_estimator_note_image_upload(*, chat_key: str, estimate_type: str) -> dict[str, Any] | None:
     try:
         max_note_images = max(1, int(os.getenv("OPENAI_ESTIMATOR_NOTE_IMAGE_MAX_IMAGES", "3")))
     except (TypeError, ValueError):
         max_note_images = 3
     uploaded_files = st.file_uploader(
-        "Upload handwritten or printed notes",
+        "Upload notes or site photos",
         type=["jpg", "jpeg", "png", "webp", "bmp", "tif", "tiff", "heic", "heif"],
         accept_multiple_files=True,
         key=f"estimator_note_image_uploads_{chat_key}",
         help=(
-            "Uploaded note images are parsed automatically, capped at a small image count, and cached by image hash. "
-            "HEIC works when pillow-heif is installed in the runtime."
+            "Mark handwritten/printed pages as notes and job-condition photos as site photos. "
+            "Only note-marked images are parsed automatically; site photos are classified locally unless you run photo analysis separately."
         ),
     )
     if not uploaded_files:
@@ -8790,10 +8828,95 @@ def render_estimator_note_image_upload(*, chat_key: str, estimate_type: str) -> 
             + "|".join(str(getattr(file, "name", "") or "") for file in uploaded_files)
         ).encode("utf-8")
     ).hexdigest()[:16]
-    records = stage_note_images(uploaded_files, upload_key=upload_key)
-    if not records:
-        st.warning("No readable note images were uploaded.")
+    photo_records = stage_uploaded_images(uploaded_files, upload_key=f"notes-and-photos-{upload_key}")
+    if not photo_records:
+        st.warning("No readable image files were uploaded.")
         return None
+    upload_rows = estimator_upload_default_rows(photo_records)
+    upload_df = pd.DataFrame(upload_rows)
+    edited_upload_df = st.data_editor(
+        upload_df[["read_as_notes", "use_as_site_photo", "file_name", "category", "signals", "quality_flags", "image_id"]],
+        hide_index=True,
+        use_container_width=True,
+        num_rows="fixed",
+        key=f"estimator_note_site_image_review_{chat_key}_{upload_key}",
+        column_config={
+            "read_as_notes": st.column_config.CheckboxColumn(
+                "Read as notes",
+                help="These images are sent to the note-reading model, capped by the note image limit.",
+            ),
+            "use_as_site_photo": st.column_config.CheckboxColumn(
+                "Use as site photo",
+                help="These images add photo-derived scope evidence and review flags.",
+            ),
+            "file_name": "Image",
+            "category": st.column_config.SelectboxColumn("Photo Category", options=PHOTO_CATEGORY_OPTIONS),
+            "signals": st.column_config.TextColumn(
+                "Photo Signals",
+                help="Comma-separated decision signals. Accepted: " + ", ".join(PHOTO_SIGNAL_OPTIONS),
+            ),
+            "quality_flags": "Quality Flags",
+            "image_id": "Image ID",
+        },
+        disabled=["file_name", "quality_flags", "image_id"],
+    )
+    edited_rows = edited_upload_df.to_dict(orient="records")
+    edited_photo_records = apply_photo_record_edits(photo_records, edited_rows)
+    site_image_ids = {str(row.get("image_id")) for row in edited_rows if row.get("use_as_site_photo") and row.get("image_id")}
+    selected_hashes = [
+        str(record.get("content_hash"))
+        for record in edited_photo_records
+        if str(record.get("image_id")) in site_image_ids and record.get("content_hash")
+    ]
+    template_hint = "insulation" if "insulation" in str(estimate_type or "").lower() else "roofing" if "roof" in str(estimate_type or "").lower() else ""
+    photo_context = build_photo_scope_context(
+        edited_photo_records,
+        selected_hashes=selected_hashes,
+        template_type=template_hint,
+    ) if selected_hashes else None
+    if photo_context:
+        st.session_state["estimator_photo_context"] = photo_context
+        st.caption(
+            f"Site photo evidence selected from {photo_context.get('selected_image_count') or 0} image(s); "
+            f"local signals: {len(photo_context.get('signals') or [])}."
+        )
+        if photo_context.get("note_text"):
+            with st.expander("Review site photo scope interpretation", expanded=False):
+                st.write(str(photo_context.get("note_text") or ""))
+                if photo_context.get("missing_photos"):
+                    st.write("Missing useful photos:", "; ".join(str(item) for item in photo_context.get("missing_photos") or []))
+    else:
+        st.session_state.pop("estimator_photo_context", None)
+
+    edited_note_image_ids = {str(row.get("image_id")) for row in edited_rows if row.get("read_as_notes") and row.get("image_id")}
+    note_hashes = {
+        str(record.get("content_hash"))
+        for record in edited_photo_records
+        if str(record.get("image_id")) in edited_note_image_ids and record.get("content_hash")
+    }
+    note_uploaded_files = []
+    if note_hashes:
+        for uploaded in uploaded_files:
+            try:
+                data = bytes(uploaded.getvalue()) if hasattr(uploaded, "getvalue") else bytes(uploaded.read())
+            except Exception:
+                data = b""
+            if data and hashlib.sha256(data).hexdigest() in note_hashes:
+                note_uploaded_files.append(uploaded)
+    records = [
+        record
+        for record in stage_note_images(note_uploaded_files, upload_key=upload_key)
+        if str(record.get("content_hash") or "") in note_hashes
+    ]
+    if not records:
+        return {
+            "records": [],
+            "normalized_estimator_notes": "",
+            "warnings": [],
+            "confidence": 0.0,
+            "image_hash_key": "",
+            "photo_context": photo_context,
+        }
     image_hash_key = hashlib.sha1(
         "|".join(str(record.get("content_hash") or "") for record in records).encode("utf-8")
     ).hexdigest()[:16]
@@ -8825,6 +8948,7 @@ def render_estimator_note_image_upload(*, chat_key: str, estimate_type: str) -> 
     result = dict(result)
     result["records"] = records
     result["image_hash_key"] = image_hash_key
+    result["photo_context"] = photo_context
     notes_text = str(result.get("normalized_estimator_notes") or "").strip()
     confidence = float(result.get("confidence") or 0.0)
     if notes_text:
@@ -8876,6 +9000,11 @@ def render_estimator_chat_draft_panel(
     note_image_result = render_estimator_note_image_upload(chat_key=chat_key, estimate_type=estimate_type)
     extracted_note_text = str((note_image_result or {}).get("normalized_estimator_notes") or "").strip()
     extracted_note_key = str((note_image_result or {}).get("image_hash_key") or "")
+    uploaded_photo_context = (
+        note_image_result.get("photo_context")
+        if isinstance(note_image_result, dict) and isinstance(note_image_result.get("photo_context"), dict)
+        else None
+    )
     prompt_placeholder = (
         "Paste field notes, measurements, photos summary, or answer the questions above. Example: "
         "30x40 metal building, 9 ft walls, outside walls and ceiling, two 9x9 doors, "
@@ -8891,7 +9020,23 @@ def render_estimator_chat_draft_panel(
     image_message = ""
     if extracted_note_text and not st.session_state.get(image_message_applied_key):
         image_message = "Notes extracted from uploaded note image(s):\n" + extracted_note_text
-    user_message = "\n\n".join(part for part in [typed_message, image_message] if part)
+    photo_message = ""
+    photo_context_key = ""
+    if uploaded_photo_context:
+        photo_context_key = hashlib.sha1(
+            json.dumps(
+                {
+                    "selected_hashes": uploaded_photo_context.get("selected_hashes") or [],
+                    "signals": uploaded_photo_context.get("signals") or [],
+                    "note_text": uploaded_photo_context.get("note_text") or "",
+                },
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()[:16]
+    photo_message_applied_key = f"estimator_site_photo_chat_applied_{chat_key}_{photo_context_key}"
+    if uploaded_photo_context and uploaded_photo_context.get("note_text") and not st.session_state.get(photo_message_applied_key):
+        photo_message = "Site photo evidence summary:\n" + str(uploaded_photo_context.get("note_text") or "")
+    user_message = "\n\n".join(part for part in [typed_message, image_message, photo_message] if part)
     use_chat_draft = st.checkbox(
         "Use this draft when building the workbook",
         value=True,
@@ -8917,10 +9062,14 @@ def render_estimator_chat_draft_panel(
         messages.append({"role": "assistant", "content": estimator_chat_assistant_history_content(result)})
         st.session_state[history_key] = messages
         result_payload = result.to_dict()
+        if uploaded_photo_context:
+            result_payload["photo_context"] = uploaded_photo_context
         st.session_state[result_key] = result_payload
         st.session_state["estimator_notes"] = result.estimator_notes or user_message
         if image_message:
             st.session_state[image_message_applied_key] = True
+        if photo_message:
+            st.session_state[photo_message_applied_key] = True
         chat_history = messages
 
     result_payload = st.session_state.get(result_key)
@@ -8929,6 +9078,8 @@ def render_estimator_chat_draft_panel(
             st.caption("Paste field notes or answer follow-up questions in the message box.")
         return None
     result = result_payload if isinstance(result_payload, dict) else {}
+    if uploaded_photo_context:
+        result["photo_context"] = uploaded_photo_context
     if not chat_history and result:
         chat_history = [{"role": "assistant", "content": estimator_chat_assistant_history_content(result)}]
     for message in chat_history[-10:]:
@@ -9571,6 +9722,13 @@ def estimator_prototype_page() -> None:
         if active_chat_context and isinstance(active_chat_context.get("scope_overrides"), dict)
         else {}
     )
+    active_photo_context = (
+        active_chat_context.get("photo_context")
+        if active_chat_context and isinstance(active_chat_context.get("photo_context"), dict)
+        else st.session_state.get("estimator_photo_context")
+        if isinstance(st.session_state.get("estimator_photo_context"), dict)
+        else None
+    )
 
     project_type = ""
     division = ""
@@ -9591,7 +9749,6 @@ def estimator_prototype_page() -> None:
     else:
         use_historical_calibration = False
     field_notes_data = data if use_historical_calibration else EstimatorData()
-    active_photo_context = None
     with st.expander("Job header and advanced options", expanded=False):
         f1, f2 = st.columns(2)
         with f1:
@@ -9617,7 +9774,7 @@ def estimator_prototype_page() -> None:
                     field_notes_data = load_estimator_data_cached("full")
             else:
                 field_notes_data = EstimatorData()
-    estimator_input_notes = combine_notes_with_photo_context(chat_augmented_notes, active_photo_context)
+    estimator_input_notes = chat_augmented_notes
     if st.button("Build / Rebuild Filled Estimate Template", key="generate_field_estimate_recommendation"):
         try:
             photo_file_ids = (active_photo_context or {}).get("selected_image_ids") or []
@@ -9742,16 +9899,6 @@ def estimator_prototype_page() -> None:
                             "disable_ai_scope_interpreter": True,
                         },
                         data=field_notes_data,
-                    )
-                if active_photo_context:
-                    recommendation.parsed_fields = apply_photo_scope_context(recommendation.parsed_fields or {}, active_photo_context)
-                    recommendation.review_flags = list(
-                        dict.fromkeys(
-                            [
-                                *(getattr(recommendation, "review_flags", None) or []),
-                                *((active_photo_context.get("scope_updates") or {}).get("review_flags") or []),
-                            ]
-                        )
                     )
                 if estimator_chat_scope_overrides:
                     recommendation.parsed_fields = {
