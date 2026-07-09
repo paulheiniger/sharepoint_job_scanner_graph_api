@@ -11467,7 +11467,7 @@ def estimator_prototype_page() -> None:
                 roofing_logistics_expense_editable_fields,
             )
 
-        if not is_insulation:
+        if str(edited_scope.get("template_type") or "").lower() != "insulation":
             st.markdown("#### Roofing Free Adders")
             roofing_free_adder_editable_fields = {
                 "include",

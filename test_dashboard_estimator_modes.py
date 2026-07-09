@@ -1159,6 +1159,15 @@ def test_estimator_assistant_exposes_memory_review_and_persistent_chat_state() -
     assert "estimator_chat_result_active" in chat_source
 
 
+def test_roofing_free_adder_section_uses_edited_scope_template_type() -> None:
+    app = importlib.import_module("dashboard.app")
+    source = inspect.getsource(app.estimator_prototype_page)
+
+    assert "if not is_insulation:" not in source
+    assert "roofing_free_adder_template_decisions" in source
+    assert 'edited_scope.get("template_type")' in source
+
+
 def test_estimator_workbench_uses_compact_columns_by_default() -> None:
     app = importlib.import_module("dashboard.app")
 
