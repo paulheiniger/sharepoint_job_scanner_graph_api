@@ -5,12 +5,14 @@ import json
 import pandas as pd
 from sqlalchemy import create_engine, inspect
 
+from jobscan.repair_estimator.estimator import estimate_repair_from_notes
 from jobscan.repair_estimator.profiler import profile_repairs
 from jobscan.repair_estimator.vsimple_loader import (
     load_vsimple_repair_export,
     write_repair_tables,
     write_repair_tables_to_database,
 )
+from jobscan.repair_estimator.workbook_writer import generate_repair_estimate_workbook, resolve_repair_template_path
 
 
 def write_sample_vsimple_export(path) -> None:
@@ -156,3 +158,47 @@ def test_repair_profiler_groups_repair_history(tmp_path) -> None:
     suggestions = json.loads(paths["repair_estimator_rule_suggestions.json"].read_text())
     assert suggestions["repair_type_defaults"]
     assert suggestions["material_package_defaults"]
+
+
+def test_generate_repair_estimate_workbook_fills_contracted_repairs_template(tmp_path) -> None:
+    import openpyxl
+
+    workbook = tmp_path / "data.xlsx"
+    write_sample_vsimple_export(workbook)
+    tables = load_vsimple_repair_export(workbook)
+    result = estimate_repair_from_notes(
+        "Active leak at one pipe boot on TPO roof. Patch, fabric, and seal. Easy access.",
+        tables,
+    )
+
+    template_path = resolve_repair_template_path()
+    output_path = generate_repair_estimate_workbook(
+        result,
+        template_path=template_path,
+        output_dir=tmp_path,
+        output_filename="repair_filled.xlsx",
+        job_name="Acme Pipe Boot Repair",
+        site_address="1 Main St",
+        contact_name="Jane Customer",
+        contact_phone="555-0100",
+        contact_email="jane@example.com",
+        estimator="Estimator One",
+    )
+
+    assert output_path.exists()
+    filled = openpyxl.load_workbook(output_path, data_only=False)
+    general = filled["General Estimate"]
+    spec = filled["Job Spec"]
+
+    assert general["G2"].value == "Acme Pipe Boot Repair"
+    assert general["G3"].value == "1 Main St"
+    assert general["G4"].value == "Jane Customer"
+    assert general["G7"].value == "Estimator One"
+    assert general["B9"].value >= 1
+    assert general["A13"].value >= 1
+    assert general["A16"].value >= 1
+    assert general["A24"].value is not None
+    assert general["I24"].value == "=A24*G24"
+    assert general["I34"].value == "=I32+I33"
+    assert "Pipe Boot Repair" in spec["B1"].value or spec["B1"].value == "='General Estimate'!G2"
+    assert str(spec["A11"].value).startswith("• ")

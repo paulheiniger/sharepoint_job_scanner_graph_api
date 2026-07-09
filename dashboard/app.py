@@ -9217,7 +9217,17 @@ def merge_editable_rows(
     return merged
 
 
-def render_repair_estimate_result(result_payload: dict[str, Any], *, notes: str, customer_job_name: str = "") -> None:
+def render_repair_estimate_result(
+    result_payload: dict[str, Any],
+    *,
+    notes: str,
+    customer_job_name: str = "",
+    site_address: str = "",
+    contact_name: str = "",
+    contact_phone: str = "",
+    contact_email: str = "",
+    estimator: str = "",
+) -> None:
     metric_row(
         [
             ("Labor Target", f"{result_payload.get('estimated_labor_hours_target') or 0:,.1f} hrs"),
@@ -9336,6 +9346,42 @@ def render_repair_estimate_result(result_payload: dict[str, Any], *, notes: str,
             audit_xlsx.name,
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key="download_integrated_repair_audit_xlsx",
+        )
+
+    st.markdown("**Filled Repair Template**")
+    if st.button("Export Filled Repair Template", key="export_integrated_repair_template"):
+        try:
+            from jobscan.repair_estimator.workbook_writer import generate_repair_estimate_workbook
+
+            stem = re.sub(
+                r"[^a-zA-Z0-9]+",
+                "_",
+                (customer_job_name or repair_scope.get("issue_type") or "repair_estimate"),
+            ).strip("_").lower()
+            output_path = generate_repair_estimate_workbook(
+                result_payload,
+                job_name=customer_job_name,
+                site_address=site_address,
+                contact_name=contact_name,
+                contact_phone=contact_phone,
+                contact_email=contact_email,
+                estimator=estimator,
+                output_filename=f"{stem or 'repair_estimate'}_filled.xlsx",
+            )
+            st.session_state["integrated_repair_filled_template_path"] = str(output_path)
+            st.success("Filled repair template exported.")
+        except Exception as exc:
+            logger.exception("Filled repair template export failed")
+            st.error(f"Could not export filled repair template: {safe_exception_text(exc)}")
+    filled_template_text = st.session_state.get("integrated_repair_filled_template_path")
+    filled_template = Path(filled_template_text) if filled_template_text else None
+    if filled_template and filled_template.exists():
+        st.download_button(
+            "Download Filled Repair Template",
+            filled_template.read_bytes(),
+            filled_template.name,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_integrated_repair_template",
         )
 
 
@@ -9477,6 +9523,7 @@ def estimator_prototype_page() -> None:
                 st.session_state["field_estimate_recommendation"] = None
                 st.session_state["field_estimate_recommendation_notes"] = estimator_input_notes
                 st.session_state.pop("integrated_repair_estimate_audit_paths", None)
+                st.session_state.pop("integrated_repair_filled_template_path", None)
                 if session_id:
                     repair_payload = repair_result.to_dict()
                     capture_estimator_session_event(
@@ -9608,7 +9655,12 @@ def estimator_prototype_page() -> None:
                     "The displayed repair estimate was generated from earlier notes. "
                     "Click Build Filled Estimate Template again to refresh it for the current text."
                 )
-            render_repair_estimate_result(repair_payload, notes=recommendation_notes, customer_job_name=field_job_name)
+            render_repair_estimate_result(
+                repair_payload,
+                notes=recommendation_notes,
+                customer_job_name=field_job_name,
+                site_address=field_site_address,
+            )
             return
     field_recommendation = st.session_state.get("field_estimate_recommendation")
     if field_recommendation:
