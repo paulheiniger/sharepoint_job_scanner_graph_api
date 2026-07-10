@@ -14,11 +14,14 @@ from sqlalchemy import text
 from jobscan.db_connections import create_resilient_engine
 
 from .job_context_profiles import build_job_context_digest, build_job_context_profiles
+from .reference_answer_key import build_reference_estimate_answer_key
 
 
 TEMPLATE_EXAMPLE_COLUMNS = [
     "example_id",
     "job_id",
+    "document_id",
+    "source_file",
     "customer",
     "job_name",
     "template_type",
@@ -34,6 +37,7 @@ TEMPLATE_EXAMPLE_COLUMNS = [
     "scope_summary",
     "decision_summary",
     "decisions_json",
+    "answer_key_json",
     "source",
     "confidence",
 ]
@@ -117,6 +121,18 @@ def _json_list(value: Any) -> list[Any]:
     return parsed if isinstance(parsed, list) else []
 
 
+def _json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not _text(value):
+        return {}
+    try:
+        parsed = json.loads(str(value))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _profile_lookup(profiles: pd.DataFrame) -> dict[str, dict[str, Any]]:
     if profiles.empty or "job_id" not in profiles.columns:
         return {}
@@ -143,6 +159,19 @@ def _row_number(row: dict[str, Any]) -> str:
     if number == number:
         return str(int(number)) if number.is_integer() else str(number)
     return _text(value)
+
+
+def _example_identity(row: dict[str, Any]) -> str:
+    for column in ("document_id", "source_file", "job_id"):
+        value = _text(row.get(column))
+        if value:
+            return value
+    return ""
+
+
+def _example_id(value: str) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9]+", "-", _text(value)).strip("-").lower()
+    return f"historical-template-example-{cleaned or 'unknown'}"
 
 
 def _decision_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -228,16 +257,20 @@ def build_template_examples(data: Any) -> pd.DataFrame:
     profiles_by_job = _profile_lookup(profiles)
     if "job_id" not in rows.columns:
         rows["job_id"] = ""
+    if "document_id" not in rows.columns:
+        rows["document_id"] = ""
     if "source_file" not in rows.columns:
         rows["source_file"] = ""
     rows = rows.copy()
-    rows["_example_key"] = rows["job_id"].fillna("").astype(str).str.strip()
-    rows["_example_key"] = rows["_example_key"].where(rows["_example_key"].ne(""), rows["source_file"].fillna("").astype(str))
+    rows["_example_key"] = rows.apply(lambda row: _example_identity(row.to_dict()), axis=1)
     records: list[dict[str, Any]] = []
     for example_key, group in rows.groupby("_example_key", dropna=False):
-        job_id = _text(example_key)
-        if not job_id:
+        if not _text(example_key):
             continue
+        first = group.fillna("").iloc[0].to_dict()
+        job_id = _text(first.get("job_id")) or _text(example_key)
+        document_id = _text(first.get("document_id"))
+        source_file = _text(first.get("source_file"))
         profile = profiles_by_job.get(job_id, {})
         if not profile and profiles_by_job:
             continue
@@ -246,10 +279,29 @@ def build_template_examples(data: Any) -> pd.DataFrame:
             continue
         template_type = _text(profile.get("template_type")) or _text(group.get("template_type", pd.Series(dtype=str)).mode().iloc[0] if "template_type" in group.columns and not group["template_type"].mode().empty else "")
         packages = _json_list(profile.get("material_packages_json")) or profile.get("material_packages") or []
+        answer_key = build_reference_estimate_answer_key(
+            group,
+            job_context={
+                "job_id": job_id,
+                "customer": _text(profile.get("customer")),
+                "job_name": _text(profile.get("job_name")),
+                "template_type": template_type,
+                "project_type": _text(profile.get("project_class")),
+                "market_segment": _text(profile.get("market_segment")),
+                "building_type": _text(profile.get("building_type")),
+                "substrate": _text(profile.get("substrate")),
+                "material_system": _text(profile.get("material_system")),
+                "scope_summary": _text(profile.get("scope_summary")),
+                "area_sqft": _number(profile.get("area_sqft")),
+                "warranty_years": _number(profile.get("warranty_years")),
+            },
+        )
         records.append(
             {
-                "example_id": f"historical-template-example-{job_id}",
+                "example_id": _example_id(_text(example_key)),
                 "job_id": job_id,
+                "document_id": document_id,
+                "source_file": source_file,
                 "customer": _text(profile.get("customer")),
                 "job_name": _text(profile.get("job_name")),
                 "template_type": template_type,
@@ -265,11 +317,65 @@ def build_template_examples(data: Any) -> pd.DataFrame:
                 "scope_summary": _text(profile.get("scope_summary")),
                 "decision_summary": _decision_summary(decisions),
                 "decisions_json": json.dumps(decisions, sort_keys=True, default=str),
+                "answer_key_json": json.dumps(answer_key, sort_keys=True, default=str),
                 "source": "historical_estimate_template_rows",
                 "confidence": _number(profile.get("confidence"), 0.5),
             }
         )
     return pd.DataFrame(records, columns=TEMPLATE_EXAMPLE_COLUMNS)
+
+
+def _answer_key_for_example(data: Any, row: dict[str, Any]) -> dict[str, Any]:
+    answer_key = _json_dict(row.get("answer_key_json"))
+    if answer_key:
+        return answer_key
+    job_id = _text(row.get("job_id"))
+    source_file = _text(row.get("source_file") or row.get("file_name"))
+    try:
+        if job_id:
+            return build_reference_estimate_answer_key(data, job_id=job_id)
+        if source_file:
+            return build_reference_estimate_answer_key(data, source_file=source_file)
+    except Exception:
+        return {}
+    return {}
+
+
+def _compact_answer_key(answer_key: dict[str, Any], *, limit: int = 12) -> dict[str, Any]:
+    if not answer_key:
+        return {}
+    decisions: list[dict[str, Any]] = []
+    for decision in answer_key.get("decisions") or []:
+        if not isinstance(decision, dict):
+            continue
+        decisions.append(
+            {
+                "decision_id": decision.get("decision_id"),
+                "section": decision.get("section"),
+                "template_bucket": decision.get("template_bucket"),
+                "workbook_row": decision.get("workbook_row"),
+                "source_row": decision.get("source_row"),
+                "line_item": decision.get("line_item"),
+                "template_option": decision.get("template_option"),
+                "inputs": decision.get("inputs") or {},
+                "calculated_outputs": decision.get("calculated_outputs") or {},
+                "evidence": decision.get("evidence") or {},
+                "confidence": decision.get("confidence"),
+                "needs_review": decision.get("needs_review"),
+            }
+        )
+        if len(decisions) >= limit:
+            break
+    return {
+        "schema_version": answer_key.get("schema_version"),
+        "source_workbook": answer_key.get("source_workbook") or {},
+        "job_context": answer_key.get("job_context") or {},
+        "decisions": decisions,
+        "summary": {
+            "decision_count": (answer_key.get("summary") or {}).get("decision_count", len(answer_key.get("decisions") or [])),
+            "unmapped_count": (answer_key.get("summary") or {}).get("unmapped_count", 0),
+        },
+    }
 
 
 def build_template_example_digest(data: Any, *, scope: dict[str, Any] | None = None, limit: int = 3) -> dict[str, Any]:
@@ -298,6 +404,7 @@ def build_template_example_digest(data: Any, *, scope: dict[str, Any] | None = N
     matched: list[dict[str, Any]] = []
     for score, row in scored[: max(0, int(limit or 3))]:
         decisions = _json_list(row.get("decisions_json"))
+        reference_answer_key = _compact_answer_key(_answer_key_for_example(data, row), limit=12)
         matched.append(
             {
                 "example_id": row.get("example_id"),
@@ -316,6 +423,7 @@ def build_template_example_digest(data: Any, *, scope: dict[str, Any] | None = N
                 "scope_summary": row.get("scope_summary"),
                 "decision_summary": row.get("decision_summary"),
                 "decisions": decisions[:18],
+                "reference_answer_key": reference_answer_key,
             }
         )
     return {"matched_examples": matched}

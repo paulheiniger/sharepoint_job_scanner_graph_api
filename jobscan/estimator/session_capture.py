@@ -624,7 +624,7 @@ def estimator_memory_candidates_from_reference_template(
     for row in decision_rows or []:
         if not isinstance(row, dict):
             continue
-        if normalize_memory_token(row.get("source")) != "reference_template_summary":
+        if normalize_memory_token(row.get("source")) not in {"reference_template_summary", "reference_estimate_answer_key"}:
             continue
         if row.get("include") is not True:
             continue
@@ -671,7 +671,7 @@ def estimator_memory_candidates_from_reference_template(
                 "product_or_system": line_item,
                 "applies_when": {
                     "source_session_id": session_id,
-                    "source_type": "reference_template_summary",
+                    "source_type": normalize_memory_token(row.get("source")) or "reference_template_summary",
                     "source_row": source_row,
                     "normalized_workbook_row": normalized_row,
                     "line_item": line_item,
@@ -679,8 +679,8 @@ def estimator_memory_candidates_from_reference_template(
                     "evidence": source_evidence,
                     **scope_memory_context,
                 },
-                "rationale": "Pending memory candidate generated from pasted correct-template summary.",
-                "source_type": "reference_template_summary",
+                "rationale": "Pending memory candidate generated from reviewed reference estimate answer key.",
+                "source_type": normalize_memory_token(row.get("source")) or "reference_template_summary",
                 "source_session_id": session_id or None,
                 "status": "pending",
                 "priority": "high",

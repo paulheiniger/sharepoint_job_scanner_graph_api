@@ -16,6 +16,8 @@ SOURCE_PRECEDENCE = {
     "deterministic_rule": 40,
     "reference_project": 45,
     "chat_estimator": 48,
+    "reference_template_summary": 49,
+    "reference_estimate_answer_key": 49,
     "photo_evidence": 47,
     "explicit_note": 50,
     "estimator_edit": 60,
@@ -141,6 +143,7 @@ PACKAGE_COMPANION_ALIASES = {
     "iso_board": "board_stock",
     "dumpsters": "dumpster",
     "drum_disposal": "disposal",
+    "thermal_barrier": "thermal_barrier_coating",
 }
 
 
@@ -730,7 +733,20 @@ def _reference_target_for_row(row: dict[str, Any], template_type: str) -> dict[s
     bucket = _canonical_package(row.get("template_bucket"))
     kind = _norm(row.get("line_item_kind"))
     row_number = str(int(_safe_number(row.get("row_number"), 0))) if _safe_number(row.get("row_number"), 0) > 0 else ""
+    shared_target = _chat_target_for_preference(
+        template_type,
+        {
+            "template_bucket": bucket,
+            "workbook_row": row_number,
+            "row_number": row_number,
+        },
+    )
+    if shared_target:
+        return shared_target
     if template_type == "roofing":
+        if bucket in {"foam", "roofing_foam"}:
+            row_number = row_number if row_number in {"19", "20", "21"} else "19"
+            return {"section": "roofing_foam_template_decisions", "decision_id": f"roofing_foam_row_{row_number}", "template_bucket": "roofing_foam", "workbook_row": row_number}
         if bucket == "coating":
             row_number = row_number if row_number in {"26", "27", "28"} else "26"
             return {"section": "roofing_coating_template_decisions", "decision_id": f"roofing_coating_system_row_{row_number}", "template_bucket": "coating", "workbook_row": row_number}
@@ -904,7 +920,16 @@ def _chat_estimator_proposals(template_type: str, scope: dict[str, Any]) -> list
         reasons = list(item.get("review_reasons") or item.get("review_flags") or [])
         if review_required and not reasons:
             reasons.append("Estimator chat proposal requires estimator confirmation.")
-        evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+        source = str(item.get("source") or "chat_estimator")
+        if source not in {"reference_template_summary", "reference_estimate_answer_key"}:
+            source = "chat_estimator"
+        raw_evidence = item.get("evidence")
+        if isinstance(raw_evidence, dict):
+            evidence = raw_evidence
+        elif isinstance(raw_evidence, list) and raw_evidence:
+            evidence = {source: [entry for entry in raw_evidence if isinstance(entry, dict)]}
+        else:
+            evidence = {}
         if not evidence:
             evidence = {
                 "chat_estimator": [
@@ -926,7 +951,7 @@ def _chat_estimator_proposals(template_type: str, scope: dict[str, Any]) -> list
                 review_required=review_required,
                 review_reasons=reasons,
                 evidence=evidence,
-                source="chat_estimator",
+                source=source,
                 section=target["section"],
             )
         )
@@ -942,6 +967,19 @@ def _chat_target_for_preference(template_type: str, item: dict[str, Any]) -> dic
     logistics_alias = _loading_travel_alias(item)
     if not bucket and logistics_alias:
         bucket = logistics_alias
+    if bucket in {"overhead", "profit"}:
+        default_rows = {
+            "insulation": {"overhead": "118", "profit": "120"},
+            "roofing": {"overhead": "165", "profit": "167"},
+            "flooring": {"overhead": "165", "profit": "167"},
+        }
+        resolved_row = workbook_row or default_rows.get(template_type, {}).get(bucket, "")
+        return {
+            "section": "pricing_markup_decisions",
+            "decision_id": decision_id or f"pricing_{bucket}",
+            "template_bucket": bucket,
+            "workbook_row": resolved_row,
+        }
     if template_type == "insulation":
         if bucket == "foam" or decision_id == "insulation_foam_template_selector":
             return {
@@ -957,12 +995,67 @@ def _chat_target_for_preference(template_type: str, item: dict[str, Any]) -> dic
                 "template_bucket": "thermal_barrier_coating",
                 "workbook_row": workbook_row if workbook_row in {"30", "31", "32"} else "30",
             }
+        if bucket in {"membrane", "primer"}:
+            resolved_row = workbook_row if workbook_row in {"24", "26"} else ("24" if bucket == "membrane" else "26")
+            return {
+                "section": "insulation_detail_material_template_decisions",
+                "decision_id": decision_id or f"insulation_{bucket}_row_{resolved_row}",
+                "template_bucket": bucket,
+                "workbook_row": resolved_row,
+            }
+        if bucket in {"thinner", "drum_disposal", "disposal", "misc_materials", "misc", "freight", "abaa_audit", "abaa_fee", "sales_tax"}:
+            row_defaults = {
+                "thinner": "37",
+                "misc_materials": "57",
+                "misc": "57",
+                "freight": "59",
+                "abaa_audit": "61",
+                "abaa_fee": "63",
+                "drum_disposal": "65",
+                "disposal": "65",
+                "sales_tax": "73",
+            }
+            resolved_row = workbook_row or row_defaults[bucket]
+            normalized_bucket = {
+                "misc": "misc_materials",
+                "disposal": "drum_disposal",
+            }.get(bucket, bucket)
+            return {
+                "section": "insulation_support_material_template_decisions",
+                "decision_id": decision_id or f"insulation_{normalized_bucket}_row_{resolved_row}",
+                "template_bucket": normalized_bucket,
+                "workbook_row": resolved_row,
+            }
         if bucket in {"caulk_detail", "caulk_sealant"}:
             return {
                 "section": "insulation_detail_material_template_decisions",
                 "decision_id": decision_id or "insulation_caulk_sealant_row_41",
                 "template_bucket": "caulk_sealant",
                 "workbook_row": workbook_row if workbook_row in {"41", "43"} else "41",
+            }
+        if bucket in {"lift", "delivery_fee", "generator", "space_heater", "sales_inspection_trips", "truck_expense"}:
+            row_defaults = {
+                "lift": "47",
+                "delivery_fee": "50",
+                "generator": "53",
+                "space_heater": "55",
+                "sales_inspection_trips": "68",
+                "truck_expense": "70",
+            }
+            decision_defaults = {
+                "lift": "insulation_lift_equipment",
+                "delivery_fee": "insulation_delivery_fee",
+                "generator": "insulation_generator",
+                "space_heater": "insulation_space_heater",
+                "sales_inspection_trips": "insulation_sales_inspection_trips",
+                "truck_expense": "insulation_truck_expense",
+            }
+            resolved_row = workbook_row if workbook_row in INSULATION_REFERENCE_ALLOWED_ROWS.get(bucket, set()) else row_defaults[bucket]
+            return {
+                "section": "insulation_equipment_logistics_template_decisions",
+                "decision_id": decision_id or decision_defaults[bucket],
+                "template_bucket": bucket,
+                "workbook_row": resolved_row,
             }
         if bucket in {"labor_loading", "labor_traveling", "infrared_scan", "meals_lodging", "labor_meals_lodging"}:
             row_defaults = {
@@ -995,10 +1088,28 @@ def _chat_target_for_preference(template_type: str, item: dict[str, Any]) -> dic
                 "workbook_row": workbook_row,
             }
     if template_type == "roofing":
-        if bucket in {"free_adder", "manual_adder", "sales_tax", "warranty", "misc_miles", "misc_materials", "misc_materials_misc_insurance_equipment_rental"} or (
+        if bucket in {
+            "free_adder",
+            "manual_adder",
+            "sales_tax",
+            "warranty",
+            "misc_miles",
+            "misc_materials",
+            "misc_insurance",
+            "permits",
+            "misc_materials_misc_insurance_equipment_rental",
+        } or (
             item.get("section") == "roofing_free_adder_template_decisions"
         ):
-            resolved_row = workbook_row or "173"
+            resolved_row = workbook_row or {
+                "sales_tax": "111",
+                "warranty": "154",
+                "misc_insurance": "156",
+                "permits": "158",
+                "misc_miles": "174",
+                "misc_materials": "175",
+                "misc_materials_misc_insurance_equipment_rental": "175",
+            }.get(bucket, "173")
             return {
                 "section": "roofing_free_adder_template_decisions",
                 "decision_id": decision_id or f"roofing_free_adder_row_{resolved_row}",
@@ -1049,12 +1160,39 @@ def _chat_target_for_preference(template_type: str, item: dict[str, Any]) -> dic
                 "template_bucket": "seams_misc",
                 "workbook_row": "47",
             }
-        if bucket == "penetrations":
+        if bucket in {"penetrations", "hvac_units", "drains"}:
+            row_defaults = {"penetrations": "49", "hvac_units": "51", "drains": "53"}
             return {
                 "section": "roofing_detail_quantity_template_decisions",
-                "decision_id": decision_id or "roofing_penetrations_row_49",
-                "template_bucket": "penetrations",
-                "workbook_row": "49",
+                "decision_id": decision_id or f"roofing_{bucket}_row_{row_defaults[bucket]}",
+                "template_bucket": bucket,
+                "workbook_row": row_defaults[bucket],
+            }
+        if bucket == "thinner":
+            return {
+                "section": "roofing_accessory_template_decisions",
+                "decision_id": decision_id or "roofing_thinner_row_33",
+                "template_bucket": "thinner",
+                "workbook_row": "33",
+            }
+        if bucket in {"edge_metal", "gutter", "downspouts", "roof_hatch", "scuppers", "curbs", "ladders", "pitch_pockets", "misc"}:
+            row_defaults = {
+                "edge_metal": "82",
+                "gutter": "84",
+                "downspouts": "86",
+                "roof_hatch": "88",
+                "scuppers": "90",
+                "curbs": "92",
+                "ladders": "94",
+                "pitch_pockets": "96",
+                "misc": "101",
+            }
+            resolved_row = workbook_row or row_defaults[bucket]
+            return {
+                "section": "roofing_accessory_template_decisions",
+                "decision_id": decision_id or f"roofing_{bucket}_row_{resolved_row}",
+                "template_bucket": bucket,
+                "workbook_row": resolved_row,
             }
         if bucket == "board_stock":
             resolved_row = workbook_row if workbook_row in {"58", "59", "60"} else "58"
@@ -1184,6 +1322,116 @@ def _chat_target_for_preference(template_type: str, item: dict[str, Any]) -> dic
                 "decision_id": decision_id or f"roofing_{bucket}_row_{resolved_row}",
                 "template_bucket": bucket,
                 "workbook_row": resolved_row,
+            }
+    if template_type == "flooring":
+        if bucket in {
+            "foam",
+            "floor_base_coat",
+            "floor_topcoat",
+            "floor_coating",
+            "floor_primer",
+            "floor_flake",
+            "coating",
+            "primer",
+            "thinner",
+            "granules",
+            "caulk_detail",
+            "caulk_sealant",
+            "seams_misc",
+            "seam_treatment",
+            "penetrations",
+            "hvac_units",
+            "drains",
+            "board_stock",
+            "fasteners",
+            "plates",
+            "fabric",
+        }:
+            normalized_bucket = {
+                "coating": "floor_coating",
+                "primer": "floor_primer",
+            }.get(bucket, bucket)
+            resolved_row = workbook_row or {
+                "floor_base_coat": "26",
+                "floor_topcoat": "27",
+                "floor_coating": "28",
+                "floor_primer": "39",
+                "thinner": "33",
+                "granules": "36",
+                "caulk_detail": "43",
+                "caulk_sealant": "43",
+                "seams_misc": "47",
+                "seam_treatment": "47",
+                "penetrations": "49",
+                "hvac_units": "51",
+                "drains": "53",
+                "board_stock": "58",
+                "fasteners": "63",
+                "plates": "65",
+                "fabric": "79",
+                "foam": "19",
+            }.get(normalized_bucket, workbook_row)
+            normalized_bucket = "seams_misc" if normalized_bucket == "seam_treatment" else normalized_bucket
+            return {
+                "section": "flooring_material_template_decisions",
+                "decision_id": decision_id or f"flooring_{normalized_bucket}_row_{resolved_row}",
+                "template_bucket": normalized_bucket,
+                "workbook_row": resolved_row,
+            }
+        if bucket in {"dumpster", "dumpsters", "disposal", "lift", "delivery_fee", "generator", "freight", "sales_inspection_trips", "truck_expense"}:
+            normalized_bucket = "dumpster" if bucket in {"dumpsters", "disposal"} else bucket
+            resolved_row = workbook_row or {
+                "dumpster": "69",
+                "lift": "73",
+                "delivery_fee": "76",
+                "generator": "99",
+                "freight": "103",
+                "sales_inspection_trips": "106",
+                "truck_expense": "108",
+            }.get(normalized_bucket, workbook_row)
+            return {
+                "section": "flooring_equipment_logistics_template_decisions",
+                "decision_id": decision_id or f"flooring_{normalized_bucket}_row_{resolved_row}",
+                "template_bucket": normalized_bucket,
+                "workbook_row": resolved_row,
+            }
+        if bucket in {"sales_tax", "warranty", "misc_insurance", "permits", "misc_materials"}:
+            resolved_row = workbook_row or {
+                "sales_tax": "111",
+                "warranty": "154",
+                "misc_insurance": "156",
+                "permits": "158",
+                "misc_materials": "174",
+            }.get(bucket, workbook_row)
+            return {
+                "section": "flooring_free_adder_template_decisions",
+                "decision_id": decision_id or f"flooring_{bucket}_row_{resolved_row}",
+                "template_bucket": bucket,
+                "workbook_row": resolved_row,
+            }
+        if bucket in {"labor_loading", "labor_traveling", "infrared_scan", "labor_infrared_scan", "meals_lodging", "labor_meals_lodging"}:
+            normalized_bucket = {
+                "labor_infrared_scan": "infrared_scan",
+                "labor_meals_lodging": "meals_lodging",
+            }.get(bucket, bucket)
+            resolved_row = workbook_row or {
+                "labor_loading": "137",
+                "labor_traveling": "139",
+                "infrared_scan": "142",
+                "meals_lodging": "145",
+            }.get(normalized_bucket, workbook_row)
+            return {
+                "section": "flooring_logistics_expense_template_decisions",
+                "decision_id": decision_id or f"flooring_{normalized_bucket}_row_{resolved_row}",
+                "template_bucket": normalized_bucket,
+                "workbook_row": resolved_row,
+            }
+        if bucket.startswith("labor_") and workbook_row:
+            return {
+                "section": "flooring_labor_template_decisions",
+                "decision_id": decision_id or f"flooring_{bucket}_row_{workbook_row}",
+                "template_bucket": bucket,
+                "workbook_row": workbook_row,
             }
         if bucket.startswith("labor_"):
             labor_row_defaults = {

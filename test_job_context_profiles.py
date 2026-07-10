@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pandas as pd
 
 from jobscan.estimator.data_loader import normalize_estimator_data
@@ -150,6 +152,9 @@ def test_template_examples_capture_worked_decisions_and_match_scope() -> None:
     assert roof["template_type"] == "roofing"
     assert "Gaco Silicone" in roof["decision_summary"]
     assert "Gaco E-5320 Primer" in roof["decisions_json"]
+    answer_key = json.loads(roof["answer_key_json"])
+    assert answer_key["schema_version"] == "reference_estimate_answer_key.v1"
+    assert any(decision["decision_id"] == "roofing_coating_system_row_26" for decision in answer_key["decisions"])
 
     digest = build_template_example_digest(
         data,
@@ -167,3 +172,60 @@ def test_template_examples_capture_worked_decisions_and_match_scope() -> None:
     assert digest["matched_examples"]
     assert digest["matched_examples"][0]["job_id"] == "R1"
     assert any(decision.get("template_bucket") == "coating" for decision in digest["matched_examples"][0]["decisions"])
+    reference_answer_key = digest["matched_examples"][0]["reference_answer_key"]
+    assert reference_answer_key["schema_version"] == "reference_estimate_answer_key.v1"
+    assert any(decision["decision_id"] == "roofing_primer_system_row_39" for decision in reference_answer_key["decisions"])
+    assert reference_answer_key["decisions"][0]["evidence"]["source"] == "reference_estimate_answer_key"
+
+
+def test_template_examples_group_history_by_workbook_not_broad_job_folder() -> None:
+    data = EstimatorData(
+        template_rows=pd.DataFrame(
+            [
+                {
+                    "job_id": "R-FOLDER",
+                    "document_id": "D-1",
+                    "source_file": "Estimate Roofing - One.xlsx",
+                    "template_type": "roofing",
+                    "row_number": 26,
+                    "template_bucket": "coating",
+                    "line_item_kind": "material",
+                    "resolved_item_name": "Gaco Silicone",
+                    "area_sqft": 1000,
+                    "estimated_units": 18,
+                    "unit_price": 32,
+                },
+                {
+                    "job_id": "R-FOLDER",
+                    "document_id": "D-2",
+                    "source_file": "Estimate Roofing - Two.xlsx",
+                    "template_type": "roofing",
+                    "row_number": 26,
+                    "template_bucket": "coating",
+                    "line_item_kind": "material",
+                    "resolved_item_name": "Gaco Silicone",
+                    "area_sqft": 2000,
+                    "estimated_units": 36,
+                    "unit_price": 32,
+                },
+            ]
+        ),
+        job_context_profiles=pd.DataFrame(
+            [
+                {
+                    "job_id": "R-FOLDER",
+                    "template_type": "roofing",
+                    "project_class": "roof_restoration",
+                    "substrate": "metal",
+                    "material_system": "Gaco Silicone",
+                    "area_sqft": 1500,
+                }
+            ]
+        ),
+    )
+
+    examples = build_template_examples(data)
+
+    assert len(examples) == 2
+    assert set(examples["document_id"]) == {"D-1", "D-2"}
+    assert all(json.loads(value)["summary"]["decision_count"] == 1 for value in examples["answer_key_json"])

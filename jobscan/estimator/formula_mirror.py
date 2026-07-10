@@ -928,7 +928,7 @@ def calculate_roofing_board_fasteners(
     price = safe_number(unit_price_per_thousand, 0.0)
     if include and area > 0:
         units = (area / 32.0) * 12.0
-        formula_source = "board_area_fastener_pattern"
+        formula_source = "board_area_sqft_div_32_times_12"
     else:
         units = 0.0
         formula_source = "not_included" if not include else "insufficient_formula_inputs"

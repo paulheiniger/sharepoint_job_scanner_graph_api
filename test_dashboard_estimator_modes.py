@@ -98,6 +98,15 @@ def test_estimator_page_uses_loaded_data_for_default_field_parser() -> None:
     assert "field_notes_data = EstimatorData()" not in source
 
 
+def test_estimator_data_table_count_tolerates_legacy_data_objects() -> None:
+    app = importlib.import_module("dashboard.app")
+    legacy_data = SimpleNamespace(template_rows=[{"row": 1}], pricing=None)
+
+    assert app.estimator_data_table_count(legacy_data, "template_rows") == 1
+    assert app.estimator_data_table_count(legacy_data, "template_examples") == 0
+    assert app.estimator_data_table_count(legacy_data, "pricing") == 0
+
+
 def test_estimator_workbench_build_cache_records_hit_and_avoids_rebuild(monkeypatch) -> None:
     app = importlib.import_module("dashboard.app")
     for key in ("estimator_build_workbench_cache", "estimator_perf_timings"):

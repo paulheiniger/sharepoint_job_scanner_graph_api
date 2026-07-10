@@ -15,6 +15,10 @@ import pandas as pd
 from .estimator_memory import relevant_memory_rows
 from .foam_yield_history import build_foam_yield_history_digest
 from .job_context_profiles import build_job_context_digest
+from .reference_answer_key import (
+    answer_key_to_workbook_decision_preferences,
+    parse_reference_answer_key_text,
+)
 from .template_examples import build_template_example_digest
 from .schemas import EstimatorData
 
@@ -99,10 +103,17 @@ def run_estimator_chat_turn(
             missing_questions=["Project notes are needed before estimating."],
         )
     deterministic_baseline = deterministic_chat_fallback(message_list, template_type_hint=template_type_hint)
+    structured_answer_key = _parse_reference_answer_key_from_messages(raw_message_list)
     reference_summary = _parse_reference_template_summary_from_messages(
         raw_message_list,
         template_type_hint=template_type_hint,
     )
+    if structured_answer_key.mapped_row_count:
+        deterministic_baseline = _merge_reference_template_summary(
+            deterministic_baseline,
+            structured_answer_key,
+            template_type_hint=template_type_hint,
+        )
     if reference_summary.mapped_row_count:
         deterministic_baseline = _merge_reference_template_summary(
             deterministic_baseline,
@@ -1648,6 +1659,22 @@ def _parse_reference_template_summary_from_messages(
     return _parse_reference_template_summary(user_text, template_type_hint=template_type_hint)
 
 
+def _parse_reference_answer_key_from_messages(
+    messages: Iterable[dict[str, str]],
+) -> ParsedReferenceTemplateSummary:
+    user_text = "\n".join(str(message.get("content") or "") for message in messages if message.get("role") == "user")
+    answer_key = parse_reference_answer_key_text(user_text)
+    if not answer_key:
+        return ParsedReferenceTemplateSummary()
+    preferences = answer_key_to_workbook_decision_preferences(answer_key)
+    return ParsedReferenceTemplateSummary(
+        workbook_decision_preferences=preferences,
+        warnings=[],
+        row_count=int((answer_key.get("summary") or {}).get("source_row_count") or len(answer_key.get("decisions") or [])),
+        mapped_row_count=len(preferences),
+    )
+
+
 def _parse_reference_template_summary(text: str, *, template_type_hint: str = "") -> ParsedReferenceTemplateSummary:
     if not _looks_like_reference_template_summary(text):
         return ParsedReferenceTemplateSummary()
@@ -2389,7 +2416,9 @@ def _chat_prompt_messages(
         "decision IDs; use it to propose likely included rows when the current scope is similar. "
         "If estimator_context.historical_template_examples has matched_examples, treat them as compact worked examples from prior "
         "estimates: compare the current job to each example, reuse normal decision patterns when the scope matches, and cite the "
-        "example in evidence. Do not copy example quantities blindly when the current area, thickness, warranty, or substrate differs. "
+        "example in evidence. If a matched example includes reference_answer_key.decisions, those are normalized historical workbook "
+        "decisions from the prior estimate; use their decision_id, template_bucket, workbook_row, line_item, inputs, and calculated_outputs "
+        "as evidence for similar current decisions. Do not copy example quantities blindly when the current area, thickness, warranty, or substrate differs. "
         "Use matched profiles as evidence for normal package inclusion and scope assumptions, but do not invent values that are not "
         "supported by the current prompt, workbook history, product guidance, or estimator memory. "
         "Ask questions only when the answer materially changes scope, safety/code compliance, system selection, warranty eligibility, or price. "

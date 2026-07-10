@@ -8808,6 +8808,16 @@ def estimator_data_signature(data: EstimatorData) -> dict[str, Any]:
     }
 
 
+def estimator_data_table_count(data: Any, attr: str) -> int:
+    value = getattr(data, attr, None)
+    if value is None:
+        return 0
+    try:
+        return len(value)
+    except TypeError:
+        return 0
+
+
 def recommendation_cache_payload(recommendation: Any) -> dict[str, Any]:
     return {
         "parsed_fields": getattr(recommendation, "parsed_fields", {}) or {},
@@ -10185,31 +10195,32 @@ def estimator_prototype_page() -> None:
             if column.button(label, key=f"estimator_sample_{label}"):
                 st.session_state["estimator_notes"] = sample
                 st.session_state["estimator_chat_pending_message"] = sample
-        st.write("Files used:", data.source_files_used or [])
-        if data.warnings:
-            st.warning("\n".join(data.warnings))
+        st.write("Files used:", getattr(data, "source_files_used", []) or [])
+        data_warnings = getattr(data, "warnings", []) or []
+        if data_warnings:
+            st.warning("\n".join(str(warning) for warning in data_warnings))
         st.write(
             {
                 "load_profile": "interactive",
-                "jobs": len(data.jobs),
-                "estimates": len(data.estimates),
-                "line_items": len(data.line_items),
-                "template_rows": len(data.template_rows),
-                "template_row_catalog": len(data.template_row_catalog),
-                "template_formula_models": len(data.template_formula_models),
-                "classified_line_items": len(data.classified_line_items),
-                "tracking_summary": len(data.tracking_summary),
-                "tracking_daily": len(data.tracking_daily),
-                "pricing": len(data.pricing),
-                "pricing_catalog": len(data.pricing_catalog),
-                "relationship_labor_rates": len(data.relationship_labor_rates),
-                "relationship_material_qty_ratios": len(data.relationship_material_qty_ratios),
-                "relationship_package_cooccurrence": len(data.relationship_package_cooccurrence),
-                "job_context_profiles": len(data.job_context_profiles),
-                "template_examples": len(data.template_examples),
-                "foam_yield_history": len(data.foam_yield_history),
-                "estimator_decision_recommendations": len(data.estimator_decision_recommendations),
-                "estimator_memory": len(data.estimator_memory),
+                "jobs": estimator_data_table_count(data, "jobs"),
+                "estimates": estimator_data_table_count(data, "estimates"),
+                "line_items": estimator_data_table_count(data, "line_items"),
+                "template_rows": estimator_data_table_count(data, "template_rows"),
+                "template_row_catalog": estimator_data_table_count(data, "template_row_catalog"),
+                "template_formula_models": estimator_data_table_count(data, "template_formula_models"),
+                "classified_line_items": estimator_data_table_count(data, "classified_line_items"),
+                "tracking_summary": estimator_data_table_count(data, "tracking_summary"),
+                "tracking_daily": estimator_data_table_count(data, "tracking_daily"),
+                "pricing": estimator_data_table_count(data, "pricing"),
+                "pricing_catalog": estimator_data_table_count(data, "pricing_catalog"),
+                "relationship_labor_rates": estimator_data_table_count(data, "relationship_labor_rates"),
+                "relationship_material_qty_ratios": estimator_data_table_count(data, "relationship_material_qty_ratios"),
+                "relationship_package_cooccurrence": estimator_data_table_count(data, "relationship_package_cooccurrence"),
+                "job_context_profiles": estimator_data_table_count(data, "job_context_profiles"),
+                "template_examples": estimator_data_table_count(data, "template_examples"),
+                "foam_yield_history": estimator_data_table_count(data, "foam_yield_history"),
+                "estimator_decision_recommendations": estimator_data_table_count(data, "estimator_decision_recommendations"),
+                "estimator_memory": estimator_data_table_count(data, "estimator_memory"),
             }
         )
     with st.expander("Estimator Memory Review", expanded=False):
@@ -11448,7 +11459,7 @@ def estimator_prototype_page() -> None:
                     "unit_price": "Unit Price",
                     "unit_price_per_thousand": "Price / 1,000",
                     "estimated_squares": "Squares",
-                    "estimated_units": "Units",
+                    "estimated_units": "Calculated Units",
                     "estimated_cost": "Cost",
                     "selected_pricing_candidate": "Pricing Candidate",
                     "compatibility_status": "Compatibility",
@@ -11504,7 +11515,7 @@ def estimator_prototype_page() -> None:
                         "historical_selector_evidence_count": "Evidence",
                         "board_area_sqft": "Fastener Area",
                         "unit_price_per_thousand": "Price / 1,000",
-                        "estimated_units": "Units",
+                        "estimated_units": "Calculated Units",
                         "estimated_cost": "Cost",
                         "selected_pricing_candidate": "Pricing Candidate",
                         "compatibility_status": "Compatibility",

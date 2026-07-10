@@ -1098,6 +1098,42 @@ def test_board_fastener_attention_notes_are_review_only_not_full_board_scope() -
     assert any("review-only" in warning for warning in board["compatibility_warnings"])
 
 
+def test_roofing_fastener_plate_units_calculate_from_board_area_pattern() -> None:
+    workbench = {
+        "scope": {"division": "Roofing", "template_type": "roofing", "project_type": "roof coating", "net_sqft": 1000},
+        "roofing_board_fastener_template_decisions": [
+            {
+                "include": True,
+                "decision_id": "roofing_fasteners_row_63",
+                "template_bucket": "fasteners",
+                "workbook_row": "63",
+                "resolved_template_option": "Fasteners",
+                "board_area_sqft": 960,
+                "unit_price_per_thousand": 250,
+            },
+            {
+                "include": True,
+                "decision_id": "roofing_plates_row_65",
+                "template_bucket": "plates",
+                "workbook_row": "65",
+                "resolved_template_option": "Plates",
+                "board_area_sqft": 960,
+                "unit_price_per_thousand": 200,
+            },
+        ],
+    }
+
+    recalculated = recalculate_workbench_tables(workbench)
+    rows = {row["template_bucket"]: row for row in recalculated["roofing_board_fastener_template_decisions"]}
+
+    assert rows["fasteners"]["estimated_units"] == 360
+    assert rows["fasteners"]["formula_source"] == "board_area_sqft_div_32_times_12"
+    assert rows["fasteners"]["estimated_cost"] == 90
+    assert rows["plates"]["estimated_units"] == 360
+    assert rows["plates"]["formula_source"] == "board_area_sqft_div_32_times_12"
+    assert rows["plates"]["estimated_cost"] == 72
+
+
 def test_manual_uncheck_prevents_companion_proposal_from_rechecking_row() -> None:
     workbench = build_estimating_workbench(roofing_recommendation(), roofing_companion_data())
     primer = workbench["roofing_primer_template_decisions"][0]
