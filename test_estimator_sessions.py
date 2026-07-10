@@ -304,6 +304,12 @@ def test_reference_template_summary_decisions_create_pending_memory_candidates()
         decisions,
         session_id=session_id,
         template_type="roofing",
+        scope_context={
+            "project_type": "silicone roof restoration",
+            "substrate": "metal",
+            "coating_type": "silicone",
+            "raw_input_notes": "Metal roof restoration with seams, fasteners, and coating.",
+        },
     )
 
     assert len(candidates) == 2
@@ -315,8 +321,20 @@ def test_reference_template_summary_decisions_create_pending_memory_candidates()
     assert loading["applies_when"]["source_row"] == "137"
     assert loading["applies_when"]["normalized_workbook_row"] == "136"
     assert loading["applies_when"]["proposed_values"]["trip_count"] == 3.0
+    assert loading["applies_when"]["substrate"] == "metal"
+    assert "silicone" in loading["applies_when"]["keywords"]
+    assert "Applies-when context" in loading["guidance"]
 
-    memory_ids = save_memory_candidates_from_reference_template(engine, session_id, decisions)
+    memory_ids = save_memory_candidates_from_reference_template(
+        engine,
+        session_id,
+        decisions,
+        scope_context={
+            "project_type": "silicone roof restoration",
+            "substrate": "metal",
+            "coating_type": "silicone",
+        },
+    )
     assert len(memory_ids) == 2
     assert len(estimator_memory_frame(engine, status="pending")) == 2
     assert approved_memory_frame(engine).empty

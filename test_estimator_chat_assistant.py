@@ -4,7 +4,12 @@ import json
 
 import pandas as pd
 
-from jobscan.estimator.chat_assistant import estimator_context_cache_stats, estimator_context_summary, run_estimator_chat_turn
+from jobscan.estimator.chat_assistant import (
+    detect_estimator_learning_intent,
+    estimator_context_cache_stats,
+    estimator_context_summary,
+    run_estimator_chat_turn,
+)
 from jobscan.estimator.schemas import EstimatorData
 
 
@@ -183,6 +188,27 @@ def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
                 }
             ]
         ),
+        job_context_profiles=pd.DataFrame(
+            [
+                {
+                    "job_id": "I-HIST-1",
+                    "customer": "Massey",
+                    "job_name": "Pole Barn Insulation",
+                    "template_type": "insulation",
+                    "project_class": "insulation_pole_barn",
+                    "market_segment": "agricultural",
+                    "building_type": "pole_barn",
+                    "substrate": "metal",
+                    "material_system": "Gaco 0.5 lb., DC315",
+                    "material_packages": ["foam", "thermal_barrier", "labor_foam"],
+                    "material_packages_json": '["foam", "thermal_barrier", "labor_foam"]',
+                    "area_sqft": 2226,
+                    "area_bucket": "under_5k",
+                    "scope_summary": "Pole barn spray foam insulation on walls and ceiling.",
+                    "confidence": 0.85,
+                }
+            ]
+        ),
     )
     calls = []
 
@@ -195,6 +221,9 @@ def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
         assert "pricing_candidates_by_bucket" in messages[1]["content"]
         assert "product_guidance_digest" in messages[1]["content"]
         assert "companion_relationships" in messages[1]["content"]
+        assert "historical_job_context" in messages[1]["content"]
+        assert "historical_context_decision_guidance" in messages[1]["content"]
+        assert "insulation_thermal_barrier_coating" in messages[1]["content"]
         assert "foam_yield_history_digest" in messages[1]["content"]
         assert "template_fallback_defaults" in messages[1]["content"]
         assert "estimator_memory_guidance" in messages[1]["content"]
@@ -244,6 +273,34 @@ def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
     assert loading["section"] == "insulation_logistics_expense_template_decisions"
     assert traveling["section"] == "insulation_logistics_expense_template_decisions"
     assert "hours_per_day" in loading["editable_fields"]
+
+
+def test_estimator_chat_marks_explicit_learning_messages() -> None:
+    result = run_estimator_chat_turn(
+        [
+            {
+                "role": "user",
+                "content": "Learn from this answer key and generate the workbook.\n\n" + ROOFING_REFERENCE_TEMPLATE_SUMMARY,
+            }
+        ],
+        template_type_hint="roofing",
+        provider=lambda messages, model: {
+            "assistant_message": "Mapped the answer key.",
+            "estimator_notes": "Roofing answer key.",
+            "scope_overrides": {"template_type": "roofing", "division": "Roofing"},
+            "workbook_decision_preferences": [],
+            "confidence": 0.8,
+        },
+        model="test-model",
+    )
+
+    assert detect_estimator_learning_intent([{"role": "user", "content": "learn from this"}])["auto_build_workbook"] is True
+    assert result.learning_mode is True
+    assert result.learning_intent["auto_save_memory"] is True
+    assert result.learning_intent["auto_approve_memory"] is True
+    assert result.scope_overrides["explicit_learning_intent"] is True
+    assert result.scope_overrides["learning_reference_template_mapped_row_count"] > 0
+    assert "Learning mode is on" in result.assistant_message
 
 
 def test_estimator_context_summary_cache_reports_hit_after_first_build() -> None:

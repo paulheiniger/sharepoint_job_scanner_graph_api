@@ -12,6 +12,7 @@ from jobscan.db_connections import create_resilient_engine
 from .decision_history import DECISION_NUMERIC_FIELDS, DECISION_TABLES
 from .estimator_memory import estimator_memory_from_rows
 from .foam_yield_history import build_foam_yield_history_table
+from .job_context_profiles import build_job_context_profiles
 from .schemas import DEFAULT_STAGE_FILES, PRICING_CANDIDATES, EstimatorData
 
 
@@ -167,6 +168,8 @@ ESTIMATOR_NUMERIC_COLUMNS = [
     "margin_pct",
     "square_feet",
     "estimated_yield",
+    "warranty_years",
+    "confidence",
 ]
 
 
@@ -213,6 +216,9 @@ def normalize_estimator_data(data: EstimatorData) -> EstimatorData:
     data.template_formula_models = normalize_estimator_dataframe(data.template_formula_models)
     data.template_product_options = normalize_estimator_dataframe(data.template_product_options)
     data.template_labor_options = normalize_estimator_dataframe(data.template_labor_options)
+    data.job_context_profiles = normalize_estimator_dataframe(data.job_context_profiles)
+    if data.job_context_profiles.empty and not data.template_rows.empty:
+        data.job_context_profiles = normalize_estimator_dataframe(build_job_context_profiles(data))
     data.foam_yield_history = normalize_estimator_dataframe(data.foam_yield_history)
     if data.foam_yield_history.empty and not data.template_rows.empty:
         data.foam_yield_history = normalize_estimator_dataframe(build_foam_yield_history_table(data))
@@ -517,6 +523,11 @@ def load_estimator_data_from_database(database_url: str, *, load_profile: str = 
         if relation_exists(connection, foam_history_relation):
             data.foam_yield_history = _read_sql_dataframe(connection, f"SELECT * FROM {foam_history_relation}")
             data.source_files_used.append(f"database: {foam_history_relation}")
+
+        job_context_relation = "analytics.estimator_job_context_profiles"
+        if relation_exists(connection, job_context_relation):
+            data.job_context_profiles = _read_sql_dataframe(connection, f"SELECT * FROM {job_context_relation}")
+            data.source_files_used.append(f"database: {job_context_relation}")
 
         recommendation_relation = "analytics.estimator_decision_recommendations"
         if relation_exists(connection, recommendation_relation):

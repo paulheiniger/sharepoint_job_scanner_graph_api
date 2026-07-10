@@ -984,6 +984,20 @@ def capture_estimator_memory_candidates(session_id: str, edit_rows: list[dict[st
         st.session_state["estimator_memory_pending_count"] = int(st.session_state.get("estimator_memory_pending_count") or 0) + len(memory_ids)
 
 
+def explicit_learning_memory_auto_approval_enabled() -> bool:
+    value = str(os.getenv("ESTIMATOR_AUTO_APPROVE_EXPLICIT_LEARNING_MEMORY", "1") or "").strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
+def estimator_chat_learning_mode(chat_result: dict[str, Any] | None) -> bool:
+    if not isinstance(chat_result, dict):
+        return False
+    if bool(chat_result.get("learning_mode")):
+        return True
+    scope = chat_result.get("scope_overrides") if isinstance(chat_result.get("scope_overrides"), dict) else {}
+    return bool(scope.get("explicit_learning_intent"))
+
+
 def capture_reference_template_memory_candidates(
     session_id: str,
     chat_result: dict[str, Any] | None,
@@ -1004,9 +1018,25 @@ def capture_reference_template_memory_candidates(
         session_id,
         decision_rows,
         template_type=template_type,
+        scope_context=chat_result.get("scope_overrides") or {},
     )
     if memory_ids:
-        st.session_state["estimator_memory_pending_count"] = int(st.session_state.get("estimator_memory_pending_count") or 0) + len(memory_ids)
+        auto_approve = estimator_chat_learning_mode(chat_result) and explicit_learning_memory_auto_approval_enabled()
+        if auto_approve:
+            approved_count = capture_estimator_session_event(
+                update_estimator_memory_status,
+                memory_ids,
+                status="approved",
+                approved_by="explicit_learning_chat",
+            )
+            st.session_state["estimator_memory_auto_approved_count"] = (
+                int(st.session_state.get("estimator_memory_auto_approved_count") or 0) + int(approved_count or 0)
+            )
+            if approved_count:
+                st.success(f"Saved and approved {int(approved_count):,} estimator memory item(s) from this explicit learning message.")
+        else:
+            st.session_state["estimator_memory_pending_count"] = int(st.session_state.get("estimator_memory_pending_count") or 0) + len(memory_ids)
+            st.caption(f"Saved {len(memory_ids):,} estimator memory item(s) for review.")
 
 
 DAILY_DISPATCH_TABLE_SQL = """
@@ -8740,6 +8770,7 @@ def estimator_data_signature(data: EstimatorData) -> dict[str, Any]:
         "product_catalog": len(data.product_catalog),
         "product_properties": len(data.product_properties),
         "template_product_options": len(data.template_product_options),
+        "job_context_profiles": len(getattr(data, "job_context_profiles", pd.DataFrame())),
         "foam_yield_history": len(getattr(data, "foam_yield_history", pd.DataFrame())),
         "estimator_decision_recommendations": len(data.estimator_decision_recommendations),
     }
@@ -9432,6 +9463,10 @@ def render_estimator_chat_draft_panel(
         result_payload = result.to_dict()
         if uploaded_photo_context:
             result_payload["photo_context"] = uploaded_photo_context
+        if estimator_chat_learning_mode(result_payload):
+            learning_intent = result_payload.get("learning_intent") if isinstance(result_payload.get("learning_intent"), dict) else {}
+            if learning_intent.get("auto_build_workbook", True):
+                st.session_state["estimator_auto_build_requested"] = True
         st.session_state[result_key] = result_payload
         st.session_state[active_result_key] = result_payload
         st.session_state["estimator_notes"] = result.estimator_notes or user_message
@@ -10138,6 +10173,7 @@ def estimator_prototype_page() -> None:
                 "relationship_labor_rates": len(data.relationship_labor_rates),
                 "relationship_material_qty_ratios": len(data.relationship_material_qty_ratios),
                 "relationship_package_cooccurrence": len(data.relationship_package_cooccurrence),
+                "job_context_profiles": len(data.job_context_profiles),
                 "foam_yield_history": len(data.foam_yield_history),
                 "estimator_decision_recommendations": len(data.estimator_decision_recommendations),
                 "estimator_memory": len(data.estimator_memory),
@@ -10227,7 +10263,11 @@ def estimator_prototype_page() -> None:
             else:
                 field_notes_data = data
     estimator_input_notes = chat_augmented_notes
-    if st.button("Build / Rebuild Filled Estimate Template", key="generate_field_estimate_recommendation"):
+    build_requested = st.button("Build / Rebuild Filled Estimate Template", key="generate_field_estimate_recommendation")
+    auto_build_requested = bool(st.session_state.pop("estimator_auto_build_requested", False))
+    if auto_build_requested:
+        st.info("Learning mode requested a workbook rebuild automatically.")
+    if build_requested or auto_build_requested:
         try:
             photo_file_ids = (active_photo_context or {}).get("selected_image_ids") or []
             session_id = capture_estimator_session_event(

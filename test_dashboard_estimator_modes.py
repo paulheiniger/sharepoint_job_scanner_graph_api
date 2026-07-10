@@ -1267,6 +1267,66 @@ def test_reference_template_memory_capture_skips_when_helper_unavailable(monkeyp
     )
 
 
+def test_reference_template_memory_capture_auto_approves_explicit_learning(monkeypatch) -> None:
+    app = importlib.import_module("dashboard.app")
+    saved_calls = []
+    approved_calls = []
+
+    def fake_save(engine, session_id, decision_rows, *, template_type="", scope_context=None):
+        saved_calls.append(
+            {
+                "session_id": session_id,
+                "template_type": template_type,
+                "scope_context": scope_context,
+                "decision_rows": decision_rows,
+            }
+        )
+        return ["memory-1", "memory-2"]
+
+    def fake_capture(action, *args, **kwargs):
+        if action is fake_save:
+            return action(None, *args, **kwargs)
+        if action is app.update_estimator_memory_status:
+            approved_calls.append({"args": args, "kwargs": kwargs})
+            return len(args[0])
+        raise AssertionError(f"unexpected action {action}")
+
+    monkeypatch.setattr(
+        app,
+        "estimator_sessions",
+        SimpleNamespace(save_memory_candidates_from_reference_template=fake_save),
+    )
+    monkeypatch.setattr(app, "capture_estimator_session_event", fake_capture)
+    monkeypatch.setenv("ESTIMATOR_AUTO_APPROVE_EXPLICIT_LEARNING_MEMORY", "1")
+    app.st.session_state.pop("estimator_memory_pending_count", None)
+    app.st.session_state.pop("estimator_memory_auto_approved_count", None)
+
+    app.capture_reference_template_memory_candidates(
+        "session-1",
+        {
+            "learning_mode": True,
+            "scope_overrides": {"template_type": "roofing", "substrate": "metal"},
+            "workbook_decision_preferences": [
+                {
+                    "source": "reference_template_summary",
+                    "decision_id": "roofing_labor_loading_row_136",
+                    "template_bucket": "labor_loading",
+                    "include": True,
+                    "proposed_values": {"hours_per_day": 0.5},
+                }
+            ],
+        },
+        template_type="roofing",
+    )
+
+    assert saved_calls[0]["scope_context"]["substrate"] == "metal"
+    assert approved_calls
+    assert approved_calls[0]["kwargs"]["status"] == "approved"
+    assert approved_calls[0]["kwargs"]["approved_by"] == "explicit_learning_chat"
+    assert app.st.session_state["estimator_memory_auto_approved_count"] == 2
+    assert not app.st.session_state.get("estimator_memory_pending_count")
+
+
 def test_estimator_assistant_exposes_memory_review_and_persistent_chat_state() -> None:
     app = importlib.import_module("dashboard.app")
     source = inspect.getsource(app.estimator_prototype_page)

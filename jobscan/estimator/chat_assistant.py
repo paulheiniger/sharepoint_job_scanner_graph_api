@@ -14,6 +14,7 @@ import pandas as pd
 
 from .estimator_memory import relevant_memory_rows
 from .foam_yield_history import build_foam_yield_history_digest
+from .job_context_profiles import build_job_context_digest
 from .schemas import EstimatorData
 
 
@@ -66,6 +67,8 @@ class EstimatorChatResult:
     workbook_decision_preferences: list[dict[str, Any]] = field(default_factory=list)
     missing_questions: list[str] = field(default_factory=list)
     assumptions: list[str] = field(default_factory=list)
+    learning_mode: bool = False
+    learning_intent: dict[str, Any] = field(default_factory=dict)
     confidence: float = 0.0
     source: str = "deterministic_fallback"
     raw_response: dict[str, Any] = field(default_factory=dict)
@@ -86,6 +89,7 @@ def run_estimator_chat_turn(
 ) -> EstimatorChatResult:
     raw_message_list = list(messages or [])
     message_list = _clean_messages(raw_message_list)
+    learning_intent = detect_estimator_learning_intent(raw_message_list)
     if not message_list:
         return EstimatorChatResult(
             assistant_message="Paste or type project notes and I will turn them into an estimator-ready draft.",
@@ -133,14 +137,88 @@ def run_estimator_chat_turn(
             )
         except Exception as exc:
             deterministic_baseline.warnings.append(f"AI estimator chat failed; used deterministic fallback. {type(exc).__name__}: {exc}")
-            return deterministic_baseline
-        return _merge_reference_template_summary(
-            result,
+            return _apply_learning_intent(deterministic_baseline, learning_intent, reference_summary)
+        return _apply_learning_intent(
+            _merge_reference_template_summary(
+                result,
+                reference_summary,
+                template_type_hint=template_type_hint,
+            ),
+            learning_intent,
             reference_summary,
-            template_type_hint=template_type_hint,
         )
     deterministic_baseline.warnings.append("OPENAI_API_KEY is not configured; used deterministic estimator-chat fallback.")
-    return deterministic_baseline
+    return _apply_learning_intent(deterministic_baseline, learning_intent, reference_summary)
+
+
+LEARNING_INTENT_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("learn_from_this", r"\b(?:learn|remember)\s+(?:from\s+)?this\b"),
+    ("answer_key", r"\b(?:answer\s*key|correct\s+template|correct\s+estimate|reviewed\s+template)\b"),
+    ("save_template_example", r"\b(?:save|store|use)\s+(?:this\s+)?(?:as\s+)?(?:a\s+)?(?:template\s+)?(?:example|training\s+example|memory)\b"),
+    ("generate_and_remember", r"\b(?:generate|build|create)\s+(?:the\s+)?(?:workbook|template|estimate).{0,80}\b(?:remember|learn|save)\b"),
+    ("remember_and_generate", r"\b(?:remember|learn|save).{0,80}\b(?:generate|build|create)\s+(?:the\s+)?(?:workbook|template|estimate)\b"),
+)
+
+
+def detect_estimator_learning_intent(messages: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    user_text = "\n".join(
+        str(message.get("content") or "")
+        for message in messages
+        if isinstance(message, dict) and str(message.get("role") or "") == "user"
+    )
+    normalized = _clean_string(user_text).lower()
+    if not normalized:
+        return {}
+    matched: list[str] = []
+    for label, pattern in LEARNING_INTENT_PATTERNS:
+        if re.search(pattern, normalized, re.I | re.S):
+            matched.append(label)
+    if not matched:
+        return {}
+    return {
+        "explicit": True,
+        "triggers": matched,
+        "auto_build_workbook": True,
+        "auto_save_memory": True,
+        "auto_approve_memory": True,
+        "source": "explicit_chat_keyword",
+    }
+
+
+def _apply_learning_intent(
+    result: EstimatorChatResult,
+    learning_intent: dict[str, Any],
+    reference_summary: ParsedReferenceTemplateSummary | None = None,
+) -> EstimatorChatResult:
+    if not learning_intent:
+        return result
+    scope = dict(result.scope_overrides or {})
+    scope["explicit_learning_intent"] = True
+    scope["learning_intent_source"] = learning_intent.get("source") or "explicit_chat_keyword"
+    if reference_summary and reference_summary.mapped_row_count:
+        scope["learning_reference_template_row_count"] = reference_summary.row_count
+        scope["learning_reference_template_mapped_row_count"] = reference_summary.mapped_row_count
+    assistant_message = result.assistant_message
+    learning_line = (
+        "Learning mode is on for this message. I will use the mapped decisions as a reviewed example, "
+        "build the workbook, and save memory for future similar jobs."
+    )
+    if learning_line not in assistant_message:
+        assistant_message = _clean_string(f"{assistant_message}\n\n{learning_line}")
+    return EstimatorChatResult(
+        assistant_message=assistant_message,
+        estimator_notes=result.estimator_notes,
+        scope_overrides=scope,
+        workbook_decision_preferences=result.workbook_decision_preferences,
+        missing_questions=result.missing_questions,
+        assumptions=result.assumptions,
+        learning_mode=True,
+        learning_intent=learning_intent,
+        confidence=result.confidence,
+        source=result.source,
+        raw_response=result.raw_response,
+        warnings=result.warnings,
+    )
 
 
 CHAT_DECISION_MENU: dict[str, list[dict[str, Any]]] = {
@@ -509,6 +587,7 @@ def _estimator_data_signature(data: EstimatorData | None) -> str:
         "product_catalog": _frame_signature(getattr(data, "product_catalog", None)),
         "product_properties": _frame_signature(getattr(data, "product_properties", None)),
         "foam_yield_history": _frame_signature(getattr(data, "foam_yield_history", None)),
+        "job_context_profiles": _frame_signature(getattr(data, "job_context_profiles", None)),
         "decision_recommendations": _frame_signature(getattr(data, "estimator_decision_recommendations", None)),
         "relationships": _frame_signature(getattr(data, "relationship_package_cooccurrence", None)),
         "estimator_memory": _frame_signature(getattr(data, "estimator_memory", None)),
@@ -645,6 +724,12 @@ def _build_estimator_context_summary(data: EstimatorData | None, *, scope: dict[
     summary["product_guidance_digest"] = _product_guidance_digest(data, template_type=template_type)
     summary["companion_relationships"] = _companion_relationships(data, template_type=template_type)
     summary["reference_job_decisions"] = _reference_job_decisions(data, scope=scope, template_type=template_type)
+    summary["historical_job_context"] = build_job_context_digest(data, scope=scope, limit=5)
+    summary["historical_context_decision_guidance"] = _historical_context_decision_guidance(
+        summary["historical_job_context"],
+        decision_menu,
+        template_type=template_type,
+    )
     return summary
 
 
@@ -685,6 +770,8 @@ def _empty_chat_decision_context(scope: dict[str, Any] | None) -> dict[str, Any]
         "product_guidance_digest": [],
         "companion_relationships": [],
         "reference_job_decisions": [],
+        "historical_job_context": {"matched_profiles": [], "aggregate_priors": []},
+        "historical_context_decision_guidance": [],
     }
 
 
@@ -1237,6 +1324,126 @@ def _reference_job_decisions(data: EstimatorData, *, scope: dict[str, Any], temp
         "crew_size",
     ]
     return _context_records(rows, preferred, limit=35)
+
+
+def _historical_context_decision_guidance(
+    historical_context: dict[str, Any],
+    decision_menu: list[dict[str, Any]],
+    *,
+    template_type: str,
+    limit: int = 18,
+) -> list[dict[str, Any]]:
+    if not isinstance(historical_context, dict) or not decision_menu:
+        return []
+    package_support: dict[str, dict[str, Any]] = {}
+    for profile in historical_context.get("matched_profiles") or []:
+        if not isinstance(profile, dict):
+            continue
+        job_label = _clean_string(profile.get("job_name") or profile.get("customer") or profile.get("job_id"))
+        similarity = _safe_number_or_blank(profile.get("similarity_score"))
+        for package in profile.get("material_packages") or []:
+            bucket = _historical_package_to_decision_bucket(package, template_type=template_type)
+            if not bucket:
+                continue
+            entry = package_support.setdefault(
+                bucket,
+                {
+                    "matched_jobs": [],
+                    "support_count": 0,
+                    "profile_conditions": set(),
+                    "source": "matched_historical_job_profiles",
+                },
+            )
+            entry["support_count"] += 1
+            if job_label:
+                label = f"{job_label} ({similarity})" if similarity != "" else job_label
+                if label not in entry["matched_jobs"]:
+                    entry["matched_jobs"].append(label)
+            condition = " + ".join(
+                part
+                for part in (
+                    _clean_string(profile.get("project_class")),
+                    _clean_string(profile.get("substrate")),
+                    _clean_string(profile.get("market_segment")),
+                )
+                if part and part != "unknown"
+            )
+            if condition:
+                entry["profile_conditions"].add(condition)
+    for prior in historical_context.get("aggregate_priors") or []:
+        if not isinstance(prior, dict):
+            continue
+        evidence_count = _safe_numeric(prior.get("evidence_count"), 0.0)
+        for package in prior.get("normally_included") or []:
+            bucket = _historical_package_to_decision_bucket(package, template_type=template_type)
+            if not bucket:
+                continue
+            entry = package_support.setdefault(
+                bucket,
+                {
+                    "matched_jobs": [],
+                    "support_count": 0,
+                    "profile_conditions": set(),
+                    "source": "aggregate_historical_profile_priors",
+                },
+            )
+            entry["support_count"] += int(evidence_count or 1)
+            condition = _clean_string(prior.get("condition"))
+            if condition:
+                entry["profile_conditions"].add(condition)
+    guidance: list[dict[str, Any]] = []
+    seen_decisions: set[str] = set()
+    for menu_row in decision_menu:
+        bucket = _clean_string(menu_row.get("template_bucket")).lower().replace(" ", "_").replace("-", "_")
+        support = package_support.get(bucket)
+        if not support:
+            continue
+        decision_id = _clean_string(menu_row.get("decision_id"))
+        if not decision_id or decision_id in seen_decisions:
+            continue
+        seen_decisions.add(decision_id)
+        guidance.append(
+            {
+                "decision_id": decision_id,
+                "template_bucket": bucket,
+                "workbook_row": _safe_row_number(menu_row.get("workbook_row")),
+                "label": _clean_string(menu_row.get("label")),
+                "historical_support_count": support["support_count"],
+                "matched_jobs": support["matched_jobs"][:5],
+                "profile_conditions": sorted(support["profile_conditions"])[:5],
+                "recommended_action": "consider_include_when_current_scope_matches",
+                "review_rule": "If included mainly from historical context, set review_required true and explain the matched-job evidence.",
+                "formula_requirements": menu_row.get("formula_requirements") or [],
+            }
+        )
+        if len(guidance) >= limit:
+            break
+    return guidance
+
+
+def _historical_package_to_decision_bucket(package: Any, *, template_type: str) -> str:
+    token = _clean_string(package).lower().replace(" ", "_").replace("-", "_")
+    aliases = {
+        "roofing_foam": "foam",
+        "thermal_barrier": "thermal_barrier_coating",
+        "thermal_barrier_coating": "thermal_barrier_coating",
+        "caulk_sealant": "caulk_detail" if template_type == "roofing" else "caulk_sealant",
+        "caulk_detail": "caulk_detail" if template_type == "roofing" else "caulk_sealant",
+        "sales_inspection_trips": "sales_trips",
+        "sales_inspect": "sales_trips",
+        "sales_inspection": "sales_trips",
+        "labor_coating": "labor_top_coat",
+        "labor_foam": "labor_foam" if template_type == "insulation" else "labor_base",
+    }
+    return aliases.get(token, token)
+
+
+def _safe_numeric(value: Any, default: float = 0.0) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return number if number == number else default
 
 
 def _filter_template_frame(frame: pd.DataFrame, template_type: str) -> pd.DataFrame:
@@ -2172,6 +2379,12 @@ def _chat_prompt_messages(
         "Estimator memory outranks AI inference but does not override current-session user instructions, manual estimator edits, or workbook formulas. "
         "When historical/template context supports a normal choice, make the best reviewed guess instead of leaving the decision blank; "
         "set review_required true, lower confidence, and explain the evidence if the prompt did not explicitly confirm it. "
+        "If estimator_context.historical_job_context has matched_profiles or aggregate_priors, use those to judge which historical jobs "
+        "are relevant by project class, market segment, building type, substrate, material system, warranty, and area bucket. "
+        "If estimator_context.historical_context_decision_guidance is present, it maps those historical profiles to allowed workbook "
+        "decision IDs; use it to propose likely included rows when the current scope is similar. "
+        "Use matched profiles as evidence for normal package inclusion and scope assumptions, but do not invent values that are not "
+        "supported by the current prompt, workbook history, product guidance, or estimator memory. "
         "Ask questions only when the answer materially changes scope, safety/code compliance, system selection, warranty eligibility, or price. "
         "If the user gives a command such as remove fabric, use closed cell R-21, make labor 2.5 days, change units, or change price, "
         "treat it as a workbook decision patch and return it in workbook_decision_preferences. "

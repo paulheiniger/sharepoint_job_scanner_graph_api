@@ -616,9 +616,11 @@ def estimator_memory_candidates_from_reference_template(
     *,
     session_id: str = "",
     template_type: str = "",
+    scope_context: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     seen: set[str] = set()
+    scope_memory_context = _reference_scope_memory_context(scope_context or {})
     for row in decision_rows or []:
         if not isinstance(row, dict):
             continue
@@ -638,9 +640,11 @@ def estimator_memory_candidates_from_reference_template(
         line_item = str(source_evidence.get("line_item") or row.get("label") or decision_id)
         value_text = ", ".join(f"{key}={_memory_value_text(value)}" for key, value in proposed_values.items())
         normalized_row = str(row.get("workbook_row") or "")
+        scope_phrase = _reference_scope_guidance_phrase(scope_memory_context)
         guidance = (
             f"For {resolved_template_type or 'estimator'} {bucket}, a reviewed reference template included "
             f"{line_item} mapped to workbook row {normalized_row} with {value_text}. "
+            f"{scope_phrase}"
             "Use this as historical guidance for similar jobs, but keep current job evidence and workbook formulas authoritative."
         )
         signature_payload = {
@@ -673,6 +677,7 @@ def estimator_memory_candidates_from_reference_template(
                     "line_item": line_item,
                     "proposed_values": proposed_values,
                     "evidence": source_evidence,
+                    **scope_memory_context,
                 },
                 "rationale": "Pending memory candidate generated from pasted correct-template summary.",
                 "source_type": "reference_template_summary",
@@ -704,6 +709,7 @@ def save_memory_candidates_from_reference_template(
     decision_rows: list[dict[str, Any]],
     *,
     template_type: str = "",
+    scope_context: dict[str, Any] | None = None,
 ) -> list[str]:
     if not decision_rows:
         return []
@@ -722,6 +728,7 @@ def save_memory_candidates_from_reference_template(
         decision_rows,
         session_id=session_id,
         template_type=resolved_template_type,
+        scope_context=scope_context,
     )
     memory_ids: list[str] = []
     for candidate in candidates:
@@ -743,6 +750,77 @@ def save_memory_candidates_from_reference_template(
             )
         )
     return memory_ids
+
+
+def _reference_scope_memory_context(scope_context: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(scope_context, dict) or not scope_context:
+        return {}
+    key_map = {
+        "project_type": "project_type",
+        "project_class": "project_class",
+        "building_type": "building_type",
+        "market_segment": "market_segment",
+        "substrate": "substrate",
+        "roof_type_substrate": "substrate",
+        "coating_type": "coating_type",
+        "foam_type": "foam_type",
+        "material_system": "material_system",
+        "warranty_target_years": "warranty_years",
+        "warranty_years": "warranty_years",
+    }
+    context: dict[str, Any] = {}
+    keywords: list[str] = []
+    for source_key, target_key in key_map.items():
+        value = scope_context.get(source_key)
+        if value in (None, "", [], {}):
+            continue
+        cleaned = _memory_value_text(value)
+        if not cleaned:
+            continue
+        context[target_key] = cleaned
+        for token in str(cleaned).replace("_", " ").replace("-", " ").split():
+            token = token.strip().lower()
+            if len(token) >= 4 and token not in keywords:
+                keywords.append(token)
+    notes_text = " ".join(
+        str(scope_context.get(key) or "")
+        for key in ("raw_input_notes", "notes", "estimator_notes", "scope_summary")
+    )
+    for term in (
+        "silicone",
+        "acrylic",
+        "metal",
+        "foam",
+        "coating",
+        "restoration",
+        "repair",
+        "pole barn",
+        "metal building",
+        "industrial",
+        "residential",
+        "commercial",
+        "fasteners",
+        "seams",
+        "ponding",
+    ):
+        if term in notes_text.lower() and term not in keywords:
+            keywords.append(term)
+    if keywords:
+        context["keywords"] = keywords[:16]
+    return context
+
+
+def _reference_scope_guidance_phrase(scope_memory_context: dict[str, Any]) -> str:
+    if not scope_memory_context:
+        return ""
+    descriptors = [
+        str(scope_memory_context.get(key) or "")
+        for key in ("project_class", "project_type", "building_type", "substrate", "coating_type", "foam_type", "material_system")
+        if scope_memory_context.get(key)
+    ]
+    if not descriptors:
+        return ""
+    return f"Applies-when context: {', '.join(descriptors[:5])}. "
 
 
 def save_memory_candidates_from_edits(
