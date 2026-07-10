@@ -485,6 +485,7 @@ CHAT_DECISION_MENU: dict[str, list[dict[str, Any]]] = {
 
 
 _ESTIMATOR_CONTEXT_CACHE: dict[str, dict[str, Any]] = {}
+_ESTIMATOR_CONTEXT_CACHE_STATS = {"hit": 0, "miss": 0}
 
 
 def _frame_signature(frame: Any) -> tuple[int, tuple[str, ...]]:
@@ -507,6 +508,7 @@ def _estimator_data_signature(data: EstimatorData | None) -> str:
         "pricing_catalog": _frame_signature(getattr(data, "pricing_catalog", None)),
         "product_catalog": _frame_signature(getattr(data, "product_catalog", None)),
         "product_properties": _frame_signature(getattr(data, "product_properties", None)),
+        "foam_yield_history": _frame_signature(getattr(data, "foam_yield_history", None)),
         "decision_recommendations": _frame_signature(getattr(data, "estimator_decision_recommendations", None)),
         "relationships": _frame_signature(getattr(data, "relationship_package_cooccurrence", None)),
         "estimator_memory": _frame_signature(getattr(data, "estimator_memory", None)),
@@ -527,12 +529,18 @@ def estimator_context_summary(data: EstimatorData | None, *, scope: dict[str, An
     key = _context_cache_key(data, scope)
     cached = _ESTIMATOR_CONTEXT_CACHE.get(key)
     if cached is not None:
+        _ESTIMATOR_CONTEXT_CACHE_STATS["hit"] += 1
         return copy.deepcopy(cached)
+    _ESTIMATOR_CONTEXT_CACHE_STATS["miss"] += 1
     summary = _build_estimator_context_summary(data, scope=scope)
     if len(_ESTIMATOR_CONTEXT_CACHE) > 24:
         _ESTIMATOR_CONTEXT_CACHE.clear()
     _ESTIMATOR_CONTEXT_CACHE[key] = copy.deepcopy(summary)
     return summary
+
+
+def estimator_context_cache_stats() -> dict[str, int]:
+    return dict(_ESTIMATOR_CONTEXT_CACHE_STATS)
 
 
 def _build_estimator_context_summary(data: EstimatorData | None, *, scope: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -616,7 +624,7 @@ def _build_estimator_context_summary(data: EstimatorData | None, *, scope: dict[
         scope=scope,
         template_type=template_type,
         limit=8,
-    ) if template_type == "insulation" else []
+    ) if template_type in {"insulation", "roofing"} else []
     summary["template_fallback_defaults"] = (
         {
             "insulation_foam": {
@@ -2182,9 +2190,11 @@ def _chat_prompt_messages(
         "For insulation jobs, include Loading and Traveling as normal checked logistics expense decisions unless evidence says otherwise; "
         "for Loading row 95 and Traveling row 97 do not use days, crew_size, daily_rate, hourly_rate, or total_hours; "
         "use only hours_per_day, people_count, trip_count, and unit_price because the workbook formula is hours x people x rate x trips. "
-        "For insulation foam yield_or_coverage, prefer foam_yield_history_digest entries matching foam type, product/template option, "
-        "and thickness band; include that evidence and set review_required when the historical range is wide or evidence is thin. "
-        "If no matching foam history is available but template_fallback_defaults includes insulation foam yield/unit price, use those as "
+        "For roofing and insulation foam decisions, prefer foam_yield_history_digest entries matching template type, foam type, "
+        "product/template option, and thickness band. The digest is mined from historical estimates and includes product, thickness, "
+        "square feet, estimated yield, and estimated sets examples; use it as evidence for yield_or_coverage and product selection. "
+        "Include that evidence and set review_required when the historical range is wide or evidence is thin. "
+        "If no matching insulation foam history is available but template_fallback_defaults includes insulation foam yield/unit price, use those as "
         "review-marked template fallbacks instead of saying yield or unit price is unavailable. "
         "Do not assume a generic standard foam thickness such as 2 inches; derive thickness from explicit thickness, target R-value with "
         "product R-per-inch evidence, or matching historical template evidence, otherwise ask or mark thickness review_required. "

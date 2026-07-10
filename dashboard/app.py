@@ -80,7 +80,7 @@ from jobscan.estimator.photo_evidence import (
     merge_photo_ai_analysis,
     stage_uploaded_images,
 )
-from jobscan.estimator.chat_assistant import run_estimator_chat_turn
+from jobscan.estimator.chat_assistant import estimator_context_cache_stats, run_estimator_chat_turn
 from jobscan.estimator.note_images import extract_notes_from_images_with_ai, stage_note_images
 
 try:
@@ -124,6 +124,10 @@ COMPACT_DIAGNOSTIC_COLUMNS = set(DECISION_EVIDENCE_DISPLAY_COLUMNS) | {
     "product_match_score",
     "product_name",
     "compatibility_warnings",
+    "product_guidance",
+    "product_warnings",
+    "product_warning_summary",
+    "notes",
 }
 
 MATERIAL_WORKBENCH_COMPACT_COLUMNS = [
@@ -2370,7 +2374,7 @@ def save_pricing_catalog_edits(original: pd.DataFrame, edited: pd.DataFrame) -> 
     load_pricing_catalog_filtered.clear()
     load_current_pricing_catalog_export.clear()
     load_pricing_filter_options.clear()
-    load_estimator_data_cached.clear()
+    clear_estimator_data_caches()
     return len(updates)
 
 
@@ -2470,7 +2474,7 @@ def create_pricing_catalog_row(row: dict[str, Any]) -> str:
     load_pricing_catalog_filtered.clear()
     load_current_pricing_catalog_export.clear()
     load_pricing_filter_options.clear()
-    load_estimator_data_cached.clear()
+    clear_estimator_data_caches()
     return prepared["pricing_item_id"]
 
 
@@ -2567,7 +2571,7 @@ def ingest_uploaded_product_document(
     write_product_catalog_json(knowledge, json_path)
     apply_product_knowledge_schema(DATABASE_URL)
     counts = upsert_product_knowledge(DATABASE_URL, knowledge, catalog_path=json_path, update_queue=False)
-    load_estimator_data_cached.clear()
+    clear_estimator_data_caches()
     load_product_catalog_options.clear()
     return {"file_path": str(staged_path), "json_path": str(json_path), "counts": counts, "knowledge": knowledge.to_dict()}
 
@@ -7862,6 +7866,39 @@ def load_estimator_data_cached(load_profile: str = "interactive"):
     return load_estimator_data(Path.cwd(), database_url=DATABASE_URL, prefer_database=True, load_profile=load_profile)
 
 
+ESTIMATOR_DATA_SESSION_CACHE_TTL_SECONDS = 300
+
+
+def clear_estimator_data_caches() -> None:
+    load_estimator_data_cached.clear()
+    try:
+        for key in list(st.session_state.keys()):
+            if str(key).startswith("estimator_data_session_cache_"):
+                st.session_state.pop(key, None)
+    except Exception:
+        logger.debug("could not clear estimator session data cache", exc_info=True)
+
+
+def load_estimator_data_for_ui(load_profile: str = "interactive") -> EstimatorData:
+    cache_key = f"estimator_data_session_cache_{load_profile}"
+    now = time.time()
+    cached = st.session_state.get(cache_key)
+    if isinstance(cached, dict) and isinstance(cached.get("data"), EstimatorData):
+        age_seconds = now - float(cached.get("loaded_at") or 0)
+        if age_seconds <= ESTIMATOR_DATA_SESSION_CACHE_TTL_SECONDS:
+            data = cached["data"]
+            record_estimator_perf_event(
+                f"{load_profile} estimator data load",
+                cache_status="hit",
+                detail=f"session cache age={age_seconds:.1f}s; {estimator_data_signature(data)}",
+            )
+            return data
+    with estimator_perf_step(f"{load_profile} estimator data load", cache_status="miss"):
+        data = load_estimator_data_cached(load_profile)
+    st.session_state[cache_key] = {"loaded_at": now, "data": data}
+    return data
+
+
 def optional_field_notes_estimator():
     if estimate_from_field_notes is None:
         return None, "Field notes estimator is not available in this deployment yet."
@@ -8523,7 +8560,6 @@ COMPACT_ALWAYS_SHOW_COLUMNS = {
     "estimated_cost",
     "compatibility_status",
     "product_guidance_status",
-    "product_guidance",
     CHOICE_SUMMARY_COLUMN,
 }
 
@@ -8577,14 +8613,43 @@ def project_display_frame(frame: pd.DataFrame, columns: Iterable[str]) -> pd.Dat
     return frame[compact_columns or available].copy()
 
 
+ESTIMATOR_PERF_TIMING_LIMIT = 160
+ESTIMATOR_WORKBENCH_BUILD_CACHE_LIMIT = 10
+
+
+def record_estimator_perf_event(
+    name: str,
+    *,
+    seconds: float = 0.0,
+    cache_status: str = "",
+    detail: str = "",
+    row_count: int | None = None,
+) -> None:
+    timings = st.session_state.setdefault("estimator_perf_timings", [])
+    event: dict[str, Any] = {"step": name, "seconds": round(float(seconds or 0), 4)}
+    if cache_status:
+        event["cache_status"] = cache_status
+    if detail:
+        event["detail"] = str(detail)[:240]
+    if row_count is not None:
+        event["row_count"] = int(row_count)
+    timings.append(event)
+    st.session_state["estimator_perf_timings"] = timings[-ESTIMATOR_PERF_TIMING_LIMIT:]
+
+
 @contextmanager
-def estimator_perf_step(name: str):
+def estimator_perf_step(name: str, *, cache_status: str = "", detail: str = "", row_count: int | None = None):
     start = time.perf_counter()
     try:
         yield
     finally:
-        timings = st.session_state.setdefault("estimator_perf_timings", [])
-        timings.append({"step": name, "seconds": round(time.perf_counter() - start, 4)})
+        record_estimator_perf_event(
+            name,
+            seconds=time.perf_counter() - start,
+            cache_status=cache_status,
+            detail=detail,
+            row_count=row_count,
+        )
 
 
 def reset_estimator_perf_timings() -> None:
@@ -8596,12 +8661,42 @@ def render_estimator_perf_timings() -> None:
     if not timings:
         return
     with st.expander("Performance timings", expanded=False):
-        st.dataframe(pd.DataFrame(timings), use_container_width=True, hide_index=True, height=220)
+        timing_df = pd.DataFrame(timings)
+        total_seconds = float(timing_df.get("seconds", pd.Series(dtype=float)).sum())
+        cache_summary = ""
+        if "cache_status" in timing_df.columns:
+            cache_counts = timing_df["cache_status"].replace("", pd.NA).dropna().value_counts()
+            if not cache_counts.empty:
+                cache_summary = " | " + ", ".join(f"{key}: {int(value)}" for key, value in cache_counts.items())
+        st.caption(f"Observed dashboard work: {total_seconds:.2f}s{cache_summary}")
+        st.dataframe(timing_df, use_container_width=True, hide_index=True, height=220)
 
 
 def stable_payload_hash(payload: Any) -> str:
     text = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
+
+def cached_export_path_for_ui(state_key: str, cache_key: str, timing_name: str) -> Path | None:
+    cached = st.session_state.get(state_key)
+    if not isinstance(cached, dict) or cached.get("key") != cache_key:
+        return None
+    cached_path_value = cached.get("path")
+    if not cached_path_value:
+        return None
+    cached_path = Path(str(cached_path_value))
+    if not cached_path.exists():
+        return None
+    record_estimator_perf_event(timing_name, cache_status="hit", detail="unchanged export inputs")
+    return cached_path
+
+
+def store_export_path_for_ui(state_key: str, cache_key: str, path: Path) -> None:
+    st.session_state[state_key] = {
+        "key": cache_key,
+        "path": str(path),
+        "created_at": pd.Timestamp.utcnow().isoformat(),
+    }
 
 
 def recalculate_workbench_tables_with_optional_data(workbench: dict[str, Any], data: EstimatorData | None = None) -> dict[str, Any]:
@@ -8616,8 +8711,9 @@ def recalculate_workbench_tables_for_ui(workbench: dict[str, Any], data: Estimat
     state_key = "estimator_recalculated_workbench_cache"
     cached = st.session_state.get(state_key)
     if isinstance(cached, dict) and cached.get("key") == cache_key and isinstance(cached.get("workbench"), dict):
+        record_estimator_perf_event("workbench recalculation", cache_status="hit", detail="unchanged workbench inputs")
         return copy.deepcopy(cached["workbench"])
-    with estimator_perf_step("workbench recalculation"):
+    with estimator_perf_step("workbench recalculation", cache_status="miss"):
         recalculated = recalculate_workbench_tables_with_optional_data(workbench, data=data)
     st.session_state[state_key] = {"key": cache_key, "workbench": copy.deepcopy(recalculated)}
     return recalculated
@@ -8628,8 +8724,9 @@ def draft_workbook_inputs_for_ui(workbench: dict[str, Any]) -> dict[str, Any]:
     state_key = "estimator_draft_workbook_inputs_cache"
     cached = st.session_state.get(state_key)
     if isinstance(cached, dict) and cached.get("key") == cache_key and isinstance(cached.get("draft"), dict):
+        record_estimator_perf_event("draft workbook input build", cache_status="hit", detail="unchanged workbench inputs")
         return copy.deepcopy(cached["draft"])
-    with estimator_perf_step("draft workbook input build"):
+    with estimator_perf_step("draft workbook input build", cache_status="miss"):
         draft = workbench_to_draft_workbook_inputs(workbench, recalculate=False)
     st.session_state[state_key] = {"key": cache_key, "draft": copy.deepcopy(draft)}
     return draft
@@ -8643,6 +8740,7 @@ def estimator_data_signature(data: EstimatorData) -> dict[str, Any]:
         "product_catalog": len(data.product_catalog),
         "product_properties": len(data.product_properties),
         "template_product_options": len(data.template_product_options),
+        "foam_yield_history": len(getattr(data, "foam_yield_history", pd.DataFrame())),
         "estimator_decision_recommendations": len(data.estimator_decision_recommendations),
     }
 
@@ -8675,8 +8773,9 @@ def build_estimating_workbench_for_ui(
     state_key = "estimator_build_workbench_cache"
     cache = st.session_state.setdefault(state_key, {})
     if isinstance(cache, dict) and cache_key in cache and isinstance(cache[cache_key], dict):
+        record_estimator_perf_event(timing_label, cache_status="hit", detail="unchanged recommendation, data, scope, and filters")
         return copy.deepcopy(cache[cache_key])
-    with estimator_perf_step(timing_label):
+    with estimator_perf_step(timing_label, cache_status="miss"):
         workbench = build_estimating_workbench(
             recommendation,
             data,
@@ -8687,7 +8786,7 @@ def build_estimating_workbench_for_ui(
         cache = {}
         st.session_state[state_key] = cache
     cache[cache_key] = copy.deepcopy(workbench)
-    while len(cache) > 6:
+    while len(cache) > ESTIMATOR_WORKBENCH_BUILD_CACHE_LIMIT:
         cache.pop(next(iter(cache)))
     return workbench
 
@@ -9310,12 +9409,22 @@ def render_estimator_chat_draft_panel(
             else {}
         )
         with st.spinner("Drafting estimate intake..."):
+            context_cache_before = estimator_context_cache_stats()
             with estimator_perf_step("chat context and response"):
                 result = run_estimator_chat_turn(
                     messages,
                     data=data,
                     template_type_hint=estimate_type,
                     existing_scope=existing_scope,
+                )
+            context_cache_after = estimator_context_cache_stats()
+            context_cache_hits = int(context_cache_after.get("hit", 0)) - int(context_cache_before.get("hit", 0))
+            context_cache_misses = int(context_cache_after.get("miss", 0)) - int(context_cache_before.get("miss", 0))
+            if context_cache_hits or context_cache_misses:
+                record_estimator_perf_event(
+                    "chat context digest",
+                    cache_status="hit" if context_cache_hits and not context_cache_misses else "miss" if context_cache_misses else "hit",
+                    detail=f"context cache hits={context_cache_hits}, misses={context_cache_misses}",
                 )
         messages.append({"role": "assistant", "content": estimator_chat_assistant_history_content(result)})
         st.session_state[history_key] = messages
@@ -9995,8 +10104,7 @@ def estimator_prototype_page() -> None:
     st.title("Estimating Assistant")
     st.caption("Describe the job, review what was parsed, then build the workbook draft. Estimator review is required before quoting.")
 
-    with estimator_perf_step("interactive estimator data load"):
-        data = load_estimator_data_cached("interactive")
+    data = load_estimator_data_for_ui("interactive")
     with st.expander("Examples, routing, and data status", expanded=False):
         estimate_type_selection = st.selectbox(
             "Estimate Type",
@@ -10030,6 +10138,7 @@ def estimator_prototype_page() -> None:
                 "relationship_labor_rates": len(data.relationship_labor_rates),
                 "relationship_material_qty_ratios": len(data.relationship_material_qty_ratios),
                 "relationship_package_cooccurrence": len(data.relationship_package_cooccurrence),
+                "foam_yield_history": len(data.foam_yield_history),
                 "estimator_decision_recommendations": len(data.estimator_decision_recommendations),
                 "estimator_memory": len(data.estimator_memory),
             }
@@ -10114,8 +10223,7 @@ def estimator_prototype_page() -> None:
                 key="use_historical_calibration",
             )
             if use_historical_calibration:
-                with estimator_perf_step("full estimator data load"):
-                    field_notes_data = load_estimator_data_cached("full")
+                field_notes_data = load_estimator_data_for_ui("full")
             else:
                 field_notes_data = data
     estimator_input_notes = chat_augmented_notes
@@ -11968,24 +12076,43 @@ def estimator_prototype_page() -> None:
                     st.session_state.get(workbook_error_key)
                     or "Workbook was not included. Use Generate Excel Estimate Draft first if the package needs the workbook."
                 )
-                with estimator_perf_step("review package export"):
-                    draft_inputs_for_package = draft_workbook_inputs_for_ui(edited_workbench)
-                    package_path = export_workbench_review_package(
-                        workbench=edited_workbench,
-                        input_notes=recommendation_notes,
-                        output_dir=DEFAULT_WORKBENCH_EXPORT_DIR,
-                        workbook_path=workbook_path_for_package,
-                        workbook_export_error=workbook_error_for_package,
-                        runtime=getattr(field_recommendation, "runtime_seconds_by_stage", None)
-                        or field_recommendation.parsed_fields.get("runtime_seconds_by_stage")
-                        or {},
-                        run_id=str(edited_workbench.get("estimate_id") or workbench_key),
-                        include_debug=False,
-                        workbench_is_recalculated=True,
-                        draft_workbook_inputs=draft_inputs_for_package,
-                    )
+                draft_inputs_for_package = draft_workbook_inputs_for_ui(edited_workbench)
+                review_export_cache_key = stable_payload_hash(
+                    {
+                        "workbench": edited_workbench,
+                        "draft_workbook_inputs": draft_inputs_for_package,
+                        "input_notes": recommendation_notes,
+                        "workbook_path": workbook_path_for_package,
+                        "workbook_error": workbook_error_for_package,
+                        "run_id": str(edited_workbench.get("estimate_id") or workbench_key),
+                    }
+                )
+                review_export_cache_state_key = f"workbench_review_package_export_cache_{workbench_key}"
+                package_path = cached_export_path_for_ui(
+                    review_export_cache_state_key,
+                    review_export_cache_key,
+                    "review package export",
+                )
+                package_cache_hit = package_path is not None
+                if package_path is None:
+                    with estimator_perf_step("review package export", cache_status="miss"):
+                        package_path = export_workbench_review_package(
+                            workbench=edited_workbench,
+                            input_notes=recommendation_notes,
+                            output_dir=DEFAULT_WORKBENCH_EXPORT_DIR,
+                            workbook_path=workbook_path_for_package,
+                            workbook_export_error=workbook_error_for_package,
+                            runtime=getattr(field_recommendation, "runtime_seconds_by_stage", None)
+                            or field_recommendation.parsed_fields.get("runtime_seconds_by_stage")
+                            or {},
+                            run_id=str(edited_workbench.get("estimate_id") or workbench_key),
+                            include_debug=False,
+                            workbench_is_recalculated=True,
+                            draft_workbook_inputs=draft_inputs_for_package,
+                        )
+                    store_export_path_for_ui(review_export_cache_state_key, review_export_cache_key, package_path)
                 session_id = current_estimator_session_id()
-                if session_id:
+                if session_id and not package_cache_hit:
                     edit_rows = build_edit_history_rows(feedback_baseline, edited_workbench, reason_map=reason_map)
                     capture_estimator_session_event(
                         estimator_sessions.save_decision_edits,
@@ -12047,36 +12174,57 @@ def estimator_prototype_page() -> None:
             if st.button("Export Session Review Package", key=f"export_estimator_session_review_package_{session_id}"):
                 try:
                     edit_rows = build_edit_history_rows(feedback_baseline, edited_workbench, reason_map=reason_map)
-                    capture_estimator_session_event(
-                        estimator_sessions.save_decision_edits,
-                        session_id,
-                        edit_rows,
-                        edited_by="estimator",
-                    )
-                    capture_estimator_memory_candidates(
-                        session_id,
-                        edit_rows,
-                        template_type=str(edited_scope.get("template_type") or ""),
-                    )
                     edited_workbook_inputs_for_session = draft_workbook_inputs_for_ui(edited_workbench)
                     workbook_path_for_session = st.session_state.get(workbook_path_key)
-                    capture_estimator_session_event(
-                        estimator_sessions.save_final_decisions,
-                        session_id,
-                        final_decisions=estimator_sessions.final_decisions_from_workbench(edited_workbench),
-                        calculated_outputs={
-                            "totals": totals,
+                    session_export_cache_key = stable_payload_hash(
+                        {
+                            "session_id": session_id,
+                            "edit_rows": edit_rows,
                             "draft_workbook_inputs": edited_workbook_inputs_for_session,
-                        },
-                        workbook_cell_writes=estimator_sessions.workbook_cell_writes_from_inputs(edited_workbook_inputs_for_session),
-                        workbook_export_path=workbook_path_for_session,
+                            "totals": totals,
+                            "workbook_path": workbook_path_for_session,
+                        }
                     )
-                    with estimator_perf_step("session package export"):
-                        session_package_path = estimator_sessions.export_estimator_session_package(
-                            get_engine(),
+                    session_export_cache_state_key = f"estimator_session_review_package_export_cache_{session_id}"
+                    session_package_path = cached_export_path_for_ui(
+                        session_export_cache_state_key,
+                        session_export_cache_key,
+                        "session package export",
+                    )
+                    if session_package_path is None:
+                        capture_estimator_session_event(
+                            estimator_sessions.save_decision_edits,
                             session_id,
-                            DEFAULT_WORKBENCH_EXPORT_DIR / f"estimator_session_{session_id}.zip",
-                            include_full_payload=False,
+                            edit_rows,
+                            edited_by="estimator",
+                        )
+                        capture_estimator_memory_candidates(
+                            session_id,
+                            edit_rows,
+                            template_type=str(edited_scope.get("template_type") or ""),
+                        )
+                        capture_estimator_session_event(
+                            estimator_sessions.save_final_decisions,
+                            session_id,
+                            final_decisions=estimator_sessions.final_decisions_from_workbench(edited_workbench),
+                            calculated_outputs={
+                                "totals": totals,
+                                "draft_workbook_inputs": edited_workbook_inputs_for_session,
+                            },
+                            workbook_cell_writes=estimator_sessions.workbook_cell_writes_from_inputs(edited_workbook_inputs_for_session),
+                            workbook_export_path=workbook_path_for_session,
+                        )
+                        with estimator_perf_step("session package export", cache_status="miss"):
+                            session_package_path = estimator_sessions.export_estimator_session_package(
+                                get_engine(),
+                                session_id,
+                                DEFAULT_WORKBENCH_EXPORT_DIR / f"estimator_session_{session_id}.zip",
+                                include_full_payload=False,
+                            )
+                        store_export_path_for_ui(
+                            session_export_cache_state_key,
+                            session_export_cache_key,
+                            session_package_path,
                         )
                     st.session_state[f"estimator_session_review_package_path_{session_id}"] = str(session_package_path)
                     st.session_state[f"estimator_session_review_package_bytes_{session_id}"] = cached_download_bytes(session_package_path)
@@ -12427,7 +12575,7 @@ def render_estimator_memory_admin() -> None:
                     status="disabled",
                     approved_by="streamlit_admin",
                 )
-                load_estimator_data_cached.clear()
+                clear_estimator_data_caches()
                 st.success(f"Approved {approved_count:,} and disabled {disabled_count:,} memory candidate(s).")
                 st.rerun()
             except Exception as exc:

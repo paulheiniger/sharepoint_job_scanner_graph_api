@@ -98,6 +98,116 @@ def test_estimator_page_uses_loaded_data_for_default_field_parser() -> None:
     assert "field_notes_data = EstimatorData()" not in source
 
 
+def test_estimator_workbench_build_cache_records_hit_and_avoids_rebuild(monkeypatch) -> None:
+    app = importlib.import_module("dashboard.app")
+    for key in ("estimator_build_workbench_cache", "estimator_perf_timings"):
+        app.st.session_state.pop(key, None)
+
+    data = SimpleNamespace(
+        source_files_used=[],
+        template_rows=[],
+        pricing=[],
+        product_catalog=[],
+        product_properties=[],
+        template_product_options=[],
+        estimator_decision_recommendations=[],
+    )
+    recommendation = SimpleNamespace(
+        parsed_fields={"template_type": "insulation", "area_sqft": 1000},
+        review_flags=[],
+        estimate_status="ready",
+        estimate_reason="",
+        required_questions=[],
+    )
+    calls = {"count": 0}
+
+    def fake_build_estimating_workbench(*args, **kwargs):
+        calls["count"] += 1
+        return {"template_type": "insulation", "calls": calls["count"]}
+
+    monkeypatch.setattr(app, "build_estimating_workbench", fake_build_estimating_workbench)
+
+    first = app.build_estimating_workbench_for_ui(recommendation, data, timing_label="test workbench build")
+    second = app.build_estimating_workbench_for_ui(recommendation, data, timing_label="test workbench build")
+
+    assert first == second
+    assert calls["count"] == 1
+    timings = app.st.session_state.get("estimator_perf_timings")
+    assert [row.get("cache_status") for row in timings] == ["miss", "hit"]
+
+
+def test_estimator_recalculation_cache_records_hit(monkeypatch) -> None:
+    app = importlib.import_module("dashboard.app")
+    for key in ("estimator_recalculated_workbench_cache", "estimator_perf_timings"):
+        app.st.session_state.pop(key, None)
+
+    calls = {"count": 0}
+
+    def fake_recalculate(workbench, data=None):
+        calls["count"] += 1
+        result = dict(workbench)
+        result["recalculated_calls"] = calls["count"]
+        return result
+
+    monkeypatch.setattr(app, "recalculate_workbench_tables_with_optional_data", fake_recalculate)
+
+    first = app.recalculate_workbench_tables_for_ui({"rows": [{"include": True}]})
+    second = app.recalculate_workbench_tables_for_ui({"rows": [{"include": True}]})
+
+    assert first == second
+    assert calls["count"] == 1
+    timings = app.st.session_state.get("estimator_perf_timings")
+    assert [row.get("cache_status") for row in timings] == ["miss", "hit"]
+
+
+def test_estimator_data_load_for_ui_uses_short_lived_session_cache(monkeypatch) -> None:
+    app = importlib.import_module("dashboard.app")
+    for key in ("estimator_data_session_cache_interactive", "estimator_perf_timings"):
+        app.st.session_state.pop(key, None)
+    calls = {"count": 0}
+
+    def fake_load_estimator_data_cached(load_profile="interactive"):
+        calls["count"] += 1
+        data = app.EstimatorData()
+        data.source_files_used = [f"profile:{load_profile}"]
+        return data
+
+    monkeypatch.setattr(app, "load_estimator_data_cached", fake_load_estimator_data_cached)
+
+    first = app.load_estimator_data_for_ui("interactive")
+    second = app.load_estimator_data_for_ui("interactive")
+
+    assert first is second
+    assert calls["count"] == 1
+    timings = app.st.session_state.get("estimator_perf_timings")
+    assert [row.get("cache_status") for row in timings] == ["miss", "hit"]
+
+
+def test_export_path_cache_reuses_existing_package(tmp_path) -> None:
+    app = importlib.import_module("dashboard.app")
+    state_key = "test_export_path_cache"
+    app.st.session_state.pop(state_key, None)
+    app.st.session_state.pop("estimator_perf_timings", None)
+    package_path = tmp_path / "review.zip"
+    package_path.write_bytes(b"zip")
+
+    app.store_export_path_for_ui(state_key, "cache-key", package_path)
+    cached = app.cached_export_path_for_ui(state_key, "cache-key", "review package export")
+
+    assert cached == package_path
+    timings = app.st.session_state.get("estimator_perf_timings")
+    assert timings[-1]["cache_status"] == "hit"
+
+
+def test_estimator_performance_table_summarizes_cache_status() -> None:
+    app = importlib.import_module("dashboard.app")
+    source = inspect.getsource(app.render_estimator_perf_timings)
+
+    assert "Observed dashboard work" in source
+    assert "cache_status" in source
+    assert "cache_counts" in source
+
+
 def test_sales_dashboard_rollups_classify_pipeline_and_gaps() -> None:
     app = importlib.import_module("dashboard.app")
     jobs = pd.DataFrame(
@@ -1246,9 +1356,11 @@ def test_estimating_assistant_hides_parser_noise_from_main_flow() -> None:
 def test_estimator_workbench_uses_compact_columns_by_default() -> None:
     app = importlib.import_module("dashboard.app")
 
-    assert {"include", "workbook_row", "package", "estimated_cost", app.CHOICE_SUMMARY_COLUMN, "product_guidance"}.issubset(
+    assert {"include", "workbook_row", "package", "estimated_cost", app.CHOICE_SUMMARY_COLUMN}.issubset(
         set(app.MATERIAL_WORKBENCH_COMPACT_COLUMNS)
     )
+    assert "product_guidance" in app.COMPACT_DIAGNOSTIC_COLUMNS
+    assert "notes" in app.COMPACT_DIAGNOSTIC_COLUMNS
     assert {"include", "workbook_row", "labor_package", "calculated_hours", "estimated_cost", app.CHOICE_SUMMARY_COLUMN}.issubset(
         set(app.LABOR_WORKBENCH_COMPACT_COLUMNS)
     )
@@ -1343,9 +1455,19 @@ def test_project_display_frame_keeps_calculation_and_choice_summary_not_raw_evid
     assert "decision_evidence_summary" not in projected.columns
     assert "historical_selector_evidence_count" not in projected.columns
     assert "compatibility_warnings" not in projected.columns
-    assert {"basis_sqft", "gal_per_100_sqft", "unit_price", "estimated_cost", "product_guidance"}.issubset(projected.columns)
+    assert "product_guidance" not in projected.columns
+    assert {"basis_sqft", "gal_per_100_sqft", "unit_price", "estimated_cost"}.issubset(projected.columns)
     assert "Included because coating path was requested." in projected[app.CHOICE_SUMMARY_COLUMN].iloc[0]
     assert "Verify substrate qualification." in projected[app.CHOICE_SUMMARY_COLUMN].iloc[0]
+
+
+def test_selected_row_details_keep_product_guidance_outside_compact_grid() -> None:
+    app = importlib.import_module("dashboard.app")
+    source = inspect.getsource(app.render_workbench_selected_row_details)
+
+    assert '"product_guidance"' in source
+    assert '"compatibility_warnings"' in source
+    assert '"notes"' in source
 
 
 def test_display_safe_dataframe_handles_mixed_proposed_values_for_streamlit() -> None:

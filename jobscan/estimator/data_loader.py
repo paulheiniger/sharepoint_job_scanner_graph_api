@@ -11,6 +11,7 @@ from sqlalchemy import text
 from jobscan.db_connections import create_resilient_engine
 from .decision_history import DECISION_NUMERIC_FIELDS, DECISION_TABLES
 from .estimator_memory import estimator_memory_from_rows
+from .foam_yield_history import build_foam_yield_history_table
 from .schemas import DEFAULT_STAGE_FILES, PRICING_CANDIDATES, EstimatorData
 
 
@@ -164,6 +165,8 @@ ESTIMATOR_NUMERIC_COLUMNS = [
     "linear_ft",
     "ft_per_unit",
     "margin_pct",
+    "square_feet",
+    "estimated_yield",
 ]
 
 
@@ -210,6 +213,9 @@ def normalize_estimator_data(data: EstimatorData) -> EstimatorData:
     data.template_formula_models = normalize_estimator_dataframe(data.template_formula_models)
     data.template_product_options = normalize_estimator_dataframe(data.template_product_options)
     data.template_labor_options = normalize_estimator_dataframe(data.template_labor_options)
+    data.foam_yield_history = normalize_estimator_dataframe(data.foam_yield_history)
+    if data.foam_yield_history.empty and not data.template_rows.empty:
+        data.foam_yield_history = normalize_estimator_dataframe(build_foam_yield_history_table(data))
     data.estimator_memory = estimator_memory_from_rows(data.estimator_memory)
     data.estimator_decision_recommendations = normalize_numeric_columns(
         data.estimator_decision_recommendations,
@@ -506,6 +512,11 @@ def load_estimator_data_from_database(database_url: str, *, load_profile: str = 
                     decision_history_tables[table_name] = _read_sql_dataframe(connection, f"SELECT * FROM {relation_name}")
                     data.source_files_used.append(f"database: {relation_name}")
             data.decision_history_tables = decision_history_tables
+
+        foam_history_relation = "analytics.estimator_foam_yield_history"
+        if relation_exists(connection, foam_history_relation):
+            data.foam_yield_history = _read_sql_dataframe(connection, f"SELECT * FROM {foam_history_relation}")
+            data.source_files_used.append(f"database: {foam_history_relation}")
 
         recommendation_relation = "analytics.estimator_decision_recommendations"
         if relation_exists(connection, recommendation_relation):

@@ -4,7 +4,7 @@ import json
 
 import pandas as pd
 
-from jobscan.estimator.chat_assistant import estimator_context_summary, run_estimator_chat_turn
+from jobscan.estimator.chat_assistant import estimator_context_cache_stats, estimator_context_summary, run_estimator_chat_turn
 from jobscan.estimator.schemas import EstimatorData
 
 
@@ -246,6 +246,32 @@ def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
     assert "hours_per_day" in loading["editable_fields"]
 
 
+def test_estimator_context_summary_cache_reports_hit_after_first_build() -> None:
+    data = EstimatorData(
+        template_rows=pd.DataFrame(
+            [
+                {
+                    "template_type": "insulation",
+                    "template_bucket": "foam",
+                    "line_item_kind": "material",
+                    "row_number": 19,
+                    "selected_item_name": "Open Cell SPF",
+                }
+            ]
+        )
+    )
+    scope = {"template_type": "insulation", "cache_test_marker": "context-cache"}
+    before = estimator_context_cache_stats()
+
+    first = estimator_context_summary(data, scope=scope)
+    second = estimator_context_summary(data, scope=scope)
+    after = estimator_context_cache_stats()
+
+    assert first == second
+    assert after["miss"] >= before["miss"] + 1
+    assert after["hit"] >= before["hit"] + 1
+
+
 def test_estimator_chat_normalizes_loading_travel_to_logistics_formula_fields() -> None:
     def provider(_messages, _model):
         return {
@@ -404,6 +430,43 @@ def test_estimator_chat_context_includes_thickness_matched_foam_yield_digest() -
     assert digest[0]["foam_type"] == "open_cell"
     assert digest[0]["thickness_band"] == "4-6"
     assert digest[0]["median_yield_or_coverage"] == 4500
+
+
+def test_estimator_chat_context_includes_roofing_foam_yield_digest() -> None:
+    data = EstimatorData(
+        foam_yield_history=pd.DataFrame(
+            [
+                {
+                    "template_type": "roofing",
+                    "foam_type": "closed_cell",
+                    "product": "Gaco Roof 2.7",
+                    "template_option": "Gaco Roof 2.7",
+                    "template_option_normalized": "gaco roof 2.7",
+                    "thickness_inches": 1.5,
+                    "thickness_band": "0-2",
+                    "square_feet": 9600,
+                    "area_sqft": 9600,
+                    "estimated_yield": 17058.8,
+                    "yield_or_coverage": 17058.8,
+                    "estimated_units": 844.44,
+                    "estimated_sets": 0.84444,
+                    "unit_price": 2.1,
+                    "job_id": "R1",
+                }
+            ]
+        )
+    )
+
+    context = estimator_context_summary(
+        data,
+        scope={"template_type": "roofing", "foam_thickness_inches": 1.5, "raw_input_notes": "Roof SPF with Gaco Roof 2.7"},
+    )
+
+    digest = context["foam_yield_history_digest"]
+    assert digest
+    assert digest[0]["template_option"] == "Gaco Roof 2.7"
+    assert digest[0]["median_square_feet"] == 9600
+    assert digest[0]["median_estimated_sets"] == 0.84444
 
 
 def test_estimator_chat_decision_menu_uses_template_catalog_metadata() -> None:
