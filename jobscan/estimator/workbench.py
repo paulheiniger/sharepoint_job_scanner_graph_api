@@ -6940,7 +6940,7 @@ def _build_roofing_coating_template_decisions(
         )
         basis_sqft = safe_number(first_nonblank(existing.get("basis_sqft"), default_basis), 0.0)
         gal_per_100 = positive_number(
-            "" if material_rate_override else existing.get("gal_per_100_sqft"),
+            existing.get("gal_per_100_sqft"),
             default_gal_per_100,
             default=0.0,
         )
@@ -7453,15 +7453,16 @@ def _build_roofing_detail_template_decisions(
                 safe_number((caulk_row or {}).get("evidence_count"), 0),
             )
         )
-        units = positive_number(
-            existing.get("units"),
+        expected_units = positive_number(
             existing.get("estimated_units"),
+            existing.get("units"),
             existing.get("calculated_quantity"),
             (caulk_row or {}).get("calculated_quantity") if include else "",
             (caulk_row or {}).get("estimated_quantity") if include else "",
             (caulk_row or {}).get("quantity") if include else "",
             default=0.0,
         )
+        units = expected_units
         formula = calculate_roofing_units_cost(
             units=units,
             unit_price=unit_price,
@@ -7527,6 +7528,7 @@ def _build_roofing_detail_template_decisions(
                     "resolved_template_option": resolved_option,
                     "selected_pricing_candidate": selected_name,
                     "units": round(units, 4),
+                    "estimated_units": round(units, 4),
                     "unit_price": round(unit_price, 4),
                 },
                 "editable_decision_value": {
@@ -7534,6 +7536,7 @@ def _build_roofing_detail_template_decisions(
                     "resolved_template_option": resolved_option,
                     "selected_pricing_candidate": selected_name,
                     "units": round(units, 4),
+                    "estimated_units": round(units, 4),
                     "unit_price": round(unit_price, 4),
                 },
                 "recommended_decision_value": {
@@ -12273,6 +12276,8 @@ def apply_historical_filter_update(previous_workbench: dict[str, Any] | None, fi
                 "thickness_inches",
                 "yield_or_coverage",
                 "linear_ft",
+                "units",
+                "estimated_units",
                 "feet_per_unit",
                 "days",
                 "hours_per_day",
@@ -12285,6 +12290,9 @@ def apply_historical_filter_update(previous_workbench: dict[str, Any] | None, fi
                 "amount",
                 "period",
                 "margin_pct",
+                "price_per_square",
+                "unit_price_per_thousand",
+                "board_area_sqft",
                 "trip_count",
                 "round_trip_miles",
             ):

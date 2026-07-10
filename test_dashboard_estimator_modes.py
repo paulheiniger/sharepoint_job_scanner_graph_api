@@ -1521,6 +1521,17 @@ def test_project_display_frame_keeps_calculation_and_choice_summary_not_raw_evid
     assert "Verify substrate qualification." in projected[app.CHOICE_SUMMARY_COLUMN].iloc[0]
 
 
+def test_roofing_compact_sections_use_matching_formula_columns() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    assert "wet_mils_estimate" not in app.ROOFING_COATING_TEMPLATE_COMPACT_COLUMNS
+    assert "price_per_square" in app.ROOFING_BOARD_STOCK_TEMPLATE_COMPACT_COLUMNS
+    assert "unit_price_per_thousand" not in app.ROOFING_BOARD_STOCK_TEMPLATE_COMPACT_COLUMNS
+    assert "unit_price_per_thousand" in app.ROOFING_FASTENER_PLATE_TEMPLATE_COMPACT_COLUMNS
+    assert "price_per_square" not in app.ROOFING_FASTENER_PLATE_TEMPLATE_COMPACT_COLUMNS
+    assert "estimated_units" in app.ROOFING_DETAIL_TEMPLATE_COMPACT_COLUMNS
+
+
 def test_selected_row_details_keep_product_guidance_outside_compact_grid() -> None:
     app = importlib.import_module("dashboard.app")
     source = inspect.getsource(app.render_workbench_selected_row_details)

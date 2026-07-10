@@ -460,7 +460,6 @@ ROOFING_COATING_TEMPLATE_COMPACT_COLUMNS = [
     "basis_sqft",
     "gal_per_100_sqft",
     "waste_factor_pct",
-    "wet_mils_estimate",
     "unit_price",
     "estimated_gallons",
     "estimated_cost",
@@ -493,10 +492,9 @@ ROOFING_DETAIL_TEMPLATE_COMPACT_COLUMNS = [
     "editable_selector_code",
     "resolved_template_option",
     CHOICE_SUMMARY_COLUMN,
-    "units",
     "linear_ft",
-    "unit_price",
     "estimated_units",
+    "unit_price",
     "estimated_cost",
     "selected_pricing_candidate",
     "compatibility_status",
@@ -530,6 +528,39 @@ ROOFING_BOARD_FASTENER_TEMPLATE_COMPACT_COLUMNS = [
     "price_per_square",
     "unit_price_per_thousand",
     "estimated_squares",
+    "estimated_units",
+    "estimated_cost",
+    "selected_pricing_candidate",
+    "compatibility_status",
+    "product_guidance",
+    "notes",
+]
+
+ROOFING_BOARD_STOCK_TEMPLATE_COMPACT_COLUMNS = [
+    "include",
+    "workbook_row",
+    "editable_selector_code",
+    "resolved_template_option",
+    CHOICE_SUMMARY_COLUMN,
+    "basis_sqft",
+    "thickness_inches",
+    "price_per_square",
+    "estimated_squares",
+    "estimated_cost",
+    "selected_pricing_candidate",
+    "compatibility_status",
+    "product_guidance",
+    "notes",
+]
+
+ROOFING_FASTENER_PLATE_TEMPLATE_COMPACT_COLUMNS = [
+    "include",
+    "workbook_row",
+    "editable_selector_code",
+    "resolved_template_option",
+    CHOICE_SUMMARY_COLUMN,
+    "board_area_sqft",
+    "unit_price_per_thousand",
     "estimated_units",
     "estimated_cost",
     "selected_pricing_candidate",
@@ -10851,7 +10882,7 @@ def estimator_prototype_page() -> None:
                     )
 
         if original_workbench.get("insulation_foam_template_decisions"):
-            st.markdown("#### Insulation Foam Template Decision")
+            st.markdown("#### Insulation Foam Template")
             foam_template_editable_fields = {
                 "include",
                 "editable_selector_code",
@@ -10911,7 +10942,7 @@ def estimator_prototype_page() -> None:
             if show_row_option_editor:
                 merged_foam_template_rows = render_decision_row_option_editor(
                     section_key="insulation_foam_template_decisions",
-                    section_label="Insulation Foam Template Decision",
+                    section_label="Insulation Foam Template",
                     rows=merged_foam_template_rows,
                     editable_fields=foam_template_editable_fields,
                     workbench_key=workbench_key,
@@ -11028,7 +11059,7 @@ def estimator_prototype_page() -> None:
             edited_workbench[section_key] = merged_section_rows
 
         if original_workbench.get("roofing_foam_template_decisions"):
-            st.markdown("#### Roofing SPF Foam Decision")
+            st.markdown("#### Roofing SPF Foam")
             roofing_foam_template_editable_fields = {
                 "include",
                 "editable_selector_code",
@@ -11090,7 +11121,7 @@ def estimator_prototype_page() -> None:
             if show_row_option_editor:
                 merged_roofing_foam_template_rows = render_decision_row_option_editor(
                     section_key="roofing_foam_template_decisions",
-                    section_label="Roofing SPF Foam Decision",
+                    section_label="Roofing SPF Foam",
                     rows=merged_roofing_foam_template_rows,
                     editable_fields=roofing_foam_template_editable_fields,
                     workbench_key=workbench_key,
@@ -11100,7 +11131,7 @@ def estimator_prototype_page() -> None:
             edited_workbench["roofing_foam_template_decisions"] = merged_roofing_foam_template_rows
 
         if original_workbench.get("roofing_coating_template_decisions"):
-            st.markdown("#### Roof Coating System Decision")
+            st.markdown("#### Roof Coating System")
             coating_template_editable_fields = {
                 "include",
                 "editable_selector_code",
@@ -11140,7 +11171,6 @@ def estimator_prototype_page() -> None:
                     "basis_sqft": "Basis Sq Ft",
                     "gal_per_100_sqft": "Gal / 100 Sq Ft",
                     "waste_factor_pct": "Waste %",
-                    "wet_mils_estimate": "Wet Mils",
                     "unit_price": "Unit Price",
                     "estimated_gallons": "Gallons",
                     "estimated_cost": "Cost",
@@ -11160,7 +11190,7 @@ def estimator_prototype_page() -> None:
             if show_row_option_editor:
                 merged_coating_template_rows = render_decision_row_option_editor(
                     section_key="roofing_coating_template_decisions",
-                    section_label="Roof Coating System Decision",
+                    section_label="Roof Coating System",
                     rows=merged_coating_template_rows,
                     editable_fields=coating_template_editable_fields,
                     workbench_key=workbench_key,
@@ -11170,7 +11200,7 @@ def estimator_prototype_page() -> None:
             edited_workbench["roofing_coating_template_decisions"] = merged_coating_template_rows
 
         if original_workbench.get("roofing_primer_template_decisions"):
-            st.markdown("#### Roofing Primer System Decision")
+            st.markdown("#### Roofing Primer System")
             primer_template_editable_fields = {
                 "include",
                 "editable_selector_code",
@@ -11227,7 +11257,7 @@ def estimator_prototype_page() -> None:
             if show_row_option_editor:
                 merged_primer_template_rows = render_decision_row_option_editor(
                     section_key="roofing_primer_template_decisions",
-                    section_label="Roofing Primer System Decision",
+                    section_label="Roofing Primer System",
                     rows=merged_primer_template_rows,
                     editable_fields=primer_template_editable_fields,
                     workbench_key=workbench_key,
@@ -11237,11 +11267,12 @@ def estimator_prototype_page() -> None:
             edited_workbench["roofing_primer_template_decisions"] = merged_primer_template_rows
 
         if original_workbench.get("roofing_detail_template_decisions"):
-            st.markdown("#### Roofing Fabric / Sealant System Decision")
+            st.markdown("#### Roofing Fabric / Sealant System")
             detail_template_editable_fields = {
                 "include",
                 "editable_selector_code",
                 "units",
+                "estimated_units",
                 "linear_ft",
                 "unit_price",
                 "selected_pricing_candidate",
@@ -11276,7 +11307,7 @@ def estimator_prototype_page() -> None:
                     "units": "Units",
                     "linear_ft": "Linear Ft",
                     "unit_price": "Unit Price",
-                    "estimated_units": "Calculated Units",
+                    "estimated_units": "Expected Units",
                     "estimated_cost": "Cost",
                     "selected_pricing_candidate": "Pricing Candidate",
                     "compatibility_status": "Compatibility",
@@ -11294,7 +11325,7 @@ def estimator_prototype_page() -> None:
             if show_row_option_editor:
                 merged_detail_template_rows = render_decision_row_option_editor(
                     section_key="roofing_detail_template_decisions",
-                    section_label="Roofing Fabric / Sealant System Decision",
+                    section_label="Roofing Fabric / Sealant System",
                     rows=merged_detail_template_rows,
                     editable_fields=detail_template_editable_fields,
                     workbench_key=workbench_key,
@@ -11304,7 +11335,7 @@ def estimator_prototype_page() -> None:
             edited_workbench["roofing_detail_template_decisions"] = merged_detail_template_rows
 
         if original_workbench.get("roofing_detail_quantity_template_decisions"):
-            st.markdown("#### Roofing Detail Quantity Decision")
+            st.markdown("#### Roofing Detail Quantity")
             detail_quantity_template_editable_fields = {
                 "include",
                 "linear_ft",
@@ -11359,7 +11390,7 @@ def estimator_prototype_page() -> None:
             if show_row_option_editor:
                 merged_detail_quantity_template_rows = render_decision_row_option_editor(
                     section_key="roofing_detail_quantity_template_decisions",
-                    section_label="Roofing Detail Quantity Decision",
+                    section_label="Roofing Detail Quantity",
                     rows=merged_detail_quantity_template_rows,
                     editable_fields=detail_quantity_template_editable_fields,
                     workbench_key=workbench_key,
@@ -11369,7 +11400,7 @@ def estimator_prototype_page() -> None:
             edited_workbench["roofing_detail_quantity_template_decisions"] = merged_detail_quantity_template_rows
 
         if original_workbench.get("roofing_board_fastener_template_decisions"):
-            st.markdown("#### Roofing Board / Fastener System Decision")
+            st.markdown("#### Roofing Board Stock")
             board_template_editable_fields = {
                 "include",
                 "editable_selector_code",
@@ -11382,14 +11413,16 @@ def estimator_prototype_page() -> None:
                 "selected_pricing_candidate",
             }
             board_template_rows = original_workbench.get("roofing_board_fastener_template_decisions") or []
+            board_stock_rows = [row for row in board_template_rows if str((row or {}).get("template_bucket") or "") == "board_stock"]
+            fastener_plate_rows = [row for row in board_template_rows if str((row or {}).get("template_bucket") or "") != "board_stock"]
             board_template_column_order = (
                 []
                 if show_row_details
-                else ROOFING_BOARD_FASTENER_TEMPLATE_COMPACT_COLUMNS
+                else ROOFING_BOARD_STOCK_TEMPLATE_COMPACT_COLUMNS
             )
-            with estimator_perf_step("roof board fastener table prep"):
+            with estimator_perf_step("roof board stock table prep"):
                 board_template_display_df, board_template_column_order = workbench_display_frame_from_records(
-                    board_template_rows,
+                    board_stock_rows,
                     board_template_column_order,
                     editable_fields=board_template_editable_fields,
                     show_row_details=show_row_details,
@@ -11425,25 +11458,90 @@ def estimator_prototype_page() -> None:
                 },
                 disabled=[column for column in board_template_column_order if column not in board_template_editable_fields],
             )
-            merged_board_template_rows = merge_editable_rows(
-                board_template_rows,
+            merged_board_stock_rows = merge_editable_rows(
+                board_stock_rows,
                 edited_board_template_df.to_dict(orient="records"),
                 board_template_editable_fields,
             )
             if show_row_option_editor:
-                merged_board_template_rows = render_decision_row_option_editor(
+                merged_board_stock_rows = render_decision_row_option_editor(
                     section_key="roofing_board_fastener_template_decisions",
-                    section_label="Roofing Board / Fastener System Decision",
-                    rows=merged_board_template_rows,
+                    section_label="Roofing Board Stock",
+                    rows=merged_board_stock_rows,
                     editable_fields=board_template_editable_fields,
                     workbench_key=workbench_key,
                     scope_key=scope_key,
                     historical_filters_key=historical_filters_key,
                 )
+            merged_fastener_plate_rows = fastener_plate_rows
+            if fastener_plate_rows:
+                st.markdown("#### Roofing Fasteners / Plates")
+                fastener_plate_column_order = (
+                    []
+                    if show_row_details
+                    else ROOFING_FASTENER_PLATE_TEMPLATE_COMPACT_COLUMNS
+                )
+                with estimator_perf_step("roof fastener plate table prep"):
+                    fastener_plate_display_df, fastener_plate_column_order = workbench_display_frame_from_records(
+                        fastener_plate_rows,
+                        fastener_plate_column_order,
+                        editable_fields=board_template_editable_fields,
+                        show_row_details=show_row_details,
+                    )
+                edited_fastener_plate_df = st.data_editor(
+                    fastener_plate_display_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    num_rows="fixed",
+                    key=f"wb_roofing_fastener_plate_template_{workbench_key}_{scope_key}_{historical_filters_key}",
+                    column_order=fastener_plate_column_order,
+                    column_config={
+                        "include": "Include",
+                        "workbook_row": "Row",
+                        "editable_selector_code": "Selector",
+                        "resolved_template_option": "Template Option",
+                        "historical_selector_recommendation": "Historical Default",
+                        "historical_selector_evidence_count": "Evidence",
+                        "board_area_sqft": "Fastener Area",
+                        "unit_price_per_thousand": "Price / 1,000",
+                        "estimated_units": "Units",
+                        "estimated_cost": "Cost",
+                        "selected_pricing_candidate": "Pricing Candidate",
+                        "compatibility_status": "Compatibility",
+                        "compatibility_warnings": "Warnings",
+                        "product_guidance": "Product Guidance",
+                        "notes": "Notes",
+                    },
+                    disabled=[column for column in fastener_plate_column_order if column not in board_template_editable_fields],
+                )
+                merged_fastener_plate_rows = merge_editable_rows(
+                    fastener_plate_rows,
+                    edited_fastener_plate_df.to_dict(orient="records"),
+                    board_template_editable_fields,
+                )
+                if show_row_option_editor:
+                    merged_fastener_plate_rows = render_decision_row_option_editor(
+                        section_key="roofing_board_fastener_template_decisions",
+                        section_label="Roofing Fasteners / Plates",
+                        rows=merged_fastener_plate_rows,
+                        editable_fields=board_template_editable_fields,
+                        workbench_key=workbench_key,
+                        scope_key=scope_key,
+                        historical_filters_key=historical_filters_key,
+                    )
+            merged_board_by_id = {
+                str(first_nonblank(row.get("decision_id"), row.get("workbook_row"), row.get("template_bucket"))): row
+                for row in [*merged_board_stock_rows, *merged_fastener_plate_rows]
+                if isinstance(row, dict)
+            }
+            merged_board_template_rows = [
+                merged_board_by_id.get(str(first_nonblank(row.get("decision_id"), row.get("workbook_row"), row.get("template_bucket"))), row)
+                for row in board_template_rows
+            ]
             edited_workbench["roofing_board_fastener_template_decisions"] = merged_board_template_rows
 
         if original_workbench.get("roofing_granules_template_decisions"):
-            st.markdown("#### Roofing Granules System Decision")
+            st.markdown("#### Roofing Granules System")
             granules_template_editable_fields = {
                 "include",
                 "editable_selector_code",
@@ -11502,7 +11600,7 @@ def estimator_prototype_page() -> None:
             if show_row_option_editor:
                 merged_granules_template_rows = render_decision_row_option_editor(
                     section_key="roofing_granules_template_decisions",
-                    section_label="Roofing Granules System Decision",
+                    section_label="Roofing Granules System",
                     rows=merged_granules_template_rows,
                     editable_fields=granules_template_editable_fields,
                     workbench_key=workbench_key,
@@ -11512,7 +11610,7 @@ def estimator_prototype_page() -> None:
             edited_workbench["roofing_granules_template_decisions"] = merged_granules_template_rows
 
         if original_workbench.get("roofing_equipment_template_decisions"):
-            st.markdown("#### Roofing Equipment / Dumpster Decision")
+            st.markdown("#### Roofing Equipment / Dumpster")
             equipment_template_editable_fields = {
                 "include",
                 "editable_selector_code",
@@ -11574,7 +11672,7 @@ def estimator_prototype_page() -> None:
             if show_row_option_editor:
                 merged_equipment_template_rows = render_decision_row_option_editor(
                     section_key="roofing_equipment_template_decisions",
-                    section_label="Roofing Equipment / Dumpster Decision",
+                    section_label="Roofing Equipment / Dumpster",
                     rows=merged_equipment_template_rows,
                     editable_fields=equipment_template_editable_fields,
                     workbench_key=workbench_key,
@@ -11584,7 +11682,7 @@ def estimator_prototype_page() -> None:
             edited_workbench["roofing_equipment_template_decisions"] = merged_equipment_template_rows
 
         if original_workbench.get("roofing_travel_freight_template_decisions"):
-            st.markdown("#### Roofing Travel / Freight Decision")
+            st.markdown("#### Roofing Travel / Freight")
             travel_freight_template_editable_fields = {
                 "include",
                 "estimated_units",
@@ -11643,7 +11741,7 @@ def estimator_prototype_page() -> None:
             if show_row_option_editor:
                 merged_travel_freight_template_rows = render_decision_row_option_editor(
                     section_key="roofing_travel_freight_template_decisions",
-                    section_label="Roofing Travel / Freight Decision",
+                    section_label="Roofing Travel / Freight",
                     rows=merged_travel_freight_template_rows,
                     editable_fields=travel_freight_template_editable_fields,
                     workbench_key=workbench_key,
@@ -11653,7 +11751,7 @@ def estimator_prototype_page() -> None:
             edited_workbench["roofing_travel_freight_template_decisions"] = merged_travel_freight_template_rows
 
         if original_workbench.get("roofing_accessory_template_decisions"):
-            st.markdown("#### Roofing Accessories / Support Decision")
+            st.markdown("#### Roofing Accessories / Support")
             accessory_template_editable_fields = {
                 "include",
                 "editable_selector_code",
@@ -11710,7 +11808,7 @@ def estimator_prototype_page() -> None:
             if show_row_option_editor:
                 merged_accessory_template_rows = render_decision_row_option_editor(
                     section_key="roofing_accessory_template_decisions",
-                    section_label="Roofing Accessories / Support Decision",
+                    section_label="Roofing Accessories / Support",
                     rows=merged_accessory_template_rows,
                     editable_fields=accessory_template_editable_fields,
                     workbench_key=workbench_key,
@@ -11845,7 +11943,7 @@ def estimator_prototype_page() -> None:
             )
 
         if original_workbench.get("roofing_labor_template_decisions"):
-            st.markdown("#### Roofing Labor Planning Decision")
+            st.markdown("#### Roofing Labor Planning")
             labor_template_editable_fields = {
                 "include",
                 "days",
@@ -11912,7 +12010,7 @@ def estimator_prototype_page() -> None:
             if show_row_option_editor:
                 merged_labor_template_rows = render_decision_row_option_editor(
                     section_key="roofing_labor_template_decisions",
-                    section_label="Roofing Labor Planning Decision",
+                    section_label="Roofing Labor Planning",
                     rows=merged_labor_template_rows,
                     editable_fields=labor_template_editable_fields,
                     workbench_key=workbench_key,

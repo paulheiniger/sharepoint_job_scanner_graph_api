@@ -1488,6 +1488,74 @@ def test_recalculate_removes_legacy_flat_rows() -> None:
     assert recalculated["roofing_coating_template_decisions"][0]["estimated_cost"] == 100
 
 
+def test_roofing_coating_recalculate_preserves_edited_gallons_per_100_sqft() -> None:
+    workbench = {
+        "scope": {"division": "Roofing", "template_type": "roofing", "project_type": "roof coating", "net_sqft": 10000},
+        "source_material_plan": [
+            {
+                "category": "coating",
+                "item": "Gaco Silicone",
+                "quantity": 150,
+                "unit": "gal",
+                "unit_price": 32,
+                "estimated_cost": 4800,
+                "historical_qty_per_sqft": 0.01,
+            }
+        ],
+        "roofing_coating_template_decisions": [
+            {
+                "include": True,
+                "decision_id": "roofing_coating_system_row_26",
+                "template_bucket": "coating",
+                "workbook_row": "26",
+                "editable_selector_code": "11",
+                "basis_sqft": 10000,
+                "gal_per_100_sqft": 1,
+                "unit_price": 32,
+            }
+        ],
+    }
+
+    recalculated = recalculate_workbench_tables(workbench)
+    coating = recalculated["roofing_coating_template_decisions"][0]
+
+    assert coating["gal_per_100_sqft"] == 1
+    assert coating["estimated_gallons"] == 100
+    assert coating["estimated_cost"] == 3200
+
+
+def test_roofing_caulk_recalculate_uses_edited_expected_units() -> None:
+    workbench = {
+        "scope": {
+            "division": "Roofing",
+            "template_type": "roofing",
+            "project_type": "roof coating",
+            "net_sqft": 10000,
+            "notes": "Open seams and penetrations need sealant.",
+        },
+        "roofing_detail_template_decisions": [
+            {
+                "include": True,
+                "decision_id": "roofing_caulk_sealant_row_43",
+                "template_bucket": "caulk_detail",
+                "workbook_row": "43",
+                "editable_selector_code": "1",
+                "resolved_template_option": "Silicone Sausage",
+                "estimated_units": 30,
+                "unit_price": 12,
+            }
+        ],
+    }
+
+    recalculated = recalculate_workbench_tables(workbench)
+    caulk = recalculated["roofing_detail_template_decisions"][0]
+
+    assert caulk["units"] == 30
+    assert caulk["estimated_units"] == 30
+    assert caulk["unit_price"] == 12
+    assert caulk["estimated_cost"] == 360
+
+
 def test_totals_use_decision_sections_only() -> None:
     workbench = {
         "scope": {"division": "Roofing", "template_type": "roofing", "project_type": "roof coating"},
