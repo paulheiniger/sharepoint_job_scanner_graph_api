@@ -82,6 +82,11 @@ from jobscan.estimator.photo_evidence import (
 )
 from jobscan.estimator.chat_assistant import estimator_context_cache_stats, run_estimator_chat_turn
 from jobscan.estimator.note_images import extract_notes_from_images_with_ai, stage_note_images
+from jobscan.estimator.reference_answer_key import (
+    answer_key_to_workbook_decision_preferences,
+    build_reference_estimate_answer_key,
+)
+from jobscan.estimator.template_examples import build_template_examples
 
 try:
     from streamlit_calendar import calendar
@@ -3098,6 +3103,18 @@ def plan_ask_spraytec_query(prompt: str, interpreted: dict[str, Any]) -> dict[st
     reasons: list[str] = []
     attribute_query = infer_ask_job_attribute_query(prompt, interpreted)
 
+    if is_generated_field_notes_request(prompt):
+        return {
+            "mode": "generated_field_notes",
+            "targets": ["historical_scope_texts", "template_examples", "estimate_template_rows"],
+            "requires_job_context": True,
+            "needs_clarification": not generated_field_notes_query(prompt),
+            "clarification": "Which job, customer, or project should I use to generate field notes?",
+            "use_llm_answer": False,
+            "reason": "generate estimator field notes from historical proposal scope",
+            "attribute_query": attribute_query,
+        }
+
     document_markers = (
         " document ",
         " documents ",
@@ -3245,6 +3262,357 @@ def plan_ask_spraytec_query(prompt: str, interpreted: dict[str, Any]) -> dict[st
         "reason": "; ".join(dict.fromkeys(reasons)) or "job lookup",
         "attribute_query": attribute_query,
     }
+
+
+def is_generated_field_notes_request(prompt: str) -> bool:
+    normalized = " " + " ".join(str(prompt or "").lower().split()) + " "
+    has_action = any(marker in normalized for marker in (" generate ", " create ", " draft ", " make "))
+    has_field_notes = " field notes " in normalized or " field note " in normalized or " notes " in normalized
+    has_scope_source = any(marker in normalized for marker in (" proposal scope ", " proposal ", " poposal ", " scope "))
+    return bool(has_action and has_field_notes and has_scope_source)
+
+
+def generated_field_notes_query(prompt: str) -> str:
+    text = str(prompt or "").strip()
+    match = re.search(r"\bfor\s+(.+)$", text, re.I)
+    query = match.group(1).strip() if match else text
+    query = re.sub(
+        r"\b(?:generate|create|draft|make|some|field|notes?|from|proposal|poposal|scope|historical|the|a|an)\b",
+        " ",
+        query,
+        flags=re.I,
+    )
+    return " ".join(query.split()).strip()
+
+
+def generated_field_notes_template_types(prompt: str) -> list[str]:
+    normalized = " " + " ".join(str(prompt or "").lower().split()) + " "
+    if " floor " in normalized or " flooring " in normalized:
+        return ["flooring"]
+    if " insulation " in normalized or " insulate " in normalized or " spray foam " in normalized and " roof " not in normalized:
+        return ["insulation"]
+    if " roof " in normalized or " roofing " in normalized or " coating " in normalized:
+        return ["roofing"]
+    return ["roofing", "insulation", "flooring"]
+
+
+def _json_dict_value(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not text_value(value):
+        return {}
+    try:
+        parsed = json.loads(str(value))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _estimator_type_for_template(template_type: str) -> str:
+    normalized = str(template_type or "").strip().lower()
+    if normalized == "insulation":
+        return ESTIMATE_TYPE_INSULATION
+    if normalized == "flooring":
+        return ESTIMATE_TYPE_FLOORING
+    return ESTIMATE_TYPE_RESTORATION
+
+
+def _division_for_template(template_type: str) -> str:
+    normalized = str(template_type or "").strip().lower()
+    if normalized == "insulation":
+        return "Insulation"
+    if normalized == "flooring":
+        return "Flooring"
+    if normalized == "roofing":
+        return "Roofing"
+    return normalized.title()
+
+
+def _field_note_match_score(
+    *,
+    query: str,
+    template_type: str,
+    example: dict[str, Any],
+    scope_row: dict[str, Any],
+    answer_key: dict[str, Any],
+) -> float:
+    query_tokens = tokenize_search_text(query)
+    candidate_text = " ".join(
+        text_value(value)
+        for value in (
+            example.get("customer"),
+            example.get("job_name"),
+            example.get("source_file"),
+            scope_row.get("file_name"),
+            scope_row.get("scope_text"),
+        )
+        if text_value(value)
+    ).lower()
+    if not query_tokens:
+        return 0.0
+    matched_tokens = sum(1 for token in query_tokens if token in candidate_text)
+    if matched_tokens == 0:
+        return 0.0
+    score = matched_tokens * 25.0
+    normalized_query = " ".join(query_tokens)
+    if normalized_query and normalized_query in candidate_text:
+        score += 80.0
+    if len(query_tokens) > 1 and matched_tokens == len(query_tokens):
+        score += 50.0
+    for phrase in re.findall(r"\broof\s+[a-z0-9#-]+\b", query.lower()):
+        if phrase in candidate_text:
+            score += 35.0
+    if template_type and template_type in candidate_text:
+        score += 10.0
+    if str(scope_row.get("document_type") or "").lower() == "proposal":
+        score += 12.0
+    if "proposal" in str(scope_row.get("file_name") or "").lower():
+        score += 8.0
+    summary = answer_key.get("summary") if isinstance(answer_key.get("summary"), dict) else {}
+    score += min(float(summary.get("decision_count") or 0), 60.0) * 0.75
+    if text_value(scope_row.get("scope_text")):
+        score += min(len(text_value(scope_row.get("scope_text"))) / 250.0, 12.0)
+    return score
+
+
+def _generated_field_notes_from_scope(
+    *,
+    example: dict[str, Any],
+    scope_row: dict[str, Any],
+    answer_key: dict[str, Any],
+) -> str:
+    context = answer_key.get("job_context") if isinstance(answer_key.get("job_context"), dict) else {}
+    customer = text_value(example.get("customer") or context.get("customer"))
+    job_name = text_value(example.get("job_name") or context.get("job_name"))
+    address = text_value(context.get("site_address") or context.get("address") or example.get("site_address"))
+    proposal_file = text_value(scope_row.get("file_name"))
+    estimate_file = text_value(example.get("source_file"))
+    scope_text = text_value(scope_row.get("scope_text"))
+    if len(scope_text) > 2400:
+        scope_text = scope_text[:2400].rstrip() + " ..."
+    lines: list[str] = []
+    header = " / ".join(part for part in (customer, job_name) if part)
+    if header:
+        lines.append(header)
+    if address:
+        lines.append(f"Site address: {address}")
+    if proposal_file:
+        lines.append(f"Historical proposal/source: {proposal_file}")
+    if estimate_file:
+        lines.append(f"Historical estimate answer key: {estimate_file}")
+    lines.append("Field notes reconstructed from historical proposal scope:")
+    lines.append(scope_text)
+    return "\n".join(line for line in lines if line).strip()
+
+
+def build_generated_field_notes_case_from_history(
+    data: EstimatorData,
+    prompt: str,
+    *,
+    limit: int = 4,
+) -> dict[str, Any]:
+    query = generated_field_notes_query(prompt)
+    template_types = set(generated_field_notes_template_types(prompt))
+    examples = getattr(data, "template_examples", pd.DataFrame())
+    if not isinstance(examples, pd.DataFrame) or examples.empty:
+        examples = build_template_examples(data)
+    scope_rows = getattr(data, "historical_scope_texts", pd.DataFrame())
+    if not isinstance(scope_rows, pd.DataFrame) or scope_rows.empty:
+        return {
+            "status": "missing_source",
+            "query": query,
+            "message": "No historical proposal scope text is loaded, so I cannot generate field notes from proposals yet.",
+            "candidates": [],
+        }
+    if examples.empty:
+        return {
+            "status": "missing_source",
+            "query": query,
+            "message": "No estimator template examples with answer keys are loaded yet.",
+            "candidates": [],
+        }
+    if "job_id" not in examples.columns or "job_id" not in scope_rows.columns:
+        return {
+            "status": "missing_source",
+            "query": query,
+            "message": "Historical examples or proposal scope rows are missing job_id, so they cannot be paired reliably.",
+            "candidates": [],
+        }
+    scope_by_job: dict[str, list[dict[str, Any]]] = {}
+    for row in scope_rows.fillna("").to_dict(orient="records"):
+        job_id = text_value(row.get("job_id"))
+        if not job_id or not text_value(row.get("scope_text")):
+            continue
+        scope_by_job.setdefault(job_id, []).append(row)
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for example in examples.fillna("").to_dict(orient="records"):
+        template_type = text_value(example.get("template_type")).lower()
+        if template_types and template_type not in template_types:
+            continue
+        job_id = text_value(example.get("job_id"))
+        if not job_id or job_id not in scope_by_job:
+            continue
+        answer_key = _json_dict_value(example.get("answer_key_json"))
+        if not answer_key:
+            try:
+                answer_key = build_reference_estimate_answer_key(
+                    data,
+                    document_id=text_value(example.get("document_id")) or None,
+                    source_file=text_value(example.get("source_file")) or None,
+                )
+            except Exception:
+                logger.debug("could not build reference answer key for generated notes", exc_info=True)
+                answer_key = {}
+        if not answer_key:
+            continue
+        for scope_row in scope_by_job.get(job_id, []):
+            score = _field_note_match_score(
+                query=query,
+                template_type=template_type,
+                example=example,
+                scope_row=scope_row,
+                answer_key=answer_key,
+            )
+            if score <= 0:
+                continue
+            summary = answer_key.get("summary") if isinstance(answer_key.get("summary"), dict) else {}
+            generated_notes = _generated_field_notes_from_scope(
+                example=example,
+                scope_row=scope_row,
+                answer_key=answer_key,
+            )
+            preferences = answer_key_to_workbook_decision_preferences(answer_key)
+            scored.append(
+                (
+                    score,
+                    {
+                        "status": "selected",
+                        "query": query,
+                        "score": round(score, 3),
+                        "template_type": template_type,
+                        "estimate_type": _estimator_type_for_template(template_type),
+                        "job_id": job_id,
+                        "customer": text_value(example.get("customer")),
+                        "job_name": text_value(example.get("job_name")),
+                        "source_file": text_value(example.get("source_file")),
+                        "proposal_file_name": text_value(scope_row.get("file_name")),
+                        "proposal_url": text_value(scope_row.get("sharepoint_url")),
+                        "generated_notes": generated_notes,
+                        "answer_key": answer_key,
+                        "workbook_decision_preferences": preferences,
+                        "answer_key_summary": {
+                            "decision_count": int(summary.get("decision_count") or len(answer_key.get("decisions") or [])),
+                            "unmapped_count": int(summary.get("unmapped_count") or 0),
+                            "source_row_count": int(summary.get("source_row_count") or 0),
+                            "preference_count": len(preferences),
+                        },
+                    },
+                )
+            )
+    scored.sort(key=lambda item: item[0], reverse=True)
+    candidates = [item for _, item in scored[: max(1, int(limit or 4))]]
+    if not candidates:
+        return {
+            "status": "not_found",
+            "query": query,
+            "message": f"I could not find a proposal scope plus answer-key match for {query or 'that request'}.",
+            "candidates": [],
+        }
+    if len(candidates) > 1 and candidates[0]["score"] < candidates[1]["score"] + 20:
+        return {
+            "status": "ambiguous",
+            "query": query,
+            "message": "I found multiple plausible proposal/estimate pairs. Ask with the proposal or estimate file name, or use one of these candidates.",
+            "candidates": candidates,
+        }
+    selected = dict(candidates[0])
+    selected["candidates"] = candidates
+    return selected
+
+
+def generated_field_notes_response(case: dict[str, Any]) -> str:
+    status = text_value(case.get("status"))
+    if status in {"missing_source", "not_found"}:
+        return text_value(case.get("message")) or "I could not generate field notes from historical proposal scope."
+    if status == "ambiguous":
+        lines = [text_value(case.get("message")) or "I found multiple candidates.", ""]
+        for index, candidate in enumerate(case.get("candidates") or [], start=1):
+            summary = candidate.get("answer_key_summary") if isinstance(candidate.get("answer_key_summary"), dict) else {}
+            lines.append(
+                f"{index}. {candidate.get('customer') or ''} / {candidate.get('job_name') or ''} "
+                f"- proposal: {candidate.get('proposal_file_name') or 'unknown'} "
+                f"- estimate: {candidate.get('source_file') or 'unknown'} "
+                f"- decisions: {summary.get('decision_count', 0)} "
+                f"- score: {candidate.get('score')}"
+            )
+        return "\n".join(lines).strip()
+    summary = case.get("answer_key_summary") if isinstance(case.get("answer_key_summary"), dict) else {}
+    lines = [
+        "Generated field notes from historical proposal scope:",
+        "",
+        "```text",
+        text_value(case.get("generated_notes")),
+        "```",
+        "",
+        "Attached to Estimating Assistant context:",
+        f"- Proposal scope: {case.get('proposal_file_name') or 'unknown'}",
+        f"- Estimate answer key: {case.get('source_file') or 'unknown'}",
+        f"- Template type: {case.get('template_type') or 'unknown'}",
+        f"- Answer-key decisions: {summary.get('decision_count', 0)} mapped, {summary.get('unmapped_count', 0)} unmapped",
+        "",
+        "Open Estimating Assistant and build/rebuild the workbook. You do not need to paste the answer key.",
+    ]
+    if text_value(case.get("proposal_url")):
+        lines.insert(-2, f"- Proposal link: {markdown_link(case.get('proposal_file_name') or 'proposal', case.get('proposal_url'))}")
+    return "\n".join(lines).strip()
+
+
+def attach_generated_field_notes_case_to_estimator_context(case: dict[str, Any]) -> str:
+    if text_value(case.get("status")) != "selected":
+        return ""
+    notes = text_value(case.get("generated_notes"))
+    if not notes:
+        return ""
+    thread_id = reset_current_estimator_chat_thread()
+    template_type = text_value(case.get("template_type"))
+    result_payload = {
+        "source": "ask_spraytec_generated_proposal_scope",
+        "confidence": min(float(case.get("score") or 0.0) / 200.0, 0.95),
+        "estimator_notes": notes,
+        "assistant_message": "Generated field notes from historical proposal scope and attached the matched estimate answer key.",
+        "missing_questions": [],
+        "warnings": [],
+        "scope_overrides": {
+            "template_type": template_type,
+            "division": _division_for_template(template_type),
+            "raw_input_notes": notes,
+            "reference_job_id": case.get("job_id"),
+            "reference_source_file": case.get("source_file"),
+            "reference_proposal_file": case.get("proposal_file_name"),
+        },
+        "workbook_decision_preferences": case.get("workbook_decision_preferences") or [],
+        "reference_answer_key": case.get("answer_key") or {},
+    }
+    history = [
+        {
+            "role": "assistant",
+            "content": generated_field_notes_response(case),
+        }
+    ]
+    st.session_state["estimator_notes"] = notes
+    st.session_state["estimator_estimate_type"] = _estimator_type_for_template(template_type)
+    st.session_state["estimator_chat_result_active"] = result_payload
+    st.session_state["estimator_chat_history_active"] = history
+    st.session_state[f"estimator_chat_result_{thread_id}"] = result_payload
+    st.session_state[f"estimator_chat_history_{thread_id}"] = history
+    save_estimator_chat_session(
+        thread_id,
+        history=history,
+        result=result_payload,
+        estimator_notes=notes,
+        estimate_type=_estimator_type_for_template(template_type),
+    )
+    return thread_id
 
 
 def indexed_document_markdown(doc: dict[str, Any]) -> str:
@@ -4626,6 +4994,34 @@ def ask_spraytec_page() -> None:
     plan_targets = set(query_plan.get("targets") or [])
     debug_payload: dict[str, Any] = {"interpreted": interpreted, "query_plan": query_plan, "ranked_matches": []}
     response = ""
+
+    if query_plan.get("mode") == "generated_field_notes":
+        if query_plan.get("needs_clarification"):
+            response = text_value(query_plan.get("clarification")) or "Which job should I use?"
+        else:
+            with st.spinner("Generating field notes from historical proposal scope..."):
+                estimator_data = load_estimator_data_for_ui("interactive")
+                generated_case = build_generated_field_notes_case_from_history(estimator_data, prompt)
+            if generated_case.get("status") == "selected":
+                thread_id = attach_generated_field_notes_case_to_estimator_context(generated_case)
+                generated_case["estimator_chat_thread_id"] = thread_id
+            response = generated_field_notes_response(generated_case)
+            debug_payload["generated_field_notes"] = {
+                "status": generated_case.get("status"),
+                "query": generated_case.get("query"),
+                "selected_job_id": generated_case.get("job_id"),
+                "source_file": generated_case.get("source_file"),
+                "proposal_file_name": generated_case.get("proposal_file_name"),
+                "answer_key_summary": generated_case.get("answer_key_summary"),
+                "candidate_count": len(generated_case.get("candidates") or []),
+            }
+        st.session_state["ask_spraytec_messages"].append({"role": "assistant", "content": response})
+        with st.chat_message("assistant"):
+            st.markdown(response)
+            with st.expander("Search details"):
+                st.write("query plan", debug_payload.get("query_plan"))
+                st.write("generated field notes", debug_payload.get("generated_field_notes"))
+        return
 
     if query_plan.get("needs_clarification") and not (selected_job or selected_job_id):
         response = text_value(query_plan.get("clarification")) or "What should I search for?"

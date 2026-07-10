@@ -735,6 +735,83 @@ def test_ask_spraytec_query_planner_routes_attribute_job_search() -> None:
     assert "estimate_line_items" in plan["targets"]
 
 
+def test_ask_spraytec_query_planner_routes_generated_field_notes() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    prompt = "Generate some field notes from poposal scope for Mudd's Furniture Roof B"
+    interpreted = app.interpret_search_request(prompt)
+    plan = app.plan_ask_spraytec_query(prompt, interpreted)
+
+    assert plan["mode"] == "generated_field_notes"
+    assert "template_examples" in plan["targets"]
+    assert plan["needs_clarification"] is False
+
+
+def test_ask_spraytec_generates_field_notes_with_attached_answer_key() -> None:
+    app = importlib.import_module("dashboard.app")
+    answer_key = {
+        "schema_version": "reference_estimate_answer_key.v1",
+        "template_type": "roofing",
+        "job_context": {
+            "customer": "Mudd Family Trust",
+            "job_name": "Mudd's Furniture Roof B",
+        },
+        "decisions": [
+            {
+                "section": "roofing_coating_template_decisions",
+                "decision_id": "roofing_coating_system_row_26",
+                "template_bucket": "coating",
+                "workbook_row": "26",
+                "source_row": "26",
+                "line_item": "Gaco Silicone",
+                "include": True,
+                "inputs": {"basis_sqft": 9600, "gal_per_100_sqft": 1.5, "unit_price": 32},
+                "evidence": {"source": "reference_estimate_answer_key"},
+            }
+        ],
+        "summary": {"decision_count": 1, "unmapped_count": 0, "source_row_count": 120},
+    }
+    data = SimpleNamespace(
+        template_examples=pd.DataFrame(
+            [
+                {
+                    "job_id": "J-MUDD",
+                    "customer": "Mudd Family Trust",
+                    "job_name": "Mudd's Furniture Roof B",
+                    "template_type": "roofing",
+                    "source_file": "Estimate Roofing - Mudd Furniture Roof B.xlsx",
+                    "answer_key_json": json.dumps(answer_key),
+                }
+            ]
+        ),
+        historical_scope_texts=pd.DataFrame(
+            [
+                {
+                    "job_id": "J-MUDD",
+                    "document_id": "P1",
+                    "document_type": "proposal",
+                    "file_name": "Proposal - Mudd Furniture Roof B.pdf",
+                    "scope_text": "Roof B restoration scope includes power wash, details, primer, and silicone coating.",
+                    "sharepoint_url": "https://sharepoint.example/mudd-proposal",
+                }
+            ]
+        ),
+    )
+
+    case = app.build_generated_field_notes_case_from_history(
+        data,
+        "Generate some field notes from poposal scope for Mudd's Furniture Roof B",
+    )
+    response = app.generated_field_notes_response(case)
+
+    assert case["status"] == "selected"
+    assert "Roof B restoration scope" in case["generated_notes"]
+    assert case["answer_key_summary"]["decision_count"] == 1
+    assert len(case["workbook_decision_preferences"]) == 1
+    assert case["workbook_decision_preferences"][0]["source"] == "reference_estimate_answer_key"
+    assert "You do not need to paste the answer key" in response
+
+
 def test_ask_spraytec_query_planner_extracts_rich_attribute_filters() -> None:
     app = importlib.import_module("dashboard.app")
 
