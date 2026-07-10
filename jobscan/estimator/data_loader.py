@@ -13,6 +13,7 @@ from .decision_history import DECISION_NUMERIC_FIELDS, DECISION_TABLES
 from .estimator_memory import estimator_memory_from_rows
 from .foam_yield_history import build_foam_yield_history_table
 from .job_context_profiles import build_job_context_profiles
+from .template_examples import build_template_examples
 from .schemas import DEFAULT_STAGE_FILES, PRICING_CANDIDATES, EstimatorData
 
 
@@ -219,6 +220,9 @@ def normalize_estimator_data(data: EstimatorData) -> EstimatorData:
     data.job_context_profiles = normalize_estimator_dataframe(data.job_context_profiles)
     if data.job_context_profiles.empty and not data.template_rows.empty:
         data.job_context_profiles = normalize_estimator_dataframe(build_job_context_profiles(data))
+    data.template_examples = normalize_estimator_dataframe(data.template_examples)
+    if data.template_examples.empty and not data.template_rows.empty:
+        data.template_examples = normalize_estimator_dataframe(build_template_examples(data))
     data.foam_yield_history = normalize_estimator_dataframe(data.foam_yield_history)
     if data.foam_yield_history.empty and not data.template_rows.empty:
         data.foam_yield_history = normalize_estimator_dataframe(build_foam_yield_history_table(data))
@@ -528,6 +532,11 @@ def load_estimator_data_from_database(database_url: str, *, load_profile: str = 
         if relation_exists(connection, job_context_relation):
             data.job_context_profiles = _read_sql_dataframe(connection, f"SELECT * FROM {job_context_relation}")
             data.source_files_used.append(f"database: {job_context_relation}")
+
+        template_examples_relation = "analytics.estimator_template_examples"
+        if relation_exists(connection, template_examples_relation):
+            data.template_examples = _read_sql_dataframe(connection, f"SELECT * FROM {template_examples_relation}")
+            data.source_files_used.append(f"database: {template_examples_relation}")
 
         recommendation_relation = "analytics.estimator_decision_recommendations"
         if relation_exists(connection, recommendation_relation):

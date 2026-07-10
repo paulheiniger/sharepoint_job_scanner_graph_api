@@ -223,6 +223,7 @@ def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
         assert "companion_relationships" in messages[1]["content"]
         assert "historical_job_context" in messages[1]["content"]
         assert "historical_context_decision_guidance" in messages[1]["content"]
+        assert "historical_template_examples" in messages[1]["content"]
         assert "insulation_thermal_barrier_coating" in messages[1]["content"]
         assert "foam_yield_history_digest" in messages[1]["content"]
         assert "template_fallback_defaults" in messages[1]["content"]

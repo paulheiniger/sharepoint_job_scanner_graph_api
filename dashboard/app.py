@@ -8771,6 +8771,7 @@ def estimator_data_signature(data: EstimatorData) -> dict[str, Any]:
         "product_properties": len(data.product_properties),
         "template_product_options": len(data.template_product_options),
         "job_context_profiles": len(getattr(data, "job_context_profiles", pd.DataFrame())),
+        "template_examples": len(getattr(data, "template_examples", pd.DataFrame())),
         "foam_yield_history": len(getattr(data, "foam_yield_history", pd.DataFrame())),
         "estimator_decision_recommendations": len(data.estimator_decision_recommendations),
     }
@@ -10174,6 +10175,7 @@ def estimator_prototype_page() -> None:
                 "relationship_material_qty_ratios": len(data.relationship_material_qty_ratios),
                 "relationship_package_cooccurrence": len(data.relationship_package_cooccurrence),
                 "job_context_profiles": len(data.job_context_profiles),
+                "template_examples": len(data.template_examples),
                 "foam_yield_history": len(data.foam_yield_history),
                 "estimator_decision_recommendations": len(data.estimator_decision_recommendations),
                 "estimator_memory": len(data.estimator_memory),

@@ -5,6 +5,7 @@ import pandas as pd
 from jobscan.estimator.data_loader import normalize_estimator_data
 from jobscan.estimator.job_context_profiles import build_job_context_digest, build_job_context_profiles
 from jobscan.estimator.schemas import EstimatorData
+from jobscan.estimator.template_examples import build_template_example_digest, build_template_examples
 
 
 def profile_data() -> EstimatorData:
@@ -20,24 +21,31 @@ def profile_data() -> EstimatorData:
                 {
                     "job_id": "R1",
                     "template_type": "roofing",
+                    "row_number": 26,
                     "template_bucket": "coating",
                     "line_item_kind": "material",
                     "resolved_item_name": "Gaco Silicone",
                     "area_sqft": 9600,
+                    "estimated_units": 165.6,
+                    "unit_price": 32.0,
                     "warranty_years": 15,
                     "substrate": "metal",
                 },
                 {
                     "job_id": "R1",
                     "template_type": "roofing",
+                    "row_number": 39,
                     "template_bucket": "primer",
                     "line_item_kind": "material",
                     "resolved_item_name": "Gaco E-5320 Primer",
                     "area_sqft": 9600,
+                    "estimated_units": 38.4,
+                    "unit_price": 33.0,
                 },
                 {
                     "job_id": "R1",
                     "template_type": "roofing",
+                    "row_number": 63,
                     "template_bucket": "fasteners",
                     "line_item_kind": "material",
                     "resolved_item_name": "Fasteners",
@@ -46,15 +54,19 @@ def profile_data() -> EstimatorData:
                 {
                     "job_id": "I1",
                     "template_type": "insulation",
+                    "row_number": 19,
                     "template_bucket": "foam",
                     "line_item_kind": "material",
                     "resolved_item_name": "Gaco 0.5 lb.",
                     "area_sqft": 2226,
+                    "thickness_inches": 3.5,
+                    "estimated_yield": 2600,
                     "building_type": "pole barn",
                 },
                 {
                     "job_id": "I1",
                     "template_type": "insulation",
+                    "row_number": 30,
                     "template_bucket": "thermal_barrier",
                     "line_item_kind": "material",
                     "resolved_item_name": "DC315",
@@ -127,3 +139,31 @@ def test_normalize_estimator_data_derives_job_context_profiles() -> None:
 
     assert not data.job_context_profiles.empty
     assert {"R1", "I1"} == set(data.job_context_profiles["job_id"])
+    assert not data.template_examples.empty
+
+
+def test_template_examples_capture_worked_decisions_and_match_scope() -> None:
+    data = normalize_estimator_data(profile_data())
+    examples = build_template_examples(data)
+
+    roof = examples[examples["job_id"] == "R1"].iloc[0].to_dict()
+    assert roof["template_type"] == "roofing"
+    assert "Gaco Silicone" in roof["decision_summary"]
+    assert "Gaco E-5320 Primer" in roof["decisions_json"]
+
+    digest = build_template_example_digest(
+        data,
+        scope={
+            "template_type": "roofing",
+            "project_type": "metal roof restoration",
+            "substrate": "metal",
+            "coating_type": "silicone",
+            "warranty_target_years": 15,
+            "estimated_sqft": 9800,
+            "raw_input_notes": "Industrial metal roof needs silicone coating and primer.",
+        },
+    )
+
+    assert digest["matched_examples"]
+    assert digest["matched_examples"][0]["job_id"] == "R1"
+    assert any(decision.get("template_bucket") == "coating" for decision in digest["matched_examples"][0]["decisions"])

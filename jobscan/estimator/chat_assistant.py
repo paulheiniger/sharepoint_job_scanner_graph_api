@@ -15,6 +15,7 @@ import pandas as pd
 from .estimator_memory import relevant_memory_rows
 from .foam_yield_history import build_foam_yield_history_digest
 from .job_context_profiles import build_job_context_digest
+from .template_examples import build_template_example_digest
 from .schemas import EstimatorData
 
 
@@ -588,6 +589,7 @@ def _estimator_data_signature(data: EstimatorData | None) -> str:
         "product_properties": _frame_signature(getattr(data, "product_properties", None)),
         "foam_yield_history": _frame_signature(getattr(data, "foam_yield_history", None)),
         "job_context_profiles": _frame_signature(getattr(data, "job_context_profiles", None)),
+        "template_examples": _frame_signature(getattr(data, "template_examples", None)),
         "decision_recommendations": _frame_signature(getattr(data, "estimator_decision_recommendations", None)),
         "relationships": _frame_signature(getattr(data, "relationship_package_cooccurrence", None)),
         "estimator_memory": _frame_signature(getattr(data, "estimator_memory", None)),
@@ -730,6 +732,7 @@ def _build_estimator_context_summary(data: EstimatorData | None, *, scope: dict[
         decision_menu,
         template_type=template_type,
     )
+    summary["historical_template_examples"] = build_template_example_digest(data, scope=scope, limit=3)
     return summary
 
 
@@ -772,6 +775,7 @@ def _empty_chat_decision_context(scope: dict[str, Any] | None) -> dict[str, Any]
         "reference_job_decisions": [],
         "historical_job_context": {"matched_profiles": [], "aggregate_priors": []},
         "historical_context_decision_guidance": [],
+        "historical_template_examples": {"matched_examples": []},
     }
 
 
@@ -2383,6 +2387,9 @@ def _chat_prompt_messages(
         "are relevant by project class, market segment, building type, substrate, material system, warranty, and area bucket. "
         "If estimator_context.historical_context_decision_guidance is present, it maps those historical profiles to allowed workbook "
         "decision IDs; use it to propose likely included rows when the current scope is similar. "
+        "If estimator_context.historical_template_examples has matched_examples, treat them as compact worked examples from prior "
+        "estimates: compare the current job to each example, reuse normal decision patterns when the scope matches, and cite the "
+        "example in evidence. Do not copy example quantities blindly when the current area, thickness, warranty, or substrate differs. "
         "Use matched profiles as evidence for normal package inclusion and scope assumptions, but do not invent values that are not "
         "supported by the current prompt, workbook history, product guidance, or estimator memory. "
         "Ask questions only when the answer materially changes scope, safety/code compliance, system selection, warranty eligibility, or price. "
