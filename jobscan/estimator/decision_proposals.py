@@ -733,6 +733,46 @@ def _reference_target_for_row(row: dict[str, Any], template_type: str) -> dict[s
     bucket = _canonical_package(row.get("template_bucket"))
     kind = _norm(row.get("line_item_kind"))
     row_number = str(int(_safe_number(row.get("row_number"), 0))) if _safe_number(row.get("row_number"), 0) > 0 else ""
+    if template_type == "roofing" and (kind == "labor" or bucket.startswith("labor_") or bucket in {"infrared_scan", "meals_lodging"}):
+        logistics_rows = {"136", "137", "138", "139", "141", "142", "144", "145"}
+        logistics_defaults = {
+            "labor_loading": ("roofing_labor_loading_row_136", "labor_loading", "136"),
+            "labor_traveling": ("roofing_labor_traveling_row_138", "labor_traveling", "138"),
+            "labor_infrared_scan": ("roofing_infrared_scan_row_141", "infrared_scan", "141"),
+            "infrared_scan": ("roofing_infrared_scan_row_141", "infrared_scan", "141"),
+            "labor_meals_lodging": ("roofing_meals_lodging_row_144", "meals_lodging", "144"),
+            "meals_lodging": ("roofing_meals_lodging_row_144", "meals_lodging", "144"),
+        }
+        production_defaults = {
+            "labor_prep": "116",
+            "labor_prime": "118",
+            "labor_seam_sealer": "120",
+            "labor_base": "122",
+            "labor_top_coat": "124",
+            "labor_caulk": "126",
+            "labor_details": "128",
+            "labor_top_coat_granules": "130",
+            "labor_cleanup": "132",
+            "labor_misc": "134",
+        }
+        if bucket in logistics_defaults and row_number in logistics_rows:
+            decision_id, normalized_bucket, resolved_row = logistics_defaults[bucket]
+            return {
+                "section": "roofing_logistics_expense_template_decisions",
+                "decision_id": decision_id,
+                "template_bucket": normalized_bucket,
+                "workbook_row": resolved_row,
+            }
+        if bucket in logistics_defaults and row_number not in logistics_rows:
+            bucket = "labor_prep" if row_number == "116" else bucket
+        if bucket in production_defaults:
+            resolved_row = production_defaults[bucket]
+            return {
+                "section": "roofing_labor_template_decisions",
+                "decision_id": f"roofing_{bucket}_row_{resolved_row}",
+                "template_bucket": bucket,
+                "workbook_row": resolved_row,
+            }
     shared_target = _chat_target_for_preference(
         template_type,
         {

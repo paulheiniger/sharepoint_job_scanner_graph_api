@@ -486,6 +486,130 @@ def _has_numeric_signal(row: dict[str, Any]) -> bool:
     return False
 
 
+def _positive_value(value: Any) -> float:
+    return _number(value, 0.0)
+
+
+def _first_positive_value(*values: Any) -> float:
+    for value in values:
+        number = _positive_value(value)
+        if number > 0:
+            return number
+    return 0.0
+
+
+def _decision_has_active_formula_basis(target: dict[str, str], values: dict[str, Any], outputs: dict[str, Any]) -> bool:
+    if _first_positive_value(outputs.get("estimated_cost"), outputs.get("calculated_cost")) > 0:
+        return True
+    if _positive_value(values.get("amount")) > 0:
+        return True
+    bucket = _norm(target.get("template_bucket"))
+    section = _text(target.get("section"))
+    unit_rate = _first_positive_value(
+        values.get("unit_price"),
+        values.get("price_per_square"),
+        values.get("unit_price_per_thousand"),
+        values.get("daily_rate"),
+        values.get("hourly_rate"),
+    )
+    physical_units = _first_positive_value(
+        values.get("estimated_units"),
+        values.get("units"),
+        values.get("estimated_sets"),
+        values.get("estimated_gallons"),
+        values.get("linear_ft"),
+        values.get("quantity"),
+    )
+    if bucket in {"sales_trips", "sales_inspection_trips", "truck_expense"}:
+        return (
+            _positive_value(values.get("trip_count")) > 0
+            and _positive_value(values.get("round_trip_miles")) > 0
+            and unit_rate > 0
+        )
+    if bucket in {"labor_loading", "labor_traveling"}:
+        return (
+            _positive_value(values.get("hours_per_day")) > 0
+            and _positive_value(values.get("people_count")) > 0
+            and unit_rate > 0
+        )
+    if bucket in {"infrared_scan"}:
+        return _positive_value(values.get("hours_per_day")) > 0 and unit_rate > 0
+    if bucket in {"meals_lodging", "labor_meals_lodging"}:
+        return _positive_value(values.get("days")) > 0 and _positive_value(values.get("people_count")) > 0 and unit_rate > 0
+    if section == "pricing_markup_decisions":
+        return _positive_value(values.get("markup_pct")) > 0
+    if section in {
+        "roofing_detail_quantity_template_decisions",
+        "insulation_detail_quantity_template_decisions",
+        "flooring_detail_quantity_template_decisions",
+    } or bucket in {"penetrations", "hvac_units", "drains", "seams_misc", "seam_treatment"}:
+        return physical_units > 0
+    if bucket.startswith("labor_"):
+        return (
+            _positive_value(values.get("days")) > 0
+            and _positive_value(values.get("crew_size") or values.get("crew_people_selection")) > 0
+            and unit_rate > 0
+        ) or (_positive_value(values.get("total_hours") or values.get("editable_total_hours")) > 0 and unit_rate > 0)
+    if bucket == "board_stock":
+        return _positive_value(values.get("basis_sqft") or values.get("board_area_sqft")) > 0 and _positive_value(values.get("price_per_square")) > 0
+    if bucket in {"fasteners", "plates"}:
+        return _positive_value(values.get("estimated_units")) > 0 and _positive_value(values.get("unit_price_per_thousand")) > 0
+    if bucket == "coating":
+        return (
+            _positive_value(values.get("basis_sqft")) > 0
+            and _first_positive_value(values.get("gal_per_100_sqft"), values.get("gal_per_sqft"), values.get("estimated_gallons")) > 0
+            and unit_rate > 0
+        )
+    if bucket in {"primer", "granules", "thermal_barrier_coating"}:
+        return (_positive_value(values.get("basis_sqft")) > 0 and unit_rate > 0) or (physical_units > 0 and unit_rate > 0)
+    if bucket in {"foam", "roofing_foam", "floor_base_coat", "floor_topcoat", "floor_coating", "floor_primer", "floor_flake"}:
+        return _positive_value(values.get("basis_sqft")) > 0 and unit_rate > 0
+    if bucket in {"delivery_fee", "lift", "generator", "space_heater", "dumpster", "disposal", "drum_disposal"}:
+        return physical_units > 0 and unit_rate > 0
+    return physical_units > 0 and unit_rate > 0
+
+
+def _merge_duplicate_answer_key_preferences(preferences: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
+    labor_additive_fields = {"days", "editable_days", "total_hours", "editable_total_hours"}
+    for preference in preferences:
+        key = (
+            _text(preference.get("section")),
+            _text(preference.get("decision_id")),
+            _text(preference.get("workbook_row")),
+        )
+        existing = by_key.get(key)
+        if existing is None:
+            by_key[key] = preference
+            merged.append(preference)
+            continue
+        existing_values = existing.setdefault("proposed_values", {})
+        incoming_values = preference.get("proposed_values") if isinstance(preference.get("proposed_values"), dict) else {}
+        is_labor = _text(existing.get("section")).endswith("labor_template_decisions") or _norm(existing.get("template_bucket")).startswith("labor_")
+        for field, value in incoming_values.items():
+            if is_labor and field in labor_additive_fields:
+                combined = _positive_value(existing_values.get(field)) + _positive_value(value)
+                if combined > 0:
+                    existing_values[field] = round(combined, 6)
+                continue
+            if existing_values.get(field) in (None, "", 0, 0.0):
+                existing_values[field] = value
+        existing["confidence"] = max(_number(existing.get("confidence"), 0.0), _number(preference.get("confidence"), 0.0))
+        existing["review_required"] = bool(existing.get("review_required")) or bool(preference.get("review_required"))
+        existing_reasons = list(existing.get("review_reasons") or [])
+        for reason in preference.get("review_reasons") or []:
+            if reason not in existing_reasons:
+                existing_reasons.append(reason)
+        existing["review_reasons"] = existing_reasons
+        existing_evidence = list(existing.get("evidence") or [])
+        for evidence in preference.get("evidence") or []:
+            if evidence not in existing_evidence:
+                existing_evidence.append(evidence)
+        existing["evidence"] = existing_evidence
+    return merged
+
+
 def _is_actionable_unmapped_row(row: dict[str, Any]) -> bool:
     bucket = _norm(row.get("template_bucket"))
     kind = _norm(row.get("line_item_kind"))
@@ -505,6 +629,8 @@ def _decision_from_row(row: dict[str, Any], *, template_type: str) -> dict[str, 
         return None
     values = _proposed_values(row, target)
     outputs = _calculated_outputs(row)
+    if not _decision_has_active_formula_basis(target, values, outputs):
+        return None
     line_item = _line_item(row)
     source_row = _text(row.get("row_number") or row.get("workbook_row"))
     evidence = {
@@ -549,12 +675,16 @@ def build_reference_estimate_answer_key(
     context = {**_job_context(profile, rows), **(job_context or {})}
     decisions: list[dict[str, Any]] = []
     unmapped: list[dict[str, Any]] = []
+    inactive_mapped_count = 0
     for row in rows.fillna("").to_dict(orient="records"):
         if _norm(row.get("line_item_kind")) in {"header", "total", "subtotal", "metadata"} and not _reference_target_for_row(row, template_type):
             continue
+        target = _reference_target_for_row(row, template_type)
         decision = _decision_from_row(row, template_type=template_type)
         if decision:
             decisions.append(decision)
+        elif target:
+            inactive_mapped_count += 1
         elif _is_actionable_unmapped_row(row):
             unmapped.append(
                 {
@@ -574,6 +704,7 @@ def build_reference_estimate_answer_key(
         "unmapped_rows": unmapped,
         "summary": {
             "decision_count": len(decisions),
+            "inactive_mapped_count": inactive_mapped_count,
             "unmapped_count": len(unmapped),
             "source_row_count": int(len(rows)),
         },
@@ -597,6 +728,9 @@ def answer_key_to_workbook_decision_preferences(answer_key: dict[str, Any]) -> l
         }
         if not target["section"] or not target["decision_id"]:
             continue
+        outputs = dict(decision.get("calculated_outputs") or {})
+        if not _decision_has_active_formula_basis(target, proposed_values, outputs):
+            continue
         source_row = _text(decision.get("source_row"))
         workbook_row = _text(target["workbook_row"])
         review_reasons = [
@@ -619,7 +753,7 @@ def answer_key_to_workbook_decision_preferences(answer_key: dict[str, Any]) -> l
                 "source": ANSWER_KEY_SOURCE,
             }
         )
-    return preferences
+    return _merge_duplicate_answer_key_preferences(preferences)
 
 
 def _extract_json_candidates(text: str) -> list[dict[str, Any]]:

@@ -347,17 +347,278 @@ def test_reference_answer_key_maps_secondary_roofing_rows_from_history() -> None
     by_id = {row["decision_id"]: row for row in answer_key["decisions"]}
 
     assert answer_key["summary"]["unmapped_count"] == 0
+    assert answer_key["summary"]["inactive_mapped_count"] == 5
     assert by_id["roofing_thinner_row_33"]["section"] == "roofing_accessory_template_decisions"
     assert by_id["roofing_hvac_units_row_51"]["inputs"]["estimated_units"] == 3
     assert by_id["roofing_drains_row_53"]["inputs"]["estimated_units"] == 2
-    assert by_id["roofing_edge_metal_row_82"]["inputs"]["estimated_units"] == 40
-    assert by_id["roofing_gutter_row_84"]["section"] == "roofing_accessory_template_decisions"
-    assert by_id["roofing_downspouts_row_86"]["inputs"]["estimated_units"] == 4
-    assert by_id["roofing_roof_hatch_row_88"]["inputs"]["estimated_units"] == 1
-    assert by_id["roofing_scuppers_row_90"]["inputs"]["estimated_units"] == 2
+    assert "roofing_edge_metal_row_82" not in by_id
+    assert "roofing_gutter_row_84" not in by_id
+    assert "roofing_downspouts_row_86" not in by_id
+    assert "roofing_roof_hatch_row_88" not in by_id
+    assert "roofing_scuppers_row_90" not in by_id
     assert by_id["roofing_misc_row_101"]["inputs"]["amount"] == 150
     assert by_id["roofing_free_adder_row_156"]["inputs"]["amount"] == 250
     assert by_id["roofing_free_adder_row_158"]["inputs"]["amount"] == 125
+
+
+def test_reference_answer_key_skips_inactive_mapped_template_options() -> None:
+    data = EstimatorData(
+        template_rows=pd.DataFrame(
+            [
+                {
+                    "template_row_id": "inactive-foam",
+                    "document_id": "D5",
+                    "job_id": "J5",
+                    "source_file": "Estimate - 10YR Coating System.xlsx",
+                    "template_type": "roofing",
+                    "row_number": 19,
+                    "template_bucket": "foam",
+                    "line_item_kind": "material",
+                    "resolved_item_name": "Gaco Roof 2.7",
+                    "unit_price": 2.1,
+                    "cell_values": {"D19": 1.5, "F19": 1200},
+                },
+                {
+                    "template_row_id": "active-coating",
+                    "document_id": "D5",
+                    "job_id": "J5",
+                    "source_file": "Estimate - 10YR Coating System.xlsx",
+                    "template_type": "roofing",
+                    "row_number": 26,
+                    "template_bucket": "coating",
+                    "line_item_kind": "material",
+                    "resolved_item_name": "Gaco Silicone",
+                    "quantity": 9600,
+                    "unit_price": 32,
+                    "estimated_units": 165.6,
+                    "estimated_cost": 5299.2,
+                    "cell_values": {"D26": 1.5},
+                },
+                {
+                    "template_row_id": "inactive-coating-option",
+                    "document_id": "D5",
+                    "job_id": "J5",
+                    "source_file": "Estimate - 10YR Coating System.xlsx",
+                    "template_type": "roofing",
+                    "row_number": 27,
+                    "template_bucket": "coating",
+                    "line_item_kind": "material",
+                    "resolved_item_name": "Gaco Silicone",
+                    "unit_price": 32,
+                    "cell_values": {"D27": 1.5},
+                },
+                {
+                    "template_row_id": "active-primer",
+                    "document_id": "D5",
+                    "job_id": "J5",
+                    "source_file": "Estimate - 10YR Coating System.xlsx",
+                    "template_type": "roofing",
+                    "row_number": 39,
+                    "template_bucket": "primer",
+                    "line_item_kind": "material",
+                    "resolved_item_name": "Gaco E-5320 Primer",
+                    "quantity": 9600,
+                    "unit_price": 33,
+                    "estimated_units": 38.4,
+                    "estimated_cost": 1267.2,
+                },
+                {
+                    "template_row_id": "active-caulk",
+                    "document_id": "D5",
+                    "job_id": "J5",
+                    "source_file": "Estimate - 10YR Coating System.xlsx",
+                    "template_type": "roofing",
+                    "row_number": 43,
+                    "template_bucket": "caulk_sealant",
+                    "line_item_kind": "material",
+                    "resolved_item_name": "Silicone Sausage",
+                    "unit_price": 12,
+                    "estimated_units": 96,
+                    "estimated_cost": 1152,
+                },
+                {
+                    "template_row_id": "inactive-accessory",
+                    "document_id": "D5",
+                    "job_id": "J5",
+                    "source_file": "Estimate - 10YR Coating System.xlsx",
+                    "template_type": "roofing",
+                    "row_number": 82,
+                    "template_bucket": "edge_metal",
+                    "line_item_kind": "material",
+                    "row_label": "Edge Metal",
+                },
+                {
+                    "template_row_id": "active-generator",
+                    "document_id": "D5",
+                    "job_id": "J5",
+                    "source_file": "Estimate - 10YR Coating System.xlsx",
+                    "template_type": "roofing",
+                    "row_number": 99,
+                    "template_bucket": "generator",
+                    "line_item_kind": "equipment",
+                    "row_label": "Generator",
+                    "quantity": 7,
+                    "unit_price": 50,
+                    "estimated_cost": 350,
+                },
+                {
+                    "template_row_id": "active-truck",
+                    "document_id": "D5",
+                    "job_id": "J5",
+                    "source_file": "Estimate - 10YR Coating System.xlsx",
+                    "template_type": "roofing",
+                    "row_number": 108,
+                    "template_bucket": "truck_expense",
+                    "line_item_kind": "equipment",
+                    "row_label": "Truck Exp.",
+                    "trips": 14,
+                    "round_trip_miles": 65,
+                    "cost_per_mile": 1.25,
+                    "estimated_cost": 1137.5,
+                },
+                {
+                    "template_row_id": "active-labor",
+                    "document_id": "D5",
+                    "job_id": "J5",
+                    "source_file": "Estimate - 10YR Coating System.xlsx",
+                    "template_type": "roofing",
+                    "row_number": 120,
+                    "template_bucket": "labor_prime",
+                    "line_item_kind": "labor",
+                    "row_label": "Prime",
+                    "days": 1.25,
+                    "crew_size": 5,
+                    "daily_rate": 1835.66,
+                    "estimated_cost": 2294.58,
+                },
+                {
+                    "template_row_id": "overhead",
+                    "document_id": "D5",
+                    "job_id": "J5",
+                    "source_file": "Estimate - 10YR Coating System.xlsx",
+                    "template_type": "roofing",
+                    "row_number": 165,
+                    "template_bucket": "overhead",
+                    "line_item_kind": "pricing",
+                    "row_label": "Estimated O/H",
+                    "overhead_pct": 35,
+                    "estimated_cost": 9555.23,
+                },
+            ]
+        )
+    )
+
+    answer_key = build_reference_estimate_answer_key(data, job_id="J5")
+    by_id = {row["decision_id"]: row for row in answer_key["decisions"]}
+
+    assert answer_key["summary"]["unmapped_count"] == 0
+    assert answer_key["summary"]["inactive_mapped_count"] == 3
+    assert "roofing_foam_row_19" not in by_id
+    assert "roofing_coating_system_row_27" not in by_id
+    assert "roofing_edge_metal_row_82" not in by_id
+    assert by_id["roofing_coating_system_row_26"]["inputs"]["basis_sqft"] == 9600
+    assert by_id["roofing_primer_system_row_39"]["inputs"]["estimated_units"] == 38.4
+    assert by_id["roofing_caulk_sealant_row_43"]["inputs"]["estimated_units"] == 96
+    assert by_id["roofing_generator_row_99"]["inputs"]["estimated_units"] == 7
+    assert by_id["roofing_truck_expense_row_108"]["inputs"]["trip_count"] == 14
+    assert by_id["roofing_labor_prime_row_118"]["inputs"]["days"] == 1.25
+    assert by_id["pricing_overhead"]["inputs"]["markup_pct"] == 35
+
+
+def test_stored_answer_key_preferences_skip_legacy_inactive_decisions() -> None:
+    answer_key = {
+        "schema_version": SCHEMA_VERSION,
+        "template_type": "roofing",
+        "source_workbook": {"document_id": "D5", "job_id": "J5", "file_name": "Estimate - 10YR Coating System.xlsx"},
+        "decisions": [
+            {
+                "source_row": "19",
+                "workbook_row": "19",
+                "section": "roofing_foam_template_decisions",
+                "decision_id": "roofing_foam_row_19",
+                "template_bucket": "roofing_foam",
+                "line_item": "Gaco Roof 2.7",
+                "include": True,
+                "inputs": {"thickness_inches": 1.5, "yield_or_coverage": 1200, "unit_price": 2.1},
+                "calculated_outputs": {},
+                "evidence": {"source_row": "19", "line_item": "Gaco Roof 2.7"},
+            },
+            {
+                "source_row": "26",
+                "workbook_row": "26",
+                "section": "roofing_coating_template_decisions",
+                "decision_id": "roofing_coating_system_row_26",
+                "template_bucket": "coating",
+                "line_item": "Gaco Silicone",
+                "include": True,
+                "inputs": {"basis_sqft": 9600, "gal_per_100_sqft": 1.5, "unit_price": 32},
+                "calculated_outputs": {"estimated_cost": 5299.2},
+                "evidence": {"source_row": "26", "line_item": "Gaco Silicone"},
+            },
+            {
+                "source_row": "108",
+                "workbook_row": "108",
+                "section": "roofing_travel_freight_template_decisions",
+                "decision_id": "roofing_truck_expense_row_108",
+                "template_bucket": "truck_expense",
+                "line_item": "Truck Exp.",
+                "include": True,
+                "inputs": {"trip_count": 14, "round_trip_miles": 65, "unit_price": 1.25},
+                "calculated_outputs": {"estimated_cost": 1137.5},
+                "evidence": {"source_row": "108", "line_item": "Truck Exp."},
+            },
+        ],
+    }
+
+    preferences = answer_key_to_workbook_decision_preferences(answer_key)
+    by_id = {row["decision_id"]: row for row in preferences}
+
+    assert "roofing_foam_row_19" not in by_id
+    assert by_id["roofing_coating_system_row_26"]["proposed_values"]["unit_price"] == 32
+    assert by_id["roofing_truck_expense_row_108"]["proposed_values"]["round_trip_miles"] == 65
+
+
+def test_answer_key_preferences_merge_duplicate_canonical_labor_targets() -> None:
+    answer_key = {
+        "schema_version": SCHEMA_VERSION,
+        "template_type": "roofing",
+        "source_workbook": {"document_id": "D6", "job_id": "J6", "file_name": "Estimate - Variant Labor.xlsx"},
+        "decisions": [
+            {
+                "source_row": "116",
+                "workbook_row": "116",
+                "section": "roofing_labor_template_decisions",
+                "decision_id": "roofing_labor_prep_row_116",
+                "template_bucket": "labor_prep",
+                "line_item": "Set-Up",
+                "include": True,
+                "inputs": {"days": 0.2, "editable_days": 0.2, "crew_size": 5, "daily_rate": 1835.66, "total_hours": 10.5},
+                "calculated_outputs": {"estimated_cost": 367.13},
+                "evidence": {"source_row": "116", "line_item": "Set-Up"},
+            },
+            {
+                "source_row": "118",
+                "workbook_row": "116",
+                "section": "roofing_labor_template_decisions",
+                "decision_id": "roofing_labor_prep_row_116",
+                "template_bucket": "labor_prep",
+                "line_item": "Pwash & Prep",
+                "include": True,
+                "inputs": {"days": 1.5, "editable_days": 1.5, "crew_size": 5, "daily_rate": 1835.66, "total_hours": 78.75},
+                "calculated_outputs": {"estimated_cost": 2753.49},
+                "evidence": {"source_row": "118", "line_item": "Pwash & Prep"},
+            },
+        ],
+    }
+
+    preferences = answer_key_to_workbook_decision_preferences(answer_key)
+
+    assert len(preferences) == 1
+    preference = preferences[0]
+    assert preference["decision_id"] == "roofing_labor_prep_row_116"
+    assert preference["proposed_values"]["days"] == 1.7
+    assert preference["proposed_values"]["total_hours"] == 89.25
+    assert len(preference["evidence"]) == 2
 
 
 def test_reference_answer_key_maps_insulation_support_rows_from_history() -> None:
