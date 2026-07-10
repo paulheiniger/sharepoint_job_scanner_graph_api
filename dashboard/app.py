@@ -3308,6 +3308,26 @@ def _json_dict_value(value: Any) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _template_examples_for_generated_notes(data: EstimatorData) -> pd.DataFrame:
+    examples = getattr(data, "template_examples", pd.DataFrame())
+    if isinstance(examples, pd.DataFrame) and not examples.empty:
+        return examples
+    try:
+        built = build_template_examples(data)
+    except Exception:
+        logger.debug("could not build template examples for generated notes", exc_info=True)
+        built = pd.DataFrame()
+    if isinstance(built, pd.DataFrame) and not built.empty:
+        return built
+    fallback_path = Path("output/estimator_template_examples/estimator_template_examples.csv")
+    if fallback_path.exists():
+        try:
+            return pd.read_csv(fallback_path)
+        except Exception:
+            logger.debug("could not read estimator template examples fallback csv", exc_info=True)
+    return pd.DataFrame()
+
+
 def _estimator_type_for_template(template_type: str) -> str:
     normalized = str(template_type or "").strip().lower()
     if normalized == "insulation":
@@ -3340,6 +3360,7 @@ def _field_note_match_score(
     candidate_text = " ".join(
         text_value(value)
         for value in (
+            example.get("job_id"),
             example.get("customer"),
             example.get("job_name"),
             example.get("source_file"),
@@ -3373,6 +3394,106 @@ def _field_note_match_score(
     if text_value(scope_row.get("scope_text")):
         score += min(len(text_value(scope_row.get("scope_text"))) / 250.0, 12.0)
     return score
+
+
+def _generated_field_notes_resolution_bonus(query: str, candidate: dict[str, Any]) -> float:
+    query_tokens = tokenize_search_text(query)
+    if not query_tokens:
+        return 0.0
+    source_file = " ".join(tokenize_search_text(candidate.get("source_file")))
+    proposal_file = " ".join(tokenize_search_text(candidate.get("proposal_file_name")))
+    job_text = " ".join(
+        tokenize_search_text(
+            " ".join(
+                text_value(candidate.get(field))
+                for field in ("customer", "job_name", "job_id")
+            )
+        )
+    )
+    bonus = 0.0
+    for token in query_tokens:
+        if token in source_file:
+            bonus += 8.0
+        if token in proposal_file:
+            bonus += 5.0
+        if token in job_text:
+            bonus += 2.0
+    normalized_query = " ".join(query_tokens)
+    for match in re.findall(r"\broof\s+([a-z0-9#-]+)\b", normalized_query):
+        roof_variants = (f"roof {match}", f"{match} roof")
+        if any(variant in source_file for variant in roof_variants):
+            bonus += 45.0
+        if any(variant in proposal_file for variant in roof_variants):
+            bonus += 20.0
+    for token in query_tokens:
+        if re.fullmatch(r"20\d{2}", token) and token in source_file:
+            bonus += 30.0
+        if token in {"stamp", "final", "master", "white", "recoat"} and token in source_file:
+            bonus += 35.0
+        if token in {"10", "15", "20"} and token in source_file:
+            bonus += 10.0
+    if "signed" in proposal_file:
+        bonus += 3.0
+    if "final" in source_file:
+        bonus += 8.0
+    summary = candidate.get("answer_key_summary") if isinstance(candidate.get("answer_key_summary"), dict) else {}
+    bonus += min(float(summary.get("decision_count") or 0), 80.0) * 0.1
+    bonus += min(float(summary.get("source_row_count") or 0), 160.0) * 0.02
+    return bonus
+
+
+def _generated_field_notes_can_auto_select(candidates: list[dict[str, Any]]) -> bool:
+    if len(candidates) <= 1:
+        return True
+    top_score = float(candidates[0].get("score") or 0.0)
+    close = [candidate for candidate in candidates if top_score - float(candidate.get("score") or 0.0) < 20.0]
+    if len(close) <= 1:
+        return True
+    close_job_ids = {text_value(candidate.get("job_id")) for candidate in close if text_value(candidate.get("job_id"))}
+    close_estimates = {text_value(candidate.get("source_file")) for candidate in close if text_value(candidate.get("source_file"))}
+    close_proposals = {text_value(candidate.get("proposal_file_name")) for candidate in close if text_value(candidate.get("proposal_file_name"))}
+    if len(close_job_ids) == 1 and len(close_estimates) == 1:
+        return True
+    if len(close_estimates) == 1 and len(close_proposals) == 1:
+        candidates[0]["selection_warning"] = (
+            "The same historical estimate/proposal pair matched multiple job IDs; I selected the best-ranked job link. "
+            "Confirm the source folder before relying on the generated workbook."
+        )
+        return True
+    # In historical folders with several proposal/estimate variants for the same job, selecting
+    # the best-ranked answer key is more useful than blocking the generator entirely.
+    if len(close_job_ids) == 1:
+        candidates[0]["selection_warning"] = (
+            "Multiple historical estimates matched this job; I selected the best-ranked answer key. "
+            "Confirm the estimate option before relying on the generated workbook."
+        )
+        return True
+    return False
+
+
+def _generated_scope_rows_from_examples(examples: pd.DataFrame) -> list[dict[str, Any]]:
+    if examples.empty or "job_id" not in examples.columns:
+        return []
+    rows: list[dict[str, Any]] = []
+    for example in examples.fillna("").to_dict(orient="records"):
+        job_id = text_value(example.get("job_id"))
+        scope_text = text_value(example.get("scope_summary"))
+        if not scope_text:
+            scope_text = text_value(example.get("decision_summary"))
+        if not job_id or not scope_text:
+            continue
+        rows.append(
+            {
+                "job_id": job_id,
+                "document_id": text_value(example.get("document_id")),
+                "document_type": "template_example_scope_summary",
+                "file_name": text_value(example.get("source_file")) or "Historical estimate scope summary",
+                "scope_text": scope_text,
+                "sharepoint_url": "",
+                "scope_source": "template_example_scope_summary",
+            }
+        )
+    return rows
 
 
 def _generated_field_notes_from_scope(
@@ -3413,22 +3534,28 @@ def build_generated_field_notes_case_from_history(
 ) -> dict[str, Any]:
     query = generated_field_notes_query(prompt)
     template_types = set(generated_field_notes_template_types(prompt))
-    examples = getattr(data, "template_examples", pd.DataFrame())
-    if not isinstance(examples, pd.DataFrame) or examples.empty:
-        examples = build_template_examples(data)
-    scope_rows = getattr(data, "historical_scope_texts", pd.DataFrame())
-    if not isinstance(scope_rows, pd.DataFrame) or scope_rows.empty:
-        return {
-            "status": "missing_source",
-            "query": query,
-            "message": "No historical proposal scope text is loaded, so I cannot generate field notes from proposals yet.",
-            "candidates": [],
-        }
+    examples = _template_examples_for_generated_notes(data)
     if examples.empty:
         return {
             "status": "missing_source",
             "query": query,
             "message": "No estimator template examples with answer keys are loaded yet.",
+            "candidates": [],
+        }
+    scope_rows = getattr(data, "historical_scope_texts", pd.DataFrame())
+    fallback_scope_rows = False
+    if not isinstance(scope_rows, pd.DataFrame) or scope_rows.empty:
+        generated_rows = _generated_scope_rows_from_examples(examples)
+        scope_rows = pd.DataFrame(generated_rows)
+        fallback_scope_rows = True
+    if scope_rows.empty:
+        return {
+            "status": "missing_source",
+            "query": query,
+            "message": (
+                "No historical proposal scope text or template scope summaries are loaded, "
+                "so I cannot generate field notes yet."
+            ),
             "candidates": [],
         }
     if "job_id" not in examples.columns or "job_id" not in scope_rows.columns:
@@ -3466,6 +3593,13 @@ def build_generated_field_notes_case_from_history(
         if not answer_key:
             continue
         for scope_row in scope_by_job.get(job_id, []):
+            if (
+                text_value(scope_row.get("scope_source")) == "template_example_scope_summary"
+                and text_value(scope_row.get("file_name"))
+                and text_value(example.get("source_file"))
+                and text_value(scope_row.get("file_name")) != text_value(example.get("source_file"))
+            ):
+                continue
             score = _field_note_match_score(
                 query=query,
                 template_type=template_type,
@@ -3482,33 +3616,34 @@ def build_generated_field_notes_case_from_history(
                 answer_key=answer_key,
             )
             preferences = answer_key_to_workbook_decision_preferences(answer_key)
-            scored.append(
-                (
-                    score,
-                    {
-                        "status": "selected",
-                        "query": query,
-                        "score": round(score, 3),
-                        "template_type": template_type,
-                        "estimate_type": _estimator_type_for_template(template_type),
-                        "job_id": job_id,
-                        "customer": text_value(example.get("customer")),
-                        "job_name": text_value(example.get("job_name")),
-                        "source_file": text_value(example.get("source_file")),
-                        "proposal_file_name": text_value(scope_row.get("file_name")),
-                        "proposal_url": text_value(scope_row.get("sharepoint_url")),
-                        "generated_notes": generated_notes,
-                        "answer_key": answer_key,
-                        "workbook_decision_preferences": preferences,
-                        "answer_key_summary": {
-                            "decision_count": int(summary.get("decision_count") or len(answer_key.get("decisions") or [])),
-                            "unmapped_count": int(summary.get("unmapped_count") or 0),
-                            "source_row_count": int(summary.get("source_row_count") or 0),
-                            "preference_count": len(preferences),
-                        },
-                    },
-                )
-            )
+            candidate = {
+                "status": "selected",
+                "query": query,
+                "score": round(score, 3),
+                "template_type": template_type,
+                "estimate_type": _estimator_type_for_template(template_type),
+                "job_id": job_id,
+                "customer": text_value(example.get("customer")),
+                "job_name": text_value(example.get("job_name")),
+                "source_file": text_value(example.get("source_file")),
+                "proposal_file_name": text_value(scope_row.get("file_name")),
+                "proposal_url": text_value(scope_row.get("sharepoint_url")),
+                "scope_source": text_value(scope_row.get("scope_source")) or text_value(scope_row.get("document_type")),
+                "used_scope_summary_fallback": fallback_scope_rows
+                or text_value(scope_row.get("scope_source")) == "template_example_scope_summary",
+                "generated_notes": generated_notes,
+                "answer_key": answer_key,
+                "workbook_decision_preferences": preferences,
+                "answer_key_summary": {
+                    "decision_count": int(summary.get("decision_count") or len(answer_key.get("decisions") or [])),
+                    "unmapped_count": int(summary.get("unmapped_count") or 0),
+                    "source_row_count": int(summary.get("source_row_count") or 0),
+                    "preference_count": len(preferences),
+                },
+            }
+            candidate_score = score + _generated_field_notes_resolution_bonus(query, candidate)
+            candidate["score"] = round(candidate_score, 3)
+            scored.append((candidate_score, candidate))
     scored.sort(key=lambda item: item[0], reverse=True)
     candidates = [item for _, item in scored[: max(1, int(limit or 4))]]
     if not candidates:
@@ -3518,7 +3653,7 @@ def build_generated_field_notes_case_from_history(
             "message": f"I could not find a proposal scope plus answer-key match for {query or 'that request'}.",
             "candidates": [],
         }
-    if len(candidates) > 1 and candidates[0]["score"] < candidates[1]["score"] + 20:
+    if len(candidates) > 1 and candidates[0]["score"] < candidates[1]["score"] + 20 and not _generated_field_notes_can_auto_select(candidates):
         return {
             "status": "ambiguous",
             "query": query,
@@ -3562,6 +3697,13 @@ def generated_field_notes_response(case: dict[str, Any]) -> str:
         "",
         "Open Estimating Assistant and build/rebuild the workbook. You do not need to paste the answer key.",
     ]
+    if case.get("used_scope_summary_fallback"):
+        lines.insert(
+            -2,
+            "- Scope source note: proposal scope text was not loaded for this match, so I used the historical template scope summary.",
+        )
+    if text_value(case.get("selection_warning")):
+        lines.insert(-2, f"- Selection note: {case.get('selection_warning')}")
     if text_value(case.get("proposal_url")):
         lines.insert(-2, f"- Proposal link: {markdown_link(case.get('proposal_file_name') or 'proposal', case.get('proposal_url'))}")
     return "\n".join(lines).strip()
@@ -5000,7 +5142,7 @@ def ask_spraytec_page() -> None:
             response = text_value(query_plan.get("clarification")) or "Which job should I use?"
         else:
             with st.spinner("Generating field notes from historical proposal scope..."):
-                estimator_data = load_estimator_data_for_ui("interactive")
+                estimator_data = load_estimator_data_for_ui("full")
                 generated_case = build_generated_field_notes_case_from_history(estimator_data, prompt)
             if generated_case.get("status") == "selected":
                 thread_id = attach_generated_field_notes_case_to_estimator_context(generated_case)
@@ -9134,6 +9276,13 @@ def stable_payload_hash(payload: Any) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()
 
 
+def data_editor_state_key(base_key: str, display_df: pd.DataFrame | None) -> str:
+    if not isinstance(display_df, pd.DataFrame) or display_df.empty:
+        return f"{base_key}_empty"
+    payload = display_df.to_dict(orient="records")
+    return f"{base_key}_{stable_payload_hash(payload)[:10]}"
+
+
 def cached_export_path_for_ui(state_key: str, cache_key: str, timing_name: str) -> Path | None:
     cached = st.session_state.get(state_key)
     if not isinstance(cached, dict) or cached.get("key") != cache_key:
@@ -12117,7 +12266,10 @@ def estimator_prototype_page() -> None:
                 use_container_width=True,
                 hide_index=True,
                 num_rows="fixed",
-                key=f"wb_roofing_travel_freight_template_{workbench_key}_{scope_key}_{historical_filters_key}",
+                key=data_editor_state_key(
+                    f"wb_roofing_travel_freight_template_{workbench_key}_{scope_key}_{historical_filters_key}",
+                    travel_freight_template_display_df,
+                ),
                 column_order=travel_freight_template_column_order,
                 column_config={
                     "include": "Include",
@@ -12252,7 +12404,10 @@ def estimator_prototype_page() -> None:
                 use_container_width=True,
                 hide_index=True,
                 num_rows="fixed",
-                key=f"wb_roofing_logistics_expense_{workbench_key}_{scope_key}_{historical_filters_key}",
+                key=data_editor_state_key(
+                    f"wb_roofing_logistics_expense_{workbench_key}_{scope_key}_{historical_filters_key}",
+                    roofing_logistics_expense_display_df,
+                ),
                 column_order=roofing_logistics_expense_column_order,
                 column_config={
                     "include": "Include",

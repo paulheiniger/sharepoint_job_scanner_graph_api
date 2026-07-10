@@ -250,6 +250,52 @@ def test_specific_labor_buckets_generate_labor_rates() -> None:
     assert rates.iloc[0]["evidence_count"] == 1
 
 
+def test_labor_rates_fallback_hours_from_days_and_crew_is_mask_aligned() -> None:
+    summary = pd.DataFrame(
+        [
+            {
+                "job_id": "J1",
+                "source_year": 2026,
+                "division": "Roofing",
+                "template_type": "roofing",
+                "project_type": "roofing",
+                "substrate": "metal",
+                "package": "labor_top_coat",
+                "unit": "",
+                "area_sqft": 1000,
+                "total_hours": None,
+                "labor_hours": None,
+                "labor_days": 0.5,
+                "crew_size": 4,
+                "total_cost": 1000,
+                "is_labor": True,
+            },
+            {
+                "job_id": "J2",
+                "source_year": 2026,
+                "division": "Roofing",
+                "template_type": "roofing",
+                "project_type": "roofing",
+                "substrate": "metal",
+                "package": "labor_top_coat",
+                "unit": "",
+                "area_sqft": 1000,
+                "total_hours": 24,
+                "labor_hours": None,
+                "labor_days": 1,
+                "crew_size": 3,
+                "total_cost": 1500,
+                "is_labor": True,
+            },
+        ]
+    )
+
+    rates = build_labor_rates(summary)
+
+    assert not rates.empty
+    assert rates.iloc[0]["median_total_hours"] == 20
+
+
 def test_missing_area_does_not_crash_and_appears_in_diagnostics() -> None:
     summary = pd.DataFrame(
         [

@@ -613,10 +613,15 @@ def build_labor_rates(labor: pd.DataFrame) -> pd.DataFrame:
     rows["hours"] = pd.to_numeric(rows["total_hours"], errors="coerce")
     rows.loc[rows["hours"].isna(), "hours"] = pd.to_numeric(rows.loc[rows["hours"].isna(), "labor_hours"], errors="coerce")
     labor_days = pd.to_numeric(rows["labor_days"], errors="coerce")
-    rows.loc[labor_days.isna(), "labor_days"] = pd.to_numeric(rows.loc[labor_days.isna(), "total_days"], errors="coerce")
-    labor_days = pd.to_numeric(rows["labor_days"], errors="coerce")
-    rows.loc[labor_days.isna(), "labor_days"] = pd.to_numeric(rows.loc[labor_days.isna(), "days"], errors="coerce")
-    rows.loc[rows["hours"].isna() & rows["labor_days"].notna() & rows.get("crew_size").notna(), "hours"] = rows["labor_days"] * rows["crew_size"] * 8
+    missing_days = labor_days.isna()
+    labor_days.loc[missing_days] = pd.to_numeric(rows.loc[missing_days, "total_days"], errors="coerce")
+    missing_days = labor_days.isna()
+    labor_days.loc[missing_days] = pd.to_numeric(rows.loc[missing_days, "days"], errors="coerce")
+    rows["labor_days"] = labor_days
+    crew_size = pd.to_numeric(rows["crew_size"], errors="coerce")
+    fallback_hours = labor_days * crew_size * 8
+    missing_hours = rows["hours"].isna() & fallback_hours.notna()
+    rows.loc[missing_hours, "hours"] = fallback_hours.loc[missing_hours]
     rows["hours_per_1000_sqft"] = rows["hours"] / rows["area_sqft"] * 1000
     rows["hours_per_sqft"] = rows["hours"] / rows["area_sqft"]
     rows["cost_per_sqft"] = rows["total_cost"] / rows["area_sqft"]

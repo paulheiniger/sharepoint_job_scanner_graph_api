@@ -1970,6 +1970,42 @@ def test_roofing_workbench_defaults_one_sales_inspection_trip() -> None:
     assert trips["estimated_cost"] == 15
 
 
+def test_roofing_truck_expense_recalculates_when_unit_price_changes() -> None:
+    workbench = build_estimating_workbench(roofing_recommendation(), EstimatorData())
+    truck = next(
+        row
+        for row in workbench["roofing_travel_freight_template_decisions"]
+        if row["template_bucket"] == "truck_expense"
+    )
+    truck.update(
+        {
+            "include": True,
+            "trip_count": 2,
+            "round_trip_miles": 100,
+            "unit_price": 1.0,
+        }
+    )
+
+    first = recalculate_workbench_tables(workbench)
+    first_truck = next(
+        row
+        for row in first["roofing_travel_freight_template_decisions"]
+        if row["template_bucket"] == "truck_expense"
+    )
+    first_truck["unit_price"] = 1.25
+
+    second = recalculate_workbench_tables(first)
+    second_truck = next(
+        row
+        for row in second["roofing_travel_freight_template_decisions"]
+        if row["template_bucket"] == "truck_expense"
+    )
+
+    assert first_truck["estimated_cost"] == 200
+    assert second_truck["estimated_cost"] == 250
+    assert second_truck["formula_source"] == "trips_miles_rate"
+
+
 def test_review_only_primer_does_not_price_full_area_until_confirmed() -> None:
     formula_workbench = {
         "scope": {

@@ -812,6 +812,197 @@ def test_ask_spraytec_generates_field_notes_with_attached_answer_key() -> None:
     assert "You do not need to paste the answer key" in response
 
 
+def test_ask_spraytec_generated_field_notes_falls_back_to_template_scope_summary() -> None:
+    app = importlib.import_module("dashboard.app")
+    answer_key = {
+        "schema_version": "reference_estimate_answer_key.v1",
+        "template_type": "roofing",
+        "decisions": [
+            {
+                "section": "roofing_coating_template_decisions",
+                "decision_id": "roofing_coating_system_row_26",
+                "template_bucket": "coating",
+                "workbook_row": "26",
+                "source_row": "26",
+                "include": True,
+                "inputs": {"basis_sqft": 9600},
+            }
+        ],
+        "summary": {"decision_count": 1, "unmapped_count": 0, "source_row_count": 120},
+    }
+    data = SimpleNamespace(
+        template_examples=pd.DataFrame(
+            [
+                {
+                    "job_id": "LIVING-WATERS-CHURCH-5425-FRANKFORT-ROAD-05-28-26",
+                    "customer": "Living Waters Church",
+                    "job_name": "Living Waters Church",
+                    "template_type": "roofing",
+                    "source_file": "Estimate - STAMP All Roofs .xlsx",
+                    "scope_summary": "Living Waters Church roofing scope with foam roof restoration and STAMP review.",
+                    "answer_key_json": json.dumps(answer_key),
+                }
+            ]
+        ),
+        historical_scope_texts=pd.DataFrame(),
+    )
+
+    case = app.build_generated_field_notes_case_from_history(
+        data,
+        "Generate some field notes from proposal scope for Living Waters Church 5425 Frankfort Road (05.28.26) STAMP",
+    )
+
+    assert case["status"] == "selected"
+    assert case["used_scope_summary_fallback"] is True
+    assert "Living Waters Church roofing scope" in case["generated_notes"]
+    assert len(case["workbook_decision_preferences"]) == 1
+
+
+def test_ask_spraytec_generated_field_notes_auto_selects_same_job_variants() -> None:
+    app = importlib.import_module("dashboard.app")
+    base_answer_key = {
+        "schema_version": "reference_estimate_answer_key.v1",
+        "template_type": "roofing",
+        "decisions": [
+            {
+                "section": "roofing_coating_template_decisions",
+                "decision_id": "roofing_coating_system_row_26",
+                "template_bucket": "coating",
+                "workbook_row": "26",
+                "source_row": "26",
+                "include": True,
+                "inputs": {"basis_sqft": 9600},
+            }
+        ],
+        "summary": {"decision_count": 1, "unmapped_count": 0, "source_row_count": 120},
+    }
+    stamp_answer_key = {
+        **base_answer_key,
+        "decisions": [
+            {
+                **base_answer_key["decisions"][0],
+                "inputs": {"basis_sqft": 9600, "gal_per_100_sqft": 1.5},
+            }
+        ],
+    }
+    data = SimpleNamespace(
+        template_examples=pd.DataFrame(
+            [
+                {
+                    "job_id": "LIVING-WATERS-CHURCH-5425-FRANKFORT-ROAD-05-28-26",
+                    "customer": "Living Waters Church",
+                    "job_name": "Living Waters Church",
+                    "template_type": "roofing",
+                    "source_file": "Estimate - Foam Roof Restoration.xlsx",
+                    "answer_key_json": json.dumps(base_answer_key),
+                },
+                {
+                    "job_id": "LIVING-WATERS-CHURCH-5425-FRANKFORT-ROAD-05-28-26",
+                    "customer": "Living Waters Church",
+                    "job_name": "Living Waters Church",
+                    "template_type": "roofing",
+                    "source_file": "Estimate - STAMP All Roofs .xlsx",
+                    "answer_key_json": json.dumps(stamp_answer_key),
+                },
+            ]
+        ),
+        historical_scope_texts=pd.DataFrame(
+            [
+                {
+                    "job_id": "LIVING-WATERS-CHURCH-5425-FRANKFORT-ROAD-05-28-26",
+                    "document_type": "proposal",
+                    "file_name": "Roof Restoration Proposal - Living Waters Church.pdf",
+                    "scope_text": "Living Waters Church roof restoration proposal scope.",
+                },
+                {
+                    "job_id": "LIVING-WATERS-CHURCH-5425-FRANKFORT-ROAD-05-28-26",
+                    "document_type": "proposal",
+                    "file_name": "Signed Roof Restoration Proposal - Living Waters Church - signed.pdf",
+                    "scope_text": "Living Waters Church signed roof restoration proposal scope.",
+                },
+            ]
+        ),
+    )
+
+    case = app.build_generated_field_notes_case_from_history(
+        data,
+        "Generate some field notes from proposal scope for Living Waters Church STAMP",
+    )
+
+    assert case["status"] == "selected"
+    assert case["source_file"] == "Estimate - STAMP All Roofs .xlsx"
+    assert "Signed Roof Restoration Proposal" in case["proposal_file_name"]
+    assert len(case["workbook_decision_preferences"]) == 1
+
+
+def test_ask_spraytec_generated_field_notes_auto_selects_same_estimate_proposal_pair() -> None:
+    app = importlib.import_module("dashboard.app")
+    answer_key = {
+        "schema_version": "reference_estimate_answer_key.v1",
+        "template_type": "roofing",
+        "decisions": [
+            {
+                "section": "roofing_coating_template_decisions",
+                "decision_id": "roofing_coating_system_row_26",
+                "template_bucket": "coating",
+                "workbook_row": "26",
+                "source_row": "26",
+                "include": True,
+                "inputs": {"basis_sqft": 9600},
+            }
+        ],
+        "summary": {"decision_count": 1, "unmapped_count": 0, "source_row_count": 120},
+    }
+    data = SimpleNamespace(
+        template_examples=pd.DataFrame(
+            [
+                {
+                    "job_id": "MUDD-S-FURNITURE-B-D",
+                    "customer": "Mudd Furniture",
+                    "job_name": "Mudd Furniture Roof B",
+                    "template_type": "roofing",
+                    "source_file": "2026 Estimate - B Roof .xlsx",
+                    "answer_key_json": json.dumps(answer_key),
+                },
+                {
+                    "job_id": "MUDD-S-FURNITURE-SECTIONS-C-E-F-G-07-04-25",
+                    "customer": "Mudd Furniture Sections",
+                    "job_name": "Mudd Furniture Roof B",
+                    "template_type": "roofing",
+                    "source_file": "2026 Estimate - B Roof .xlsx",
+                    "answer_key_json": json.dumps(answer_key),
+                },
+            ]
+        ),
+        historical_scope_texts=pd.DataFrame(
+            [
+                {
+                    "job_id": "MUDD-S-FURNITURE-B-D",
+                    "document_type": "proposal",
+                    "file_name": "Proposal - Roof B.pdf",
+                    "scope_text": "Mudd Furniture Roof B proposal scope.",
+                },
+                {
+                    "job_id": "MUDD-S-FURNITURE-SECTIONS-C-E-F-G-07-04-25",
+                    "document_type": "proposal",
+                    "file_name": "Proposal - Roof B.pdf",
+                    "scope_text": "Mudd Furniture Roof B proposal scope.",
+                },
+            ]
+        ),
+    )
+
+    case = app.build_generated_field_notes_case_from_history(
+        data,
+        "Generate some field notes from proposal scope for Mudd Furniture Roof B 2026",
+    )
+
+    assert case["status"] == "selected"
+    assert case["source_file"] == "2026 Estimate - B Roof .xlsx"
+    assert case["proposal_file_name"] == "Proposal - Roof B.pdf"
+    assert "multiple job IDs" in case["selection_warning"]
+
+
 def test_ask_spraytec_query_planner_extracts_rich_attribute_filters() -> None:
     app = importlib.import_module("dashboard.app")
 
@@ -1090,6 +1281,27 @@ def test_recalculate_workbench_ui_helper_tolerates_legacy_recalculate_signature(
 
     assert result["legacy"] is True
     assert calls == [{"scope": {"template_type": "roofing"}}]
+
+
+def test_data_editor_state_key_changes_when_formula_output_changes() -> None:
+    app = importlib.import_module("dashboard.app")
+    first = app.pd.DataFrame(
+        [
+            {
+                "include": True,
+                "template_bucket": "truck_expense",
+                "trip_count": 2,
+                "round_trip_miles": 100,
+                "unit_price": 1.0,
+                "estimated_cost": 200.0,
+            }
+        ]
+    )
+    second = first.copy()
+    second.loc[0, "unit_price"] = 1.25
+    second.loc[0, "estimated_cost"] = 250.0
+
+    assert app.data_editor_state_key("truck", first) != app.data_editor_state_key("truck", second)
 
 
 def test_merge_editable_rows_marks_labor_hour_override() -> None:
