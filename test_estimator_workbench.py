@@ -1103,6 +1103,37 @@ def test_roofing_companion_relationships_suggest_primer_and_detail_rows() -> Non
     assert sealant["why_included"].startswith("Included by historical companion")
 
 
+def test_historical_companion_detail_quantity_without_basis_is_not_included() -> None:
+    formula_workbench = {
+        "scope": {
+            "division": "Roofing",
+            "template_type": "roofing",
+            "project_type": "coated foam roof",
+            "net_sqft": 11058,
+            "notes": "Coated foam roof with silicone coating, fabric, fasteners, plates, granules, and minor seams.",
+        },
+        "roofing_detail_quantity_template_decisions": [
+            {
+                "include": True,
+                "proposal_source": "historical_companion",
+                "template_bucket": "seams_misc",
+                "workbook_row": "47",
+                "resolved_template_option": "Misc. / Seams",
+                "linear_ft": 0,
+                "estimated_units": 0,
+                "amount": 0,
+                "estimated_cost": 0,
+            }
+        ],
+    }
+
+    recalculated = recalculate_workbench_tables(formula_workbench)
+    seams = next(row for row in recalculated["roofing_detail_quantity_template_decisions"] if row["workbook_row"] == "47")
+
+    assert seams["include"] is False
+    assert seams["estimated_cost"] == 0
+
+
 def test_fabric_companion_suggests_seam_detail_labor_review_marked() -> None:
     workbench = build_estimating_workbench(roofing_recommendation(), roofing_companion_data())
     fabric = next(row for row in workbench["roofing_detail_template_decisions"] if row["template_bucket"] == "fabric")

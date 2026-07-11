@@ -329,7 +329,7 @@ def _product_guidance_rows(
             continue
         rows.append(
             {
-                "include": row.get("include"),
+                "decision_include": row.get("include"),
                 "decision_id": row.get("decision_id") or row.get("package_key"),
                 "workbook_row": row.get("workbook_row"),
                 "package": row.get("package") or row.get("surface") or row.get("resolved_template_option"),

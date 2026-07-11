@@ -103,6 +103,9 @@ def test_export_package_creates_zip_with_decision_files_and_workbook(tmp_path) -
         assert "labor_final" not in summary
         assert "adders_final" not in summary
         assert any(row["product_id"] == "gaf_high_solids_silicone" for row in summary["product_guidance"])
+        guidance_row = next(row for row in summary["product_guidance"] if row["product_id"] == "gaf_high_solids_silicone")
+        assert guidance_row["decision_include"] is True
+        assert "include" not in guidance_row
         readme = archive.read("README.txt").decode("utf-8")
         assert "Decision Trace" in readme
         assert "Debug Decision JSON" in readme
