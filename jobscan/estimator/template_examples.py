@@ -341,13 +341,117 @@ def _answer_key_for_example(data: Any, row: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
-def _compact_answer_key(answer_key: dict[str, Any], *, limit: int = 12) -> dict[str, Any]:
+def _scope_answer_key_text(scope: dict[str, Any]) -> str:
+    fields = (
+        "template_type",
+        "division",
+        "project_type",
+        "project_class",
+        "market_segment",
+        "building_type",
+        "substrate",
+        "roof_type_substrate",
+        "material_system",
+        "coating_type",
+        "foam_type",
+        "roof_condition",
+        "access_complexity",
+        "raw_input_notes",
+        "notes",
+        "estimator_notes",
+    )
+    return " ".join(_text(scope.get(field)) for field in fields if _text(scope.get(field))).lower()
+
+
+def _scope_answer_key_packages(scope: dict[str, Any]) -> set[str]:
+    text = _scope_answer_key_text(scope)
+    packages: set[str] = set()
+    package_terms = {
+        "foam": ("foam", "spf", "spray foam"),
+        "roofing_foam": ("roof foam", "roof spf", "spf roof"),
+        "coating": ("coating", "silicone", "acrylic", "urethane", "restoration", "top coat"),
+        "primer": ("primer", "prime"),
+        "caulk_detail": ("caulk", "sealant", "sausage", "flashing", "detail"),
+        "fabric": ("fabric", "reinforcement"),
+        "seams_misc": ("seam", "seams"),
+        "fasteners": ("fastener", "fasteners", "screw"),
+        "plates": ("plate", "plates"),
+        "board_stock": ("board", "iso", "cover board"),
+        "granules": ("granule", "granules"),
+        "thermal_barrier": ("thermal barrier", "dc315", "noburn", "ignition barrier"),
+        "generator": ("generator",),
+        "truck_expense": ("truck", "miles", "mileage"),
+        "sales_inspection_trips": ("sales", "inspection", "site visit"),
+    }
+    for package, terms in package_terms.items():
+        if any(term in text for term in terms):
+            packages.add(package)
+    scope_packages = scope.get("material_packages") or scope.get("scope_triggers") or []
+    if isinstance(scope_packages, str):
+        scope_packages = _json_list(scope_packages)
+    if isinstance(scope_packages, (list, tuple, set)):
+        packages.update(_norm(value) for value in scope_packages if _text(value))
+    if _text(scope.get("foam_type")):
+        packages.add("foam")
+    if _text(scope.get("coating_type")):
+        packages.add("coating")
+    return {package for package in packages if package}
+
+
+def _answer_key_decision_priority(
+    decision: dict[str, Any],
+    *,
+    preferred_decision_ids: set[str],
+    preferred_buckets: set[str],
+) -> tuple[int, int, int]:
+    decision_id = _text(decision.get("decision_id"))
+    bucket = _norm(decision.get("template_bucket"))
+    section = _norm(decision.get("section"))
+    outputs = decision.get("calculated_outputs") if isinstance(decision.get("calculated_outputs"), dict) else {}
+    inputs = decision.get("inputs") if isinstance(decision.get("inputs"), dict) else {}
+    score = 0
+    if decision_id and decision_id in preferred_decision_ids:
+        score += 80
+    if bucket and bucket in preferred_buckets:
+        score += 50
+    if _number(outputs.get("estimated_cost") or outputs.get("calculated_cost"), 0.0) > 0:
+        score += 18
+    if inputs:
+        score += 10
+    if section.endswith("material_template_decisions") or "material" in section:
+        score += 8
+    if "labor" in section:
+        score += 6
+    if "pricing_markup" in section:
+        score += 3
+    row_number = _number(decision.get("workbook_row") or decision.get("source_row"), 9999)
+    return (score, -int(row_number or 9999), -len(str(decision)))
+
+
+def _compact_answer_key(
+    answer_key: dict[str, Any],
+    *,
+    limit: int = 12,
+    preferred_decision_ids: set[str] | None = None,
+    preferred_buckets: set[str] | None = None,
+) -> dict[str, Any]:
     if not answer_key:
         return {}
+    preferred_decision_ids = preferred_decision_ids or set()
+    preferred_buckets = preferred_buckets or set()
+    raw_decisions = [decision for decision in answer_key.get("decisions") or [] if isinstance(decision, dict)]
+    if preferred_decision_ids or preferred_buckets:
+        raw_decisions = sorted(
+            raw_decisions,
+            key=lambda decision: _answer_key_decision_priority(
+                decision,
+                preferred_decision_ids=preferred_decision_ids,
+                preferred_buckets=preferred_buckets,
+            ),
+            reverse=True,
+        )
     decisions: list[dict[str, Any]] = []
-    for decision in answer_key.get("decisions") or []:
-        if not isinstance(decision, dict):
-            continue
+    for decision in raw_decisions:
         decisions.append(
             {
                 "decision_id": decision.get("decision_id"),
@@ -374,6 +478,194 @@ def _compact_answer_key(answer_key: dict[str, Any], *, limit: int = 12) -> dict[
         "summary": {
             "decision_count": (answer_key.get("summary") or {}).get("decision_count", len(answer_key.get("decisions") or [])),
             "unmapped_count": (answer_key.get("summary") or {}).get("unmapped_count", 0),
+        },
+    }
+
+
+def _area_match_score(example_area: float, scope_area: float) -> tuple[float, str]:
+    if example_area <= 0 or scope_area <= 0:
+        return (0.0, "")
+    ratio = max(example_area, scope_area) / max(min(example_area, scope_area), 1.0)
+    if ratio <= 1.25:
+        return (35.0, "similar area")
+    if ratio <= 2.0:
+        return (20.0, "same area order")
+    if ratio <= 4.0:
+        return (8.0, "loose area match")
+    return (0.0, "")
+
+
+def _token_overlap_score(left: str, right: str) -> tuple[float, str]:
+    left_tokens = {token for token in re.findall(r"[a-z0-9]{3,}", left.lower()) if token not in {"roof", "job", "the", "and", "with"}}
+    right_tokens = {token for token in re.findall(r"[a-z0-9]{3,}", right.lower()) if token not in {"roof", "job", "the", "and", "with"}}
+    if not left_tokens or not right_tokens:
+        return (0.0, "")
+    overlap = left_tokens & right_tokens
+    if not overlap:
+        return (0.0, "")
+    score = min(len(overlap) * 4.0, 32.0)
+    return (score, f"text overlap: {', '.join(sorted(overlap)[:5])}")
+
+
+def _answer_key_example_score(
+    row: dict[str, Any],
+    answer_key: dict[str, Any],
+    scope: dict[str, Any],
+    *,
+    profile_score: float = 0.0,
+) -> tuple[float, list[str]]:
+    reasons: list[str] = []
+    score = 0.0
+    scope_text = _scope_answer_key_text(scope)
+    example_text = " ".join(
+        _text(row.get(field))
+        for field in (
+            "customer",
+            "job_name",
+            "source_file",
+            "template_type",
+            "project_class",
+            "market_segment",
+            "building_type",
+            "substrate",
+            "material_system",
+            "scope_summary",
+            "decision_summary",
+        )
+        if _text(row.get(field))
+    ).lower()
+    scope_template = _norm(scope.get("template_type") or scope.get("division"))
+    example_template = _norm(row.get("template_type"))
+    if scope_template and example_template and (scope_template == example_template or scope_template in example_template or example_template in scope_template):
+        score += 90
+        reasons.append(f"template={example_template}")
+    if profile_score > 0:
+        score += min(profile_score * 0.4, 60.0)
+        reasons.append("matched job profile")
+    for field, weight in (("project_class", 35), ("market_segment", 18), ("building_type", 25), ("substrate", 30), ("material_system", 20)):
+        value = _text(row.get(field)).lower().replace("_", " ")
+        if value and value != "unknown" and value in scope_text:
+            score += weight
+            reasons.append(f"{field}={value}")
+    scope_packages = _scope_answer_key_packages(scope)
+    example_packages = {_norm(value) for value in _json_list(row.get("material_packages_json")) if _text(value)}
+    answer_key_buckets = {
+        _norm(decision.get("template_bucket"))
+        for decision in answer_key.get("decisions") or []
+        if isinstance(decision, dict) and _text(decision.get("template_bucket"))
+    }
+    example_packages.update(answer_key_buckets)
+    package_overlap = scope_packages & example_packages
+    if package_overlap:
+        score += min(len(package_overlap) * 22.0, 70.0)
+        reasons.append("packages: " + ", ".join(sorted(package_overlap)[:6]))
+    scope_area = _number(scope.get("estimated_sqft") or scope.get("net_sqft") or scope.get("area_sqft"), 0.0)
+    area_score, area_reason = _area_match_score(_number(row.get("area_sqft"), 0.0), scope_area)
+    if area_score:
+        score += area_score
+        reasons.append(area_reason)
+    scope_warranty = _number(scope.get("warranty_target_years") or scope.get("warranty_years"), 0.0)
+    example_warranty = _number(row.get("warranty_years"), 0.0)
+    if scope_warranty and example_warranty:
+        if abs(scope_warranty - example_warranty) <= 1:
+            score += 20
+            reasons.append("similar warranty")
+        elif abs(scope_warranty - example_warranty) <= 5:
+            score += 8
+            reasons.append("near warranty")
+    text_score, text_reason = _token_overlap_score(scope_text, example_text)
+    if text_score:
+        score += text_score
+        reasons.append(text_reason)
+    decision_count = _number((answer_key.get("summary") or {}).get("decision_count"), len(answer_key.get("decisions") or []))
+    if decision_count > 0:
+        score += min(decision_count * 0.5, 18.0)
+        reasons.append(f"{int(decision_count)} answer-key decisions")
+    return score, reasons[:8]
+
+
+def build_similar_answer_key_digest(
+    data: Any,
+    *,
+    scope: dict[str, Any] | None = None,
+    limit: int = 5,
+    decisions_per_example: int = 20,
+    decision_menu: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    scope = scope or {}
+    examples = _frame(data, "template_examples")
+    if examples.empty:
+        examples = build_template_examples(data)
+    if examples.empty:
+        return {"matched_answer_keys": []}
+    profile_digest = build_job_context_digest(data, scope=scope, limit=max(limit * 4, 10))
+    profile_scores = {
+        _text(profile.get("job_id")): _number(profile.get("similarity_score"))
+        for profile in profile_digest.get("matched_profiles") or []
+        if _text(profile.get("job_id"))
+    }
+    preferred_decision_ids = {
+        _text(row.get("decision_id"))
+        for row in decision_menu or []
+        if isinstance(row, dict) and _text(row.get("decision_id"))
+    }
+    preferred_buckets = {
+        _norm(row.get("template_bucket"))
+        for row in decision_menu or []
+        if isinstance(row, dict) and _text(row.get("template_bucket"))
+    }
+    preferred_buckets.update(_scope_answer_key_packages(scope))
+    scored: list[tuple[float, dict[str, Any], dict[str, Any], list[str]]] = []
+    for row in examples.fillna("").to_dict(orient="records"):
+        answer_key = _answer_key_for_example(data, row)
+        if not answer_key or not answer_key.get("decisions"):
+            continue
+        score, reasons = _answer_key_example_score(
+            row,
+            answer_key,
+            scope,
+            profile_score=profile_scores.get(_text(row.get("job_id")), 0.0),
+        )
+        if score <= 0:
+            continue
+        scored.append((score, row, answer_key, reasons))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    matched: list[dict[str, Any]] = []
+    for score, row, answer_key, reasons in scored[: max(0, int(limit or 5))]:
+        compact = _compact_answer_key(
+            answer_key,
+            limit=decisions_per_example,
+            preferred_decision_ids=preferred_decision_ids,
+            preferred_buckets=preferred_buckets,
+        )
+        matched.append(
+            {
+                "example_id": row.get("example_id"),
+                "job_id": row.get("job_id"),
+                "customer": row.get("customer"),
+                "job_name": row.get("job_name"),
+                "source_file": row.get("source_file"),
+                "similarity_score": round(score, 3),
+                "match_reasons": reasons,
+                "template_type": row.get("template_type"),
+                "project_class": row.get("project_class"),
+                "market_segment": row.get("market_segment"),
+                "building_type": row.get("building_type"),
+                "substrate": row.get("substrate"),
+                "material_system": row.get("material_system"),
+                "warranty_years": row.get("warranty_years"),
+                "area_sqft": row.get("area_sqft"),
+                "scope_summary": row.get("scope_summary"),
+                "reference_answer_key": compact,
+            }
+        )
+    return {
+        "matched_answer_keys": matched,
+        "retrieval": {
+            "candidate_count": len(scored),
+            "limit": int(limit or 5),
+            "decisions_per_example": int(decisions_per_example or 20),
+            "preferred_buckets": sorted(preferred_buckets)[:30],
         },
     }
 

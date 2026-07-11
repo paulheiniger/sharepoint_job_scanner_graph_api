@@ -19,7 +19,7 @@ from .reference_answer_key import (
     answer_key_to_workbook_decision_preferences,
     parse_reference_answer_key_text,
 )
-from .template_examples import build_template_example_digest
+from .template_examples import build_similar_answer_key_digest, build_template_example_digest
 from .schemas import EstimatorData
 
 
@@ -163,9 +163,15 @@ def run_estimator_chat_turn(
                 baseline_scope=baseline_scope,
                 baseline_notes=deterministic_baseline.estimator_notes,
             )
+            result = _attach_context_retrieval_summary(result, context)
         except Exception as exc:
             deterministic_baseline.warnings.append(f"AI estimator chat failed; used deterministic fallback. {type(exc).__name__}: {exc}")
-            return _apply_learning_intent(deterministic_baseline, learning_intent, reference_summary, answer_key_mode=answer_key_mode)
+            return _apply_learning_intent(
+                _attach_context_retrieval_summary(deterministic_baseline, context),
+                learning_intent,
+                reference_summary,
+                answer_key_mode=answer_key_mode,
+            )
         if should_apply_reference:
             result = _merge_reference_template_summary(
                 result,
@@ -190,7 +196,12 @@ def run_estimator_chat_turn(
             answer_key_mode=answer_key_mode,
         )
     deterministic_baseline.warnings.append("OPENAI_API_KEY is not configured; used deterministic estimator-chat fallback.")
-    return _apply_learning_intent(deterministic_baseline, learning_intent, reference_summary, answer_key_mode=answer_key_mode)
+    return _apply_learning_intent(
+        _attach_context_retrieval_summary(deterministic_baseline, context),
+        learning_intent,
+        reference_summary,
+        answer_key_mode=answer_key_mode,
+    )
 
 
 LEARNING_INTENT_PATTERNS: tuple[tuple[str, str], ...] = (
@@ -224,6 +235,41 @@ def detect_estimator_learning_intent(messages: Iterable[dict[str, Any]]) -> dict
         "auto_approve_memory": True,
         "source": "explicit_chat_keyword",
     }
+
+
+def _attach_context_retrieval_summary(result: EstimatorChatResult, context: dict[str, Any]) -> EstimatorChatResult:
+    answer_key_context = context.get("historical_answer_key_examples") if isinstance(context, dict) else {}
+    matched = (
+        answer_key_context.get("matched_answer_keys")
+        if isinstance(answer_key_context, dict) and isinstance(answer_key_context.get("matched_answer_keys"), list)
+        else []
+    )
+    if not matched:
+        return result
+    rows: list[dict[str, Any]] = []
+    for example in matched[:5]:
+        if not isinstance(example, dict):
+            continue
+        answer_key = example.get("reference_answer_key") if isinstance(example.get("reference_answer_key"), dict) else {}
+        decisions = answer_key.get("decisions") if isinstance(answer_key.get("decisions"), list) else []
+        rows.append(
+            {
+                "job_id": example.get("job_id"),
+                "customer": example.get("customer"),
+                "job_name": example.get("job_name"),
+                "source_file": example.get("source_file"),
+                "similarity_score": example.get("similarity_score"),
+                "match_reasons": example.get("match_reasons") or [],
+                "decision_count_sent": len(decisions),
+            }
+        )
+    if not rows:
+        return result
+    result.raw_response = {
+        **(result.raw_response or {}),
+        "historical_answer_key_matches": rows,
+    }
+    return result
 
 
 def detect_reference_answer_key_mode(messages: Iterable[dict[str, Any]]) -> str:
@@ -797,6 +843,13 @@ def _build_estimator_context_summary(data: EstimatorData | None, *, scope: dict[
         template_type=template_type,
     )
     summary["historical_template_examples"] = build_template_example_digest(data, scope=scope, limit=3)
+    summary["historical_answer_key_examples"] = build_similar_answer_key_digest(
+        data,
+        scope=scope,
+        limit=5,
+        decisions_per_example=20,
+        decision_menu=decision_menu,
+    )
     return summary
 
 
@@ -840,6 +893,7 @@ def _empty_chat_decision_context(scope: dict[str, Any] | None) -> dict[str, Any]
         "historical_job_context": {"matched_profiles": [], "aggregate_priors": []},
         "historical_context_decision_guidance": [],
         "historical_template_examples": {"matched_examples": []},
+        "historical_answer_key_examples": {"matched_answer_keys": []},
     }
 
 
@@ -2472,6 +2526,10 @@ def _chat_prompt_messages(
         "example in evidence. If a matched example includes reference_answer_key.decisions, those are normalized historical workbook "
         "decisions from the prior estimate; use their decision_id, template_bucket, workbook_row, line_item, inputs, and calculated_outputs "
         "as evidence for similar current decisions. Do not copy example quantities blindly when the current area, thickness, warranty, or substrate differs. "
+        "If estimator_context.historical_answer_key_examples has matched_answer_keys, prioritize those over generic examples: they are "
+        "the most similar historical estimate answer keys found for this scope. Use match_reasons and reference_answer_key.decisions "
+        "as evidence for included rows, product/system choices, labor/logistics patterns, markup/warranty assumptions, and typical "
+        "formula inputs. Still scale quantities to the current job and mark review_required when the prompt evidence is incomplete. "
         "Use matched profiles as evidence for normal package inclusion and scope assumptions, but do not invent values that are not "
         "supported by the current prompt, workbook history, product guidance, or estimator memory. "
         "Ask questions only when the answer materially changes scope, safety/code compliance, system selection, warranty eligibility, or price. "

@@ -10105,6 +10105,15 @@ def render_estimator_chat_draft_panel(
         role = str(message.get("role") or "assistant")
         with st.chat_message("user" if role == "user" else "assistant"):
             st.write(str(message.get("content") or ""))
+    raw_response = result.get("raw_response") if isinstance(result.get("raw_response"), dict) else {}
+    historical_answer_key_matches = raw_response.get("historical_answer_key_matches") if isinstance(raw_response, dict) else []
+    if historical_answer_key_matches:
+        with st.expander("Historical answer keys used", expanded=False):
+            st.dataframe(
+                pd.DataFrame(historical_answer_key_matches),
+                use_container_width=True,
+                hide_index=True,
+            )
     return result if use_chat_draft else None
 
 

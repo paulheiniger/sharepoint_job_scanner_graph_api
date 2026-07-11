@@ -210,6 +210,52 @@ def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
                 }
             ]
         ),
+        template_examples=pd.DataFrame(
+            [
+                {
+                    "example_id": "insulation-metal-building-example",
+                    "job_id": "I-HIST-1",
+                    "customer": "Massey",
+                    "job_name": "Pole Barn Insulation",
+                    "template_type": "insulation",
+                    "project_class": "insulation_pole_barn",
+                    "market_segment": "agricultural",
+                    "building_type": "pole_barn",
+                    "substrate": "metal",
+                    "material_system": "Open Cell SPF",
+                    "material_packages_json": json.dumps(["foam", "labor_foam"]),
+                    "area_sqft": 2226,
+                    "area_bucket": "under_5k",
+                    "scope_summary": "Pole barn spray foam insulation on walls and ceiling.",
+                    "decision_summary": "row 19 foam Open Cell SPF",
+                    "answer_key_json": json.dumps(
+                        {
+                            "schema_version": "reference_estimate_answer_key.v1",
+                            "template_type": "insulation",
+                            "source_workbook": {"file_name": "Estimate Insulation - Pole Barn.xlsx"},
+                            "decisions": [
+                                {
+                                    "section": "insulation_foam_template_decisions",
+                                    "decision_id": "insulation_foam_template_selector",
+                                    "template_bucket": "foam",
+                                    "workbook_row": "19-21",
+                                    "line_item": "Open Cell SPF",
+                                    "include": True,
+                                    "inputs": {
+                                        "basis_sqft": 2226,
+                                        "thickness_inches": 5.5,
+                                        "yield_or_coverage": 4500,
+                                        "unit_price": 1600,
+                                    },
+                                    "calculated_outputs": {"estimated_cost": 4800},
+                                }
+                            ],
+                            "summary": {"decision_count": 1, "unmapped_count": 0},
+                        }
+                    ),
+                }
+            ]
+        ),
     )
     calls = []
 
@@ -225,6 +271,7 @@ def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
         assert "historical_job_context" in messages[1]["content"]
         assert "historical_context_decision_guidance" in messages[1]["content"]
         assert "historical_template_examples" in messages[1]["content"]
+        assert "historical_answer_key_examples" in messages[1]["content"]
         assert "insulation_thermal_barrier_coating" in messages[1]["content"]
         assert "foam_yield_history_digest" in messages[1]["content"]
         assert "template_fallback_defaults" in messages[1]["content"]
@@ -268,6 +315,10 @@ def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
 
     context = json.loads(calls[0][0][1]["content"])["estimator_context"]
     assert context["estimator_memory_guidance"][0]["template_bucket"] == "labor_loading"
+    answer_key_examples = context["historical_answer_key_examples"]["matched_answer_keys"]
+    assert answer_key_examples
+    assert answer_key_examples[0]["job_id"] == "I-HIST-1"
+    assert answer_key_examples[0]["reference_answer_key"]["decisions"][0]["decision_id"] == "insulation_foam_template_selector"
     assert context["template_fallback_defaults"]["insulation_foam"]["yield_or_coverage"] == 2600
     assert context["template_fallback_defaults"]["insulation_foam"]["unit_price"] == 2.25
     loading = next(row for row in context["decision_menu"] if row["template_bucket"] == "labor_loading")
@@ -534,6 +585,115 @@ def test_estimator_chat_context_includes_roofing_foam_yield_digest() -> None:
     assert digest[0]["template_option"] == "Gaco Roof 2.7"
     assert digest[0]["median_square_feet"] == 9600
     assert digest[0]["median_estimated_sets"] == 0.84444
+
+
+def test_estimator_chat_context_retrieves_similar_answer_keys_by_scope_packages() -> None:
+    coating_answer_key = {
+        "schema_version": "reference_estimate_answer_key.v1",
+        "template_type": "roofing",
+        "source_workbook": {"file_name": "Estimate - Metal Roof Coating + Foam.xlsx"},
+        "decisions": [
+            {
+                "section": "roofing_accessory_template_decisions",
+                "decision_id": "roofing_edge_metal_row_82",
+                "template_bucket": "edge_metal",
+                "workbook_row": "82",
+                "line_item": "Edge Metal",
+                "inputs": {"estimated_units": 10},
+            },
+            {
+                "section": "roofing_coating_template_decisions",
+                "decision_id": "roofing_coating_system_row_26",
+                "template_bucket": "coating",
+                "workbook_row": "26",
+                "line_item": "Gaco Silicone",
+                "inputs": {"basis_sqft": 9600, "gal_per_100_sqft": 1.5, "unit_price": 32},
+                "calculated_outputs": {"estimated_cost": 5299.2},
+            },
+            {
+                "section": "roofing_foam_template_decisions",
+                "decision_id": "roofing_foam_row_19",
+                "template_bucket": "foam",
+                "workbook_row": "19",
+                "line_item": "Gaco Roof 2.7",
+                "inputs": {"basis_sqft": 96, "thickness_inches": 4, "unit_price": 2.1},
+                "calculated_outputs": {"estimated_cost": 806.4},
+            },
+        ],
+        "summary": {"decision_count": 3, "unmapped_count": 0},
+    }
+    repair_answer_key = {
+        "schema_version": "reference_estimate_answer_key.v1",
+        "template_type": "roofing",
+        "source_workbook": {"file_name": "Estimate - Leak Repair.xlsx"},
+        "decisions": [
+            {
+                "section": "roofing_detail_template_decisions",
+                "decision_id": "roofing_caulk_sealant_row_43",
+                "template_bucket": "caulk_detail",
+                "workbook_row": "43",
+                "line_item": "Sealant",
+                "inputs": {"estimated_units": 2, "unit_price": 12},
+                "calculated_outputs": {"estimated_cost": 24},
+            }
+        ],
+        "summary": {"decision_count": 1, "unmapped_count": 0},
+    }
+    data = EstimatorData(
+        template_examples=pd.DataFrame(
+            [
+                {
+                    "example_id": "coating-foam",
+                    "job_id": "R-COAT",
+                    "customer": "Gatti",
+                    "job_name": "Metal Roof Coating",
+                    "template_type": "roofing",
+                    "project_class": "roof_restoration",
+                    "building_type": "commercial",
+                    "substrate": "metal",
+                    "material_system": "Gaco silicone and roof foam",
+                    "material_packages_json": json.dumps(["coating", "foam", "primer", "fasteners"]),
+                    "area_sqft": 9600,
+                    "scope_summary": "Metal roof restoration with coating and foam repair.",
+                    "decision_summary": "coating; foam; primer; fasteners",
+                    "answer_key_json": json.dumps(coating_answer_key),
+                },
+                {
+                    "example_id": "repair",
+                    "job_id": "R-REPAIR",
+                    "customer": "Repair Customer",
+                    "job_name": "Small leak repair",
+                    "template_type": "roofing",
+                    "project_class": "roof_repair",
+                    "building_type": "commercial",
+                    "substrate": "tpo",
+                    "material_system": "sealant",
+                    "material_packages_json": json.dumps(["caulk_detail"]),
+                    "area_sqft": 200,
+                    "scope_summary": "Small leak repair only.",
+                    "decision_summary": "caulk detail",
+                    "answer_key_json": json.dumps(repair_answer_key),
+                },
+            ]
+        )
+    )
+
+    context = estimator_context_summary(
+        data,
+        scope={
+            "template_type": "roofing",
+            "estimated_sqft": 9600,
+            "substrate": "metal",
+            "raw_input_notes": "metal roof coating with foam repair, primer and fasteners",
+        },
+    )
+
+    matches = context["historical_answer_key_examples"]["matched_answer_keys"]
+    assert matches[0]["job_id"] == "R-COAT"
+    assert "packages: coating" in "; ".join(matches[0]["match_reasons"])
+    decision_ids = [row["decision_id"] for row in matches[0]["reference_answer_key"]["decisions"]]
+    assert set(decision_ids[:2]) == {"roofing_coating_system_row_26", "roofing_foam_row_19"}
+    assert decision_ids.index("roofing_edge_metal_row_82") > 1
 
 
 def test_estimator_chat_decision_menu_uses_template_catalog_metadata() -> None:
