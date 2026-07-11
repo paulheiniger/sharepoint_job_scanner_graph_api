@@ -3496,34 +3496,186 @@ def _generated_scope_rows_from_examples(examples: pd.DataFrame) -> list[dict[str
     return rows
 
 
+def _generated_notes_answer_key_context(answer_key: dict[str, Any], *, max_decisions: int = 18) -> list[dict[str, Any]]:
+    decisions = answer_key.get("decisions") if isinstance(answer_key, dict) else []
+    if not isinstance(decisions, list):
+        return []
+    compact: list[dict[str, Any]] = []
+    for decision in decisions:
+        if not isinstance(decision, dict) or decision.get("include") is False:
+            continue
+        line_item = text_value(decision.get("line_item") or decision.get("template_line"))
+        bucket = text_value(decision.get("template_bucket"))
+        inputs = decision.get("inputs") if isinstance(decision.get("inputs"), dict) else {}
+        input_keys = [
+            key
+            for key, value in inputs.items()
+            if text_value(value) and key not in {"unit_price", "hourly_rate", "daily_rate", "estimated_cost", "total_cost"}
+        ][:5]
+        compact.append(
+            {
+                "bucket": bucket,
+                "line_item": line_item,
+                "non_price_inputs": input_keys,
+            }
+        )
+        if len(compact) >= max_decisions:
+            break
+    return compact
+
+
+def _fallback_scope_to_estimator_notes(
+    *,
+    customer: str,
+    job_name: str,
+    address: str,
+    template_type: str,
+    scope_text: str,
+) -> str:
+    cleaned_lines: list[str] = []
+    skip_patterns = re.compile(
+        r"\b("
+        r"subtotal|total|proposal amount|contract amount|unit price|estimated cost|profit|overhead|sales tax|"
+        r"payment|terms|signature|accepted|warranty fee|line item|source row|workbook row"
+        r")\b",
+        re.I,
+    )
+    for raw_line in re.split(r"[\r\n]+", scope_text):
+        line = " ".join(str(raw_line or "").strip().split())
+        if not line or skip_patterns.search(line):
+            continue
+        if len(line) > 320:
+            line = line[:320].rstrip(" ,;:") + "."
+        cleaned_lines.append(line)
+        if len(cleaned_lines) >= 8:
+            break
+    prefix_parts = [part for part in (customer, job_name) if part]
+    lines: list[str] = []
+    if prefix_parts:
+        lines.append(" / ".join(prefix_parts))
+    if address:
+        lines.append(f"Site address: {address}")
+    if template_type == "insulation":
+        lines.append("Estimator field notes from prior proposal scope: spray foam insulation review.")
+    elif template_type == "flooring":
+        lines.append("Estimator field notes from prior proposal scope: flooring/repair review.")
+    else:
+        lines.append("Estimator field notes from prior proposal scope: roof condition and restoration/repair review.")
+    lines.extend(cleaned_lines)
+    lines.append("Verify measurements, substrate condition, access, product/system selection, labor plan, logistics, and any warranty requirements before quoting.")
+    return "\n".join(line for line in lines if line).strip()
+
+
+def _call_openai_generated_field_notes_rewrite(payload: dict[str, Any]) -> dict[str, Any]:
+    if not os.getenv("OPENAI_API_KEY"):
+        raise RuntimeError("OPENAI_API_KEY is not configured")
+    try:
+        from openai import OpenAI  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError("openai package is not installed") from exc
+    system = (
+        "You rewrite historical Spray-Tec proposal scope text into realistic estimator field notes. "
+        "The notes should sound like what an estimator might enter after reading a scope or walking a site, "
+        "not like a formal proposal or an answer key."
+    )
+    instructions = [
+        "Return strict JSON with keys generated_notes, note_style, preserved_cues, omitted_details, warnings.",
+        "Keep customer/job/address, dimensions, areas, substrate, condition, access, constraints, customer intent, and uncertainty cues when present.",
+        "Use short natural field-note prose or bullets.",
+        "Do not copy proposal boilerplate, legal terms, pricing, totals, taxes, profit, overhead, payment terms, signatures, or acceptance language.",
+        "Do not mention workbook rows, source rows, selector codes, or that an answer key exists.",
+        "Do not list every product or line item from the historical estimate. Include product names only when the proposal text itself clearly makes them part of the field-facing scope.",
+        "Convert final-scope certainty into review language when appropriate, such as verify, review, confirm, possible, likely, or if qualifies.",
+        "Keep enough estimating cues that an AI estimator could infer template decisions, but leave product/package choices for the estimator system to infer from context and history.",
+    ]
+    user_payload = {**payload, "instructions": instructions}
+    client = OpenAI(timeout=float(os.getenv("OPENAI_GENERATED_FIELD_NOTES_TIMEOUT_SECONDS", "25")))
+    response = client.chat.completions.create(
+        model=os.getenv("OPENAI_GENERATED_FIELD_NOTES_MODEL")
+        or os.getenv("OPENAI_ASK_SPRAYTEC_MODEL")
+        or os.getenv("OPENAI_MODEL")
+        or "gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": json.dumps(user_payload, indent=2, default=str)},
+        ],
+        temperature=0.25,
+        response_format={"type": "json_object"},
+    )
+    content = response.choices[0].message.content if response.choices else ""
+    parsed = json.loads(text_value(content) or "{}")
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _rewrite_generated_field_notes_from_scope(
+    *,
+    example: dict[str, Any],
+    scope_row: dict[str, Any],
+    answer_key: dict[str, Any],
+) -> dict[str, Any]:
+    context = answer_key.get("job_context") if isinstance(answer_key.get("job_context"), dict) else {}
+    customer = text_value(example.get("customer") or context.get("customer"))
+    job_name = text_value(example.get("job_name") or context.get("job_name"))
+    address = text_value(context.get("site_address") or context.get("address") or example.get("site_address"))
+    template_type = text_value(example.get("template_type")).lower()
+    scope_text = text_value(scope_row.get("scope_text"))
+    if len(scope_text) > 5200:
+        scope_text = scope_text[:5200].rstrip() + " ..."
+    fallback_notes = _fallback_scope_to_estimator_notes(
+        customer=customer,
+        job_name=job_name,
+        address=address,
+        template_type=template_type,
+        scope_text=scope_text,
+    )
+    payload = {
+        "source_metadata": {
+            "customer": customer,
+            "job_name": job_name,
+            "site_address": address,
+            "template_type": template_type,
+            "proposal_file": text_value(scope_row.get("file_name")),
+            "estimate_file": text_value(example.get("source_file")),
+        },
+        "proposal_scope_text": scope_text,
+        "historical_answer_key_context_for_cues_only": _generated_notes_answer_key_context(answer_key),
+    }
+    try:
+        parsed = _call_openai_generated_field_notes_rewrite(payload)
+        notes = text_value(parsed.get("generated_notes"))
+        if notes:
+            return {
+                "generated_notes": notes,
+                "note_style": text_value(parsed.get("note_style")) or "llm_field_note_rewrite",
+                "generation_method": "openai_field_note_rewrite",
+                "preserved_cues": parsed.get("preserved_cues") if isinstance(parsed.get("preserved_cues"), list) else [],
+                "omitted_details": parsed.get("omitted_details") if isinstance(parsed.get("omitted_details"), list) else [],
+                "warnings": parsed.get("warnings") if isinstance(parsed.get("warnings"), list) else [],
+            }
+    except Exception as exc:
+        logger.info("Generated field-note LLM rewrite unavailable; using local fallback: %s", safe_exception_text(exc))
+    return {
+        "generated_notes": fallback_notes,
+        "note_style": "local_scope_note_rewrite",
+        "generation_method": "local_scope_note_rewrite",
+        "preserved_cues": [],
+        "omitted_details": ["proposal boilerplate", "pricing/totals/markup language"],
+        "warnings": ["AI field-note rewrite was unavailable; used local proposal-scope cleanup."],
+    }
+
+
 def _generated_field_notes_from_scope(
     *,
     example: dict[str, Any],
     scope_row: dict[str, Any],
     answer_key: dict[str, Any],
 ) -> str:
-    context = answer_key.get("job_context") if isinstance(answer_key.get("job_context"), dict) else {}
-    customer = text_value(example.get("customer") or context.get("customer"))
-    job_name = text_value(example.get("job_name") or context.get("job_name"))
-    address = text_value(context.get("site_address") or context.get("address") or example.get("site_address"))
-    proposal_file = text_value(scope_row.get("file_name"))
-    estimate_file = text_value(example.get("source_file"))
-    scope_text = text_value(scope_row.get("scope_text"))
-    if len(scope_text) > 2400:
-        scope_text = scope_text[:2400].rstrip() + " ..."
-    lines: list[str] = []
-    header = " / ".join(part for part in (customer, job_name) if part)
-    if header:
-        lines.append(header)
-    if address:
-        lines.append(f"Site address: {address}")
-    if proposal_file:
-        lines.append(f"Historical proposal/source: {proposal_file}")
-    if estimate_file:
-        lines.append(f"Historical estimate answer key: {estimate_file}")
-    lines.append("Field notes reconstructed from historical proposal scope:")
-    lines.append(scope_text)
-    return "\n".join(line for line in lines if line).strip()
+    rewritten = _rewrite_generated_field_notes_from_scope(
+        example=example,
+        scope_row=scope_row,
+        answer_key=answer_key,
+    )
+    return text_value(rewritten.get("generated_notes"))
 
 
 def build_generated_field_notes_case_from_history(
@@ -3610,11 +3762,6 @@ def build_generated_field_notes_case_from_history(
             if score <= 0:
                 continue
             summary = answer_key.get("summary") if isinstance(answer_key.get("summary"), dict) else {}
-            generated_notes = _generated_field_notes_from_scope(
-                example=example,
-                scope_row=scope_row,
-                answer_key=answer_key,
-            )
             preferences = answer_key_to_workbook_decision_preferences(answer_key)
             candidate = {
                 "status": "selected",
@@ -3631,7 +3778,10 @@ def build_generated_field_notes_case_from_history(
                 "scope_source": text_value(scope_row.get("scope_source")) or text_value(scope_row.get("document_type")),
                 "used_scope_summary_fallback": fallback_scope_rows
                 or text_value(scope_row.get("scope_source")) == "template_example_scope_summary",
-                "generated_notes": generated_notes,
+                "generated_notes": "",
+                "generated_notes_method": "",
+                "generated_notes_style": "",
+                "generated_notes_warnings": [],
                 "answer_key": answer_key,
                 "workbook_decision_preferences": preferences,
                 "answer_key_summary": {
@@ -3640,6 +3790,8 @@ def build_generated_field_notes_case_from_history(
                     "source_row_count": int(summary.get("source_row_count") or 0),
                     "preference_count": len(preferences),
                 },
+                "_rewrite_example": example,
+                "_rewrite_scope_row": scope_row,
             }
             candidate_score = score + _generated_field_notes_resolution_bonus(query, candidate)
             candidate["score"] = round(candidate_score, 3)
@@ -3661,7 +3813,22 @@ def build_generated_field_notes_case_from_history(
             "candidates": candidates,
         }
     selected = dict(candidates[0])
-    selected["candidates"] = candidates
+    generated_note_result = _rewrite_generated_field_notes_from_scope(
+        example=selected.get("_rewrite_example") if isinstance(selected.get("_rewrite_example"), dict) else {},
+        scope_row=selected.get("_rewrite_scope_row") if isinstance(selected.get("_rewrite_scope_row"), dict) else {},
+        answer_key=selected.get("answer_key") if isinstance(selected.get("answer_key"), dict) else {},
+    )
+    selected["generated_notes"] = text_value(generated_note_result.get("generated_notes"))
+    selected["generated_notes_method"] = text_value(generated_note_result.get("generation_method"))
+    selected["generated_notes_style"] = text_value(generated_note_result.get("note_style"))
+    selected["generated_notes_warnings"] = (
+        generated_note_result.get("warnings") if isinstance(generated_note_result.get("warnings"), list) else []
+    )
+    cleaned_candidates = []
+    for candidate in candidates:
+        cleaned_candidates.append({key: value for key, value in candidate.items() if not str(key).startswith("_rewrite_")})
+    selected = {key: value for key, value in selected.items() if not str(key).startswith("_rewrite_")}
+    selected["candidates"] = cleaned_candidates
     return selected
 
 
@@ -3693,6 +3860,7 @@ def generated_field_notes_response(case: dict[str, Any]) -> str:
         f"- Proposal scope: {case.get('proposal_file_name') or 'unknown'}",
         f"- Estimate answer key: {case.get('source_file') or 'unknown'}",
         f"- Template type: {case.get('template_type') or 'unknown'}",
+        f"- Notes rewrite: {case.get('generated_notes_method') or 'unknown'}",
         f"- Answer-key decisions: {summary.get('decision_count', 0)} mapped, {summary.get('unmapped_count', 0)} unmapped",
         "- Mode: generated notes only. The matched answer key is retained for evaluation/reference, not automatically applied.",
         "",
@@ -3705,6 +3873,9 @@ def generated_field_notes_response(case: dict[str, Any]) -> str:
         )
     if text_value(case.get("selection_warning")):
         lines.insert(-2, f"- Selection note: {case.get('selection_warning')}")
+    for warning in case.get("generated_notes_warnings") or []:
+        if text_value(warning):
+            lines.insert(-2, f"- Notes rewrite warning: {warning}")
     if text_value(case.get("proposal_url")):
         lines.insert(-2, f"- Proposal link: {markdown_link(case.get('proposal_file_name') or 'proposal', case.get('proposal_url'))}")
     return "\n".join(lines).strip()

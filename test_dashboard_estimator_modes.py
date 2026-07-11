@@ -816,6 +816,121 @@ def test_ask_spraytec_generates_field_notes_with_attached_answer_key() -> None:
     assert "not automatically applied" in response
 
 
+def test_ask_spraytec_generated_field_notes_uses_llm_rewrite(monkeypatch) -> None:
+    app = importlib.import_module("dashboard.app")
+    answer_key = {
+        "schema_version": "reference_estimate_answer_key.v1",
+        "template_type": "roofing",
+        "job_context": {
+            "customer": "Mudd Family Trust",
+            "job_name": "Mudd's Furniture Roof B",
+        },
+        "decisions": [
+            {
+                "section": "roofing_coating_template_decisions",
+                "decision_id": "roofing_coating_system_row_26",
+                "template_bucket": "coating",
+                "workbook_row": "26",
+                "line_item": "Gaco Silicone",
+                "include": True,
+                "inputs": {"basis_sqft": 9600, "gal_per_100_sqft": 1.5, "unit_price": 32},
+            }
+        ],
+        "summary": {"decision_count": 1, "unmapped_count": 0, "source_row_count": 120},
+    }
+    captured_payloads: list[dict[str, object]] = []
+
+    def fake_rewrite(payload: dict[str, object]) -> dict[str, object]:
+        captured_payloads.append(payload)
+        return {
+            "generated_notes": (
+                "Mudd Furniture Roof B site note. Roof B needs restoration review. "
+                "Observed/expected prep includes power wash, detail work around seams and penetrations, "
+                "primer review, and silicone coating path if roof qualifies. Confirm substrate and warranty."
+            ),
+            "note_style": "mock_field_notes",
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(app, "_call_openai_generated_field_notes_rewrite", fake_rewrite)
+    data = SimpleNamespace(
+        template_examples=pd.DataFrame(
+            [
+                {
+                    "job_id": "J-MUDD",
+                    "customer": "Mudd Family Trust",
+                    "job_name": "Mudd's Furniture Roof B",
+                    "template_type": "roofing",
+                    "source_file": "Estimate Roofing - Mudd Furniture Roof B.xlsx",
+                    "answer_key_json": json.dumps(answer_key),
+                }
+            ]
+        ),
+        historical_scope_texts=pd.DataFrame(
+            [
+                {
+                    "job_id": "J-MUDD",
+                    "document_id": "P1",
+                    "document_type": "proposal",
+                    "file_name": "Proposal - Mudd Furniture Roof B.pdf",
+                    "scope_text": (
+                        "Roof B restoration proposal scope includes power wash, primer, silicone coating, "
+                        "proposal amount $42,000, sales tax, profit, overhead, and payment terms."
+                    ),
+                    "sharepoint_url": "https://sharepoint.example/mudd-proposal",
+                }
+            ]
+        ),
+    )
+
+    case = app.build_generated_field_notes_case_from_history(
+        data,
+        "Generate some field notes from proposal scope for Mudd Furniture Roof B",
+    )
+
+    assert case["status"] == "selected"
+    assert case["generated_notes_method"] == "openai_field_note_rewrite"
+    assert "site note" in case["generated_notes"]
+    assert "proposal amount" not in case["generated_notes"].lower()
+    assert "payment terms" not in case["generated_notes"].lower()
+    assert len(captured_payloads) == 1
+    assert "historical_answer_key_context_for_cues_only" in captured_payloads[0]
+
+
+def test_ask_spraytec_generated_field_notes_fallback_strips_proposal_boilerplate(monkeypatch) -> None:
+    app = importlib.import_module("dashboard.app")
+    monkeypatch.setattr(
+        app,
+        "_call_openai_generated_field_notes_rewrite",
+        lambda payload: (_ for _ in ()).throw(RuntimeError("no model")),
+    )
+    notes = app._rewrite_generated_field_notes_from_scope(
+        example={
+            "customer": "Acme",
+            "job_name": "Main Roof",
+            "template_type": "roofing",
+            "source_file": "Estimate Roofing - Acme.xlsx",
+        },
+        scope_row={
+            "file_name": "Proposal - Acme.pdf",
+            "scope_text": (
+                "Power wash roof and review open seams.\n"
+                "Proposal amount $10,000.\n"
+                "Payment terms net 30.\n"
+                "Existing metal roof has rusted fasteners and ponding near drains."
+            ),
+        },
+        answer_key={"decisions": []},
+    )
+
+    generated = notes["generated_notes"]
+    assert notes["generation_method"] == "local_scope_note_rewrite"
+    assert "Power wash roof" in generated
+    assert "rusted fasteners" in generated
+    assert "Proposal amount" not in generated
+    assert "Payment terms" not in generated
+
+
 def test_ask_spraytec_generated_field_notes_attach_as_evaluation_reference(monkeypatch) -> None:
     app = importlib.import_module("dashboard.app")
     monkeypatch.setattr(app, "save_estimator_chat_session", lambda *args, **kwargs: None)
