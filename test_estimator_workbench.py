@@ -198,6 +198,42 @@ def roofing_catalog_pricing_and_people_data() -> EstimatorData:
     )
 
 
+def roofing_primer_detail_pricing_data() -> EstimatorData:
+    return EstimatorData(
+        pricing_catalog=pd.DataFrame(
+            [
+                {
+                    "pricing_item_id": "primer",
+                    "product_name": "Gaco E-5320 Primer",
+                    "category": "Primer",
+                    "unit_price": 33,
+                    "status": "active",
+                    "is_current": True,
+                    "needs_review": False,
+                },
+                {
+                    "pricing_item_id": "silicone-sausage",
+                    "product_name": "Silicone Sausage",
+                    "category": "Sealant",
+                    "unit_price": 12,
+                    "status": "active",
+                    "is_current": True,
+                    "needs_review": False,
+                },
+                {
+                    "pricing_item_id": "fabric",
+                    "product_name": "GacoFlex Fabric",
+                    "category": "Reinforcement Fabric",
+                    "unit_price": 1,
+                    "status": "active",
+                    "is_current": True,
+                    "needs_review": False,
+                },
+            ]
+        )
+    )
+
+
 def roofing_reference_project_data() -> EstimatorData:
     return EstimatorData(
         template_rows=pd.DataFrame(
@@ -374,6 +410,114 @@ def test_roofing_spf_patch_uses_catalog_materials_and_people_sheet_labor_drivers
     assert labor["labor_base"]["labor_driver_quantity"] == coating["estimated_gallons"]
     assert labor["labor_top_coat"]["labor_driver_quantity"] == coating["estimated_gallons"]
     assert labor["labor_seam_sealer"]["include"] is False
+
+
+def test_roofing_checked_primer_detail_and_dumpster_rows_get_preview_costs() -> None:
+    data = roofing_primer_detail_pricing_data()
+    recommendation = roofing_recommendation()
+    recommendation.parsed_fields.update(
+        {
+            "net_sqft": 10478,
+            "estimated_sqft": 10478,
+            "deduction_sqft": 580,
+            "foam_thickness_inches": 1.25,
+            "notes": (
+                "Existing coated foam roof. IR survey found 580 sqft saturated foam to remove. "
+                "Pressure wash, primer review, silicone sealant at penetrations and transitions, "
+                "reinforced fabric details, coating, and dumpster disposal."
+            ),
+        }
+    )
+    workbench = build_estimating_workbench(recommendation, data)
+    for section in (
+        "roofing_primer_template_decisions",
+        "roofing_detail_template_decisions",
+        "roofing_equipment_template_decisions",
+    ):
+        for row in workbench.get(section) or []:
+            if row.get("template_bucket") in {"primer", "caulk_detail", "fabric", "dumpster"}:
+                row["include"] = True
+
+    recalculated = recalculate_workbench_tables(workbench, data=data)
+    primer = recalculated["roofing_primer_template_decisions"][0]
+    details = {
+        (row["template_bucket"], row["workbook_row"]): row
+        for row in recalculated["roofing_detail_template_decisions"]
+    }
+    dumpster = next(row for row in recalculated["roofing_equipment_template_decisions"] if row["template_bucket"] == "dumpster")
+
+    assert primer["include"] is True
+    assert primer["basis_sqft"] > 0
+    assert primer["unit_price"] == 33
+    assert primer["estimated_cost"] > 0
+    assert details[("caulk_detail", "43")]["unit_price"] == 12
+    assert details[("caulk_detail", "43")]["estimated_units"] > 0
+    assert details[("caulk_detail", "43")]["estimated_cost"] > 0
+    assert details[("fabric", "79")]["unit_price"] == 1
+    assert details[("fabric", "79")]["estimated_cost"] > 0
+    assert dumpster["basis_sqft"] == 580
+    assert dumpster["debris_thickness_inches"] == 1.25
+    assert dumpster["debris_thickness_source"] == "foam_thickness_fallback"
+    assert dumpster["thickness_inches"] == 1.25
+    assert any("foam repair/replacement thickness" in warning for warning in dumpster["compatibility_warnings"])
+    assert dumpster["estimated_cost"] > 0
+
+
+def test_roofing_dumpster_uses_explicit_debris_thickness_when_available() -> None:
+    data = roofing_primer_detail_pricing_data()
+    recommendation = roofing_recommendation()
+    recommendation.parsed_fields.update(
+        {
+            "net_sqft": 10478,
+            "estimated_sqft": 10478,
+            "deduction_sqft": 580,
+            "foam_thickness_inches": 1.25,
+            "tearout_thickness_inches": 2.0,
+            "notes": "IR survey found 580 sqft saturated roof assembly to tear out. Include dumpster disposal.",
+        }
+    )
+    workbench = build_estimating_workbench(recommendation, data)
+    for row in workbench.get("roofing_equipment_template_decisions") or []:
+        if row.get("template_bucket") == "dumpster":
+            row["include"] = True
+
+    recalculated = recalculate_workbench_tables(workbench, data=data)
+    dumpster = next(row for row in recalculated["roofing_equipment_template_decisions"] if row["template_bucket"] == "dumpster")
+
+    assert dumpster["basis_sqft"] == 580
+    assert dumpster["debris_thickness_inches"] == 2.0
+    assert dumpster["debris_thickness_source"] == "explicit_debris_thickness"
+    assert dumpster["thickness_inches"] == 2.0
+    assert not any("foam repair/replacement thickness" in warning for warning in dumpster["compatibility_warnings"])
+    assert dumpster["estimated_cost"] > 0
+
+
+def test_roofing_unchecked_rows_still_show_available_unit_prices() -> None:
+    data = roofing_primer_detail_pricing_data()
+    recommendation = roofing_recommendation()
+    recommendation.parsed_fields.update(
+        {
+            "net_sqft": 10478,
+            "estimated_sqft": 10478,
+            "notes": "Roof restoration with coating. No mileage row selected yet.",
+        }
+    )
+    workbench = recalculate_workbench_tables(build_estimating_workbench(recommendation, data), data=data)
+
+    primer = workbench["roofing_primer_template_decisions"][0]
+    caulk = next(row for row in workbench["roofing_detail_template_decisions"] if row["workbook_row"] == "43")
+    fabric = next(row for row in workbench["roofing_detail_template_decisions"] if row["workbook_row"] == "79")
+    truck = next(row for row in workbench["roofing_travel_freight_template_decisions"] if row["template_bucket"] == "truck_expense")
+
+    assert primer["include"] is False
+    assert primer["unit_price"] == 33
+    assert caulk["include"] is False
+    assert caulk["unit_price"] == 12
+    assert fabric["include"] is False
+    assert fabric["unit_price"] == 1
+    assert truck["include"] is False
+    assert truck["unit_price"] == 1.0
+    assert truck["estimated_cost"] == 0
 
 
 def test_roofing_chat_preferences_fill_rows_without_exact_workbook_metadata() -> None:
@@ -2006,7 +2150,7 @@ def test_roofing_truck_expense_recalculates_when_unit_price_changes() -> None:
     assert second_truck["formula_source"] == "trips_miles_rate"
 
 
-def test_review_only_primer_does_not_price_full_area_until_confirmed() -> None:
+def test_review_only_primer_prices_checked_row_but_keeps_review_warning() -> None:
     formula_workbench = {
         "scope": {
             "division": "Roofing",
@@ -2033,10 +2177,11 @@ def test_review_only_primer_does_not_price_full_area_until_confirmed() -> None:
     primer = recalculated["roofing_primer_template_decisions"][0]
 
     assert primer["include"] is True
-    assert primer["basis_sqft"] == 0
-    assert primer["unit_price"] == 0
-    assert primer["estimated_cost"] == 0
-    assert any("review-only" in warning for warning in primer["compatibility_warnings"])
+    assert primer["basis_sqft"] == 10000
+    assert primer["unit_price"] == 40
+    assert primer["estimated_cost"] == 1600
+    assert primer["compatibility_status"] in {"review", "spec_mismatch"}
+    assert any("verify primer scope" in warning.lower() for warning in primer["compatibility_warnings"])
 
 
 def test_roofing_labor_workbench_preserves_driver_evidence_from_recommendation() -> None:

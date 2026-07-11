@@ -274,7 +274,7 @@ def _write_granules_row(ws: Any, row: dict[str, Any]) -> None:
 def _write_dumpster_row(ws: Any, row: dict[str, Any]) -> None:
     selector_code = _number(row.get("selector_code"))
     area_sqft = _number(row.get("area_sqft") or row.get("basis_sqft"))
-    thickness = _number(row.get("thickness_inches"))
+    thickness = _number(row.get("debris_thickness_inches") or row.get("thickness_inches"))
     unit_price = _number(row.get("unit_price"))
     margin_pct = _number(row.get("margin_pct"))
     if selector_code is not None:

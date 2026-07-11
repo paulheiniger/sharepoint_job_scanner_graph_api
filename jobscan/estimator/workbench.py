@@ -1983,6 +1983,47 @@ def _estimate_area(scope: dict[str, Any]) -> float:
     )
 
 
+def _roofing_repair_area(scope: dict[str, Any]) -> float:
+    explicit = positive_number(
+        scope.get("repair_area_sqft"),
+        scope.get("tearout_area_sqft"),
+        scope.get("saturated_area_sqft"),
+        scope.get("wet_area_sqft"),
+        scope.get("deduction_sqft"),
+        scope.get("foam_repair_sqft"),
+        default=0.0,
+    )
+    if explicit > 0:
+        return explicit
+    notes = str(first_nonblank(scope.get("notes"), scope.get("raw_input_notes"), scope.get("scope_of_work"), ""))
+    patterns = [
+        r"([0-9][0-9,]*(?:\.[0-9]+)?)\s*(?:sq\.?\s*ft|sqft|sf|square\s*feet)[^.\n]{0,80}\b(?:saturated|wet|tear(?:\s|-)?out|remove|removed|void|repair|patch)\b",
+        r"\b(?:saturated|wet|tear(?:\s|-)?out|remove|removed|void|repair|patch)[^.\n]{0,80}?([0-9][0-9,]*(?:\.[0-9]+)?)\s*(?:sq\.?\s*ft|sqft|sf|square\s*feet)\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, notes, re.I)
+        if match:
+            value = safe_number(str(match.group(1)).replace(",", ""), 0.0)
+            if value > 0:
+                return value
+    return 0.0
+
+
+def _roofing_detail_default_units(scope: dict[str, Any], *, bucket: str, workbook_row: int | str) -> float:
+    area = _estimate_area(scope)
+    repair_area = _roofing_repair_area(scope)
+    if bucket == "caulk_detail":
+        if int(safe_number(workbook_row, 0)) == ROOFING_CAULK_TEMPLATE_ROWS[0]:
+            basis_area = repair_area if repair_area > 0 else area
+            return max(1.0, math.ceil(basis_area / 1000.0)) if basis_area > 0 else 1.0
+        return 0.0
+    if bucket == "fabric":
+        basis_area = repair_area if repair_area > 0 else area
+        if basis_area > 0:
+            return max(25.0, round(math.sqrt(basis_area) * 4.0, 2))
+    return 0.0
+
+
 def _foam_product_context_from_row(row: dict[str, Any] | None) -> dict[str, Any]:
     row = row or {}
     return {
@@ -3176,6 +3217,23 @@ def _candidate_options_with_historical_templates(
             _template_lookup_material_options(data, package=package, default_unit=default_unit),
             identity_fields=("item_name", "template_lookup_table_id", "source"),
         )
+        if package != "foam":
+            pricing_frame = _frame(data, "pricing_catalog")
+            if pricing_frame.empty:
+                pricing_frame = _frame(data, "pricing")
+            material_options = _merge_option_lists(
+                material_options,
+                _pricing_options_for_package(
+                    pricing_frame,
+                    {
+                        "package": package,
+                        "keywords": _package_aliases(package),
+                        "default_unit": default_unit,
+                    },
+                    scope,
+                ),
+                identity_fields=("item_name", "pricing_item_id", "source"),
+            )
     for option in material_options:
         name = _normalized(option.get("item_name"))
         if not name:
@@ -3603,7 +3661,11 @@ def _selected_roofing_foam_candidate(candidates: list[dict[str, Any]], selected_
     normalized = _normalized(selected_name)
     if normalized:
         for candidate in candidates:
-            if _normalized(candidate.get("item_name")) == normalized:
+            if (
+                _normalized(candidate.get("item_name")) == normalized
+                and safe_number(candidate.get("unit_price"), 0.0) > 0
+                and candidate.get("compatibility_status") != "spec_mismatch"
+            ):
                 return candidate
     for candidate in candidates:
         if _is_roofing_foam_candidate(candidate) and str(candidate.get("compatibility_status") or "").lower() != "spec_mismatch":
@@ -7144,6 +7206,13 @@ def _build_roofing_primer_template_decisions(
     resolved_option = _resolved_roofing_primer_option(selector_code, historical_option)
     area = _estimate_area(scope)
     notes = _normalized(" ".join(str(scope.get(key) or "") for key in ("notes", "raw_input_notes", "roof_condition", "project_type")))
+    if (
+        _normalized(resolved_option) == "black foam"
+        and not _manual_include_locked(existing)
+        and not _contains_any_text(notes, ["foam primer", "black foam"])
+    ):
+        selector_code = "1"
+        resolved_option = _resolved_roofing_primer_option(selector_code, "Gaco E-5320")
     explicit_include_signal = bool(
         re.search(r"\b(include|included|add|apply)\s+(?:\w+\s+){0,4}(primer|priming)\b", notes)
         or re.search(r"\b(primer|priming)\s+(?:is\s+)?included\b", notes)
@@ -7176,16 +7245,12 @@ def _build_roofing_primer_template_decisions(
         and not primer_source_priced
         and not explicit_include_signal
     )
-    basis_sqft = (
-        0.0
-        if review_only_primer
-        else positive_number(
-            existing.get("basis_sqft"),
-            primer_row.get("editable_basis_sqft"),
-            primer_row.get("default_basis_sqft"),
-            area if include else "",
-            0.0,
-        )
+    basis_sqft = positive_number(
+        existing.get("basis_sqft"),
+        primer_row.get("editable_basis_sqft"),
+        primer_row.get("default_basis_sqft"),
+        area if include else "",
+        0.0,
     )
     coverage = positive_number(
         existing.get("coverage_sqft_per_unit"),
@@ -7232,8 +7297,6 @@ def _build_roofing_primer_template_decisions(
         ),
         0.0,
     )
-    if review_only_primer:
-        unit_price = 0.0
     evidence_count = int(
         max(
             safe_number(existing.get("decision_evidence_count"), 0),
@@ -7268,7 +7331,7 @@ def _build_roofing_primer_template_decisions(
     if coverage <= 0:
         warnings.append("Primer coverage is missing; formula output requires estimator review.")
     if review_only_primer:
-        warnings.append("Primer is review-only from notes; cost is held at zero until primer scope and product are confirmed.")
+        warnings.append("Primer was inferred from review evidence; verify primer scope and product before quoting.")
     if include and safe_number(formula.get("estimated_cost"), 0.0) <= 0:
         warnings.append("Primer material cost is missing; current pricing or historical cost/sqft is required.")
     proposal_review_reasons = list(existing.get("proposal_review_reasons") or [])
@@ -7277,7 +7340,7 @@ def _build_roofing_primer_template_decisions(
             "Conditional coating/restoration path references primer/rust/adhesion, but primer product and scope are not confirmed."
         )
     if include and safe_number(formula.get("estimated_cost"), 0.0) <= 0:
-        proposal_review_reasons.append("Primer cost is missing or intentionally held at zero for estimator review.")
+        proposal_review_reasons.append("Primer cost is missing; choose pricing or enter a unit price before quoting.")
     proposal_review_reasons = list(dict.fromkeys(str(reason) for reason in proposal_review_reasons if reason))
     product_context_status = "matched" if selected_candidate.get("product_id") else "missing"
     selected_name = selected_candidate.get("item_name") or str(first_nonblank(primer_row.get("item_name"), primer_row.get("current_item"), ""))
@@ -7462,6 +7525,10 @@ def _build_roofing_detail_template_decisions(
             (caulk_row or {}).get("quantity") if include else "",
             default=0.0,
         )
+        estimated_quantity_from_scope = False
+        if include and expected_units <= 0 and (detail_signal or _manual_include_locked(existing)):
+            expected_units = _roofing_detail_default_units(scope, bucket="caulk_detail", workbook_row=row_number)
+            estimated_quantity_from_scope = expected_units > 0
         units = expected_units
         formula = calculate_roofing_units_cost(
             units=units,
@@ -7480,6 +7547,8 @@ def _build_roofing_detail_template_decisions(
         )
         if include and units <= 0:
             warnings.append("Sealant units are missing; formula output requires estimator review.")
+        if estimated_quantity_from_scope:
+            warnings.append("Sealant units were estimated from roof/repair area; verify count before quoting.")
         selected_name = selected_candidate.get("item_name") or str(first_nonblank((caulk_row or {}).get("item_name"), (caulk_row or {}).get("current_item"), ""))
         rows.append(
             {
@@ -7596,6 +7665,10 @@ def _build_roofing_detail_template_decisions(
         (fabric_row or {}).get("quantity") if fabric_include else "",
         default=0.0,
     )
+    estimated_fabric_quantity_from_scope = False
+    if fabric_include and linear_ft <= 0 and (fabric_signal or _manual_include_locked(existing)):
+        linear_ft = _roofing_detail_default_units(scope, bucket="fabric", workbook_row=ROOFING_FABRIC_TEMPLATE_ROW)
+        estimated_fabric_quantity_from_scope = linear_ft > 0
     if fabric_include and linear_ft <= 0 and not _manual_include_locked(existing) and not fabric_signal:
         fabric_include = False
     formula = calculate_roofing_fabric(linear_ft=linear_ft, unit_price=unit_price, include=fabric_include)
@@ -7610,6 +7683,8 @@ def _build_roofing_detail_template_decisions(
     )
     if fabric_include and linear_ft <= 0:
         warnings.append("Fabric linear feet are missing; formula output requires estimator review.")
+    if estimated_fabric_quantity_from_scope:
+        warnings.append("Fabric linear feet were estimated from roof/repair area; verify reinforcement quantity before quoting.")
     selected_name = selected_candidate.get("item_name") or str(first_nonblank((fabric_row or {}).get("item_name"), (fabric_row or {}).get("current_item"), ""))
     rows.append(
         {
@@ -7747,6 +7822,8 @@ def _build_roofing_detail_quantity_template_decisions(
         amount = safe_number(first_nonblank(existing.get("amount"), existing.get("estimated_cost")), 0.0)
         if amount <= 0 and bucket == "seams_misc":
             amount = safe_number(related_material.get("estimated_cost"), 0.0)
+        if include and quantity <= 0 and amount <= 0 and not _manual_include_locked(existing):
+            include = False
         formula = calculate_roofing_detail_quantity(
             quantity=quantity,
             amount=amount,
@@ -8345,8 +8422,47 @@ def _build_roofing_equipment_template_decisions(
         )
     )
     resolved_option = _resolved_roofing_equipment_option(selector_code, ROOFING_DUMPSTER_SELECTOR_MAP, dumpster_options, "40 Yard")
-    basis_sqft = positive_number(existing.get("basis_sqft"), area_default if include else "", default=0.0)
-    thickness = safe_number(first_nonblank(existing.get("thickness_inches"), existing.get("roof_thickness_inches")), 0.0)
+    repair_area_default = _roofing_repair_area(scope)
+    dumpster_area_default = repair_area_default if repair_area_default > 0 else area_default
+    basis_sqft = (
+        positive_number(existing.get("basis_sqft"), dumpster_area_default if include else "", default=0.0)
+        if _manual_include_locked(existing)
+        else positive_number(dumpster_area_default if include else "", existing.get("basis_sqft"), default=0.0)
+    )
+    existing_debris_thickness_source = str(first_nonblank(existing.get("debris_thickness_source"), "")).strip().lower()
+    existing_debris_thickness = (
+        positive_number(
+            existing.get("debris_thickness_inches"),
+            existing.get("tearout_thickness_inches"),
+            existing.get("removed_assembly_thickness_inches"),
+            default=0.0,
+        )
+        if _manual_include_locked(existing) or existing_debris_thickness_source not in {"foam_thickness_fallback"}
+        else 0.0
+    )
+    scope_debris_thickness = positive_number(
+        scope.get("debris_thickness_inches"),
+        scope.get("tearout_thickness_inches"),
+        scope.get("removed_assembly_thickness_inches"),
+        default=0.0,
+    )
+    explicit_debris_thickness = positive_number(existing_debris_thickness, scope_debris_thickness, default=0.0)
+    legacy_thickness = positive_number(
+        existing.get("thickness_inches"),
+        existing.get("roof_thickness_inches"),
+        scope.get("roof_thickness_inches"),
+        default=0.0,
+    )
+    foam_thickness_fallback = positive_number(scope.get("foam_thickness_inches"), default=0.0)
+    if explicit_debris_thickness > 0:
+        thickness = explicit_debris_thickness
+        debris_thickness_source = "explicit_debris_thickness"
+    elif legacy_thickness > 0:
+        thickness = legacy_thickness
+        debris_thickness_source = str(first_nonblank(existing.get("debris_thickness_source"), "legacy_thickness_inches"))
+    else:
+        thickness = foam_thickness_fallback
+        debris_thickness_source = "foam_thickness_fallback" if thickness > 0 else ""
     unit_price = positive_number(
         existing.get("unit_price"),
         adder_default("dumpster"),
@@ -8366,7 +8482,9 @@ def _build_roofing_equipment_template_decisions(
     if include and basis_sqft <= 0:
         warnings.append("Dumpster area is missing.")
     if include and thickness <= 0:
-        warnings.append("Roof thickness is missing; dumpster count preview is zero until thickness is entered.")
+        warnings.append("Debris or tearout thickness is missing; dumpster count preview is zero until thickness is entered.")
+    if include and debris_thickness_source == "foam_thickness_fallback":
+        warnings.append("Dumpster quantity uses foam repair/replacement thickness as debris depth; verify removed assembly thickness.")
     if include and unit_price <= 0:
         warnings.append("Dumpster unit price is missing.")
     if dumpster_note_signal and not include:
@@ -8389,6 +8507,8 @@ def _build_roofing_equipment_template_decisions(
             "historical_selector_evidence_count": int(safe_number((adder_by_key.get("dumpster") or {}).get("evidence_count"), 0)),
             "historical_selector_confidence": (adder_by_key.get("dumpster") or {}).get("confidence") or "",
             "basis_sqft": round(basis_sqft, 2),
+            "debris_thickness_inches": round(thickness, 4),
+            "debris_thickness_source": debris_thickness_source,
             "thickness_inches": round(thickness, 4),
             "unit_price": round(unit_price, 4),
             "margin_pct": round(margin_pct, 4),
@@ -8401,12 +8521,14 @@ def _build_roofing_equipment_template_decisions(
             "compatibility_status": "review" if warnings else "compatible",
             "compatibility_warnings": warnings,
             "product_guidance": "",
-            "notes": "Template selector is the estimator decision. Area, roof thickness, unit price, and margin feed the dumpster formula."
+            "notes": "Template selector is the estimator decision. Area, debris/tearout thickness, unit price, and margin feed the dumpster formula."
             + (" " + " ".join(warnings) if warnings else ""),
             "decision_values": {
                 "selector_code": selector_code,
                 "resolved_template_option": resolved_option,
                 "basis_sqft": round(basis_sqft, 2),
+                "debris_thickness_inches": round(thickness, 4),
+                "debris_thickness_source": debris_thickness_source,
                 "thickness_inches": round(thickness, 4),
                 "unit_price": round(unit_price, 4),
                 "margin_pct": round(margin_pct, 4),
@@ -8415,6 +8537,8 @@ def _build_roofing_equipment_template_decisions(
                 "selector_code": selector_code,
                 "resolved_template_option": resolved_option,
                 "basis_sqft": round(basis_sqft, 2),
+                "debris_thickness_inches": round(thickness, 4),
+                "debris_thickness_source": debris_thickness_source,
                 "thickness_inches": round(thickness, 4),
                 "unit_price": round(unit_price, 4),
                 "margin_pct": round(margin_pct, 4),
@@ -8425,7 +8549,7 @@ def _build_roofing_equipment_template_decisions(
             "workbook_cell_write_preview": [
                 {"cell": f"Estimate!A{ROOFING_DUMPSTER_TEMPLATE_ROW}", "field": "selector_code", "value": selector_code},
                 {"cell": f"Estimate!C{ROOFING_DUMPSTER_TEMPLATE_ROW}", "field": "area_sqft", "value": round(basis_sqft, 2)},
-                {"cell": f"Estimate!D{ROOFING_DUMPSTER_TEMPLATE_ROW}", "field": "thickness_inches", "value": round(thickness, 4)},
+                {"cell": f"Estimate!D{ROOFING_DUMPSTER_TEMPLATE_ROW}", "field": "debris_thickness_inches", "value": round(thickness, 4)},
                 {"cell": f"Estimate!E{ROOFING_DUMPSTER_TEMPLATE_ROW}", "field": "unit_price", "value": round(unit_price, 4)},
                 {"cell": f"Estimate!F{ROOFING_DUMPSTER_TEMPLATE_ROW}", "field": "margin_pct", "value": round(margin_pct, 4)},
                 {"cell": f"Estimate!G{ROOFING_DUMPSTER_TEMPLATE_ROW}", "field": "estimated_units_formula_output", "value": formula.get("estimated_units")},
@@ -8722,7 +8846,11 @@ def _build_roofing_travel_freight_template_decisions(
         default_amount = adder_default(*adder_keys)
         trips = safe_number(first_nonblank(existing.get("trip_count"), existing.get("trips")), 0.0)
         miles = safe_number(first_nonblank(existing.get("round_trip_miles"), existing.get("miles")), 0.0)
-        rate = safe_number(first_nonblank(existing.get("unit_price"), existing.get("rate")), 0.0)
+        rate = safe_number(first_nonblank(existing.get("unit_price"), existing.get("rate"), default_rate), default_rate)
+        if trips <= 0:
+            trips = default_trips if include else 0.0
+        if miles <= 0:
+            miles = ROOFING_TRAVEL_DEFAULT_ROUND_TRIP_MILES if include else 0.0
         if include and trips <= 0:
             trips = default_trips
         if include and miles <= 0:
@@ -9799,8 +9927,14 @@ def _scope_from_recommendation(recommendation: Any) -> dict[str, Any]:
         ),
         "deduction_sqft": safe_number(
             parsed.get("opening_area_known_sqft")
+            or parsed.get("deduction_sqft")
             or parsed.get("deduction_area_sqft")
+            or parsed.get("repair_area_sqft")
+            or parsed.get("tearout_area_sqft")
+            or parsed.get("saturated_area_sqft")
+            or parsed.get("wet_area_sqft")
             or dimension_summary.get("opening_area_known_sqft")
+            or dimension_summary.get("deduction_sqft")
             or dimension_summary.get("deduction_area_sqft"),
             0.0,
         ),
@@ -9851,6 +9985,9 @@ def _scope_from_recommendation(recommendation: Any) -> dict[str, Any]:
         "foam_type",
         "foam_thickness_inches",
         "thickness_inches",
+        "debris_thickness_inches",
+        "tearout_thickness_inches",
+        "removed_assembly_thickness_inches",
         "requested_timing",
         "building_installation_timing",
         "customer_name",

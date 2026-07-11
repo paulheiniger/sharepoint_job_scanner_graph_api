@@ -711,6 +711,8 @@ def build_workbench_review_payloads(
                 "historical_selector_recommendation",
                 "historical_selector_evidence_count",
                 "basis_sqft",
+                "debris_thickness_inches",
+                "debris_thickness_source",
                 "thickness_inches",
                 "size",
                 "period",
