@@ -1795,14 +1795,71 @@ def _chat_estimator_evidence_summary(row: dict[str, Any]) -> str:
 def _why_included_summary(row: dict[str, Any]) -> str:
     if not row.get("include"):
         return ""
-    source = str(row.get("proposal_source") or "").strip()
-    if source:
-        label = source.replace("_", " ")
-        reasons = [str(item) for item in row.get("proposal_review_reasons") or [] if item]
-        return f"Included by {label}" + (f"; review: {'; '.join(reasons[:2])}" if reasons else "")
-    if row.get("decision_evidence_count") or row.get("historical_selector_evidence_count"):
-        return "Included from historical default/workbench rule"
-    return "Included by workbench rule or estimator edit"
+    reasons = [str(item) for item in row.get("proposal_review_reasons") or [] if item]
+    evidence = row.get("proposal_evidence") or {}
+    reference = _reference_project_evidence_summary(row)
+    chat = _chat_estimator_evidence_summary(row)
+    note_text = _note_evidence_text(evidence)
+    companion = _companion_evidence_summary(evidence)
+    source = str(row.get("proposal_source") or "").strip().lower()
+    parts: list[str] = []
+    if source == "estimator_edit" or row.get("manual_override"):
+        parts.append("Estimator selected this row.")
+    elif note_text:
+        parts.append(f"Notes mention: {_shorten(note_text, 120)}.")
+    elif chat:
+        parts.append(f"Chat requested: {_shorten(chat, 120)}.")
+    elif reference:
+        parts.append(f"Reference project: {reference}.")
+    elif companion:
+        parts.append(companion + ".")
+    elif row.get("decision_evidence_count") or row.get("historical_selector_evidence_count"):
+        recommendation = str(row.get("historical_selector_recommendation") or row.get("historical_recommendation") or "").strip()
+        count = int(_safe_number(row.get("decision_evidence_count") or row.get("historical_selector_evidence_count"), 0))
+        if recommendation and count:
+            parts.append(f"Historical support: {recommendation} from {count} row{'s' if count != 1 else ''}.")
+        elif count:
+            parts.append(f"Historical support: used in {count} row{'s' if count != 1 else ''}.")
+    elif source:
+        parts.append("Selected for the current scope.")
+    else:
+        parts.append("Selected for the current scope.")
+    if reasons:
+        parts.append("Review: " + "; ".join(_shorten(reason, 140) for reason in reasons[:2]) + ".")
+    return " ".join(parts)
+
+
+def _note_evidence_text(evidence: dict[str, Any]) -> str:
+    rows = evidence.get("note") or []
+    if not rows:
+        return ""
+    first = rows[0]
+    if isinstance(first, dict):
+        return str(first.get("text") or first.get("quote") or first.get("summary") or "").strip()
+    return str(first).strip()
+
+
+def _companion_evidence_summary(evidence: dict[str, Any]) -> str:
+    rows = evidence.get("relationship_package_cooccurrence") or []
+    if not rows:
+        return ""
+    first = rows[0] if isinstance(rows[0], dict) else {}
+    anchor = str(first.get("anchor_package") or first.get("package_a") or "").replace("_", " ").strip()
+    rate = _safe_number(first.get("co_occurrence_rate"), 0)
+    jobs = int(_safe_number(first.get("job_count"), 0))
+    project_type = str(first.get("project_type") or "").strip()
+    parts = []
+    if anchor:
+        parts.append(f"Often paired with {anchor}")
+    else:
+        parts.append("Often paired with selected materials")
+    if rate > 0:
+        parts.append(f"{rate:.0%} of comparable jobs")
+    if jobs > 0:
+        parts.append(f"{jobs} job{'s' if jobs != 1 else ''}")
+    if project_type and project_type.lower() != "unknown":
+        parts.append(project_type)
+    return "; ".join(parts)
 
 
 def _historical_evidence_summary(row: dict[str, Any]) -> str:

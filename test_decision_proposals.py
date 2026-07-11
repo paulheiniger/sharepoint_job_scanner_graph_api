@@ -377,6 +377,6 @@ def test_apply_proposals_dedupes_rows_and_attaches_product_and_formula_evidence(
     assert rows[0]["proposal_evidence"]["note"]
     assert rows[0]["decision_evidence_summary"] == "note evidence, product guidance, formula preview"
     assert rows[0]["decision_evidence_types"] == "note, product, formula"
-    assert rows[0]["why_included"] == "Included by deterministic rule"
+    assert rows[0]["why_included"] == "Notes mention: coating."
     assert rows[0]["product_evidence_summary"] == "prod-1"
     assert rows[0]["formula_evidence_summary"] == "roofing_coating"

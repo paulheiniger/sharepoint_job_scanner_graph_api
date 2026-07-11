@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from openpyxl import Workbook, load_workbook
 
-from jobscan.estimator.workbench_export import EXCEL_CELL_LIMIT, export_workbench_review_package
+from jobscan.estimator.workbench_export import EXCEL_CELL_LIMIT, build_workbench_review_payloads, export_workbench_review_package
 
 
 def sample_workbench() -> dict:
@@ -106,6 +106,9 @@ def test_export_package_creates_zip_with_decision_files_and_workbook(tmp_path) -
         guidance_row = next(row for row in summary["product_guidance"] if row["product_id"] == "gaf_high_solids_silicone")
         assert guidance_row["decision_include"] is True
         assert "include" not in guidance_row
+        trace_row = next(row for row in summary["decision_trace"] if row["decision_id"] == "roofing_coating_system_row_26")
+        assert trace_row["decision_include"] is True
+        assert "include" not in trace_row
         readme = archive.read("README.txt").decode("utf-8")
         assert "Decision Trace" in readme
         assert "Debug Decision JSON" in readme
@@ -136,6 +139,24 @@ def test_export_package_can_omit_full_debug_payload_for_fast_ui_export(tmp_path)
         assert "workbench_summary.xlsx" in names
         assert "workbench_debug.json" not in names
         assert "workbench_debug_omitted.txt" in names
+
+
+def test_review_payload_does_not_recalculate_saved_summary_payload() -> None:
+    workbench = {
+        "scope": {
+            "division": "Roofing",
+            "template_type": "roofing",
+            "project_type": "roof coating",
+            "net_sqft": 10000,
+        },
+        "totals": {"estimated_cost": 0},
+        "roofing_labor_template_decisions": [],
+        "workbook_decisions": [{"section": "existing", "workbook_row": "A1"}],
+    }
+
+    summary, _debug, _sheets = build_workbench_review_payloads(workbench=workbench, input_notes="Saved package replay")
+
+    assert summary["roofing_labor_template_decisions"] == []
 
 
 def test_insulation_review_package_uses_decision_sheets(tmp_path) -> None:

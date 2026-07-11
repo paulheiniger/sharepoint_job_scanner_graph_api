@@ -90,7 +90,7 @@ def sample_workbench() -> dict:
                 "proposal_review_reasons": ["Warranty duration was not stated."],
                 "decision_evidence_summary": "note evidence, historical evidence (11), product guidance, formula preview",
                 "decision_evidence_types": "note, historical, pricing, product, formula",
-                "why_included": "Included by explicit note; review: Warranty duration was not stated.",
+                "why_included": "Notes mention: Customer requested coating. Review: Warranty duration was not stated.",
                 "historical_evidence_summary": "11 historical decision rows; confidence high; recommendation Gaco Silicone",
                 "pricing_evidence_summary": "GAF High Solids Silicone 55 Gal; unit price 42",
                 "product_evidence_summary": "prod-gaf-silicone; Use as silicone roof coating.",
@@ -180,7 +180,7 @@ def test_session_decision_helpers_are_decision_only() -> None:
     assert coating["pricing_evidence_summary"].startswith("GAF High Solids Silicone")
     assert coating["product_guidance_snapshot"]["source_documents"] == ["gaf_silicone_pds.pdf"]
     assert coating["source_evidence"]["decision_source_tables"] == "roofing_coating_decision_history"
-    assert coating["source_evidence"]["why_included"].startswith("Included by explicit note")
+    assert coating["source_evidence"]["why_included"].startswith("Notes mention: Customer requested coating.")
 
 
 def test_workbook_cell_writes_use_decision_native_payload() -> None:

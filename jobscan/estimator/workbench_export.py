@@ -253,7 +253,7 @@ def _decision_trace_rows(
             rows.append(
                 {
                     "section": section,
-                    "include": row.get("include"),
+                    "decision_include": row.get("include"),
                     "decision_id": row.get("decision_id") or row.get("package_key") or row.get("adder_key"),
                     "template_bucket": row.get("template_bucket") or row.get("package_key") or row.get("adder_key"),
                     "workbook_row": row.get("workbook_row"),
@@ -391,13 +391,14 @@ def build_workbench_review_payloads(
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     """Build JSON/XLSX payloads for an estimator workbench review package."""
 
-    recalculated = workbench if workbench_is_recalculated else recalculate_workbench_tables(workbench)
+    already_recalculated = workbench_is_recalculated or bool(workbench.get("totals")) or bool(workbench.get("workbook_decisions"))
+    recalculated = workbench if already_recalculated else recalculate_workbench_tables(workbench)
     resolved_run_id = run_id or str(recalculated.get("estimate_id") or "workbench")
     resolved_timestamp = timestamp or datetime.now(UTC).isoformat()
     totals = summarize_workbench_totals(recalculated)
     draft_inputs = draft_workbook_inputs or workbench_to_draft_workbook_inputs(
         recalculated,
-        recalculate=not workbench_is_recalculated,
+        recalculate=not already_recalculated,
     )
     workbook_decisions = list(draft_inputs.get("workbook_decisions") or [])
     performance_specs = list(recalculated.get("insulation_performance_specs") or [])
@@ -464,7 +465,7 @@ def build_workbench_review_payloads(
             insulation_decision_trace.append(
                 {
                     "section": readable_section,
-                    "include": row.get("include"),
+                    "decision_include": row.get("include"),
                     "decision_id": row.get("decision_id"),
                     "template_bucket": row.get("template_bucket"),
                     "workbook_row": row.get("workbook_row"),

@@ -1100,7 +1100,7 @@ def test_roofing_companion_relationships_suggest_primer_and_detail_rows() -> Non
     assert any("Historical companion suggestion" in warning for warning in primer["compatibility_warnings"])
     assert sealant["include"] is True
     assert sealant["proposal_source"] == "historical_companion"
-    assert sealant["why_included"].startswith("Included by historical companion")
+    assert sealant["why_included"].startswith("Often paired with coating")
 
 
 def test_historical_companion_detail_quantity_without_basis_is_not_included() -> None:
