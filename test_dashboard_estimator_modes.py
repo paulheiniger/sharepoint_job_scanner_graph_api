@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import inspect
 import json
+from datetime import date, timedelta
 from types import SimpleNamespace
 
 import pandas as pd
@@ -267,6 +268,8 @@ def test_sales_dashboard_rollups_classify_pipeline_and_gaps() -> None:
 
 def test_operations_dashboard_rollups_classify_readiness_and_schedule_health() -> None:
     app = importlib.import_module("dashboard.app")
+    tomorrow = date.today() + timedelta(days=1)
+    day_after_tomorrow = date.today() + timedelta(days=2)
     jobs = pd.DataFrame(
         [
             {
@@ -297,8 +300,8 @@ def test_operations_dashboard_rollups_classify_readiness_and_schedule_health() -
                 "pipeline_status": "Contracted",
                 "estimated_value": 18000,
                 "estimate_date": "2026-06-14",
-                "estimated_start_date": "2026-07-09",
-                "estimated_end_date": "2026-07-10",
+                "estimated_start_date": tomorrow.isoformat(),
+                "estimated_end_date": day_after_tomorrow.isoformat(),
                 "assigned_crew_leader": "Crew A",
             },
         ]
@@ -809,7 +812,40 @@ def test_ask_spraytec_generates_field_notes_with_attached_answer_key() -> None:
     assert case["answer_key_summary"]["decision_count"] == 1
     assert len(case["workbook_decision_preferences"]) == 1
     assert case["workbook_decision_preferences"][0]["source"] == "reference_estimate_answer_key"
-    assert "You do not need to paste the answer key" in response
+    assert "generated notes only" in response
+    assert "not automatically applied" in response
+
+
+def test_ask_spraytec_generated_field_notes_attach_as_evaluation_reference(monkeypatch) -> None:
+    app = importlib.import_module("dashboard.app")
+    monkeypatch.setattr(app, "save_estimator_chat_session", lambda *args, **kwargs: None)
+    case = {
+        "status": "selected",
+        "generated_notes": "Historical proposal scope reconstructed as field notes.",
+        "score": 80,
+        "template_type": "roofing",
+        "job_id": "J-REF",
+        "source_file": "Estimate - Reference.xlsx",
+        "proposal_file_name": "Proposal - Reference.pdf",
+        "answer_key": {"schema_version": "reference_estimate_answer_key.v1", "decisions": []},
+        "workbook_decision_preferences": [
+            {
+                "source": "reference_estimate_answer_key",
+                "decision_id": "roofing_coating_system_row_26",
+                "template_bucket": "coating",
+                "include": True,
+            }
+        ],
+        "answer_key_summary": {"decision_count": 1, "unmapped_count": 0},
+    }
+
+    thread_id = app.attach_generated_field_notes_case_to_estimator_context(case)
+    active = app.st.session_state[f"estimator_chat_result_{thread_id}"]
+
+    assert thread_id
+    assert active["reference_answer_key_mode"] == "evaluate"
+    assert active["reference_answer_key"] == case["answer_key"]
+    assert active["workbook_decision_preferences"] == []
 
 
 def test_ask_spraytec_generated_field_notes_falls_back_to_template_scope_summary() -> None:
@@ -825,7 +861,8 @@ def test_ask_spraytec_generated_field_notes_falls_back_to_template_scope_summary
                 "workbook_row": "26",
                 "source_row": "26",
                 "include": True,
-                "inputs": {"basis_sqft": 9600},
+                "inputs": {"basis_sqft": 9600, "gal_per_100_sqft": 1.5, "unit_price": 32},
+                "calculated_outputs": {"estimated_cost": 5299.2},
             }
         ],
         "summary": {"decision_count": 1, "unmapped_count": 0, "source_row_count": 120},
@@ -871,7 +908,8 @@ def test_ask_spraytec_generated_field_notes_auto_selects_same_job_variants() -> 
                 "workbook_row": "26",
                 "source_row": "26",
                 "include": True,
-                "inputs": {"basis_sqft": 9600},
+                "inputs": {"basis_sqft": 9600, "gal_per_100_sqft": 1.5, "unit_price": 32},
+                "calculated_outputs": {"estimated_cost": 5299.2},
             }
         ],
         "summary": {"decision_count": 1, "unmapped_count": 0, "source_row_count": 120},
@@ -881,7 +919,7 @@ def test_ask_spraytec_generated_field_notes_auto_selects_same_job_variants() -> 
         "decisions": [
             {
                 **base_answer_key["decisions"][0],
-                "inputs": {"basis_sqft": 9600, "gal_per_100_sqft": 1.5},
+                "inputs": {"basis_sqft": 9600, "gal_per_100_sqft": 1.5, "unit_price": 32},
             }
         ],
     }

@@ -3694,8 +3694,9 @@ def generated_field_notes_response(case: dict[str, Any]) -> str:
         f"- Estimate answer key: {case.get('source_file') or 'unknown'}",
         f"- Template type: {case.get('template_type') or 'unknown'}",
         f"- Answer-key decisions: {summary.get('decision_count', 0)} mapped, {summary.get('unmapped_count', 0)} unmapped",
+        "- Mode: generated notes only. The matched answer key is retained for evaluation/reference, not automatically applied.",
         "",
-        "Open Estimating Assistant and build/rebuild the workbook. You do not need to paste the answer key.",
+        "Open Estimating Assistant and build/rebuild the workbook from the generated notes. Use an explicit learn/apply command only when you want the answer key to drive decisions.",
     ]
     if case.get("used_scope_summary_fallback"):
         lines.insert(
@@ -3721,7 +3722,7 @@ def attach_generated_field_notes_case_to_estimator_context(case: dict[str, Any])
         "source": "ask_spraytec_generated_proposal_scope",
         "confidence": min(float(case.get("score") or 0.0) / 200.0, 0.95),
         "estimator_notes": notes,
-        "assistant_message": "Generated field notes from historical proposal scope and attached the matched estimate answer key.",
+        "assistant_message": "Generated field notes from historical proposal scope. The matched answer key is retained for evaluation/reference and was not applied to workbook decisions.",
         "missing_questions": [],
         "warnings": [],
         "scope_overrides": {
@@ -3732,7 +3733,8 @@ def attach_generated_field_notes_case_to_estimator_context(case: dict[str, Any])
             "reference_source_file": case.get("source_file"),
             "reference_proposal_file": case.get("proposal_file_name"),
         },
-        "workbook_decision_preferences": case.get("workbook_decision_preferences") or [],
+        "workbook_decision_preferences": [],
+        "reference_answer_key_mode": "evaluate",
         "reference_answer_key": case.get("answer_key") or {},
     }
     history = [
@@ -10886,7 +10888,11 @@ def estimator_prototype_page() -> None:
             if session_id:
                 st.session_state["estimator_session_id"] = session_id
                 reference_memory_saved_key = f"estimator_reference_memory_saved_{session_id}"
-                if active_chat_context and not st.session_state.get(reference_memory_saved_key):
+                if (
+                    active_chat_context
+                    and active_chat_context.get("learning_mode")
+                    and not st.session_state.get(reference_memory_saved_key)
+                ):
                     capture_reference_template_memory_candidates(
                         session_id,
                         active_chat_context,

@@ -6,6 +6,7 @@ import pandas as pd
 
 from jobscan.estimator.chat_assistant import (
     detect_estimator_learning_intent,
+    detect_reference_answer_key_mode,
     estimator_context_cache_stats,
     estimator_context_summary,
     run_estimator_chat_turn,
@@ -302,6 +303,14 @@ def test_estimator_chat_marks_explicit_learning_messages() -> None:
     assert result.scope_overrides["explicit_learning_intent"] is True
     assert result.scope_overrides["learning_reference_template_mapped_row_count"] > 0
     assert "Learning mode is on" in result.assistant_message
+
+
+def test_estimator_chat_detects_answer_key_modes() -> None:
+    assert detect_reference_answer_key_mode([{"role": "user", "content": "Apply this answer key to the workbook"}]) == "apply"
+    assert detect_reference_answer_key_mode([{"role": "user", "content": "Learn from this answer key and remember it"}]) == "teach"
+    assert detect_reference_answer_key_mode([{"role": "user", "content": "Evaluate against this answer key"}]) == "evaluate"
+    assert detect_reference_answer_key_mode([{"role": "user", "content": "Here is the answer key"}]) == "evaluate"
+    assert detect_estimator_learning_intent([{"role": "user", "content": "Here is the answer key"}]) == {}
 
 
 def test_estimator_context_summary_cache_reports_hit_after_first_build() -> None:
@@ -816,11 +825,53 @@ def test_estimator_chat_normalizes_decision_patch_aliases() -> None:
     assert result.workbook_decision_preferences[1]["proposed_values"]["days"] == 0.5
 
 
-def test_estimator_chat_parses_pasted_roofing_reference_template_summary(monkeypatch) -> None:
+def test_estimator_chat_does_not_apply_plain_pasted_roofing_reference_template_summary(monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
     result = run_estimator_chat_turn(
         [{"role": "user", "content": ROOFING_REFERENCE_TEMPLATE_SUMMARY}],
+        template_type_hint="roofing",
+    )
+
+    assert result.workbook_decision_preferences == []
+    assert result.scope_overrides["reference_answer_key_mode"] == "evaluate"
+    assert any("detected but not applied" in warning for warning in result.warnings)
+
+
+def test_estimator_chat_blocks_ai_preferences_from_evaluation_only_answer_key() -> None:
+    def provider(_messages, _model):
+        return {
+            "assistant_message": "I found workbook decisions in the pasted answer key.",
+            "estimator_notes": "Reference template only.",
+            "scope_overrides": {"template_type": "roofing"},
+            "workbook_decision_preferences": [
+                {
+                    "decision_id": "roofing_coating_system_row_26",
+                    "template_bucket": "coating",
+                    "include": True,
+                    "proposed_values": {"basis_sqft": 9600},
+                }
+            ],
+            "confidence": 0.7,
+        }
+
+    result = run_estimator_chat_turn(
+        [{"role": "user", "content": ROOFING_REFERENCE_TEMPLATE_SUMMARY}],
+        template_type_hint="roofing",
+        provider=provider,
+        model="test-model",
+    )
+
+    assert result.workbook_decision_preferences == []
+    assert result.scope_overrides["reference_answer_key_mode"] == "evaluate"
+    assert any("detected but not applied" in warning for warning in result.warnings)
+
+
+def test_estimator_chat_applies_pasted_roofing_reference_template_summary_when_requested(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    result = run_estimator_chat_turn(
+        [{"role": "user", "content": "Apply this answer key to the workbook.\n\n" + ROOFING_REFERENCE_TEMPLATE_SUMMARY}],
         template_type_hint="roofing",
     )
 
@@ -829,6 +880,7 @@ def test_estimator_chat_parses_pasted_roofing_reference_template_summary(monkeyp
     assert result.scope_overrides["template_type"] == "roofing"
     assert result.scope_overrides["reference_template_summary_present"] is True
     assert result.scope_overrides["reference_template_summary_mapped_row_count"] >= 20
+    assert result.scope_overrides["reference_answer_key_mode"] == "apply"
 
     foam = by_id["roofing_foam_row_19"]
     assert foam["source"] == "reference_template_summary"
@@ -894,7 +946,7 @@ def test_estimator_chat_parses_compact_roofing_reference_answer_key(monkeypatch)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
     result = run_estimator_chat_turn(
-        [{"role": "user", "content": ROOFING_COMPACT_REFERENCE_TEMPLATE_SUMMARY}],
+        [{"role": "user", "content": "Apply this answer key to the workbook.\n\n" + ROOFING_COMPACT_REFERENCE_TEMPLATE_SUMMARY}],
         template_type_hint="roofing",
     )
 
@@ -993,7 +1045,7 @@ def test_estimator_chat_merges_pasted_reference_summary_after_ai_payload() -> No
         }
 
     result = run_estimator_chat_turn(
-        [{"role": "user", "content": ROOFING_REFERENCE_TEMPLATE_SUMMARY}],
+        [{"role": "user", "content": "Apply this answer key to the workbook.\n\n" + ROOFING_REFERENCE_TEMPLATE_SUMMARY}],
         template_type_hint="roofing",
         provider=provider,
         model="test-model",

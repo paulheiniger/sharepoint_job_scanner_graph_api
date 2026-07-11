@@ -54,6 +54,13 @@ DETERMINISTIC_DIMENSION_FIELDS = {
     "area_calculation_explanation",
 }
 REFERENCE_TEMPLATE_SOURCE = "reference_template_summary"
+ANSWER_KEY_MODE_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("teach", r"\b(?:learn|remember|save|store)\b.{0,120}\b(?:answer\s*key|correct\s+template|correct\s+estimate|reviewed\s+template|reference\s+template)\b"),
+    ("teach", r"\b(?:answer\s*key|correct\s+template|correct\s+estimate|reviewed\s+template|reference\s+template)\b.{0,120}\b(?:learn|remember|save|store)\b"),
+    ("apply", r"\b(?:apply|use|fill|update|patch)\b.{0,120}\b(?:answer\s*key|correct\s+template|correct\s+estimate|reviewed\s+template|reference\s+template)\b"),
+    ("apply", r"\b(?:answer\s*key|correct\s+template|correct\s+estimate|reviewed\s+template|reference\s+template)\b.{0,120}\b(?:apply|use|fill|update|patch)\b"),
+    ("evaluate", r"\b(?:evaluate|compare|test|check|score)\b.{0,120}\b(?:against\s+)?(?:answer\s*key|correct\s+template|correct\s+estimate|reviewed\s+template|reference\s+template)\b"),
+)
 
 
 @dataclass
@@ -103,22 +110,31 @@ def run_estimator_chat_turn(
             missing_questions=["Project notes are needed before estimating."],
         )
     deterministic_baseline = deterministic_chat_fallback(message_list, template_type_hint=template_type_hint)
+    answer_key_mode = detect_reference_answer_key_mode(raw_message_list)
     structured_answer_key = _parse_reference_answer_key_from_messages(raw_message_list)
     reference_summary = _parse_reference_template_summary_from_messages(
         raw_message_list,
         template_type_hint=template_type_hint,
     )
-    if structured_answer_key.mapped_row_count:
+    if not answer_key_mode and (structured_answer_key.mapped_row_count or reference_summary.mapped_row_count):
+        answer_key_mode = "evaluate"
+    should_apply_reference = answer_key_mode in {"apply", "teach"}
+    if structured_answer_key.mapped_row_count and should_apply_reference:
         deterministic_baseline = _merge_reference_template_summary(
             deterministic_baseline,
             structured_answer_key,
             template_type_hint=template_type_hint,
         )
-    if reference_summary.mapped_row_count:
+    if reference_summary.mapped_row_count and should_apply_reference:
         deterministic_baseline = _merge_reference_template_summary(
             deterministic_baseline,
             reference_summary,
             template_type_hint=template_type_hint,
+        )
+    if (structured_answer_key.mapped_row_count or reference_summary.mapped_row_count) and not should_apply_reference:
+        deterministic_baseline.warnings.append(
+            "Reference answer key/template summary detected but not applied. Say 'apply this answer key' to fill the current workbook, "
+            "'learn from this answer key' to save it as memory, or use it only for evaluation."
         )
     deterministic_baseline.scope_overrides = _apply_basis_area_multiplier_from_messages(
         deterministic_baseline.scope_overrides,
@@ -149,23 +165,36 @@ def run_estimator_chat_turn(
             )
         except Exception as exc:
             deterministic_baseline.warnings.append(f"AI estimator chat failed; used deterministic fallback. {type(exc).__name__}: {exc}")
-            return _apply_learning_intent(deterministic_baseline, learning_intent, reference_summary)
-        return _apply_learning_intent(
-            _merge_reference_template_summary(
+            return _apply_learning_intent(deterministic_baseline, learning_intent, reference_summary, answer_key_mode=answer_key_mode)
+        if should_apply_reference:
+            result = _merge_reference_template_summary(
                 result,
                 reference_summary,
                 template_type_hint=template_type_hint,
-            ),
+            )
+            result = _merge_reference_template_summary(
+                result,
+                structured_answer_key,
+                template_type_hint=template_type_hint,
+            )
+        elif structured_answer_key.mapped_row_count or reference_summary.mapped_row_count:
+            result.workbook_decision_preferences = []
+            result.warnings.append(
+                "Reference answer key/template summary detected but not applied. Say 'apply this answer key' to fill the current workbook, "
+                "'learn from this answer key' to save it as memory, or use it only for evaluation."
+            )
+        return _apply_learning_intent(
+            result,
             learning_intent,
             reference_summary,
+            answer_key_mode=answer_key_mode,
         )
     deterministic_baseline.warnings.append("OPENAI_API_KEY is not configured; used deterministic estimator-chat fallback.")
-    return _apply_learning_intent(deterministic_baseline, learning_intent, reference_summary)
+    return _apply_learning_intent(deterministic_baseline, learning_intent, reference_summary, answer_key_mode=answer_key_mode)
 
 
 LEARNING_INTENT_PATTERNS: tuple[tuple[str, str], ...] = (
     ("learn_from_this", r"\b(?:learn|remember)\s+(?:from\s+)?this\b"),
-    ("answer_key", r"\b(?:answer\s*key|correct\s+template|correct\s+estimate|reviewed\s+template)\b"),
     ("save_template_example", r"\b(?:save|store|use)\s+(?:this\s+)?(?:as\s+)?(?:a\s+)?(?:template\s+)?(?:example|training\s+example|memory)\b"),
     ("generate_and_remember", r"\b(?:generate|build|create)\s+(?:the\s+)?(?:workbook|template|estimate).{0,80}\b(?:remember|learn|save)\b"),
     ("remember_and_generate", r"\b(?:remember|learn|save).{0,80}\b(?:generate|build|create)\s+(?:the\s+)?(?:workbook|template|estimate)\b"),
@@ -197,16 +226,40 @@ def detect_estimator_learning_intent(messages: Iterable[dict[str, Any]]) -> dict
     }
 
 
+def detect_reference_answer_key_mode(messages: Iterable[dict[str, Any]]) -> str:
+    user_text = "\n".join(
+        str(message.get("content") or "")
+        for message in messages
+        if isinstance(message, dict) and str(message.get("role") or "") == "user"
+    )
+    normalized = _clean_string(user_text).lower()
+    if not normalized:
+        return ""
+    for mode, pattern in ANSWER_KEY_MODE_PATTERNS:
+        if re.search(pattern, normalized, re.I | re.S):
+            return mode
+    if re.search(r"\b(?:answer\s*key|correct\s+template|correct\s+estimate|reviewed\s+template|reference\s+template)\b", normalized, re.I):
+        return "evaluate"
+    return ""
+
+
 def _apply_learning_intent(
     result: EstimatorChatResult,
     learning_intent: dict[str, Any],
     reference_summary: ParsedReferenceTemplateSummary | None = None,
+    *,
+    answer_key_mode: str = "",
 ) -> EstimatorChatResult:
     if not learning_intent:
+        if answer_key_mode:
+            scope = dict(result.scope_overrides or {})
+            scope["reference_answer_key_mode"] = answer_key_mode
+            result.scope_overrides = scope
         return result
     scope = dict(result.scope_overrides or {})
     scope["explicit_learning_intent"] = True
     scope["learning_intent_source"] = learning_intent.get("source") or "explicit_chat_keyword"
+    scope["reference_answer_key_mode"] = answer_key_mode or "teach"
     if reference_summary and reference_summary.mapped_row_count:
         scope["learning_reference_template_row_count"] = reference_summary.row_count
         scope["learning_reference_template_mapped_row_count"] = reference_summary.mapped_row_count
