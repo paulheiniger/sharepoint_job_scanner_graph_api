@@ -96,6 +96,7 @@ def run_estimator_chat_turn(
     data: EstimatorData | None = None,
     template_type_hint: str = "",
     existing_scope: dict[str, Any] | None = None,
+    attached_reference_answer_key: dict[str, Any] | None = None,
     provider: Callable[[list[dict[str, Any]], str], Any] | None = None,
     model: str | None = None,
 ) -> EstimatorChatResult:
@@ -116,9 +117,19 @@ def run_estimator_chat_turn(
         raw_message_list,
         template_type_hint=template_type_hint,
     )
+    attached_answer_key = attached_reference_answer_key if isinstance(attached_reference_answer_key, dict) else {}
     if not answer_key_mode and (structured_answer_key.mapped_row_count or reference_summary.mapped_row_count):
         answer_key_mode = "evaluate"
     should_apply_reference = answer_key_mode in {"apply", "teach"}
+    attached_answer_key_summary = (
+        _reference_answer_key_summary(
+            attached_answer_key,
+            template_type_hint=template_type_hint,
+            warning_label="Applied attached estimator answer key",
+        )
+        if should_apply_reference and attached_answer_key
+        else ParsedReferenceTemplateSummary()
+    )
     if structured_answer_key.mapped_row_count and should_apply_reference:
         deterministic_baseline = _merge_reference_template_summary(
             deterministic_baseline,
@@ -129,6 +140,12 @@ def run_estimator_chat_turn(
         deterministic_baseline = _merge_reference_template_summary(
             deterministic_baseline,
             reference_summary,
+            template_type_hint=template_type_hint,
+        )
+    if attached_answer_key_summary.mapped_row_count and should_apply_reference:
+        deterministic_baseline = _merge_reference_template_summary(
+            deterministic_baseline,
+            attached_answer_key_summary,
             template_type_hint=template_type_hint,
         )
     if (structured_answer_key.mapped_row_count or reference_summary.mapped_row_count) and not should_apply_reference:
@@ -148,7 +165,8 @@ def run_estimator_chat_turn(
     context = estimator_context_summary(data, scope=baseline_scope)
     matched_answer_key_summary = (
         _matched_answer_key_reference_summary(data, context, template_type_hint=template_type_hint)
-        if should_apply_reference and not (structured_answer_key.mapped_row_count or reference_summary.mapped_row_count)
+        if should_apply_reference
+        and not (structured_answer_key.mapped_row_count or reference_summary.mapped_row_count or attached_answer_key_summary.mapped_row_count)
         else ParsedReferenceTemplateSummary()
     )
     if matched_answer_key_summary.mapped_row_count:
@@ -180,7 +198,12 @@ def run_estimator_chat_turn(
             return _apply_learning_intent(
                 _attach_context_retrieval_summary(deterministic_baseline, context),
                 learning_intent,
-                _best_learning_reference_summary(reference_summary, structured_answer_key, matched_answer_key_summary),
+                _best_learning_reference_summary(
+                    reference_summary,
+                    structured_answer_key,
+                    attached_answer_key_summary,
+                    matched_answer_key_summary,
+                ),
                 answer_key_mode=answer_key_mode,
             )
         if should_apply_reference:
@@ -192,6 +215,11 @@ def run_estimator_chat_turn(
             result = _merge_reference_template_summary(
                 result,
                 structured_answer_key,
+                template_type_hint=template_type_hint,
+            )
+            result = _merge_reference_template_summary(
+                result,
+                attached_answer_key_summary,
                 template_type_hint=template_type_hint,
             )
             result = _merge_reference_template_summary(
@@ -208,14 +236,24 @@ def run_estimator_chat_turn(
         return _apply_learning_intent(
             result,
             learning_intent,
-            _best_learning_reference_summary(reference_summary, structured_answer_key, matched_answer_key_summary),
+            _best_learning_reference_summary(
+                reference_summary,
+                structured_answer_key,
+                attached_answer_key_summary,
+                matched_answer_key_summary,
+            ),
             answer_key_mode=answer_key_mode,
         )
     deterministic_baseline.warnings.append("OPENAI_API_KEY is not configured; used deterministic estimator-chat fallback.")
     return _apply_learning_intent(
         _attach_context_retrieval_summary(deterministic_baseline, context),
         learning_intent,
-        _best_learning_reference_summary(reference_summary, structured_answer_key, matched_answer_key_summary),
+        _best_learning_reference_summary(
+            reference_summary,
+            structured_answer_key,
+            attached_answer_key_summary,
+            matched_answer_key_summary,
+        ),
         answer_key_mode=answer_key_mode,
     )
 
@@ -322,8 +360,9 @@ def _matched_answer_key_reference_summary(
             answer_key = example.get("reference_answer_key") if isinstance(example.get("reference_answer_key"), dict) else {}
         if not answer_key:
             continue
-        row_count += int((answer_key.get("summary") or {}).get("source_row_count") or len(answer_key.get("decisions") or []))
-        preferences.extend(answer_key_to_workbook_decision_preferences(answer_key))
+        summary = _reference_answer_key_summary(answer_key, template_type_hint=template_type_hint)
+        row_count += summary.row_count
+        preferences.extend(summary.workbook_decision_preferences)
         label = _clean_string(example.get("job_name") or example.get("customer") or example.get("source_file") or example.get("job_id"))
         if label:
             warnings.append(f"Applied matched historical answer key: {label}.")
@@ -332,6 +371,34 @@ def _matched_answer_key_reference_summary(
         workbook_decision_preferences=cleaned,
         warnings=warnings,
         row_count=row_count,
+        mapped_row_count=len(cleaned),
+    )
+
+
+def _reference_answer_key_summary(
+    answer_key: dict[str, Any],
+    *,
+    template_type_hint: str = "",
+    warning_label: str = "",
+) -> ParsedReferenceTemplateSummary:
+    if not isinstance(answer_key, dict) or not answer_key.get("decisions"):
+        return ParsedReferenceTemplateSummary()
+    preferences = answer_key_to_workbook_decision_preferences(answer_key)
+    cleaned = _clean_decision_preferences(preferences, template_type=template_type_hint)
+    label = _clean_string(
+        ((answer_key.get("source_workbook") or {}).get("file_name") if isinstance(answer_key.get("source_workbook"), dict) else "")
+        or ((answer_key.get("job_context") or {}).get("job_name") if isinstance(answer_key.get("job_context"), dict) else "")
+        or ((answer_key.get("job_context") or {}).get("customer") if isinstance(answer_key.get("job_context"), dict) else "")
+    )
+    warnings: list[str] = []
+    if warning_label and label:
+        warnings.append(f"{warning_label}: {label}.")
+    elif warning_label:
+        warnings.append(f"{warning_label}.")
+    return ParsedReferenceTemplateSummary(
+        workbook_decision_preferences=cleaned,
+        warnings=warnings,
+        row_count=int((answer_key.get("summary") or {}).get("source_row_count") or len(answer_key.get("decisions") or [])),
         mapped_row_count=len(cleaned),
     )
 

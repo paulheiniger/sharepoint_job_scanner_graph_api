@@ -796,6 +796,96 @@ def test_estimator_chat_apply_matched_answer_key_uses_full_labor_rows() -> None:
     assert result.scope_overrides["reference_template_summary_mapped_row_count"] >= 3
 
 
+def test_estimator_chat_apply_uses_attached_answer_key_before_similar_match() -> None:
+    living_waters_key = {
+        "schema_version": "reference_estimate_answer_key.v1",
+        "template_type": "roofing",
+        "source_workbook": {"file_name": "Estimate Roofing - Living Waters Church.xlsx"},
+        "job_context": {"job_name": "Living Waters Church"},
+        "decisions": [
+            {
+                "section": "roofing_labor_template_decisions",
+                "decision_id": "roofing_labor_prime_row_118",
+                "template_bucket": "labor_prime",
+                "workbook_row": "118",
+                "line_item": "Prime",
+                "inputs": {"days": 1.25, "crew_size": 5, "daily_rate": 1835.66, "total_hours": 65.6},
+                "calculated_outputs": {"estimated_cost": 2294.58},
+                "evidence": {"source_row": "118"},
+            }
+        ],
+        "summary": {"decision_count": 1, "unmapped_count": 0, "source_row_count": 125},
+    }
+    stables_key = {
+        "schema_version": "reference_estimate_answer_key.v1",
+        "template_type": "roofing",
+        "source_workbook": {"file_name": "Estimate Roofing - The Stables at Floyds Fork.xlsx"},
+        "job_context": {"job_name": "The Stables at Floyds Fork"},
+        "decisions": [
+            {
+                "section": "roofing_labor_template_decisions",
+                "decision_id": "roofing_labor_prime_row_118",
+                "template_bucket": "labor_prime",
+                "workbook_row": "118",
+                "line_item": "Prime",
+                "inputs": {"days": 0.3, "crew_size": 3, "daily_rate": 1200, "total_hours": 8},
+                "calculated_outputs": {"estimated_cost": 360},
+                "evidence": {"source_row": "118"},
+            }
+        ],
+        "summary": {"decision_count": 1, "unmapped_count": 0, "source_row_count": 120},
+    }
+    data = EstimatorData(
+        template_examples=pd.DataFrame(
+            [
+                {
+                    "example_id": "stables",
+                    "job_id": "R-STABLES",
+                    "customer": "The Stables at Floyds Fork",
+                    "job_name": "The Stables at Floyds Fork",
+                    "source_file": "Estimate Roofing - The Stables at Floyds Fork.xlsx",
+                    "template_type": "roofing",
+                    "project_class": "roof_restoration",
+                    "substrate": "metal",
+                    "material_system": "Gaco silicone",
+                    "material_packages_json": json.dumps(["coating", "labor_prime"]),
+                    "area_sqft": 9600,
+                    "scope_summary": "Metal roof restoration with coating and prime labor.",
+                    "decision_summary": "prime labor",
+                    "answer_key_json": json.dumps(stables_key),
+                }
+            ]
+        )
+    )
+
+    result = run_estimator_chat_turn(
+        [{"role": "user", "content": "Apply the Living Waters Church answer key."}],
+        data=data,
+        template_type_hint="roofing",
+        existing_scope={
+            "template_type": "roofing",
+            "estimated_sqft": 9600,
+            "raw_input_notes": "Metal roof restoration coating with prime labor.",
+        },
+        attached_reference_answer_key=living_waters_key,
+        provider=lambda messages, model: {
+            "assistant_message": "Applying answer key.",
+            "estimator_notes": "Metal roof coating.",
+            "scope_overrides": {"template_type": "roofing"},
+            "workbook_decision_preferences": [],
+            "confidence": 0.8,
+        },
+        model="test-model",
+    )
+
+    labor = {row["decision_id"]: row for row in result.workbook_decision_preferences}["roofing_labor_prime_row_118"]
+
+    assert labor["proposed_values"]["days"] == 1.25
+    assert labor["proposed_values"]["daily_rate"] == 1835.66
+    assert any("Living Waters Church" in warning for warning in result.warnings)
+    assert not any("Stables" in warning for warning in result.warnings)
+
+
 def test_estimator_chat_decision_menu_uses_template_catalog_metadata() -> None:
     data = EstimatorData(
         template_row_catalog=pd.DataFrame(

@@ -10203,6 +10203,11 @@ def render_estimator_chat_draft_panel(
             if isinstance(previous_result, dict) and isinstance(previous_result.get("scope_overrides"), dict)
             else {}
         )
+        attached_reference_answer_key = (
+            previous_result.get("reference_answer_key")
+            if isinstance(previous_result, dict) and isinstance(previous_result.get("reference_answer_key"), dict)
+            else {}
+        )
         with st.spinner("Drafting estimate intake..."):
             context_cache_before = estimator_context_cache_stats()
             with estimator_perf_step("chat context and response"):
@@ -10211,6 +10216,7 @@ def render_estimator_chat_draft_panel(
                     data=data,
                     template_type_hint=estimate_type,
                     existing_scope=existing_scope,
+                    attached_reference_answer_key=attached_reference_answer_key,
                 )
             context_cache_after = estimator_context_cache_stats()
             context_cache_hits = int(context_cache_after.get("hit", 0)) - int(context_cache_before.get("hit", 0))
