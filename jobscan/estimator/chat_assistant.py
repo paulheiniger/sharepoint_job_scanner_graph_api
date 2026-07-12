@@ -1841,20 +1841,24 @@ def _merge_reference_template_summary(
         result.workbook_decision_preferences,
         reference_summary.workbook_decision_preferences,
     )
+    reference_area = _basis_sqft_from_decision_preferences(merged_preferences)
     template_type = "roofing" if _clean_string(template_type_hint).lower() == "roofing" else ""
     if not template_type:
         template_type = "roofing"
-    scope = _clean_scope(
-        {
-            **_clean_scope(result.scope_overrides),
-            "template_type": template_type,
-            "division": "Roofing" if template_type == "roofing" else template_type.title(),
-            "project_type": "roofing estimate" if template_type == "roofing" else template_type,
-            "reference_template_summary_present": True,
-            "reference_template_summary_row_count": reference_summary.row_count,
-            "reference_template_summary_mapped_row_count": reference_summary.mapped_row_count,
-        }
-    )
+    scope_payload = {
+        **_clean_scope(result.scope_overrides),
+        "template_type": template_type,
+        "division": "Roofing" if template_type == "roofing" else template_type.title(),
+        "project_type": "roofing estimate" if template_type == "roofing" else template_type,
+        "reference_template_summary_present": True,
+        "reference_template_summary_row_count": reference_summary.row_count,
+        "reference_template_summary_mapped_row_count": reference_summary.mapped_row_count,
+    }
+    if reference_area > 0:
+        scope_payload.setdefault("estimated_sqft", reference_area)
+        scope_payload.setdefault("net_sqft", reference_area)
+        scope_payload.setdefault("basis_sqft", reference_area)
+    scope = _clean_scope(scope_payload)
     warnings = list(result.warnings)
     for warning in reference_summary.warnings:
         if warning not in warnings:
@@ -1878,6 +1882,21 @@ def _merge_reference_template_summary(
         raw_response=result.raw_response,
         warnings=warnings,
     )
+
+
+def _basis_sqft_from_decision_preferences(preferences: list[dict[str, Any]]) -> float:
+    candidates: list[float] = []
+    for preference in preferences or []:
+        if not isinstance(preference, dict):
+            continue
+        values = preference.get("proposed_values") if isinstance(preference.get("proposed_values"), dict) else {}
+        bucket = _clean_string(preference.get("template_bucket")).lower()
+        if bucket not in {"foam", "coating", "primer", "board_stock", "granules", "thermal_barrier_coating"}:
+            continue
+        area = _safe_positive_number(values.get("basis_sqft") or values.get("area_sqft"))
+        if area > 0:
+            candidates.append(area)
+    return max(candidates) if candidates else 0.0
 
 
 def _merge_decision_preferences(

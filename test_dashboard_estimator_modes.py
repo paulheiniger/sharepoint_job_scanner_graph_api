@@ -1816,6 +1816,39 @@ def test_estimator_chat_session_snapshot_round_trips(tmp_path, monkeypatch) -> N
     assert app.load_estimator_chat_session("../bad") == {}
 
 
+def test_chat_roofing_override_clears_stale_insulation_readiness() -> None:
+    app = importlib.import_module("dashboard.app")
+    recommendation = SimpleNamespace(
+        parsed_fields={
+            "template_type": "roofing",
+            "estimate_status": "NEED_MORE_INFORMATION",
+            "estimate_reason": "Insulation area is unknown. An insulation estimate cannot be generated without building dimensions or square footage.",
+            "required_questions": ["Building length and width?"],
+            "recommended_next_actions": ["Request insulation dimensions"],
+            "missing_info": ["estimated_sqft"],
+        },
+        estimate_status="NEED_MORE_INFORMATION",
+        estimate_reason="Insulation area is unknown. An insulation estimate cannot be generated without building dimensions or square footage.",
+        required_questions=["Building length and width?"],
+        recommended_next_actions=["Request insulation dimensions"],
+        review_flags=[
+            "Missing: estimated_sqft",
+            "Insulation area is unknown. An insulation estimate cannot be generated without building dimensions or square footage.",
+            "Estimator chat draft supplied scope overrides; estimator must verify before quoting.",
+        ],
+    )
+
+    cleaned = app.clear_conflicting_readiness_after_chat_override(recommendation, "roofing")
+
+    assert cleaned.estimate_status == "READY_TO_ESTIMATE"
+    assert cleaned.estimate_reason == ""
+    assert cleaned.required_questions == []
+    assert cleaned.parsed_fields["estimate_status"] == "READY_TO_ESTIMATE"
+    assert "estimate_reason" not in cleaned.parsed_fields
+    assert cleaned.parsed_fields["missing_info"] == []
+    assert cleaned.review_flags == ["Estimator chat draft supplied scope overrides; estimator must verify before quoting."]
+
+
 def test_estimator_chat_session_drops_stale_assistant_results(tmp_path, monkeypatch) -> None:
     app = importlib.import_module("dashboard.app")
     monkeypatch.setattr(app, "ESTIMATOR_CHAT_SESSION_DIR", tmp_path)

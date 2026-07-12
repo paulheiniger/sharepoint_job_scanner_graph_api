@@ -1309,6 +1309,8 @@ def test_estimator_chat_parses_compact_roofing_reference_answer_key(monkeypatch)
     assert result.scope_overrides["reference_template_summary_present"] is True
     assert result.scope_overrides["reference_template_summary_row_count"] >= 20
     assert result.scope_overrides["reference_template_summary_mapped_row_count"] >= 20
+    assert result.scope_overrides["estimated_sqft"] == 9600.0
+    assert result.scope_overrides["net_sqft"] == 9600.0
     assert not [
         warning
         for warning in result.warnings

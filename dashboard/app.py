@@ -8742,6 +8742,31 @@ def route_estimator_request(
     return resolved_type, field_estimator_fn(notes, overrides or {}, data=field_notes_data)
 
 
+def clear_conflicting_readiness_after_chat_override(recommendation: Any, final_template_type: str) -> Any:
+    template_type = text_value(final_template_type).lower()
+    if template_type == "insulation" or not template_type:
+        return recommendation
+    parsed_fields = recommendation.parsed_fields if isinstance(getattr(recommendation, "parsed_fields", None), dict) else {}
+    reason = text_value(getattr(recommendation, "estimate_reason", "") or parsed_fields.get("estimate_reason"))
+    if "Insulation area is unknown" not in reason:
+        return recommendation
+    recommendation.estimate_status = "READY_TO_ESTIMATE"
+    recommendation.estimate_reason = ""
+    recommendation.required_questions = []
+    recommendation.recommended_next_actions = []
+    for key in ("estimate_status", "estimate_reason", "required_questions", "recommended_next_actions"):
+        parsed_fields.pop(key, None)
+    parsed_fields["estimate_status"] = "READY_TO_ESTIMATE"
+    missing = parsed_fields.get("missing_info") if isinstance(parsed_fields.get("missing_info"), list) else []
+    parsed_fields["missing_info"] = [item for item in missing if text_value(item) != "estimated_sqft"]
+    recommendation.review_flags = [
+        flag
+        for flag in (getattr(recommendation, "review_flags", None) or [])
+        if "Insulation area is unknown" not in text_value(flag) and text_value(flag) != "Missing: estimated_sqft"
+    ]
+    return recommendation
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def load_repair_history_cached():
     from jobscan.repair_estimator.estimator import load_repair_history_from_database
@@ -10978,6 +11003,14 @@ def estimator_prototype_page() -> None:
         estimate_type=resolved_estimate_type,
         data=data,
     )
+    chat_template_type = ""
+    if active_chat_context and isinstance(active_chat_context.get("scope_overrides"), dict):
+        chat_template_type = text_value(active_chat_context.get("scope_overrides", {}).get("template_type")).lower()
+    if chat_template_type in {"roofing", "insulation", "repair", "flooring"}:
+        chat_resolved_estimate_type = _estimator_type_for_template(chat_template_type)
+        if chat_resolved_estimate_type != resolved_estimate_type:
+            st.caption(f"Using chat-selected estimate type: {chat_resolved_estimate_type}")
+            resolved_estimate_type = chat_resolved_estimate_type
     latest_notes = str(st.session_state.get("estimator_notes") or notes)
     chat_augmented_notes = (
         str(active_chat_context.get("estimator_notes") or latest_notes)
@@ -11216,6 +11249,10 @@ def estimator_prototype_page() -> None:
                                 ),
                             ]
                         )
+                    )
+                    recommendation = clear_conflicting_readiness_after_chat_override(
+                        recommendation,
+                        str(recommendation.parsed_fields.get("template_type") or ""),
                     )
                 st.session_state["field_estimate_recommendation"] = recommendation
                 st.session_state["field_estimate_route"] = resolved_estimate_type
