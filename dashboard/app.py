@@ -3937,24 +3937,7 @@ def build_generated_field_notes_case_from_history(
             "message": "I found multiple plausible proposal/estimate pairs. Ask with the proposal or estimate file name, or use one of these candidates.",
             "candidates": candidates,
         }
-    selected = dict(candidates[0])
-    generated_note_result = _rewrite_generated_field_notes_from_scope(
-        example=selected.get("_rewrite_example") if isinstance(selected.get("_rewrite_example"), dict) else {},
-        scope_row=selected.get("_rewrite_scope_row") if isinstance(selected.get("_rewrite_scope_row"), dict) else {},
-        answer_key=selected.get("answer_key") if isinstance(selected.get("answer_key"), dict) else {},
-    )
-    selected["generated_notes"] = text_value(generated_note_result.get("generated_notes"))
-    selected["generated_notes_method"] = text_value(generated_note_result.get("generation_method"))
-    selected["generated_notes_style"] = text_value(generated_note_result.get("note_style"))
-    selected["generated_notes_warnings"] = (
-        generated_note_result.get("warnings") if isinstance(generated_note_result.get("warnings"), list) else []
-    )
-    cleaned_candidates = []
-    for candidate in candidates:
-        cleaned_candidates.append({key: value for key, value in candidate.items() if not str(key).startswith("_rewrite_")})
-    selected = {key: value for key, value in selected.items() if not str(key).startswith("_rewrite_")}
-    selected["candidates"] = cleaned_candidates
-    return selected
+    return finalize_generated_field_notes_candidate(candidates[0], candidates=candidates)
 
 
 def generated_field_notes_response(case: dict[str, Any]) -> str:
@@ -4004,6 +3987,42 @@ def generated_field_notes_response(case: dict[str, Any]) -> str:
     if text_value(case.get("proposal_url")):
         lines.insert(-2, f"- Proposal link: {markdown_link(case.get('proposal_file_name') or 'proposal', case.get('proposal_url'))}")
     return "\n".join(lines).strip()
+
+
+ASK_SPRAYTEC_PENDING_GENERATED_FIELD_NOTES_KEY = "ask_spraytec_pending_generated_field_notes"
+
+
+def ask_spraytec_option_selection_index(prompt: str) -> int | None:
+    normalized = text_value(prompt).lower().strip()
+    if not normalized:
+        return None
+    match = re.search(r"^(?:use|select|choose|pick|go\s+with)?\s*(?:option|#|number|candidate)?\s*(\d+)\b", normalized)
+    if not match:
+        return None
+    return max(int(match.group(1)) - 1, 0)
+
+
+def finalize_generated_field_notes_candidate(candidate: dict[str, Any], *, candidates: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    selected = dict(candidate or {})
+    selected["status"] = "selected"
+    generated_note_result = _rewrite_generated_field_notes_from_scope(
+        example=selected.get("_rewrite_example") if isinstance(selected.get("_rewrite_example"), dict) else {},
+        scope_row=selected.get("_rewrite_scope_row") if isinstance(selected.get("_rewrite_scope_row"), dict) else {},
+        answer_key=selected.get("answer_key") if isinstance(selected.get("answer_key"), dict) else {},
+    )
+    selected["generated_notes"] = text_value(generated_note_result.get("generated_notes"))
+    selected["generated_notes_method"] = text_value(generated_note_result.get("generation_method"))
+    selected["generated_notes_style"] = text_value(generated_note_result.get("note_style"))
+    selected["generated_notes_warnings"] = (
+        generated_note_result.get("warnings") if isinstance(generated_note_result.get("warnings"), list) else []
+    )
+    cleaned_candidates = []
+    for candidate_row in candidates or []:
+        cleaned_candidates.append({key: value for key, value in candidate_row.items() if not str(key).startswith("_rewrite_")})
+    selected = {key: value for key, value in selected.items() if not str(key).startswith("_rewrite_")}
+    if cleaned_candidates:
+        selected["candidates"] = cleaned_candidates
+    return selected
 
 
 def attach_generated_field_notes_case_to_estimator_context(case: dict[str, Any]) -> str:
@@ -5429,6 +5448,50 @@ def ask_spraytec_page() -> None:
     st.session_state["ask_spraytec_messages"].append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
+    pending_generated_notes = st.session_state.get(ASK_SPRAYTEC_PENDING_GENERATED_FIELD_NOTES_KEY)
+    option_index = ask_spraytec_option_selection_index(prompt)
+    if isinstance(pending_generated_notes, dict) and option_index is not None:
+        pending_candidates = pending_generated_notes.get("candidates") if isinstance(pending_generated_notes.get("candidates"), list) else []
+        debug_payload: dict[str, Any] = {
+            "interpreted": {"option_selection": option_index + 1},
+            "query_plan": {"mode": "generated_field_notes_option_selection"},
+            "ranked_matches": [],
+        }
+        if 0 <= option_index < len(pending_candidates):
+            with st.spinner("Generating field notes from selected historical proposal scope..."):
+                generated_case = finalize_generated_field_notes_candidate(
+                    pending_candidates[option_index],
+                    candidates=pending_candidates,
+                )
+            thread_id = attach_generated_field_notes_case_to_estimator_context(generated_case)
+            generated_case["estimator_chat_thread_id"] = thread_id
+            st.session_state.pop(ASK_SPRAYTEC_PENDING_GENERATED_FIELD_NOTES_KEY, None)
+            response = generated_field_notes_response(generated_case)
+            debug_payload["generated_field_notes"] = {
+                "status": generated_case.get("status"),
+                "selected_option": option_index + 1,
+                "query": generated_case.get("query") or pending_generated_notes.get("query"),
+                "selected_job_id": generated_case.get("job_id"),
+                "source_file": generated_case.get("source_file"),
+                "proposal_file_name": generated_case.get("proposal_file_name"),
+                "answer_key_summary": generated_case.get("answer_key_summary"),
+                "candidate_count": len(pending_candidates),
+            }
+        else:
+            response = f"I only have {len(pending_candidates)} generated-notes option(s) from the last search. Choose one of those options or ask a new field-notes question."
+            debug_payload["generated_field_notes"] = {
+                "status": "invalid_option",
+                "selected_option": option_index + 1,
+                "candidate_count": len(pending_candidates),
+            }
+        st.session_state["ask_spraytec_messages"].append({"role": "assistant", "content": response})
+        with st.chat_message("assistant"):
+            st.markdown(response)
+            with st.expander("Search details"):
+                st.write("query plan", debug_payload.get("query_plan"))
+                st.write("generated field notes", debug_payload.get("generated_field_notes"))
+        return
+
     interpreted = interpret_search_request(prompt)
     query_plan = plan_ask_spraytec_query(prompt, interpreted)
     plan_targets = set(query_plan.get("targets") or [])
@@ -5445,6 +5508,9 @@ def ask_spraytec_page() -> None:
             if generated_case.get("status") == "selected":
                 thread_id = attach_generated_field_notes_case_to_estimator_context(generated_case)
                 generated_case["estimator_chat_thread_id"] = thread_id
+                st.session_state.pop(ASK_SPRAYTEC_PENDING_GENERATED_FIELD_NOTES_KEY, None)
+            elif generated_case.get("status") == "ambiguous" and generated_case.get("candidates"):
+                st.session_state[ASK_SPRAYTEC_PENDING_GENERATED_FIELD_NOTES_KEY] = generated_case
             response = generated_field_notes_response(generated_case)
             debug_payload["generated_field_notes"] = {
                 "status": generated_case.get("status"),

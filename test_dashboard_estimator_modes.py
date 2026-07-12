@@ -963,6 +963,53 @@ def test_ask_spraytec_generated_field_notes_attach_as_evaluation_reference(monke
     assert active["workbook_decision_preferences"] == []
 
 
+def test_ask_spraytec_option_selection_index_parses_followup_choice() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    assert app.ask_spraytec_option_selection_index("use option 1") == 0
+    assert app.ask_spraytec_option_selection_index("choose 2") == 1
+    assert app.ask_spraytec_option_selection_index("#3") == 2
+    assert app.ask_spraytec_option_selection_index("find option 1 roof") is None
+
+
+def test_ask_spraytec_finalize_generated_field_notes_candidate_reuses_candidate(monkeypatch) -> None:
+    app = importlib.import_module("dashboard.app")
+
+    def fake_rewrite(*, example, scope_row, answer_key):
+        return {
+            "generated_notes": f"Notes for {scope_row['file_name']} using {answer_key['source_workbook']['file_name']}.",
+            "generation_method": "test_rewrite",
+            "note_style": "field_notes",
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(app, "_rewrite_generated_field_notes_from_scope", fake_rewrite)
+    candidate = {
+        "status": "selected",
+        "template_type": "roofing",
+        "job_id": "J-MUDD",
+        "customer": "Mudd's Furniture",
+        "job_name": "Mudd's Furniture Showroom",
+        "source_file": "2026 Estimate - B Roof .xlsx",
+        "proposal_file_name": "Proposal - Roof B.pdf",
+        "answer_key": {
+            "source_workbook": {"file_name": "2026 Estimate - B Roof .xlsx"},
+            "decisions": [{"decision_id": "roofing_coating_system_row_26"}],
+        },
+        "answer_key_summary": {"decision_count": 61, "unmapped_count": 0},
+        "_rewrite_example": {"source_file": "2026 Estimate - B Roof .xlsx"},
+        "_rewrite_scope_row": {"file_name": "Proposal - Roof B.pdf"},
+    }
+
+    selected = app.finalize_generated_field_notes_candidate(candidate, candidates=[candidate])
+
+    assert selected["generated_notes"] == "Notes for Proposal - Roof B.pdf using 2026 Estimate - B Roof .xlsx."
+    assert selected["generated_notes_method"] == "test_rewrite"
+    assert selected["source_file"] == "2026 Estimate - B Roof .xlsx"
+    assert "_rewrite_example" not in selected
+    assert "_rewrite_scope_row" not in selected
+
+
 def test_estimator_chat_preserves_attached_answer_key_across_followup_turn() -> None:
     app = importlib.import_module("dashboard.app")
     answer_key = {
