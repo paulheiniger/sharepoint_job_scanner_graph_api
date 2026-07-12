@@ -261,6 +261,8 @@ def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
 
     def provider(messages, model):
         calls.append((messages, model))
+        assert "Critical calculation rule" in messages[0]["content"]
+        assert "if include is true, proposed_values must provide the row's required calculation inputs" in messages[0]["content"]
         assert "common_template_buckets" in messages[1]["content"]
         assert "decision_recommendation_examples" in messages[1]["content"]
         assert "decision_menu" in messages[1]["content"]
@@ -790,6 +792,7 @@ def test_estimator_chat_decision_menu_uses_template_catalog_metadata() -> None:
     context = estimator_context_summary(data, scope={"template_type": "roofing"})
     menu = context["decision_menu"]
     coating = next(row for row in menu if row["template_bucket"] == "coating" and row["workbook_row"] == "26")
+    seams = next(row for row in menu if row["template_bucket"] == "seams_misc" and row["workbook_row"] == "47")
     labor = next(row for row in menu if row["template_bucket"] == "labor_base" and row["workbook_row"] == "122")
 
     assert coating["source"] == "template_row_catalog+decision_graph"
@@ -799,6 +802,9 @@ def test_estimator_chat_decision_menu_uses_template_catalog_metadata() -> None:
     assert "selector_code" in coating["editable_fields"]
     assert "basis_sqft" in coating["formula_requirements"]
     assert "unit_price" in coating["formula_requirements"]
+    assert "amount" in seams["editable_fields"]
+    assert "unit_price" not in seams["editable_fields"]
+    assert any("amount" in requirement for requirement in seams["formula_requirements"])
     assert labor["decision_id"] == "roofing_labor_base"
     assert labor["section"] == "roofing_labor_template_decisions"
     assert "daily_rate" in labor["editable_fields"]

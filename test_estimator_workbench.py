@@ -1088,19 +1088,32 @@ def test_workbench_uses_materials_lookup_pricing_for_board_and_fabric() -> None:
 
 
 def test_roofing_companion_relationships_suggest_primer_and_detail_rows() -> None:
-    workbench = build_estimating_workbench(roofing_recommendation(), roofing_companion_data())
+    data = roofing_companion_data()
+    data.pricing_catalog = roofing_primer_detail_pricing_data().pricing_catalog
+    workbench = build_estimating_workbench(
+        roofing_recommendation(),
+        data,
+        scope_override={
+            "net_sqft": 8000,
+            "estimated_sqft": 8000,
+            "notes": "Roof coating with primer and caulk/detail sealant around penetrations.",
+        },
+    )
 
     primer = workbench["roofing_primer_template_decisions"][0]
     sealant = next(row for row in workbench["roofing_detail_template_decisions"] if row["template_bucket"] == "caulk_detail")
 
-    assert primer["include"] is True
+    assert primer["include"] is False
+    assert primer["estimated_cost"] == 0
     assert primer["proposal_source"] == "historical_companion"
+    assert any("no calculable cost" in warning for warning in primer["compatibility_warnings"])
     assert primer["proposal_evidence"]["relationship_package_cooccurrence"]
     assert primer["proposal_review_required"] is True
     assert any("Historical companion suggestion" in warning for warning in primer["compatibility_warnings"])
     assert sealant["include"] is True
-    assert sealant["proposal_source"] == "historical_companion"
-    assert sealant["why_included"].startswith("Often paired with coating")
+    assert sealant["estimated_cost"] > 0
+    seams = next(row for row in workbench["roofing_detail_quantity_template_decisions"] if row["template_bucket"] == "seams_misc")
+    assert seams["include"] is False
 
 
 def test_historical_companion_detail_quantity_without_basis_is_not_included() -> None:
@@ -1144,10 +1157,11 @@ def test_fabric_companion_suggests_seam_detail_labor_review_marked() -> None:
     recalculated = recalculate_workbench_tables(workbench)
     seam_labor = next(row for row in recalculated["roofing_labor_template_decisions"] if row["template_bucket"] == "labor_seam_sealer")
 
-    assert seam_labor["include"] is True
+    assert seam_labor["include"] is False
     assert seam_labor["proposal_source"] == "historical_companion"
     assert seam_labor["proposal_review_required"] is True
     assert "fabric" in seam_labor["proposal_review_reasons"][0]
+    assert any("no calculable cost" in warning for warning in seam_labor["compatibility_warnings"])
 
 
 def test_open_seams_do_not_auto_check_fabric_without_quantity_or_explicit_fabric() -> None:
@@ -1312,7 +1326,7 @@ def test_roofing_fastener_plate_units_calculate_from_board_area_pattern() -> Non
 def test_manual_uncheck_prevents_companion_proposal_from_rechecking_row() -> None:
     workbench = build_estimating_workbench(roofing_recommendation(), roofing_companion_data())
     primer = workbench["roofing_primer_template_decisions"][0]
-    assert primer["include"] is True
+    assert primer["include"] is False
 
     primer["include"] = False
     primer["manual_override"] = True

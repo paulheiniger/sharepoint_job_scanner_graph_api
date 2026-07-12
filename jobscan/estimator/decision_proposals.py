@@ -1670,12 +1670,13 @@ def _companion_proposal(
         ]
     }
     confidence = min(0.9, 0.35 + (rate * 0.4) + min(job_count, 20) / 100)
+    include = target_spec.get("section") != "roofing_detail_quantity_template_decisions"
     return DecisionProposal(
         decision_id=target_spec["decision_id"],
         template_type="roofing",
         template_bucket=target_spec["template_bucket"],
         workbook_row=target_spec["workbook_row"],
-        include=True,
+        include=include,
         proposed_values={},
         confidence=round(confidence, 4),
         review_required=True,

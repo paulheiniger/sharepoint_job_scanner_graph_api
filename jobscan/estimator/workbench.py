@@ -5867,6 +5867,56 @@ def _guard_pricing_markup_auto_includes(workbench: dict[str, Any]) -> dict[str, 
     return workbench
 
 
+def _guard_included_zero_cost_auto_rows(workbench: dict[str, Any]) -> dict[str, Any]:
+    for section in WORKBENCH_DECISION_SECTIONS:
+        for row in workbench.get(section) or []:
+            if not isinstance(row, dict) or not row.get("include"):
+                continue
+            estimated_cost = safe_number(
+                first_nonblank(row.get("estimated_cost"), row.get("calculated_output")),
+                0.0,
+            )
+            if estimated_cost > 0:
+                continue
+            source = str(first_nonblank(row.get("include_source"), row.get("proposal_source"), "")).strip().lower()
+            risky_auto_source = source in {"historical_companion", "chat_estimator", "ai_chat", "photo_scope", "ai_scope"}
+            calculation_only_detail_row = section == "roofing_detail_quantity_template_decisions"
+            if not risky_auto_source and not calculation_only_detail_row:
+                continue
+            reason = (
+                "Unchecked because this included row had no calculable cost. "
+                "Fill the required quantity/rate/price fields before including it."
+            )
+            warnings = list(row.get("compatibility_warnings") or [])
+            if _manual_include_locked(row):
+                warnings.append("Included row has zero cost; enter the required quantity/rate/price fields before quoting.")
+                row["compatibility_warnings"] = list(dict.fromkeys(str(warning) for warning in warnings if warning))
+                row["compatibility_status"] = "review"
+                row["proposal_review_required"] = True
+                review_reasons = list(row.get("proposal_review_reasons") or [])
+                review_reasons.append("Included row is missing required calculation inputs.")
+                row["proposal_review_reasons"] = list(dict.fromkeys(str(item) for item in review_reasons if item))
+                continue
+            row["include"] = False
+            row["include_source"] = "calculation_basis_guard"
+            row["proposal_review_required"] = True
+            row["proposal_review_reasons"] = list(
+                dict.fromkeys([*(str(item) for item in row.get("proposal_review_reasons") or [] if item), reason])
+            )
+            row["estimated_cost"] = 0.0
+            row["calculated_output"] = 0.0
+            row["formula_source"] = "not_included"
+            row["cost_source"] = "not_included"
+            row["compatibility_status"] = "not_included"
+            warnings.append(reason)
+            row["compatibility_warnings"] = list(dict.fromkeys(str(warning) for warning in warnings if warning))
+            row["why_included"] = ""
+            notes = str(row.get("notes") or "")
+            if reason not in notes:
+                row["notes"] = (notes + " " + reason).strip()
+    return workbench
+
+
 def _build_insulation_decision_rows(
     *,
     section: str,
@@ -12332,6 +12382,7 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
     )
     updated = _guard_insulation_scaffold_auto_includes(updated)
     updated = _guard_pricing_markup_auto_includes(updated)
+    updated = _guard_included_zero_cost_auto_rows(updated)
     updated = enrich_workbench_template_options(updated)
     return updated
 

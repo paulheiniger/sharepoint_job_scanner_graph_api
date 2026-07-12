@@ -477,8 +477,8 @@ CHAT_DECISION_MENU: dict[str, list[dict[str, Any]]] = {
             "template_bucket": "seams_misc",
             "workbook_row": "47",
             "label": "Seam quantity",
-            "editable_fields": ["include", "linear_ft", "unit_price", "estimated_units"],
-            "formula_requirements": ["linear_ft or estimated_units"],
+            "editable_fields": ["include", "linear_ft", "estimated_units", "amount"],
+            "formula_requirements": ["linear_ft or estimated_units or amount"],
         },
         {
             "decision_id": "roofing_penetrations_row_49",
@@ -486,8 +486,8 @@ CHAT_DECISION_MENU: dict[str, list[dict[str, Any]]] = {
             "template_bucket": "penetrations",
             "workbook_row": "49",
             "label": "Penetration/detail quantity",
-            "editable_fields": ["include", "estimated_units", "unit_price"],
-            "formula_requirements": ["estimated_units"],
+            "editable_fields": ["include", "estimated_units", "units", "amount"],
+            "formula_requirements": ["estimated_units or units or amount"],
         },
         {
             "decision_id": "roofing_board_stock_row_58",
@@ -2544,9 +2544,16 @@ def _chat_prompt_messages(
         "scope_triggers, and reference_job_ids. "
         "workbook_decision_preferences should be a list of decisions with decision_id, template_bucket, include, proposed_values, "
         "evidence, confidence, and review_required. Include section and workbook_row when known. "
+        "Critical calculation rule: if include is true, proposed_values must provide the row's required calculation inputs from "
+        "estimator_context.workbook_decision_menu, or cite a specific historical/template value that supplies them. "
+        "Do not check a row based only on relationship/history/product evidence when quantity, area, rate, yield, or unit price is missing. "
+        "In that case set include false, review_required true, and explain which calculation fields are needed. "
         "Use proposed_values for editable workbook fields such as basis_sqft, thickness_inches, gal_per_100_sqft, unit_price, "
         "estimated_units, linear_ft, days, hours_per_day, people_count, trip_count, crew_size, daily_rate, hourly_rate, "
         "total_hours, editable_total_hours, and formula_mode. "
+        "For seam/detail quantity rows such as roofing seams_misc row 47 or penetrations row 49, include true requires linear_ft, "
+        "estimated_units, units, or amount. If you only know that seams/penetrations exist, leave the quantity row unchecked and "
+        "put the issue in review_required/warnings while still including priced sealant/fabric/labor rows when their basis is available. "
         "For insulation jobs, include Loading and Traveling as normal checked logistics expense decisions unless evidence says otherwise; "
         "for Loading row 95 and Traveling row 97 do not use days, crew_size, daily_rate, hourly_rate, or total_hours; "
         "use only hours_per_day, people_count, trip_count, and unit_price because the workbook formula is hours x people x rate x trips. "
