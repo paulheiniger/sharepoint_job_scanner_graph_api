@@ -331,6 +331,22 @@ def update_estimator_memory_status(
     return count
 
 
+def delete_estimator_memory(engine: Engine, memory_ids: list[str]) -> int:
+    ensure_estimator_memory_table(engine)
+    ids = [str(memory_id) for memory_id in memory_ids if str(memory_id or "").strip()]
+    if not ids:
+        return 0
+    with engine.begin() as connection:
+        count = 0
+        for memory_id in ids:
+            result = connection.execute(
+                text("DELETE FROM estimator_memory WHERE memory_id = :memory_id"),
+                {"memory_id": memory_id},
+            )
+            count += int(result.rowcount or 0)
+    return count
+
+
 def estimator_memory_from_rows(rows: list[dict[str, Any]] | pd.DataFrame | None) -> pd.DataFrame:
     if isinstance(rows, pd.DataFrame):
         frame = rows.copy()
@@ -379,9 +395,11 @@ def relevant_memory_rows(
         if not (bucket_match or keyword_match or generic_template_rule):
             continue
         priority_rank = {"high": 0, "medium": 1, "low": 2}.get(normalize_memory_token(row.get("priority")), 3)
+        source_type = normalize_memory_token(row.get("source_type"))
+        source_rank = 0 if source_type in {"reference_answer_key_cue", "reviewed_answer_key_cue"} else 1
         specificity = 0 if bucket_match else 1 if keyword_match else 2
         updated_at = str(row.get("updated_at") or row.get("created_at") or "")
-        ranked.append(((priority_rank, specificity, 0 if row_template else 1, updated_at), row))
+        ranked.append(((priority_rank, source_rank, specificity, 0 if row_template else 1, updated_at), row))
     ranked.sort(key=lambda item: item[0])
     out: list[dict[str, Any]] = []
     for _, row in ranked[: max(0, int(limit or DEFAULT_MEMORY_LIMIT))]:

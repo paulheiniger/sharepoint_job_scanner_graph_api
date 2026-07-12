@@ -1778,13 +1778,67 @@ def test_reference_template_memory_capture_auto_approves_explicit_learning(monke
     assert not app.st.session_state.get("estimator_memory_pending_count")
 
 
+def test_reference_template_memory_capture_prefers_cue_memory_by_default(monkeypatch) -> None:
+    app = importlib.import_module("dashboard.app")
+    cue_calls = []
+    row_calls = []
+
+    def fake_save_cue(engine, session_id, decision_rows, *, template_type="", scope_context=None):
+        cue_calls.append({"session_id": session_id, "template_type": template_type, "scope_context": scope_context})
+        return ["cue-memory-1"]
+
+    def fake_save_row(engine, session_id, decision_rows, *, template_type="", scope_context=None):
+        row_calls.append({"session_id": session_id, "template_type": template_type, "scope_context": scope_context})
+        return ["row-memory-1"]
+
+    def fake_capture(action, *args, **kwargs):
+        return action(None, *args, **kwargs)
+
+    monkeypatch.setattr(
+        app,
+        "estimator_sessions",
+        SimpleNamespace(
+            save_cue_memory_candidates_from_reference_template=fake_save_cue,
+            save_memory_candidates_from_reference_template=fake_save_row,
+        ),
+    )
+    monkeypatch.setattr(app, "capture_estimator_session_event", fake_capture)
+    monkeypatch.delenv("ESTIMATOR_SAVE_ROW_REFERENCE_MEMORIES", raising=False)
+    app.st.session_state.pop("estimator_memory_pending_count", None)
+
+    app.capture_reference_template_memory_candidates(
+        "session-1",
+        {
+            "scope_overrides": {"template_type": "roofing", "raw_input_notes": "roof coating"},
+            "workbook_decision_preferences": [
+                {
+                    "source": "reference_estimate_answer_key",
+                    "decision_id": "roofing_material_coating_row_26",
+                    "template_bucket": "coating",
+                    "include": True,
+                    "proposed_values": {"unit_price": 32.0},
+                }
+            ],
+        },
+        template_type="roofing",
+    )
+
+    assert len(cue_calls) == 1
+    assert row_calls == []
+    assert app.st.session_state["estimator_memory_pending_count"] == 1
+
+
 def test_estimator_assistant_exposes_memory_review_and_persistent_chat_state() -> None:
     app = importlib.import_module("dashboard.app")
     source = inspect.getsource(app.estimator_prototype_page)
     chat_source = inspect.getsource(app.render_estimator_chat_draft_panel)
+    memory_admin_source = inspect.getsource(app.render_estimator_memory_admin)
 
     assert "Estimator Memory Review" in source
     assert "render_estimator_memory_admin()" in source
+    assert "Approve All Visible Pending" in memory_admin_source
+    assert "Delete All Visible Pending" in memory_admin_source
+    assert "Disable All Visible Approved" in memory_admin_source
     assert "estimator_chat_history_active" in chat_source
     assert "estimator_chat_result_active" in chat_source
     assert "load_estimator_chat_session(chat_key)" in chat_source

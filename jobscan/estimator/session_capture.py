@@ -692,6 +692,176 @@ def estimator_memory_candidates_from_reference_template(
     return candidates
 
 
+REFERENCE_CUE_GROUPS: dict[str, dict[str, Any]] = {
+    "roofing_coating_restoration": {
+        "template_type": "roofing",
+        "template_bucket": "coating_restoration",
+        "cue_terms": ["coating", "restoration", "silicone", "acrylic", "warranty", "top coat", "primer"],
+        "buckets": {"coating", "primer", "granules", "warranty"},
+        "label": "roof coating/restoration path",
+    },
+    "roofing_detail_repairs": {
+        "template_type": "roofing",
+        "template_bucket": "detail_repairs",
+        "cue_terms": ["seams", "fasteners", "penetrations", "curbs", "flashing", "ponding", "caulk", "repair"],
+        "buckets": {"caulk_detail", "caulk_sealant", "fabric", "fasteners", "plates", "seams_misc", "drains", "hvac_units"},
+        "label": "roof detail and repair work",
+    },
+    "roofing_foam_repair": {
+        "template_type": "roofing",
+        "template_bucket": "foam_repair",
+        "cue_terms": ["foam", "blister", "saturated", "tear out", "board", "wet", "repair"],
+        "buckets": {"foam", "roofing_foam", "board", "iso_board", "membrane", "dumpster", "disposal"},
+        "label": "roof foam/board repair",
+    },
+    "roofing_labor_plan": {
+        "template_type": "roofing",
+        "template_bucket": "labor_plan",
+        "cue_terms": ["labor", "crew", "prep", "prime", "caulk", "top coat", "cleanup", "tear out"],
+        "buckets": {
+            "labor_setup",
+            "labor_base",
+            "labor_prime",
+            "labor_caulk",
+            "labor_fasteners",
+            "labor_topcoat",
+            "labor_misc",
+            "labor_cleanup",
+        },
+        "bucket_prefixes": ["labor_"],
+        "label": "roofing labor plan",
+    },
+    "roofing_logistics": {
+        "template_type": "roofing",
+        "template_bucket": "logistics",
+        "cue_terms": ["travel", "loading", "generator", "miles", "lodging", "truck", "sales", "inspection"],
+        "buckets": {"generator", "truck_expense", "sales_inspection", "sales_trips", "labor_loading", "labor_traveling", "meals_lodging"},
+        "label": "roofing logistics and trip costs",
+    },
+    "insulation_foam_scope": {
+        "template_type": "insulation",
+        "template_bucket": "foam_scope",
+        "cue_terms": ["spray foam", "open cell", "closed cell", "r-value", "metal building", "pole barn", "ceiling", "walls"],
+        "buckets": {"foam", "wall_foam", "ceiling_foam", "thermal_barrier", "labor_foam", "labor_mask"},
+        "label": "insulation foam scope",
+    },
+    "insulation_logistics": {
+        "template_type": "insulation",
+        "template_bucket": "logistics",
+        "cue_terms": ["travel", "loading", "generator", "miles", "lodging", "truck", "sales", "inspection"],
+        "buckets": {"generator", "truck_expense", "sales_inspection", "labor_loading", "labor_traveling", "meals_lodging"},
+        "label": "insulation logistics and support costs",
+    },
+}
+
+
+def estimator_cue_memory_candidates_from_reference_template(
+    decision_rows: list[dict[str, Any]],
+    *,
+    session_id: str = "",
+    template_type: str = "",
+    scope_context: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    scope_memory_context = _reference_scope_memory_context(scope_context or {})
+    scope_text = " ".join(str(value or "") for value in (scope_context or {}).values()).lower()
+    resolved_template_filter = normalize_memory_token(template_type)
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in decision_rows or []:
+        if not isinstance(row, dict):
+            continue
+        if normalize_memory_token(row.get("source")) not in {"reference_template_summary", "reference_estimate_answer_key"}:
+            continue
+        if row.get("include") is not True:
+            continue
+        row_template_type = _memory_template_type_from_edit(row, template_type)
+        if resolved_template_filter and row_template_type and row_template_type != resolved_template_filter:
+            continue
+        bucket = normalize_memory_token(row.get("template_bucket"))
+        if not bucket:
+            continue
+        for group_id, group in REFERENCE_CUE_GROUPS.items():
+            if group.get("template_type") != row_template_type:
+                continue
+            group_buckets = set(group.get("buckets") or set())
+            group_prefixes = tuple(str(value) for value in group.get("bucket_prefixes") or [])
+            if bucket in group_buckets or any(bucket.startswith(prefix) for prefix in group_prefixes):
+                grouped.setdefault(group_id, []).append(row)
+    candidates: list[dict[str, Any]] = []
+    for group_id, rows in grouped.items():
+        group = REFERENCE_CUE_GROUPS[group_id]
+        cue_terms = [term for term in group.get("cue_terms", []) if term in scope_text]
+        if not cue_terms:
+            cue_terms = [str(term) for term in group.get("cue_terms", [])[:4]]
+        line_items: list[str] = []
+        source_rows: list[str] = []
+        decision_ids: list[str] = []
+        value_snippets: list[str] = []
+        for row in rows:
+            evidence = row.get("evidence") if isinstance(row.get("evidence"), list) else []
+            source_evidence = evidence[0] if evidence and isinstance(evidence[0], dict) else {}
+            line_item = str(source_evidence.get("line_item") or row.get("label") or row.get("decision_id") or "").strip()
+            if line_item and line_item not in line_items:
+                line_items.append(line_item)
+            source_row = str(source_evidence.get("source_row") or row.get("workbook_row") or "").strip()
+            if source_row and source_row not in source_rows:
+                source_rows.append(source_row)
+            decision_id = normalize_memory_token(row.get("decision_id"))
+            if decision_id and decision_id not in decision_ids:
+                decision_ids.append(decision_id)
+            values = _reference_memory_values(row.get("proposed_values") or {})
+            if values and len(value_snippets) < 8:
+                value_snippets.append(f"{line_item or decision_id}: " + ", ".join(f"{key}={_memory_value_text(value)}" for key, value in values.items()))
+        if not line_items:
+            continue
+        label = str(group.get("label") or group_id.replace("_", " "))
+        item_text = ", ".join(line_items[:10])
+        cue_text = ", ".join(cue_terms[:8])
+        value_text = "; ".join(value_snippets[:5])
+        guidance = (
+            f"When field notes point to {label}"
+            f"{f' ({cue_text})' if cue_text else ''}, similar reviewed estimates included: {item_text}. "
+        )
+        if value_text:
+            guidance += f"Typical answer-key values from the reviewed example: {value_text}. "
+        guidance += "Use this as cue-linked historical evidence, then apply current job quantities, pricing, and workbook formulas."
+        signature_payload = {
+            "session_id": session_id,
+            "template_type": group.get("template_type"),
+            "group_id": group_id,
+            "decision_ids": sorted(decision_ids),
+            "source_rows": sorted(source_rows),
+        }
+        signature = json.dumps(signature_payload, sort_keys=True, default=str)
+        applies_when = {
+            "source_session_id": session_id,
+            "source_type": "reference_answer_key_cue",
+            "cue_group": group_id,
+            "cue_terms": cue_terms,
+            "keywords": sorted(set((scope_memory_context.get("keywords") or []) + cue_terms))[:20],
+            "line_items": line_items[:20],
+            "source_rows": source_rows[:20],
+            "decision_ids": decision_ids[:40],
+            **scope_memory_context,
+        }
+        candidates.append(
+            {
+                "memory_id": str(uuid5(NAMESPACE_URL, f"spraytec-reference-answer-key-cue|{signature}")),
+                "guidance": guidance,
+                "template_type": str(group.get("template_type") or ""),
+                "decision_id": group_id,
+                "template_bucket": str(group.get("template_bucket") or ""),
+                "product_or_system": label,
+                "applies_when": applies_when,
+                "rationale": "Grouped cue memory generated from a reviewed answer key and its field-note cues.",
+                "source_type": "reference_answer_key_cue",
+                "source_session_id": session_id or None,
+                "status": "pending",
+                "priority": "high",
+            }
+        )
+    return candidates
+
+
 def _reference_memory_values(values: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(values, dict):
         return {}
@@ -728,6 +898,55 @@ def save_memory_candidates_from_reference_template(
                 or ""
             )
     candidates = estimator_memory_candidates_from_reference_template(
+        decision_rows,
+        session_id=session_id,
+        template_type=resolved_template_type,
+        scope_context=scope_context,
+    )
+    memory_ids: list[str] = []
+    for candidate in candidates:
+        memory_ids.append(
+            upsert_estimator_memory(
+                engine,
+                memory_id=candidate["memory_id"],
+                guidance=candidate["guidance"],
+                template_type=candidate["template_type"],
+                decision_id=candidate["decision_id"],
+                template_bucket=candidate["template_bucket"],
+                product_or_system=candidate["product_or_system"],
+                applies_when=candidate["applies_when"],
+                rationale=candidate["rationale"],
+                source_type=candidate["source_type"],
+                source_session_id=candidate["source_session_id"],
+                status=candidate["status"],
+                priority=candidate["priority"],
+            )
+        )
+    return memory_ids
+
+
+def save_cue_memory_candidates_from_reference_template(
+    engine: Engine,
+    session_id: str,
+    decision_rows: list[dict[str, Any]],
+    *,
+    template_type: str = "",
+    scope_context: dict[str, Any] | None = None,
+) -> list[str]:
+    if not decision_rows:
+        return []
+    ensure_estimator_session_tables(engine)
+    resolved_template_type = template_type
+    if not resolved_template_type:
+        with engine.connect() as connection:
+            resolved_template_type = str(
+                connection.execute(
+                    text("SELECT template_type FROM estimator_sessions WHERE session_id = :session_id"),
+                    {"session_id": session_id},
+                ).scalar_one_or_none()
+                or ""
+            )
+    candidates = estimator_cue_memory_candidates_from_reference_template(
         decision_rows,
         session_id=session_id,
         template_type=resolved_template_type,

@@ -8,6 +8,7 @@ from sqlalchemy import create_engine, text
 from jobscan.estimator.session_capture import (
     create_estimator_session,
     ensure_estimator_session_tables,
+    estimator_cue_memory_candidates_from_reference_template,
     estimator_memory_candidates_from_edits,
     estimator_memory_candidates_from_reference_template,
     export_estimator_session_package,
@@ -18,6 +19,7 @@ from jobscan.estimator.session_capture import (
     save_decision_edits,
     save_decision_proposal,
     save_final_decisions,
+    save_cue_memory_candidates_from_reference_template,
     save_memory_candidates_from_reference_template,
     save_memory_candidates_from_edits,
     save_scope_interpretation,
@@ -343,6 +345,77 @@ def test_reference_template_summary_decisions_create_pending_memory_candidates()
     approved = approved_memory_frame(engine)
     assert len(approved) == 1
     assert approved.iloc[0]["source_type"] == "reference_template_summary"
+
+
+def test_reference_template_cue_memory_groups_answer_key_rows() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    ensure_estimator_session_tables(engine)
+    session_id = create_estimator_session(engine, raw_input_notes="Living Waters roof notes.", division="roofing")
+    decisions = [
+        {
+            "source": "reference_estimate_answer_key",
+            "section": "roofing_material_template_decisions",
+            "decision_id": "roofing_material_coating_row_26",
+            "template_bucket": "coating",
+            "workbook_row": "26",
+            "include": True,
+            "proposed_values": {"basis_sqft": 9600, "gal_per_100_sqft": 1.5, "unit_price": 32.0},
+            "evidence": [{"source_row": "26", "line_item": "Gaco Silicone"}],
+        },
+        {
+            "source": "reference_estimate_answer_key",
+            "section": "roofing_material_template_decisions",
+            "decision_id": "roofing_material_primer_row_39",
+            "template_bucket": "primer",
+            "workbook_row": "39",
+            "include": True,
+            "proposed_values": {"basis_sqft": 9600, "estimated_units": 38.4, "unit_price": 33.0},
+            "evidence": [{"source_row": "39", "line_item": "Gaco E-5320 Primer"}],
+        },
+        {
+            "source": "reference_estimate_answer_key",
+            "section": "roofing_labor_template_decisions",
+            "decision_id": "roofing_labor_topcoat_row_124",
+            "template_bucket": "labor_topcoat",
+            "workbook_row": "124",
+            "include": True,
+            "proposed_values": {"days": 1.0, "crew_size": 5, "daily_rate": 1835.66},
+            "evidence": [{"source_row": "124", "line_item": "Top Coat"}],
+        },
+    ]
+
+    candidates = estimator_cue_memory_candidates_from_reference_template(
+        decisions,
+        session_id=session_id,
+        template_type="roofing",
+        scope_context={
+            "raw_input_notes": "Metal roof coating restoration with primer, seams, and top coat.",
+            "substrate": "metal",
+            "coating_type": "silicone",
+        },
+    )
+
+    assert {candidate["template_bucket"] for candidate in candidates} >= {"coating_restoration", "labor_plan"}
+    coating = next(candidate for candidate in candidates if candidate["template_bucket"] == "coating_restoration")
+    assert coating["source_type"] == "reference_answer_key_cue"
+    assert "Gaco Silicone" in coating["guidance"]
+    assert "Gaco E-5320 Primer" in coating["guidance"]
+    assert "coating" in coating["applies_when"]["keywords"]
+    assert "Grouped cue memory" in coating["rationale"]
+
+    memory_ids = save_cue_memory_candidates_from_reference_template(
+        engine,
+        session_id,
+        decisions,
+        scope_context={
+            "raw_input_notes": "Metal roof coating restoration with primer, seams, and top coat.",
+            "substrate": "metal",
+            "coating_type": "silicone",
+        },
+    )
+    assert len(memory_ids) == len(candidates)
+    pending = estimator_memory_frame(engine, status="pending")
+    assert set(pending["source_type"]) == {"reference_answer_key_cue"}
 
 
 def test_estimator_session_lifecycle_and_exports(tmp_path) -> None:

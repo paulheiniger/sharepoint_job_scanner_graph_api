@@ -57,7 +57,7 @@ except ImportError:
 from jobscan.estimator.schemas import EstimatorData
 from jobscan.estimator.evidence_export import write_estimator_evidence_export
 from jobscan.estimator import session_capture as estimator_sessions
-from jobscan.estimator.estimator_memory import estimator_memory_frame, update_estimator_memory_status
+from jobscan.estimator.estimator_memory import delete_estimator_memory, estimator_memory_frame, update_estimator_memory_status
 from jobscan.estimator.workbench import (
     append_edit_history,
     apply_historical_filter_update,
@@ -1026,6 +1026,11 @@ def explicit_learning_memory_auto_approval_enabled() -> bool:
     return value not in {"0", "false", "no", "off"}
 
 
+def reference_template_row_memory_enabled() -> bool:
+    value = str(os.getenv("ESTIMATOR_SAVE_ROW_REFERENCE_MEMORIES", "0") or "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
 def estimator_chat_learning_mode(chat_result: dict[str, Any] | None) -> bool:
     if not isinstance(chat_result, dict):
         return False
@@ -1046,17 +1051,33 @@ def capture_reference_template_memory_candidates(
     decision_rows = chat_result.get("workbook_decision_preferences")
     if not isinstance(decision_rows, list) or not decision_rows:
         return
-    save_reference_memory = getattr(estimator_sessions, "save_memory_candidates_from_reference_template", None)
-    if save_reference_memory is None:
-        logger.warning("Reference-template memory capture skipped; session_capture helper is unavailable.")
+    save_cue_memory = getattr(estimator_sessions, "save_cue_memory_candidates_from_reference_template", None)
+    save_row_memory = getattr(estimator_sessions, "save_memory_candidates_from_reference_template", None)
+    if save_cue_memory is None and save_row_memory is None:
+        logger.warning("Reference-template memory capture skipped; session_capture helpers are unavailable.")
         return
-    memory_ids = capture_estimator_session_event(
-        save_reference_memory,
-        session_id,
-        decision_rows,
-        template_type=template_type,
-        scope_context=chat_result.get("scope_overrides") or {},
-    )
+    memory_ids: list[str] = []
+    scope_context = chat_result.get("scope_overrides") or {}
+    if save_cue_memory is not None:
+        cue_memory_ids = capture_estimator_session_event(
+            save_cue_memory,
+            session_id,
+            decision_rows,
+            template_type=template_type,
+            scope_context=scope_context,
+        )
+        if cue_memory_ids:
+            memory_ids.extend(cue_memory_ids)
+    if (reference_template_row_memory_enabled() or save_cue_memory is None) and save_row_memory is not None:
+        row_memory_ids = capture_estimator_session_event(
+            save_row_memory,
+            session_id,
+            decision_rows,
+            template_type=template_type,
+            scope_context=scope_context,
+        )
+        if row_memory_ids:
+            memory_ids.extend(row_memory_ids)
     if memory_ids:
         auto_approve = estimator_chat_learning_mode(chat_result) and explicit_learning_memory_auto_approval_enabled()
         if auto_approve:
@@ -13450,25 +13471,62 @@ def raw_tables_page() -> None:
 
 def render_estimator_memory_admin() -> None:
     st.subheader("Estimator Memory")
-    st.caption("Pending rows are generated from estimator edits. Only approved memory is exposed back to the Estimating Assistant chat.")
+    st.caption("Approved memory is exposed back to the Estimating Assistant chat. Answer-key learning is grouped into cue memories by default.")
     try:
-        pending = estimator_memory_frame(get_engine(), status="pending", limit=200)
-        approved = estimator_memory_frame(get_engine(), status="approved", limit=50)
+        engine = get_engine()
+        pending = estimator_memory_frame(engine, status="pending", limit=500)
+        approved = estimator_memory_frame(engine, status="approved", limit=200)
     except Exception as exc:
         logger.exception("Estimator memory review load failed")
         st.warning(f"Estimator memory table is unavailable: {safe_exception_text(exc)}")
         return
 
+    def _memory_ids(frame: pd.DataFrame) -> list[str]:
+        if frame.empty or "memory_id" not in frame.columns:
+            return []
+        return [str(value) for value in frame["memory_id"].dropna().astype(str).tolist() if str(value).strip()]
+
+    def _apply_memory_bulk_action(memory_ids: list[str], *, action: str, label: str) -> None:
+        if not memory_ids:
+            st.warning(f"No visible memory rows to {label.lower()}.")
+            return
+        try:
+            if action == "delete":
+                changed_count = delete_estimator_memory(get_engine(), memory_ids)
+            else:
+                changed_count = update_estimator_memory_status(
+                    get_engine(),
+                    memory_ids,
+                    status=action,
+                    approved_by="streamlit_admin",
+                )
+            clear_estimator_data_caches()
+            st.success(f"{label} {changed_count:,} estimator memory item(s).")
+            st.rerun()
+        except Exception as exc:
+            logger.exception("Estimator memory bulk action failed")
+            st.error(f"Could not update estimator memory: {safe_exception_text(exc)}")
+
     st.metric("Pending Memory Candidates", fmt_count(len(pending)))
     if pending.empty:
         st.caption("No pending estimator memory candidates.")
     else:
+        pending_ids = _memory_ids(pending)
+        bulk_cols = st.columns(3)
+        if bulk_cols[0].button("Approve All Visible Pending", key="approve_all_visible_pending_memory"):
+            _apply_memory_bulk_action(pending_ids, action="approved", label="Approved")
+        if bulk_cols[1].button("Disable All Visible Pending", key="disable_all_visible_pending_memory"):
+            _apply_memory_bulk_action(pending_ids, action="disabled", label="Disabled")
+        if bulk_cols[2].button("Delete All Visible Pending", key="delete_all_visible_pending_memory"):
+            _apply_memory_bulk_action(pending_ids, action="delete", label="Deleted")
         review_rows = pending.copy()
         review_rows.insert(0, "approve", False)
         review_rows.insert(1, "disable", False)
+        review_rows.insert(2, "delete", False)
         visible_columns = [
             "approve",
             "disable",
+            "delete",
             "priority",
             "template_type",
             "template_bucket",
@@ -13481,25 +13539,27 @@ def render_estimator_memory_admin() -> None:
         visible_columns = [column for column in visible_columns if column in review_rows.columns]
         edited = st.data_editor(
             review_rows[visible_columns],
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             num_rows="fixed",
             key="estimator_memory_pending_review",
             column_config={
                 "approve": "Approve",
                 "disable": "Disable",
+                "delete": "Delete",
                 "template_type": "Template",
                 "template_bucket": "Bucket",
                 "decision_id": "Decision",
                 "guidance": st.column_config.TextColumn("Guidance", width="large"),
                 "memory_id": st.column_config.TextColumn("Memory ID", width="small"),
             },
-            disabled=[column for column in visible_columns if column not in {"approve", "disable"}],
+            disabled=[column for column in visible_columns if column not in {"approve", "disable", "delete"}],
         )
         if st.button("Apply Estimator Memory Review", key="apply_estimator_memory_review"):
             edited_rows = edited.to_dict(orient="records")
             approve_ids = [str(row.get("memory_id")) for row in edited_rows if row.get("approve")]
-            disable_ids = [str(row.get("memory_id")) for row in edited_rows if row.get("disable") and not row.get("approve")]
+            disable_ids = [str(row.get("memory_id")) for row in edited_rows if row.get("disable") and not row.get("approve") and not row.get("delete")]
+            delete_ids = [str(row.get("memory_id")) for row in edited_rows if row.get("delete") and not row.get("approve")]
             try:
                 approved_count = update_estimator_memory_status(
                     get_engine(),
@@ -13513,8 +13573,11 @@ def render_estimator_memory_admin() -> None:
                     status="disabled",
                     approved_by="streamlit_admin",
                 )
+                deleted_count = delete_estimator_memory(get_engine(), delete_ids)
                 clear_estimator_data_caches()
-                st.success(f"Approved {approved_count:,} and disabled {disabled_count:,} memory candidate(s).")
+                st.success(
+                    f"Approved {approved_count:,}, disabled {disabled_count:,}, and deleted {deleted_count:,} memory candidate(s)."
+                )
                 st.rerun()
             except Exception as exc:
                 logger.exception("Estimator memory review update failed")
@@ -13524,25 +13587,66 @@ def render_estimator_memory_admin() -> None:
         if approved.empty:
             st.caption("No approved estimator memory yet.")
         else:
-            st.dataframe(
-                approved[
-                    [
-                        column
-                        for column in [
-                            "priority",
-                            "template_type",
-                            "template_bucket",
-                            "decision_id",
-                            "guidance",
-                            "source_type",
-                            "updated_at",
-                        ]
-                        if column in approved.columns
-                    ]
-                ],
-                use_container_width=True,
+            approved_ids = _memory_ids(approved)
+            approved_cols = st.columns(2)
+            if approved_cols[0].button("Disable All Visible Approved", key="disable_all_visible_approved_memory"):
+                _apply_memory_bulk_action(approved_ids, action="disabled", label="Disabled")
+            if approved_cols[1].button("Delete All Visible Approved", key="delete_all_visible_approved_memory"):
+                _apply_memory_bulk_action(approved_ids, action="delete", label="Deleted")
+            approved_review_rows = approved.copy()
+            approved_review_rows.insert(0, "disable", False)
+            approved_review_rows.insert(1, "delete", False)
+            approved_columns = [
+                column
+                for column in [
+                    "disable",
+                    "delete",
+                    "priority",
+                    "template_type",
+                    "template_bucket",
+                    "decision_id",
+                    "guidance",
+                    "source_type",
+                    "updated_at",
+                    "memory_id",
+                ]
+                if column in approved_review_rows.columns
+            ]
+            edited_approved = st.data_editor(
+                approved_review_rows[approved_columns],
+                width="stretch",
                 hide_index=True,
+                num_rows="fixed",
+                key="estimator_memory_approved_review",
+                column_config={
+                    "disable": "Disable",
+                    "delete": "Delete",
+                    "template_type": "Template",
+                    "template_bucket": "Bucket",
+                    "decision_id": "Decision",
+                    "guidance": st.column_config.TextColumn("Guidance", width="large"),
+                    "memory_id": st.column_config.TextColumn("Memory ID", width="small"),
+                },
+                disabled=[column for column in approved_columns if column not in {"disable", "delete"}],
             )
+            if st.button("Apply Approved Memory Changes", key="apply_approved_estimator_memory_review"):
+                edited_rows = edited_approved.to_dict(orient="records")
+                disable_ids = [str(row.get("memory_id")) for row in edited_rows if row.get("disable") and not row.get("delete")]
+                delete_ids = [str(row.get("memory_id")) for row in edited_rows if row.get("delete")]
+                try:
+                    disabled_count = update_estimator_memory_status(
+                        get_engine(),
+                        disable_ids,
+                        status="disabled",
+                        approved_by="streamlit_admin",
+                    )
+                    deleted_count = delete_estimator_memory(get_engine(), delete_ids)
+                    clear_estimator_data_caches()
+                    st.success(f"Disabled {disabled_count:,} and deleted {deleted_count:,} approved memory item(s).")
+                    st.rerun()
+                except Exception as exc:
+                    logger.exception("Approved estimator memory update failed")
+                    st.error(f"Could not update approved estimator memory: {safe_exception_text(exc)}")
 
 
 def admin_health_page() -> None:

@@ -5,6 +5,7 @@ from sqlalchemy import create_engine, text
 
 from jobscan.estimator.estimator_memory import (
     approved_memory_frame,
+    delete_estimator_memory,
     ensure_estimator_memory_table,
     estimator_memory_frame,
     estimator_memory_from_rows,
@@ -105,6 +106,22 @@ def test_estimator_memory_status_update_controls_approved_frame() -> None:
     assert approved.iloc[0]["approved_by"] == "tester"
 
 
+def test_estimator_memory_delete_removes_rows() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    memory_id = upsert_estimator_memory(
+        engine,
+        guidance="Temporary memory candidate.",
+        template_type="roofing",
+        template_bucket="coating",
+        status="pending",
+    )
+
+    deleted = delete_estimator_memory(engine, [memory_id])
+
+    assert deleted == 1
+    assert estimator_memory_frame(engine, status="pending").empty
+
+
 def test_estimator_memory_relevance_excludes_wrong_template_and_disabled_rows() -> None:
     memory = estimator_memory_from_rows(
         [
@@ -140,6 +157,39 @@ def test_estimator_memory_relevance_excludes_wrong_template_and_disabled_rows() 
     )
 
     assert [row["guidance"] for row in relevant] == ["Generic insulation memory applies."]
+
+
+def test_estimator_memory_relevance_prioritizes_answer_key_cues() -> None:
+    memory = estimator_memory_from_rows(
+        [
+            {
+                "status": "approved",
+                "priority": "high",
+                "template_type": "roofing",
+                "template_bucket": "coating_restoration",
+                "source_type": "reference_template_summary",
+                "guidance": "Row-level coating memory.",
+            },
+            {
+                "status": "approved",
+                "priority": "high",
+                "template_type": "roofing",
+                "template_bucket": "coating_restoration",
+                "source_type": "reference_answer_key_cue",
+                "guidance": "Cue-level coating restoration memory.",
+            },
+        ]
+    )
+
+    relevant = relevant_memory_rows(
+        memory,
+        scope={"template_type": "roofing", "scope_summary": "silicone coating restoration"},
+        template_type="roofing",
+        decision_buckets=["coating_restoration"],
+        limit=2,
+    )
+
+    assert relevant[0]["guidance"] == "Cue-level coating restoration memory."
 
 
 def test_estimator_memory_from_rows_normalizes_tokens_and_text() -> None:
