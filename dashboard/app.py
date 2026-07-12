@@ -1066,7 +1066,51 @@ def preserve_attached_reference_answer_key_context(
         for key in ("reference_answer_key_mode", "reference_answer_key_label", "reference_answer_key_source_file"):
             if previous_result.get(key) not in (None, "", [], {}) and result_payload.get(key) in (None, "", [], {}):
                 result_payload[key] = previous_result.get(key)
+    result_payload["scope_overrides"] = scope_with_decision_basis_area(
+        result_payload.get("scope_overrides") if isinstance(result_payload.get("scope_overrides"), dict) else {},
+        result_payload.get("workbook_decision_preferences") if isinstance(result_payload.get("workbook_decision_preferences"), list) else [],
+    )
     return result_payload
+
+
+def decision_basis_area_from_preferences(decision_preferences: list[dict[str, Any]] | None) -> float:
+    candidates: list[float] = []
+    preferred_buckets = {"coating", "primer", "foam", "board_stock", "granules", "thermal_barrier_coating"}
+    for preference in decision_preferences or []:
+        if not isinstance(preference, dict):
+            continue
+        bucket = text_value(preference.get("template_bucket")).lower()
+        if bucket and bucket not in preferred_buckets:
+            continue
+        values = preference.get("proposed_values") if isinstance(preference.get("proposed_values"), dict) else {}
+        for key in ("basis_sqft", "area_sqft", "surface_area_sqft", "estimated_sqft", "net_sqft"):
+            area = _surface_review_number(values.get(key))
+            if area and area > 0:
+                candidates.append(float(area))
+                break
+    return max(candidates) if candidates else 0.0
+
+
+def scope_with_decision_basis_area(scope: dict[str, Any], decision_preferences: list[dict[str, Any]] | None) -> dict[str, Any]:
+    resolved_scope = dict(scope or {})
+    existing_area = (
+        _surface_review_number(resolved_scope.get("estimated_sqft"))
+        or _surface_review_number(resolved_scope.get("surface_area_sqft"))
+        or _surface_review_number(resolved_scope.get("net_sqft"))
+        or _surface_review_number(resolved_scope.get("basis_sqft"))
+        or 0.0
+    )
+    if existing_area > 0:
+        return resolved_scope
+    decision_area = decision_basis_area_from_preferences(decision_preferences)
+    if decision_area <= 0:
+        return resolved_scope
+    resolved_scope.setdefault("estimated_sqft", decision_area)
+    resolved_scope.setdefault("surface_area_sqft", decision_area)
+    resolved_scope.setdefault("net_sqft", decision_area)
+    resolved_scope.setdefault("basis_sqft", decision_area)
+    resolved_scope.setdefault("area_source", "workbook_decision_preferences")
+    return resolved_scope
 
 
 def capture_reference_template_memory_candidates(
@@ -11107,6 +11151,10 @@ def estimator_prototype_page() -> None:
         if active_chat_context and isinstance(active_chat_context.get("scope_overrides"), dict)
         else {}
     )
+    estimator_chat_scope_overrides = scope_with_decision_basis_area(
+        estimator_chat_scope_overrides,
+        active_chat_context.get("workbook_decision_preferences") if active_chat_context else [],
+    )
     active_photo_context = (
         active_chat_context.get("photo_context")
         if active_chat_context and isinstance(active_chat_context.get("photo_context"), dict)
@@ -11303,6 +11351,8 @@ def estimator_prototype_page() -> None:
                             "site_address": field_site_address,
                             "city": field_city,
                             "state": field_state,
+                            "estimated_sqft": estimator_chat_scope_overrides.get("estimated_sqft"),
+                            "surface_area_sqft": estimator_chat_scope_overrides.get("surface_area_sqft"),
                             "disable_ai_scope_interpreter": True,
                         },
                         data=field_notes_data,

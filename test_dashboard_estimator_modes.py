@@ -990,6 +990,26 @@ def test_estimator_chat_preserves_attached_answer_key_across_followup_turn() -> 
     assert preserved["reference_answer_key_mode"] == "evaluate"
 
 
+def test_estimator_chat_promotes_decision_basis_area_to_scope() -> None:
+    app = importlib.import_module("dashboard.app")
+    scope = {"template_type": "roofing"}
+    decisions = [
+        {
+            "decision_id": "roofing_coating_system_row_26",
+            "template_bucket": "coating",
+            "include": True,
+            "proposed_values": {"basis_sqft": 9600.0, "gal_per_100_sqft": 1.5},
+        }
+    ]
+
+    promoted = app.scope_with_decision_basis_area(scope, decisions)
+
+    assert promoted["estimated_sqft"] == 9600.0
+    assert promoted["surface_area_sqft"] == 9600.0
+    assert promoted["net_sqft"] == 9600.0
+    assert promoted["area_source"] == "workbook_decision_preferences"
+
+
 def test_ask_spraytec_generated_field_notes_falls_back_to_template_scope_summary() -> None:
     app = importlib.import_module("dashboard.app")
     answer_key = {
