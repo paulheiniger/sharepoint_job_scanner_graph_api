@@ -2261,6 +2261,78 @@ def test_roofing_labor_workbench_preserves_driver_evidence_from_recommendation()
     assert draft_base["labor_driver_summary"].startswith("200 gal")
 
 
+def test_roofing_answer_key_labor_rows_118_130_134_apply_to_workbench() -> None:
+    recommendation = roofing_recommendation()
+    recommendation.parsed_fields["estimator_chat"] = {
+        "source": "ai_chat",
+        "confidence": 0.9,
+        "assistant_message": "Apply the attached reference estimate answer key.",
+        "workbook_decision_preferences": [
+            {
+                "section": "roofing_labor_template_decisions",
+                "decision_id": "roofing_labor_prep_row_118",
+                "template_bucket": "labor_prep",
+                "workbook_row": "118",
+                "include": True,
+                "source": "reference_estimate_answer_key",
+                "proposed_values": {
+                    "days": 1.0,
+                    "editable_days": 1.0,
+                    "crew_size": 5,
+                    "crew_people_selection": 5,
+                    "daily_rate": 1667.25,
+                    "total_hours": 50.0,
+                },
+            },
+            {
+                "section": "roofing_labor_template_decisions",
+                "decision_id": "roofing_labor_top_coat_row_130",
+                "template_bucket": "labor_top_coat",
+                "workbook_row": "130",
+                "include": True,
+                "source": "reference_estimate_answer_key",
+                "proposed_values": {
+                    "days": 1.4,
+                    "editable_days": 1.4,
+                    "crew_size": 5,
+                    "crew_people_selection": 5,
+                    "daily_rate": 1667.25,
+                    "total_hours": 70.0,
+                },
+            },
+            {
+                "section": "roofing_labor_template_decisions",
+                "decision_id": "roofing_labor_misc_row_134",
+                "template_bucket": "labor_misc",
+                "workbook_row": "134",
+                "include": True,
+                "source": "reference_estimate_answer_key",
+                "proposed_values": {
+                    "days": 0.65,
+                    "editable_days": 0.65,
+                    "crew_size": 5,
+                    "crew_people_selection": 5,
+                    "daily_rate": 1667.25,
+                    "total_hours": 32.5,
+                },
+            },
+        ],
+    }
+
+    workbench = recalculate_workbench_tables(build_estimating_workbench(recommendation, EstimatorData()))
+    labor = {row["template_bucket"]: row for row in workbench["roofing_labor_template_decisions"]}
+
+    assert labor["labor_prime"]["include"] is True
+    assert labor["labor_prime"]["workbook_row"] == "118"
+    assert labor["labor_prime"]["estimated_cost"] == 1667.25
+    assert labor["labor_top_coat_granules"]["include"] is True
+    assert labor["labor_top_coat_granules"]["workbook_row"] == "130"
+    assert labor["labor_top_coat_granules"]["estimated_cost"] == 2334.15
+    assert labor["labor_misc"]["include"] is True
+    assert labor["labor_misc"]["workbook_row"] == "134"
+    assert labor["labor_misc"]["estimated_cost"] == 1083.71
+
+
 def test_roofing_coating_uses_formula_compatible_historical_unit_price() -> None:
     recommendation = EstimateRecommendation(
         parsed_fields={

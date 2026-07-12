@@ -726,6 +726,7 @@ def answer_key_to_workbook_decision_preferences(answer_key: dict[str, Any]) -> l
             "template_bucket": decision.get("template_bucket"),
             "workbook_row": str(decision.get("normalized_workbook_row") or decision.get("workbook_row") or ""),
         }
+        target = _normalize_answer_key_target(template_type, target, source_row=decision.get("source_row"))
         if not target["section"] or not target["decision_id"]:
             continue
         outputs = dict(decision.get("calculated_outputs") or {})
@@ -754,6 +755,52 @@ def answer_key_to_workbook_decision_preferences(answer_key: dict[str, Any]) -> l
             }
         )
     return _merge_duplicate_answer_key_preferences(preferences)
+
+
+def _normalize_answer_key_target(
+    template_type: str,
+    target: dict[str, Any],
+    *,
+    source_row: Any = None,
+) -> dict[str, str]:
+    cleaned = {key: _text(value) for key, value in target.items()}
+    if _norm(template_type) != "roofing":
+        return cleaned
+    roofing_labor_by_row = {
+        "116": ("roofing_labor_prep_row_116", "labor_prep"),
+        "118": ("roofing_labor_prime_row_118", "labor_prime"),
+        "120": ("roofing_labor_seam_sealer_row_120", "labor_seam_sealer"),
+        "122": ("roofing_labor_base_row_122", "labor_base"),
+        "124": ("roofing_labor_top_coat_row_124", "labor_top_coat"),
+        "126": ("roofing_labor_caulk_row_126", "labor_caulk"),
+        "128": ("roofing_labor_details_row_128", "labor_details"),
+        "130": ("roofing_labor_top_coat_granules_row_130", "labor_top_coat_granules"),
+        "132": ("roofing_labor_cleanup_row_132", "labor_cleanup"),
+        "134": ("roofing_labor_misc_row_134", "labor_misc"),
+    }
+    source_row_number = _text(source_row)
+    if source_row_number.endswith(".0"):
+        source_row_number = source_row_number[:-2]
+    workbook_row_number = _text(cleaned.get("workbook_row"))
+    if workbook_row_number.endswith(".0"):
+        workbook_row_number = workbook_row_number[:-2]
+    row_number = (
+        source_row_number
+        if source_row_number in roofing_labor_by_row and workbook_row_number not in roofing_labor_by_row
+        else workbook_row_number
+    )
+    if row_number.endswith(".0"):
+        row_number = row_number[:-2]
+    if row_number not in roofing_labor_by_row:
+        return cleaned
+    decision_id, bucket = roofing_labor_by_row[row_number]
+    return {
+        **cleaned,
+        "section": "roofing_labor_template_decisions",
+        "decision_id": decision_id,
+        "template_bucket": bucket,
+        "workbook_row": row_number,
+    }
 
 
 def _extract_json_candidates(text: str) -> list[dict[str, Any]]:

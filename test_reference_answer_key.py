@@ -621,6 +621,75 @@ def test_answer_key_preferences_merge_duplicate_canonical_labor_targets() -> Non
     assert len(preference["evidence"]) == 2
 
 
+def test_answer_key_preferences_normalize_roofing_labor_by_workbook_row() -> None:
+    answer_key = {
+        "schema_version": SCHEMA_VERSION,
+        "template_type": "roofing",
+        "source_workbook": {"document_id": "D7", "job_id": "J7", "file_name": "Estimate FINAL- Recoat 15 YR.xlsx"},
+        "decisions": [
+            {
+                "source_row": "116",
+                "workbook_row": "136",
+                "section": "roofing_logistics_expense_template_decisions",
+                "decision_id": "roofing_labor_loading_row_136",
+                "template_bucket": "labor_loading",
+                "line_item": "Set Up/Safety",
+                "include": True,
+                "inputs": {"days": 0.15, "crew_size": 5, "daily_rate": 1667.25, "total_hours": 7.5},
+                "calculated_outputs": {"estimated_cost": 250.09},
+                "evidence": {"source_row": "116", "line_item": "Set Up/Safety"},
+            },
+            {
+                "source_row": "118",
+                "workbook_row": "118",
+                "section": "roofing_labor_template_decisions",
+                "decision_id": "roofing_labor_prep_row_118",
+                "template_bucket": "labor_prep",
+                "line_item": "PW/Prep",
+                "include": True,
+                "inputs": {"days": 1.0, "crew_size": 5, "daily_rate": 1667.25, "total_hours": 50.0},
+                "calculated_outputs": {"estimated_cost": 1667.25},
+                "evidence": {"source_row": "118", "line_item": "PW/Prep"},
+            },
+            {
+                "source_row": "130",
+                "workbook_row": "130",
+                "section": "roofing_labor_template_decisions",
+                "decision_id": "roofing_labor_top_coat_row_130",
+                "template_bucket": "labor_top_coat",
+                "line_item": "Top Coat/Gran",
+                "include": True,
+                "inputs": {"days": 1.4, "crew_size": 5, "daily_rate": 1667.25, "total_hours": 70.0},
+                "calculated_outputs": {"estimated_cost": 2334.15},
+                "evidence": {"source_row": "130", "line_item": "Top Coat/Gran"},
+            },
+            {
+                "source_row": "134",
+                "workbook_row": "134",
+                "section": "roofing_labor_template_decisions",
+                "decision_id": "roofing_labor_misc_row_134",
+                "template_bucket": "labor_misc",
+                "line_item": "Misc.",
+                "include": True,
+                "inputs": {"days": 0.65, "crew_size": 5, "daily_rate": 1667.25, "total_hours": 32.5},
+                "calculated_outputs": {"estimated_cost": 1083.71},
+                "evidence": {"source_row": "134", "line_item": "Misc."},
+            },
+        ],
+    }
+
+    preferences = answer_key_to_workbook_decision_preferences(answer_key)
+    by_id = {row["decision_id"]: row for row in preferences}
+
+    assert by_id["roofing_labor_prep_row_116"]["template_bucket"] == "labor_prep"
+    assert by_id["roofing_labor_prep_row_116"]["proposed_values"]["days"] == 0.15
+    assert by_id["roofing_labor_prime_row_118"]["template_bucket"] == "labor_prime"
+    assert by_id["roofing_labor_prime_row_118"]["proposed_values"]["days"] == 1.0
+    assert by_id["roofing_labor_top_coat_granules_row_130"]["template_bucket"] == "labor_top_coat_granules"
+    assert by_id["roofing_labor_top_coat_granules_row_130"]["proposed_values"]["total_hours"] == 70.0
+    assert by_id["roofing_labor_misc_row_134"]["proposed_values"]["days"] == 0.65
+
+
 def test_reference_answer_key_maps_insulation_support_rows_from_history() -> None:
     data = EstimatorData(
         template_rows=pd.DataFrame(

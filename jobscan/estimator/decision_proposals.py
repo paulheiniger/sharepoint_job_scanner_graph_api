@@ -320,7 +320,9 @@ ROOFING_REFERENCE_ALLOWED_ROWS: dict[str, set[str]] = {
     "labor_caulk": {"126"},
     "labor_details": {"128"},
     "labor_top_coat": {"130"},
+    "labor_top_coat_granules": {"130"},
     "labor_cleanup": {"132"},
+    "labor_misc": {"134"},
     "labor_loading": {"137", "136"},
     "labor_traveling": {"138"},
     "labor_infrared_scan": {"141"},
@@ -1031,6 +1033,19 @@ def _chat_target_for_preference(template_type: str, item: dict[str, Any]) -> dic
             "template_bucket": bucket,
             "workbook_row": resolved_row,
         }
+    if template_type == "roofing":
+        normalized_labor = _roofing_labor_target_for_row(workbook_row)
+        if normalized_labor and (
+            str(item.get("source") or "") in {"reference_template_summary", "reference_estimate_answer_key"}
+            or bucket.startswith("labor_")
+        ):
+            normalized_decision_id, normalized_bucket, normalized_row = normalized_labor
+            return {
+                "section": "roofing_labor_template_decisions",
+                "decision_id": normalized_decision_id,
+                "template_bucket": normalized_bucket,
+                "workbook_row": normalized_row,
+            }
     if template_type == "insulation":
         if bucket == "foam" or decision_id == "insulation_foam_template_selector":
             return {
@@ -1361,7 +1376,9 @@ def _chat_target_for_preference(template_type: str, item: dict[str, Any]) -> dic
                 "labor_top_coat": "124",
                 "labor_caulk": "126",
                 "labor_details": "128",
+                "labor_top_coat_granules": "130",
                 "labor_cleanup": "132",
+                "labor_misc": "134",
                 "labor_loading": "136",
                 "labor_traveling": "138",
                 "labor_infrared_scan": "141",
@@ -1493,7 +1510,9 @@ def _chat_target_for_preference(template_type: str, item: dict[str, Any]) -> dic
                 "labor_top_coat": "124",
                 "labor_caulk": "126",
                 "labor_details": "128",
+                "labor_top_coat_granules": "130",
                 "labor_cleanup": "132",
+                "labor_misc": "134",
                 "labor_loading": "136",
                 "labor_traveling": "138",
                 "labor_infrared_scan": "141",
@@ -1515,6 +1534,25 @@ def _chat_target_for_preference(template_type: str, item: dict[str, Any]) -> dic
             "workbook_row": workbook_row,
         }
     return None
+
+
+def _roofing_labor_target_for_row(workbook_row: Any) -> tuple[str, str, str] | None:
+    row = str(workbook_row or "").strip()
+    if row.endswith(".0"):
+        row = row[:-2]
+    by_row = {
+        "116": ("roofing_labor_prep_row_116", "labor_prep", "116"),
+        "118": ("roofing_labor_prime_row_118", "labor_prime", "118"),
+        "120": ("roofing_labor_seam_sealer_row_120", "labor_seam_sealer", "120"),
+        "122": ("roofing_labor_base_row_122", "labor_base", "122"),
+        "124": ("roofing_labor_top_coat_row_124", "labor_top_coat", "124"),
+        "126": ("roofing_labor_caulk_row_126", "labor_caulk", "126"),
+        "128": ("roofing_labor_details_row_128", "labor_details", "128"),
+        "130": ("roofing_labor_top_coat_granules_row_130", "labor_top_coat_granules", "130"),
+        "132": ("roofing_labor_cleanup_row_132", "labor_cleanup", "132"),
+        "134": ("roofing_labor_misc_row_134", "labor_misc", "134"),
+    }
+    return by_row.get(row)
 
 
 def _decision_id_row_number(decision_id: Any) -> str:
