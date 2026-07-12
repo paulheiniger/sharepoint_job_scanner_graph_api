@@ -1040,6 +1040,16 @@ def estimator_chat_learning_mode(chat_result: dict[str, Any] | None) -> bool:
     return bool(scope.get("explicit_learning_intent"))
 
 
+def estimator_reference_memory_capture_enabled(chat_result: dict[str, Any] | None) -> bool:
+    if estimator_chat_learning_mode(chat_result):
+        return True
+    if not isinstance(chat_result, dict):
+        return False
+    scope = chat_result.get("scope_overrides") if isinstance(chat_result.get("scope_overrides"), dict) else {}
+    answer_key_mode = str(scope.get("reference_answer_key_mode") or "").strip().lower()
+    return answer_key_mode in {"apply", "teach"}
+
+
 def capture_reference_template_memory_candidates(
     session_id: str,
     chat_result: dict[str, Any] | None,
@@ -11134,7 +11144,7 @@ def estimator_prototype_page() -> None:
                 reference_memory_saved_key = f"estimator_reference_memory_saved_{session_id}"
                 if (
                     active_chat_context
-                    and active_chat_context.get("learning_mode")
+                    and estimator_reference_memory_capture_enabled(active_chat_context)
                     and not st.session_state.get(reference_memory_saved_key)
                 ):
                     capture_reference_template_memory_candidates(

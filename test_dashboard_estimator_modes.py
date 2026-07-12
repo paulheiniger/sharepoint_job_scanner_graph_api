@@ -1828,6 +1828,20 @@ def test_reference_template_memory_capture_prefers_cue_memory_by_default(monkeyp
     assert app.st.session_state["estimator_memory_pending_count"] == 1
 
 
+def test_reference_memory_capture_enabled_for_applied_answer_key_without_learning_mode() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    assert app.estimator_reference_memory_capture_enabled(
+        {"scope_overrides": {"reference_answer_key_mode": "apply"}}
+    )
+    assert not app.estimator_chat_learning_mode(
+        {"scope_overrides": {"reference_answer_key_mode": "apply"}}
+    )
+    assert not app.estimator_reference_memory_capture_enabled(
+        {"scope_overrides": {"reference_answer_key_mode": "evaluate"}}
+    )
+
+
 def test_estimator_assistant_exposes_memory_review_and_persistent_chat_state() -> None:
     app = importlib.import_module("dashboard.app")
     source = inspect.getsource(app.estimator_prototype_page)
