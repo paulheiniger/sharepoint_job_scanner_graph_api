@@ -418,10 +418,10 @@ def _answer_key_decision_priority(
         score += 18
     if inputs:
         score += 10
+    if "labor" in section or bucket.startswith("labor_") or bucket in {"meals_lodging", "infrared_scan"}:
+        score += 18
     if section.endswith("material_template_decisions") or "material" in section:
         score += 8
-    if "labor" in section:
-        score += 6
     if "pricing_markup" in section:
         score += 3
     row_number = _number(decision.get("workbook_row") or decision.get("source_row"), 9999)

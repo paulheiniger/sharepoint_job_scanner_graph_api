@@ -238,6 +238,56 @@ def test_estimator_chat_roofing_preferences_target_workbook_rows_without_row_num
     assert by_bucket["labor_loading"]["proposed_values"]["people_count"] == 4
 
 
+def test_reference_answer_key_proposal_overrides_fallback_labor_values() -> None:
+    workbench = {
+        "scope": {"template_type": "roofing", "division": "Roofing"},
+        "roofing_labor_template_decisions": [
+            {
+                "decision_id": "roofing_labor_prep_row_116",
+                "template_bucket": "labor_prep",
+                "workbook_row": "116",
+                "include": True,
+                "days": 0.5,
+                "crew_size": 4,
+                "daily_rate": 1500,
+                "total_hours": 16,
+                "include_source": "historical_default",
+            }
+        ],
+    }
+    proposal = DecisionProposal(
+        decision_id="roofing_labor_prep_row_116",
+        template_type="roofing",
+        template_bucket="labor_prep",
+        workbook_row="116",
+        section="roofing_labor_template_decisions",
+        include=True,
+        proposed_values={
+            "days": 1.7,
+            "editable_days": 1.7,
+            "crew_size": 5,
+            "daily_rate": 1835.66,
+            "total_hours": 89.25,
+        },
+        confidence=0.9,
+        source="reference_estimate_answer_key",
+    )
+
+    updated = apply_decision_proposals_to_workbench(
+        workbench,
+        [proposal],
+        decision_sections=["roofing_labor_template_decisions"],
+    )
+    labor = updated["roofing_labor_template_decisions"][0]
+
+    assert labor["days"] == 1.7
+    assert labor["editable_days"] == 1.7
+    assert labor["crew_size"] == 5
+    assert labor["daily_rate"] == 1835.66
+    assert labor["total_hours"] == 89.25
+    assert labor["proposal_source"] == "reference_estimate_answer_key"
+
+
 def test_estimator_chat_roofing_shorthand_decision_ids_are_canonicalized() -> None:
     proposals = build_decision_proposals(
         {

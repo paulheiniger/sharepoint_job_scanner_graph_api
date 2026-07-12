@@ -146,6 +146,17 @@ def run_estimator_chat_turn(
     )
     deterministic_baseline.scope_overrides = baseline_scope
     context = estimator_context_summary(data, scope=baseline_scope)
+    matched_answer_key_summary = (
+        _matched_answer_key_reference_summary(data, context, template_type_hint=template_type_hint)
+        if should_apply_reference and not (structured_answer_key.mapped_row_count or reference_summary.mapped_row_count)
+        else ParsedReferenceTemplateSummary()
+    )
+    if matched_answer_key_summary.mapped_row_count:
+        deterministic_baseline = _merge_reference_template_summary(
+            deterministic_baseline,
+            matched_answer_key_summary,
+            template_type_hint=template_type_hint,
+        )
     model_name = model or os.getenv("OPENAI_ESTIMATOR_CHAT_MODEL") or DEFAULT_CHAT_ESTIMATOR_MODEL
     prompt_messages = _chat_prompt_messages(
         message_list,
@@ -169,7 +180,7 @@ def run_estimator_chat_turn(
             return _apply_learning_intent(
                 _attach_context_retrieval_summary(deterministic_baseline, context),
                 learning_intent,
-                reference_summary,
+                _best_learning_reference_summary(reference_summary, structured_answer_key, matched_answer_key_summary),
                 answer_key_mode=answer_key_mode,
             )
         if should_apply_reference:
@@ -183,6 +194,11 @@ def run_estimator_chat_turn(
                 structured_answer_key,
                 template_type_hint=template_type_hint,
             )
+            result = _merge_reference_template_summary(
+                result,
+                matched_answer_key_summary,
+                template_type_hint=template_type_hint,
+            )
         elif structured_answer_key.mapped_row_count or reference_summary.mapped_row_count:
             result.workbook_decision_preferences = []
             result.warnings.append(
@@ -192,14 +208,14 @@ def run_estimator_chat_turn(
         return _apply_learning_intent(
             result,
             learning_intent,
-            reference_summary,
+            _best_learning_reference_summary(reference_summary, structured_answer_key, matched_answer_key_summary),
             answer_key_mode=answer_key_mode,
         )
     deterministic_baseline.warnings.append("OPENAI_API_KEY is not configured; used deterministic estimator-chat fallback.")
     return _apply_learning_intent(
         _attach_context_retrieval_summary(deterministic_baseline, context),
         learning_intent,
-        reference_summary,
+        _best_learning_reference_summary(reference_summary, structured_answer_key, matched_answer_key_summary),
         answer_key_mode=answer_key_mode,
     )
 
@@ -270,6 +286,85 @@ def _attach_context_retrieval_summary(result: EstimatorChatResult, context: dict
         "historical_answer_key_matches": rows,
     }
     return result
+
+
+def _best_learning_reference_summary(
+    *summaries: ParsedReferenceTemplateSummary | None,
+) -> ParsedReferenceTemplateSummary:
+    for summary in summaries:
+        if summary and summary.mapped_row_count:
+            return summary
+    return ParsedReferenceTemplateSummary()
+
+
+def _matched_answer_key_reference_summary(
+    data: EstimatorData | None,
+    context: dict[str, Any],
+    *,
+    template_type_hint: str = "",
+) -> ParsedReferenceTemplateSummary:
+    answer_key_context = context.get("historical_answer_key_examples") if isinstance(context, dict) else {}
+    matched = (
+        answer_key_context.get("matched_answer_keys")
+        if isinstance(answer_key_context, dict) and isinstance(answer_key_context.get("matched_answer_keys"), list)
+        else []
+    )
+    if not matched:
+        return ParsedReferenceTemplateSummary()
+    preferences: list[dict[str, Any]] = []
+    row_count = 0
+    warnings: list[str] = []
+    for example in matched[:1]:
+        if not isinstance(example, dict):
+            continue
+        answer_key = _full_answer_key_for_matched_example(data, example)
+        if not answer_key:
+            answer_key = example.get("reference_answer_key") if isinstance(example.get("reference_answer_key"), dict) else {}
+        if not answer_key:
+            continue
+        row_count += int((answer_key.get("summary") or {}).get("source_row_count") or len(answer_key.get("decisions") or []))
+        preferences.extend(answer_key_to_workbook_decision_preferences(answer_key))
+        label = _clean_string(example.get("job_name") or example.get("customer") or example.get("source_file") or example.get("job_id"))
+        if label:
+            warnings.append(f"Applied matched historical answer key: {label}.")
+    cleaned = _clean_decision_preferences(preferences, template_type=template_type_hint)
+    return ParsedReferenceTemplateSummary(
+        workbook_decision_preferences=cleaned,
+        warnings=warnings,
+        row_count=row_count,
+        mapped_row_count=len(cleaned),
+    )
+
+
+def _full_answer_key_for_matched_example(data: EstimatorData | None, example: dict[str, Any]) -> dict[str, Any]:
+    examples = getattr(data, "template_examples", pd.DataFrame()) if data is not None else pd.DataFrame()
+    if not isinstance(examples, pd.DataFrame) or examples.empty or "answer_key_json" not in examples.columns:
+        return {}
+    frame = examples.fillna("").copy()
+    filters: list[pd.Series] = []
+    for column in ("example_id", "document_id"):
+        value = _clean_string(example.get(column))
+        if value and column in frame.columns:
+            filters.append(frame[column].fillna("").astype(str).eq(value))
+    job_id = _clean_string(example.get("job_id"))
+    source_file = _clean_string(example.get("source_file"))
+    if job_id and source_file and {"job_id", "source_file"}.issubset(frame.columns):
+        filters.append(
+            frame["job_id"].fillna("").astype(str).eq(job_id)
+            & frame["source_file"].fillna("").astype(str).eq(source_file)
+        )
+    if job_id and "job_id" in frame.columns:
+        filters.append(frame["job_id"].fillna("").astype(str).eq(job_id))
+    if source_file and "source_file" in frame.columns:
+        filters.append(frame["source_file"].fillna("").astype(str).eq(source_file))
+    for mask in filters:
+        matched = frame[mask]
+        if matched.empty:
+            continue
+        payload = _json_payload(matched.iloc[0].get("answer_key_json"))
+        if isinstance(payload, dict) and payload.get("decisions"):
+            return payload
+    return {}
 
 
 def detect_reference_answer_key_mode(messages: Iterable[dict[str, Any]]) -> str:
@@ -847,7 +942,7 @@ def _build_estimator_context_summary(data: EstimatorData | None, *, scope: dict[
         data,
         scope=scope,
         limit=5,
-        decisions_per_example=20,
+        decisions_per_example=30,
         decision_menu=decision_menu,
     )
     return summary

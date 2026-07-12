@@ -698,6 +698,104 @@ def test_estimator_chat_context_retrieves_similar_answer_keys_by_scope_packages(
     assert decision_ids.index("roofing_edge_metal_row_82") > 1
 
 
+def test_estimator_chat_apply_matched_answer_key_uses_full_labor_rows() -> None:
+    answer_key = {
+        "schema_version": "reference_estimate_answer_key.v1",
+        "template_type": "roofing",
+        "source_workbook": {"file_name": "Estimate Roofing - Living Waters Church.xlsx"},
+        "decisions": [
+            {
+                "section": "roofing_coating_template_decisions",
+                "decision_id": "roofing_coating_system_row_26",
+                "template_bucket": "coating",
+                "workbook_row": "26",
+                "line_item": "Gaco Silicone",
+                "inputs": {"basis_sqft": 9600, "gal_per_100_sqft": 1.5, "unit_price": 32},
+                "calculated_outputs": {"estimated_cost": 5299.2},
+                "evidence": {"source_row": "26"},
+            },
+            {
+                "section": "roofing_labor_template_decisions",
+                "decision_id": "roofing_labor_prep_row_116",
+                "template_bucket": "labor_prep",
+                "workbook_row": "116",
+                "line_item": "Set-Up / Prep",
+                "inputs": {"days": 1.7, "editable_days": 1.7, "crew_size": 5, "daily_rate": 1835.66, "total_hours": 89.25},
+                "calculated_outputs": {"estimated_cost": 3120.62},
+                "evidence": {"source_row": "116"},
+            },
+            {
+                "section": "roofing_labor_template_decisions",
+                "decision_id": "roofing_labor_prime_row_118",
+                "template_bucket": "labor_prime",
+                "workbook_row": "118",
+                "line_item": "Prime",
+                "inputs": {"days": 1.25, "editable_days": 1.25, "crew_size": 5, "daily_rate": 1835.66, "total_hours": 65.6},
+                "calculated_outputs": {"estimated_cost": 2294.58},
+                "evidence": {"source_row": "118"},
+            },
+        ],
+        "summary": {"decision_count": 3, "unmapped_count": 0, "source_row_count": 125},
+    }
+    data = EstimatorData(
+        template_examples=pd.DataFrame(
+            [
+                {
+                    "example_id": "living-waters-answer-key",
+                    "job_id": "R-LIVING",
+                    "customer": "Living Waters Church",
+                    "job_name": "Living Waters Church Roof",
+                    "source_file": "Estimate Roofing - Living Waters Church.xlsx",
+                    "template_type": "roofing",
+                    "project_class": "roof_restoration",
+                    "substrate": "metal",
+                    "material_system": "Gaco silicone",
+                    "material_packages_json": json.dumps(["coating", "primer", "labor_prep", "labor_prime"]),
+                    "area_sqft": 9600,
+                    "scope_summary": "Metal roof restoration with coating and primer.",
+                    "decision_summary": "coating; prep labor; prime labor",
+                    "answer_key_json": json.dumps(answer_key),
+                }
+            ]
+        )
+    )
+
+    result = run_estimator_chat_turn(
+        [{"role": "user", "content": "Now learn. Apply the answer key for this metal roof coating job."}],
+        data=data,
+        template_type_hint="roofing",
+        existing_scope={
+            "template_type": "roofing",
+            "estimated_sqft": 9600,
+            "substrate": "metal",
+            "raw_input_notes": "Living Waters Church metal roof coating with primer and prep labor.",
+        },
+        provider=lambda messages, model: {
+            "assistant_message": "I applied the matched coating answer key.",
+            "estimator_notes": "Metal roof coating.",
+            "scope_overrides": {"template_type": "roofing", "estimated_sqft": 9600},
+            "workbook_decision_preferences": [
+                {
+                    "decision_id": "roofing_coating_system_row_26",
+                    "template_bucket": "coating",
+                    "include": True,
+                    "proposed_values": {"basis_sqft": 9600},
+                }
+            ],
+            "confidence": 0.78,
+        },
+        model="test-model",
+    )
+
+    by_id = {row["decision_id"]: row for row in result.workbook_decision_preferences}
+
+    assert by_id["roofing_labor_prep_row_116"]["source"] == "reference_estimate_answer_key"
+    assert by_id["roofing_labor_prep_row_116"]["proposed_values"]["days"] == 1.7
+    assert by_id["roofing_labor_prep_row_116"]["proposed_values"]["daily_rate"] == 1835.66
+    assert by_id["roofing_labor_prime_row_118"]["proposed_values"]["days"] == 1.25
+    assert result.scope_overrides["reference_template_summary_mapped_row_count"] >= 3
+
+
 def test_estimator_chat_decision_menu_uses_template_catalog_metadata() -> None:
     data = EstimatorData(
         template_row_catalog=pd.DataFrame(

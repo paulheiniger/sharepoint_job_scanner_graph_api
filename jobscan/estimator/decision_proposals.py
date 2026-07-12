@@ -564,17 +564,28 @@ def _annotate_row(row: dict[str, Any], proposal: dict[str, Any] | None) -> dict[
             updated["include"] = bool(proposal.get("include"))
             updated["include_source"] = proposal.get("source")
         for key, value in (proposal.get("proposed_values") or {}).items():
+            source = proposal.get("source")
             reference_can_override = (
-                proposal.get("source") == "reference_project"
+                source == "reference_project"
                 and not updated.get("manual_override")
                 and key in REFERENCE_PROJECT_OVERRIDE_FIELDS
             )
             chat_can_override = (
-                proposal.get("source") == "chat_estimator"
+                source == "chat_estimator"
                 and not updated.get("manual_override")
                 and key in CHAT_ESTIMATOR_OVERRIDE_FIELDS
             )
-            if value is not None and (_proposal_value_can_fill(updated.get(key)) or reference_can_override or chat_can_override):
+            answer_key_can_override = (
+                source in {"reference_template_summary", "reference_estimate_answer_key"}
+                and not updated.get("manual_override")
+                and key in REFERENCE_PROJECT_OVERRIDE_FIELDS
+            )
+            if value is not None and (
+                _proposal_value_can_fill(updated.get(key))
+                or reference_can_override
+                or chat_can_override
+                or answer_key_can_override
+            ):
                 updated[key] = value
         updated["decision_proposal"] = proposal
         updated["proposal_source"] = proposal.get("source")
