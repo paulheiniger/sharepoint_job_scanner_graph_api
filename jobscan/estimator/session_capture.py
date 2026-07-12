@@ -859,7 +859,106 @@ def estimator_cue_memory_candidates_from_reference_template(
                 "priority": "high",
             }
         )
+    if not candidates:
+        candidates.extend(
+            _generic_reference_answer_key_memory_candidates(
+                decision_rows,
+                session_id=session_id,
+                template_type=template_type,
+                scope_memory_context=scope_memory_context,
+            )
+        )
     return candidates
+
+
+def _generic_reference_answer_key_memory_candidates(
+    decision_rows: list[dict[str, Any]],
+    *,
+    session_id: str = "",
+    template_type: str = "",
+    scope_memory_context: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    scope_memory_context = scope_memory_context or {}
+    resolved_template_type = normalize_memory_token(template_type)
+    included_rows: list[dict[str, Any]] = []
+    line_items: list[str] = []
+    source_rows: list[str] = []
+    decision_ids: list[str] = []
+    buckets: list[str] = []
+    value_snippets: list[str] = []
+    for row in decision_rows or []:
+        if not isinstance(row, dict):
+            continue
+        if normalize_memory_token(row.get("source")) not in {"reference_template_summary", "reference_estimate_answer_key"}:
+            continue
+        if row.get("include") is not True:
+            continue
+        row_template_type = _memory_template_type_from_edit(row, template_type)
+        if resolved_template_type and row_template_type and row_template_type != resolved_template_type:
+            continue
+        included_rows.append(row)
+        evidence = row.get("evidence") if isinstance(row.get("evidence"), list) else []
+        source_evidence = evidence[0] if evidence and isinstance(evidence[0], dict) else {}
+        line_item = str(source_evidence.get("line_item") or row.get("label") or row.get("decision_id") or "").strip()
+        if line_item and line_item not in line_items:
+            line_items.append(line_item)
+        source_row = str(source_evidence.get("source_row") or row.get("workbook_row") or "").strip()
+        if source_row and source_row not in source_rows:
+            source_rows.append(source_row)
+        decision_id = normalize_memory_token(row.get("decision_id"))
+        if decision_id and decision_id not in decision_ids:
+            decision_ids.append(decision_id)
+        bucket = normalize_memory_token(row.get("template_bucket"))
+        if bucket and bucket not in buckets:
+            buckets.append(bucket)
+        values = _reference_memory_values(row.get("proposed_values") or {})
+        if values and len(value_snippets) < 8:
+            value_snippets.append(f"{line_item or decision_id}: " + ", ".join(f"{key}={_memory_value_text(value)}" for key, value in values.items()))
+    if not included_rows:
+        return []
+    resolved_template_type = resolved_template_type or _memory_template_type_from_edit(included_rows[0], template_type) or "estimator"
+    item_text = ", ".join(line_items[:12]) if line_items else ", ".join(decision_ids[:12])
+    value_text = "; ".join(value_snippets[:5])
+    guidance = (
+        f"Reviewed {resolved_template_type} answer key included {len(included_rows)} mapped decision rows"
+        f"{f': {item_text}' if item_text else ''}. "
+    )
+    if value_text:
+        guidance += f"Representative values: {value_text}. "
+    guidance += "Use this full reviewed example as historical context for similar jobs, but keep current job evidence and workbook formulas authoritative."
+    signature_payload = {
+        "session_id": session_id,
+        "template_type": resolved_template_type,
+        "decision_ids": sorted(decision_ids),
+        "source_rows": sorted(source_rows),
+    }
+    signature = json.dumps(signature_payload, sort_keys=True, default=str)
+    return [
+        {
+            "memory_id": str(uuid5(NAMESPACE_URL, f"spraytec-reference-answer-key-generic|{signature}")),
+            "guidance": guidance,
+            "template_type": resolved_template_type,
+            "decision_id": f"{resolved_template_type}_reviewed_answer_key_example",
+            "template_bucket": "reviewed_answer_key_example",
+            "product_or_system": "Reviewed answer key example",
+            "applies_when": {
+                "source_session_id": session_id,
+                "source_type": "reference_answer_key_cue",
+                "cue_group": "reviewed_answer_key_example",
+                "keywords": sorted(set(scope_memory_context.get("keywords") or []))[:20],
+                "line_items": line_items[:30],
+                "source_rows": source_rows[:30],
+                "decision_ids": decision_ids[:60],
+                "template_buckets": buckets[:30],
+                **scope_memory_context,
+            },
+            "rationale": "Generic reviewed answer-key memory created because no specific cue group matched the mapped rows.",
+            "source_type": "reference_answer_key_cue",
+            "source_session_id": session_id or None,
+            "status": "pending",
+            "priority": "high",
+        }
+    ]
 
 
 def _reference_memory_values(values: dict[str, Any]) -> dict[str, Any]:

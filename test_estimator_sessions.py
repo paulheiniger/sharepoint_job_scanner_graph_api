@@ -418,6 +418,35 @@ def test_reference_template_cue_memory_groups_answer_key_rows() -> None:
     assert set(pending["source_type"]) == {"reference_answer_key_cue"}
 
 
+def test_reference_template_cue_memory_falls_back_to_generic_reviewed_example() -> None:
+    decisions = [
+        {
+            "source": "reference_estimate_answer_key",
+            "section": "roofing_material_template_decisions",
+            "decision_id": "roofing_material_custom_misc_row_999",
+            "template_bucket": "custom_misc_bucket",
+            "workbook_row": "999",
+            "include": True,
+            "proposed_values": {"estimated_units": 1, "unit_price": 250},
+            "evidence": [{"source_row": "999", "line_item": "Custom Misc Item"}],
+        }
+    ]
+
+    candidates = estimator_cue_memory_candidates_from_reference_template(
+        decisions,
+        session_id="session-1",
+        template_type="roofing",
+        scope_context={"raw_input_notes": "Roof estimate with custom item."},
+    )
+
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate["template_bucket"] == "reviewed_answer_key_example"
+    assert candidate["source_type"] == "reference_answer_key_cue"
+    assert "Custom Misc Item" in candidate["guidance"]
+    assert "no specific cue group matched" in candidate["rationale"]
+
+
 def test_estimator_session_lifecycle_and_exports(tmp_path) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     ensure_estimator_session_tables(engine)

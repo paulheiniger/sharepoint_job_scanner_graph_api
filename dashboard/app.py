@@ -1050,16 +1050,40 @@ def estimator_reference_memory_capture_enabled(chat_result: dict[str, Any] | Non
     return answer_key_mode in {"apply", "teach"}
 
 
+def preserve_attached_reference_answer_key_context(
+    result_payload: dict[str, Any],
+    previous_result: dict[str, Any] | None,
+    attached_reference_answer_key: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not isinstance(result_payload, dict):
+        return result_payload
+    preserved_key = attached_reference_answer_key if isinstance(attached_reference_answer_key, dict) else {}
+    if not preserved_key and isinstance(previous_result, dict):
+        preserved_key = previous_result.get("reference_answer_key") if isinstance(previous_result.get("reference_answer_key"), dict) else {}
+    if preserved_key and not isinstance(result_payload.get("reference_answer_key"), dict):
+        result_payload["reference_answer_key"] = preserved_key
+    if isinstance(previous_result, dict):
+        for key in ("reference_answer_key_mode", "reference_answer_key_label", "reference_answer_key_source_file"):
+            if previous_result.get(key) not in (None, "", [], {}) and result_payload.get(key) in (None, "", [], {}):
+                result_payload[key] = previous_result.get(key)
+    return result_payload
+
+
 def capture_reference_template_memory_candidates(
     session_id: str,
     chat_result: dict[str, Any] | None,
     *,
     template_type: str = "",
 ) -> None:
+    status_key = "estimator_memory_last_capture_status"
     if not session_id or not isinstance(chat_result, dict):
         return
     decision_rows = chat_result.get("workbook_decision_preferences")
     if not isinstance(decision_rows, list) or not decision_rows:
+        st.session_state[status_key] = {
+            "status": "skipped",
+            "message": "No answer-key workbook decisions were available to save as memory.",
+        }
         return
     save_cue_memory = getattr(estimator_sessions, "save_cue_memory_candidates_from_reference_template", None)
     save_row_memory = getattr(estimator_sessions, "save_memory_candidates_from_reference_template", None)
@@ -1078,6 +1102,11 @@ def capture_reference_template_memory_candidates(
         )
         if cue_memory_ids:
             memory_ids.extend(cue_memory_ids)
+        elif cue_memory_ids is None:
+            st.session_state[status_key] = {
+                "status": "failed",
+                "message": "Answer-key memory capture failed while saving cue memories. Check application logs for the database error.",
+            }
     if (reference_template_row_memory_enabled() or save_cue_memory is None) and save_row_memory is not None:
         row_memory_ids = capture_estimator_session_event(
             save_row_memory,
@@ -1088,6 +1117,11 @@ def capture_reference_template_memory_candidates(
         )
         if row_memory_ids:
             memory_ids.extend(row_memory_ids)
+        elif row_memory_ids is None:
+            st.session_state[status_key] = {
+                "status": "failed",
+                "message": "Answer-key memory capture failed while saving row memories. Check application logs for the database error.",
+            }
     if memory_ids:
         auto_approve = estimator_chat_learning_mode(chat_result) and explicit_learning_memory_auto_approval_enabled()
         if auto_approve:
@@ -1101,10 +1135,25 @@ def capture_reference_template_memory_candidates(
                 int(st.session_state.get("estimator_memory_auto_approved_count") or 0) + int(approved_count or 0)
             )
             if approved_count:
+                st.session_state[status_key] = {
+                    "status": "approved",
+                    "message": f"Saved and approved {int(approved_count):,} estimator memory item(s) from the applied answer key.",
+                    "count": int(approved_count),
+                }
                 st.success(f"Saved and approved {int(approved_count):,} estimator memory item(s) from this explicit learning message.")
         else:
             st.session_state["estimator_memory_pending_count"] = int(st.session_state.get("estimator_memory_pending_count") or 0) + len(memory_ids)
+            st.session_state[status_key] = {
+                "status": "pending",
+                "message": f"Saved {len(memory_ids):,} estimator memory item(s) for review from the applied answer key.",
+                "count": len(memory_ids),
+            }
             st.caption(f"Saved {len(memory_ids):,} estimator memory item(s) for review.")
+    elif st.session_state.get(status_key, {}).get("status") != "failed":
+        st.session_state[status_key] = {
+            "status": "empty",
+            "message": "The applied answer key was detected, but no estimator memory candidates were generated.",
+        }
 
 
 DAILY_DISPATCH_TABLE_SQL = """
@@ -10287,6 +10336,11 @@ def render_estimator_chat_draft_panel(
         st.session_state[history_key] = messages
         st.session_state[active_history_key] = messages
         result_payload = result.to_dict()
+        result_payload = preserve_attached_reference_answer_key_context(
+            result_payload,
+            previous_result if isinstance(previous_result, dict) else {},
+            attached_reference_answer_key,
+        )
         if uploaded_photo_context:
             result_payload["photo_context"] = uploaded_photo_context
         if estimator_chat_learning_mode(result_payload):
@@ -13490,6 +13544,17 @@ def render_estimator_memory_admin() -> None:
         logger.exception("Estimator memory review load failed")
         st.warning(f"Estimator memory table is unavailable: {safe_exception_text(exc)}")
         return
+
+    last_capture_status = st.session_state.get("estimator_memory_last_capture_status")
+    if isinstance(last_capture_status, dict) and last_capture_status.get("message"):
+        status_value = str(last_capture_status.get("status") or "")
+        message = str(last_capture_status.get("message") or "")
+        if status_value == "failed":
+            st.warning(message)
+        elif status_value in {"empty", "skipped"}:
+            st.info(message)
+        else:
+            st.success(message)
 
     def _memory_ids(frame: pd.DataFrame) -> list[str]:
         if frame.empty or "memory_id" not in frame.columns:

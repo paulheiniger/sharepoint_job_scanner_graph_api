@@ -963,6 +963,33 @@ def test_ask_spraytec_generated_field_notes_attach_as_evaluation_reference(monke
     assert active["workbook_decision_preferences"] == []
 
 
+def test_estimator_chat_preserves_attached_answer_key_across_followup_turn() -> None:
+    app = importlib.import_module("dashboard.app")
+    answer_key = {
+        "schema_version": "reference_estimate_answer_key.v1",
+        "source_workbook": {"file_name": "Estimate - 10YR Coating System.xlsx"},
+        "decisions": [{"decision_id": "roofing_coating_system_row_26"}],
+    }
+    previous_result = {
+        "reference_answer_key_mode": "evaluate",
+        "reference_answer_key": answer_key,
+        "scope_overrides": {"reference_source_file": "Estimate - 10YR Coating System.xlsx"},
+    }
+    result_payload = {
+        "scope_overrides": {"template_type": "roofing"},
+        "workbook_decision_preferences": [],
+    }
+
+    preserved = app.preserve_attached_reference_answer_key_context(
+        result_payload,
+        previous_result,
+        answer_key,
+    )
+
+    assert preserved["reference_answer_key"] == answer_key
+    assert preserved["reference_answer_key_mode"] == "evaluate"
+
+
 def test_ask_spraytec_generated_field_notes_falls_back_to_template_scope_summary() -> None:
     app = importlib.import_module("dashboard.app")
     answer_key = {
@@ -1826,6 +1853,7 @@ def test_reference_template_memory_capture_prefers_cue_memory_by_default(monkeyp
     assert len(cue_calls) == 1
     assert row_calls == []
     assert app.st.session_state["estimator_memory_pending_count"] == 1
+    assert app.st.session_state["estimator_memory_last_capture_status"]["status"] == "pending"
 
 
 def test_reference_memory_capture_enabled_for_applied_answer_key_without_learning_mode() -> None:

@@ -361,6 +361,7 @@ def test_estimator_chat_marks_explicit_learning_messages() -> None:
 def test_estimator_chat_detects_answer_key_modes() -> None:
     assert detect_reference_answer_key_mode([{"role": "user", "content": "Apply this answer key to the workbook"}]) == "apply"
     assert detect_reference_answer_key_mode([{"role": "user", "content": "Learn from this answer key and remember it"}]) == "teach"
+    assert detect_reference_answer_key_mode([{"role": "user", "content": "Now learn from the answer key for Gatti Klondike Lane"}]) == "teach"
     assert detect_reference_answer_key_mode([{"role": "user", "content": "Evaluate against this answer key"}]) == "evaluate"
     assert detect_reference_answer_key_mode([{"role": "user", "content": "Here is the answer key"}]) == "evaluate"
     assert detect_estimator_learning_intent([{"role": "user", "content": "Here is the answer key"}]) == {}
