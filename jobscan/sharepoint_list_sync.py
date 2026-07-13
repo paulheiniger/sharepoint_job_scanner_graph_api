@@ -473,8 +473,46 @@ def build_payload(
             source_field=source,
             url_fields_as_text=url_fields_as_text or column.name in url_text_columns,
         )
+        if converted is None:
+            continue
         fields[column.name] = converted
     return fields
+
+
+def write_list_item_fields(
+    client: GraphClient,
+    site_id: str,
+    list_id: str,
+    item_id: str | None,
+    fields: dict[str, Any],
+) -> None:
+    if item_id:
+        client.request("PATCH", f"/sites/{site_id}/lists/{list_id}/items/{item_id}/fields", json=fields)
+    else:
+        client.request("POST", f"/sites/{site_id}/lists/{list_id}/items", json={"fields": fields})
+
+
+def diagnose_rejected_fields(
+    *,
+    client: GraphClient,
+    site_id: str,
+    list_id: str,
+    item_id: str | None,
+    fields: dict[str, Any],
+) -> list[dict[str, Any]]:
+    rejected: list[dict[str, Any]] = []
+    for field_name, value in fields.items():
+        try:
+            write_list_item_fields(client, site_id, list_id, item_id, {field_name: value})
+        except Exception as exc:
+            rejected.append(
+                {
+                    "column": field_name,
+                    "value_preview": str(value)[:200],
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+    return rejected
 
 
 def get_existing_items(client: GraphClient, site_id: str, list_id: str) -> list[dict[str, Any]]:
@@ -506,6 +544,8 @@ def sync_records(
     update_only: bool,
     continue_on_error: bool,
     url_fields_as_text: bool = False,
+    diagnose_field_errors: bool = False,
+    omit_rejected_fields: bool = False,
 ) -> dict[str, Any]:
     stats = Counter()
     errors: list[dict[str, Any]] = []
@@ -532,7 +572,7 @@ def sync_records(
                     continue
                 stats["updates_attempted"] += 1
                 if not dry_run:
-                    client.request("PATCH", f"/sites/{site_id}/lists/{list_id}/items/{item_id}/fields", json=fields)
+                    write_list_item_fields(client, site_id, list_id, item_id, fields)
                 stats["updates_succeeded"] += 1
             else:
                 if update_only:
@@ -540,7 +580,7 @@ def sync_records(
                     continue
                 stats["creates_attempted"] += 1
                 if not dry_run:
-                    client.request("POST", f"/sites/{site_id}/lists/{list_id}/items", json={"fields": fields})
+                    write_list_item_fields(client, site_id, list_id, None, fields)
                 stats["creates_succeeded"] += 1
         except Exception as exc:
             if not url_fields_as_text and url_column_names:
@@ -548,29 +588,75 @@ def sync_records(
                     retry_fields = build_payload(record, mapping, url_fields_as_text=True, omitted_fields=omitted_fields)
                     if item_id:
                         if not dry_run:
-                            client.request("PATCH", f"/sites/{site_id}/lists/{list_id}/items/{item_id}/fields", json=retry_fields)
+                            write_list_item_fields(client, site_id, list_id, item_id, retry_fields)
                         stats["updates_succeeded"] += 1
                     else:
                         if not dry_run:
-                            client.request("POST", f"/sites/{site_id}/lists/{list_id}/items", json={"fields": retry_fields})
+                            write_list_item_fields(client, site_id, list_id, None, retry_fields)
                         stats["creates_succeeded"] += 1
                     url_text_columns.update(url_column_names)
                     stats["url_hyperlink_fallbacks"] += 1
                     continue
                 except Exception as retry_exc:
+                    rejected_fields = []
+                    if diagnose_field_errors and not dry_run:
+                        rejected_fields = diagnose_rejected_fields(
+                            client=client,
+                            site_id=site_id,
+                            list_id=list_id,
+                            item_id=item_id,
+                            fields=retry_fields,
+                        )
+                        if rejected_fields and omit_rejected_fields:
+                            rejected_column_names = {str(field["column"]) for field in rejected_fields}
+                            sanitized_fields = {key: value for key, value in retry_fields.items() if key not in rejected_column_names}
+                            try:
+                                write_list_item_fields(client, site_id, list_id, item_id, sanitized_fields)
+                                url_text_columns.update(url_column_names)
+                                stats["rejected_fields_omitted"] += len(rejected_fields)
+                                if item_id:
+                                    stats["updates_succeeded"] += 1
+                                else:
+                                    stats["creates_succeeded"] += 1
+                                continue
+                            except Exception:
+                                pass
                     errors.append(
                         {
                             "job_id": job_id,
                             "error": f"{type(exc).__name__}: {exc}",
                             "text_retry_error": f"{type(retry_exc).__name__}: {retry_exc}",
+                            "rejected_fields": rejected_fields,
                         }
                     )
                     stats["failures"] += 1
                     if not continue_on_error:
                         raise retry_exc from exc
             else:
+                rejected_fields = []
+                if diagnose_field_errors and not dry_run:
+                    rejected_fields = diagnose_rejected_fields(
+                        client=client,
+                        site_id=site_id,
+                        list_id=list_id,
+                        item_id=item_id,
+                        fields=fields,
+                    )
+                    if rejected_fields and omit_rejected_fields:
+                        rejected_column_names = {str(field["column"]) for field in rejected_fields}
+                        sanitized_fields = {key: value for key, value in fields.items() if key not in rejected_column_names}
+                        try:
+                            write_list_item_fields(client, site_id, list_id, item_id, sanitized_fields)
+                            stats["rejected_fields_omitted"] += len(rejected_fields)
+                            if item_id:
+                                stats["updates_succeeded"] += 1
+                            else:
+                                stats["creates_succeeded"] += 1
+                            continue
+                        except Exception:
+                            pass
                 stats["failures"] += 1
-                errors.append({"job_id": job_id, "error": f"{type(exc).__name__}: {exc}"})
+                errors.append({"job_id": job_id, "error": f"{type(exc).__name__}: {exc}", "rejected_fields": rejected_fields})
                 if not continue_on_error:
                     raise
     return {**stats, "errors": errors, "url_text_columns": sorted(url_text_columns), "omitted_fields": omitted_fields}
@@ -656,6 +742,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         update_only=args.update_only,
         continue_on_error=args.continue_on_error,
         url_fields_as_text=args.url_fields_as_text,
+        diagnose_field_errors=args.diagnose_field_errors,
+        omit_rejected_fields=args.omit_rejected_fields,
     )
     completed_at = datetime.now(timezone.utc).isoformat()
     report = {
@@ -687,6 +775,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "skipped_read_only_columns": skipped,
         "ensure_column_failures": ensure_column_failures,
         "url_hyperlink_fallbacks": sync_stats.get("url_hyperlink_fallbacks", 0),
+        "rejected_fields_omitted": sync_stats.get("rejected_fields_omitted", 0),
         "url_text_columns": sync_stats.get("url_text_columns", []),
         "omitted_fields": sync_stats.get("omitted_fields", []),
         "truncated_values": [],
@@ -701,6 +790,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     print(f"Created: {report['creates_succeeded']}")
     print(f"Updated: {report['updates_succeeded']}")
     print(f"Failed: {report['failures']}")
+    print(f"Rejected fields omitted: {report['rejected_fields_omitted']}")
     print(f"Jobs with folder URL: {report['jobs_with_folder_url']}")
     print(f"Jobs with primary document link: {report['jobs_with_primary_doc_link']}")
     print(f"Jobs missing primary document link: {len(unique_records) - report['jobs_with_primary_doc_link']}")
@@ -726,6 +816,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--ensure-columns", action="store_true", help="Attempt to create missing SharePoint columns, then continue syncing existing columns if creation fails.")
     parser.add_argument("--ensure-columns-only", action="store_true", help="Only attempt to create missing columns and write a report.")
     parser.add_argument("--url-fields-as-text", action="store_true", help="Force URL fields to be written as plain strings regardless of detected SharePoint column type.")
+    parser.add_argument("--diagnose-field-errors", action="store_true", help="On SharePoint 400s, try each field separately and write rejected field details to the report.")
+    parser.add_argument("--omit-rejected-fields", action="store_true", help="With --diagnose-field-errors, retry the item after omitting fields rejected by SharePoint.")
     parser.add_argument("--include-important-doc-links-json", action="store_true", help="Include important_doc_links_json in SharePoint writes. Omitted by default because long JSON can exceed single-line text limits.")
     parser.add_argument("--columns-out", type=Path, default=DEFAULT_COLUMNS_OUT)
     parser.add_argument("--report-out", type=Path, default=DEFAULT_REPORT_OUT)

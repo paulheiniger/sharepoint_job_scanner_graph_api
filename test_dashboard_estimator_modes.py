@@ -1038,6 +1038,60 @@ def test_timesheet_project_matching_scores_job_candidates() -> None:
     assert by_project["Estimate"]["match_status"] == "Unmatched"
 
 
+def test_timesheet_activity_rollups_preserve_employee_and_job_context() -> None:
+    app = importlib.import_module("dashboard.app")
+    timesheets = pd.DataFrame(
+        [
+            {
+                "project_name": "Mudd's Furniture",
+                "duration_hours": 1.5,
+                "work_date": "2026-07-01",
+                "employee": "Haley",
+                "code": "Estimating",
+                "row_type": "timed_entry",
+                "notes": "Estimate review",
+            },
+            {
+                "project_name": "Mudd's Furniture",
+                "duration_hours": 0,
+                "work_date": "2026-07-02",
+                "employee": "Paul",
+                "code": "Admin",
+                "row_type": "activity_only",
+                "notes": "Folder setup",
+            },
+        ]
+    )
+    jobs = pd.DataFrame(
+        [
+            {
+                "job_id": "J-MUDD-B",
+                "customer": "Mudd's Furniture",
+                "job_name": "Mudd's Furniture Showroom Roof B",
+                "division": "Roofing",
+                "job_type": "Roof Coating",
+                "pipeline_status": "Proposed",
+                "status": "Open",
+                "folder_path": "2026 ROOFING/Mudd's Furniture Roof B",
+                "estimated_value": 125000,
+            }
+        ]
+    )
+
+    activity = app.prepare_timesheet_activity_rows(timesheets, jobs)
+    employee_summary = app.summarize_timesheet_by_employee(activity)
+    job_rollup = app.summarize_timesheet_by_job(activity)
+
+    assert set(activity["employee"]) == {"Haley", "Paul"}
+    assert activity["matched_job"].all()
+    assert employee_summary["total_hours"].sum() == 1.5
+    assert employee_summary["touch_count"].sum() == 2
+    assert job_rollup.iloc[0]["job_id"] == "J-MUDD-B"
+    assert job_rollup.iloc[0]["job_type"] == "Roof Coating"
+    assert job_rollup.iloc[0]["job_value"] == 125000
+    assert job_rollup.iloc[0]["employee_count"] == 2
+
+
 def test_ask_spraytec_finalize_generated_field_notes_candidate_reuses_candidate(monkeypatch) -> None:
     app = importlib.import_module("dashboard.app")
 

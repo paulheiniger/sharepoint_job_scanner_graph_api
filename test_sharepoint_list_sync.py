@@ -132,6 +132,19 @@ def test_field_type_conversion_and_payload_generation() -> None:
     assert skipped == []
 
 
+def test_blank_converted_values_are_omitted_from_payload() -> None:
+    columns = [
+        col("job_id", "Job ID"),
+        col("invoice_amount", "invoice_amount", "currency"),
+        col("invoice_url", "invoice_url", "hyperlinkOrPicture"),
+    ]
+    mapping, _, _ = build_field_mapping(columns, ["job_id", "invoice_amount", "invoice_url"])
+
+    payload = build_payload({"job_id": "job-1", "invoice_amount": "", "invoice_url": ""}, mapping)
+
+    assert payload == {"job_id": "job-1"}
+
+
 def test_url_field_written_as_text_column() -> None:
     columns = [col("folder_url", "folder_url", "text")]
     mapping, _, _ = build_field_mapping(columns, ["folder_url"])
@@ -160,6 +173,20 @@ class FallbackClient:
         return object()
 
 
+class RejectFieldClient:
+    def __init__(self, rejected_field: str) -> None:
+        self.rejected_field = rejected_field
+        self.requests = []
+
+    def request(self, method: str, url: str, **kwargs):
+        self.requests.append((method, url, kwargs))
+        body = kwargs.get("json") or {}
+        fields = body.get("fields") if "fields" in body else body
+        if self.rejected_field in fields:
+            raise RuntimeError(f"{self.rejected_field} rejected")
+        return object()
+
+
 def test_url_field_fallback_from_hyperlink_to_text_and_cache() -> None:
     client = FallbackClient()
     columns = [col("folder_url", "folder_url", "hyperlinkOrPicture"), col("job_id", "job_id")]
@@ -184,6 +211,34 @@ def test_url_field_fallback_from_hyperlink_to_text_and_cache() -> None:
     assert isinstance(client.requests[0][2]["json"]["fields"]["folder_url"], dict)
     assert client.requests[1][2]["json"]["fields"]["folder_url"] == "https://example/one"
     assert client.requests[2][2]["json"]["fields"]["folder_url"] == "https://example/two"
+
+
+def test_sync_can_diagnose_and_omit_rejected_field() -> None:
+    client = RejectFieldClient("bad_column")
+    mapping = {
+        "job_id": col("job_id", "job_id"),
+        "bad": col("bad_column", "bad"),
+        "customer": col("customer", "customer"),
+    }
+
+    stats = sync_records(
+        client=client,
+        site_id="site",
+        list_id="list",
+        records=[{"job_id": "one", "bad": "bad value", "customer": "Customer"}],
+        mapping=mapping,
+        existing={"one": "4"},
+        dry_run=False,
+        create_only=False,
+        update_only=False,
+        continue_on_error=False,
+        diagnose_field_errors=True,
+        omit_rejected_fields=True,
+    )
+
+    assert stats["updates_succeeded"] == 1
+    assert stats["rejected_fields_omitted"] == 1
+    assert client.requests[-1][2]["json"] == {"job_id": "one", "customer": "Customer"}
 
 
 def test_sync_continues_when_optional_columns_are_missing() -> None:
