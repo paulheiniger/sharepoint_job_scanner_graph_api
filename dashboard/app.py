@@ -14,6 +14,7 @@ import copy
 import re
 import sys
 import time
+from io import BytesIO
 from contextlib import contextmanager
 from datetime import date, timedelta
 from pathlib import Path
@@ -1368,6 +1369,7 @@ CREATE TABLE IF NOT EXISTS job_workflow_overrides (
     assigned_user TEXT,
     follow_up_date DATE,
     priority TEXT,
+    closed_did_not_get BOOLEAN DEFAULT FALSE,
     internal_notes TEXT,
     updated_by TEXT,
     updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -1433,6 +1435,7 @@ def ensure_job_workflow_overrides_table() -> None:
     engine = get_engine()
     with engine.begin() as conn:
         conn.execute(text(JOB_WORKFLOW_OVERRIDES_TABLE_SQL))
+        conn.execute(text("ALTER TABLE job_workflow_overrides ADD COLUMN IF NOT EXISTS closed_did_not_get BOOLEAN DEFAULT FALSE"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_job_workflow_status ON job_workflow_overrides(workflow_status)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_job_workflow_priority ON job_workflow_overrides(priority)"))
 
@@ -1539,6 +1542,7 @@ def load_job_workflow_overrides() -> pd.DataFrame:
                 assigned_user,
                 follow_up_date,
                 priority,
+                closed_did_not_get,
                 internal_notes,
                 updated_by,
                 updated_at
@@ -1558,6 +1562,7 @@ def save_job_workflow_override(
     follow_up_date: object,
     priority: object,
     internal_notes: object,
+    closed_did_not_get: object = False,
     updated_by: object | None = None,
 ) -> None:
     ensure_job_workflow_overrides_table()
@@ -1571,6 +1576,7 @@ def save_job_workflow_override(
         "assigned_user": clean_db_value(assigned_user),
         "follow_up_date": clean_db_value(follow_up_date),
         "priority": clean_db_value(priority),
+        "closed_did_not_get": truthy_bool(closed_did_not_get),
         "internal_notes": clean_db_value(internal_notes),
         "updated_by": clean_db_value(updated_by),
     }
@@ -1583,6 +1589,7 @@ def save_job_workflow_override(
             assigned_user,
             follow_up_date,
             priority,
+            closed_did_not_get,
             internal_notes,
             updated_by,
             updated_at
@@ -1594,6 +1601,7 @@ def save_job_workflow_override(
             :assigned_user,
             :follow_up_date,
             :priority,
+            :closed_did_not_get,
             :internal_notes,
             :updated_by,
             NOW()
@@ -1604,6 +1612,7 @@ def save_job_workflow_override(
             assigned_user = EXCLUDED.assigned_user,
             follow_up_date = EXCLUDED.follow_up_date,
             priority = EXCLUDED.priority,
+            closed_did_not_get = EXCLUDED.closed_did_not_get,
             internal_notes = EXCLUDED.internal_notes,
             updated_by = EXCLUDED.updated_by,
             updated_at = NOW()
@@ -6067,6 +6076,128 @@ def load_job_board_jobs() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
+def load_job_board_document_dates() -> pd.DataFrame:
+    document_cols = relation_columns("documents")
+    if not {"job_id", "file_name"}.issubset(document_cols):
+        return pd.DataFrame()
+    drive_cols = relation_columns("sharepoint_drive_items")
+    document_type_expr = sql_column("d", document_cols, "document_type", "''")
+    file_name_expr = sql_column("d", document_cols, "file_name", "''")
+    relative_path_expr = sql_column("d", document_cols, "relative_path", "NULL")
+    modified_expr = sql_column("d", document_cols, "modified_at", "NULL")
+    document_created_expr = sql_column("d", document_cols, "created_at", "NULL")
+
+    join_sql = ""
+    drive_created_expr = "NULL"
+    drive_modified_expr = "NULL"
+    modified_by_expr = "NULL"
+    if {"drive_id", "drive_item_id"}.issubset(document_cols) and {"drive_id", "drive_item_id"}.issubset(drive_cols):
+        join_sql = """
+        LEFT JOIN sharepoint_drive_items s
+          ON s.drive_id = d.drive_id
+         AND s.drive_item_id = d.drive_item_id
+        """
+        if "metadata_json" in drive_cols:
+            drive_created_expr = "NULLIF(s.metadata_json ->> 'createdDateTime', '')::timestamptz"
+            modified_by_expr = """
+            COALESCE(
+                NULLIF(s.metadata_json #>> '{lastModifiedBy,user,displayName}', ''),
+                NULLIF(s.metadata_json #>> '{lastModifiedBy,user,email}', ''),
+                NULLIF(s.metadata_json #>> '{lastModifiedBy,application,displayName}', '')
+            )
+            """
+        drive_modified_expr = sql_column("s", drive_cols, "last_modified_at", "NULL")
+
+    created_expr = drive_created_expr
+    updated_expr = sql_coalesce([drive_modified_expr, modified_expr])
+    sql = f"""
+        WITH typed_documents AS (
+            SELECT
+                d.job_id,
+                CASE
+                    WHEN LOWER(COALESCE({document_type_expr}, '')) LIKE '%proposal%'
+                      OR LOWER(COALESCE({file_name_expr}, '')) LIKE '%proposal%'
+                        THEN 'proposal'
+                    WHEN LOWER(COALESCE({document_type_expr}, '')) LIKE '%estimate%'
+                      OR LOWER(COALESCE({file_name_expr}, '')) LIKE '%estimate%'
+                        THEN 'estimate'
+                    ELSE NULL
+                END AS document_kind,
+                {file_name_expr} AS file_name,
+                {relative_path_expr} AS relative_path,
+                {created_expr} AS file_created_at,
+                {updated_expr} AS file_modified_at,
+                {modified_by_expr} AS file_modified_by
+            FROM documents d
+            {join_sql}
+            WHERE d.job_id IS NOT NULL
+              AND (
+                LOWER(COALESCE({document_type_expr}, '')) LIKE '%proposal%'
+                OR LOWER(COALESCE({file_name_expr}, '')) LIKE '%proposal%'
+                OR LOWER(COALESCE({document_type_expr}, '')) LIKE '%estimate%'
+                OR LOWER(COALESCE({file_name_expr}, '')) LIKE '%estimate%'
+              )
+        ),
+        ranked_documents AS (
+            SELECT
+                *,
+                ROW_NUMBER() OVER (
+                    PARTITION BY job_id, document_kind
+                    ORDER BY file_created_at DESC NULLS LAST, file_modified_at DESC NULLS LAST, file_name
+                ) AS rn,
+                COUNT(*) OVER (PARTITION BY job_id, document_kind) AS document_count
+            FROM typed_documents
+            WHERE document_kind IS NOT NULL
+        )
+        SELECT
+            job_id,
+            document_kind,
+            file_name,
+            relative_path,
+            file_created_at,
+            file_modified_at,
+            file_modified_by,
+            document_count
+        FROM ranked_documents
+        WHERE rn = 1
+    """
+    try:
+        dates = safe_load(sql)
+    except Exception:
+        return pd.DataFrame()
+    if dates.empty:
+        return pd.DataFrame()
+    pivot = dates.pivot(
+        index="job_id",
+        columns="document_kind",
+        values=["file_created_at", "file_modified_at", "file_modified_by", "file_name", "relative_path", "document_count"],
+    )
+    pivot.columns = [f"{kind}_{field}" for field, kind in pivot.columns]
+    return pivot.reset_index()
+
+
+def add_job_board_proposal_stale_columns(jobs: pd.DataFrame) -> pd.DataFrame:
+    out = jobs.copy()
+    for column in ["proposal_file_created_at", "proposal_file_modified_at", "estimate_file_created_at", "estimate_file_modified_at"]:
+        if column not in out.columns:
+            out[column] = pd.NaT
+    out["proposal_created_at"] = date_column_series(out, ["proposal_file_created_at"])
+    out["estimate_created_at"] = date_column_series(out, ["estimate_file_created_at", "estimate_date"])
+    out["proposal_modified_at"] = date_column_series(out, ["proposal_file_modified_at"])
+    out["estimate_modified_at"] = date_column_series(out, ["estimate_file_modified_at"])
+    out["proposal_modified_by"] = out.get("proposal_file_modified_by", pd.Series("", index=out.index)).fillna("").astype(str)
+    out["estimate_modified_by"] = out.get("estimate_file_modified_by", pd.Series("", index=out.index)).fillna("").astype(str)
+    out["proposal_date_for_stale"] = out["proposal_created_at"].combine_first(out["proposal_modified_at"])
+    today = pd.Timestamp(date.today())
+    out["proposal_age_days"] = (today.normalize() - out["proposal_date_for_stale"].dt.normalize()).dt.days
+    out.loc[out["proposal_age_days"].isna() | (out["proposal_age_days"] < 0), "proposal_age_days"] = pd.NA
+    out["proposal_stale"] = out["proposal_age_days"].fillna(0).astype(float) > 30
+    out["proposal_status_flag"] = out["proposal_stale"].map({True: "Stale", False: "Current"})
+    out.loc[out["proposal_date_for_stale"].isna(), "proposal_status_flag"] = "No proposal date"
+    return out
+
+
+@st.cache_data(ttl=300, show_spinner=False)
 def load_job_board_vsimple_enrichment() -> pd.DataFrame:
     match_cols = relation_columns("vsimple_sharepoint_job_matches_accepted")
     project_cols = relation_columns("vsimple_projects")
@@ -6325,6 +6456,10 @@ def load_job_board_df() -> pd.DataFrame:
         load_job_board_template_enrichment(),
         load_job_board_document_signal_enrichment(),
     )
+    document_dates = load_job_board_document_dates()
+    if not document_dates.empty and "job_id" in document_dates.columns:
+        jobs = jobs.merge(document_dates, on="job_id", how="left")
+    jobs = add_job_board_proposal_stale_columns(jobs)
     overrides = load_job_workflow_overrides()
     if "job_id" in overrides.columns:
         jobs = jobs.merge(overrides, on="job_id", how="left")
@@ -6919,6 +7054,19 @@ def first_nonblank(*values: object) -> str:
     return ""
 
 
+def truthy_bool(value: object) -> bool:
+    if value is None:
+        return False
+    try:
+        if pd.isna(value):
+            return False
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "checked", "closed", "lost"}
+    return bool(value)
+
+
 SALES_PIPELINE_STAGES = [
     "Lead Received",
     "Site Visit Scheduled",
@@ -6955,6 +7103,8 @@ def row_first_positive_number(row: pd.Series, columns: Iterable[str]) -> float:
 
 
 def normalized_sales_stage(row: pd.Series) -> str:
+    if truthy_bool(row.get("closed_did_not_get")):
+        return "Closed Lost"
     source_text = " ".join(
         row_first_nonblank(row, [column])
         for column in [
@@ -7456,12 +7606,19 @@ def normalize_board_status(value: object) -> str:
         "complete": "Completed",
         "invoiced": "Invoiced",
         "invoice": "Invoiced",
+        "closed lost": "Closed Lost",
+        "lost": "Closed Lost",
+        "did not get": "Closed Lost",
+        "closed won": "Closed Won",
+        "won": "Closed Won",
         "folder created": "Folder Created",
     }
     return mapping.get(key, raw if raw else "Other")
 
 
 def board_status_for_row(row: pd.Series) -> str:
+    if truthy_bool(row.get("closed_did_not_get")):
+        return "Closed Lost"
     workflow_value = first_existing_value(row, POSSIBLE_WORKFLOW_STATUS_COLS)
     pipeline_value = first_existing_value(row, POSSIBLE_PIPELINE_STATUS_COLS)
     status_value = first_existing_value(row, POSSIBLE_STATUS_COLS)
@@ -7470,7 +7627,7 @@ def board_status_for_row(row: pd.Series) -> str:
 
 
 def bool_label(value: object) -> str:
-    return "Yes" if bool(value) else "No"
+    return "Yes" if truthy_bool(value) else "No"
 
 
 def job_board_summary(row: pd.Series) -> str:
@@ -7496,6 +7653,88 @@ def render_job_board_documents(row: pd.Series) -> None:
     render_document_access("Open Proposal / Estimate", row.get("proposal_file") or row.get("estimate_file"), "Proposal / estimate link not available.")
     render_document_access("Open Contract", row.get("contract_file"), "Contract link not available.")
     render_document_access("Open Job Tracking Form", row.get("job_tracking_file"), "Job tracking form link not available.")
+
+
+def dataframe_to_excel_bytes(df: pd.DataFrame, sheet_name: str = "Jobs") -> bytes:
+    output = BytesIO()
+    safe_sheet_name = re.sub(r"[\[\]\:*?/\\]", "_", sheet_name or "Jobs")[:31] or "Jobs"
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name=safe_sheet_name)
+    output.seek(0)
+    return output.read()
+
+
+def job_board_export_rows(rows: pd.DataFrame) -> pd.DataFrame:
+    if not isinstance(rows, pd.DataFrame) or rows.empty:
+        return pd.DataFrame()
+    export = rows.copy()
+    for column in ["proposal_created_at", "estimate_created_at", "proposal_modified_at", "estimate_modified_at"]:
+        if column in export.columns:
+            export[column] = pd.to_datetime(export[column], errors="coerce").dt.date.astype("string")
+    columns = [
+        "closed_did_not_get",
+        "proposal_status_flag",
+        "proposal_age_days",
+        "proposal_created_at",
+        "proposal_modified_at",
+        "proposal_modified_by",
+        "estimate_created_at",
+        "estimate_modified_at",
+        "estimate_modified_by",
+        "customer_display",
+        "project",
+        "division",
+        "sales_stage",
+        "sales_value",
+        "project_category",
+        "estimator_display",
+        "lead_source_display",
+        "workflow_status",
+        "pipeline_status",
+        "status",
+        "follow_up_date",
+        "priority",
+        "folder",
+        "job_id",
+    ]
+    return export[[column for column in columns if column in export.columns]]
+
+
+def save_closed_did_not_get_edits(original_rows: pd.DataFrame, edited_rows: pd.DataFrame) -> int:
+    if not isinstance(original_rows, pd.DataFrame) or not isinstance(edited_rows, pd.DataFrame):
+        return 0
+    if original_rows.empty or edited_rows.empty or "job_id" not in original_rows.columns or "job_id" not in edited_rows.columns:
+        return 0
+    original_lookup = {
+        text_value(row.get("job_id")): row
+        for row in original_rows.to_dict(orient="records")
+        if text_value(row.get("job_id"))
+    }
+    saved = 0
+    for row in edited_rows.to_dict(orient="records"):
+        job_id = text_value(row.get("job_id"))
+        if not job_id:
+            continue
+        original_row = original_lookup.get(job_id, {})
+        edited_value = truthy_bool(row.get("closed_did_not_get"))
+        if truthy_bool(original_row.get("closed_did_not_get")) == edited_value:
+            continue
+        workflow_status = "Closed Lost" if edited_value else original_row.get("workflow_status")
+        if not edited_value and normalize_board_status(workflow_status) == "Closed Lost":
+            workflow_status = first_nonblank(original_row.get("pipeline_status"), original_row.get("status"), "Lead Received")
+        save_job_workflow_override(
+            job_id=job_id,
+            workflow_status=workflow_status,
+            deal_owner=original_row.get("deal_owner"),
+            assigned_user=original_row.get("assigned_user"),
+            follow_up_date=original_row.get("follow_up_date"),
+            priority=original_row.get("priority"),
+            internal_notes=original_row.get("internal_notes"),
+            closed_did_not_get=edited_value,
+            updated_by=os.getenv("USER"),
+        )
+        saved += 1
+    return saved
 
 
 def parsed_date_or_today(value: object) -> date:
@@ -7526,6 +7765,7 @@ def job_board_page() -> None:
         "assigned_user",
         "follow_up_date",
         "priority",
+        "closed_did_not_get",
         "internal_notes",
         "updated_by",
         "updated_at",
@@ -7541,11 +7781,22 @@ def job_board_page() -> None:
         "schedule_notes",
         "warning_count",
         "warning_summary",
+        "proposal_created_at",
+        "estimate_created_at",
+        "proposal_modified_at",
+        "estimate_modified_at",
+        "proposal_modified_by",
+        "estimate_modified_by",
+        "proposal_date_for_stale",
+        "proposal_age_days",
+        "proposal_stale",
+        "proposal_status_flag",
     ]:
         if column not in jobs.columns:
             jobs[column] = None
 
     jobs["job_id"] = jobs["job_id"].fillna("").astype(str)
+    jobs["closed_did_not_get"] = jobs["closed_did_not_get"].apply(truthy_bool)
     jobs["board_status"] = jobs.apply(board_status_for_row, axis=1)
     selected_job_id = str(st.session_state.get("selected_job_board_job_id", "") or "")
     if selected_job_id:
@@ -7623,15 +7874,124 @@ def job_board_page() -> None:
             ("Total Estimated Value", fmt_dollar(safe_sum(filtered, "estimated_value"))),
             ("Proposed Value", fmt_dollar(status_value(filtered, "proposed"))),
             ("Contracted / Backlog Value", fmt_dollar(status_value(filtered, "contracted"))),
+            ("Stale Proposals", fmt_count(filtered.get("proposal_stale", pd.Series(False, index=filtered.index)).fillna(False).astype(bool).sum())),
             ("Warnings / Action Items", fmt_count((numeric_series(filtered, "warning_count").fillna(0) > 0).sum())),
         ]
     )
 
     dashboard_rows = prepare_job_board_dashboard_rows(filtered)
+    if "closed_did_not_get" in dashboard_rows.columns:
+        dashboard_rows["closed_did_not_get"] = dashboard_rows["closed_did_not_get"].apply(truthy_bool)
+
+    review_rows = job_board_export_rows(dashboard_rows)
+    if not review_rows.empty:
+        st.subheader("Proposal Aging / Closeout Review")
+        st.caption("Use the checkbox for jobs that are closed or did not get. Stale means the latest proposal document is more than 30 days old. The Excel export can be marked by changing the closed_did_not_get TRUE/FALSE column and importing it here.")
+        edited_review_rows = st.data_editor(
+            review_rows,
+            column_order=[
+                column
+                for column in [
+                    "closed_did_not_get",
+                    "proposal_status_flag",
+                    "proposal_age_days",
+                    "proposal_created_at",
+                    "proposal_modified_at",
+                    "proposal_modified_by",
+                    "estimate_created_at",
+                    "estimate_modified_at",
+                    "estimate_modified_by",
+                    "customer_display",
+                    "project",
+                    "sales_stage",
+                    "sales_value",
+                    "estimator_display",
+                    "follow_up_date",
+                    "priority",
+                    "folder",
+                    "job_id",
+                ]
+                if column in review_rows.columns
+            ],
+            hide_index=True,
+            width="stretch",
+            height=360,
+            disabled=[column for column in review_rows.columns if column != "closed_did_not_get"],
+            column_config={
+                "closed_did_not_get": st.column_config.CheckboxColumn("Closed / Did Not Get"),
+                "proposal_status_flag": st.column_config.TextColumn("Proposal Status"),
+                "proposal_age_days": st.column_config.NumberColumn("Proposal Age Days", format="%d"),
+                "proposal_created_at": st.column_config.TextColumn("Proposal Created"),
+                "proposal_modified_at": st.column_config.TextColumn("Proposal Modified"),
+                "proposal_modified_by": st.column_config.TextColumn("Proposal Modified By"),
+                "estimate_created_at": st.column_config.TextColumn("Estimate Created"),
+                "estimate_modified_at": st.column_config.TextColumn("Estimate Modified"),
+                "estimate_modified_by": st.column_config.TextColumn("Estimate Modified By"),
+                "customer_display": st.column_config.TextColumn("Customer"),
+                "project": st.column_config.TextColumn("Project", width="large"),
+                "sales_stage": st.column_config.TextColumn("Sales Stage"),
+                "sales_value": st.column_config.NumberColumn("Value", format="$%.0f"),
+                "estimator_display": st.column_config.TextColumn("Estimator"),
+                "folder": st.column_config.LinkColumn("Folder"),
+            },
+            key="job_board_closeout_review_editor",
+        )
+        export_cols = st.columns([1, 1, 2])
+        with export_cols[0]:
+            if st.button("Save Closeout Checks", type="primary", key="save_job_board_closeout_checks"):
+                try:
+                    saved = save_closed_did_not_get_edits(dashboard_rows, edited_review_rows)
+                    if saved:
+                        st.success(f"Saved {saved:,} closeout update{'s' if saved != 1 else ''}.")
+                        st.rerun()
+                    else:
+                        st.info("No closeout changes detected.")
+                except Exception as exc:
+                    show_database_error(exc)
+        with export_cols[1]:
+            export_df = job_board_export_rows(dashboard_rows)
+            st.download_button(
+                "Export Excel",
+                data=dataframe_to_excel_bytes(export_df, "Job Board"),
+                file_name="job_board_proposal_closeout_review.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_job_board_closeout_excel",
+            )
+        with export_cols[2]:
+            uploaded_closeout_excel = st.file_uploader(
+                "Import marked Excel",
+                type=["xlsx"],
+                key="upload_job_board_closeout_excel",
+                help="Requires job_id and closed_did_not_get columns from the exported workbook.",
+            )
+            if uploaded_closeout_excel is not None:
+                try:
+                    imported_closeout = pd.read_excel(uploaded_closeout_excel)
+                    required = {"job_id", "closed_did_not_get"}
+                    if not required.issubset(imported_closeout.columns):
+                        st.error("Imported workbook must include job_id and closed_did_not_get columns.")
+                    elif st.button("Apply Imported Closeout Checks", key="apply_imported_job_board_closeout"):
+                        saved = save_closed_did_not_get_edits(dashboard_rows, imported_closeout)
+                        if saved:
+                            st.success(f"Imported {saved:,} closeout update{'s' if saved != 1 else ''}.")
+                            st.rerun()
+                        else:
+                            st.info("No imported closeout changes detected.")
+                except Exception as exc:
+                    show_database_error(exc)
+
     st.subheader("Job Board Table")
     show_table(
         dashboard_rows,
         [
+            "proposal_status_flag",
+            "proposal_created_at",
+            "proposal_modified_at",
+            "proposal_modified_by",
+            "estimate_created_at",
+            "estimate_modified_at",
+            "estimate_modified_by",
+            "closed_did_not_get",
             "customer_display",
             "project",
             "division",
@@ -7727,6 +8087,14 @@ def job_board_page() -> None:
             ("Division", row.get("division"), "text"),
             ("Sales Stage", display_row.get("sales_stage"), "text"),
             ("Win / Loss", display_row.get("win_loss_status"), "text"),
+            ("Closed / Did Not Get", bool_label(row.get("closed_did_not_get")), "text"),
+            ("Proposal Created", row.get("proposal_created_at"), "text"),
+            ("Proposal Modified", row.get("proposal_modified_at"), "text"),
+            ("Proposal Modified By", row.get("proposal_modified_by"), "text"),
+            ("Estimate Created", row.get("estimate_created_at"), "text"),
+            ("Estimate Modified", row.get("estimate_modified_at"), "text"),
+            ("Estimate Modified By", row.get("estimate_modified_by"), "text"),
+            ("Proposal Status", row.get("proposal_status_flag"), "text"),
             ("Priority", row.get("priority"), "text"),
             ("Follow Up Date", row.get("follow_up_date"), "text"),
             ("Estimator / Owner", display_row.get("estimator_display"), "text"),
@@ -7790,6 +8158,11 @@ def job_board_page() -> None:
                     index=priority_index,
                     key=f"job_workflow_priority_{job_key}",
                 )
+                closed_did_not_get = st.checkbox(
+                    "Closed / Did Not Get",
+                    value=truthy_bool(row.get("closed_did_not_get")),
+                    key=f"job_closed_did_not_get_{job_key}",
+                )
             internal_notes = st.text_area(
                 "Internal Notes",
                 value=text_value(row.get("internal_notes")),
@@ -7806,6 +8179,7 @@ def job_board_page() -> None:
                         follow_up_date=follow_up_date,
                         priority=priority,
                         internal_notes=internal_notes,
+                        closed_did_not_get=closed_did_not_get,
                         updated_by=os.getenv("USER"),
                     )
                     st.success("Workflow updated")
