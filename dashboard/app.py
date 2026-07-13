@@ -8,6 +8,7 @@ import hashlib
 import inspect
 import json
 import logging
+import math
 import os
 import copy
 import re
@@ -6758,6 +6759,88 @@ def summarize_timesheet_daily_touches(activity: pd.DataFrame) -> pd.DataFrame:
     return grouped
 
 
+def timesheet_touch_value_weight(value: object, *, scale: str = "sqrt", baseline: float = 100000.0, cap: float = 5.0) -> float:
+    number = optional_positive_number(value) or 0.0
+    if number <= 0:
+        return 0.25
+    baseline = max(float(baseline or 100000.0), 1.0)
+    normalized = number / baseline
+    scale_key = str(scale or "sqrt").lower()
+    if scale_key == "linear":
+        weight = normalized
+    elif scale_key == "log":
+        weight = math.log10(number + 1.0) / math.log10(baseline + 1.0)
+    else:
+        weight = math.sqrt(normalized)
+    return float(min(max(weight, 0.25), cap))
+
+
+def summarize_timesheet_employee_weighted_touches(
+    activity: pd.DataFrame,
+    *,
+    value_scale: str = "sqrt",
+    top_employee_count: int = 8,
+) -> pd.DataFrame:
+    if not isinstance(activity, pd.DataFrame) or activity.empty or "work_date_parsed" not in activity.columns:
+        return pd.DataFrame()
+    df = activity.copy()
+    df = df[df["work_date_parsed"].notna()].copy()
+    if df.empty:
+        return pd.DataFrame()
+    for column in ("employee", "project_name", "job_id", "customer", "job_name", "code"):
+        if column not in df.columns:
+            df[column] = ""
+        df[column] = df[column].fillna("").astype(str)
+    if "job_value" not in df.columns:
+        df["job_value"] = 0.0
+    df["job_value"] = pd.to_numeric(df["job_value"], errors="coerce").fillna(0.0)
+    df["activity_date"] = df["work_date_parsed"].dt.date.astype("string")
+    df["touch_project_key"] = df["job_id"].where(df["job_id"].str.strip().ne(""), df["project_name"])
+    df["touch_project_key"] = df["touch_project_key"].fillna("").astype(str).replace("", "(blank)")
+
+    touch_rows = (
+        df.groupby(["activity_date", "employee", "touch_project_key"], dropna=False)
+        .agg(
+            job_value=("job_value", "max"),
+            customer=("customer", "first"),
+            job_name=("job_name", "first"),
+            project_name=("project_name", "first"),
+            codes=("code", compact_unique_text),
+            source_line_count=("touch_count", "sum"),
+        )
+        .reset_index()
+    )
+    touch_rows["project_touch_count"] = 1
+    touch_rows["value_weight"] = touch_rows["job_value"].apply(lambda value: timesheet_touch_value_weight(value, scale=value_scale))
+    touch_rows["weighted_touch_score"] = touch_rows["project_touch_count"] * touch_rows["value_weight"]
+
+    employee_totals = (
+        touch_rows.groupby("employee", dropna=False)["weighted_touch_score"]
+        .sum()
+        .sort_values(ascending=False)
+        .head(max(int(top_employee_count or 8), 1))
+    )
+    top_employees = set(employee_totals.index.astype(str))
+    chart_rows = touch_rows[touch_rows["employee"].astype(str).isin(top_employees)].copy()
+    if chart_rows.empty:
+        return pd.DataFrame()
+    grouped = (
+        chart_rows.groupby(["activity_date", "employee"], dropna=False)
+        .agg(
+            weighted_touch_score=("weighted_touch_score", "sum"),
+            project_touch_count=("project_touch_count", "sum"),
+            job_value_touched=("job_value", "sum"),
+            source_line_count=("source_line_count", "sum"),
+            projects=("project_name", compact_unique_text),
+            customers=("customer", compact_unique_text),
+            codes=("codes", compact_unique_text),
+        )
+        .reset_index()
+        .sort_values(["activity_date", "employee"])
+    )
+    return grouped
+
+
 def summarize_timesheet_job_type_touches(job_rollup: pd.DataFrame, activity: pd.DataFrame) -> pd.DataFrame:
     source = job_rollup if isinstance(job_rollup, pd.DataFrame) and not job_rollup.empty else activity
     if not isinstance(source, pd.DataFrame) or source.empty:
@@ -7835,6 +7918,24 @@ def timesheet_job_touches_page() -> None:
     with filter_col4:
         search = st.text_input("Search project/job/customer", key="timesheet_touches_search").strip()
 
+    weight_col1, weight_col2 = st.columns([1.2, 1.2])
+    with weight_col1:
+        weighted_touch_scale = st.selectbox(
+            "Value weighting",
+            ["sqrt", "log", "linear"],
+            index=0,
+            key="timesheet_touches_value_weighting",
+            help="Weights each employee/project/day touch by matched job value. Sqrt is the default because raw linear dollars can make large jobs dominate.",
+        )
+    with weight_col2:
+        weighted_touch_top_n = st.slider(
+            "Employees in weighted trend",
+            min_value=3,
+            max_value=15,
+            value=8,
+            key="timesheet_touches_weighted_employee_count",
+        )
+
     with dashboard_perf_step("timesheet filter application", row_count=len(activity_all)):
         activity = activity_all.copy()
         if start_date:
@@ -7868,6 +7969,11 @@ def timesheet_job_touches_page() -> None:
         code_summary = summarize_timesheet_by_code(activity)
         daily_summary = summarize_timesheet_daily_touches(activity)
         job_type_summary = summarize_timesheet_job_type_touches(job_rollup, activity)
+        weighted_employee_touches = summarize_timesheet_employee_weighted_touches(
+            activity,
+            value_scale=weighted_touch_scale,
+            top_employee_count=weighted_touch_top_n,
+        )
     matched_rows = activity[activity["matched_job"]]
     unmatched_rows = activity[~activity["matched_job"]]
     metric_row(
@@ -7907,6 +8013,40 @@ def timesheet_job_touches_page() -> None:
             labels={"activity_date": "date", "touch_count": "touches"},
         )
         st.plotly_chart(fig, width="stretch")
+    if weighted_employee_touches.empty:
+        show_empty("No dated employee project touches are available for the weighted touch trend.")
+    else:
+        fig = px.line(
+            weighted_employee_touches,
+            x="activity_date",
+            y="weighted_touch_score",
+            color="employee",
+            markers=True,
+            title="Value-Weighted Project Touches Over Time by Employee",
+            labels={
+                "activity_date": "date",
+                "weighted_touch_score": "weighted touch score",
+                "employee": "employee",
+                "project_touch_count": "project touches",
+                "job_value_touched": "job value touched",
+                "projects": "projects",
+                "customers": "customers",
+                "codes": "codes",
+            },
+            hover_data={
+                "project_touch_count": True,
+                "job_value_touched": ":$,.0f",
+                "source_line_count": True,
+                "projects": True,
+                "customers": True,
+                "codes": True,
+            },
+        )
+        st.plotly_chart(fig, width="stretch")
+        st.caption(
+            "Weighted score counts one touch per employee/project/day and weights it by matched job value. "
+            f"Current scale: {weighted_touch_scale}; unknown-value projects receive a small weight."
+        )
 
     tab_jobs, tab_employee, tab_codes, tab_activity, tab_review = st.tabs(
         ["Projects Moving", "By Employee", "By Code", "Recent Activity", "Match Review"]
