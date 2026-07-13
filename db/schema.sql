@@ -203,6 +203,8 @@ CREATE TABLE IF NOT EXISTS job_workflow_overrides (
     follow_up_date DATE,
     priority TEXT,
     closed_did_not_get BOOLEAN DEFAULT FALSE,
+    review_mark_contracted BOOLEAN DEFAULT FALSE,
+    review_mark_completed BOOLEAN DEFAULT FALSE,
     internal_notes TEXT,
     updated_by TEXT,
     updated_at TIMESTAMPTZ DEFAULT NOW()

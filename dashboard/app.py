@@ -1370,6 +1370,8 @@ CREATE TABLE IF NOT EXISTS job_workflow_overrides (
     follow_up_date DATE,
     priority TEXT,
     closed_did_not_get BOOLEAN DEFAULT FALSE,
+    review_mark_contracted BOOLEAN DEFAULT FALSE,
+    review_mark_completed BOOLEAN DEFAULT FALSE,
     internal_notes TEXT,
     updated_by TEXT,
     updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -1436,6 +1438,8 @@ def ensure_job_workflow_overrides_table() -> None:
     with engine.begin() as conn:
         conn.execute(text(JOB_WORKFLOW_OVERRIDES_TABLE_SQL))
         conn.execute(text("ALTER TABLE job_workflow_overrides ADD COLUMN IF NOT EXISTS closed_did_not_get BOOLEAN DEFAULT FALSE"))
+        conn.execute(text("ALTER TABLE job_workflow_overrides ADD COLUMN IF NOT EXISTS review_mark_contracted BOOLEAN DEFAULT FALSE"))
+        conn.execute(text("ALTER TABLE job_workflow_overrides ADD COLUMN IF NOT EXISTS review_mark_completed BOOLEAN DEFAULT FALSE"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_job_workflow_status ON job_workflow_overrides(workflow_status)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_job_workflow_priority ON job_workflow_overrides(priority)"))
 
@@ -1543,6 +1547,8 @@ def load_job_workflow_overrides() -> pd.DataFrame:
                 follow_up_date,
                 priority,
                 closed_did_not_get,
+                review_mark_contracted,
+                review_mark_completed,
                 internal_notes,
                 updated_by,
                 updated_at
@@ -1563,6 +1569,8 @@ def save_job_workflow_override(
     priority: object,
     internal_notes: object,
     closed_did_not_get: object = False,
+    review_mark_contracted: object = False,
+    review_mark_completed: object = False,
     updated_by: object | None = None,
 ) -> None:
     ensure_job_workflow_overrides_table()
@@ -1577,6 +1585,8 @@ def save_job_workflow_override(
         "follow_up_date": clean_db_value(follow_up_date),
         "priority": clean_db_value(priority),
         "closed_did_not_get": truthy_bool(closed_did_not_get),
+        "review_mark_contracted": truthy_bool(review_mark_contracted),
+        "review_mark_completed": truthy_bool(review_mark_completed),
         "internal_notes": clean_db_value(internal_notes),
         "updated_by": clean_db_value(updated_by),
     }
@@ -1590,6 +1600,8 @@ def save_job_workflow_override(
             follow_up_date,
             priority,
             closed_did_not_get,
+            review_mark_contracted,
+            review_mark_completed,
             internal_notes,
             updated_by,
             updated_at
@@ -1602,6 +1614,8 @@ def save_job_workflow_override(
             :follow_up_date,
             :priority,
             :closed_did_not_get,
+            :review_mark_contracted,
+            :review_mark_completed,
             :internal_notes,
             :updated_by,
             NOW()
@@ -1613,6 +1627,8 @@ def save_job_workflow_override(
             follow_up_date = EXCLUDED.follow_up_date,
             priority = EXCLUDED.priority,
             closed_did_not_get = EXCLUDED.closed_did_not_get,
+            review_mark_contracted = EXCLUDED.review_mark_contracted,
+            review_mark_completed = EXCLUDED.review_mark_completed,
             internal_notes = EXCLUDED.internal_notes,
             updated_by = EXCLUDED.updated_by,
             updated_at = NOW()
@@ -7067,6 +7083,39 @@ def truthy_bool(value: object) -> bool:
     return bool(value)
 
 
+def folder_pipeline_bucket_for_row(row: pd.Series | dict[str, Any]) -> str:
+    folder_text = " ".join(
+        text_value(row.get(column))
+        for column in ["folder_path", "folder_url", "folder_link_or_path", "folder"]
+        if hasattr(row, "get")
+    ).lower()
+    normalized = re.sub(r"[^a-z0-9]+", " ", folder_text)
+    tokens = set(normalized.split())
+    if "completed" in tokens or "complete" in tokens:
+        return "Completed Folder"
+    if "contracted" in tokens or "contract" in tokens:
+        return "Contracted Folder"
+    return "Proposal Pipeline"
+
+
+def is_proposal_pipeline_review_row(row: pd.Series | dict[str, Any]) -> bool:
+    if folder_pipeline_bucket_for_row(row) != "Proposal Pipeline":
+        return False
+    if truthy_bool(row.get("closed_did_not_get")):
+        return False
+    proposal_signal = first_nonblank(
+        row.get("proposal_status_flag"),
+        row.get("proposal_file"),
+        row.get("proposal_file_name"),
+        row.get("proposal_modified_at"),
+        row.get("proposal_created_at"),
+    )
+    stage = normalize_board_status(first_nonblank(row.get("workflow_status"), row.get("pipeline_status"), row.get("status"), row.get("sales_stage")))
+    if proposal_signal and text_value(proposal_signal) != "No proposal date":
+        return True
+    return stage in {"Proposed", "Proposal Submitted", "Contract Pending"}
+
+
 SALES_PIPELINE_STAGES = [
     "Lead Received",
     "Site Visit Scheduled",
@@ -7673,6 +7722,9 @@ def job_board_export_rows(rows: pd.DataFrame) -> pd.DataFrame:
             export[column] = pd.to_datetime(export[column], errors="coerce").dt.date.astype("string")
     columns = [
         "closed_did_not_get",
+        "review_mark_contracted",
+        "review_mark_completed",
+        "folder_pipeline_bucket",
         "proposal_status_flag",
         "proposal_age_days",
         "proposal_created_at",
@@ -7700,7 +7752,23 @@ def job_board_export_rows(rows: pd.DataFrame) -> pd.DataFrame:
     return export[[column for column in columns if column in export.columns]]
 
 
-def save_closed_did_not_get_edits(original_rows: pd.DataFrame, edited_rows: pd.DataFrame) -> int:
+JOB_BOARD_REVIEW_CHECKBOX_FIELDS = ["closed_did_not_get", "review_mark_contracted", "review_mark_completed"]
+
+
+def workflow_status_from_review_marks(original_row: dict[str, Any], marks: dict[str, bool]) -> object:
+    if marks.get("review_mark_completed"):
+        return "Completed"
+    if marks.get("review_mark_contracted"):
+        return "Contracted"
+    if marks.get("closed_did_not_get"):
+        return "Closed Lost"
+    current = original_row.get("workflow_status")
+    if normalize_board_status(current) in {"Closed Lost", "Contracted", "Completed"}:
+        return first_nonblank(original_row.get("pipeline_status"), original_row.get("status"), "Lead Received")
+    return current
+
+
+def save_job_board_review_edits(original_rows: pd.DataFrame, edited_rows: pd.DataFrame) -> int:
     if not isinstance(original_rows, pd.DataFrame) or not isinstance(edited_rows, pd.DataFrame):
         return 0
     if original_rows.empty or edited_rows.empty or "job_id" not in original_rows.columns or "job_id" not in edited_rows.columns:
@@ -7716,21 +7784,24 @@ def save_closed_did_not_get_edits(original_rows: pd.DataFrame, edited_rows: pd.D
         if not job_id:
             continue
         original_row = original_lookup.get(job_id, {})
-        edited_value = truthy_bool(row.get("closed_did_not_get"))
-        if truthy_bool(original_row.get("closed_did_not_get")) == edited_value:
+        marks = {
+            field: truthy_bool(row.get(field, original_row.get(field)))
+            for field in JOB_BOARD_REVIEW_CHECKBOX_FIELDS
+        }
+        changed = any(truthy_bool(original_row.get(field)) != marks[field] for field in JOB_BOARD_REVIEW_CHECKBOX_FIELDS)
+        if not changed:
             continue
-        workflow_status = "Closed Lost" if edited_value else original_row.get("workflow_status")
-        if not edited_value and normalize_board_status(workflow_status) == "Closed Lost":
-            workflow_status = first_nonblank(original_row.get("pipeline_status"), original_row.get("status"), "Lead Received")
         save_job_workflow_override(
             job_id=job_id,
-            workflow_status=workflow_status,
+            workflow_status=workflow_status_from_review_marks(original_row, marks),
             deal_owner=original_row.get("deal_owner"),
             assigned_user=original_row.get("assigned_user"),
             follow_up_date=original_row.get("follow_up_date"),
             priority=original_row.get("priority"),
             internal_notes=original_row.get("internal_notes"),
-            closed_did_not_get=edited_value,
+            closed_did_not_get=marks["closed_did_not_get"],
+            review_mark_contracted=marks["review_mark_contracted"],
+            review_mark_completed=marks["review_mark_completed"],
             updated_by=os.getenv("USER"),
         )
         saved += 1
@@ -7766,6 +7837,8 @@ def job_board_page() -> None:
         "follow_up_date",
         "priority",
         "closed_did_not_get",
+        "review_mark_contracted",
+        "review_mark_completed",
         "internal_notes",
         "updated_by",
         "updated_at",
@@ -7791,12 +7864,15 @@ def job_board_page() -> None:
         "proposal_age_days",
         "proposal_stale",
         "proposal_status_flag",
+        "folder_pipeline_bucket",
     ]:
         if column not in jobs.columns:
             jobs[column] = None
 
     jobs["job_id"] = jobs["job_id"].fillna("").astype(str)
-    jobs["closed_did_not_get"] = jobs["closed_did_not_get"].apply(truthy_bool)
+    for checkbox_column in JOB_BOARD_REVIEW_CHECKBOX_FIELDS:
+        jobs[checkbox_column] = jobs[checkbox_column].apply(truthy_bool)
+    jobs["folder_pipeline_bucket"] = jobs.apply(folder_pipeline_bucket_for_row, axis=1)
     jobs["board_status"] = jobs.apply(board_status_for_row, axis=1)
     selected_job_id = str(st.session_state.get("selected_job_board_job_id", "") or "")
     if selected_job_id:
@@ -7875,24 +7951,41 @@ def job_board_page() -> None:
             ("Proposed Value", fmt_dollar(status_value(filtered, "proposed"))),
             ("Contracted / Backlog Value", fmt_dollar(status_value(filtered, "contracted"))),
             ("Stale Proposals", fmt_count(filtered.get("proposal_stale", pd.Series(False, index=filtered.index)).fillna(False).astype(bool).sum())),
+            ("Contracted/Completed Folders", fmt_count(filtered.get("folder_pipeline_bucket", pd.Series("", index=filtered.index)).isin(["Contracted Folder", "Completed Folder"]).sum())),
             ("Warnings / Action Items", fmt_count((numeric_series(filtered, "warning_count").fillna(0) > 0).sum())),
         ]
     )
 
     dashboard_rows = prepare_job_board_dashboard_rows(filtered)
-    if "closed_did_not_get" in dashboard_rows.columns:
-        dashboard_rows["closed_did_not_get"] = dashboard_rows["closed_did_not_get"].apply(truthy_bool)
+    for checkbox_column in JOB_BOARD_REVIEW_CHECKBOX_FIELDS:
+        if checkbox_column in dashboard_rows.columns:
+            dashboard_rows[checkbox_column] = dashboard_rows[checkbox_column].apply(truthy_bool)
+    if "folder_pipeline_bucket" not in dashboard_rows.columns:
+        dashboard_rows["folder_pipeline_bucket"] = dashboard_rows.apply(folder_pipeline_bucket_for_row, axis=1)
 
-    review_rows = job_board_export_rows(dashboard_rows)
+    review_dashboard_rows = dashboard_rows[dashboard_rows.apply(is_proposal_pipeline_review_row, axis=1)].copy()
+    review_rows = job_board_export_rows(review_dashboard_rows)
     if not review_rows.empty:
         st.subheader("Proposal Aging / Closeout Review")
-        st.caption("Use the checkbox for jobs that are closed or did not get. Stale means the latest proposal document is more than 30 days old. The Excel export can be marked by changing the closed_did_not_get TRUE/FALSE column and importing it here.")
+        excluded_folder_count = int(
+            dashboard_rows.get("folder_pipeline_bucket", pd.Series("", index=dashboard_rows.index))
+            .isin(["Contracted Folder", "Completed Folder"])
+            .sum()
+        )
+        st.caption(
+            "Contracted and Completed folders are excluded from this proposal-pipeline review list. "
+            f"{excluded_folder_count:,} filtered job{'s' if excluded_folder_count != 1 else ''} were excluded by folder rule. "
+            "Use the checkboxes for remaining jobs that need to be moved or marked after estimator review."
+        )
         edited_review_rows = st.data_editor(
             review_rows,
             column_order=[
                 column
                 for column in [
                     "closed_did_not_get",
+                    "review_mark_contracted",
+                    "review_mark_completed",
+                    "folder_pipeline_bucket",
                     "proposal_status_flag",
                     "proposal_age_days",
                     "proposal_created_at",
@@ -7916,9 +8009,12 @@ def job_board_page() -> None:
             hide_index=True,
             width="stretch",
             height=360,
-            disabled=[column for column in review_rows.columns if column != "closed_did_not_get"],
+            disabled=[column for column in review_rows.columns if column not in JOB_BOARD_REVIEW_CHECKBOX_FIELDS],
             column_config={
                 "closed_did_not_get": st.column_config.CheckboxColumn("Closed / Did Not Get"),
+                "review_mark_contracted": st.column_config.CheckboxColumn("Contracted"),
+                "review_mark_completed": st.column_config.CheckboxColumn("Completed"),
+                "folder_pipeline_bucket": st.column_config.TextColumn("Folder Rule"),
                 "proposal_status_flag": st.column_config.TextColumn("Proposal Status"),
                 "proposal_age_days": st.column_config.NumberColumn("Proposal Age Days", format="%d"),
                 "proposal_created_at": st.column_config.TextColumn("Proposal Created"),
@@ -7938,18 +8034,18 @@ def job_board_page() -> None:
         )
         export_cols = st.columns([1, 1, 2])
         with export_cols[0]:
-            if st.button("Save Closeout Checks", type="primary", key="save_job_board_closeout_checks"):
+            if st.button("Save Review Checks", type="primary", key="save_job_board_closeout_checks"):
                 try:
-                    saved = save_closed_did_not_get_edits(dashboard_rows, edited_review_rows)
+                    saved = save_job_board_review_edits(dashboard_rows, edited_review_rows)
                     if saved:
-                        st.success(f"Saved {saved:,} closeout update{'s' if saved != 1 else ''}.")
+                        st.success(f"Saved {saved:,} review update{'s' if saved != 1 else ''}.")
                         st.rerun()
                     else:
-                        st.info("No closeout changes detected.")
+                        st.info("No review changes detected.")
                 except Exception as exc:
                     show_database_error(exc)
         with export_cols[1]:
-            export_df = job_board_export_rows(dashboard_rows)
+            export_df = job_board_export_rows(review_dashboard_rows)
             st.download_button(
                 "Export Excel",
                 data=dataframe_to_excel_bytes(export_df, "Job Board"),
@@ -7967,16 +8063,15 @@ def job_board_page() -> None:
             if uploaded_closeout_excel is not None:
                 try:
                     imported_closeout = pd.read_excel(uploaded_closeout_excel)
-                    required = {"job_id", "closed_did_not_get"}
-                    if not required.issubset(imported_closeout.columns):
-                        st.error("Imported workbook must include job_id and closed_did_not_get columns.")
+                    if "job_id" not in imported_closeout.columns or not any(column in imported_closeout.columns for column in JOB_BOARD_REVIEW_CHECKBOX_FIELDS):
+                        st.error("Imported workbook must include job_id and at least one review checkbox column.")
                     elif st.button("Apply Imported Closeout Checks", key="apply_imported_job_board_closeout"):
-                        saved = save_closed_did_not_get_edits(dashboard_rows, imported_closeout)
+                        saved = save_job_board_review_edits(dashboard_rows, imported_closeout)
                         if saved:
-                            st.success(f"Imported {saved:,} closeout update{'s' if saved != 1 else ''}.")
+                            st.success(f"Imported {saved:,} review update{'s' if saved != 1 else ''}.")
                             st.rerun()
                         else:
-                            st.info("No imported closeout changes detected.")
+                            st.info("No imported review changes detected.")
                 except Exception as exc:
                     show_database_error(exc)
 
@@ -7992,6 +8087,9 @@ def job_board_page() -> None:
             "estimate_modified_at",
             "estimate_modified_by",
             "closed_did_not_get",
+            "review_mark_contracted",
+            "review_mark_completed",
+            "folder_pipeline_bucket",
             "customer_display",
             "project",
             "division",
@@ -8088,6 +8186,9 @@ def job_board_page() -> None:
             ("Sales Stage", display_row.get("sales_stage"), "text"),
             ("Win / Loss", display_row.get("win_loss_status"), "text"),
             ("Closed / Did Not Get", bool_label(row.get("closed_did_not_get")), "text"),
+            ("Review Mark Contracted", bool_label(row.get("review_mark_contracted")), "text"),
+            ("Review Mark Completed", bool_label(row.get("review_mark_completed")), "text"),
+            ("Folder Rule", row.get("folder_pipeline_bucket"), "text"),
             ("Proposal Created", row.get("proposal_created_at"), "text"),
             ("Proposal Modified", row.get("proposal_modified_at"), "text"),
             ("Proposal Modified By", row.get("proposal_modified_by"), "text"),
@@ -8163,6 +8264,16 @@ def job_board_page() -> None:
                     value=truthy_bool(row.get("closed_did_not_get")),
                     key=f"job_closed_did_not_get_{job_key}",
                 )
+                review_mark_contracted = st.checkbox(
+                    "Contracted",
+                    value=truthy_bool(row.get("review_mark_contracted")),
+                    key=f"job_review_mark_contracted_{job_key}",
+                )
+                review_mark_completed = st.checkbox(
+                    "Completed",
+                    value=truthy_bool(row.get("review_mark_completed")),
+                    key=f"job_review_mark_completed_{job_key}",
+                )
             internal_notes = st.text_area(
                 "Internal Notes",
                 value=text_value(row.get("internal_notes")),
@@ -8180,6 +8291,8 @@ def job_board_page() -> None:
                         priority=priority,
                         internal_notes=internal_notes,
                         closed_did_not_get=closed_did_not_get,
+                        review_mark_contracted=review_mark_contracted,
+                        review_mark_completed=review_mark_completed,
                         updated_by=os.getenv("USER"),
                     )
                     st.success("Workflow updated")
