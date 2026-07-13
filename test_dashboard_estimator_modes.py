@@ -1157,6 +1157,36 @@ def test_estimator_chat_preserves_attached_answer_key_across_followup_turn() -> 
     assert preserved["reference_answer_key_mode"] == "evaluate"
 
 
+def test_estimator_chat_reference_answer_key_template_type_overrides_stale_scope() -> None:
+    app = importlib.import_module("dashboard.app")
+    answer_key = {
+        "schema_version": "reference_estimate_answer_key.v1",
+        "template_type": "insulation",
+        "source_workbook": {"file_name": "Estimate Insulation (Revised) - Fryman Residence .xlsx"},
+        "decisions": [{"decision_id": "insulation_foam_template_selector", "template_type": "insulation"}],
+    }
+    result_payload = {
+        "scope_overrides": {"division": "Roofing", "template_type": "roofing", "project_type": "roof coating"},
+        "workbook_decision_preferences": [
+            {
+                "template_type": "insulation",
+                "section": "insulation_foam_template_decisions",
+                "decision_id": "insulation_foam_template_selector",
+                "template_bucket": "foam",
+                "proposed_values": {"basis_sqft": 3600.0},
+            }
+        ],
+    }
+
+    preserved = app.preserve_attached_reference_answer_key_context(result_payload, None, answer_key)
+    scope = preserved["scope_overrides"]
+
+    assert scope["template_type"] == "insulation"
+    assert scope["division"] == "Insulation"
+    assert scope["estimate_mode"] == "insulation"
+    assert scope["estimated_sqft"] == 3600.0
+
+
 def test_estimator_chat_promotes_decision_basis_area_to_scope() -> None:
     app = importlib.import_module("dashboard.app")
     scope = {"template_type": "roofing"}

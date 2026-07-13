@@ -17,6 +17,17 @@ from jobscan.estimator.workbench import (
 )
 
 
+def test_insulation_template_type_wins_over_stale_roofing_division() -> None:
+    assert workbench_module._is_insulation_scope(
+        {
+            "division": "Roofing",
+            "template_type": "insulation",
+            "estimate_mode": "insulation",
+            "project_type": "spray foam insulation",
+        }
+    )
+
+
 def roofing_recommendation() -> EstimateRecommendation:
     return EstimateRecommendation(
         parsed_fields={

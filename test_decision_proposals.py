@@ -288,6 +288,66 @@ def test_reference_answer_key_proposal_overrides_fallback_labor_values() -> None
     assert labor["proposal_source"] == "reference_estimate_answer_key"
 
 
+def test_insulation_answer_key_scope_wins_over_stale_roofing_division() -> None:
+    proposals = build_decision_proposals(
+        {
+            "division": "Roofing",
+            "template_type": "insulation",
+            "project_type": "spray foam insulation",
+            "workbook_decision_preferences": [
+                {
+                    "template_type": "insulation",
+                    "section": "insulation_foam_template_decisions",
+                    "decision_id": "insulation_foam_template_selector",
+                    "template_bucket": "foam",
+                    "workbook_row": "19-21",
+                    "include": True,
+                    "source": "reference_estimate_answer_key",
+                    "proposed_values": {
+                        "basis_sqft": 3600.0,
+                        "thickness_inches": 8.75,
+                        "unit_price": 1.6,
+                        "yield_or_coverage": 17500,
+                        "estimated_units": 1800,
+                    },
+                }
+            ],
+        }
+    )
+
+    foam = [row for row in proposals if row["template_bucket"] == "foam"]
+
+    assert foam
+    assert {row["section"] for row in foam} == {"insulation_foam_template_decisions"}
+    assert all(row["template_type"] == "insulation" for row in foam)
+    assert all(row["proposed_values"].get("yield_or_coverage") == 17500 for row in foam)
+    assert all("estimated_units" not in row["proposed_values"] for row in foam)
+
+
+def test_chat_preferences_ignore_opposite_template_rows() -> None:
+    proposals = build_decision_proposals(
+        {
+            "division": "Roofing",
+            "template_type": "roofing",
+            "project_type": "roof restoration",
+            "workbook_decision_preferences": [
+                {
+                    "template_type": "insulation",
+                    "section": "insulation_foam_template_decisions",
+                    "decision_id": "insulation_foam_template_selector",
+                    "template_bucket": "foam",
+                    "workbook_row": "19-21",
+                    "include": True,
+                    "source": "reference_estimate_answer_key",
+                    "proposed_values": {"basis_sqft": 3600.0, "thickness_inches": 8.75},
+                }
+            ],
+        }
+    )
+
+    assert all(row["section"] != "roofing_foam_template_decisions" for row in proposals)
+
+
 def test_estimator_chat_roofing_shorthand_decision_ids_are_canonicalized() -> None:
     proposals = build_decision_proposals(
         {

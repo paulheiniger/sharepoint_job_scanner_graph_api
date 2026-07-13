@@ -1047,12 +1047,14 @@ def _is_insulation_scope(scope: dict[str, Any] | None) -> bool:
     template_type = _normalized(scope.get("template_type"))
     estimate_mode = _normalized(scope.get("estimate_mode"))
     project_type = _normalized(scope.get("project_type"))
-    if estimate_mode in {"roofing", "roof restoration", "roof coating", "restoration"}:
-        return False
-    if division == "roofing" or template_type == "roofing" or "roof coating" in project_type or "roof restoration" in project_type:
-        return False
-    if division == "insulation" or template_type == "insulation" or estimate_mode == "insulation":
+    if template_type == "insulation" or estimate_mode == "insulation":
         return True
+    if template_type in {"roofing", "repair", "flooring"} or estimate_mode in {"roofing", "roof restoration", "roof coating", "restoration"}:
+        return False
+    if division == "insulation":
+        return True
+    if division == "roofing" or "roof coating" in project_type or "roof restoration" in project_type:
+        return False
     text = " ".join(
         _normalized(scope.get(key))
         for key in (

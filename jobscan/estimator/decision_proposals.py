@@ -961,8 +961,17 @@ def _chat_estimator_proposals(template_type: str, scope: dict[str, Any]) -> list
     chat_payload = scope.get("estimator_chat") if isinstance(scope.get("estimator_chat"), dict) else {}
     raw = chat_payload.get("workbook_decision_preferences") or scope.get("workbook_decision_preferences") or []
     proposals: list[DecisionProposal] = []
+    normalized_template_type = _norm(template_type)
     for item in raw if isinstance(raw, list) else []:
         if not isinstance(item, dict):
+            continue
+        item_template_type = _norm(item.get("template_type"))
+        if item_template_type and item_template_type != normalized_template_type:
+            continue
+        item_section = _norm(item.get("section"))
+        if normalized_template_type != "insulation" and item_section.startswith("insulation "):
+            continue
+        if normalized_template_type != "roofing" and item_section.startswith("roofing "):
             continue
         target = _chat_target_for_preference(template_type, item)
         if not target:
@@ -1595,9 +1604,13 @@ def _clean_chat_proposed_values(item: dict[str, Any], *, template_type: str = ""
         allowed = {"hours_per_day", "people_count", "trip_count", "unit_price", "round_trip_miles"}
         return {key: value for key, value in values.items() if key in allowed and value is not None}
     if template_type == "insulation" and (bucket == "foam" or workbook_row in {"19", "20", "21", "19-21"}):
-        values.pop("yield_or_coverage", None)
-        values.pop("foam_yield_or_coverage", None)
-        values.pop("foam_yield", None)
+        if str(item.get("source") or "") not in {"reference_template_summary", "reference_estimate_answer_key"}:
+            values.pop("yield_or_coverage", None)
+            values.pop("foam_yield_or_coverage", None)
+            values.pop("foam_yield", None)
+        values.pop("estimated_units", None)
+        values.pop("estimated_sets", None)
+        values.pop("estimated_cost", None)
     if template_type in {"insulation", "roofing"} and (
         bucket in {"infrared_scan", "labor_infrared_scan"}
         or (workbook_row in {"99", "141"} and bucket in {"", "infrared_scan", "labor_infrared_scan"})

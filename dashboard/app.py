@@ -1050,6 +1050,79 @@ def estimator_reference_memory_capture_enabled(chat_result: dict[str, Any] | Non
     return answer_key_mode in {"apply", "teach"}
 
 
+def _normalize_reference_template_type(value: Any) -> str:
+    normalized = " ".join(str(value or "").strip().lower().replace("_", " ").replace("-", " ").split())
+    if normalized in {"insulation", "spray foam insulation"}:
+        return "insulation"
+    if normalized in {"roofing", "roof", "roof restoration", "roof coating"}:
+        return "roofing"
+    if normalized in {"repair", "repairs"}:
+        return "repair"
+    if normalized == "flooring":
+        return "flooring"
+    return ""
+
+
+def _reference_template_type_from_context(
+    reference_answer_key: dict[str, Any] | None,
+    decision_preferences: list[dict[str, Any]] | None,
+) -> str:
+    counts: dict[str, int] = {}
+
+    def add_candidate(value: Any, weight: int = 1) -> None:
+        candidate = _normalize_reference_template_type(value)
+        if candidate:
+            counts[candidate] = counts.get(candidate, 0) + weight
+
+    if isinstance(reference_answer_key, dict):
+        add_candidate(reference_answer_key.get("template_type"), 5)
+        for decision in reference_answer_key.get("decisions") or []:
+            if isinstance(decision, dict):
+                add_candidate(decision.get("template_type"), 1)
+                section = str(decision.get("section") or "")
+                if section.startswith("insulation_"):
+                    add_candidate("insulation", 1)
+                elif section.startswith("roofing_"):
+                    add_candidate("roofing", 1)
+    for preference in decision_preferences or []:
+        if not isinstance(preference, dict):
+            continue
+        add_candidate(preference.get("template_type"), 2)
+        section = str(preference.get("section") or "")
+        if section.startswith("insulation_"):
+            add_candidate("insulation", 1)
+        elif section.startswith("roofing_"):
+            add_candidate("roofing", 1)
+    if not counts:
+        return ""
+    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
+
+
+def scope_with_reference_template_type(
+    scope: dict[str, Any],
+    reference_answer_key: dict[str, Any] | None,
+    decision_preferences: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    resolved_scope = dict(scope or {})
+    template_type = _reference_template_type_from_context(reference_answer_key, decision_preferences)
+    if not template_type:
+        return resolved_scope
+    resolved_scope["template_type"] = template_type
+    resolved_scope["estimate_mode"] = template_type
+    if template_type == "insulation":
+        resolved_scope["division"] = "Insulation"
+        project_type = str(resolved_scope.get("project_type") or "").lower()
+        if not project_type or "roof" in project_type:
+            resolved_scope["project_type"] = "spray foam insulation"
+    elif template_type == "roofing":
+        resolved_scope["division"] = "Roofing"
+    elif template_type == "flooring":
+        resolved_scope["division"] = "Flooring"
+    elif template_type == "repair":
+        resolved_scope["division"] = "Repair"
+    return resolved_scope
+
+
 def preserve_attached_reference_answer_key_context(
     result_payload: dict[str, Any],
     previous_result: dict[str, Any] | None,
@@ -1066,9 +1139,15 @@ def preserve_attached_reference_answer_key_context(
         for key in ("reference_answer_key_mode", "reference_answer_key_label", "reference_answer_key_source_file"):
             if previous_result.get(key) not in (None, "", [], {}) and result_payload.get(key) in (None, "", [], {}):
                 result_payload[key] = previous_result.get(key)
+    decision_preferences = result_payload.get("workbook_decision_preferences") if isinstance(result_payload.get("workbook_decision_preferences"), list) else []
+    result_payload["scope_overrides"] = scope_with_reference_template_type(
+        result_payload.get("scope_overrides") if isinstance(result_payload.get("scope_overrides"), dict) else {},
+        result_payload.get("reference_answer_key") if isinstance(result_payload.get("reference_answer_key"), dict) else preserved_key,
+        decision_preferences,
+    )
     result_payload["scope_overrides"] = scope_with_decision_basis_area(
         result_payload.get("scope_overrides") if isinstance(result_payload.get("scope_overrides"), dict) else {},
-        result_payload.get("workbook_decision_preferences") if isinstance(result_payload.get("workbook_decision_preferences"), list) else [],
+        decision_preferences,
     )
     return result_payload
 
@@ -11808,6 +11887,12 @@ def estimator_prototype_page() -> None:
         estimate_type=resolved_estimate_type,
         data=data,
     )
+    if active_chat_context and isinstance(active_chat_context.get("scope_overrides"), dict):
+        active_chat_context["scope_overrides"] = scope_with_reference_template_type(
+            active_chat_context.get("scope_overrides") or {},
+            active_chat_context.get("reference_answer_key") if isinstance(active_chat_context.get("reference_answer_key"), dict) else None,
+            active_chat_context.get("workbook_decision_preferences") if isinstance(active_chat_context.get("workbook_decision_preferences"), list) else [],
+        )
     chat_template_type = ""
     if active_chat_context and isinstance(active_chat_context.get("scope_overrides"), dict):
         chat_template_type = text_value(active_chat_context.get("scope_overrides", {}).get("template_type")).lower()
@@ -11829,6 +11914,11 @@ def estimator_prototype_page() -> None:
     )
     estimator_chat_scope_overrides = scope_with_decision_basis_area(
         estimator_chat_scope_overrides,
+        active_chat_context.get("workbook_decision_preferences") if active_chat_context else [],
+    )
+    estimator_chat_scope_overrides = scope_with_reference_template_type(
+        estimator_chat_scope_overrides,
+        active_chat_context.get("reference_answer_key") if active_chat_context and isinstance(active_chat_context.get("reference_answer_key"), dict) else None,
         active_chat_context.get("workbook_decision_preferences") if active_chat_context else [],
     )
     active_photo_context = (
