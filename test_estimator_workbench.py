@@ -1660,6 +1660,29 @@ def test_insulation_answer_key_preserves_row_specific_foam_yield() -> None:
     assert all(row["yield_or_coverage_source"] == "provided" for row in foam_rows)
 
 
+def test_roofing_sales_and_truck_rows_use_scoped_route_mileage(monkeypatch) -> None:
+    recommendation = roofing_recommendation()
+    recommendation.parsed_fields.update(
+        {
+            "site_address": "521 East 4th Street Owensboro, KY 42303",
+            "destination_address": "521 East 4th Street Owensboro, KY 42303",
+            "notes": "Include truck expense mileage.",
+        }
+    )
+
+    monkeypatch.setattr(workbench_module, "estimate_one_way_miles", lambda scope: 86.4)
+
+    workbench = build_estimating_workbench(recommendation, EstimatorData())
+    travel_rows = {
+        row["template_bucket"]: row
+        for row in workbench["roofing_travel_freight_template_decisions"]
+        if row.get("template_bucket") in {"sales_trips", "truck_expense"}
+    }
+
+    assert travel_rows["sales_trips"]["round_trip_miles"] == 172.8
+    assert travel_rows["truck_expense"]["round_trip_miles"] == 172.8
+
+
 def test_insulation_foam_labor_uses_foam_set_driver_evidence() -> None:
     data = insulation_labor_driver_data()
 

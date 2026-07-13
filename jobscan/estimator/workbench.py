@@ -8981,6 +8981,7 @@ def _build_roofing_travel_freight_template_decisions(
             ("truck_expense", "travel"),
         ),
     ]
+    scoped_round_trip_miles = _estimated_round_trip_miles_from_scope(scope)
     for row_number, bucket, label, signal_terms, default_trips, default_rate, adder_keys in travel_specs:
         existing = existing_by_row.get(str(row_number), {})
         signal = bool(any((adder_by_key.get(key) or {}).get("include") for key in adder_keys) or _has_positive_note_signal(notes, signal_terms))
@@ -8994,11 +8995,11 @@ def _build_roofing_travel_freight_template_decisions(
         if trips <= 0:
             trips = default_trips if include else 0.0
         if miles <= 0:
-            miles = ROOFING_TRAVEL_DEFAULT_ROUND_TRIP_MILES if include else 0.0
+            miles = scoped_round_trip_miles if include and scoped_round_trip_miles > 0 else ROOFING_TRAVEL_DEFAULT_ROUND_TRIP_MILES if include else 0.0
         if include and trips <= 0:
             trips = default_trips
         if include and miles <= 0:
-            miles = ROOFING_TRAVEL_DEFAULT_ROUND_TRIP_MILES
+            miles = scoped_round_trip_miles if scoped_round_trip_miles > 0 else ROOFING_TRAVEL_DEFAULT_ROUND_TRIP_MILES
         if include and rate <= 0:
             rate = default_amount / (trips * miles) if default_amount > 0 and trips > 0 and miles > 0 else default_rate
         formula = calculate_roofing_travel_cost(

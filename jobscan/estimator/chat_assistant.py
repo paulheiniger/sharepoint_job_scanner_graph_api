@@ -13,6 +13,7 @@ from typing import Any, Callable, Iterable
 import pandas as pd
 
 from .estimator_memory import relevant_memory_rows
+from . import labor as estimator_labor
 from .foam_yield_history import build_foam_yield_history_digest
 from .job_context_profiles import build_job_context_digest
 from .reference_answer_key import (
@@ -20,7 +21,7 @@ from .reference_answer_key import (
     parse_reference_answer_key_text,
 )
 from .template_examples import build_similar_answer_key_digest, build_template_example_digest
-from .schemas import EstimatorData
+from .schemas import EstimatorAssumptions, EstimatorData
 
 
 DEFAULT_CHAT_ESTIMATOR_MODEL = "gpt-4o"
@@ -161,6 +162,7 @@ def run_estimator_chat_turn(
         _merge_chat_scopes(existing_scope or {}, deterministic_baseline.scope_overrides),
         raw_message_list,
     )
+    baseline_scope = _enrich_scope_with_route_mileage(baseline_scope)
     deterministic_baseline.scope_overrides = baseline_scope
     context = estimator_context_summary(data, scope=baseline_scope)
     matched_answer_key_summary = (
@@ -909,6 +911,9 @@ def _build_estimator_context_summary(data: EstimatorData | None, *, scope: dict[
         "decision_recommendation_rows": _frame_len(data.estimator_decision_recommendations),
         **_empty_chat_decision_context(scope),
     }
+    route_mileage = _route_mileage_context(scope)
+    if route_mileage:
+        summary["route_mileage"] = route_mileage
     summary["decision_menu"] = decision_menu
     summary["formula_requirements"] = [
         {
@@ -1018,7 +1023,7 @@ def _build_estimator_context_summary(data: EstimatorData | None, *, scope: dict[
 def _empty_chat_decision_context(scope: dict[str, Any] | None) -> dict[str, Any]:
     template_type = _template_type_for_scope(scope or {})
     decision_menu = CHAT_DECISION_MENU.get(template_type, [])
-    return {
+    summary = {
         "template_type": template_type,
         "decision_menu": decision_menu,
         "formula_requirements": [
@@ -1057,6 +1062,10 @@ def _empty_chat_decision_context(scope: dict[str, Any] | None) -> dict[str, Any]
         "historical_template_examples": {"matched_examples": []},
         "historical_answer_key_examples": {"matched_answer_keys": []},
     }
+    route_mileage = _route_mileage_context(scope or {})
+    if route_mileage:
+        summary["route_mileage"] = route_mileage
+    return summary
 
 
 def _build_template_decision_menu(data: EstimatorData, *, template_type: str) -> list[dict[str, Any]]:
@@ -2595,7 +2604,11 @@ def deterministic_chat_fallback(
     assumptions: list[str] = []
     questions: list[str] = []
     template_hint = template_type_hint.lower()
-    if "insulation" in template_hint or re.search(r"\bfoam|spray|insulat", text, re.I):
+    if "roof" in template_hint:
+        scope["template_type"] = "roofing"
+        scope["division"] = "Roofing"
+        scope["project_type"] = "roofing estimate"
+    elif "insulation" in template_hint or re.search(r"\bfoam|spray|insulat", text, re.I):
         scope["template_type"] = "insulation"
         scope["division"] = "Insulation"
         scope["project_type"] = "spray foam insulation"
@@ -2609,61 +2622,62 @@ def deterministic_chat_fallback(
         scope["address"] = site_address
         scope["destination_address"] = site_address
 
-    length, width = _parse_footprint(text)
-    wall_height = _parse_wall_height(text)
-    if length and width:
-        scope["building_footprint_length_ft"] = length
-        scope["building_footprint_width_ft"] = width
-        scope["footprint_area_sqft"] = round(length * width, 2)
-    if wall_height:
-        scope["wall_height_ft"] = wall_height
-    openings, deduction_area = _parse_openings(text)
-    if openings:
-        scope["openings"] = openings
-        scope["opening_area_known_sqft"] = round(deduction_area, 2)
-        scope["deduction_sqft"] = round(deduction_area, 2)
-    if length and width and wall_height:
-        wall_area = 2 * (length + width) * wall_height
-        roof_area = length * width
-        net_wall = max(wall_area - deduction_area, 0)
-        scope.update(
-            {
-                "outside_walls_included": True,
-                "ceiling_included": True,
-                "gross_wall_area_sqft": round(wall_area, 2),
-                "ceiling_area_sqft": round(roof_area, 2),
-                "gross_insulation_area_sqft": round(wall_area + roof_area, 2),
-                "net_insulation_area_sqft": round(net_wall + roof_area, 2),
-                "net_sqft": round(net_wall + roof_area, 2),
-                "estimated_sqft": round(net_wall + roof_area, 2),
-                "area_calculation_explanation": (
-                    f"Walls: 2 x ({length:g} + {width:g}) x {wall_height:g} = {wall_area:,.0f} sq ft. "
-                    f"Openings deducted: {deduction_area:,.0f} sq ft. "
-                    f"Ceiling/roof deck: {length:g} x {width:g} = {roof_area:,.0f} sq ft. "
-                    f"Total spray area: {net_wall + roof_area:,.0f} sq ft."
-                ),
-            }
-        )
-    else:
-        questions.append("Confirm building length, width, wall height, and whether roof deck/ceiling is included.")
+    if scope.get("template_type") == "insulation":
+        length, width = _parse_footprint(text)
+        wall_height = _parse_wall_height(text)
+        if length and width:
+            scope["building_footprint_length_ft"] = length
+            scope["building_footprint_width_ft"] = width
+            scope["footprint_area_sqft"] = round(length * width, 2)
+        if wall_height:
+            scope["wall_height_ft"] = wall_height
+        openings, deduction_area = _parse_openings(text)
+        if openings:
+            scope["openings"] = openings
+            scope["opening_area_known_sqft"] = round(deduction_area, 2)
+            scope["deduction_sqft"] = round(deduction_area, 2)
+        if length and width and wall_height:
+            wall_area = 2 * (length + width) * wall_height
+            roof_area = length * width
+            net_wall = max(wall_area - deduction_area, 0)
+            scope.update(
+                {
+                    "outside_walls_included": True,
+                    "ceiling_included": True,
+                    "gross_wall_area_sqft": round(wall_area, 2),
+                    "ceiling_area_sqft": round(roof_area, 2),
+                    "gross_insulation_area_sqft": round(wall_area + roof_area, 2),
+                    "net_insulation_area_sqft": round(net_wall + roof_area, 2),
+                    "net_sqft": round(net_wall + roof_area, 2),
+                    "estimated_sqft": round(net_wall + roof_area, 2),
+                    "area_calculation_explanation": (
+                        f"Walls: 2 x ({length:g} + {width:g}) x {wall_height:g} = {wall_area:,.0f} sq ft. "
+                        f"Openings deducted: {deduction_area:,.0f} sq ft. "
+                        f"Ceiling/roof deck: {length:g} x {width:g} = {roof_area:,.0f} sq ft. "
+                        f"Total spray area: {net_wall + roof_area:,.0f} sq ft."
+                    ),
+                }
+            )
+        else:
+            questions.append("Confirm building length, width, wall height, and whether roof deck/ceiling is included.")
 
-    if not scope.get("foam_type"):
-        questions.append("Confirm open-cell vs closed-cell foam.")
-    thickness = _parse_thickness(text)
-    if thickness:
-        scope["foam_thickness_inches"] = thickness
-    else:
-        questions.append("Confirm target R-value or foam thickness.")
-    target_r_value = _parse_target_r_value(text)
-    if target_r_value:
-        scope["target_r_value"] = target_r_value
-        if scope.get("outside_walls_included") and scope.get("ceiling_included"):
-            scope["insulation_r_value_targets"] = {"walls": target_r_value, "ceiling": target_r_value}
-    r_value_per_inch = _parse_r_value_per_inch(text)
-    if target_r_value and r_value_per_inch and not scope.get("foam_thickness_inches"):
-        scope["r_value_per_inch_assumption"] = r_value_per_inch
-        scope["foam_thickness_inches"] = round(target_r_value / r_value_per_inch, 2)
-        questions = [question for question in questions if "r-value" not in question.lower() and "thickness" not in question.lower()]
+        if not scope.get("foam_type"):
+            questions.append("Confirm open-cell vs closed-cell foam.")
+        thickness = _parse_thickness(text)
+        if thickness:
+            scope["foam_thickness_inches"] = thickness
+        else:
+            questions.append("Confirm target R-value or foam thickness.")
+        target_r_value = _parse_target_r_value(text)
+        if target_r_value:
+            scope["target_r_value"] = target_r_value
+            if scope.get("outside_walls_included") and scope.get("ceiling_included"):
+                scope["insulation_r_value_targets"] = {"walls": target_r_value, "ceiling": target_r_value}
+        r_value_per_inch = _parse_r_value_per_inch(text)
+        if target_r_value and r_value_per_inch and not scope.get("foam_thickness_inches"):
+            scope["r_value_per_inch_assumption"] = r_value_per_inch
+            scope["foam_thickness_inches"] = round(target_r_value / r_value_per_inch, 2)
+            questions = [question for question in questions if "r-value" not in question.lower() and "thickness" not in question.lower()]
     timing = _parse_timing(text)
     if timing:
         scope["requested_timing"] = timing
@@ -2741,7 +2755,9 @@ def _chat_prompt_messages(
         "For insulation support and logistics rows, never include a row unless the calculation will produce nonzero cost: "
         "Caulk / Sealant rows require linear_ft or estimated_units plus unit_price; Drum Disposal requires estimated_units/foam dependency plus unit_price; "
         "Sales / Inspection Trips and Truck Expense require trip_count, round_trip_miles, and unit_price. "
-        "If address or mileage is missing, do not include Sales / Inspection Trips or Truck Expense; ask for/flag mileage instead. "
+        "If estimator_context.route_mileage.estimated_round_trip_miles or existing_scope.estimated_round_trip_miles is present, use that "
+        "as round_trip_miles for Sales / Inspection Trips and Truck Expense and do not ask for exact mileage. "
+        "If both address and mileage are missing, do not include Sales / Inspection Trips or Truck Expense; ask for/flag mileage instead. "
         "If the notes mention seal voids or masking but do not provide a measurable basis, either estimate a defensible quantity from openings with evidence "
         "or leave the material row unchecked with review_required true. "
         "For roofing and insulation foam decisions, prefer foam_yield_history_digest entries matching template type, foam type, "
@@ -2759,6 +2775,7 @@ def _chat_prompt_messages(
         "For roofing Infrared row 141 use hours_per_day and unit_price; for Meals / Hotel row 144 use days, people_count, and unit_price. "
         "Roofing labor rows use the mixed labor formula: daily_rate and days when a daily rate is available, otherwise total_hours and hourly_rate. "
         "Roofing sales/truck travel rows use trip_count x round_trip_miles x unit_price. "
+        "For roofing sales/truck rows, use the deterministic route mileage from estimator_context.route_mileage when an address was provided. "
         "You may do takeoff math from explicit dimensions and deductions. Do not invent hidden warranty years, exact proprietary products, "
         "or final quote totals when evidence is weak. Use review_required for assumptions. "
         "Workbook formulas remain authoritative for final costs."
@@ -2827,6 +2844,78 @@ def _clean_scope(scope: dict[str, Any]) -> dict[str, Any]:
             continue
         cleaned[str(key)] = value
     return cleaned
+
+
+def _scope_destination_address(scope: dict[str, Any]) -> str:
+    return _clean_string(
+        scope.get("destination_address")
+        or scope.get("site_address")
+        or scope.get("address")
+        or scope.get("location")
+        or scope.get("city")
+    )
+
+
+def _route_mileage_context(scope: dict[str, Any]) -> dict[str, Any]:
+    explicit_round_trip = _safe_positive_number(
+        scope.get("round_trip_miles")
+        or scope.get("estimated_round_trip_miles")
+        or scope.get("travel_round_trip_miles")
+    )
+    one_way = _safe_positive_number(scope.get("estimated_one_way_miles"))
+    if explicit_round_trip > 0:
+        if one_way <= 0:
+            one_way = round(explicit_round_trip / 2.0, 1)
+        return {
+            "origin_address": _clean_string(scope.get("origin_address") or EstimatorAssumptions().origin_address),
+            "destination_address": _scope_destination_address(scope),
+            "estimated_one_way_miles": one_way,
+            "estimated_round_trip_miles": explicit_round_trip,
+            "round_trip_miles": explicit_round_trip,
+            "source": _clean_string(scope.get("route_mileage_source") or "provided_or_precomputed"),
+        }
+    destination = _scope_destination_address(scope)
+    if not destination:
+        return {}
+    origin = _clean_string(scope.get("origin_address") or EstimatorAssumptions().origin_address)
+    route_scope = {**scope, "origin_address": origin, "destination_address": destination}
+    try:
+        routed_one_way = estimator_labor.estimate_one_way_miles(route_scope)
+    except Exception:
+        routed_one_way = None
+    if routed_one_way is None or routed_one_way <= 0:
+        return {
+            "origin_address": origin,
+            "destination_address": destination,
+            "source": "route_unavailable",
+            "review_required": True,
+        }
+    return {
+        "origin_address": origin,
+        "destination_address": destination,
+        "estimated_one_way_miles": round(float(routed_one_way), 1),
+        "estimated_round_trip_miles": round(float(routed_one_way) * 2.0, 1),
+        "round_trip_miles": round(float(routed_one_way) * 2.0, 1),
+        "source": "route_distance_estimator",
+    }
+
+
+def _enrich_scope_with_route_mileage(scope: dict[str, Any]) -> dict[str, Any]:
+    updated = dict(scope or {})
+    mileage = _route_mileage_context(updated)
+    if not mileage:
+        return _clean_scope(updated)
+    updated["origin_address"] = mileage.get("origin_address") or updated.get("origin_address")
+    updated["destination_address"] = mileage.get("destination_address") or updated.get("destination_address")
+    if mileage.get("estimated_one_way_miles"):
+        updated["estimated_one_way_miles"] = mileage["estimated_one_way_miles"]
+    if mileage.get("estimated_round_trip_miles"):
+        updated["estimated_round_trip_miles"] = mileage["estimated_round_trip_miles"]
+        updated["round_trip_miles"] = mileage["estimated_round_trip_miles"]
+    updated["route_mileage_source"] = mileage.get("source") or updated.get("route_mileage_source")
+    if mileage.get("review_required"):
+        updated["route_mileage_review_required"] = True
+    return _clean_scope(updated)
 
 
 def _apply_basis_area_multiplier_from_messages(

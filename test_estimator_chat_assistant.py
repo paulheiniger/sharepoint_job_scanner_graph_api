@@ -4,6 +4,7 @@ import json
 
 import pandas as pd
 
+import jobscan.estimator.chat_assistant as chat_assistant
 from jobscan.estimator.chat_assistant import (
     detect_estimator_learning_intent,
     detect_reference_answer_key_mode,
@@ -1417,3 +1418,54 @@ def test_estimator_chat_merges_pasted_reference_summary_after_ai_payload() -> No
         "trip_count": 3.0,
         "unit_price": 25.5,
     }
+
+
+def test_estimator_chat_precomputes_route_mileage_from_address(monkeypatch) -> None:
+    calls = []
+    seen_payload = {}
+
+    def fake_estimate_one_way_miles(scope):
+        calls.append(scope)
+        return 86.4
+
+    def provider(messages, _model):
+        payload = json.loads(messages[1]["content"])
+        seen_payload.update(payload)
+        return {
+            "assistant_message": "Using route mileage from the provided address.",
+            "estimator_notes": "Include sales/truck mileage using the routed round trip.",
+            "scope_overrides": {"template_type": "roofing"},
+            "workbook_decision_preferences": [
+                {
+                    "decision_id": "roofing_sales_trips_row_106",
+                    "section": "roofing_travel_freight_template_decisions",
+                    "template_bucket": "sales_trips",
+                    "workbook_row": "106",
+                    "include": True,
+                    "proposed_values": {"trip_count": 1, "round_trip_miles": 172.8, "unit_price": 1.0},
+                }
+            ],
+            "missing_questions": [],
+            "confidence": 0.8,
+        }
+
+    monkeypatch.setattr(chat_assistant.estimator_labor, "estimate_one_way_miles", fake_estimate_one_way_miles)
+
+    result = run_estimator_chat_turn(
+        [
+            {
+                "role": "user",
+                "content": "Roof repair with foam and coating. Address is 521 East 4th Street Owensboro, KY 42303.",
+            }
+        ],
+        template_type_hint="roofing",
+        provider=provider,
+        model="test-model",
+    )
+
+    assert calls
+    assert calls[0]["destination_address"] == "521 East 4th Street Owensboro, KY 42303"
+    assert seen_payload["existing_scope"]["estimated_round_trip_miles"] == 172.8
+    assert seen_payload["estimator_context"]["route_mileage"]["estimated_round_trip_miles"] == 172.8
+    assert result.scope_overrides["round_trip_miles"] == 172.8
+    assert not result.missing_questions
