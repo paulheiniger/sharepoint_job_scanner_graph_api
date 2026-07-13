@@ -4583,9 +4583,38 @@ def _build_insulation_foam_template_decisions(
     foam_row: dict[str, Any] | None = None,
     existing_rows: list[dict[str, Any]] | None = None,
     data: Any = None,
+    _force_single: bool = False,
 ) -> list[dict[str, Any]]:
     foam_row = foam_row or {}
+    if not _force_single:
+        row_specific_existing = [
+            row
+            for row in (existing_rows or [])
+            if isinstance(row, dict) and str(row.get("workbook_row") or "").strip() in {"19", "20", "21"}
+        ]
+        if row_specific_existing:
+            row_specific_existing = sorted(
+                row_specific_existing,
+                key=lambda row: int(str(row.get("workbook_row") or "999").strip()),
+            )
+            rows: list[dict[str, Any]] = []
+            for row in row_specific_existing:
+                rows.extend(
+                    _build_insulation_foam_template_decisions(
+                        scope=scope,
+                        foam_row=foam_row,
+                        existing_rows=[row],
+                        data=data,
+                        _force_single=True,
+                    )
+                )
+            return rows
     existing = (existing_rows or [{}])[0] if existing_rows else {}
+    foam_workbook_row = str(existing.get("workbook_row") or "").strip()
+    row_specific_workbook_row = foam_workbook_row if foam_workbook_row in {"19", "20", "21"} else ""
+    output_workbook_row = row_specific_workbook_row or "19-21"
+    output_decision_id = f"insulation_foam_row_{row_specific_workbook_row}" if row_specific_workbook_row else "insulation_foam_template_selector"
+    cell_row = row_specific_workbook_row or "19"
     filters = historical_filters_from_scope(scope)
     defaults = _insulation_foam_decision_defaults(data, filters)
     meta = defaults.get("meta") if isinstance(defaults.get("meta"), dict) else {}
@@ -4699,8 +4728,16 @@ def _build_insulation_foam_template_decisions(
         and any(abs(existing_yield_value - value) < 1e-6 for value in calculated_yield_values)
     )
     existing_yield_is_chat_or_auto = not explicit_existing_is_manual and _is_chat_estimator_source(existing)
+    row_specific_yield_from_proposal = (
+        row_specific_workbook_row
+        and existing_yield_value > 0
+        and str(first_nonblank(existing.get("proposal_source"), existing.get("include_source"), "")).strip().lower()
+        in {"chat_estimator", "reference_template_summary", "reference_estimate_answer_key"}
+    )
     provided_yield_or_coverage = positive_number(
-        "" if existing_yield_is_calculated or existing_yield_is_chat_or_auto else existing_yield_value,
+        existing_yield_value
+        if row_specific_yield_from_proposal
+        else "" if existing_yield_is_calculated or existing_yield_is_chat_or_auto else existing_yield_value,
         foam_row.get("yield_factor") if explicit_existing_is_manual else "",
         default=0.0,
     )
@@ -4872,11 +4909,12 @@ def _build_insulation_foam_template_decisions(
         {
             "include": include,
             "section": "insulation_foam_template_decisions",
-            "decision_id": "insulation_foam_template_selector",
+            "decision_id": output_decision_id,
+            "source_decision_id": "insulation_foam_template_selector",
             "template_bucket": "foam",
-            "workbook_row": "19-21",
-            "template_rows": "19,20,21",
-            "selector_cell": "A19",
+            "workbook_row": output_workbook_row,
+            "template_rows": row_specific_workbook_row or "19,20,21",
+            "selector_cell": f"A{cell_row}",
             "selector_code": str(selector_code),
             "editable_selector_code": str(selector_code),
             "resolved_template_option": resolved_option,
@@ -4994,12 +5032,12 @@ def _build_insulation_foam_template_decisions(
                 }
             ),
             "workbook_cell_write_preview": [
-                {"cell": "Estimate!A19", "field": "selector_code", "value": str(selector_code)},
-                {"cell": "Estimate!C19", "field": "area_sqft", "value": round(basis_sqft, 2)},
-                {"cell": "Estimate!D19", "field": "thickness_inches", "value": round(thickness, 4)},
-                {"cell": "Estimate!E19", "field": "unit_price", "value": round(unit_price, 4)},
-                {"cell": "Estimate!F19", "field": "yield_or_coverage", "value": round(yield_or_coverage, 4)},
-                {"cell": "Estimate!G19", "field": "estimated_units_formula_output", "value": formula.get("estimated_units")},
+                {"cell": f"Estimate!A{cell_row}", "field": "selector_code", "value": str(selector_code)},
+                {"cell": f"Estimate!C{cell_row}", "field": "area_sqft", "value": round(basis_sqft, 2)},
+                {"cell": f"Estimate!D{cell_row}", "field": "thickness_inches", "value": round(thickness, 4)},
+                {"cell": f"Estimate!E{cell_row}", "field": "unit_price", "value": round(unit_price, 4)},
+                {"cell": f"Estimate!F{cell_row}", "field": "yield_or_coverage", "value": round(yield_or_coverage, 4)},
+                {"cell": f"Estimate!G{cell_row}", "field": "estimated_units_formula_output", "value": formula.get("estimated_units")},
             ],
         }
     ]
@@ -5663,11 +5701,7 @@ def _is_chat_estimator_source(row: dict[str, Any]) -> bool:
 
 
 def _insulation_explicit_travel_basis(row: dict[str, Any]) -> bool:
-    return (
-        positive_number(row.get("trip_count"), default=0.0) > 0
-        or positive_number(row.get("round_trip_miles"), default=0.0) > 0
-        or positive_number(row.get("unit_price"), row.get("current_unit_price"), row.get("current_price"), default=0.0) > 0
-    )
+    return positive_number(row.get("round_trip_miles"), default=0.0) > 0
 
 
 def _is_spray_foam_scope(scope: dict[str, Any] | None) -> bool:
@@ -5871,6 +5905,43 @@ def _guard_pricing_markup_auto_includes(workbench: dict[str, Any]) -> dict[str, 
     return workbench
 
 
+def _guard_opposite_template_includes(workbench: dict[str, Any]) -> dict[str, Any]:
+    insulation_scope = _is_insulation_scope(workbench.get("scope") or {})
+    opposite_sections = (
+        (
+            *ROOFING_MATERIAL_TOTAL_DECISION_SECTIONS,
+            *ROOFING_ADDER_TOTAL_DECISION_SECTIONS,
+            *ROOFING_FREE_ADDER_DECISION_SECTIONS,
+            *ROOFING_LABOR_TOTAL_DECISION_SECTIONS,
+        )
+        if insulation_scope
+        else (
+            *INSULATION_MATERIAL_TOTAL_DECISION_SECTIONS,
+            *INSULATION_ADDER_TOTAL_DECISION_SECTIONS,
+            *INSULATION_LABOR_TOTAL_DECISION_SECTIONS,
+        )
+    )
+    reason = (
+        "Unchecked because this row belongs to the roofing template but the active estimate is insulation."
+        if insulation_scope
+        else "Unchecked because this row belongs to the insulation template but the active estimate is roofing."
+    )
+    for section in opposite_sections:
+        for row in workbench.get(section) or []:
+            if not isinstance(row, dict) or not row.get("include"):
+                continue
+            row["include"] = False
+            row["include_source"] = "template_scope_guard"
+            row["estimated_cost"] = 0.0
+            row["calculated_output"] = 0.0
+            row["formula_source"] = "not_included"
+            row["compatibility_status"] = "not_included"
+            warnings = list(row.get("compatibility_warnings") or [])
+            warnings.append(reason)
+            row["compatibility_warnings"] = list(dict.fromkeys(str(warning) for warning in warnings if warning))
+    return workbench
+
+
 def _guard_included_zero_cost_auto_rows(workbench: dict[str, Any]) -> dict[str, Any]:
     for section in WORKBENCH_DECISION_SECTIONS:
         for row in workbench.get(section) or []:
@@ -5883,8 +5954,27 @@ def _guard_included_zero_cost_auto_rows(workbench: dict[str, Any]) -> dict[str, 
             if estimated_cost > 0:
                 continue
             source = str(first_nonblank(row.get("include_source"), row.get("proposal_source"), "")).strip().lower()
-            risky_auto_source = source in {"historical_companion", "chat_estimator", "ai_chat", "photo_scope", "ai_scope"}
+            warning_text = " ".join(str(warning) for warning in row.get("compatibility_warnings") or [])
+            evidence_text = str(row.get("formula_evidence_summary") or "")
+            missing_formula_inputs = (
+                "Formula preview needs estimator input" in warning_text
+                or "insufficient_formula_inputs" in evidence_text
+            )
+            risky_auto_source = source in {
+                "",
+                "selected_item",
+                "historical_default",
+                "template_default",
+                "deterministic_rule",
+                "historical_companion",
+                "chat_estimator",
+                "ai_chat",
+                "photo_scope",
+                "ai_scope",
+            }
             calculation_only_detail_row = section == "roofing_detail_quantity_template_decisions"
+            if not (missing_formula_inputs or calculation_only_detail_row):
+                continue
             if not risky_auto_source and not calculation_only_detail_row:
                 continue
             reason = (
@@ -12137,9 +12227,62 @@ def _restore_manual_include_overrides(workbench: dict[str, Any], overrides: dict
     return workbench
 
 
+def _seed_insulation_foam_rows_from_proposals(
+    workbench: dict[str, Any],
+    proposals: Iterable[dict[str, Any]],
+) -> dict[str, Any]:
+    if not _is_insulation_scope(workbench.get("scope") or {}):
+        return workbench
+    proposal_rows = sorted(
+        {
+            str(proposal.get("workbook_row") or "").strip()
+            for proposal in proposals or []
+            if isinstance(proposal, dict)
+            and str(proposal.get("section") or "") == "insulation_foam_template_decisions"
+            and str(proposal.get("workbook_row") or "").strip() in {"19", "20", "21"}
+        },
+        key=int,
+    )
+    if not proposal_rows:
+        return workbench
+    existing_rows = [row for row in workbench.get("insulation_foam_template_decisions") or [] if isinstance(row, dict)]
+    existing_by_row = {
+        str(row.get("workbook_row") or "").strip(): row
+        for row in existing_rows
+        if str(row.get("workbook_row") or "").strip() in {"19", "20", "21"}
+    }
+    aggregate = next(
+        (row for row in existing_rows if str(row.get("workbook_row") or "").strip() not in {"19", "20", "21"}),
+        {},
+    )
+    seeded_rows: list[dict[str, Any]] = []
+    for row_number in proposal_rows:
+        source = dict(existing_by_row.get(row_number) or aggregate or {})
+        source.update(
+            {
+                "section": "insulation_foam_template_decisions",
+                "decision_id": f"insulation_foam_row_{row_number}",
+                "source_decision_id": "insulation_foam_template_selector",
+                "template_bucket": "foam",
+                "workbook_row": row_number,
+                "template_rows": row_number,
+            }
+        )
+        seeded_rows.append(source)
+    workbench["insulation_foam_template_decisions"] = seeded_rows
+    return workbench
+
+
 def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float = DEFAULT_HOURLY_RATE, data: Any = None) -> dict[str, Any]:
     updated = deepcopy(workbench)
-    scope = updated.setdefault("scope", {})
+    existing_scope = updated.get("scope")
+    if isinstance(existing_scope, dict) and existing_scope:
+        scope = existing_scope
+    elif isinstance(updated.get("parsed_scope"), dict) and updated.get("parsed_scope"):
+        scope = dict(updated.get("parsed_scope") or {})
+        updated["scope"] = scope
+    else:
+        scope = updated.setdefault("scope", {})
     source_material_plan = _records(updated.get("source_material_plan") or [])
     source_labor_plan = _records(updated.get("source_labor_plan") or [])
     base_decision_proposals = [
@@ -12147,6 +12290,7 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
         for proposal in updated.get("decision_proposals") or []
         if str((proposal or {}).get("source") or "") != "historical_companion"
     ]
+    updated = _seed_insulation_foam_rows_from_proposals(updated, base_decision_proposals)
     if base_decision_proposals:
         updated = apply_decision_proposals_to_workbench(
             updated,
@@ -12384,6 +12528,7 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
         [*base_decision_proposals, *companion_proposals],
         decision_sections=WORKBENCH_DECISION_SECTIONS,
     )
+    updated = _guard_opposite_template_includes(updated)
     updated = _guard_insulation_scaffold_auto_includes(updated)
     updated = _guard_pricing_markup_auto_includes(updated)
     updated = _guard_included_zero_cost_auto_rows(updated)

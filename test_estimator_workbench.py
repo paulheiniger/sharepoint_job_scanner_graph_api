@@ -28,6 +28,63 @@ def test_insulation_template_type_wins_over_stale_roofing_division() -> None:
     )
 
 
+def test_auto_included_zero_cost_insulation_rows_are_unchecked_when_inputs_missing() -> None:
+    workbench = {
+        "scope": {"template_type": "insulation", "division": "Insulation"},
+        "insulation_detail_material_template_decisions": [
+            {
+                "include": True,
+                "workbook_row": "41",
+                "template_bucket": "caulk_sealant",
+                "template_line": "Caulk / Sealant",
+                "estimated_cost": 0.0,
+                "unit_price": 12.0,
+                "linear_ft": 0.0,
+                "compatibility_warnings": ["Formula preview needs estimator input before it can calculate cost."],
+                "formula_evidence_summary": "insulation_sealant_units_from_linear_feet; source=insufficient_formula_inputs",
+            }
+        ],
+    }
+
+    guarded = workbench_module._guard_included_zero_cost_auto_rows(workbench)
+    row = guarded["insulation_detail_material_template_decisions"][0]
+
+    assert row["include"] is False
+    assert row["include_source"] == "calculation_basis_guard"
+    assert row["compatibility_status"] == "not_included"
+    assert any("Fill the required quantity/rate/price fields" in warning for warning in row["compatibility_warnings"])
+
+
+def test_insulation_travel_basis_requires_mileage_not_just_unit_price() -> None:
+    assert not workbench_module._insulation_explicit_travel_basis(
+        {"trip_count": 1, "unit_price": 0.75, "round_trip_miles": 0}
+    )
+    assert workbench_module._insulation_explicit_travel_basis(
+        {"trip_count": 1, "unit_price": 0.75, "round_trip_miles": 80}
+    )
+
+
+def test_opposite_template_rows_are_unchecked_for_insulation_scope() -> None:
+    workbench = {
+        "scope": {"template_type": "insulation", "division": "Insulation"},
+        "roofing_labor_template_decisions": [
+            {
+                "include": True,
+                "workbook_row": "116",
+                "template_bucket": "labor_prep",
+                "estimated_cost": 0.0,
+            }
+        ],
+    }
+
+    guarded = workbench_module._guard_opposite_template_includes(workbench)
+    row = guarded["roofing_labor_template_decisions"][0]
+
+    assert row["include"] is False
+    assert row["include_source"] == "template_scope_guard"
+    assert row["compatibility_status"] == "not_included"
+
+
 def roofing_recommendation() -> EstimateRecommendation:
     return EstimateRecommendation(
         parsed_fields={
@@ -1505,6 +1562,102 @@ def test_insulation_workbench_uses_decision_sections_only() -> None:
     assert any(row["row_type"] == "material" and row["template_bucket"] == "foam" for row in draft["workbook_decisions"])
     assert any(row["row_type"] == "material" and row["template_bucket"] == "labor_loading" for row in draft["workbook_decisions"])
     assert any(row["row_type"] == "labor" and row["template_bucket"] == "labor_foam" for row in draft["workbook_decisions"])
+
+
+def test_insulation_workbench_preserves_multiple_chat_foam_rows() -> None:
+    recommendation = insulation_recommendation()
+    recommendation.parsed_fields.update(
+        {
+            "template_type": "insulation",
+            "division": "Insulation",
+            "estimator_chat": {
+                "workbook_decision_preferences": [
+                    {
+                        "template_type": "insulation",
+                        "section": "insulation_foam_template_decisions",
+                        "template_bucket": "foam",
+                        "include": True,
+                        "source": "chat_estimator",
+                        "proposed_values": {
+                            "basis_sqft": 2853.0,
+                            "thickness_inches": 5.5,
+                            "unit_price": 1.6,
+                            "yield_or_coverage": 17500,
+                        },
+                    },
+                    {
+                        "template_type": "insulation",
+                        "section": "insulation_foam_template_decisions",
+                        "template_bucket": "foam",
+                        "include": True,
+                        "source": "chat_estimator",
+                        "proposed_values": {
+                            "basis_sqft": 3491.0,
+                            "thickness_inches": 8.0,
+                            "unit_price": 1.6,
+                            "yield_or_coverage": 14500,
+                        },
+                    },
+                ]
+            },
+        }
+    )
+
+    workbench = build_estimating_workbench(recommendation, EstimatorData())
+    foam_rows = workbench["insulation_foam_template_decisions"]
+
+    assert [row["workbook_row"] for row in foam_rows] == ["19", "20"]
+    assert [row["basis_sqft"] for row in foam_rows] == [2853.0, 3491.0]
+    assert [row["thickness_inches"] for row in foam_rows] == [5.5, 8.0]
+    assert all(row["include"] for row in foam_rows)
+    assert all(row["estimated_cost"] > 0 for row in foam_rows)
+
+
+def test_insulation_answer_key_preserves_row_specific_foam_yield() -> None:
+    recommendation = insulation_recommendation()
+    recommendation.parsed_fields.update(
+        {
+            "template_type": "insulation",
+            "division": "Insulation",
+            "estimator_chat": {
+                "workbook_decision_preferences": [
+                    {
+                        "template_type": "insulation",
+                        "section": "insulation_foam_template_decisions",
+                        "template_bucket": "foam",
+                        "include": True,
+                        "source": "reference_estimate_answer_key",
+                        "proposed_values": {
+                            "basis_sqft": 2853.0,
+                            "thickness_inches": 5.5,
+                            "unit_price": 1.6,
+                            "yield_or_coverage": 17500,
+                        },
+                    },
+                    {
+                        "template_type": "insulation",
+                        "section": "insulation_foam_template_decisions",
+                        "template_bucket": "foam",
+                        "include": True,
+                        "source": "reference_estimate_answer_key",
+                        "proposed_values": {
+                            "basis_sqft": 3491.0,
+                            "thickness_inches": 8.0,
+                            "unit_price": 1.6,
+                            "yield_or_coverage": 14500,
+                        },
+                    },
+                ]
+            },
+        }
+    )
+
+    workbench = build_estimating_workbench(recommendation, EstimatorData())
+    foam_rows = workbench["insulation_foam_template_decisions"]
+
+    assert [row["workbook_row"] for row in foam_rows] == ["19", "20"]
+    assert [row["yield_or_coverage"] for row in foam_rows] == [17500, 14500]
+    assert all(row["yield_or_coverage_source"] == "provided" for row in foam_rows)
 
 
 def test_insulation_foam_labor_uses_foam_set_driver_evidence() -> None:

@@ -324,6 +324,39 @@ def test_insulation_answer_key_scope_wins_over_stale_roofing_division() -> None:
     assert all("estimated_units" not in row["proposed_values"] for row in foam)
 
 
+def test_multiple_insulation_foam_chat_preferences_are_assigned_to_distinct_rows() -> None:
+    proposals = build_decision_proposals(
+        {
+            "division": "Insulation",
+            "template_type": "insulation",
+            "project_type": "spray foam insulation",
+            "workbook_decision_preferences": [
+                {
+                    "template_type": "insulation",
+                    "section": "insulation_foam_template_decisions",
+                    "template_bucket": "foam",
+                    "include": True,
+                    "source": "chat_estimator",
+                    "proposed_values": {"basis_sqft": 2853.0, "thickness_inches": 5.5, "unit_price": 1.6},
+                },
+                {
+                    "template_type": "insulation",
+                    "section": "insulation_foam_template_decisions",
+                    "template_bucket": "foam",
+                    "include": True,
+                    "source": "chat_estimator",
+                    "proposed_values": {"basis_sqft": 3491.0, "thickness_inches": 8.0, "unit_price": 1.6},
+                },
+            ],
+        }
+    )
+
+    foam = [row for row in proposals if row["section"] == "insulation_foam_template_decisions"]
+
+    assert [row["workbook_row"] for row in foam] == ["19", "20"]
+    assert [row["decision_id"] for row in foam] == ["insulation_foam_row_19", "insulation_foam_row_20"]
+
+
 def test_chat_preferences_ignore_opposite_template_rows() -> None:
     proposals = build_decision_proposals(
         {

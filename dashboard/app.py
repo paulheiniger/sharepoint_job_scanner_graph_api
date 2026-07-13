@@ -10072,33 +10072,177 @@ def display_safe_cell_value(value: Any) -> Any:
     return value
 
 
-def choice_summary_for_row(row: dict[str, Any]) -> str:
-    reason_parts: list[str] = []
+def _choice_number(value: Any) -> float:
+    if isinstance(value, (dict, list, tuple, set)):
+        return 0.0
+    try:
+        number = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    except (TypeError, ValueError):
+        return 0.0
+    return 0.0 if pd.isna(number) else float(number)
+
+
+def _choice_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = text_value(value).lower()
+    if text in {"true", "1", "yes", "y", "checked"}:
+        return True
+    if text in {"false", "0", "no", "n", "unchecked", ""}:
+        return False
+    return bool(value)
+
+
+def _choice_quantity(value: Any, *, suffix: str = "") -> str:
+    number = _choice_number(value)
+    if number <= 0:
+        return ""
+    rendered = f"{number:,.2f}".rstrip("0").rstrip(".")
+    return f"{rendered}{suffix}"
+
+
+def _choice_text_items(value: Any, *, limit: int = 4) -> list[str]:
+    if value is None:
+        return []
+    parsed = value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped or stripped.lower() in {"nan", "none", "null", "[]", "{}"}:
+            return []
+        if stripped[:1] in {"[", "{"}:
+            try:
+                parsed = json.loads(stripped)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed = stripped
+    if isinstance(parsed, dict):
+        items = [f"{key}: {item}" for key, item in parsed.items() if text_value(item)]
+    elif isinstance(parsed, (list, tuple, set)):
+        items = [text_value(item) for item in parsed if text_value(item)]
+    else:
+        items = [text_value(parsed)]
+    return list(dict.fromkeys(item for item in items if item))[:limit]
+
+
+def _choice_add_unique(parts: list[str], text: Any) -> None:
+    cleaned = text_value(text)
+    if not cleaned:
+        return
+    if cleaned not in parts:
+        parts.append(cleaned)
+
+
+def _choice_label(row: dict[str, Any]) -> str:
+    return text_value(
+        row.get("resolved_template_option")
+        or row.get("template_line")
+        or row.get("labor_task")
+        or row.get("package")
+        or row.get("decision_id")
+    )
+
+
+def _choice_include_summary(row: dict[str, Any]) -> str:
+    label = _choice_label(row) or "this row"
+    if not _choice_bool(row.get("include")):
+        return f"Not included: {label} is available for review but is not selected."
     if text_value(row.get("manual_override")) in {"True", "true", "1", "yes"} or text_value(row.get("proposal_source")) == "estimator_edit":
-        reason_parts.append("Estimator edited this row.")
-    if text_value(row.get("why_included")):
-        reason_parts.append(text_value(row.get("why_included")))
-    elif text_value(row.get("decision_evidence_summary")):
-        reason_parts.append(text_value(row.get("decision_evidence_summary")))
-    elif text_value(row.get("historical_evidence_summary")):
-        reason_parts.append(text_value(row.get("historical_evidence_summary")))
-    elif text_value(row.get("historical_selector_recommendation")):
-        evidence = text_value(row.get("historical_selector_evidence_count"))
-        suffix = f" from {evidence} historical rows" if evidence else ""
-        reason_parts.append(f"Historical default: {text_value(row.get('historical_selector_recommendation'))}{suffix}.")
-    elif text_value(row.get("historical_recommendation")):
-        reason_parts.append(f"Historical default: {text_value(row.get('historical_recommendation'))}.")
-    if text_value(row.get("pricing_evidence_summary")):
-        reason_parts.append(text_value(row.get("pricing_evidence_summary")))
-    if text_value(row.get("formula_evidence_summary")):
-        reason_parts.append(text_value(row.get("formula_evidence_summary")))
-    warning = text_value(row.get("proposal_review_reasons")) or text_value(row.get("compatibility_warnings"))
+        return f"Included because the estimator selected or edited {label}."
+    why = text_value(row.get("why_included"))
+    if why and not why.lower().startswith("included from historical default/workbench rule"):
+        return why
+    source = text_value(row.get("proposal_source") or row.get("include_source")).lower()
+    if source in {"chat_estimator", "ai_chat"}:
+        return f"Included because the estimator chat identified {label} for this scope."
+    if source in {"reference_template_summary", "reference_estimate_answer_key", "reference_project"}:
+        return f"Included because the matched reference estimate used {label}."
+    if source in {"historical_companion"}:
+        return f"Included because it is commonly paired with the selected material package."
+    if text_value(row.get("historical_evidence_summary")):
+        return f"Included based on historical estimating patterns for {label}."
+    return f"Included for the current scope: {label}."
+
+
+def _choice_calculation_summary(row: dict[str, Any]) -> str:
+    pieces: list[str] = []
+    basis = _choice_quantity(row.get("basis_sqft") or row.get("editable_basis_sqft"), suffix=" sq ft")
+    if basis:
+        pieces.append(f"basis {basis}")
+    thickness = _choice_quantity(row.get("thickness_inches") or row.get("foam_thickness_inches"), suffix='"')
+    if thickness:
+        pieces.append(f"thickness {thickness}")
+    for field, label in (
+        ("estimated_units", "units"),
+        ("estimated_sets", "sets"),
+        ("quantity", "quantity"),
+        ("linear_ft", "linear ft"),
+        ("days", "days"),
+        ("total_hours", "hours"),
+        ("display_total_hours", "display hours"),
+        ("crew_size", "people"),
+        ("trip_count", "trips"),
+        ("round_trip_miles", "round trip miles"),
+    ):
+        value = _choice_quantity(row.get(field))
+        if value:
+            pieces.append(f"{label} {value}")
+    unit_price = _choice_quantity(row.get("unit_price") or row.get("current_unit_price") or row.get("current_price"))
+    if unit_price:
+        pieces.append(f"unit price {unit_price}")
+    cost = _choice_quantity(row.get("estimated_cost"), suffix="")
+    if cost:
+        pieces.append(f"cost ${cost}")
+    if not pieces:
+        return ""
+    return "Calculation: " + "; ".join(pieces) + "."
+
+
+def _choice_labor_dependency_summary(row: dict[str, Any]) -> str:
+    driver_summary = text_value(row.get("labor_driver_summary"))
+    if driver_summary:
+        return f"Labor sizing: {driver_summary}"
+    driver_qty = _choice_quantity(row.get("labor_driver_quantity"))
+    driver_unit = text_value(row.get("labor_driver_unit"))
+    driver_rate = _choice_quantity(row.get("historical_driver_rate"))
+    driver_rate_unit = text_value(row.get("labor_driver_rate_unit"))
+    if driver_qty and driver_rate:
+        unit = f" {driver_unit}" if driver_unit else ""
+        rate_unit = f" {driver_rate_unit}" if driver_rate_unit else ""
+        return f"Labor sizing: {driver_qty}{unit} x {driver_rate}{rate_unit}."
+    return ""
+
+
+def _choice_product_summary(row: dict[str, Any]) -> str:
+    guidance = text_value(row.get("product_guidance"))
+    warning = text_value(row.get("product_warning_summary") or row.get("product_warnings"))
+    product = text_value(row.get("product_name") or row.get("selected_pricing_candidate") or row.get("item_name"))
+    status = text_value(row.get("product_guidance_status"))
+    if guidance:
+        prefix = f"Product guidance ({product or status}): " if product or status else "Product guidance: "
+        return prefix + guidance
     if warning:
-        reason_parts.append(f"Review: {warning}")
-    if not reason_parts and text_value(row.get("notes")):
-        reason_parts.append(text_value(row.get("notes")))
-    summary = " ".join(dict.fromkeys(part.strip() for part in reason_parts if part.strip()))
-    return summary[:500]
+        return f"Product warning: {warning}"
+    return ""
+
+
+def _choice_full_explanation(row: dict[str, Any]) -> str:
+    parts: list[str] = []
+    _choice_add_unique(parts, _choice_include_summary(row))
+    _choice_add_unique(parts, row.get("reference_project_evidence_summary"))
+    _choice_add_unique(parts, row.get("chat_estimator_evidence_summary"))
+    _choice_add_unique(parts, row.get("historical_evidence_summary"))
+    _choice_add_unique(parts, row.get("pricing_evidence_summary"))
+    _choice_add_unique(parts, _choice_product_summary(row))
+    _choice_add_unique(parts, _choice_labor_dependency_summary(row))
+    _choice_add_unique(parts, _choice_calculation_summary(row))
+    for warning in _choice_text_items(row.get("proposal_review_reasons")) + _choice_text_items(row.get("compatibility_warnings")):
+        _choice_add_unique(parts, f"Review: {warning}")
+    if not parts:
+        _choice_add_unique(parts, row.get("notes"))
+    return "\n\n".join(parts)
+
+
+def choice_summary_for_row(row: dict[str, Any]) -> str:
+    return _choice_full_explanation(row)
 
 
 def display_safe_records(records: list[dict[str, Any]], *, editable_fields: set[str] | None = None) -> list[dict[str, Any]]:
@@ -10857,6 +11001,15 @@ def render_workbench_selected_row_details(
         summary = projected_display_records([selected_row], summary_columns)
         if summary:
             st.dataframe(pd.DataFrame(summary), use_container_width=True, hide_index=True)
+        full_explanation = choice_summary_for_row(selected_row)
+        if full_explanation:
+            st.text_area(
+                "Why this choice",
+                value=full_explanation,
+                height=220,
+                disabled=True,
+                key=f"wb_row_detail_why_{section_key}_{selected_idx}_{workbench_key}_{scope_key}_{historical_filters_key}",
+            )
         detail_keys = [
             key
             for key in (

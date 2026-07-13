@@ -962,7 +962,18 @@ def _chat_estimator_proposals(template_type: str, scope: dict[str, Any]) -> list
     raw = chat_payload.get("workbook_decision_preferences") or scope.get("workbook_decision_preferences") or []
     proposals: list[DecisionProposal] = []
     normalized_template_type = _norm(template_type)
-    for item in raw if isinstance(raw, list) else []:
+    raw_items = [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
+    insulation_foam_items_without_row = [
+        item
+        for item in raw_items
+        if normalized_template_type == "insulation"
+        and _canonical_package(item.get("template_bucket") or item.get("package") or item.get("category")) == "foam"
+        and not str(item.get("workbook_row") or item.get("row_number") or "").strip()
+        and not _decision_id_row_number(item.get("decision_id"))
+    ]
+    assign_insulation_foam_rows = len(insulation_foam_items_without_row) > 1
+    next_insulation_foam_row = 19
+    for item in raw_items:
         if not isinstance(item, dict):
             continue
         item_template_type = _norm(item.get("template_type"))
@@ -973,6 +984,17 @@ def _chat_estimator_proposals(template_type: str, scope: dict[str, Any]) -> list
             continue
         if normalized_template_type != "roofing" and item_section.startswith("roofing "):
             continue
+        bucket = _canonical_package(item.get("template_bucket") or item.get("package") or item.get("category"))
+        if assign_insulation_foam_rows and normalized_template_type == "insulation" and bucket == "foam":
+            if (
+                not str(item.get("workbook_row") or item.get("row_number") or "").strip()
+                and not _decision_id_row_number(item.get("decision_id"))
+                and next_insulation_foam_row <= 21
+            ):
+                item = dict(item)
+                item["workbook_row"] = str(next_insulation_foam_row)
+                item["decision_id"] = f"insulation_foam_row_{next_insulation_foam_row}"
+                next_insulation_foam_row += 1
         target = _chat_target_for_preference(template_type, item)
         if not target:
             continue
@@ -1057,6 +1079,14 @@ def _chat_target_for_preference(template_type: str, item: dict[str, Any]) -> dic
             }
     if template_type == "insulation":
         if bucket == "foam" or decision_id == "insulation_foam_template_selector":
+            resolved_row = workbook_row if workbook_row in {"19", "20", "21"} else ""
+            if resolved_row:
+                return {
+                    "section": "insulation_foam_template_decisions",
+                    "decision_id": decision_id if decision_id and decision_id != "insulation_foam_template_selector" else f"insulation_foam_row_{resolved_row}",
+                    "template_bucket": "foam",
+                    "workbook_row": resolved_row,
+                }
             return {
                 "section": "insulation_foam_template_decisions",
                 "decision_id": "insulation_foam_template_selector",
