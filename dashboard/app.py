@@ -904,6 +904,7 @@ selected_divisions: list[str] = []
 selected_pipeline_statuses: list[str] = []
 selected_statuses: list[str] = []
 customer_search = ""
+DASHBOARD_PERF_TIMING_LIMIT = 80
 
 st.set_page_config(page_title="Spray-Tec Ops Dashboard", layout="wide")
 
@@ -927,6 +928,58 @@ def load_df(query: str) -> pd.DataFrame:
     if result.ok:
         return result.value
     raise result.error or RuntimeError("Database read failed.")
+
+
+def record_dashboard_perf_event(
+    name: str,
+    *,
+    seconds: float,
+    detail: str = "",
+    row_count: int | None = None,
+) -> None:
+    if not bool(st.session_state.get("show_dashboard_perf_timings")):
+        return
+    try:
+        event = {
+            "name": name,
+            "seconds": round(float(seconds), 4),
+            "detail": detail,
+            "row_count": row_count,
+        }
+        timings = st.session_state.setdefault("dashboard_perf_timings", [])
+        timings.append(event)
+        st.session_state["dashboard_perf_timings"] = timings[-DASHBOARD_PERF_TIMING_LIMIT:]
+    except Exception:
+        logger.debug("dashboard performance event capture failed", exc_info=True)
+
+
+@contextmanager
+def dashboard_perf_step(name: str, *, detail: str = "", row_count: int | None = None):
+    start = time.perf_counter()
+    try:
+        yield
+    finally:
+        record_dashboard_perf_event(
+            name,
+            seconds=time.perf_counter() - start,
+            detail=detail,
+            row_count=row_count,
+        )
+
+
+def reset_dashboard_perf_timings() -> None:
+    st.session_state["dashboard_perf_timings"] = []
+
+
+def render_dashboard_perf_timings() -> None:
+    timings = st.session_state.get("dashboard_perf_timings") or []
+    if not timings:
+        st.caption("No timings recorded yet.")
+        return
+    timing_df = pd.DataFrame(timings)
+    total_seconds = float(timing_df.get("seconds", pd.Series(dtype=float)).sum())
+    st.caption(f"Recorded time: {total_seconds:.2f}s across {len(timing_df):,} step(s).")
+    st.dataframe(timing_df, width="stretch", hide_index=True, height=220)
 
 
 def reset_database_connection() -> None:
@@ -1472,6 +1525,7 @@ def save_schedule_rows(df: pd.DataFrame) -> int:
     return len(records)
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def load_job_workflow_overrides() -> pd.DataFrame:
     try:
         ensure_job_workflow_overrides_table()
@@ -1580,6 +1634,7 @@ def get_crew_color(crew_leader: object) -> str:
     return CREW_COLOR_PALETTE[int(digest[:8], 16) % len(CREW_COLOR_PALETTE)]
 
 
+@st.cache_data(ttl=600, show_spinner=False)
 def relation_columns(relation_name: str) -> set[str]:
     try:
         engine = get_engine()
@@ -2905,6 +2960,21 @@ def options_from(df: pd.DataFrame, column: str) -> list[str]:
         return []
     values = df[column].dropna().astype(str).str.strip()
     return sorted(value for value in values.unique() if value)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_sidebar_filter_jobs() -> pd.DataFrame:
+    cols = relation_columns("dashboard_jobs")
+    if not cols:
+        return pd.DataFrame(columns=["division", "pipeline_status", "status", "customer"])
+    fields = {
+        "division": "division",
+        "pipeline_status": "pipeline_status",
+        "status": "status",
+        "customer": "customer",
+    }
+    select_parts = [f"{sql_column('j', cols, source)} AS {alias}" for source, alias in fields.items()]
+    return load_df(f"SELECT DISTINCT {', '.join(select_parts)} FROM dashboard_jobs j")
 
 
 def sidebar_filters(jobs: pd.DataFrame) -> dict[str, object]:
@@ -5973,6 +6043,7 @@ JOB_BOARD_FIELDS = [
 ]
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def load_job_board_jobs() -> pd.DataFrame:
     cols = relation_columns("dashboard_jobs")
     if not cols:
@@ -6188,6 +6259,7 @@ def merge_job_board_enrichments(jobs: pd.DataFrame, *enrichments: pd.DataFrame) 
     return out
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def load_job_board_schedule() -> pd.DataFrame:
     cols = relation_columns("crew_schedule")
     if not cols or "job_id" not in cols:
@@ -6215,6 +6287,7 @@ def load_job_board_schedule() -> pd.DataFrame:
     return schedule.sort_values("estimated_start_date", na_position="last").drop_duplicates("job_id", keep="first")
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def load_job_board_warnings() -> pd.DataFrame:
     if "job_id" not in relation_columns("dashboard_job_warnings_actionable"):
         return pd.DataFrame()
@@ -6237,6 +6310,7 @@ def load_job_board_warnings() -> pd.DataFrame:
     return warnings
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def load_job_board_df() -> pd.DataFrame:
     jobs = load_job_board_jobs()
     if not isinstance(jobs, pd.DataFrame):
@@ -6415,6 +6489,27 @@ def score_timesheet_project_to_job(project: str, candidate: dict[str, Any]) -> t
     return round(score, 3), "; ".join(reason_parts) or "no strong overlap"
 
 
+def timesheet_candidate_token_index(candidates: list[dict[str, Any]]) -> dict[str, list[int]]:
+    index: dict[str, list[int]] = {}
+    for candidate_index, candidate in enumerate(candidates):
+        for token in candidate.get("match_tokens") or set():
+            index.setdefault(str(token), []).append(candidate_index)
+    return index
+
+
+def timesheet_candidate_indices_for_project(
+    project: object,
+    token_index: dict[str, list[int]],
+) -> list[int]:
+    project_tokens = timesheet_match_tokens(project)
+    if not project_tokens:
+        return []
+    indices: set[int] = set()
+    for token in project_tokens:
+        indices.update(token_index.get(token, []))
+    return sorted(indices)
+
+
 def match_status_from_score(score: float) -> str:
     if score >= 90:
         return "Exact/Strong"
@@ -6470,13 +6565,15 @@ def match_timesheet_projects_to_jobs(project_summary: pd.DataFrame, jobs: pd.Dat
     if not isinstance(project_summary, pd.DataFrame) or project_summary.empty:
         return pd.DataFrame()
     candidates = job_timesheet_match_candidates(jobs)
+    token_index = timesheet_candidate_token_index(candidates)
     rows: list[dict[str, Any]] = []
     for _, project_row in project_summary.iterrows():
         project = text_value(project_row.get("project_name"))
         best: dict[str, Any] | None = None
         best_score = 0.0
         best_reason = ""
-        for candidate in candidates:
+        candidate_indices = timesheet_candidate_indices_for_project(project, token_index)
+        for candidate in (candidates[index] for index in candidate_indices):
             score, reason = score_timesheet_project_to_job(project, candidate)
             if score > best_score:
                 best = candidate
@@ -6564,6 +6661,26 @@ def prepare_timesheet_activity_rows(timesheets: pd.DataFrame, jobs: pd.DataFrame
     df["value_band"] = df["job_value"].apply(timesheet_value_band)
     df["matched_job"] = df["job_id"].fillna("").astype(str).str.strip().ne("")
     return df
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_timesheet_dashboard_activity() -> dict[str, Any]:
+    timings: list[dict[str, Any]] = []
+    start = time.perf_counter()
+    timesheets = load_office_timesheet_entries()
+    timings.append({"name": "office timesheet entry load", "seconds": round(time.perf_counter() - start, 4), "row_count": len(timesheets)})
+    start = time.perf_counter()
+    jobs = load_job_board_df()
+    timings.append({"name": "job board load for timesheets", "seconds": round(time.perf_counter() - start, 4), "row_count": len(jobs)})
+    start = time.perf_counter()
+    activity = prepare_timesheet_activity_rows(timesheets, jobs)
+    timings.append({"name": "timesheet job matching prep", "seconds": round(time.perf_counter() - start, 4), "row_count": len(activity)})
+    return {
+        "timesheet_rows": len(timesheets) if isinstance(timesheets, pd.DataFrame) else 0,
+        "job_rows": len(jobs) if isinstance(jobs, pd.DataFrame) else 0,
+        "activity": activity,
+        "build_timings": timings,
+    }
 
 
 def summarize_timesheet_by_employee(activity: pd.DataFrame) -> pd.DataFrame:
@@ -7653,17 +7770,31 @@ def timesheet_job_touches_page() -> None:
         "Office/admin/sales work by employee and job, matched back to the job board where timesheet project text is strong enough."
     )
 
-    timesheets = load_office_timesheet_entries()
-    jobs = load_job_board_df()
-    if timesheets.empty:
+    show_perf = bool(st.session_state.get("show_dashboard_perf_timings"))
+    if show_perf:
+        reset_dashboard_perf_timings()
+
+    with dashboard_perf_step("timesheet cached activity load"):
+        dashboard_data = load_timesheet_dashboard_activity()
+    if show_perf and isinstance(dashboard_data, dict):
+        for timing in dashboard_data.get("build_timings") or []:
+            if isinstance(timing, dict):
+                record_dashboard_perf_event(
+                    f"cached build: {timing.get('name')}",
+                    seconds=float(timing.get("seconds") or 0.0),
+                    row_count=int(timing.get("row_count") or 0),
+                )
+    activity_all = dashboard_data.get("activity") if isinstance(dashboard_data, dict) else pd.DataFrame()
+    timesheet_rows = int(dashboard_data.get("timesheet_rows") or 0) if isinstance(dashboard_data, dict) else 0
+    job_rows = int(dashboard_data.get("job_rows") or 0) if isinstance(dashboard_data, dict) else 0
+    if timesheet_rows <= 0:
         show_empty("No office timesheet entries are loaded.")
         return
-    if jobs.empty:
+    if job_rows <= 0:
         show_empty("No job board rows are loaded, so timesheets cannot be matched to jobs yet.")
         return
 
-    activity_all = prepare_timesheet_activity_rows(timesheets, jobs)
-    if activity_all.empty:
+    if not isinstance(activity_all, pd.DataFrame) or activity_all.empty:
         show_empty("No timesheet activity rows are available.")
         return
 
@@ -7704,37 +7835,39 @@ def timesheet_job_touches_page() -> None:
     with filter_col4:
         search = st.text_input("Search project/job/customer", key="timesheet_touches_search").strip()
 
-    activity = activity_all.copy()
-    if start_date:
-        activity = activity[activity["work_date_parsed"].isna() | (activity["work_date_parsed"].dt.date >= start_date)]
-    if end_date:
-        activity = activity[activity["work_date_parsed"].isna() | (activity["work_date_parsed"].dt.date <= end_date)]
-    if employee_filter:
-        activity = activity[activity["employee"].astype(str).isin(employee_filter)]
-    if code_filter:
-        activity = activity[activity["code"].astype(str).isin(code_filter)]
-    if division_filter and "division" in activity.columns:
-        activity = activity[activity["division"].astype(str).isin(division_filter)]
-    if job_type_filter and "job_type" in activity.columns:
-        activity = activity[activity["job_type"].astype(str).isin(job_type_filter)]
-    if status_filter:
-        activity = activity[activity["match_status"].isin(status_filter)]
-    if search:
-        search_columns = [column for column in ["project_name", "customer", "job_name", "job_id", "notes", "code"] if column in activity.columns]
-        mask = pd.Series(False, index=activity.index)
-        for column in search_columns:
-            mask = mask | activity[column].fillna("").astype(str).str.contains(search, case=False, na=False)
-        activity = activity[mask]
+    with dashboard_perf_step("timesheet filter application", row_count=len(activity_all)):
+        activity = activity_all.copy()
+        if start_date:
+            activity = activity[activity["work_date_parsed"].isna() | (activity["work_date_parsed"].dt.date >= start_date)]
+        if end_date:
+            activity = activity[activity["work_date_parsed"].isna() | (activity["work_date_parsed"].dt.date <= end_date)]
+        if employee_filter:
+            activity = activity[activity["employee"].astype(str).isin(employee_filter)]
+        if code_filter:
+            activity = activity[activity["code"].astype(str).isin(code_filter)]
+        if division_filter and "division" in activity.columns:
+            activity = activity[activity["division"].astype(str).isin(division_filter)]
+        if job_type_filter and "job_type" in activity.columns:
+            activity = activity[activity["job_type"].astype(str).isin(job_type_filter)]
+        if status_filter:
+            activity = activity[activity["match_status"].isin(status_filter)]
+        if search:
+            search_columns = [column for column in ["project_name", "customer", "job_name", "job_id", "notes", "code"] if column in activity.columns]
+            mask = pd.Series(False, index=activity.index)
+            for column in search_columns:
+                mask = mask | activity[column].fillna("").astype(str).str.contains(search, case=False, na=False)
+            activity = activity[mask]
 
     if activity.empty:
         show_empty("No timesheet rows match the current filters.")
         return
 
-    employee_summary = summarize_timesheet_by_employee(activity)
-    job_rollup = summarize_timesheet_by_job(activity)
-    code_summary = summarize_timesheet_by_code(activity)
-    daily_summary = summarize_timesheet_daily_touches(activity)
-    job_type_summary = summarize_timesheet_job_type_touches(job_rollup, activity)
+    with dashboard_perf_step("timesheet summary rollups", row_count=len(activity)):
+        employee_summary = summarize_timesheet_by_employee(activity)
+        job_rollup = summarize_timesheet_by_job(activity)
+        code_summary = summarize_timesheet_by_code(activity)
+        daily_summary = summarize_timesheet_daily_touches(activity)
+        job_type_summary = summarize_timesheet_job_type_touches(job_rollup, activity)
     matched_rows = activity[activity["matched_job"]]
     unmatched_rows = activity[~activity["matched_job"]]
     metric_row(
@@ -7874,6 +8007,7 @@ def timesheet_job_touches_page() -> None:
     with tab_review:
         st.subheader("Match Review")
         project_summary = office_timesheet_project_summary(activity)
+        jobs = load_job_board_df()
         matched_projects = match_timesheet_projects_to_jobs(project_summary, jobs)
         show_table(
             matched_projects,
@@ -7925,6 +8059,9 @@ def timesheet_job_touches_page() -> None:
 - The next improvement should persist reviewed match overrides for common shorthand.
             """.strip()
         )
+    if show_perf:
+        with st.expander("Performance timings", expanded=True):
+            render_dashboard_perf_timings()
 
 
 def owner_overview_page() -> None:
@@ -14733,7 +14870,7 @@ def admin_health_page() -> None:
 def main() -> None:
     database_startup_error: Exception | None = None
     try:
-        jobs_for_filters = query_view("dashboard_jobs")
+        jobs_for_filters = load_sidebar_filter_jobs()
     except Exception as exc:
         jobs_for_filters = pd.DataFrame()
         database_startup_error = exc
@@ -14772,6 +14909,7 @@ def main() -> None:
             "Raw Tables",
         ]
         show_legacy_pages = st.checkbox("Show legacy/raw dashboard pages", value=False)
+        show_perf_timings = st.checkbox("Show performance timings", value=False, key="show_dashboard_perf_timings")
         page_options = core_pages + (legacy_pages if show_legacy_pages else [])
         page = st.radio(
             "Page",
