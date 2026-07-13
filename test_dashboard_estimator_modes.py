@@ -1081,6 +1081,9 @@ def test_timesheet_activity_rollups_preserve_employee_and_job_context() -> None:
     activity = app.prepare_timesheet_activity_rows(timesheets, jobs)
     employee_summary = app.summarize_timesheet_by_employee(activity)
     job_rollup = app.summarize_timesheet_by_job(activity)
+    code_summary = app.summarize_timesheet_by_code(activity)
+    daily_summary = app.summarize_timesheet_daily_touches(activity)
+    job_type_summary = app.summarize_timesheet_job_type_touches(job_rollup, activity)
 
     assert set(activity["employee"]) == {"Haley", "Paul"}
     assert activity["matched_job"].all()
@@ -1090,6 +1093,10 @@ def test_timesheet_activity_rollups_preserve_employee_and_job_context() -> None:
     assert job_rollup.iloc[0]["job_type"] == "Roof Coating"
     assert job_rollup.iloc[0]["job_value"] == 125000
     assert job_rollup.iloc[0]["employee_count"] == 2
+    assert code_summary["touch_count"].sum() == 2
+    assert daily_summary["touch_count"].sum() == 2
+    assert job_type_summary.iloc[0]["job_type"] == "Roof Coating"
+    assert job_type_summary.iloc[0]["touch_count"] == 2
 
 
 def test_ask_spraytec_finalize_generated_field_notes_candidate_reuses_candidate(monkeypatch) -> None:

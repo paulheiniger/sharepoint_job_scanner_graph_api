@@ -2993,6 +2993,7 @@ def bar_chart(
     *,
     color: str | None = None,
     labels: dict[str, str] | None = None,
+    top_n: int | None = None,
 ) -> None:
     if df.empty or x not in df.columns or (y is not None and y not in df.columns):
         show_empty(f"No data available for {title}.")
@@ -3008,6 +3009,8 @@ def bar_chart(
     if color and color in chart_df.columns:
         chart_df[color] = chart_df[color].fillna("Unknown").astype(str)
     chart_df = chart_df.sort_values(y, ascending=False)
+    if top_n is not None and top_n > 0 and not color:
+        chart_df = chart_df.head(top_n)
     fig = px.bar(chart_df, x=x, y=y, color=color if color in chart_df.columns else None, title=title, labels=labels)
     st.plotly_chart(fig, width="stretch")
 
@@ -6585,7 +6588,83 @@ def summarize_timesheet_by_employee(activity: pd.DataFrame) -> pd.DataFrame:
     )
     grouped["first_touch"] = pd.to_datetime(grouped["first_touch"], errors="coerce").dt.date.astype("string")
     grouped["last_touch"] = pd.to_datetime(grouped["last_touch"], errors="coerce").dt.date.astype("string")
-    return grouped.sort_values(["total_hours", "touch_count"], ascending=False, na_position="last")
+    return grouped.sort_values(["touch_count", "job_count", "last_touch"], ascending=False, na_position="last")
+
+
+def summarize_timesheet_by_code(activity: pd.DataFrame) -> pd.DataFrame:
+    if not isinstance(activity, pd.DataFrame) or activity.empty:
+        return pd.DataFrame()
+    df = activity.copy()
+    if "code" not in df.columns:
+        df["code"] = ""
+    df["code"] = df["code"].fillna("").astype(str).replace("", "Unknown")
+    grouped = (
+        df.groupby("code", dropna=False)
+        .agg(
+            touch_count=("touch_count", "sum"),
+            total_hours=("duration_hours", "sum"),
+            job_count=("job_id", lambda values: int(pd.Series(values).replace("", pd.NA).dropna().nunique())),
+            project_string_count=("project_name", "nunique"),
+            employee_count=("employee", lambda values: int(pd.Series(values).replace("", pd.NA).dropna().nunique())),
+            employees=("employee", compact_unique_text),
+            recent_projects=("project_name", compact_unique_text),
+            last_touch=("work_date_parsed", "max"),
+        )
+        .reset_index()
+    )
+    grouped["last_touch"] = pd.to_datetime(grouped["last_touch"], errors="coerce").dt.date.astype("string")
+    return grouped.sort_values(["touch_count", "job_count", "last_touch"], ascending=False, na_position="last")
+
+
+def summarize_timesheet_daily_touches(activity: pd.DataFrame) -> pd.DataFrame:
+    if not isinstance(activity, pd.DataFrame) or activity.empty:
+        return pd.DataFrame()
+    df = activity.copy()
+    if "work_date_parsed" not in df.columns:
+        return pd.DataFrame()
+    df = df[df["work_date_parsed"].notna()].copy()
+    if df.empty:
+        return pd.DataFrame()
+    df["activity_date"] = df["work_date_parsed"].dt.date.astype("string")
+    grouped = (
+        df.groupby("activity_date", dropna=False)
+        .agg(
+            touch_count=("touch_count", "sum"),
+            total_hours=("duration_hours", "sum"),
+            job_count=("job_id", lambda values: int(pd.Series(values).replace("", pd.NA).dropna().nunique())),
+            project_string_count=("project_name", "nunique"),
+            employee_count=("employee", lambda values: int(pd.Series(values).replace("", pd.NA).dropna().nunique())),
+        )
+        .reset_index()
+        .sort_values("activity_date")
+    )
+    return grouped
+
+
+def summarize_timesheet_job_type_touches(job_rollup: pd.DataFrame, activity: pd.DataFrame) -> pd.DataFrame:
+    source = job_rollup if isinstance(job_rollup, pd.DataFrame) and not job_rollup.empty else activity
+    if not isinstance(source, pd.DataFrame) or source.empty:
+        return pd.DataFrame()
+    df = source.copy()
+    if "job_type" not in df.columns:
+        df["job_type"] = ""
+    df["job_type"] = df["job_type"].fillna("").astype(str).replace("", "Unknown")
+    if "job_id" not in df.columns:
+        df["job_id"] = ""
+    if "job_value" not in df.columns:
+        df["job_value"] = 0.0
+    grouped = (
+        df.groupby("job_type", dropna=False)
+        .agg(
+            touch_count=("touch_count", "sum"),
+            total_hours=("total_hours" if "total_hours" in df.columns else "duration_hours", "sum"),
+            job_count=("job_id", lambda values: int(pd.Series(values).replace("", pd.NA).dropna().nunique())),
+            employee_count=("employee_count" if "employee_count" in df.columns else "employee", "sum" if "employee_count" in df.columns else lambda values: int(pd.Series(values).replace("", pd.NA).dropna().nunique())),
+            job_value=("job_value", "sum"),
+        )
+        .reset_index()
+    )
+    return grouped.sort_values(["touch_count", "job_count"], ascending=False, na_position="last")
 
 
 def summarize_timesheet_by_job(activity: pd.DataFrame) -> pd.DataFrame:
@@ -7592,7 +7671,7 @@ def timesheet_job_touches_page() -> None:
     min_date = activity_all["work_date_parsed"].dropna().min()
     max_date = activity_all["work_date_parsed"].dropna().max()
     default_end = max_date.date() if not pd.isna(max_date) else date.today()
-    default_start = max(min_date.date(), default_end - timedelta(days=6)) if not pd.isna(min_date) else default_end - timedelta(days=6)
+    default_start = max(min_date.date(), default_end - timedelta(days=29)) if not pd.isna(min_date) else default_end - timedelta(days=29)
     with date_col1:
         start_date = st.date_input(
             "From",
@@ -7653,58 +7732,52 @@ def timesheet_job_touches_page() -> None:
 
     employee_summary = summarize_timesheet_by_employee(activity)
     job_rollup = summarize_timesheet_by_job(activity)
+    code_summary = summarize_timesheet_by_code(activity)
+    daily_summary = summarize_timesheet_daily_touches(activity)
+    job_type_summary = summarize_timesheet_job_type_touches(job_rollup, activity)
     matched_rows = activity[activity["matched_job"]]
     unmatched_rows = activity[~activity["matched_job"]]
     metric_row(
         [
-            ("Filtered Touches", fmt_count(len(activity))),
-            ("Timed Hours", f"{safe_sum(activity, 'duration_hours'):,.1f}"),
+            ("Job Touches", fmt_count(len(activity))),
+            ("Jobs Touched", fmt_count(job_rollup["job_id"].nunique() if not job_rollup.empty else 0)),
+            ("Project Strings", fmt_count(activity["project_name"].nunique())),
             ("Employees", fmt_count(activity["employee"].nunique())),
-            ("Matched Jobs", fmt_count(job_rollup["job_id"].nunique() if not job_rollup.empty else 0)),
-            ("Unmatched Touches", fmt_count(len(unmatched_rows))),
+            ("Timed Hours", f"{safe_sum(activity, 'duration_hours'):,.1f}"),
+            ("Unmatched", fmt_count(len(unmatched_rows))),
         ]
     )
 
     chart_col1, chart_col2 = st.columns(2)
     with chart_col1:
-        bar_chart(activity, "employee", "duration_hours", "Hours by Employee")
+        bar_chart(activity, "employee", "touch_count", "Touches by Employee", top_n=12)
     with chart_col2:
-        bar_chart(activity, "code", "duration_hours", "Hours by Code")
+        bar_chart(code_summary, "code", "touch_count", "Touches by Work Code", top_n=12)
     chart_col3, chart_col4 = st.columns(2)
     with chart_col3:
-        if job_rollup.empty:
+        if job_type_summary.empty:
             show_empty("No matched jobs available for job type chart.")
         else:
-            bar_chart(job_rollup, "job_type", "total_hours", "Hours by Job Type")
+            bar_chart(job_type_summary, "job_type", "touch_count", "Touches by Job Type", top_n=12)
     with chart_col4:
         if job_rollup.empty:
             show_empty("No matched jobs available for pipeline chart.")
         else:
-            bar_chart(job_rollup, "pipeline_status", "touch_count", "Job Touches by Pipeline Status")
-
-    tab_employee, tab_jobs, tab_activity, tab_review = st.tabs(
-        ["By Employee", "By Job", "Recent Activity", "Match Review"]
-    )
-    with tab_employee:
-        st.subheader("Who Did What")
-        show_table(
-            employee_summary,
-            [
-                "employee",
-                "total_hours",
-                "touch_count",
-                "timed_entry_count",
-                "activity_only_count",
-                "job_count",
-                "project_string_count",
-                "last_touch",
-                "codes",
-                "recent_projects",
-            ],
-            height=420,
-            sort_by="total_hours",
+            bar_chart(job_rollup, "pipeline_status", "touch_count", "Touches by Pipeline Status", top_n=10)
+    if not daily_summary.empty:
+        fig = px.line(
+            daily_summary,
+            x="activity_date",
+            y="touch_count",
+            markers=True,
+            title="Daily Job Touches",
+            labels={"activity_date": "date", "touch_count": "touches"},
         )
+        st.plotly_chart(fig, width="stretch")
 
+    tab_jobs, tab_employee, tab_codes, tab_activity, tab_review = st.tabs(
+        ["Projects Moving", "By Employee", "By Code", "Recent Activity", "Match Review"]
+    )
     with tab_jobs:
         st.subheader("Where Are We With This Project")
         if job_rollup.empty:
@@ -7722,9 +7795,8 @@ def timesheet_job_touches_page() -> None:
                     "status",
                     "job_value",
                     "value_band",
-                    "estimated_sqft",
-                    "total_hours",
                     "touch_count",
+                    "total_hours",
                     "employee_count",
                     "employees",
                     "codes",
@@ -7736,6 +7808,45 @@ def timesheet_job_touches_page() -> None:
                 sort_by="last_touch",
             )
 
+    with tab_employee:
+        st.subheader("Who Touched What")
+        show_table(
+            employee_summary,
+            [
+                "employee",
+                "touch_count",
+                "job_count",
+                "project_string_count",
+                "total_hours",
+                "timed_entry_count",
+                "activity_only_count",
+                "last_touch",
+                "codes",
+                "recent_projects",
+            ],
+            height=420,
+            sort_by="touch_count",
+        )
+
+    with tab_codes:
+        st.subheader("What Kind of Work Is Happening")
+        show_table(
+            code_summary,
+            [
+                "code",
+                "touch_count",
+                "job_count",
+                "project_string_count",
+                "employee_count",
+                "total_hours",
+                "last_touch",
+                "employees",
+                "recent_projects",
+            ],
+            height=420,
+            sort_by="touch_count",
+        )
+
     with tab_activity:
         st.subheader("Recent Timesheet Activity")
         recent_activity = activity.sort_values("work_date_parsed", ascending=False, na_position="last")
@@ -7745,13 +7856,13 @@ def timesheet_job_touches_page() -> None:
                 "activity_date",
                 "employee",
                 "code",
-                "duration_hours",
                 "project_name",
                 "customer",
                 "job_name",
                 "division",
                 "job_type",
                 "pipeline_status",
+                "duration_hours",
                 "notes",
                 "match_status",
                 "match_score",
@@ -7775,8 +7886,8 @@ def timesheet_job_touches_page() -> None:
                 "division",
                 "job_type",
                 "pipeline_status",
-                "total_hours",
                 "touch_count",
+                "total_hours",
                 "employee_count",
                 "last_touch",
                 "codes",
