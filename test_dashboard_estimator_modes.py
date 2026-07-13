@@ -972,6 +972,72 @@ def test_ask_spraytec_option_selection_index_parses_followup_choice() -> None:
     assert app.ask_spraytec_option_selection_index("find option 1 roof") is None
 
 
+def test_timesheet_project_summary_counts_timed_hours_and_touches() -> None:
+    app = importlib.import_module("dashboard.app")
+    timesheets = pd.DataFrame(
+        [
+            {
+                "project_name": "Mudd's Furniture",
+                "duration_hours": 1.5,
+                "work_date": "2026-07-01",
+                "employee": "Haley",
+                "code": "Estimating",
+                "row_type": "timed_entry",
+                "notes": "Estimate review",
+            },
+            {
+                "project_name": "Mudd's Furniture",
+                "duration_hours": 0,
+                "work_date": "2026-07-02",
+                "employee": "Paul",
+                "code": "Admin",
+                "row_type": "activity_only",
+                "notes": "Folder setup",
+            },
+        ]
+    )
+
+    summary = app.office_timesheet_project_summary(timesheets)
+
+    row = summary.iloc[0]
+    assert row["project_name"] == "Mudd's Furniture"
+    assert row["total_hours"] == 1.5
+    assert row["touch_count"] == 2
+    assert row["timed_entry_count"] == 1
+    assert row["activity_only_count"] == 1
+    assert row["employee_count"] == 2
+
+
+def test_timesheet_project_matching_scores_job_candidates() -> None:
+    app = importlib.import_module("dashboard.app")
+    project_summary = pd.DataFrame(
+        [
+            {"project_name": "Mudd's Furniture", "total_hours": 2.0, "touch_count": 3},
+            {"project_name": "Estimate", "total_hours": 1.0, "touch_count": 1},
+        ]
+    )
+    jobs = pd.DataFrame(
+        [
+            {
+                "job_id": "J-MUDD-B",
+                "customer": "Mudd's Furniture",
+                "job_name": "Mudd's Furniture Showroom Roof B",
+                "division": "Roofing",
+                "pipeline_status": "Proposed",
+                "status": "Open",
+                "folder_path": "2026 ROOFING/Mudd's Furniture Roof B",
+            }
+        ]
+    )
+
+    matched = app.match_timesheet_projects_to_jobs(project_summary, jobs)
+    by_project = {row["project_name"]: row for row in matched.to_dict(orient="records")}
+
+    assert by_project["Mudd's Furniture"]["job_id"] == "J-MUDD-B"
+    assert by_project["Mudd's Furniture"]["match_status"] in {"Exact/Strong", "Strong"}
+    assert by_project["Estimate"]["match_status"] == "Unmatched"
+
+
 def test_ask_spraytec_finalize_generated_field_notes_candidate_reuses_candidate(monkeypatch) -> None:
     app = importlib.import_module("dashboard.app")
 

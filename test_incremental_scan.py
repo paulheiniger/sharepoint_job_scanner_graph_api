@@ -21,6 +21,7 @@ def root_rules() -> list[inc.ScanRootRule]:
     return [
         inc.ScanRootRule("2026 ROOFING/PROPOSED", division="Roofing", pipeline_status="Proposed", source_year=2026),
         inc.ScanRootRule("2025 FLOORING/COMPLETED", division="Flooring", pipeline_status="Completed", source_year=2025),
+        inc.ScanRootRule("Timesheets", root_kind="office_timesheet"),
     ]
 
 
@@ -60,6 +61,30 @@ def test_processor_classification_for_estimate_tracking_timesheet_and_document()
     assert inc.processor_for_item(inc.IncrementalItem(name="Job Tracking Form.xlsx", **base)) == "job_tracking"
     assert inc.processor_for_item(inc.IncrementalItem(name="Office Timesheet.xlsx", **base)) == "office_timesheet"
     assert inc.processor_for_item(inc.IncrementalItem(name="Proposal.pdf", **base)) == "document"
+
+
+def test_timesheet_root_routes_workbook_without_fake_job() -> None:
+    stats = sp.DeltaSyncStats(
+        mode="incremental",
+        drive_id="drive",
+        changed_files=[
+            {
+                "drive_id": "drive",
+                "drive_item_id": "timesheet-1",
+                "change_type": "modified",
+                "relative_path": "Timesheets/Aaron/2026 Timesheets/July/07-12-26.xlsx",
+                "name": "07-12-26.xlsx",
+                "is_file": True,
+            }
+        ],
+    )
+
+    changeset = inc.changeset_from_delta_stats(stats, root_rules(), "run-timesheet")
+
+    assert not changeset.affected_job_ids
+    assert changeset.affected_timesheet_files == {"Timesheets/Aaron/2026 Timesheets/July/07-12-26.xlsx"}
+    routed_items = changeset.new_files + changeset.modified_files + changeset.moved_files
+    assert routed_items[0].processor == "office_timesheet"
 
 
 def test_changeset_routes_changed_files_and_deleted_documents() -> None:
@@ -176,6 +201,7 @@ def test_no_change_incremental_run_writes_empty_changed_outputs(monkeypatch, tmp
         config_path=config,
         output_dir=tmp_path,
         cache_root=tmp_path / ".cache",
+        timesheet_cache_root=tmp_path / ".timesheets",
         metadata_only=True,
         skip_db_load=False,
         run_id="run-1",
@@ -261,6 +287,7 @@ def test_changed_estimate_merges_without_dropping_unrelated_outputs(monkeypatch,
         config_path=config,
         output_dir=tmp_path,
         cache_root=tmp_path / ".cache",
+        timesheet_cache_root=tmp_path / ".timesheets",
         skip_db_load=True,
         run_id="run-estimate",
     )

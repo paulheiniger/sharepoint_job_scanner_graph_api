@@ -168,6 +168,21 @@ def row_with_aliases(row: dict[str, Any], aliases: dict[str, str]) -> dict[str, 
     return enriched
 
 
+def normalize_office_timesheet_record(row: dict[str, Any]) -> dict[str, Any]:
+    normalized = row_with_aliases(
+        row,
+        {
+            "employee": "employee_name",
+            "project_name": "project",
+            "source_file_path": "source_path",
+        },
+    )
+    if not normalized.get("notes"):
+        notes = [normalized.get("hubspot_notes"), normalized.get("additional_notes")]
+        normalized["notes"] = "\n".join(str(note).strip() for note in notes if note is not None and str(note).strip())
+    return normalized
+
+
 def generate_tracking_id(row: dict[str, Any]) -> str:
     return stable_hash_id("tracking-", row, TRACKING_ID_FIELDS)
 
@@ -175,6 +190,8 @@ def generate_tracking_id(row: dict[str, Any]) -> str:
 def ensure_primary_id(dataset_key: str, row: dict[str, Any]) -> dict[str, Any]:
     """Fill missing primary keys with stable IDs based on available source fields."""
     row = dict(row)
+    if dataset_key == "office_timesheets":
+        row = normalize_office_timesheet_record(row)
 
     if dataset_key == "jobs" and not row.get("job_id"):
         row["job_id"] = stable_id("job", row.get("folder_path"), row.get("folder_url"), row.get("customer"), row.get("job_name"))
@@ -201,8 +218,7 @@ def ensure_primary_id(dataset_key: str, row: dict[str, Any]) -> dict[str, Any]:
             row["tracking_entry_id"] = stable_hash_id("trackingentry-", row, TRACKING_ENTRY_ID_FIELDS)
 
     if dataset_key == "office_timesheets" and not row.get("entry_id"):
-        hash_row = row_with_aliases(row, {"employee": "employee_name", "project_name": "project"})
-        row["entry_id"] = stable_hash_id("timesheet-", hash_row, TIMESHEET_ID_FIELDS)
+        row["entry_id"] = stable_hash_id("timesheet-", row, TIMESHEET_ID_FIELDS)
 
     return row
 
@@ -571,6 +587,42 @@ def ensure_tracking_summary_parents(
     return created
 
 
+def delete_existing_office_timesheet_sources(
+    conn: Connection,
+    records: list[dict[str, Any]],
+) -> int:
+    source_paths = sorted(
+        {
+            str(normalize_office_timesheet_record(record).get("source_file_path") or "").strip()
+            for record in records
+            if str(normalize_office_timesheet_record(record).get("source_file_path") or "").strip()
+        }
+    )
+    drive_item_ids = sorted(
+        {
+            str(record.get("source_drive_item_id") or "").strip()
+            for record in records
+            if str(record.get("source_drive_item_id") or "").strip()
+        }
+    )
+    deleted = 0
+    if source_paths:
+        result = conn.execute(
+            text("DELETE FROM office_timesheet_entries WHERE source_file_path = ANY(:source_paths)"),
+            {"source_paths": source_paths},
+        )
+        deleted += int(result.rowcount or 0)
+    if drive_item_ids:
+        result = conn.execute(
+            text("DELETE FROM office_timesheet_entries WHERE source_drive_item_id = ANY(:drive_item_ids)"),
+            {"drive_item_ids": drive_item_ids},
+        )
+        deleted += int(result.rowcount or 0)
+    if deleted:
+        print(f"Existing office timesheet rows deleted for changed source files: {deleted}")
+    return deleted
+
+
 def load_dataset(
     engine: Engine,
     dataset_key: str,
@@ -610,6 +662,8 @@ def load_dataset(
         coercion_stats: dict[str, int] = {}
         if dataset_key == "job_tracking_daily":
             ensure_tracking_summary_parents(conn, records, loaded_at)
+        if dataset_key == "office_timesheets":
+            delete_existing_office_timesheet_sources(conn, records)
         prepared_batches: dict[tuple[str, ...], list[dict[str, Any]]] = {}
         for index, record in enumerate(records, start=1):
             prepared = prepare_row(dataset_key, record, table_columns, loaded_at, coercion_stats)

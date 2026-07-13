@@ -102,6 +102,40 @@ def test_generated_timesheet_ids_include_employee_month_and_source_context() -> 
     assert first["entry_id"] != second["entry_id"]
 
 
+def test_prepare_row_normalizes_office_timesheet_parser_fields() -> None:
+    columns = {
+        "entry_id": "text",
+        "employee": "text",
+        "project_name": "text",
+        "notes": "text",
+        "source_file_path": "text",
+        "source_drive_item_id": "text",
+        "raw": "jsonb",
+        "updated_at": "timestamp with time zone",
+    }
+
+    row = prepare_row(
+        "office_timesheets",
+        {
+            "employee_name": "Alex",
+            "project": "Mudd's Furniture",
+            "hubspot_notes": "Called customer",
+            "additional_notes": "Needs follow-up",
+            "source_path": ".cache/office_timesheets/Data/Timesheets/Alex/2026/July.xlsx",
+            "source_drive_item_id": "drive-item-1",
+        },
+        columns,
+        datetime(2026, 6, 10, tzinfo=timezone.utc),
+    )
+
+    assert row["entry_id"].startswith("timesheet-")
+    assert row["employee"] == "Alex"
+    assert row["project_name"] == "Mudd's Furniture"
+    assert row["source_file_path"].endswith("July.xlsx")
+    assert row["notes"] == "Called customer\nNeeds follow-up"
+    assert row["raw"]["project"] == "Mudd's Furniture"
+
+
 def test_generated_line_item_ids_use_broad_line_item_fields() -> None:
     base = {
         "estimate_id": "estimate-1",

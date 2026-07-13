@@ -2,6 +2,9 @@ sharepoint:
   site_url: "https://aro365531128.sharepoint.com/sites/Data"
   library: "Documents"
 
+timesheet_roots:
+  - folder: "Timesheets"
+
 scan_roots:
   - folder: "2026 FLOORING/COMPLETED"
     division: "Flooring"
@@ -46,3 +49,73 @@ scan_roots:
   - folder: "2026 SPECIALTY"
     division: "Specialty"
     pipeline_status: "Folder Created"
+
+  - folder: "2025 MASTER FILES/2025 FLOORING/COMPLETED"
+    division: "Flooring"
+    pipeline_status: "Completed"
+    source_year: 2025
+
+  - folder: "2025 MASTER FILES/2025 FLOORING/CONTRACTED"
+    division: "Flooring"
+    pipeline_status: "Contracted"
+    source_year: 2025
+
+  - folder: "2025 MASTER FILES/2025 FLOORING/PROPOSED"
+    division: "Flooring"
+    pipeline_status: "Proposed"
+    source_year: 2025
+
+  - folder: "2025 MASTER FILES/2025 FLOORING/DID NOT GET"
+    division: "Flooring"
+    pipeline_status: "Did Not Get"
+    source_year: 2025
+
+  - folder: "2025 MASTER FILES/2025 INSULATION/CONTRACTED"
+    division: "Insulation"
+    pipeline_status: "Contracted"
+    source_year: 2025
+
+  - folder: "2025 MASTER FILES/2025 INSULATION/PROPOSED"
+    division: "Insulation"
+    pipeline_status: "Proposed"
+    source_year: 2025
+
+  - folder: "2025 MASTER FILES/2025 INSULATION/BUDGETARY"
+    division: "Insulation"
+    pipeline_status: "Budgetary"
+    source_year: 2025
+
+  - folder: "2025 MASTER FILES/2025 INSULATION/SUBCONTRACTED"
+    division: "Insulation"
+    pipeline_status: "Subcontracted"
+    source_year: 2025
+
+  - folder: "2025 MASTER FILES/2025 INSULATION/CANCELLED"
+    division: "Insulation"
+    pipeline_status: "Cancelled"
+    source_year: 2025
+
+  - folder: "2025 MASTER FILES/2025 INSULATION/DID NOT GET"
+    division: "Insulation"
+    pipeline_status: "Did Not Get"
+    source_year: 2025
+
+  - folder: "2025 MASTER FILES/2025 ROOFING/COMPLETED"
+    division: "Roofing"
+    pipeline_status: "Completed"
+    source_year: 2025
+
+  - folder: "2025 MASTER FILES/2025 ROOFING/CONTRACTED"
+    division: "Roofing"
+    pipeline_status: "Contracted"
+    source_year: 2025
+
+  - folder: "2025 MASTER FILES/2025 ROOFING/PROPOSED"
+    division: "Roofing"
+    pipeline_status: "Proposed"
+    source_year: 2025
+
+  - folder: "2025 MASTER FILES/2025 SPECIALTY PROJECTS/COMPLETED"
+    division: "Specialty"
+    pipeline_status: "Completed"
+    source_year: 2025

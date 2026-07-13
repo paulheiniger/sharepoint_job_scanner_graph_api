@@ -6184,6 +6184,237 @@ def load_job_board_df() -> pd.DataFrame:
     return jobs
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def load_office_timesheet_entries() -> pd.DataFrame:
+    cols = relation_columns("office_timesheet_entries")
+    if not cols:
+        return pd.DataFrame()
+    fields = {
+        "entry_id": "entry_id",
+        "employee": "employee",
+        "work_date": "work_date",
+        "project_name": "project_name",
+        "code": "code",
+        "duration_hours": "duration_hours",
+        "row_type": "row_type",
+        "notes": "notes",
+        "source_file": "source_file",
+        "source_sheet": "source_sheet",
+        "warnings": "warnings",
+    }
+    select_parts = [f"{sql_column('t', cols, source)} AS {alias}" for source, alias in fields.items()]
+    try:
+        return safe_load(f"SELECT {', '.join(select_parts)} FROM office_timesheet_entries t")
+    except Exception:
+        return pd.DataFrame()
+
+
+def timesheet_match_text(value: object) -> str:
+    text_clean = text_value(value).lower()
+    text_clean = re.sub(r"&", " and ", text_clean)
+    text_clean = re.sub(r"[^a-z0-9]+", " ", text_clean)
+    stop_words = {
+        "the",
+        "and",
+        "inc",
+        "llc",
+        "co",
+        "company",
+        "corp",
+        "corporation",
+        "roof",
+        "roofing",
+        "project",
+        "job",
+        "estimate",
+        "proposal",
+        "section",
+        "sections",
+        "building",
+        "bldg",
+    }
+    tokens = [token for token in text_clean.split() if len(token) >= 2 and token not in stop_words]
+    return " ".join(tokens)
+
+
+def timesheet_match_tokens(value: object) -> set[str]:
+    return set(timesheet_match_text(value).split())
+
+
+def job_timesheet_match_candidates(jobs: pd.DataFrame) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    if not isinstance(jobs, pd.DataFrame) or jobs.empty:
+        return candidates
+    for _, row in jobs.iterrows():
+        text_parts = [
+            row.get("customer"),
+            row.get("job_name"),
+            row.get("job_id"),
+            row.get("site_address"),
+            row.get("city"),
+            row.get("folder_path"),
+            row.get("folder_link_or_path"),
+            row.get("estimate_file"),
+            row.get("proposal_file"),
+            row.get("contract_file"),
+        ]
+        raw_label = first_nonblank(row.get("customer"), row.get("job_name"), row.get("job_id"))
+        normalized = timesheet_match_text(" ".join(text_value(part) for part in text_parts))
+        tokens = set(normalized.split())
+        if not tokens:
+            continue
+        candidates.append(
+            {
+                "job_id": row.get("job_id"),
+                "customer": row.get("customer"),
+                "job_name": row.get("job_name"),
+                "division": row.get("division"),
+                "pipeline_status": row.get("pipeline_status"),
+                "status": row.get("status"),
+                "estimated_value": row.get("estimated_value"),
+                "final_price": row.get("final_price"),
+                "folder_link_or_path": row.get("folder_link_or_path"),
+                "match_label": raw_label,
+                "match_text": normalized,
+                "match_tokens": tokens,
+            }
+        )
+    return candidates
+
+
+def score_timesheet_project_to_job(project: str, candidate: dict[str, Any]) -> tuple[float, str]:
+    project_text = timesheet_match_text(project)
+    if not project_text:
+        return 0.0, "blank project"
+    project_tokens = set(project_text.split())
+    job_text = str(candidate.get("match_text") or "")
+    job_tokens = set(candidate.get("match_tokens") or set())
+    if not job_tokens:
+        return 0.0, "job has no match tokens"
+    overlap = project_tokens & job_tokens
+    overlap_ratio = len(overlap) / max(len(project_tokens), 1)
+    reverse_ratio = len(overlap) / max(len(job_tokens), 1)
+    sequence_bonus = 0.0
+    reason_parts: list[str] = []
+    if project_text and project_text in job_text:
+        sequence_bonus = 35.0
+        reason_parts.append("project phrase appears in job text")
+    elif job_text and job_text in project_text:
+        sequence_bonus = 25.0
+        reason_parts.append("job phrase appears in project text")
+    if overlap:
+        reason_parts.append(f"{len(overlap)} token overlap: {', '.join(sorted(overlap)[:6])}")
+    score = min(100.0, sequence_bonus + overlap_ratio * 50.0 + reverse_ratio * 20.0)
+    if len(project_tokens) == 1 and len(overlap) == 1:
+        score = min(score, 72.0)
+        reason_parts.append("single-token project match")
+    if len(project_tokens) <= 2 and score > 88:
+        score = 88.0
+        reason_parts.append("short project label")
+    return round(score, 3), "; ".join(reason_parts) or "no strong overlap"
+
+
+def match_status_from_score(score: float) -> str:
+    if score >= 90:
+        return "Exact/Strong"
+    if score >= 75:
+        return "Strong"
+    if score >= 58:
+        return "Review"
+    if score >= 42:
+        return "Weak"
+    return "Unmatched"
+
+
+def office_timesheet_project_summary(timesheets: pd.DataFrame) -> pd.DataFrame:
+    if not isinstance(timesheets, pd.DataFrame) or timesheets.empty:
+        return pd.DataFrame()
+    df = timesheets.copy()
+    if "project_name" not in df.columns:
+        df["project_name"] = ""
+    df["project_name"] = df["project_name"].fillna("").astype(str).str.strip()
+    if "duration_hours" not in df.columns:
+        df["duration_hours"] = 0.0
+    df["duration_hours"] = pd.to_numeric(df["duration_hours"], errors="coerce").fillna(0.0)
+    if "work_date" not in df.columns:
+        df["work_date"] = pd.NaT
+    df["work_date_parsed"] = pd.to_datetime(df["work_date"], errors="coerce")
+    for column in ("employee", "code", "row_type", "notes"):
+        if column not in df.columns:
+            df[column] = ""
+        df[column] = df[column].fillna("").astype(str)
+    grouped = (
+        df.groupby("project_name", dropna=False)
+        .agg(
+            total_hours=("duration_hours", "sum"),
+            touch_count=("project_name", "size"),
+            timed_entry_count=("row_type", lambda values: int((values == "timed_entry").sum())),
+            activity_only_count=("row_type", lambda values: int((values == "activity_only").sum())),
+            employee_count=("employee", lambda values: int(pd.Series(values).replace("", pd.NA).dropna().nunique())),
+            first_touch=("work_date_parsed", "min"),
+            last_touch=("work_date_parsed", "max"),
+            codes=("code", lambda values: ", ".join(list(dict.fromkeys(v for v in values if text_value(v)))[:8])),
+            employees=("employee", lambda values: ", ".join(list(dict.fromkeys(v for v in values if text_value(v)))[:8])),
+            latest_notes=("notes", lambda values: next((text_value(v) for v in reversed(list(values)) if text_value(v)), "")),
+        )
+        .reset_index()
+    )
+    grouped["project_name"] = grouped["project_name"].replace("", "(blank)")
+    grouped["first_touch"] = grouped["first_touch"].dt.date.astype("string")
+    grouped["last_touch"] = grouped["last_touch"].dt.date.astype("string")
+    return grouped.sort_values(["last_touch", "touch_count"], ascending=[False, False], na_position="last")
+
+
+def match_timesheet_projects_to_jobs(project_summary: pd.DataFrame, jobs: pd.DataFrame) -> pd.DataFrame:
+    if not isinstance(project_summary, pd.DataFrame) or project_summary.empty:
+        return pd.DataFrame()
+    candidates = job_timesheet_match_candidates(jobs)
+    rows: list[dict[str, Any]] = []
+    for _, project_row in project_summary.iterrows():
+        project = text_value(project_row.get("project_name"))
+        best: dict[str, Any] | None = None
+        best_score = 0.0
+        best_reason = ""
+        for candidate in candidates:
+            score, reason = score_timesheet_project_to_job(project, candidate)
+            if score > best_score:
+                best = candidate
+                best_score = score
+                best_reason = reason
+        row = project_row.to_dict()
+        row["match_score"] = round(best_score, 1)
+        row["match_status"] = match_status_from_score(best_score)
+        row["match_reason"] = best_reason
+        if best and best_score >= 42:
+            for key in [
+                "job_id",
+                "customer",
+                "job_name",
+                "division",
+                "pipeline_status",
+                "status",
+                "estimated_value",
+                "final_price",
+                "folder_link_or_path",
+            ]:
+                row[key] = best.get(key)
+        else:
+            for key in [
+                "job_id",
+                "customer",
+                "job_name",
+                "division",
+                "pipeline_status",
+                "status",
+                "estimated_value",
+                "final_price",
+                "folder_link_or_path",
+            ]:
+                row[key] = ""
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
 def first_nonblank(*values: object) -> str:
     for value in values:
         if value is None:
@@ -7125,6 +7356,210 @@ def job_board_page() -> None:
 
         st.subheader("Copy Job Summary")
         st.text_area("Copy into Teams/email", value=job_board_summary(row), height=180)
+
+
+def timesheet_job_touches_page() -> None:
+    st.title("Office Timesheet Job Touches")
+    st.caption(
+        "Matches office/admin/sales timesheet project text to jobs. Use match status to separate reliable touches from fuzzy matches needing review."
+    )
+
+    timesheets = load_office_timesheet_entries()
+    jobs = load_job_board_df()
+    if timesheets.empty:
+        show_empty("No office timesheet entries are loaded.")
+        return
+    if jobs.empty:
+        show_empty("No job board rows are loaded, so timesheets cannot be matched to jobs yet.")
+        return
+
+    filtered_timesheets = timesheets.copy()
+    if "work_date" in filtered_timesheets.columns:
+        filtered_timesheets["work_date_parsed"] = pd.to_datetime(filtered_timesheets["work_date"], errors="coerce")
+    else:
+        filtered_timesheets["work_date_parsed"] = pd.NaT
+
+    date_col1, date_col2, date_col3, date_col4 = st.columns(4)
+    min_date = filtered_timesheets["work_date_parsed"].dropna().min()
+    max_date = filtered_timesheets["work_date_parsed"].dropna().max()
+    with date_col1:
+        start_date = st.date_input(
+            "From",
+            value=min_date.date() if not pd.isna(min_date) else date.today() - timedelta(days=90),
+            key="timesheet_touches_start_date",
+        )
+    with date_col2:
+        end_date = st.date_input(
+            "To",
+            value=max_date.date() if not pd.isna(max_date) else date.today(),
+            key="timesheet_touches_end_date",
+        )
+    with date_col3:
+        employee_filter = st.multiselect("Employee", options_from(filtered_timesheets, "employee"), key="timesheet_touches_employee")
+    with date_col4:
+        code_filter = st.multiselect("Code", options_from(filtered_timesheets, "code"), key="timesheet_touches_code")
+
+    if start_date:
+        filtered_timesheets = filtered_timesheets[
+            filtered_timesheets["work_date_parsed"].isna()
+            | (filtered_timesheets["work_date_parsed"].dt.date >= start_date)
+        ]
+    if end_date:
+        filtered_timesheets = filtered_timesheets[
+            filtered_timesheets["work_date_parsed"].isna()
+            | (filtered_timesheets["work_date_parsed"].dt.date <= end_date)
+        ]
+    if employee_filter and "employee" in filtered_timesheets.columns:
+        filtered_timesheets = filtered_timesheets[filtered_timesheets["employee"].astype(str).isin(employee_filter)]
+    if code_filter and "code" in filtered_timesheets.columns:
+        filtered_timesheets = filtered_timesheets[filtered_timesheets["code"].astype(str).isin(code_filter)]
+
+    project_summary = office_timesheet_project_summary(filtered_timesheets)
+    matched = match_timesheet_projects_to_jobs(project_summary, jobs)
+    if matched.empty:
+        show_empty("No timesheet project rows are available after filters.")
+        return
+
+    status_col, search_col, min_score_col = st.columns([1.3, 2.2, 1])
+    with status_col:
+        status_filter = st.multiselect(
+            "Match Status",
+            ["Exact/Strong", "Strong", "Review", "Weak", "Unmatched"],
+            default=["Exact/Strong", "Strong", "Review"],
+            key="timesheet_touches_match_status",
+        )
+    with search_col:
+        search = st.text_input("Search project/job/customer", key="timesheet_touches_search").strip()
+    with min_score_col:
+        min_score = st.slider("Min Score", 0, 100, 58, key="timesheet_touches_min_score")
+
+    display = matched.copy()
+    if status_filter:
+        display = display[display["match_status"].isin(status_filter)]
+    display = display[pd.to_numeric(display["match_score"], errors="coerce").fillna(0) >= float(min_score)]
+    if search:
+        search_columns = [column for column in ["project_name", "customer", "job_name", "job_id", "match_reason"] if column in display.columns]
+        mask = pd.Series(False, index=display.index)
+        for column in search_columns:
+            mask = mask | display[column].fillna("").astype(str).str.contains(search, case=False, na=False)
+        display = display[mask]
+
+    matched_jobs = display[display["job_id"].fillna("").astype(str).str.strip().ne("")]
+    metric_row(
+        [
+            ("Timesheet Rows", fmt_count(len(filtered_timesheets))),
+            ("Project Strings", fmt_count(len(project_summary))),
+            ("Matched Project Strings", fmt_count(len(matched_jobs))),
+            ("Timed Hours", f"{safe_sum(display, 'total_hours'):,.1f}"),
+            ("Touches", fmt_count(safe_sum(display, "touch_count"))),
+        ]
+    )
+
+    st.subheader("Matched Timesheet Projects")
+    show_table(
+        display,
+        [
+            "match_status",
+            "match_score",
+            "project_name",
+            "customer",
+            "job_name",
+            "division",
+            "pipeline_status",
+            "status",
+            "total_hours",
+            "touch_count",
+            "timed_entry_count",
+            "activity_only_count",
+            "employee_count",
+            "last_touch",
+            "codes",
+            "employees",
+            "match_reason",
+            "folder_link_or_path",
+        ],
+        height=520,
+        sort_by="last_touch",
+    )
+
+    if not matched_jobs.empty:
+        job_rollup = (
+            matched_jobs.groupby("job_id", dropna=False)
+            .agg(
+                customer=("customer", "first"),
+                job_name=("job_name", "first"),
+                division=("division", "first"),
+                pipeline_status=("pipeline_status", "first"),
+                status=("status", "first"),
+                total_hours=("total_hours", "sum"),
+                touch_count=("touch_count", "sum"),
+                project_string_count=("project_name", "nunique"),
+                employee_count=("employees", lambda values: len({employee.strip() for value in values for employee in text_value(value).split(",") if employee.strip()})),
+                last_touch=("last_touch", "max"),
+                best_match_score=("match_score", "max"),
+                folder_link_or_path=("folder_link_or_path", "first"),
+            )
+            .reset_index()
+        )
+    else:
+        job_rollup = pd.DataFrame()
+
+    st.subheader("Job Touch Rollup")
+    if job_rollup.empty:
+        st.caption("No matched jobs under the current filters.")
+    else:
+        show_table(
+            job_rollup,
+            [
+                "customer",
+                "job_name",
+                "division",
+                "pipeline_status",
+                "status",
+                "total_hours",
+                "touch_count",
+                "project_string_count",
+                "employee_count",
+                "last_touch",
+                "best_match_score",
+                "folder_link_or_path",
+            ],
+            height=360,
+            sort_by="last_touch",
+        )
+
+    st.subheader("Unmatched / Low Confidence Project Strings")
+    unmatched = matched[matched["match_status"].isin(["Unmatched", "Weak"])].copy()
+    if unmatched.empty:
+        st.caption("No unmatched or weak project strings under the current filters.")
+    else:
+        show_table(
+            unmatched,
+            [
+                "match_status",
+                "match_score",
+                "project_name",
+                "total_hours",
+                "touch_count",
+                "employee_count",
+                "last_touch",
+                "codes",
+                "latest_notes",
+                "match_reason",
+            ],
+            height=360,
+            sort_by="last_touch",
+        )
+
+    with st.expander("Matching Method and Limits"):
+        st.markdown(
+            """
+- Timesheet rows do not carry job IDs, so this page matches free-form project names to job/customer/folder/address text.
+- `Exact/Strong` and `Strong` matches are usually usable; `Review` should be checked; `Weak` and `Unmatched` are shown separately.
+- Activity-only timesheet rows count as touches but have zero parsed hours. Hour totals are only from timed rows with a duration.
+- The next improvement should persist reviewed matches so common shorthand like `UK WT Young` or `Mudd's Furniture` can be locked to a job.
+            """.strip()
+        )
 
 
 def owner_overview_page() -> None:
@@ -13935,6 +14370,7 @@ def main() -> None:
             "Sales Dashboard",
             "Operations Dashboard",
             "Job Board",
+            "Timesheet Job Touches",
             "Schedule Calendar",
             "Estimating Assistant",
             "Pricing Catalog",
@@ -13976,6 +14412,8 @@ def main() -> None:
         ask_spraytec_page()
     elif page == "Job Board":
         job_board_page()
+    elif page == "Timesheet Job Touches":
+        timesheet_job_touches_page()
     elif page == "Sales Dashboard":
         sales_dashboard_page()
     elif page == "Operations Dashboard":

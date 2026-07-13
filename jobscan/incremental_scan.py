@@ -22,6 +22,7 @@ from .graph_client import GraphClient, SharePointTarget
 from .job_tracking_extractor import JOB_TRACKING_DAILY_FIELDS, JOB_TRACKING_SUMMARY_FIELDS
 from .job_tracking_extractor import scan_job_tracking_for_records
 from .models import JobRecord
+from .office_timesheet_sync import scan_office_timesheets
 from .scan import records_as_dicts
 from .sharepoint_sync import (
     DeltaSyncStats,
@@ -40,6 +41,7 @@ class ScanRootRule:
     division: str | None = None
     pipeline_status: str | None = None
     source_year: int | None = None
+    root_kind: str = "job"
 
 
 @dataclass
@@ -144,6 +146,21 @@ def load_scan_root_rules(config_path: Path | None) -> list[ScanRootRule]:
                     division=root.get("division"),
                     pipeline_status=root.get("pipeline_status"),
                     source_year=source_year,
+                    root_kind="job",
+                )
+            )
+    timesheet_roots = payload.get("timesheet_roots") if isinstance(payload, dict) else []
+    if isinstance(timesheet_roots, list):
+        for root in timesheet_roots:
+            if not isinstance(root, dict) or not root.get("folder"):
+                continue
+            out.append(
+                ScanRootRule(
+                    folder=normalize_drive_path(root.get("folder")),
+                    division=root.get("division"),
+                    pipeline_status=root.get("pipeline_status"),
+                    source_year=infer_year(root.get("folder")),
+                    root_kind="office_timesheet",
                 )
             )
     return out
@@ -161,6 +178,8 @@ def map_path_to_job(relative_path: str, roots: list[ScanRootRule]) -> tuple[Scan
     for root in sorted(roots, key=lambda item: len(item.folder), reverse=True):
         prefix = root.folder.rstrip("/")
         if path.lower() == prefix.lower() or path.lower().startswith(prefix.lower() + "/"):
+            if root.root_kind == "office_timesheet":
+                return root, None, None
             remainder = path[len(prefix) :].strip("/")
             if not remainder:
                 return root, None, None
@@ -173,6 +192,8 @@ def map_path_to_job(relative_path: str, roots: list[ScanRootRule]) -> tuple[Scan
 def processor_for_item(item: IncrementalItem) -> str:
     suffix = Path(item.name).suffix.lower()
     lower = item.name.lower()
+    if item.root and item.root.root_kind == "office_timesheet" and suffix in SPREADSHEET_EXTS:
+        return "office_timesheet"
     if suffix in SPREADSHEET_EXTS and any(token in lower for token in TRACKING_NAME_TOKENS):
         return "job_tracking"
     if suffix in SPREADSHEET_EXTS and any(token in lower for token in TIMESHEET_NAME_TOKENS):
@@ -240,9 +261,9 @@ def changeset_from_delta_stats(stats: DeltaSyncStats, roots: list[ScanRootRule],
 
 
 def add_item_to_changeset(changeset: IncrementalChangeSet, item: IncrementalItem) -> None:
-    if item.job_id:
+    if item.processor != "office_timesheet" and item.job_id:
         changeset.affected_job_ids.add(item.job_id)
-    if item.job_path:
+    if item.processor != "office_timesheet" and item.job_path:
         changeset.affected_job_paths.add(item.job_path)
     if item.processor == "estimate":
         changeset.affected_estimate_files.add(item.relative_path)
@@ -275,6 +296,111 @@ def merge_rows(existing: list[dict[str, Any]], changed: list[dict[str, Any]], ke
         if value:
             merged[str(value)] = row
     return list(merged.values())
+
+
+def safe_cache_segment(value: str) -> str:
+    cleaned = "".join(char if char.isalnum() or char in {" ", ".", "-", "_", "(", ")"} else "_" for char in value)
+    return cleaned.strip() or "_"
+
+
+def changed_timesheet_items(changeset: IncrementalChangeSet) -> list[IncrementalItem]:
+    items = []
+    for item in list(changeset.new_files) + list(changeset.modified_files) + list(changeset.moved_files):
+        if item.processor == "office_timesheet" and item.is_file and Path(item.name).suffix.lower() in SPREADSHEET_EXTS:
+            items.append(item)
+    return items
+
+
+def timesheet_local_path(item: IncrementalItem, timesheet_cache_root: Path) -> Path:
+    relative_path = normalize_drive_path(item.relative_path)
+    root_prefix = normalize_drive_path(item.root.folder if item.root else "").strip("/")
+    if root_prefix and (relative_path.lower() == root_prefix.lower() or relative_path.lower().startswith(root_prefix.lower() + "/")):
+        relative_path = relative_path[len(root_prefix) :].strip("/")
+    parts = [safe_cache_segment(part) for part in Path(relative_path).parts if part and part != "."]
+    return timesheet_cache_root.joinpath(*parts)
+
+
+def source_keys_for_timesheet_record(record: dict[str, Any]) -> tuple[str, str]:
+    source_path = str(record.get("source_file_path") or record.get("source_path") or "").strip()
+    source_item = str(record.get("source_drive_item_id") or "").strip()
+    return source_path, source_item
+
+
+def merge_timesheet_rows(
+    existing: list[dict[str, Any]],
+    changed: list[dict[str, Any]],
+    changed_source_paths: set[str],
+    changed_drive_item_ids: set[str],
+) -> list[dict[str, Any]]:
+    merged = []
+    for row in existing:
+        source_path, source_item = source_keys_for_timesheet_record(row)
+        if source_path and source_path in changed_source_paths:
+            continue
+        if source_item and source_item in changed_drive_item_ids:
+            continue
+        merged.append(row)
+    merged.extend(changed)
+    return merged
+
+
+def process_changed_timesheets(
+    *,
+    client: GraphClient,
+    changeset: IncrementalChangeSet,
+    output_dir: Path,
+    timesheet_cache_root: Path,
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    items = changed_timesheet_items(changeset)
+    deleted_items = [item for item in changeset.deleted_files if item.processor == "office_timesheet"]
+    if not items and not deleted_items:
+        return [], []
+
+    failures: list[dict[str, str]] = []
+    local_path_to_item: dict[str, IncrementalItem] = {}
+    for item in items:
+        destination = timesheet_local_path(item, timesheet_cache_root)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            client.download_item(item.drive_id, item.drive_item_id, destination)
+            local_path_to_item[str(destination)] = item
+        except Exception as exc:
+            failures.append(
+                {
+                    "processor": "office_timesheet",
+                    "path": item.relative_path,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+
+    changed_records: list[dict[str, Any]] = []
+    changed_source_paths: set[str] = set()
+    changed_drive_item_ids = {item.drive_item_id for item in deleted_items if item.drive_item_id}
+    if local_path_to_item:
+        scan_result = scan_office_timesheets(timesheet_cache_root)
+        for record in scan_result.records:
+            local_source_path = str(record.get("source_path") or "")
+            item = local_path_to_item.get(local_source_path)
+            if not item:
+                continue
+            record["source_drive_id"] = item.drive_id
+            record["source_drive_item_id"] = item.drive_item_id
+            record["source_modified_at"] = item.last_modified_at
+            record["source_file_path"] = local_source_path
+            changed_source_paths.add(local_source_path)
+            changed_drive_item_ids.add(item.drive_item_id)
+            changed_records.append(record)
+
+    for item in deleted_items:
+        changed_source_paths.add(str(timesheet_local_path(item, timesheet_cache_root)))
+
+    all_timesheets_path = output_dir / "office_timesheet_entries.json"
+    existing = load_json_rows(all_timesheets_path)
+    atomic_write_json(
+        all_timesheets_path,
+        merge_timesheet_rows(existing, changed_records, changed_source_paths, changed_drive_item_ids),
+    )
+    return changed_records, failures
 
 
 def document_row_from_item(item: IncrementalItem) -> dict[str, Any]:
@@ -495,6 +621,7 @@ def run_incremental(
     config_path: Path | None,
     output_dir: Path,
     cache_root: Path,
+    timesheet_cache_root: Path,
     metadata_only: bool = False,
     skip_db_load: bool = False,
     run_id: str | None = None,
@@ -578,15 +705,15 @@ def run_incremental(
         )
         report.tracking_reparsed = len(changed_tracking_summary)
 
-        atomic_write_json(output_dir / "changed_timesheets.json", [])
-        if changeset.affected_timesheet_files:
-            report.failures.append(
-                {
-                    "processor": "office_timesheet",
-                    "path": ", ".join(sorted(changeset.affected_timesheet_files)[:5]),
-                    "error": "SharePoint-routed office timesheet incremental parsing requires configured timesheet roots; full rebuild was not run.",
-                }
-            )
+        changed_timesheets, timesheet_failures = process_changed_timesheets(
+            client=client,
+            changeset=changeset,
+            output_dir=output_dir,
+            timesheet_cache_root=timesheet_cache_root,
+        )
+        atomic_write_json(output_dir / "changed_timesheets.json", changed_timesheets)
+        report.timesheets_reparsed = len(changed_timesheets)
+        report.failures.extend(timesheet_failures)
     else:
         atomic_write_json(output_dir / "changed_jobs.json", [])
         atomic_write_json(output_dir / "changed_estimates.json", [])
@@ -681,6 +808,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--database-url", default=os.getenv("DATABASE_URL") or os.getenv("NEON_DATABASE_URL"))
     parser.add_argument("--output-dir", type=Path, default=Path("output"))
     parser.add_argument("--cache-root", type=Path, default=Path(".cache/sharepoint"))
+    parser.add_argument("--timesheet-cache-root", type=Path, default=Path(".cache/office_timesheets/Data/Timesheets"))
     parser.add_argument("--metadata-only", action="store_true")
     parser.add_argument("--skip-db-load", action="store_true")
     parser.add_argument("--skip-job-index-list-sync", action="store_true")
@@ -723,6 +851,7 @@ def main(argv: list[str] | None = None) -> int:
         config_path=args.config,
         output_dir=args.output_dir,
         cache_root=args.cache_root,
+        timesheet_cache_root=args.timesheet_cache_root,
         metadata_only=args.metadata_only,
         skip_db_load=args.skip_db_load,
         run_id=args.run_id,

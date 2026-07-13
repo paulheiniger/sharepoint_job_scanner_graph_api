@@ -579,6 +579,11 @@ def load_configured_roots(config_path: Path | None) -> list[str]:
         for root in roots:
             if isinstance(root, dict) and root.get("folder"):
                 out.append(normalize_drive_path(str(root["folder"])))
+    timesheet_roots = payload.get("timesheet_roots") if isinstance(payload, dict) else []
+    if isinstance(timesheet_roots, list):
+        for root in timesheet_roots:
+            if isinstance(root, dict) and root.get("folder"):
+                out.append(normalize_drive_path(str(root["folder"])))
     return out
 
 
