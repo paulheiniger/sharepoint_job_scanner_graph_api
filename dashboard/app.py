@@ -8279,7 +8279,7 @@ def job_board_page() -> None:
         axis=1,
     )
 
-    job_board_table_columns = [
+    job_board_default_columns = [
         "project",
         "project_category",
         "sales_stage",
@@ -8288,40 +8288,54 @@ def job_board_page() -> None:
         "proposal_modified_at",
         "proposal_modified_by",
         "substrate_display",
-        "material_system_warranty",
+        "material_system_display",
+        "warranty_display",
+        "labor_plan",
         "win_loss_status",
         "completion_date_display",
-        "estimator_display",
         "lead_source_display",
         "readiness_status",
         "schedule_health",
-        "estimated_start_date",
-        "labor_plan",
         "production_risk_summary",
         "folder",
         "customer_display",
-        "division",
-        "proposal_status_flag",
-        "proposal_created_at",
-        "estimate_created_at",
         "estimate_modified_at",
         "estimate_modified_by",
-        "closed_did_not_get",
-        "review_mark_contracted",
-        "review_mark_completed",
-        "folder_pipeline_bucket",
-        "material_system_display",
-        "warranty_display",
     ]
-    job_board_default_hidden_columns = {
-        "proposal_status_flag",
-        "folder_pipeline_bucket",
-        "proposal_created_at",
-        "estimate_created_at",
-        "closed_did_not_get",
-        "review_mark_contracted",
-        "review_mark_completed",
-    }
+    job_board_table_columns = unique_columns(
+        [
+            *job_board_default_columns,
+            "material_system_warranty",
+            "estimator_display",
+            "estimated_start_date",
+            "proposal_status_flag",
+            "folder_pipeline_bucket",
+            "proposal_created_at",
+            "estimate_created_at",
+            "closed_did_not_get",
+            "review_mark_contracted",
+            "review_mark_completed",
+            "warranty_type",
+            "warranty_years",
+            "material_system",
+            "product_system",
+            "substrate",
+            "roof_type",
+            "building_type",
+        ]
+    )
+    job_board_default_hidden_columns = set(job_board_table_columns) - set(job_board_default_columns)
+    job_board_default_hidden_columns.update(
+        {
+            "proposal_status_flag",
+            "folder_pipeline_bucket",
+            "proposal_created_at",
+            "estimate_created_at",
+            "closed_did_not_get",
+            "review_mark_contracted",
+            "review_mark_completed",
+        }
+    )
     job_board_column_labels = {
         "project": "Project",
         "project_category": "Project Category",
