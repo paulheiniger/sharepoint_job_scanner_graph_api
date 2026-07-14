@@ -8637,6 +8637,7 @@ def job_board_page() -> None:
         jobs[checkbox_column] = jobs[checkbox_column].apply(truthy_bool)
     jobs["folder_pipeline_bucket"] = jobs.apply(folder_pipeline_bucket_for_row, axis=1)
     jobs["opportunity_freshness"] = jobs.apply(job_board_freshness_for_row, axis=1)
+    jobs = normalize_sales_jobs(jobs)
     terminal_folder_buckets = ["Closed Lost Folder", "Contracted Folder", "Completed Folder"]
     overall_folder_excluded_count = int(jobs["folder_pipeline_bucket"].isin(terminal_folder_buckets).sum())
     jobs["board_status"] = jobs.apply(board_status_for_row, axis=1)
@@ -8657,20 +8658,25 @@ def job_board_page() -> None:
     with f2:
         division_filter = st.multiselect("Division", options_from(jobs, "division"), key="job_board_division")
     with f3:
-        pipeline_filter = st.multiselect("Pipeline Status", options_from(jobs, "pipeline_status"), key="job_board_pipeline")
+        ordered_sales_stage_options = [stage for stage in SALES_PIPELINE_STAGES if stage in set(options_from(jobs, "sales_stage"))]
+        remaining_sales_stage_options = [
+            stage for stage in options_from(jobs, "sales_stage") if stage not in ordered_sales_stage_options
+        ]
+        sales_stage_filter = st.multiselect(
+            "Sales Stage",
+            ordered_sales_stage_options + remaining_sales_stage_options,
+            key="job_board_sales_stage",
+        )
     with f4:
-        status_filter = st.multiselect("Status", options_from(jobs, "status"), key="job_board_status")
-
-    f5, f6, f7, f8 = st.columns(4)
-    with f5:
         crew_filter = st.multiselect("Crew Leader", options_from(jobs, "assigned_crew_leader"), key="job_board_crew")
-    with f6:
-        workflow_filter = st.multiselect("Workflow Status", options_from(jobs, "workflow_status"), key="job_board_workflow_status")
-    with f7:
+
+    f5, f6, f7 = st.columns(3)
+    with f5:
         priority_filter = st.multiselect("Priority", options_from(jobs, "priority"), key="job_board_priority")
-    with f8:
+    with f6:
         hide_completed = st.checkbox("Hide completed/closed jobs", value=True, key="job_board_hide_completed")
-    show_action_only = st.checkbox("Show only jobs needing action", key="job_board_action_only")
+    with f7:
+        show_action_only = st.checkbox("Show only jobs needing action", key="job_board_action_only")
 
     filtered = jobs.copy()
     if search:
@@ -8681,10 +8687,8 @@ def job_board_page() -> None:
         filtered = filtered[mask]
     for selected, column in (
         (division_filter, "division"),
-        (pipeline_filter, "pipeline_status"),
-        (status_filter, "status"),
+        (sales_stage_filter, "sales_stage"),
         (crew_filter, "assigned_crew_leader"),
-        (workflow_filter, "workflow_status"),
         (priority_filter, "priority"),
     ):
         if selected and column in filtered.columns:
