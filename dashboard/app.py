@@ -3118,6 +3118,8 @@ def show_table(
     *,
     sort_by: str | None = None,
     n: int | None = None,
+    row_style_column: str | None = None,
+    row_style_colors: dict[str, str] | None = None,
 ) -> None:
     table_df = with_folder_link(df)
     requested_columns = unique_columns(columns if columns is not None else table_df.columns)
@@ -3132,7 +3134,17 @@ def show_table(
     if table_df.empty:
         show_empty()
         return
-    st.dataframe(table_df[available], width="stretch", hide_index=True, height=height)
+    display_df = table_df[available]
+    if row_style_column and row_style_column in table_df.columns and row_style_colors:
+        style_values = table_df.loc[display_df.index, row_style_column].fillna("").astype(str)
+
+        def row_style(row: pd.Series) -> list[str]:
+            color = row_style_colors.get(style_values.get(row.name, ""), "")
+            return [f"background-color: {color}" if color else "" for _ in row]
+
+        st.dataframe(display_df.style.apply(row_style, axis=1), width="stretch", hide_index=True, height=height)
+        return
+    st.dataframe(display_df, width="stretch", hide_index=True, height=height)
 
 
 def status_value(df: pd.DataFrame, status_text: str) -> float:
@@ -7103,6 +7115,11 @@ def is_proposal_pipeline_review_row(row: pd.Series | dict[str, Any]) -> bool:
         return False
     if truthy_bool(row.get("closed_did_not_get")):
         return False
+    freshness = text_value(row.get("opportunity_freshness")) or job_board_freshness_for_row(row)
+    if freshness in {"Contracted / Active", "Completed", "Not Proposal Pipeline"}:
+        return False
+    if freshness in {"Fresh / Active", "Aging", "Stale", "Estimate, No Proposal"}:
+        return True
     proposal_signal = first_nonblank(
         row.get("proposal_status_flag"),
         row.get("proposal_file"),
@@ -7114,6 +7131,86 @@ def is_proposal_pipeline_review_row(row: pd.Series | dict[str, Any]) -> bool:
     if proposal_signal and text_value(proposal_signal) != "No proposal date":
         return True
     return stage in {"Proposed", "Proposal Submitted", "Contract Pending"}
+
+
+def job_board_contract_completion_bucket(row: pd.Series | dict[str, Any]) -> str:
+    folder_bucket = folder_pipeline_bucket_for_row(row)
+    status_text = " ".join(
+        text_value(row.get(column))
+        for column in [
+            "workflow_status",
+            "pipeline_status",
+            "status",
+            "sales_stage",
+            "schedule_status",
+            "win_loss_status",
+        ]
+        if hasattr(row, "get")
+    ).lower()
+    status_normalized = re.sub(r"[^a-z0-9]+", " ", status_text)
+    completed_signal = (
+        folder_bucket == "Completed Folder"
+        or any(token in status_normalized.split() for token in ["completed", "complete", "invoiced", "invoice"])
+        or bool(first_nonblank(row.get("completion_date"), row.get("date_of_completion"), row.get("completed_date")))
+    )
+    if completed_signal:
+        return "Completed"
+    contracted_signal = (
+        folder_bucket == "Contracted Folder"
+        or truthy_bool(row.get("has_signed_contract"))
+        or "closed won" in status_normalized
+        or any(token in status_normalized.split() for token in ["contracted", "awarded", "signed"])
+    )
+    if contracted_signal:
+        return "Contracted / Active"
+    return ""
+
+
+JOB_BOARD_FRESHNESS_COLORS = {
+    "Fresh / Active": "#e6f4ea",
+    "Aging": "#fff7d6",
+    "Stale": "#fde8e8",
+    "Contracted / Active": "#e8f0fe",
+    "Estimate, No Proposal": "#e8f0fe",
+    "Completed": "#f3f4f6",
+    "No Proposal Date": "#f3f4f6",
+    "Not Proposal Pipeline": "#f3f4f6",
+}
+
+
+def job_board_freshness_for_row(row: pd.Series | dict[str, Any]) -> str:
+    contract_bucket = job_board_contract_completion_bucket(row)
+    if contract_bucket:
+        return contract_bucket
+    if folder_pipeline_bucket_for_row(row) != "Proposal Pipeline":
+        return "Not Proposal Pipeline"
+    has_estimate = bool(
+        first_nonblank(
+            row.get("estimate_created_at"),
+            row.get("estimate_modified_at"),
+            row.get("estimate_file"),
+            row.get("estimate_file_name"),
+        )
+    )
+    has_proposal = bool(
+        first_nonblank(
+            row.get("proposal_date_for_stale"),
+            row.get("proposal_created_at"),
+            row.get("proposal_modified_at"),
+            row.get("proposal_file"),
+            row.get("proposal_file_name"),
+        )
+    )
+    if has_estimate and not has_proposal:
+        return "Estimate, No Proposal"
+    age = pd.to_numeric(pd.Series([row.get("proposal_age_days")]), errors="coerce").iloc[0]
+    if pd.isna(age):
+        return "No Proposal Date"
+    if float(age) <= 30:
+        return "Fresh / Active"
+    if float(age) <= 90:
+        return "Aging"
+    return "Stale"
 
 
 SALES_PIPELINE_STAGES = [
@@ -7725,6 +7822,7 @@ def job_board_export_rows(rows: pd.DataFrame) -> pd.DataFrame:
         "review_mark_contracted",
         "review_mark_completed",
         "folder_pipeline_bucket",
+        "opportunity_freshness",
         "proposal_status_flag",
         "proposal_age_days",
         "proposal_created_at",
@@ -7865,6 +7963,7 @@ def job_board_page() -> None:
         "proposal_stale",
         "proposal_status_flag",
         "folder_pipeline_bucket",
+        "opportunity_freshness",
     ]:
         if column not in jobs.columns:
             jobs[column] = None
@@ -7873,6 +7972,8 @@ def job_board_page() -> None:
     for checkbox_column in JOB_BOARD_REVIEW_CHECKBOX_FIELDS:
         jobs[checkbox_column] = jobs[checkbox_column].apply(truthy_bool)
     jobs["folder_pipeline_bucket"] = jobs.apply(folder_pipeline_bucket_for_row, axis=1)
+    jobs["opportunity_freshness"] = jobs.apply(job_board_freshness_for_row, axis=1)
+    overall_folder_excluded_count = int(jobs["folder_pipeline_bucket"].isin(["Contracted Folder", "Completed Folder"]).sum())
     jobs["board_status"] = jobs.apply(board_status_for_row, axis=1)
     selected_job_id = str(st.session_state.get("selected_job_board_job_id", "") or "")
     if selected_job_id:
@@ -7962,11 +8063,13 @@ def job_board_page() -> None:
             dashboard_rows[checkbox_column] = dashboard_rows[checkbox_column].apply(truthy_bool)
     if "folder_pipeline_bucket" not in dashboard_rows.columns:
         dashboard_rows["folder_pipeline_bucket"] = dashboard_rows.apply(folder_pipeline_bucket_for_row, axis=1)
+    if "opportunity_freshness" not in dashboard_rows.columns:
+        dashboard_rows["opportunity_freshness"] = dashboard_rows.apply(job_board_freshness_for_row, axis=1)
 
     review_dashboard_rows = dashboard_rows[dashboard_rows.apply(is_proposal_pipeline_review_row, axis=1)].copy()
     review_rows = job_board_export_rows(review_dashboard_rows)
     if not review_rows.empty:
-        st.subheader("Proposal Aging / Closeout Review")
+        st.subheader("Proposal / Estimate Follow-Up Review")
         excluded_folder_count = int(
             dashboard_rows.get("folder_pipeline_bucket", pd.Series("", index=dashboard_rows.index))
             .isin(["Contracted Folder", "Completed Folder"])
@@ -7974,8 +8077,10 @@ def job_board_page() -> None:
         )
         st.caption(
             "Contracted and Completed folders are excluded from this proposal-pipeline review list. "
-            f"{excluded_folder_count:,} filtered job{'s' if excluded_folder_count != 1 else ''} were excluded by folder rule. "
-            "Use the checkboxes for remaining jobs that need to be moved or marked after estimator review."
+            f"{excluded_folder_count:,} job{'s' if excluded_folder_count != 1 else ''} were excluded in the current filtered view; "
+            f"{overall_folder_excluded_count:,} job{'s' if overall_folder_excluded_count != 1 else ''} are excluded across the loaded job board. "
+            "Use the checkboxes for remaining jobs that need to be moved or marked after estimator review. "
+            "Rows marked Estimate, No Proposal are active follow-up items."
         )
         edited_review_rows = st.data_editor(
             review_rows,
@@ -7986,6 +8091,7 @@ def job_board_page() -> None:
                     "review_mark_contracted",
                     "review_mark_completed",
                     "folder_pipeline_bucket",
+                    "opportunity_freshness",
                     "proposal_status_flag",
                     "proposal_age_days",
                     "proposal_created_at",
@@ -8015,6 +8121,7 @@ def job_board_page() -> None:
                 "review_mark_contracted": st.column_config.CheckboxColumn("Contracted"),
                 "review_mark_completed": st.column_config.CheckboxColumn("Completed"),
                 "folder_pipeline_bucket": st.column_config.TextColumn("Folder Rule"),
+                "opportunity_freshness": st.column_config.TextColumn("Freshness"),
                 "proposal_status_flag": st.column_config.TextColumn("Proposal Status"),
                 "proposal_age_days": st.column_config.NumberColumn("Proposal Age Days", format="%d"),
                 "proposal_created_at": st.column_config.TextColumn("Proposal Created"),
@@ -8090,6 +8197,7 @@ def job_board_page() -> None:
             "review_mark_contracted",
             "review_mark_completed",
             "folder_pipeline_bucket",
+            "opportunity_freshness",
             "customer_display",
             "project",
             "division",
@@ -8112,6 +8220,8 @@ def job_board_page() -> None:
         ],
         height=520,
         sort_by="sales_value",
+        row_style_column="opportunity_freshness",
+        row_style_colors=JOB_BOARD_FRESHNESS_COLORS,
     )
 
     if not dashboard_rows.empty and "job_id" in dashboard_rows.columns:
