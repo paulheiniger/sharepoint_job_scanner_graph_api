@@ -7959,6 +7959,19 @@ def normalized_project_size(value: float) -> str:
     return "Unknown"
 
 
+def estimator_display_for_row(row: pd.Series) -> str:
+    explicit_estimator = row_first_nonblank(
+        row,
+        ["estimator", "salesperson", "sales_person", "deal_owner", "assigned_user", "owner", "project_manager"],
+    )
+    if explicit_estimator:
+        return explicit_estimator
+    proposal_editor = row_first_nonblank(row, ["proposal_modified_by", "proposal_file_modified_by"])
+    if proposal_editor:
+        return proposal_editor
+    return "Not Captured"
+
+
 def normalize_sales_jobs(df: pd.DataFrame) -> pd.DataFrame:
     if not isinstance(df, pd.DataFrame):
         return pd.DataFrame()
@@ -7973,14 +7986,7 @@ def normalize_sales_jobs(df: pd.DataFrame) -> pd.DataFrame:
         ),
         axis=1,
     )
-    out["estimator_display"] = out.apply(
-        lambda row: row_first_nonblank(
-            row,
-            ["estimator", "salesperson", "sales_person", "deal_owner", "assigned_user", "owner", "project_manager"],
-        )
-        or "Not Captured",
-        axis=1,
-    )
+    out["estimator_display"] = out.apply(estimator_display_for_row, axis=1)
     out["lead_source_display"] = out.apply(
         lambda row: row_first_nonblank(
             row,
