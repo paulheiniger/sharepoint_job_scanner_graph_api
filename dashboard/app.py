@@ -6452,29 +6452,122 @@ def merge_job_board_enrichments(jobs: pd.DataFrame, *enrichments: pd.DataFrame) 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_job_board_estimate_labor_enrichment() -> pd.DataFrame:
+    frames: list[pd.DataFrame] = []
     cols = relation_columns("dashboard_estimates")
-    if "job_id" not in cols:
-        return pd.DataFrame()
     fields = {
         "estimated_duration_days": "estimate_estimated_duration_days",
         "estimated_labor_hours": "estimate_estimated_labor_hours",
         "estimated_crew_size": "estimate_estimated_crew_size",
         "labor_subtotal": "estimate_labor_subtotal",
     }
-    select_parts = ["e.job_id"]
-    for source, alias in fields.items():
-        select_parts.append(f"MAX({sql_column('e', cols, source, 'NULL')}) AS {alias}")
-    try:
-        return safe_load(
-            f"""
-            SELECT {', '.join(select_parts)}
-            FROM dashboard_estimates e
-            WHERE e.job_id IS NOT NULL
-            GROUP BY e.job_id
-            """
-        )
-    except Exception:
+    if "job_id" in cols:
+        select_parts = ["e.job_id"]
+        for source, alias in fields.items():
+            select_parts.append(f"MAX({sql_column('e', cols, source, 'NULL')}) AS {alias}")
+        try:
+            frames.append(
+                safe_load(
+                    f"""
+                    SELECT {', '.join(select_parts)}
+                    FROM dashboard_estimates e
+                    WHERE e.job_id IS NOT NULL
+                    GROUP BY e.job_id
+                    """
+                )
+            )
+        except Exception:
+            pass
+
+    template_cols = relation_columns("estimate_template_rows")
+    if {"job_id", "document_id"}.issubset(template_cols):
+        document_join = ""
+        modified_order = "TIMESTAMPTZ 'epoch'"
+        if {"document_id", "modified_at"}.issubset(relation_columns("documents")):
+            document_join = "LEFT JOIN documents d ON d.document_id = r.document_id"
+            modified_order = "COALESCE(MAX(d.modified_at), TIMESTAMPTZ 'epoch')"
+        labor_filter_parts = []
+        if "template_section" in template_cols:
+            labor_filter_parts.append("LOWER(COALESCE(r.template_section, '')) LIKE '%labor%'")
+        if "template_bucket" in template_cols:
+            labor_filter_parts.append("LOWER(COALESCE(r.template_bucket, '')) LIKE 'labor_%'")
+        if "line_item_kind" in template_cols:
+            labor_filter_parts.append("LOWER(COALESCE(r.line_item_kind, '')) = 'labor'")
+        if labor_filter_parts:
+            try:
+                frames.append(
+                    safe_load(
+                        f"""
+                        WITH labor_by_workbook AS (
+                            SELECT
+                                r.job_id,
+                                r.document_id,
+                                COALESCE(r.source_file, '') AS source_file,
+                                SUM(GREATEST(COALESCE(r.days, 0), 0)) AS estimate_estimated_duration_days,
+                                SUM(GREATEST(COALESCE(r.total_hours, 0), 0)) AS estimate_estimated_labor_hours,
+                                MAX(NULLIF(r.crew_size, 0)) AS estimate_estimated_crew_size,
+                                SUM(COALESCE(NULLIF(r.estimated_cost, 0), NULLIF(r.calculated_cost, 0), 0)) AS estimate_labor_subtotal,
+                                COUNT(*) AS labor_row_count,
+                                {modified_order} AS source_modified_at
+                            FROM estimate_template_rows r
+                            {document_join}
+                            WHERE r.job_id IS NOT NULL
+                              AND ({' OR '.join(labor_filter_parts)})
+                              AND LOWER(BTRIM(COALESCE(r.row_label, ''))) NOT IN ('types', 'types:', 'units')
+                              AND COALESCE(r.days, 0) <= 30
+                              AND COALESCE(r.total_hours, 0) <= 1000
+                            GROUP BY r.job_id, r.document_id, COALESCE(r.source_file, '')
+                        ),
+                        ranked AS (
+                            SELECT
+                                *,
+                                ROW_NUMBER() OVER (
+                                    PARTITION BY job_id
+                                    ORDER BY
+                                        CASE WHEN COALESCE(estimate_labor_subtotal, 0) > 0 THEN 1 ELSE 0 END DESC,
+                                        source_modified_at DESC,
+                                        COALESCE(estimate_estimated_labor_hours, 0) DESC,
+                                        COALESCE(estimate_estimated_duration_days, 0) DESC,
+                                        labor_row_count DESC
+                                ) AS rank
+                            FROM labor_by_workbook
+                            WHERE COALESCE(estimate_estimated_labor_hours, 0) > 0
+                               OR COALESCE(estimate_estimated_duration_days, 0) > 0
+                               OR COALESCE(estimate_labor_subtotal, 0) > 0
+                        )
+                        SELECT
+                            job_id,
+                            estimate_estimated_duration_days,
+                            estimate_estimated_labor_hours,
+                            estimate_estimated_crew_size,
+                            estimate_labor_subtotal
+                        FROM ranked
+                        WHERE rank = 1
+                        """
+                    )
+                )
+            except Exception:
+                pass
+
+    if not frames:
         return pd.DataFrame()
+    out = frames[0].copy()
+    for frame in frames[1:]:
+        if not isinstance(frame, pd.DataFrame) or frame.empty or "job_id" not in frame.columns:
+            continue
+        out = out.merge(frame.drop_duplicates("job_id", keep="first"), on="job_id", how="outer", suffixes=("", "_detail"))
+        for alias in fields.values():
+            detail_column = f"{alias}_detail"
+            if detail_column not in out.columns:
+                continue
+            if alias not in out.columns:
+                out[alias] = out[detail_column]
+            else:
+                current = pd.to_numeric(out[alias], errors="coerce")
+                detail = pd.to_numeric(out[detail_column], errors="coerce")
+                mask = (current.isna() | current.eq(0)) & detail.notna() & detail.ne(0)
+                out.loc[mask, alias] = out.loc[mask, detail_column]
+            out = out.drop(columns=[detail_column])
+    return out
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -7504,6 +7597,9 @@ def prepare_job_board_dashboard_rows(jobs: pd.DataFrame) -> pd.DataFrame:
                 else "",
                 f"{format_summary_value(row.get('estimated_labor_hours'), kind='number')} hrs"
                 if row_first_positive_number(row, ["estimated_labor_hours"]) > 0
+                else "",
+                f"{fmt_dollar(row_first_positive_number(row, ['labor_subtotal']))} labor"
+                if row_first_positive_number(row, ["labor_subtotal"]) > 0
                 else "",
             ]
             if part
