@@ -3120,6 +3120,7 @@ def show_table(
     n: int | None = None,
     row_style_column: str | None = None,
     row_style_colors: dict[str, str] | None = None,
+    column_labels: dict[str, str] | None = None,
 ) -> None:
     table_df = with_folder_link(df)
     requested_columns = unique_columns(columns if columns is not None else table_df.columns)
@@ -3134,13 +3135,15 @@ def show_table(
     if table_df.empty:
         show_empty()
         return
-    display_df = table_df[available]
+    display_df = table_df[available].copy()
+    if column_labels:
+        display_df = display_df.rename(columns={column: label for column, label in column_labels.items() if column in display_df.columns})
     if row_style_column and row_style_column in table_df.columns and row_style_colors:
         style_values = table_df.loc[display_df.index, row_style_column].fillna("").astype(str)
 
         def row_style(row: pd.Series) -> list[str]:
             color = row_style_colors.get(style_values.get(row.name, ""), "")
-            return [f"background-color: {color}" if color else "" for _ in row]
+            return [f"background-color: {color}; color: #111827" if color else "" for _ in row]
 
         st.dataframe(display_df.style.apply(row_style, axis=1), width="stretch", hide_index=True, height=height)
         return
@@ -6394,6 +6397,10 @@ def merge_job_board_enrichments(jobs: pd.DataFrame, *enrichments: pd.DataFrame) 
         "total_job_cost": ["vsimple_all_costs"],
         "estimated_sqft": ["vsimple_estimated_sqft", "vsimple_roof_deck_sqft"],
         "warranty_years": ["template_warranty_years", "document_warranty_years"],
+        "estimated_duration_days": ["estimate_estimated_duration_days"],
+        "estimated_labor_hours": ["estimate_estimated_labor_hours"],
+        "estimated_crew_size": ["estimate_estimated_crew_size"],
+        "labor_subtotal": ["estimate_labor_subtotal"],
     }
     for target, sources in text_targets.items():
         if target not in out.columns:
@@ -6417,6 +6424,33 @@ def merge_job_board_enrichments(jobs: pd.DataFrame, *enrichments: pd.DataFrame) 
             out.loc[mask, target] = source_num[mask]
             target_num = pd.to_numeric(out[target], errors="coerce")
     return out
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_job_board_estimate_labor_enrichment() -> pd.DataFrame:
+    cols = relation_columns("dashboard_estimates")
+    if "job_id" not in cols:
+        return pd.DataFrame()
+    fields = {
+        "estimated_duration_days": "estimate_estimated_duration_days",
+        "estimated_labor_hours": "estimate_estimated_labor_hours",
+        "estimated_crew_size": "estimate_estimated_crew_size",
+        "labor_subtotal": "estimate_labor_subtotal",
+    }
+    select_parts = ["e.job_id"]
+    for source, alias in fields.items():
+        select_parts.append(f"MAX({sql_column('e', cols, source, 'NULL')}) AS {alias}")
+    try:
+        return safe_load(
+            f"""
+            SELECT {', '.join(select_parts)}
+            FROM dashboard_estimates e
+            WHERE e.job_id IS NOT NULL
+            GROUP BY e.job_id
+            """
+        )
+    except Exception:
+        return pd.DataFrame()
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -6483,6 +6517,7 @@ def load_job_board_df() -> pd.DataFrame:
         load_job_board_vsimple_enrichment(),
         load_job_board_template_enrichment(),
         load_job_board_document_signal_enrichment(),
+        load_job_board_estimate_labor_enrichment(),
     )
     document_dates = load_job_board_document_dates()
     if not document_dates.empty and "job_id" in document_dates.columns:
@@ -6493,7 +6528,27 @@ def load_job_board_df() -> pd.DataFrame:
         jobs = jobs.merge(overrides, on="job_id", how="left")
     schedule = load_job_board_schedule()
     if not schedule.empty and "job_id" in schedule.columns:
-        jobs = jobs.merge(schedule, on="job_id", how="left")
+        jobs = jobs.merge(schedule, on="job_id", how="left", suffixes=("", "_schedule"))
+        for column in [
+            "assigned_crew_leader",
+            "estimated_start_date",
+            "estimated_end_date",
+            "estimated_duration_days",
+            "estimated_labor_hours",
+            "estimated_crew_size",
+            "schedule_status",
+            "schedule_priority",
+            "blocking_issue",
+            "schedule_notes",
+        ]:
+            schedule_column = f"{column}_schedule"
+            if schedule_column not in jobs.columns:
+                continue
+            if column in jobs.columns:
+                jobs[column] = jobs[column].combine_first(jobs[schedule_column])
+            else:
+                jobs[column] = jobs[schedule_column]
+            jobs = jobs.drop(columns=[schedule_column])
     warnings = load_job_board_warnings()
     if not warnings.empty and "job_id" in warnings.columns:
         jobs = jobs.merge(warnings, on="job_id", how="left")
@@ -8083,6 +8138,72 @@ def job_board_page() -> None:
         dashboard_rows["folder_pipeline_bucket"] = dashboard_rows.apply(folder_pipeline_bucket_for_row, axis=1)
     if "opportunity_freshness" not in dashboard_rows.columns:
         dashboard_rows["opportunity_freshness"] = dashboard_rows.apply(job_board_freshness_for_row, axis=1)
+    dashboard_rows["material_system_warranty"] = dashboard_rows.apply(
+        lambda row: " / ".join(
+            part
+            for part in [
+                text_value(row.get("material_system_display")),
+                text_value(row.get("warranty_display")),
+            ]
+            if part and part != "Not Captured"
+        )
+        or "Not Captured",
+        axis=1,
+    )
+
+    job_board_table_columns = [
+        "project",
+        "project_category",
+        "sales_stage",
+        "sales_value",
+        "opportunity_freshness",
+        "proposal_modified_at",
+        "proposal_modified_by",
+        "substrate_display",
+        "material_system_warranty",
+        "win_loss_status",
+        "completion_date_display",
+        "estimator_display",
+        "lead_source_display",
+        "readiness_status",
+        "schedule_health",
+        "estimated_start_date",
+        "labor_plan",
+        "production_risk_summary",
+        "folder",
+    ]
+    job_board_column_labels = {
+        "project": "Project",
+        "project_category": "Project Category",
+        "sales_stage": "Sales Stage",
+        "sales_value": "Value",
+        "opportunity_freshness": "Freshness",
+        "proposal_modified_at": "Proposal Modified",
+        "proposal_modified_by": "Proposal Modified By",
+        "substrate_display": "Substrate",
+        "material_system_warranty": "Material / Warranty",
+        "win_loss_status": "Win / Loss",
+        "completion_date_display": "Completion Date",
+        "estimator_display": "Estimator",
+        "lead_source_display": "Lead Source",
+        "readiness_status": "Readiness",
+        "schedule_health": "Schedule Health",
+        "estimated_start_date": "Start",
+        "labor_plan": "Labor Plan",
+        "production_risk_summary": "Production Risk",
+        "folder": "Folder",
+    }
+
+    st.subheader("Job Board Table")
+    show_table(
+        dashboard_rows,
+        job_board_table_columns,
+        height=520,
+        sort_by="sales_value",
+        row_style_column="opportunity_freshness",
+        row_style_colors=JOB_BOARD_FRESHNESS_COLORS,
+        column_labels=job_board_column_labels,
+    )
 
     review_dashboard_rows = dashboard_rows[dashboard_rows.apply(is_proposal_pipeline_review_row, axis=1)].copy()
     review_rows = job_board_export_rows(review_dashboard_rows)
@@ -8199,48 +8320,6 @@ def job_board_page() -> None:
                             st.info("No imported review changes detected.")
                 except Exception as exc:
                     show_database_error(exc)
-
-    st.subheader("Job Board Table")
-    show_table(
-        dashboard_rows,
-        [
-            "proposal_status_flag",
-            "proposal_created_at",
-            "proposal_modified_at",
-            "proposal_modified_by",
-            "estimate_created_at",
-            "estimate_modified_at",
-            "estimate_modified_by",
-            "closed_did_not_get",
-            "review_mark_contracted",
-            "review_mark_completed",
-            "folder_pipeline_bucket",
-            "opportunity_freshness",
-            "customer_display",
-            "project",
-            "division",
-            "sales_stage",
-            "win_loss_status",
-            "sales_value",
-            "project_category",
-            "substrate_display",
-            "material_system_display",
-            "warranty_display",
-            "completion_date_display",
-            "estimator_display",
-            "lead_source_display",
-            "readiness_status",
-            "schedule_health",
-            "estimated_start_date",
-            "labor_plan",
-            "production_risk_summary",
-            "folder",
-        ],
-        height=520,
-        sort_by="sales_value",
-        row_style_column="opportunity_freshness",
-        row_style_colors=JOB_BOARD_FRESHNESS_COLORS,
-    )
 
     if not dashboard_rows.empty and "job_id" in dashboard_rows.columns:
         selectable_rows = dashboard_rows[dashboard_rows["job_id"].fillna("").astype(str).str.strip().ne("")]
