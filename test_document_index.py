@@ -28,7 +28,10 @@ def test_document_classification_rules() -> None:
     assert classify_document("Signed Roof Proposal.pdf")["document_type"] == "proposal"
     assert classify_document("Invoice No. 2026-042.pdf")["document_type"] == "invoice"
     assert classify_document("Job Tracking Form.xlsx")["document_type"] == "job_tracking"
+    assert classify_document("Job Spec.xlsx")["document_type"] == "specification"
+    assert classify_document("Estimate + Spec Form - Contracted Repairs.xlsx")["document_type"] == "specification"
     assert classify_document("EagleView Report.pdf")["document_type"] == "aerial"
+    assert classify_document("photo.heic", "Old Estimate Copies")["document_type"] == "photos"
     assert classify_document("Field Notes Scan.pdf")["document_type"] == "field_notes"
 
 

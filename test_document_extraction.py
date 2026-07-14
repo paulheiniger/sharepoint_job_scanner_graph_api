@@ -142,6 +142,40 @@ def test_cache_path_is_stable_and_existing_cache_is_reused(tmp_path: Path) -> No
     assert de.ensure_local_document(document, cache_root) == existing
 
 
+def test_job_spec_candidate_selection_sql_includes_type_and_name_matches() -> None:
+    where_sql, params = de.document_selection_sql(
+        document_id=None,
+        job_id=None,
+        pending=True,
+        document_type=None,
+        job_spec_candidates=True,
+    )
+
+    assert "document_type = ANY" in where_sql
+    assert "job_spec_candidate_pattern" in params
+    assert "job_tracking" in params["job_spec_note_document_types"]
+    assert "job tracking" in params["job_spec_candidate_pattern"]
+    assert "extraction_status" in where_sql
+
+
+def test_failed_document_selection_sql_retries_failed_only() -> None:
+    where_sql, _params = de.document_selection_sql(
+        document_id=None,
+        job_id=None,
+        pending=False,
+        failed=True,
+        document_type=None,
+    )
+
+    assert "extraction_status = 'failed'" in where_sql
+    assert "not_started" not in where_sql
+
+
+def test_postgres_safe_text_strips_nul_bytes() -> None:
+    assert de.postgres_safe_text("Job\x00 Spec") == "Job Spec"
+    assert de.postgres_safe_text(None) is None
+
+
 def test_download_failure_is_reported_without_live_sharepoint(tmp_path: Path) -> None:
     with pytest.raises(de.DocumentAcquisitionError):
         de.ensure_local_document({"document_id": "doc-1", "file_name": "Missing.pdf"}, tmp_path)

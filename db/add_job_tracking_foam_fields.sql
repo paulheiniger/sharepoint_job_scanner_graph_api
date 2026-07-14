@@ -1,0 +1,31 @@
+ALTER TABLE job_tracking_summary
+    ADD COLUMN IF NOT EXISTS actual_foam_strokes NUMERIC,
+    ADD COLUMN IF NOT EXISTS actual_foam_thickness_inches NUMERIC,
+    ADD COLUMN IF NOT EXISTS actual_foam_sqft NUMERIC,
+    ADD COLUMN IF NOT EXISTS actual_foam_yield NUMERIC,
+    ADD COLUMN IF NOT EXISTS actual_granules NUMERIC,
+    ADD COLUMN IF NOT EXISTS actual_primer NUMERIC,
+    ADD COLUMN IF NOT EXISTS actual_sf NUMERIC,
+    ADD COLUMN IF NOT EXISTS estimated_foam_strokes NUMERIC,
+    ADD COLUMN IF NOT EXISTS estimated_foam_thickness_inches NUMERIC,
+    ADD COLUMN IF NOT EXISTS estimated_foam_sqft NUMERIC,
+    ADD COLUMN IF NOT EXISTS estimated_foam_yield NUMERIC,
+    ADD COLUMN IF NOT EXISTS estimated_granules NUMERIC,
+    ADD COLUMN IF NOT EXISTS estimated_primer NUMERIC,
+    ADD COLUMN IF NOT EXISTS estimated_sf NUMERIC,
+    ADD COLUMN IF NOT EXISTS foam_strokes_variance NUMERIC,
+    ADD COLUMN IF NOT EXISTS foam_sqft_variance NUMERIC,
+    ADD COLUMN IF NOT EXISTS granules_variance NUMERIC,
+    ADD COLUMN IF NOT EXISTS primer_variance NUMERIC,
+    ADD COLUMN IF NOT EXISTS sf_variance NUMERIC;
+
+ALTER TABLE job_tracking_daily_entries
+    ADD COLUMN IF NOT EXISTS foam_strokes NUMERIC,
+    ADD COLUMN IF NOT EXISTS foam_thickness_inches NUMERIC,
+    ADD COLUMN IF NOT EXISTS foam_sqft NUMERIC,
+    ADD COLUMN IF NOT EXISTS foam_yield NUMERIC,
+    ADD COLUMN IF NOT EXISTS a_side_lot TEXT,
+    ADD COLUMN IF NOT EXISTS b_side_lot TEXT,
+    ADD COLUMN IF NOT EXISTS granules NUMERIC,
+    ADD COLUMN IF NOT EXISTS primer NUMERIC,
+    ADD COLUMN IF NOT EXISTS sf NUMERIC;

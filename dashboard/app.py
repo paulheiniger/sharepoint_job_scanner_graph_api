@@ -1444,6 +1444,264 @@ def ensure_job_workflow_overrides_table() -> None:
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_job_workflow_priority ON job_workflow_overrides(priority)"))
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def load_job_tracking_dashboard_summary() -> pd.DataFrame:
+    tracking_cols = relation_columns("job_tracking_summary")
+    if not tracking_cols:
+        return pd.DataFrame()
+    job_cols = relation_columns("dashboard_jobs")
+    has_jobs = bool(job_cols)
+    join_sql = "LEFT JOIN dashboard_jobs j ON j.job_id = t.job_id" if has_jobs and "job_id" in job_cols else ""
+
+    text_fields = {
+        "job_id": sql_column("t", tracking_cols, "job_id"),
+        "customer": sql_coalesce(
+            [
+                sql_column("j", job_cols, "customer") if has_jobs else "NULL",
+                sql_column("t", tracking_cols, "customer"),
+            ]
+        ),
+        "job_name": sql_coalesce(
+            [
+                sql_column("j", job_cols, "job_name") if has_jobs else "NULL",
+                sql_column("t", tracking_cols, "job_name"),
+            ]
+        ),
+        "division": sql_column("j", job_cols, "division") if has_jobs else "NULL",
+        "pipeline_status": sql_column("j", job_cols, "pipeline_status") if has_jobs else "NULL",
+        "status": sql_column("j", job_cols, "status") if has_jobs else "NULL",
+        "folder_path": sql_column("j", job_cols, "folder_path") if has_jobs else "NULL",
+        "folder_url": sql_column("j", job_cols, "folder_url") if has_jobs else "NULL",
+        "source_file": sql_column("t", tracking_cols, "source_file"),
+        "tracking_notes": sql_column("t", tracking_cols, "tracking_notes"),
+        "tracking_warnings": sql_column("t", tracking_cols, "tracking_warnings"),
+    }
+    numeric_fields = [
+        "actual_labor_hours",
+        "actual_travel_hours",
+        "actual_load_hours",
+        "actual_os_hours",
+        "actual_mileage",
+        "actual_os_mileage",
+        "actual_foam_strokes",
+        "actual_foam_thickness_inches",
+        "actual_foam_sqft",
+        "actual_foam_yield",
+        "actual_base_coat_1",
+        "actual_base_coat_2",
+        "actual_granules",
+        "actual_af_buttergrade",
+        "actual_caulk",
+        "actual_primer",
+        "actual_sf",
+        "estimated_labor_hours",
+        "estimated_travel_hours",
+        "estimated_load_hours",
+        "estimated_mileage",
+        "estimated_os_mileage",
+        "estimated_foam_strokes",
+        "estimated_foam_thickness_inches",
+        "estimated_foam_sqft",
+        "estimated_foam_yield",
+        "estimated_base_coat_1",
+        "estimated_base_coat_2",
+        "estimated_granules",
+        "estimated_af_buttergrade",
+        "estimated_caulk",
+        "estimated_primer",
+        "estimated_sf",
+        "labor_hours_variance",
+        "travel_hours_variance",
+        "load_hours_variance",
+        "foam_strokes_variance",
+        "foam_sqft_variance",
+        "granules_variance",
+        "primer_variance",
+        "sf_variance",
+    ]
+    date_fields = ["first_work_date", "last_work_date", "created_at", "updated_at"]
+    select_parts = [f"{expr} AS {alias}" for alias, expr in text_fields.items()]
+    select_parts.extend(f"{sql_column('t', tracking_cols, field)} AS {field}" for field in numeric_fields)
+    select_parts.extend(f"{sql_column('t', tracking_cols, field)} AS {field}" for field in date_fields)
+    if has_jobs:
+        select_parts.extend(
+            [
+                f"{sql_column('j', job_cols, 'estimated_value')} AS estimated_value",
+                f"{sql_column('j', job_cols, 'project_category')} AS project_category",
+                f"{sql_column('j', job_cols, 'material_system_display')} AS material_system_display",
+                f"{sql_column('j', job_cols, 'substrate_display')} AS substrate_display",
+                f"{sql_column('j', job_cols, 'warranty_display')} AS warranty_display",
+            ]
+        )
+    else:
+        select_parts.extend(
+            [
+                "NULL AS estimated_value",
+                "NULL AS project_category",
+                "NULL AS material_system_display",
+                "NULL AS substrate_display",
+                "NULL AS warranty_display",
+            ]
+        )
+
+    try:
+        engine = get_engine()
+        with engine.connect() as conn:
+            df = pd.read_sql_query(
+                text(
+                    f"""
+                    SELECT {', '.join(select_parts)}
+                    FROM job_tracking_summary t
+                    {join_sql}
+                    ORDER BY t.last_work_date DESC NULLS LAST, t.updated_at DESC NULLS LAST
+                    """
+                ),
+                conn,
+            )
+    except Exception:
+        return pd.DataFrame()
+    if df.empty:
+        return df
+    for column in numeric_fields + ["estimated_value"]:
+        if column in df.columns:
+            df[column] = pd.to_numeric(df[column], errors="coerce")
+    for column in date_fields:
+        if column in df.columns:
+            df[column] = pd.to_datetime(df[column], errors="coerce")
+    for column in ["customer", "job_name"]:
+        if column not in df.columns:
+            df[column] = ""
+    df["project"] = (
+        df["customer"].fillna("").astype(str).str.strip()
+        + np.where(df["job_name"].fillna("").astype(str).str.strip().ne(""), " - ", "")
+        + df["job_name"].fillna("").astype(str).str.strip()
+    ).str.strip(" -")
+    actual_total_hours = pd.Series(0.0, index=df.index)
+    for column in ["actual_labor_hours", "actual_travel_hours", "actual_load_hours", "actual_os_hours"]:
+        if column in df.columns:
+            actual_total_hours = actual_total_hours.add(numeric_series(df, column).reindex(df.index).fillna(0), fill_value=0)
+    estimated_total_hours = pd.Series(0.0, index=df.index)
+    for column in ["estimated_labor_hours", "estimated_travel_hours", "estimated_load_hours"]:
+        if column in df.columns:
+            estimated_total_hours = estimated_total_hours.add(numeric_series(df, column).reindex(df.index).fillna(0), fill_value=0)
+    df["actual_total_hours"] = actual_total_hours
+    df["estimated_total_hours"] = estimated_total_hours
+    df["labor_delta_hours"] = numeric_series(df, "actual_labor_hours") - numeric_series(df, "estimated_labor_hours")
+    df["labor_hours_used_pct"] = np.where(
+        numeric_series(df, "estimated_labor_hours") > 0,
+        numeric_series(df, "actual_labor_hours") / numeric_series(df, "estimated_labor_hours"),
+        np.nan,
+    )
+    today = pd.Timestamp(date.today())
+    last_work = pd.to_datetime(df.get("last_work_date"), errors="coerce")
+    status_text = (
+        df.get("status", pd.Series("", index=df.index)).fillna("").astype(str)
+        + " "
+        + df.get("pipeline_status", pd.Series("", index=df.index)).fillna("").astype(str)
+        + " "
+        + df.get("folder_path", pd.Series("", index=df.index)).fillna("").astype(str)
+    ).str.lower()
+    recent_mask = last_work.notna() & ((today - last_work).dt.days <= 21)
+    completed_mask = status_text.str.contains("completed|complete", regex=True, na=False)
+    contracted_mask = status_text.str.contains("contracted|production|scheduled|in progress|active", regex=True, na=False)
+    df["tracking_status"] = np.select(
+        [recent_mask, contracted_mask & ~completed_mask, completed_mask],
+        ["Recently touched", "Contracted / active", "Completed"],
+        default="Historical / proposed",
+    )
+    df = with_folder_link(df)
+    return df
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_job_tracking_dashboard_daily() -> pd.DataFrame:
+    daily_cols = relation_columns("job_tracking_daily_entries")
+    if not daily_cols:
+        return pd.DataFrame()
+    job_cols = relation_columns("dashboard_jobs")
+    has_jobs = bool(job_cols)
+    join_sql = "LEFT JOIN dashboard_jobs j ON j.job_id = d.job_id" if has_jobs and "job_id" in job_cols else ""
+    text_fields = {
+        "job_id": sql_column("d", daily_cols, "job_id"),
+        "customer": sql_coalesce(
+            [
+                sql_column("j", job_cols, "customer") if has_jobs else "NULL",
+                sql_column("d", daily_cols, "customer"),
+            ]
+        ),
+        "job_name": sql_coalesce(
+            [
+                sql_column("j", job_cols, "job_name") if has_jobs else "NULL",
+                sql_column("d", daily_cols, "job_name"),
+            ]
+        ),
+        "division": sql_column("j", job_cols, "division") if has_jobs else "NULL",
+        "work_date": sql_column("d", daily_cols, "work_date"),
+        "crew": sql_column("d", daily_cols, "crew"),
+        "notes": sql_column("d", daily_cols, "notes"),
+        "source_file": sql_column("d", daily_cols, "source_file"),
+    }
+    numeric_fields = [
+        "labor_hours",
+        "travel_hours",
+        "load_hours",
+        "os_hours",
+        "mileage",
+        "os_mileage",
+        "foam_strokes",
+        "foam_thickness_inches",
+        "foam_sqft",
+        "foam_yield",
+        "base_coat_1",
+        "base_sqft",
+        "base_gal_per_sq",
+        "base_coat_2",
+        "top_sqft",
+        "top_gal_per_sq",
+        "granules",
+        "af_buttergrade",
+        "caulk",
+        "primer",
+        "sf",
+    ]
+    select_parts = [f"{expr} AS {alias}" for alias, expr in text_fields.items()]
+    select_parts.extend(f"{sql_column('d', daily_cols, field)} AS {field}" for field in numeric_fields)
+    try:
+        engine = get_engine()
+        with engine.connect() as conn:
+            df = pd.read_sql_query(
+                text(
+                    f"""
+                    SELECT {', '.join(select_parts)}
+                    FROM job_tracking_daily_entries d
+                    {join_sql}
+                    ORDER BY d.work_date DESC NULLS LAST, d.source_file
+                    """
+                ),
+                conn,
+            )
+    except Exception:
+        return pd.DataFrame()
+    if df.empty:
+        return df
+    for column in numeric_fields:
+        if column in df.columns:
+            df[column] = pd.to_numeric(df[column], errors="coerce")
+    if "work_date" in df.columns:
+        df["work_date"] = pd.to_datetime(df["work_date"], errors="coerce")
+    df["project"] = (
+        df.get("customer", pd.Series("", index=df.index)).fillna("").astype(str).str.strip()
+        + np.where(df.get("job_name", pd.Series("", index=df.index)).fillna("").astype(str).str.strip().ne(""), " - ", "")
+        + df.get("job_name", pd.Series("", index=df.index)).fillna("").astype(str).str.strip()
+    ).str.strip(" -")
+    total_hours = pd.Series(0.0, index=df.index)
+    for column in ["labor_hours", "travel_hours", "load_hours", "os_hours"]:
+        if column in df.columns:
+            total_hours = total_hours.add(numeric_series(df, column).reindex(df.index).fillna(0), fill_value=0)
+    df["total_hours"] = total_hours
+    return df
+
+
 def load_schedule_df() -> pd.DataFrame:
     return safe_load("SELECT * FROM crew_schedule")
 
@@ -1811,6 +2069,191 @@ def load_unscheduled_backlog_df(scheduled_job_ids: set[str]) -> pd.DataFrame:
     if "proposal_file" not in out.columns:
         out["proposal_file"] = out["estimate_file"] if "estimate_file" in out.columns else None
     return out
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_schedule_job_spec_content(job_id: str) -> pd.DataFrame:
+    job_id_text = text_value(job_id)
+    if not job_id_text:
+        return pd.DataFrame()
+    content_cols = relation_columns("document_content")
+    document_cols = relation_columns("documents")
+    if not {"job_id", "document_id", "text_content"}.issubset(content_cols):
+        return pd.DataFrame()
+    if not {"document_id", "job_id", "file_name"}.issubset(document_cols):
+        return pd.DataFrame()
+    try:
+        engine = get_engine()
+        candidate_pattern = r"(job[ _-]*spec|jobspec|job specification|spec form|scope of work|work scope|(^|\s)spec(\s|$)|job tracking|tracking form|field notes|site notes|inspection notes|estimator notes)"
+        exclude_pattern = r"(submittal|submittals|sds|pds|tds|technical data|data sheet|sales sheet|brochure|certificate of liability|cert tracking)"
+        with engine.connect() as conn:
+            return pd.read_sql_query(
+                text(
+                    """
+                    WITH selected_job AS (
+                        SELECT LOWER(NULLIF(COALESCE(folder_path, folder_name, ''), '')) AS match_path
+                        FROM dashboard_jobs
+                        WHERE job_id = :job_id
+                        LIMIT 1
+                    )
+                    SELECT
+                        d.document_id,
+                        d.file_name,
+                        d.document_type,
+                        d.sharepoint_url,
+                        d.modified_at,
+                        c.page_number,
+                        c.source_locator,
+                        c.text_content,
+                        CASE
+                            WHEN LOWER(COALESCE(d.document_type, '')) = 'specification' THEN 4
+                            WHEN LOWER(COALESCE(d.document_type, '')) = 'job_tracking' THEN 3
+                            WHEN LOWER(COALESCE(d.file_name, '') || ' ' || COALESCE(d.relative_path, '')) ~ :candidate_pattern THEN 2
+                            ELSE 1
+                        END AS spec_score
+                    FROM document_content c
+                    JOIN documents d ON d.document_id = c.document_id
+                    WHERE (
+                            c.job_id = :job_id
+                         OR d.job_id = :job_id
+                         OR EXISTS (
+                                SELECT 1
+                                FROM selected_job sj
+                                WHERE sj.match_path IS NOT NULL
+                                  AND LOWER(COALESCE(d.relative_path, '') || ' ' || COALESCE(d.folder_path, '')) LIKE '%' || sj.match_path || '%'
+                            )
+                      )
+                      AND (
+                            LOWER(COALESCE(d.document_type, '')) IN ('job_tracking', 'field_notes', 'site_notes')
+                         OR LOWER(COALESCE(d.file_name, '') || ' ' || COALESCE(d.relative_path, '')) ~ :candidate_pattern
+                         OR (
+                                LOWER(COALESCE(d.document_type, '')) = 'specification'
+                            AND LOWER(COALESCE(d.file_name, '') || ' ' || COALESCE(d.relative_path, '')) !~ :exclude_pattern
+                         )
+                      )
+                      AND NULLIF(BTRIM(c.text_content), '') IS NOT NULL
+                    ORDER BY spec_score DESC, d.modified_at DESC NULLS LAST, d.file_name, c.page_number NULLS LAST, c.source_locator
+                    LIMIT 20
+                    """
+                ),
+                conn,
+                params={"job_id": job_id_text, "candidate_pattern": candidate_pattern, "exclude_pattern": exclude_pattern},
+            )
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_schedule_job_spec_documents(job_id: str) -> pd.DataFrame:
+    job_id_text = text_value(job_id)
+    if not job_id_text:
+        return pd.DataFrame()
+    document_cols = relation_columns("documents")
+    if not {"document_id", "job_id", "file_name"}.issubset(document_cols):
+        return pd.DataFrame()
+    try:
+        engine = get_engine()
+        candidate_pattern = r"(job[ _-]*spec|jobspec|job specification|spec form|scope of work|work scope|(^|\s)spec(\s|$)|job tracking|tracking form|field notes|site notes|inspection notes|estimator notes)"
+        exclude_pattern = r"(submittal|submittals|sds|pds|tds|technical data|data sheet|sales sheet|brochure|certificate of liability|cert tracking)"
+        with engine.connect() as conn:
+            return pd.read_sql_query(
+                text(
+                    """
+                    WITH selected_job AS (
+                        SELECT LOWER(NULLIF(COALESCE(folder_path, folder_name, ''), '')) AS match_path
+                        FROM dashboard_jobs
+                        WHERE job_id = :job_id
+                        LIMIT 1
+                    )
+                    SELECT
+                        d.document_id,
+                        d.file_name,
+                        d.document_type,
+                        d.extraction_status,
+                        d.extraction_error,
+                        d.sharepoint_url,
+                        d.modified_at,
+                        CASE
+                            WHEN LOWER(COALESCE(d.document_type, '')) = 'specification' THEN 4
+                            WHEN LOWER(COALESCE(d.document_type, '')) = 'job_tracking' THEN 3
+                            WHEN LOWER(COALESCE(d.file_name, '') || ' ' || COALESCE(d.relative_path, '')) ~ :candidate_pattern THEN 2
+                            ELSE 1
+                        END AS spec_score
+                    FROM documents d
+                    WHERE (
+                            d.job_id = :job_id
+                         OR EXISTS (
+                                SELECT 1
+                                FROM selected_job sj
+                                WHERE sj.match_path IS NOT NULL
+                                  AND LOWER(COALESCE(d.relative_path, '') || ' ' || COALESCE(d.folder_path, '')) LIKE '%' || sj.match_path || '%'
+                            )
+                      )
+                      AND (
+                            LOWER(COALESCE(d.document_type, '')) IN ('job_tracking', 'field_notes', 'site_notes')
+                         OR LOWER(COALESCE(d.file_name, '') || ' ' || COALESCE(d.relative_path, '')) ~ :candidate_pattern
+                         OR (
+                                LOWER(COALESCE(d.document_type, '')) = 'specification'
+                            AND LOWER(COALESCE(d.file_name, '') || ' ' || COALESCE(d.relative_path, '')) !~ :exclude_pattern
+                         )
+                      )
+                    ORDER BY spec_score DESC, d.modified_at DESC NULLS LAST, d.file_name
+                    LIMIT 20
+                    """
+                ),
+                conn,
+                params={"job_id": job_id_text, "candidate_pattern": candidate_pattern, "exclude_pattern": exclude_pattern},
+            )
+    except Exception:
+        return pd.DataFrame()
+
+
+def render_schedule_job_spec_preview(job_id: object) -> None:
+    job_id_text = text_value(job_id)
+    st.subheader("Job Spec")
+    if not job_id_text:
+        st.info("Select a job to view the extracted job spec.")
+        return
+    spec_rows = load_schedule_job_spec_content(job_id_text)
+    if spec_rows.empty:
+        candidate_docs = load_schedule_job_spec_documents(job_id_text)
+        if candidate_docs.empty:
+            st.info("No indexed job spec or job tracking document was found for this job yet.")
+            return
+        st.info("Job spec/tracking candidates exist, but extracted text is not available yet.")
+        display_cols = [
+            col
+            for col in ["file_name", "document_type", "extraction_status", "modified_at", "sharepoint_url", "extraction_error"]
+            if col in candidate_docs.columns
+        ]
+        st.dataframe(candidate_docs[display_cols], width="stretch", hide_index=True)
+        return
+    first = spec_rows.iloc[0]
+    file_name = text_value(first.get("file_name")) or "Job spec"
+    url = text_value(first.get("sharepoint_url"))
+    if url:
+        st.link_button(f"Open {file_name}", url)
+    else:
+        st.caption(file_name)
+    combined = "\n\n".join(
+        text_value(row.get("text_content"))
+        for row in spec_rows.to_dict(orient="records")
+        if text_value(row.get("text_content"))
+    )
+    st.text_area("Extracted job spec text", value=combined[:12000], height=320, disabled=True, key=f"job_spec_preview_{job_id_text}")
+
+
+def load_schedule_contracted_job_board_df(scheduled_job_ids: set[str]) -> pd.DataFrame:
+    jobs = load_unscheduled_backlog_df(scheduled_job_ids)
+    if not isinstance(jobs, pd.DataFrame) or jobs.empty or "job_id" not in jobs.columns:
+        return pd.DataFrame()
+    rows = prepare_job_board_dashboard_rows(jobs)
+    if rows.empty or "job_id" not in rows.columns:
+        return pd.DataFrame()
+    if "folder_pipeline_bucket" not in rows.columns:
+        rows["folder_pipeline_bucket"] = rows.apply(folder_pipeline_bucket_for_row, axis=1)
+    contracted = rows[rows["folder_pipeline_bucket"].eq("Contracted Folder")].copy()
+    return contracted
 
 
 def is_url(value: object) -> bool:
@@ -9078,6 +9521,252 @@ def timesheet_job_touches_page() -> None:
             render_dashboard_perf_timings()
 
 
+def job_tracking_dashboard_page() -> None:
+    st.title("Job Tracking")
+    st.caption(
+        "Field production from job tracking forms, joined to the job board where possible. "
+        "Use this to see active project touches and estimate-vs-actual production."
+    )
+
+    summary_all = load_job_tracking_dashboard_summary()
+    daily_all = load_job_tracking_dashboard_daily()
+    if summary_all.empty:
+        show_empty("No job tracking summary rows are loaded yet.")
+        return
+
+    filter_col1, filter_col2, filter_col3, filter_col4 = st.columns([1.1, 1.2, 1.4, 2.0])
+    with filter_col1:
+        active_only = st.checkbox("Active / recent only", value=True, key="job_tracking_active_recent_only")
+    with filter_col2:
+        division_filter = st.multiselect("Division", options_from(summary_all, "division"), key="job_tracking_division")
+    with filter_col3:
+        status_filter = st.multiselect("Tracking Status", options_from(summary_all, "tracking_status"), key="job_tracking_status")
+    with filter_col4:
+        search = st.text_input("Search customer, job, file, notes", key="job_tracking_search").strip()
+
+    summary = summary_all.copy()
+    if active_only and "tracking_status" in summary.columns:
+        summary = summary[summary["tracking_status"].isin(["Recently touched", "Contracted / active"])]
+    if division_filter and "division" in summary.columns:
+        summary = summary[summary["division"].astype(str).isin(division_filter)]
+    if status_filter and "tracking_status" in summary.columns:
+        summary = summary[summary["tracking_status"].astype(str).isin(status_filter)]
+    if search:
+        search_columns = [
+            column
+            for column in ["project", "customer", "job_name", "source_file", "tracking_notes", "tracking_warnings"]
+            if column in summary.columns
+        ]
+        mask = pd.Series(False, index=summary.index)
+        for column in search_columns:
+            mask = mask | summary[column].fillna("").astype(str).str.contains(search, case=False, na=False)
+        summary = summary[mask]
+
+    daily = daily_all.copy()
+    if not daily.empty and "job_id" in daily.columns and "job_id" in summary.columns:
+        daily = daily[daily["job_id"].astype(str).isin(summary["job_id"].dropna().astype(str))]
+
+    if summary.empty:
+        show_empty("No job tracking rows match the current filters.")
+        return
+
+    over_labor = summary[
+        numeric_series(summary, "estimated_labor_hours").gt(0)
+        & numeric_series(summary, "actual_labor_hours").gt(numeric_series(summary, "estimated_labor_hours"))
+    ]
+    recent_or_active = summary[summary["tracking_status"].isin(["Recently touched", "Contracted / active"])]
+    metric_row(
+        [
+            ("Tracked Jobs", fmt_count(len(summary))),
+            ("Recent / Active", fmt_count(len(recent_or_active))),
+            ("Actual Labor Hrs", f"{safe_sum(summary, 'actual_labor_hours'):,.1f}"),
+            ("Actual Total Hrs", f"{safe_sum(summary, 'actual_total_hours'):,.1f}"),
+            ("Jobs Over Labor", fmt_count(len(over_labor))),
+            ("Tracked Value", fmt_dollar(safe_sum(summary, "estimated_value"))),
+        ]
+    )
+
+    chart_col1, chart_col2 = st.columns(2)
+    with chart_col1:
+        bar_chart(summary, "project", "actual_total_hours", "Top Tracked Jobs by Actual Hours", top_n=12)
+    with chart_col2:
+        if daily.empty or "work_date" not in daily.columns:
+            show_empty("No dated daily tracking rows are available.")
+        else:
+            daily_chart = daily.copy()
+            daily_chart["work_day"] = pd.to_datetime(daily_chart["work_date"], errors="coerce").dt.date
+            chart_group = (
+                daily_chart.dropna(subset=["work_day"])
+                .groupby(["work_day", "division"], dropna=False, as_index=False)["total_hours"]
+                .sum()
+            )
+            if chart_group.empty:
+                show_empty("No daily tracking hours are available.")
+            else:
+                fig = px.bar(
+                    chart_group,
+                    x="work_day",
+                    y="total_hours",
+                    color="division",
+                    title="Daily Tracked Hours by Division",
+                    labels={"work_day": "date", "total_hours": "hours", "division": "division"},
+                )
+                st.plotly_chart(fig, width="stretch")
+
+    tab_active, tab_variance, tab_daily, tab_foam = st.tabs(
+        ["Active Projects", "Estimate vs Actual", "Daily Entries", "Foam / Materials"]
+    )
+
+    with tab_active:
+        st.subheader("Active Project Tracking")
+        show_table(
+            summary,
+            [
+                "project",
+                "division",
+                "tracking_status",
+                "pipeline_status",
+                "status",
+                "project_category",
+                "estimated_value",
+                "first_work_date",
+                "last_work_date",
+                "actual_labor_hours",
+                "actual_total_hours",
+                "estimated_labor_hours",
+                "labor_delta_hours",
+                "actual_mileage",
+                "source_file",
+                "folder_link_or_path",
+                "tracking_warnings",
+            ],
+            height=520,
+            sort_by="last_work_date",
+        )
+
+    with tab_variance:
+        st.subheader("Estimate vs Actual")
+        variance = summary[numeric_series(summary, "estimated_labor_hours").gt(0)].copy()
+        if variance.empty:
+            st.caption("No tracked jobs have estimated labor loaded yet.")
+        else:
+            variance["labor_used_pct_display"] = numeric_series(variance, "labor_hours_used_pct").map(
+                lambda value: "" if pd.isna(value) else f"{value:.0%}"
+            )
+            show_table(
+                variance,
+                [
+                    "project",
+                    "division",
+                    "tracking_status",
+                    "actual_labor_hours",
+                    "estimated_labor_hours",
+                    "labor_delta_hours",
+                    "labor_used_pct_display",
+                    "actual_travel_hours",
+                    "estimated_travel_hours",
+                    "actual_load_hours",
+                    "estimated_load_hours",
+                    "actual_mileage",
+                    "estimated_mileage",
+                    "last_work_date",
+                    "source_file",
+                    "tracking_warnings",
+                ],
+                height=520,
+                sort_by="labor_delta_hours",
+            )
+
+    with tab_daily:
+        st.subheader("Daily Field Entries")
+        if daily.empty:
+            st.caption("No daily job tracking entries match the current filters.")
+        else:
+            recent_daily = daily.sort_values("work_date", ascending=False, na_position="last")
+            show_table(
+                recent_daily,
+                [
+                    "work_date",
+                    "project",
+                    "division",
+                    "labor_hours",
+                    "travel_hours",
+                    "load_hours",
+                    "os_hours",
+                    "total_hours",
+                    "mileage",
+                    "crew",
+                    "notes",
+                    "source_file",
+                ],
+                height=560,
+            )
+
+    with tab_foam:
+        st.subheader("Foam and Material Usage")
+        foam_summary_columns = [
+            "project",
+            "division",
+            "actual_foam_strokes",
+            "estimated_foam_strokes",
+            "foam_strokes_variance",
+            "actual_foam_thickness_inches",
+            "actual_foam_sqft",
+            "estimated_foam_sqft",
+            "foam_sqft_variance",
+            "actual_foam_yield",
+            "estimated_foam_yield",
+            "actual_base_coat_1",
+            "estimated_base_coat_1",
+            "actual_base_coat_2",
+            "estimated_base_coat_2",
+            "actual_granules",
+            "estimated_granules",
+            "actual_primer",
+            "estimated_primer",
+            "actual_sf",
+            "estimated_sf",
+            "last_work_date",
+            "source_file",
+        ]
+        available_foam_summary = [column for column in foam_summary_columns if column in summary.columns]
+        has_foam_values = any(
+            column in summary.columns and numeric_series(summary, column).notna().any()
+            for column in [
+                "actual_foam_strokes",
+                "actual_foam_sqft",
+                "actual_foam_yield",
+                "actual_granules",
+                "actual_primer",
+                "actual_sf",
+            ]
+        )
+        if has_foam_values:
+            show_table(summary, available_foam_summary, height=420, sort_by="last_work_date")
+        else:
+            st.info("Foam/material tracking columns are ready, but no loaded rows contain those values yet.")
+
+        daily_material_columns = [
+            "work_date",
+            "project",
+            "foam_strokes",
+            "foam_thickness_inches",
+            "foam_sqft",
+            "foam_yield",
+            "base_coat_1",
+            "base_coat_2",
+            "granules",
+            "primer",
+            "sf",
+            "caulk",
+            "crew",
+            "notes",
+        ]
+        if not daily.empty and any(column in daily.columns and numeric_series(daily, column).notna().any() for column in ["foam_strokes", "foam_sqft", "granules", "primer", "sf"]):
+            st.subheader("Daily Material Entries")
+            show_table(daily, daily_material_columns, height=420)
+
+
 def owner_overview_page() -> None:
     st.title("Owner Overview")
     jobs = apply_basic_filters(query_view("dashboard_jobs"))
@@ -9681,16 +10370,28 @@ def schedule_calendar_page() -> None:
 
     events = calendar_events_from_schedule(filtered)
     calendar_options = {
-        "initialView": "dayGridMonth",
+        "initialView": "compact90Day",
+        "views": {
+            "compact90Day": {
+                "type": "dayGrid",
+                "duration": {"days": 90},
+                "buttonText": "90 days",
+            }
+        },
         "editable": True,
         "eventStartEditable": True,
         "eventDurationEditable": True,
         "selectable": True,
-        "height": 800,
+        "height": 620,
+        "contentHeight": 620,
+        "aspectRatio": 2.4,
+        "fixedWeekCount": False,
+        "dayMaxEventRows": 1,
+        "moreLinkClick": "popover",
         "headerToolbar": {
             "left": "prev,next today",
             "center": "title",
-            "right": "dayGridMonth,timeGridWeek,timeGridDay,listWeek",
+            "right": "compact90Day,dayGridMonth,listWeek",
         },
         "eventDisplay": "block",
     }
@@ -9742,6 +10443,7 @@ def schedule_calendar_page() -> None:
             folder_link = text_value(props.get("folder_link_or_path"))
             if folder_link:
                 render_document_access("Open Job Folder", folder_link)
+            render_schedule_job_spec_preview(props.get("job_id"))
 
             st.subheader("Proposal Summary")
             summary_fields = [
@@ -9837,25 +10539,33 @@ def schedule_calendar_page() -> None:
 
     if show_unscheduled:
         scheduled_job_ids = set(schedule_df["job_id"].dropna().astype(str)) if "job_id" in schedule_df.columns else set()
-        unscheduled = load_unscheduled_backlog_df(scheduled_job_ids)
-        st.subheader("Unscheduled Contracted Jobs")
+        unscheduled = load_schedule_contracted_job_board_df(scheduled_job_ids)
+        st.subheader("Contracted Jobs To Schedule")
+        schedule_job_board_columns = [
+            "project",
+            "project_category",
+            "sales_stage",
+            "sales_value",
+            "opportunity_freshness",
+            "proposal_modified_at",
+            "proposal_modified_by",
+            "substrate_display",
+            "material_system_display",
+            "warranty_display",
+            "labor_plan",
+            "readiness_status",
+            "schedule_health",
+            "production_risk_summary",
+            "folder",
+            "customer_display",
+            "estimate_modified_at",
+            "estimate_modified_by",
+        ]
         show_table(
             unscheduled,
-            [
-                "customer",
-                "job_name",
-                "division",
-                "pipeline_status",
-                "estimated_value",
-                "estimated_duration_days",
-                "estimated_labor_hours",
-                "estimated_crew_size",
-                "estimate_file",
-                "proposal_file",
-                "folder_link_or_path",
-            ],
-            height=300,
-            sort_by="estimated_value",
+            schedule_job_board_columns,
+            height=360,
+            sort_by="sales_value",
         )
 
         if not unscheduled.empty and "job_id" in unscheduled.columns:
@@ -9871,7 +10581,7 @@ def schedule_calendar_page() -> None:
 
             def job_label(job_id: str) -> str:
                 row = unscheduled_by_id.get(job_id, {})
-                return f"{text_value(row.get('customer'))} - {text_value(row.get('job_name'))} ({job_id})"
+                return f"{text_value(row.get('project')) or text_value(row.get('job_name')) or text_value(row.get('customer'))} ({job_id})"
 
             selected_job_id = st.selectbox("Job", job_ids, format_func=job_label, key="schedule_job_to_add")
             selected_row = unscheduled_by_id.get(selected_job_id, {})
@@ -9899,6 +10609,8 @@ def schedule_calendar_page() -> None:
                     int(selected_crew_size) if not pd.isna(selected_crew_size) else 0
                 )
 
+            render_schedule_job_spec_preview(selected_job_id)
+
             with st.form("add_unscheduled_job_form"):
                 assigned_crew_leader = st.text_input("Crew Leader", key="unscheduled_crew_leader")
                 estimated_start_date = st.date_input("Estimated Start Date", value=date.today(), key="unscheduled_start")
@@ -9924,14 +10636,14 @@ def schedule_calendar_page() -> None:
                 st.write(f"**Estimated End Date:** {estimated_end_date or '-'}")
                 st.write("**Selected Job Metadata**")
                 metadata = [
-                    ("Customer", selected_row.get("customer")),
-                    ("Job Name", selected_row.get("job_name")),
+                    ("Customer", selected_row.get("customer_display")),
+                    ("Job Name", selected_row.get("project")),
                     ("Division", selected_row.get("division")),
-                    ("Estimated Value", fmt_dollar(pd.to_numeric(pd.Series([selected_row.get("estimated_value")]), errors="coerce").iloc[0])),
+                    ("Estimated Value", fmt_dollar(pd.to_numeric(pd.Series([selected_row.get("sales_value")]), errors="coerce").iloc[0])),
                     ("Estimated Duration Days", selected_row.get("estimated_duration_days")),
                     ("Estimated Labor Hours", selected_row.get("estimated_labor_hours")),
                     ("Estimated Crew Size", selected_row.get("estimated_crew_size")),
-                    ("Folder Link / Path", selected_row.get("folder_link_or_path")),
+                    ("Folder Link / Path", selected_row.get("folder") or selected_row.get("folder_link_or_path")),
                 ]
                 for label, value in metadata:
                     st.write(f"**{label}:** {text_value(value) or '-'}")
@@ -16051,6 +16763,7 @@ def main() -> None:
             "Operations Dashboard",
             "Job Board",
             "Timesheet Job Touches",
+            "Job Tracking",
             "Schedule Calendar",
             "Estimating Assistant",
             "Pricing Catalog",
@@ -16095,6 +16808,8 @@ def main() -> None:
         job_board_page()
     elif page == "Timesheet Job Touches":
         timesheet_job_touches_page()
+    elif page == "Job Tracking":
+        job_tracking_dashboard_page()
     elif page == "Sales Dashboard":
         sales_dashboard_page()
     elif page == "Operations Dashboard":

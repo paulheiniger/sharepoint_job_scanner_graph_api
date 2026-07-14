@@ -22,6 +22,8 @@ from .graph_client import GraphClient, GraphError, SharePointTarget
 from .job_search import first_nonblank, normalize_search_text, tokenize_search_text
 
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".xlsm", ".txt", ".csv"}
+JOB_SPEC_CANDIDATE_PATTERN = r"(job[ _-]*spec|jobspec|job specification|spec form|scope of work|work scope|(^|\\s)spec(\\s|$)|job tracking|tracking form|field notes|site notes|inspection notes|estimator notes)"
+JOB_SPEC_EXCLUDE_PATTERN = r"(submittal|submittals|sds|pds|tds|technical data|data sheet|sales sheet|brochure|certificate of liability|cert tracking)"
 TEXT_EMPTY_THRESHOLD = 20
 MAX_XLSX_ROWS_PER_SHEET = 5000
 MAX_XLSX_COLUMNS_PER_SHEET = 120
@@ -117,6 +119,12 @@ def content_id_for(document_id: str, row: ExtractedContent) -> str:
 
 def normalized_content(text_value: str) -> str:
     return normalize_search_text(text_value)
+
+
+def postgres_safe_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value).replace("\x00", "")
 
 
 def stable_cache_path(document: dict[str, Any], cache_root: Path) -> Path:
@@ -575,6 +583,11 @@ def replace_document_content(
     now = datetime.now(timezone.utc)
     connection.execute(text("DELETE FROM document_content WHERE document_id = :document_id"), {"document_id": document_id})
     for row in result.rows:
+        text_content = postgres_safe_text(row.text_content) or ""
+        source_locator = postgres_safe_text(row.source_locator)
+        sheet_name = postgres_safe_text(row.sheet_name)
+        cell_range = postgres_safe_text(row.cell_range)
+        section_name = postgres_safe_text(row.section_name)
         connection.execute(
             text(
                 """
@@ -599,14 +612,14 @@ def replace_document_content(
                 "document_id": document_id,
                 "job_id": job_id,
                 "content_type": row.content_type,
-                "source_locator": row.source_locator,
+                "source_locator": source_locator,
                 "page_number": row.page_number,
-                "sheet_name": row.sheet_name,
-                "cell_range": row.cell_range,
+                "sheet_name": sheet_name,
+                "cell_range": cell_range,
                 "row_number": row.row_number,
-                "section_name": row.section_name,
-                "text_content": row.text_content,
-                "normalized_text": normalized_content(row.text_content),
+                "section_name": section_name,
+                "text_content": text_content,
+                "normalized_text": normalized_content(text_content),
                 "extraction_method": result.extraction_method,
                 "content_hash": current_hash,
                 "created_at": now,
@@ -729,7 +742,15 @@ def extract_one_document_with_retry(
     raise TransientDocumentDatabaseError("Database connection dropped during document extraction.")
 
 
-def document_selection_sql(*, document_id: str | None, job_id: str | None, pending: bool, document_type: str | None) -> tuple[str, dict[str, Any]]:
+def document_selection_sql(
+    *,
+    document_id: str | None,
+    job_id: str | None,
+    pending: bool,
+    failed: bool = False,
+    document_type: str | None = None,
+    job_spec_candidates: bool = False,
+) -> tuple[str, dict[str, Any]]:
     where: list[str] = []
     params: dict[str, Any] = {}
     if document_id:
@@ -741,8 +762,26 @@ def document_selection_sql(*, document_id: str | None, job_id: str | None, pendi
     if document_type:
         where.append("document_type = :document_type")
         params["document_type"] = document_type
+    if job_spec_candidates:
+        where.append(
+            """
+            (
+                document_type = ANY(:job_spec_note_document_types)
+                OR LOWER(COALESCE(file_name, '') || ' ' || COALESCE(relative_path, '')) ~ :job_spec_candidate_pattern
+                OR (
+                    document_type = 'specification'
+                    AND LOWER(COALESCE(file_name, '') || ' ' || COALESCE(relative_path, '')) !~ :job_spec_exclude_pattern
+                )
+            )
+            """
+        )
+        params["job_spec_note_document_types"] = ["field_notes", "job_tracking", "site_notes"]
+        params["job_spec_candidate_pattern"] = JOB_SPEC_CANDIDATE_PATTERN
+        params["job_spec_exclude_pattern"] = JOB_SPEC_EXCLUDE_PATTERN
     if pending:
         where.append("(extraction_status IS NULL OR extraction_status IN ('not_started', 'pending'))")
+    if failed:
+        where.append("extraction_status = 'failed'")
     where.append("LOWER(COALESCE(file_extension, '')) = ANY(:extensions)")
     params["extensions"] = sorted(SUPPORTED_EXTENSIONS)
     where_sql = "WHERE " + " AND ".join(where) if where else ""
@@ -755,14 +794,18 @@ def load_documents_for_extraction(
     document_id: str | None = None,
     job_id: str | None = None,
     pending: bool = False,
+    failed: bool = False,
     document_type: str | None = None,
+    job_spec_candidates: bool = False,
     limit: int = 10,
 ) -> list[dict[str, Any]]:
     where_sql, params = document_selection_sql(
         document_id=document_id,
         job_id=job_id,
         pending=pending,
+        failed=failed,
         document_type=document_type,
+        job_spec_candidates=job_spec_candidates,
     )
     params["limit"] = limit
     sql = f"""
@@ -907,6 +950,7 @@ def load_documents_missing_drive_metadata(
     job_id: str | None = None,
     limit: int = 10,
     document_type: str | None = None,
+    job_spec_candidates: bool = False,
 ) -> list[dict[str, Any]]:
     params: dict[str, Any] = {"limit": limit}
     where = ["(drive_id IS NULL OR drive_id = '' OR drive_item_id IS NULL OR drive_item_id = '')"]
@@ -916,6 +960,22 @@ def load_documents_missing_drive_metadata(
     if document_type:
         where.append("document_type = :document_type")
         params["document_type"] = document_type
+    if job_spec_candidates:
+        where.append(
+            """
+            (
+                document_type = ANY(:job_spec_note_document_types)
+                OR LOWER(COALESCE(file_name, '') || ' ' || COALESCE(relative_path, '')) ~ :job_spec_candidate_pattern
+                OR (
+                    document_type = 'specification'
+                    AND LOWER(COALESCE(file_name, '') || ' ' || COALESCE(relative_path, '')) !~ :job_spec_exclude_pattern
+                )
+            )
+            """
+        )
+        params["job_spec_note_document_types"] = ["field_notes", "job_tracking", "site_notes"]
+        params["job_spec_candidate_pattern"] = JOB_SPEC_CANDIDATE_PATTERN
+        params["job_spec_exclude_pattern"] = JOB_SPEC_EXCLUDE_PATTERN
     sql = f"""
         SELECT *
         FROM documents
@@ -932,12 +992,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--document-id")
     parser.add_argument("--job-id")
     parser.add_argument("--pending", action="store_true")
+    parser.add_argument("--failed", action="store_true", help="Retry documents currently marked failed.")
     parser.add_argument("--status", action="store_true")
     parser.add_argument("--identifier-status", action="store_true", help="Show document rows with and without Graph drive identifiers.")
     parser.add_argument("--backfill-metadata", action="store_true", help="Backfill drive identifiers from cached SharePoint manifests.")
     parser.add_argument("--resolve-metadata", action="store_true", help="Resolve missing drive identifiers from Graph by site/library/path without downloading content.")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--document-type")
+    parser.add_argument(
+        "--job-spec-candidates",
+        action="store_true",
+        help="Limit extraction to job spec, scope, job tracking, and field-note candidate documents.",
+    )
     parser.add_argument("--limit", type=int, default=10)
     parser.add_argument("--cache-root", type=Path, default=Path(".cache/sharepoint"))
     parser.add_argument("--site-url", help="SharePoint site URL for --resolve-metadata.")
@@ -976,6 +1042,7 @@ def main(argv: list[str] | None = None) -> int:
                 job_id=args.job_id,
                 limit=args.limit,
                 document_type=args.document_type,
+                job_spec_candidates=args.job_spec_candidates,
             )
         resolved = 0
         failed = 0
@@ -999,8 +1066,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Identifiers resolved: {resolved}")
         print(f"Identifier resolution failures: {failed}")
         return 0
-    if not any([args.document_id, args.job_id, args.pending]):
-        raise SystemExit("Choose --document-id, --job-id, --pending, or --status.")
+    if not any([args.document_id, args.job_id, args.pending, args.failed, args.job_spec_candidates]):
+        raise SystemExit("Choose --document-id, --job-id, --pending, --failed, --job-spec-candidates, or --status.")
 
     with engine.connect() as conn:
         documents = load_documents_for_extraction(
@@ -1008,13 +1075,15 @@ def main(argv: list[str] | None = None) -> int:
             document_id=args.document_id,
             job_id=args.job_id,
             pending=args.pending,
+            failed=args.failed,
             document_type=args.document_type,
+            job_spec_candidates=args.job_spec_candidates,
             limit=args.limit,
         )
     total = len(documents)
     for index, document in enumerate(documents, start=1):
         try:
-            status, count = extract_one_document_with_retry(engine, document, args.cache_root, force=args.force)
+            status, count = extract_one_document_with_retry(engine, document, args.cache_root, force=args.force or args.failed)
         except TransientDocumentDatabaseError as exc:
             label = first_nonblank(document.get("file_name"), document.get("document_id"))
             print(f"[{index}/{total}] {label} — database connection failure: {str(exc)[:240]}", flush=True)

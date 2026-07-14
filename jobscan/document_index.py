@@ -36,6 +36,17 @@ DOCUMENT_TYPES = {
 }
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".heic", ".webp", ".tif", ".tiff"}
+JOB_SPEC_DOCUMENT_TYPES = {"specification", "job_tracking", "field_notes", "site_notes"}
+JOB_SPEC_NAME_TOKENS = (
+    "job spec",
+    "jobspec",
+    "job_spec",
+    "job specification",
+    "spec form",
+    "scope of work",
+    "work scope",
+    "submittal",
+)
 
 
 def stable_document_id(row: dict[str, Any]) -> str:
@@ -62,26 +73,35 @@ def classify_document(file_name: str, folder_path: str = "") -> dict[str, str]:
     suffix = Path(file_name).suffix.lower()
 
     rules: list[tuple[str, str, bool]] = [
+        ("photos", "image extension", suffix in IMAGE_EXTENSIONS),
         ("invoice", "filename contains invoice or invoice number", bool(re.search(r"\binvoice\b|\binv\b|\b20\d{2}[- ]?\d{3}\b", combined))),
         ("job_tracking", "filename/path contains job tracking", "job tracking" in combined or "tracking form" in combined),
         ("change_order", "filename/path contains change order", "change order" in combined or re.search(r"\bco\b", name) is not None),
         ("safety", "filename/path contains safety", any(token in combined for token in ("safety", "msds", "sds", "incident report"))),
         ("aerial", "filename/path contains aerial/drone/EagleView term", any(token in combined for token in ("aerial", "drone", "eagleview", "satellite", "uav", "ir scan", "infrared"))),
         ("warranty", "filename/path contains warranty", "warranty" in combined),
-        ("contract", "filename/path contains contract/agreement/award/po", any(token in combined for token in ("contract", "agreement", "award letter", "purchase order", " po "))),
+        ("contract", "filename/path contains contract/agreement/award/po", re.search(r"\bcontract\b|\bagreement\b|\baward letter\b|\bpurchase order\b|\bpo\b", combined) is not None),
         ("proposal", "filename/path contains proposal/quote/bid", any(token in combined for token in ("proposal", "quote", "bid"))),
-        ("estimate", "Excel estimate file or filename contains estimate", "estimate" in combined or (suffix in {".xlsx", ".xlsm", ".xls"} and "tracking" not in combined)),
-        ("specification", "filename/path contains spec/scope/submittal", any(token in combined for token in ("job spec", "specification", " spec ", "scope of work", "submittal"))),
+        ("specification", "filename/path contains spec/scope/submittal", is_job_spec_candidate_name(file_name, folder_path)),
         ("field_notes", "filename/path contains field/site/inspection/estimator notes", any(token in combined for token in ("field notes", "inspection notes", "estimator notes"))),
         ("site_notes", "filename/path contains site notes or estimate notes", any(token in combined for token in ("site notes", "estimate notes", "notes from"))),
         ("drawing", "filename/path contains drawing/plan/detail", any(token in combined for token in ("drawing", "drawings", "plans", "plan ", "detail"))),
         ("bid_package", "filename/path contains bid package", "bid package" in combined or "bid documents" in combined),
-        ("photos", "image extension", suffix in IMAGE_EXTENSIONS),
+        ("estimate", "Excel estimate file or filename contains estimate", "estimate" in combined or (suffix in {".xlsx", ".xlsm", ".xls"} and "tracking" not in combined)),
     ]
     for document_type, reason, matched in rules:
         if matched:
             return {"document_type": document_type, "classification_reason": reason}
     return {"document_type": "other", "classification_reason": "no specific filename/path rule matched"}
+
+
+def is_job_spec_candidate_name(file_name: str, folder_path: str = "", document_type: str | None = None) -> bool:
+    if str(document_type or "").strip().lower() in JOB_SPEC_DOCUMENT_TYPES:
+        return True
+    combined = normalize_search_text(f"{folder_path} {file_name}")
+    if any(token in combined for token in JOB_SPEC_NAME_TOKENS):
+        return True
+    return bool(re.search(r"(^|\\s)spec(\\s|$)", combined))
 
 
 def load_json_records(path: Path) -> list[dict[str, Any]]:

@@ -81,6 +81,7 @@ def test_document_classification_and_exact_matching() -> None:
     ]
     assert classify_document_type("Signed Contract.pdf") == "contract"
     assert classify_document_type("EagleView aerial.pdf") == "aerial"
+    assert classify_document_type("Job Spec.xlsx") == "specification"
     assert select_document_url(docs, "proposal", ["Customer Proposal.pdf"])["web_url"] == "https://example/proposal"
 
 

@@ -18,6 +18,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Connection, Engine, make_url
 from sqlalchemy.exc import DBAPIError, OperationalError, SQLAlchemyError
 
+from .document_index import classify_document
 from .extractors import DOC_EXTS, SPREADSHEET_EXTS
 from .graph_client import GraphClient, GraphError, SharePointTarget
 from .scan import scan_root, write_csv, write_excel, write_json
@@ -256,22 +257,7 @@ def drive_item_manifest_entry(child: dict[str, Any], relative_path: Path, drive_
 
 
 def classify_document_type(name: str) -> str:
-    lower = name.lower()
-    if any(token in lower for token in ("proposal", "quote", "bid")):
-        return "proposal"
-    if "invoice" in lower:
-        return "invoice"
-    if any(token in lower for token in ("contract", "signed", "agreement")):
-        return "contract"
-    if any(token in lower for token in ("job tracking", "tracking form")):
-        return "job_tracking"
-    if "warranty" in lower:
-        return "warranty"
-    if any(token in lower for token in ("aerial", "eagleview", "drone", "satellite")):
-        return "aerial"
-    if "estimate" in lower or Path(name).suffix.lower() in SPREADSHEET_EXTS:
-        return "estimate"
-    return "other"
+    return classify_document(name).get("document_type") or "other"
 
 
 def _name_matches(selected_name: Any, candidate_name: Any) -> bool:

@@ -25,14 +25,23 @@ def write_tracking_workbook(path: Path) -> None:
         "OS Hours",
         "Mileage",
         "OS Mileage",
-        "Base Coat #1",
+        "Foam Strokes",
+        "Thickness (in.)",
+        "Sq. Ft. (Foam)",
+        "Foam Yield",
+        "A-Side Lot #",
+        "B-Side Lot #",
+        "Base Coat",
         "Sq. Ft. (Base)",
         "Gal/Sq. (Base)",
-        "Base Coat #2",
+        "Top Coat",
         "Sq. Ft. (Top)",
         "Gal/Sq. (Top)",
+        "Granules",
         "AF Buttergrade",
         "Caulk",
+        "Primer",
+        "SF",
         "Crew",
         "Notes",
     ]
@@ -49,10 +58,19 @@ def write_tracking_workbook(path: Path) -> None:
         ws.cell(row=index, column=6).value = 5
         ws.cell(row=index, column=7).value = 6
         ws.cell(row=index, column=8).value = 0.5
-        ws.cell(row=index, column=14).value = 1
-        ws.cell(row=index, column=15).value = 2
-        ws.cell(row=index, column=16).value = "Crew"
-        ws.cell(row=index, column=17).value = "Notes"
+        ws.cell(row=index, column=9).value = 1.5
+        ws.cell(row=index, column=10).value = 100
+        ws.cell(row=index, column=11).value = 3000
+        ws.cell(row=index, column=12).value = "A1"
+        ws.cell(row=index, column=13).value = "B1"
+        ws.cell(row=index, column=14).value = 0.5
+        ws.cell(row=index, column=20).value = 3
+        ws.cell(row=index, column=21).value = 1
+        ws.cell(row=index, column=22).value = 2
+        ws.cell(row=index, column=23).value = 4
+        ws.cell(row=index, column=24).value = 5
+        ws.cell(row=index, column=25).value = "Crew"
+        ws.cell(row=index, column=26).value = "Notes"
 
     ws.cell(row=11, column=1).value = "Daily Totals"
     totals = {
@@ -63,9 +81,16 @@ def write_tracking_workbook(path: Path) -> None:
         6: 67,
         7: 77,
         8: 6.5,
-        11: 0,
-        14: 9.25,
-        15: 19,
+        9: 1.5,
+        10: 800,
+        11: 3000,
+        14: 6.5,
+        17: 0,
+        20: 24,
+        21: 9.25,
+        22: 19,
+        23: 4,
+        24: 5,
     }
     for col, value in totals.items():
         ws.cell(row=11, column=col).value = value
@@ -79,16 +104,23 @@ def write_tracking_workbook(path: Path) -> None:
         "Overhead",
         "Mileage",
         "OS Mileage",
-        "Base Coat #1",
+        "Foam Strokes",
+        "Thickness (in.)",
+        "Sq. Ft. (Foam)",
+        "Foam Yield",
+        "Base Coat",
         "Sq. Ft. (Base)",
         "Gal/Sq. (Base)",
-        "Base Coat #2",
+        "Top Coat",
         "Sq. Ft. (Top)",
         "Gal/Sq. (Top)",
+        "Granules",
         "AF Buttergrade",
         "Caulk",
+        "Primer",
+        "SF",
     ]
-    estimated_values = [None, 175, 50, 8, 12, 160, 240, 119, None, None, 119, None, None, 15, 80]
+    estimated_values = [None, 175, 50, 8, 12, 160, 240, 10, 1.5, 1000, 2800, 119, None, None, 119, None, None, 30, 15, 80, 6, 7]
     for col, value in enumerate(estimated_headers, start=1):
         ws.cell(row=23, column=col).value = value
     for col, value in enumerate(estimated_values, start=1):
@@ -100,10 +132,15 @@ def write_tracking_workbook(path: Path) -> None:
     ws.cell(row=27, column=2).value = -102.59
     ws.cell(row=27, column=3).value = -40.28
     ws.cell(row=27, column=4).value = -3.66
-    ws.cell(row=27, column=8).value = -112.5
-    ws.cell(row=27, column=11).value = -119
-    ws.cell(row=27, column=14).value = -5.75
-    ws.cell(row=27, column=15).value = -61
+    ws.cell(row=27, column=8).value = -3.5
+    ws.cell(row=27, column=10).value = -200
+    ws.cell(row=27, column=12).value = -112.5
+    ws.cell(row=27, column=15).value = -119
+    ws.cell(row=27, column=18).value = -6
+    ws.cell(row=27, column=19).value = -5.75
+    ws.cell(row=27, column=20).value = -61
+    ws.cell(row=27, column=21).value = -2
+    ws.cell(row=27, column=22).value = -2
     wb.save(path)
 
 
@@ -132,19 +169,47 @@ def test_job_tracking_extractor_reads_daily_summary_and_estimates() -> None:
     assert summary["actual_load_hours"] == 4.34
     assert summary["actual_mileage"] == 67
     assert summary["actual_os_mileage"] == 77
+    assert summary["actual_foam_strokes"] == 6.5
+    assert summary["actual_foam_thickness_inches"] == 1.5
+    assert summary["actual_foam_sqft"] == 800
+    assert summary["actual_foam_yield"] == 3000
     assert summary["actual_base_coat_1"] == 6.5
+    assert summary["actual_granules"] == 24
     assert summary["actual_af_buttergrade"] == 9.25
     assert summary["actual_caulk"] == 19
+    assert summary["actual_primer"] == 4
+    assert summary["actual_sf"] == 5
     assert summary["estimated_labor_hours"] == 175
     assert summary["estimated_travel_hours"] == 50
     assert summary["estimated_load_hours"] == 8
     assert summary["estimated_mileage"] == 160
     assert summary["estimated_os_mileage"] == 240
+    assert summary["estimated_foam_strokes"] == 10
+    assert summary["estimated_foam_thickness_inches"] == 1.5
+    assert summary["estimated_foam_sqft"] == 1000
+    assert summary["estimated_foam_yield"] == 2800
     assert summary["estimated_base_coat_1"] == 119
     assert summary["estimated_base_coat_2"] == 119
+    assert summary["estimated_granules"] == 30
     assert summary["estimated_af_buttergrade"] == 15
     assert summary["estimated_caulk"] == 80
+    assert summary["estimated_primer"] == 6
+    assert summary["estimated_sf"] == 7
     assert summary["labor_hours_variance"] == -102.59
+    assert summary["foam_strokes_variance"] == -3.5
+    assert summary["foam_sqft_variance"] == -200
+    assert summary["granules_variance"] == -6
+    assert summary["primer_variance"] == -2
+    assert summary["sf_variance"] == -2
+    assert daily[0]["foam_strokes"] == 0.5
+    assert daily[0]["foam_thickness_inches"] == 1.5
+    assert daily[0]["foam_sqft"] == 100
+    assert daily[0]["foam_yield"] == 3000
+    assert daily[0]["a_side_lot"] == "A1"
+    assert daily[0]["b_side_lot"] == "B1"
+    assert daily[0]["granules"] == 3
+    assert daily[0]["primer"] == 4
+    assert daily[0]["sf"] == 5
 
     assert row["has_job_tracking_form"] is True
     assert row["job_tracking_file"] == "Meredith Residence/Job Tracking Form - Meredith Residence (Roofing 2026).xlsx"
