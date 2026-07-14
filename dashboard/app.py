@@ -6242,11 +6242,11 @@ def add_job_board_proposal_stale_columns(jobs: pd.DataFrame) -> pd.DataFrame:
     out["estimate_modified_at"] = date_column_series(out, ["estimate_file_modified_at"])
     out["proposal_modified_by"] = out.get("proposal_file_modified_by", pd.Series("", index=out.index)).fillna("").astype(str)
     out["estimate_modified_by"] = out.get("estimate_file_modified_by", pd.Series("", index=out.index)).fillna("").astype(str)
-    out["proposal_date_for_stale"] = out["proposal_created_at"].combine_first(out["proposal_modified_at"])
+    out["proposal_date_for_stale"] = out["proposal_modified_at"].combine_first(out["proposal_created_at"])
     today = pd.Timestamp(date.today())
     out["proposal_age_days"] = (today.normalize() - out["proposal_date_for_stale"].dt.normalize()).dt.days
     out.loc[out["proposal_age_days"].isna() | (out["proposal_age_days"] < 0), "proposal_age_days"] = pd.NA
-    out["proposal_stale"] = out["proposal_age_days"].fillna(0).astype(float) > 30
+    out["proposal_stale"] = out["proposal_age_days"].fillna(0).astype(float) > 90
     out["proposal_status_flag"] = out["proposal_stale"].map({True: "Stale", False: "Current"})
     out.loc[out["proposal_date_for_stale"].isna(), "proposal_status_flag"] = "No proposal date"
     return out
@@ -7420,6 +7420,8 @@ READINESS_STATUSES = [
     "Permit Hold",
     "Weather Window",
     "Scheduled",
+    "Missing Job Spec",
+    "Not Contracted Folder",
 ]
 
 
@@ -7803,6 +7805,8 @@ def normalized_readiness_status(row: pd.Series) -> str:
         for column in ["workflow_status", "schedule_status", "blocking_issue", "schedule_notes", "pipeline_status", "status", "warnings"]
     ).lower()
     has_start = not pd.isna(row.get("estimated_start_date_parsed"))
+    in_contracted_folder = folder_pipeline_bucket_for_row(row) == "Contracted Folder"
+    has_job_spec = truthy_bool(row.get("has_job_spec"))
     if any(token in source_text for token in ["customer hold", "waiting on customer", "customer delay", "owner hold"]):
         return "Customer Hold"
     if any(token in source_text for token in ["material", "submittal", "lead time"]):
@@ -7813,6 +7817,10 @@ def normalized_readiness_status(row: pd.Series) -> str:
         return "Weather Window"
     if has_start or any(token in source_text for token in ["scheduled", "mobilized", "in progress"]):
         return "Scheduled"
+    if not in_contracted_folder:
+        return "Not Contracted Folder"
+    if not has_job_spec:
+        return "Missing Job Spec"
     return "Ready To Schedule"
 
 
