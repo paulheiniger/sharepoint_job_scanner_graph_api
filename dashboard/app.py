@@ -7893,8 +7893,13 @@ def row_first_positive_number(row: pd.Series, columns: Iterable[str]) -> float:
 
 
 def normalized_sales_stage(row: pd.Series) -> str:
-    if truthy_bool(row.get("closed_did_not_get")) or folder_pipeline_bucket_for_row(row) == "Closed Lost Folder":
+    terminal_bucket = job_board_contract_completion_bucket(row)
+    if terminal_bucket == "Closed / Did Not Get":
         return "Closed Lost"
+    if terminal_bucket == "Completed":
+        return "Closed Won"
+    if terminal_bucket == "Contracted / Active":
+        return "Contract Pending"
     source_text = " ".join(
         row_first_nonblank(row, [column])
         for column in [
@@ -8507,12 +8512,12 @@ JOB_BOARD_REVIEW_CHECKBOX_FIELDS = ["closed_did_not_get", "review_mark_contracte
 
 
 def workflow_status_from_review_marks(original_row: dict[str, Any], marks: dict[str, bool]) -> object:
+    if marks.get("closed_did_not_get"):
+        return "Closed Lost"
     if marks.get("review_mark_completed"):
         return "Completed"
     if marks.get("review_mark_contracted"):
         return "Contracted"
-    if marks.get("closed_did_not_get"):
-        return "Closed Lost"
     current = original_row.get("workflow_status")
     if normalize_board_status(current) in {"Closed Lost", "Contracted", "Completed"}:
         return first_nonblank(original_row.get("pipeline_status"), original_row.get("status"), "Lead Received")
@@ -8658,7 +8663,7 @@ def job_board_page() -> None:
     with f7:
         priority_filter = st.multiselect("Priority", options_from(jobs, "priority"), key="job_board_priority")
     with f8:
-        hide_completed = st.checkbox("Hide completed/invoiced jobs", value=True, key="job_board_hide_completed")
+        hide_completed = st.checkbox("Hide completed/closed jobs", value=True, key="job_board_hide_completed")
     show_action_only = st.checkbox("Show only jobs needing action", key="job_board_action_only")
 
     filtered = jobs.copy()
@@ -8684,14 +8689,18 @@ def job_board_page() -> None:
         blocking_mask = filtered["blocking_issue"].fillna("").astype(str).str.strip().ne("") if "blocking_issue" in filtered.columns else False
         filtered = filtered[warning_mask | warning_text_mask | blocking_mask]
     if hide_completed:
-        status_text = (
-            filtered.get("workflow_status", pd.Series("", index=filtered.index)).fillna("").astype(str)
-            + " "
-            + filtered.get("pipeline_status", pd.Series("", index=filtered.index)).fillna("").astype(str)
-            + " "
-            + filtered.get("status", pd.Series("", index=filtered.index)).fillna("").astype(str)
+        if "board_status" not in filtered.columns:
+            filtered["board_status"] = filtered.apply(board_status_for_row, axis=1)
+        terminal_mask = filtered["board_status"].isin(["Completed", "Closed Lost"])
+        terminal_mask = terminal_mask | filtered.apply(
+            lambda row: job_board_contract_completion_bucket(row) in {"Completed", "Closed / Did Not Get"},
+            axis=1,
         )
-        filtered = filtered[~status_text.str.contains("completed|invoiced", case=False, na=False)]
+        terminal_mask = terminal_mask | filtered.get(
+            "closed_did_not_get",
+            pd.Series(False, index=filtered.index),
+        ).apply(truthy_bool)
+        filtered = filtered[~terminal_mask]
 
     if st.session_state.get("job_board_show_diagnostics"):
         with st.expander("Job Board selection debug"):
