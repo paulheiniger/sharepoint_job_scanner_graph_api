@@ -2250,9 +2250,13 @@ def render_schedule_job_spec_preview(job_id: object) -> None:
 
 
 def load_schedule_contracted_job_board_df(scheduled_job_ids: set[str]) -> pd.DataFrame:
-    jobs = load_unscheduled_backlog_df(scheduled_job_ids)
+    jobs = load_job_board_df()
     if not isinstance(jobs, pd.DataFrame) or jobs.empty or "job_id" not in jobs.columns:
         return pd.DataFrame()
+    jobs = jobs.copy()
+    jobs["job_id"] = jobs["job_id"].fillna("").astype(str)
+    if scheduled_job_ids:
+        jobs = jobs[~jobs["job_id"].isin({str(job_id) for job_id in scheduled_job_ids})]
     rows = prepare_job_board_dashboard_rows(jobs)
     if rows.empty or "job_id" not in rows.columns:
         return pd.DataFrame()
@@ -10376,38 +10380,77 @@ def schedule_calendar_page() -> None:
 
     events = calendar_events_from_schedule(filtered)
     calendar_options = {
-        "initialView": "compact90Day",
+        "initialView": "compactQuarter",
         "views": {
-            "compact90Day": {
-                "type": "dayGrid",
-                "duration": {"days": 90},
+            "compactQuarter": {
+                "type": "multiMonth",
+                "duration": {"months": 3},
                 "buttonText": "90 days",
+                "multiMonthMaxColumns": 1,
             }
         },
         "editable": True,
         "eventStartEditable": True,
         "eventDurationEditable": True,
         "selectable": True,
-        "height": 620,
-        "contentHeight": 620,
-        "aspectRatio": 2.4,
+        "height": "auto",
+        "contentHeight": "auto",
+        "aspectRatio": 1.35,
         "fixedWeekCount": False,
         "dayMaxEventRows": 1,
         "moreLinkClick": "popover",
         "headerToolbar": {
             "left": "prev,next today",
             "center": "title",
-            "right": "compact90Day,dayGridMonth,listWeek",
+            "right": "compactQuarter,dayGridMonth,listWeek",
         },
         "eventDisplay": "block",
     }
+    calendar_custom_css = """
+    .fc .fc-multimonth {
+        border: 0;
+    }
+    .fc .fc-multimonth-month {
+        padding: 0 0 8px 0;
+    }
+    .fc .fc-multimonth-title {
+        font-size: 0.95rem;
+        padding: 4px 0;
+    }
+    .fc .fc-daygrid-day-frame {
+        min-height: 34px;
+        padding: 1px;
+    }
+    .fc .fc-daygrid-day-number {
+        font-size: 0.72rem;
+        padding: 1px 3px;
+    }
+    .fc .fc-col-header-cell-cushion {
+        font-size: 0.72rem;
+        padding: 2px;
+    }
+    .fc .fc-daygrid-event {
+        font-size: 0.68rem;
+        line-height: 1.05;
+        margin-top: 1px;
+        padding: 0 2px;
+    }
+    .fc .fc-daygrid-more-link {
+        font-size: 0.68rem;
+    }
+    """
 
     # TODO: add Teams send button from selected calendar day.
     # TODO: add weather delay/push schedule feature.
     # TODO: add true crew availability table.
     calendar_col, detail_col = st.columns([2, 1])
     with calendar_col:
-        calendar_result = calendar(events=events, options=calendar_options, key="schedule_calendar")
+        calendar_result = calendar(
+            events=events,
+            options=calendar_options,
+            custom_css=calendar_custom_css,
+            key="schedule_calendar",
+        )
         with st.expander("Calendar event debug"):
             st.write(calendar_result)
 
