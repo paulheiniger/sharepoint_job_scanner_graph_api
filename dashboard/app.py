@@ -3121,6 +3121,7 @@ def show_table(
     row_style_column: str | None = None,
     row_style_colors: dict[str, str] | None = None,
     column_labels: dict[str, str] | None = None,
+    default_visible_columns: Iterable[str] | None = None,
 ) -> None:
     table_df = with_folder_link(df)
     requested_columns = unique_columns(columns if columns is not None else table_df.columns)
@@ -3136,8 +3137,17 @@ def show_table(
         show_empty()
         return
     display_df = table_df[available].copy()
+    column_order = None
+    if default_visible_columns is not None:
+        visible_requested = unique_columns(default_visible_columns)
+        column_order = [column for column in visible_requested if column in display_df.columns]
+    column_config = None
     if column_labels:
-        display_df = display_df.rename(columns={column: label for column, label in column_labels.items() if column in display_df.columns})
+        column_config = {
+            column: st.column_config.Column(label)
+            for column, label in column_labels.items()
+            if column in display_df.columns
+        }
     if row_style_column and row_style_column in table_df.columns and row_style_colors:
         style_values = table_df.loc[display_df.index, row_style_column].fillna("").astype(str)
 
@@ -3145,9 +3155,23 @@ def show_table(
             color = row_style_colors.get(style_values.get(row.name, ""), "")
             return [f"background-color: {color}; color: #111827" if color else "" for _ in row]
 
-        st.dataframe(display_df.style.apply(row_style, axis=1), width="stretch", hide_index=True, height=height)
+        st.dataframe(
+            display_df.style.apply(row_style, axis=1),
+            width="stretch",
+            hide_index=True,
+            height=height,
+            column_order=column_order,
+            column_config=column_config,
+        )
         return
-    st.dataframe(display_df, width="stretch", hide_index=True, height=height)
+    st.dataframe(
+        display_df,
+        width="stretch",
+        hide_index=True,
+        height=height,
+        column_order=column_order,
+        column_config=column_config,
+    )
 
 
 def status_value(df: pd.DataFrame, status_text: str) -> float:
@@ -8171,7 +8195,29 @@ def job_board_page() -> None:
         "labor_plan",
         "production_risk_summary",
         "folder",
+        "customer_display",
+        "division",
+        "proposal_status_flag",
+        "proposal_created_at",
+        "estimate_created_at",
+        "estimate_modified_at",
+        "estimate_modified_by",
+        "closed_did_not_get",
+        "review_mark_contracted",
+        "review_mark_completed",
+        "folder_pipeline_bucket",
+        "material_system_display",
+        "warranty_display",
     ]
+    job_board_default_hidden_columns = {
+        "proposal_status_flag",
+        "folder_pipeline_bucket",
+        "proposal_created_at",
+        "estimate_created_at",
+        "closed_did_not_get",
+        "review_mark_contracted",
+        "review_mark_completed",
+    }
     job_board_column_labels = {
         "project": "Project",
         "project_category": "Project Category",
@@ -8192,17 +8238,33 @@ def job_board_page() -> None:
         "labor_plan": "Labor Plan",
         "production_risk_summary": "Production Risk",
         "folder": "Folder",
+        "customer_display": "Customer",
+        "division": "Division",
+        "proposal_status_flag": "Proposal Status",
+        "proposal_created_at": "Proposal Created",
+        "estimate_created_at": "Estimate Created",
+        "estimate_modified_at": "Estimate Modified",
+        "estimate_modified_by": "Estimate Modified By",
+        "closed_did_not_get": "Closed / Did Not Get",
+        "review_mark_contracted": "Contracted Review",
+        "review_mark_completed": "Completed Review",
+        "folder_pipeline_bucket": "Folder Rule",
+        "material_system_display": "Material System",
+        "warranty_display": "Warranty",
     }
+    available_job_board_columns = [column for column in job_board_table_columns if column in dashboard_rows.columns]
+    default_job_board_columns = [column for column in available_job_board_columns if column not in job_board_default_hidden_columns]
 
     st.subheader("Job Board Table")
     show_table(
         dashboard_rows,
-        job_board_table_columns,
+        available_job_board_columns,
         height=520,
         sort_by="sales_value",
         row_style_column="opportunity_freshness",
         row_style_colors=JOB_BOARD_FRESHNESS_COLORS,
         column_labels=job_board_column_labels,
+        default_visible_columns=default_job_board_columns,
     )
 
     review_dashboard_rows = dashboard_rows[dashboard_rows.apply(is_proposal_pipeline_review_row, axis=1)].copy()
