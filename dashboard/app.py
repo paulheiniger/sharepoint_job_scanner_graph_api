@@ -7103,6 +7103,14 @@ def folder_pipeline_bucket_for_row(row: pd.Series | dict[str, Any]) -> str:
     ).lower()
     normalized = re.sub(r"[^a-z0-9]+", " ", folder_text)
     tokens = set(normalized.split())
+    if (
+        {"did", "not", "get"}.issubset(tokens)
+        or "dng" in tokens
+        or "cancelled" in tokens
+        or "canceled" in tokens
+        or "cancel" in tokens
+    ):
+        return "Closed Lost Folder"
     if "completed" in tokens or "complete" in tokens:
         return "Completed Folder"
     if "contracted" in tokens or "contract" in tokens:
@@ -7116,7 +7124,7 @@ def is_proposal_pipeline_review_row(row: pd.Series | dict[str, Any]) -> bool:
     if truthy_bool(row.get("closed_did_not_get")):
         return False
     freshness = text_value(row.get("opportunity_freshness")) or job_board_freshness_for_row(row)
-    if freshness in {"Contracted / Active", "Completed", "Not Proposal Pipeline"}:
+    if freshness in {"Contracted / Active", "Completed", "Closed / Did Not Get", "Not Proposal Pipeline"}:
         return False
     if freshness in {"Fresh / Active", "Aging", "Stale", "Estimate, No Proposal"}:
         return True
@@ -7148,6 +7156,14 @@ def job_board_contract_completion_bucket(row: pd.Series | dict[str, Any]) -> str
         if hasattr(row, "get")
     ).lower()
     status_normalized = re.sub(r"[^a-z0-9]+", " ", status_text)
+    closed_lost_signal = (
+        folder_bucket == "Closed Lost Folder"
+        or "closed lost" in status_normalized
+        or "did not get" in status_normalized
+        or any(token in status_normalized.split() for token in ["lost", "dead", "declined", "cancelled", "canceled"])
+    )
+    if closed_lost_signal:
+        return "Closed / Did Not Get"
     completed_signal = (
         folder_bucket == "Completed Folder"
         or any(token in status_normalized.split() for token in ["completed", "complete", "invoiced", "invoice"])
@@ -7172,6 +7188,7 @@ JOB_BOARD_FRESHNESS_COLORS = {
     "Stale": "#fde8e8",
     "Contracted / Active": "#e8f0fe",
     "Estimate, No Proposal": "#e8f0fe",
+    "Closed / Did Not Get": "#f3f4f6",
     "Completed": "#f3f4f6",
     "No Proposal Date": "#f3f4f6",
     "Not Proposal Pipeline": "#f3f4f6",
@@ -7249,7 +7266,7 @@ def row_first_positive_number(row: pd.Series, columns: Iterable[str]) -> float:
 
 
 def normalized_sales_stage(row: pd.Series) -> str:
-    if truthy_bool(row.get("closed_did_not_get")):
+    if truthy_bool(row.get("closed_did_not_get")) or folder_pipeline_bucket_for_row(row) == "Closed Lost Folder":
         return "Closed Lost"
     source_text = " ".join(
         row_first_nonblank(row, [column])
@@ -7763,7 +7780,7 @@ def normalize_board_status(value: object) -> str:
 
 
 def board_status_for_row(row: pd.Series) -> str:
-    if truthy_bool(row.get("closed_did_not_get")):
+    if truthy_bool(row.get("closed_did_not_get")) or folder_pipeline_bucket_for_row(row) == "Closed Lost Folder":
         return "Closed Lost"
     workflow_value = first_existing_value(row, POSSIBLE_WORKFLOW_STATUS_COLS)
     pipeline_value = first_existing_value(row, POSSIBLE_PIPELINE_STATUS_COLS)
@@ -7973,7 +7990,8 @@ def job_board_page() -> None:
         jobs[checkbox_column] = jobs[checkbox_column].apply(truthy_bool)
     jobs["folder_pipeline_bucket"] = jobs.apply(folder_pipeline_bucket_for_row, axis=1)
     jobs["opportunity_freshness"] = jobs.apply(job_board_freshness_for_row, axis=1)
-    overall_folder_excluded_count = int(jobs["folder_pipeline_bucket"].isin(["Contracted Folder", "Completed Folder"]).sum())
+    terminal_folder_buckets = ["Closed Lost Folder", "Contracted Folder", "Completed Folder"]
+    overall_folder_excluded_count = int(jobs["folder_pipeline_bucket"].isin(terminal_folder_buckets).sum())
     jobs["board_status"] = jobs.apply(board_status_for_row, axis=1)
     selected_job_id = str(st.session_state.get("selected_job_board_job_id", "") or "")
     if selected_job_id:
@@ -8052,7 +8070,7 @@ def job_board_page() -> None:
             ("Proposed Value", fmt_dollar(status_value(filtered, "proposed"))),
             ("Contracted / Backlog Value", fmt_dollar(status_value(filtered, "contracted"))),
             ("Stale Proposals", fmt_count(filtered.get("proposal_stale", pd.Series(False, index=filtered.index)).fillna(False).astype(bool).sum())),
-            ("Contracted/Completed Folders", fmt_count(filtered.get("folder_pipeline_bucket", pd.Series("", index=filtered.index)).isin(["Contracted Folder", "Completed Folder"]).sum())),
+            ("Terminal Folders", fmt_count(filtered.get("folder_pipeline_bucket", pd.Series("", index=filtered.index)).isin(terminal_folder_buckets).sum())),
             ("Warnings / Action Items", fmt_count((numeric_series(filtered, "warning_count").fillna(0) > 0).sum())),
         ]
     )
@@ -8072,11 +8090,11 @@ def job_board_page() -> None:
         st.subheader("Proposal / Estimate Follow-Up Review")
         excluded_folder_count = int(
             dashboard_rows.get("folder_pipeline_bucket", pd.Series("", index=dashboard_rows.index))
-            .isin(["Contracted Folder", "Completed Folder"])
+            .isin(terminal_folder_buckets)
             .sum()
         )
         st.caption(
-            "Contracted and Completed folders are excluded from this proposal-pipeline review list. "
+            "Did Not Get, Cancelled, Contracted, and Completed folders are excluded from this proposal-pipeline review list. "
             f"{excluded_folder_count:,} job{'s' if excluded_folder_count != 1 else ''} were excluded in the current filtered view; "
             f"{overall_folder_excluded_count:,} job{'s' if overall_folder_excluded_count != 1 else ''} are excluded across the loaded job board. "
             "Use the checkboxes for remaining jobs that need to be moved or marked after estimator review. "
