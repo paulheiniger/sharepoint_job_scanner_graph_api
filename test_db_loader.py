@@ -7,6 +7,7 @@ from jobscan.db_loader import (
     clean_date_value,
     ensure_primary_id,
     generate_tracking_id,
+    load_records,
     minimal_tracking_summary_row,
     prepare_row,
     primary_key_diagnostics,
@@ -228,6 +229,25 @@ def test_clean_date_value_normalizes_valid_dates_and_nulls_invalid_text() -> Non
     assert clean_date_value("") is None
     assert clean_date_value("nan") is None
     assert clean_date_value("none") is None
+
+
+def test_load_records_reads_csv_outputs(tmp_path) -> None:
+    path = tmp_path / "job_tracking_summary.csv"
+    path.write_text(
+        "job_id,tracking_file,actual_labor_hours\n"
+        "job-1,Job Tracking Form.xlsx,12.5\n",
+        encoding="utf-8",
+    )
+
+    rows = load_records(path)
+
+    assert rows == [
+        {
+            "job_id": "job-1",
+            "tracking_file": "Job Tracking Form.xlsx",
+            "actual_labor_hours": "12.5",
+        }
+    ]
     assert clean_date_value("n/a") is None
     assert clean_date_value("on separate Sheet") is None
 

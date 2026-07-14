@@ -1519,9 +1519,15 @@ def load_job_tracking_dashboard_summary() -> pd.DataFrame:
         "primer_variance",
         "sf_variance",
     ]
-    date_fields = ["first_work_date", "last_work_date", "created_at", "updated_at"]
+    date_fields = ["created_at", "updated_at"]
     select_parts = [f"{expr} AS {alias}" for alias, expr in text_fields.items()]
     select_parts.extend(f"{sql_column('t', tracking_cols, field)} AS {field}" for field in numeric_fields)
+    select_parts.extend(
+        [
+            f"{sql_column('t', tracking_cols, 'actual_first_work_date')} AS first_work_date",
+            f"{sql_column('t', tracking_cols, 'actual_last_work_date')} AS last_work_date",
+        ]
+    )
     select_parts.extend(f"{sql_column('t', tracking_cols, field)} AS {field}" for field in date_fields)
     if has_jobs:
         select_parts.extend(
@@ -1565,7 +1571,7 @@ def load_job_tracking_dashboard_summary() -> pd.DataFrame:
     for column in numeric_fields + ["estimated_value"]:
         if column in df.columns:
             df[column] = pd.to_numeric(df[column], errors="coerce")
-    for column in date_fields:
+    for column in date_fields + ["first_work_date", "last_work_date"]:
         if column in df.columns:
             df[column] = pd.to_datetime(df[column], errors="coerce")
     for column in ["customer", "job_name"]:

@@ -1,8 +1,9 @@
-"""Load scanner JSON outputs into the SprayTec operations Postgres database."""
+"""Load scanner outputs into the SprayTec operations Postgres database."""
 
 from __future__ import annotations
 
 import argparse
+import csv
 from collections import Counter
 import hashlib
 import json
@@ -420,6 +421,17 @@ def prepare_row(
     return prepared
 
 
+def load_csv_records(path: Path) -> list[dict[str, Any]]:
+    with path.open("r", encoding="utf-8-sig", newline="") as f:
+        return [dict(row) for row in csv.DictReader(f)]
+
+
+def load_records(path: Path) -> list[dict[str, Any]]:
+    if path.suffix.lower() == ".csv":
+        return load_csv_records(path)
+    return load_json_records(path)
+
+
 def load_json_records(path: Path) -> list[dict[str, Any]]:
     with path.open("r", encoding="utf-8") as f:
         payload = json.load(f)
@@ -639,7 +651,7 @@ def load_dataset(
             return 0, 0
         raise FileNotFoundError(message)
 
-    records = load_json_records(path)
+    records = load_records(path)
     records_read = len(records)
     skipped_records = 0
     deduplicated_records = 0
