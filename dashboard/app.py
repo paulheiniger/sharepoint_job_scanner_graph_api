@@ -1616,7 +1616,7 @@ def load_job_tracking_dashboard_summary() -> pd.DataFrame:
                     SELECT {', '.join(select_parts)}
                     FROM job_tracking_summary t
                     {join_sql}
-                    ORDER BY t.last_work_date DESC NULLS LAST, t.updated_at DESC NULLS LAST
+                    ORDER BY t.actual_last_work_date DESC NULLS LAST, t.updated_at DESC NULLS LAST
                     """
                 ),
                 conn,
@@ -1702,7 +1702,12 @@ def load_job_tracking_dashboard_daily() -> pd.DataFrame:
         "work_date": sql_column("d", daily_cols, "work_date"),
         "crew": sql_column("d", daily_cols, "crew"),
         "notes": sql_column("d", daily_cols, "notes"),
-        "source_file": sql_column("d", daily_cols, "source_file"),
+        "source_file": sql_coalesce(
+            [
+                sql_column("d", daily_cols, "source_file"),
+                sql_column("d", daily_cols, "tracking_file"),
+            ]
+        ),
     }
     numeric_fields = [
         "labor_hours",
@@ -1738,7 +1743,7 @@ def load_job_tracking_dashboard_daily() -> pd.DataFrame:
                     SELECT {', '.join(select_parts)}
                     FROM job_tracking_daily_entries d
                     {join_sql}
-                    ORDER BY d.work_date DESC NULLS LAST, d.source_file
+                    ORDER BY d.work_date DESC NULLS LAST, {sql_coalesce([sql_column('d', daily_cols, 'source_file'), sql_column('d', daily_cols, 'tracking_file')])}
                     """
                 ),
                 conn,
@@ -2568,6 +2573,38 @@ def load_schedule_job_spec_documents(job_id: str) -> pd.DataFrame:
 
 
 CELL_DUMP_RE = re.compile(r"([A-Z]{1,3})(\d+):\s*(.*?)(?=\s+\|\s+[A-Z]{1,3}\d+:|$)")
+PLAIN_SPEC_LABELS = [
+    "Job Name",
+    "Address",
+    "City, State, Zip",
+    "Contact Name",
+    "Contact 1",
+    "Phone #",
+    "Helton Phone #",
+    "Email",
+    "Sales/ Estimator",
+    "Sales / Estimator",
+    "Estimator/Sales",
+    "Estimator",
+    "Warranty",
+    "Est. Start Date",
+    "Est. # of Days",
+    "Est. # of Hours",
+    "Est. Crew Size",
+    "Total Sq. Ft.",
+    "Total Sq Ft",
+    "Sq. Ft.",
+    "Deck",
+    "Roof Type",
+    "Building Type",
+]
+PLAIN_SPEC_LABEL_RE = re.compile(
+    "|".join(
+        rf"{re.escape(label).replace(r'\\ ', r'\\s+')}"
+        for label in sorted(PLAIN_SPEC_LABELS, key=len, reverse=True)
+    ),
+    re.IGNORECASE,
+)
 
 
 def parse_cell_dump_row(text: object) -> list[dict[str, object]]:
@@ -2588,6 +2625,92 @@ def parse_cell_dump_row(text: object) -> list[dict[str, object]]:
             }
         )
     return cells
+
+
+def normalize_plain_spec_text(text: object) -> str:
+    return re.sub(r"[ \t]+", " ", text_value(text).replace("\r\n", "\n").replace("\r", "\n")).strip()
+
+
+def split_plain_spec_items(text: str) -> list[str]:
+    cleaned = re.sub(r"\s+", " ", text).strip()
+    if not cleaned:
+        return []
+    parts = re.split(r"(?:\n\s*[o•*-]\s+|\s+[o•]\s+(?=[A-Z])|\s*;\s+)", text)
+    items: list[str] = []
+    for part in parts:
+        item = re.sub(r"\s+", " ", part).strip(" -;")
+        if item and len(item) > 2:
+            items.append(item)
+    return items
+
+
+def extract_plain_section(text: str, start_pattern: str, end_pattern: str) -> str:
+    match = re.search(start_pattern, text, flags=re.IGNORECASE | re.DOTALL)
+    if not match:
+        return ""
+    section = text[match.end() :]
+    end_match = re.search(end_pattern, section, flags=re.IGNORECASE | re.DOTALL)
+    if end_match:
+        section = section[: end_match.start()]
+    return section.strip()
+
+
+def parse_plain_schedule_spec_text(text: object) -> dict[str, object]:
+    plain = normalize_plain_spec_text(text)
+    parsed: dict[str, object] = {
+        "has_spec": False,
+        "general": {},
+        "scope": [],
+        "materials": [],
+        "notes": [],
+    }
+    if not plain:
+        return parsed
+    if re.search(r"\b(job specification|scope of work|materials needed|est\.\s*# of days|est\.\s*crew size)\b", plain, re.IGNORECASE):
+        parsed["has_spec"] = True
+
+    general_text = re.split(r"\bScope of Work\b|\bMaterials Needed\b|\bNotes\b", plain, maxsplit=1, flags=re.IGNORECASE)[0]
+    general: dict[str, str] = {}
+    matches = list(PLAIN_SPEC_LABEL_RE.finditer(general_text))
+    for index, match in enumerate(matches):
+        label = re.sub(r"\s+", " ", match.group(0)).strip()
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(general_text)
+        value = re.sub(r"\s+", " ", general_text[start:end]).strip(" :-")
+        if not value:
+            continue
+        value = re.split(
+            r"\b(Scope of Work|Materials Needed|Rental|Notes)\b",
+            value,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0].strip(" :-")
+        if value:
+            general[label] = value
+            parsed["has_spec"] = True
+
+    scope_text = extract_plain_section(
+        plain,
+        r"\bScope of Work\s*:?",
+        r"\b(Materials Needed|Rental|Notes)\b\s*:?",
+    )
+    scope_items = split_plain_spec_items(scope_text)
+    materials_text = extract_plain_section(
+        plain,
+        r"\bMaterials Needed\b.*?(?:Color|Quantity|Size|Color)?",
+        r"\b(Rental|Notes)\b\s*:?",
+    )
+    material_items = split_plain_spec_items(materials_text)
+    notes_text = extract_plain_section(plain, r"\bNotes\s*:?", r"$")
+    note_items = split_plain_spec_items(notes_text)
+
+    parsed["general"] = general
+    parsed["scope"] = scope_items[:12]
+    parsed["materials"] = material_items[:12]
+    parsed["notes"] = note_items[:8]
+    if general or scope_items or material_items or note_items:
+        parsed["has_spec"] = True
+    return parsed
 
 
 def parse_schedule_spec_rows(spec_rows: pd.DataFrame) -> dict[str, object]:
@@ -2672,7 +2795,22 @@ def parse_schedule_spec_rows(spec_rows: pd.DataFrame) -> dict[str, object]:
             combined_parts.append(row_text)
         cells = parse_cell_dump_row(row_text)
         if not cells:
-            if row_text and current_section in {"scope", "notes"}:
+            plain_spec = parse_plain_schedule_spec_text(row_text)
+            if plain_spec.get("has_spec"):
+                parsed["has_spec"] = True
+                for key, value in (plain_spec.get("general") or {}).items():
+                    if key not in general and text_value(value):
+                        general[key] = text_value(value)
+                for item in plain_spec.get("scope") or []:
+                    if text_value(item):
+                        scope.append(text_value(item))
+                for item in plain_spec.get("materials") or []:
+                    if text_value(item):
+                        materials.append(text_value(item))
+                for item in plain_spec.get("notes") or []:
+                    if text_value(item):
+                        notes.append(text_value(item))
+            elif row_text and current_section in {"scope", "notes"}:
                 target = scope if current_section == "scope" else notes
                 target.append(row_text)
             continue
@@ -11707,6 +11845,180 @@ def operations_scheduling_page() -> None:
     contracted_backlog_scheduling_page()
 
 
+def selected_schedule_event_from_state(events: list[dict[str, object]]) -> dict[str, object] | None:
+    selected_event_id = text_value(st.session_state.get("schedule_board_selected_event_id"))
+    if not selected_event_id:
+        return None
+    return next((event for event in events if text_value(event.get("id")) == selected_event_id), None)
+
+
+def render_schedule_selected_job_panel(
+    selected_event: dict[str, object] | None,
+    schedule_events: list[dict[str, object]],
+) -> None:
+    if not selected_event:
+        st.info("Click a scheduled job block to view and edit details.")
+        return
+    props = selected_event.get("extendedProps", {})
+    if not isinstance(props, dict):
+        props = {}
+    selected_actual_props: dict[str, object] | None = None
+    if text_value(props.get("event_kind")) == "job_tracking_actual":
+        selected_actual_props = props
+        matched_schedule_event = next(
+            (
+                event
+                for event in schedule_events
+                if text_value((event.get("extendedProps") or {}).get("job_id"))
+                == text_value(selected_actual_props.get("job_id"))
+            ),
+            None,
+        )
+        if matched_schedule_event and isinstance(matched_schedule_event.get("extendedProps"), dict):
+            props = matched_schedule_event["extendedProps"]
+        st.info("Selected calendar event is an actual job-tracking entry.")
+        actual_details = [
+            ("Work Date", selected_actual_props.get("work_date")),
+            ("Crew", selected_actual_props.get("crew")),
+            ("Total Hours", selected_actual_props.get("total_hours")),
+            ("Labor Hours", selected_actual_props.get("labor_hours")),
+            ("Travel Hours", selected_actual_props.get("travel_hours")),
+            ("Load Hours", selected_actual_props.get("load_hours")),
+            ("Foam Sq Ft", selected_actual_props.get("foam_sqft")),
+            ("Base Coat 1", selected_actual_props.get("base_coat_1")),
+            ("Base Coat 2", selected_actual_props.get("base_coat_2")),
+            ("Granules", selected_actual_props.get("granules")),
+            ("Notes", selected_actual_props.get("notes")),
+            ("Tracking File", selected_actual_props.get("tracking_file")),
+        ]
+        st.write("**Actual Work Entry**")
+        for label, value in actual_details:
+            if text_value(value):
+                st.write(f"**{label}:** {text_value(value)}")
+
+    details = [
+        ("Customer", props.get("customer")),
+        ("Job Name", props.get("job_name")),
+        ("Division", props.get("division")),
+        ("Pipeline Status", props.get("pipeline_status")),
+        ("Status", props.get("status")),
+        ("Estimated Value", fmt_dollar(pd.to_numeric(pd.Series([props.get("estimated_value")]), errors="coerce").iloc[0])),
+        ("Estimated Duration Days", props.get("estimated_duration_days")),
+        ("Estimated Labor Hours", props.get("estimated_labor_hours")),
+        ("Estimated Crew Size", props.get("estimated_crew_size")),
+        ("Crew Leader", props.get("assigned_crew_leader")),
+        ("Start Date", props.get("estimated_start_date")),
+        ("End Date", props.get("estimated_end_date")),
+        ("Schedule Status", props.get("schedule_status")),
+        ("Priority", props.get("priority")),
+        ("Blocking Issue", props.get("blocking_issue")),
+        ("Schedule Notes", props.get("schedule_notes")),
+    ]
+    detail_cols = st.columns(2)
+    for index, (label, value) in enumerate(details):
+        with detail_cols[index % 2]:
+            st.write(f"**{label}:** {text_value(value) or '-'}")
+
+    folder_link = text_value(props.get("folder_link_or_path"))
+    if folder_link:
+        render_document_access("Open Job Folder", folder_link)
+    has_readable_job_spec = render_schedule_job_spec_preview(props.get("job_id"))
+    render_schedule_job_tracking_preview(props.get("job_id"))
+
+    if not has_readable_job_spec:
+        st.subheader("Proposal Summary")
+        actionable_warnings = actionable_schedule_warning_text(props.get("warnings"))
+        summary_fields = [
+            ("Estimated Value", props.get("estimated_value"), "money"),
+            ("Estimated Sq Ft", props.get("estimated_sqft"), "number"),
+            ("Price / Sq Ft", props.get("price_per_sqft"), "money"),
+            ("Estimated Duration Days", props.get("estimated_duration_days"), "number"),
+            ("Estimated Labor Hours", props.get("estimated_labor_hours"), "number"),
+            ("Estimated Crew Size", props.get("estimated_crew_size"), "number"),
+            ("Job Type", props.get("job_type"), "text"),
+            ("Coating Type", props.get("coating_type"), "text"),
+            ("Foam Type", props.get("foam_type"), "text"),
+            ("Warranty Amount", props.get("warranty_amount"), "money"),
+            ("Equipment Rental Amount", props.get("equipment_rental_amount"), "money"),
+            ("Subcontractor Amount", props.get("subcontractor_amount"), "money"),
+            ("Material Subtotal", props.get("material_subtotal"), "money"),
+            ("Labor Subtotal", props.get("labor_subtotal"), "money"),
+            ("Schedule Notes", props.get("schedule_notes"), "text"),
+        ]
+        if actionable_warnings:
+            summary_fields.append(("Warnings", actionable_warnings, "text"))
+        for label, value, kind in summary_fields:
+            st.write(f"**{label}:** {format_summary_value(value, kind=kind)}")
+
+    st.subheader("Job Documents")
+    folder_value = props.get("folder_url") or props.get("folder_link_or_path") or props.get("folder_path")
+    proposal_value = props.get("proposal_file") or props.get("estimate_file")
+    render_document_access("Open Job Folder", folder_value)
+    render_document_access(
+        "Open Proposal / Estimate",
+        proposal_value,
+        "Proposal link not available yet — use job folder.",
+    )
+    render_document_access("Open Contract", props.get("contract_file"))
+    render_document_access("Open Job Tracking Form", props.get("job_tracking_file"))
+    aerial_status = "Available" if bool(props.get("has_aerial")) else "Not found"
+    st.write(f"**Aerial/Drone status:** {aerial_status}")
+    st.write(f"**Photo count:** {text_value(props.get('photo_count')) or '0'}")
+
+    start_default = pd.to_datetime(props.get("estimated_start_date"), errors="coerce")
+    end_default = pd.to_datetime(props.get("estimated_end_date"), errors="coerce")
+    duration_default = pd.to_numeric(pd.Series([props.get("estimated_duration_days")]), errors="coerce").iloc[0]
+    with st.form("calendar_selected_job_form"):
+        assigned_crew_leader = st.text_input(
+            "Crew Leader",
+            value=text_value(props.get("assigned_crew_leader")),
+        )
+        estimated_start_date = st.date_input(
+            "Estimated Start Date",
+            value=start_default.date() if not pd.isna(start_default) else date.today(),
+        )
+        estimated_duration_days = st.number_input(
+            "Estimated Duration Days",
+            min_value=1.0,
+            value=float(duration_default) if not pd.isna(duration_default) and float(duration_default) > 0 else 1.0,
+            step=0.5,
+        )
+        calculated_end = calculate_end_date(estimated_start_date, estimated_duration_days)
+        selected_end_default = end_default if not pd.isna(end_default) else pd.to_datetime(calculated_end, errors="coerce")
+        estimated_end_date = st.date_input(
+            "Estimated End Date",
+            value=selected_end_default.date()
+            if not pd.isna(selected_end_default)
+            else estimated_start_date,
+        )
+        schedule_status = st.text_input("Schedule Status", value=text_value(props.get("schedule_status")))
+        priority = st.text_input("Priority", value=text_value(props.get("priority")))
+        blocking_issue = st.text_area("Blocking Issue", value=text_value(props.get("blocking_issue")), height=80)
+        schedule_notes = st.text_area("Schedule Notes", value=text_value(props.get("schedule_notes")), height=120)
+        submitted = st.form_submit_button("Save Calendar Changes", type="primary")
+
+    if submitted:
+        row = pd.DataFrame(
+            [
+                {
+                    "schedule_id": props.get("schedule_id") or selected_event.get("id"),
+                    "job_id": props.get("job_id"),
+                    "assigned_crew_leader": assigned_crew_leader,
+                    "estimated_start_date": estimated_start_date,
+                    "estimated_duration_days": estimated_duration_days,
+                    "estimated_end_date": estimated_end_date,
+                    "schedule_status": schedule_status,
+                    "priority": priority,
+                    "blocking_issue": blocking_issue,
+                    "schedule_notes": schedule_notes,
+                }
+            ]
+        )
+        save_schedule_rows(row)
+        st.success("Calendar changes saved.")
+        st.rerun()
+
+
 def schedule_calendar_page() -> None:
     st.title("Schedule Calendar")
     if calendar is None:
@@ -11787,26 +12099,28 @@ def schedule_calendar_page() -> None:
     # TODO: add weather delay/push schedule feature.
     # TODO: add true crew availability table.
     render_schedule_crew_lane_board(events)
-    calendar_col, detail_col = st.columns([2, 1])
+    selected_event = selected_schedule_event_from_state(calendar_events)
+    with st.expander("Selected Job", expanded=bool(selected_event)):
+        render_schedule_selected_job_panel(selected_event, events)
+
     calendar_result: object = {}
-    with calendar_col:
-        show_calendar_grid = st.toggle(
-            "Show calendar grid",
-            value=False,
-            key="schedule_show_calendar_grid",
-            help="Open the full drag-and-drop calendar. Hidden by default to keep the scheduling board compact.",
+    show_calendar_grid = st.toggle(
+        "Show calendar grid",
+        value=False,
+        key="schedule_show_calendar_grid",
+        help="Open the full drag-and-drop calendar. Hidden by default to keep the scheduling board compact.",
+    )
+    if show_calendar_grid:
+        calendar_result = calendar(
+            events=calendar_events,
+            options=calendar_options,
+            custom_css=calendar_custom_css,
+            key="schedule_calendar",
         )
-        if show_calendar_grid:
-            calendar_result = calendar(
-                events=calendar_events,
-                options=calendar_options,
-                custom_css=calendar_custom_css,
-                key="schedule_calendar",
-            )
-            with st.expander("Calendar event debug"):
-                st.write(calendar_result)
-        else:
-            st.caption("Calendar grid is hidden. Turn it on to drag jobs or edit dates from the calendar.")
+        with st.expander("Calendar event debug"):
+            st.write(calendar_result)
+    else:
+        st.caption("Calendar grid is hidden. Turn it on to drag jobs or edit dates from the calendar.")
 
     change = parse_calendar_change(calendar_result)
     if change and not text_value(change.get("event_id")).startswith("tracking-"):
@@ -11814,175 +12128,11 @@ def schedule_calendar_page() -> None:
         st.success("Schedule updated")
         st.rerun()
 
-    selected_event = find_calendar_event(calendar_result, calendar_events)
-    if not selected_event:
-        selected_board_event_id = text_value(st.session_state.get("schedule_board_selected_event_id"))
-        selected_event = next(
-            (event for event in events if text_value(event.get("id")) == selected_board_event_id),
-            None,
-        )
-    with detail_col:
-        st.subheader("Selected Job")
-        if not selected_event:
-            st.info("Click a scheduled job block to view and edit details.")
-        else:
-            props = selected_event.get("extendedProps", {})
-            if not isinstance(props, dict):
-                props = {}
-            selected_actual_props: dict[str, object] | None = None
-            if text_value(props.get("event_kind")) == "job_tracking_actual":
-                selected_actual_props = props
-                matched_schedule_event = next(
-                    (
-                        event
-                        for event in events
-                        if text_value((event.get("extendedProps") or {}).get("job_id"))
-                        == text_value(selected_actual_props.get("job_id"))
-                    ),
-                    None,
-                )
-                if matched_schedule_event and isinstance(matched_schedule_event.get("extendedProps"), dict):
-                    props = matched_schedule_event["extendedProps"]
-                st.info("Selected calendar event is an actual job-tracking entry.")
-                actual_details = [
-                    ("Work Date", selected_actual_props.get("work_date")),
-                    ("Crew", selected_actual_props.get("crew")),
-                    ("Total Hours", selected_actual_props.get("total_hours")),
-                    ("Labor Hours", selected_actual_props.get("labor_hours")),
-                    ("Travel Hours", selected_actual_props.get("travel_hours")),
-                    ("Load Hours", selected_actual_props.get("load_hours")),
-                    ("Foam Sq Ft", selected_actual_props.get("foam_sqft")),
-                    ("Base Coat 1", selected_actual_props.get("base_coat_1")),
-                    ("Base Coat 2", selected_actual_props.get("base_coat_2")),
-                    ("Granules", selected_actual_props.get("granules")),
-                    ("Notes", selected_actual_props.get("notes")),
-                    ("Tracking File", selected_actual_props.get("tracking_file")),
-                ]
-                st.write("**Actual Work Entry**")
-                for label, value in actual_details:
-                    if text_value(value):
-                        st.write(f"**{label}:** {text_value(value)}")
-            details = [
-                ("Customer", props.get("customer")),
-                ("Job Name", props.get("job_name")),
-                ("Division", props.get("division")),
-                ("Pipeline Status", props.get("pipeline_status")),
-                ("Status", props.get("status")),
-                ("Estimated Value", fmt_dollar(pd.to_numeric(pd.Series([props.get("estimated_value")]), errors="coerce").iloc[0])),
-                ("Estimated Duration Days", props.get("estimated_duration_days")),
-                ("Estimated Labor Hours", props.get("estimated_labor_hours")),
-                ("Estimated Crew Size", props.get("estimated_crew_size")),
-                ("Crew Leader", props.get("assigned_crew_leader")),
-                ("Start Date", props.get("estimated_start_date")),
-                ("End Date", props.get("estimated_end_date")),
-                ("Schedule Status", props.get("schedule_status")),
-                ("Priority", props.get("priority")),
-                ("Blocking Issue", props.get("blocking_issue")),
-                ("Schedule Notes", props.get("schedule_notes")),
-            ]
-            for label, value in details:
-                st.write(f"**{label}:** {text_value(value) or '-'}")
-            folder_link = text_value(props.get("folder_link_or_path"))
-            if folder_link:
-                render_document_access("Open Job Folder", folder_link)
-            has_readable_job_spec = render_schedule_job_spec_preview(props.get("job_id"))
-            render_schedule_job_tracking_preview(props.get("job_id"))
-
-            if not has_readable_job_spec:
-                st.subheader("Proposal Summary")
-                actionable_warnings = actionable_schedule_warning_text(props.get("warnings"))
-                summary_fields = [
-                    ("Estimated Value", props.get("estimated_value"), "money"),
-                    ("Estimated Sq Ft", props.get("estimated_sqft"), "number"),
-                    ("Price / Sq Ft", props.get("price_per_sqft"), "money"),
-                    ("Estimated Duration Days", props.get("estimated_duration_days"), "number"),
-                    ("Estimated Labor Hours", props.get("estimated_labor_hours"), "number"),
-                    ("Estimated Crew Size", props.get("estimated_crew_size"), "number"),
-                    ("Job Type", props.get("job_type"), "text"),
-                    ("Coating Type", props.get("coating_type"), "text"),
-                    ("Foam Type", props.get("foam_type"), "text"),
-                    ("Warranty Amount", props.get("warranty_amount"), "money"),
-                    ("Equipment Rental Amount", props.get("equipment_rental_amount"), "money"),
-                    ("Subcontractor Amount", props.get("subcontractor_amount"), "money"),
-                    ("Material Subtotal", props.get("material_subtotal"), "money"),
-                    ("Labor Subtotal", props.get("labor_subtotal"), "money"),
-                    ("Schedule Notes", props.get("schedule_notes"), "text"),
-                ]
-                if actionable_warnings:
-                    summary_fields.append(("Warnings", actionable_warnings, "text"))
-                for label, value, kind in summary_fields:
-                    st.write(f"**{label}:** {format_summary_value(value, kind=kind)}")
-
-            st.subheader("Job Documents")
-            # TODO: generate true SharePoint web links for estimate/proposal files.
-            # TODO: extract proposal scope summary for display in calendar.
-            # TODO: add proposal preview panel or PDF link.
-            folder_value = props.get("folder_url") or props.get("folder_link_or_path") or props.get("folder_path")
-            proposal_value = props.get("proposal_file") or props.get("estimate_file")
-            render_document_access("Open Job Folder", folder_value)
-            render_document_access(
-                "Open Proposal / Estimate",
-                proposal_value,
-                "Proposal link not available yet — use job folder.",
-            )
-            render_document_access("Open Contract", props.get("contract_file"))
-            render_document_access("Open Job Tracking Form", props.get("job_tracking_file"))
-            aerial_status = "Available" if bool(props.get("has_aerial")) else "Not found"
-            st.write(f"**Aerial/Drone status:** {aerial_status}")
-            st.write(f"**Photo count:** {text_value(props.get('photo_count')) or '0'}")
-
-            start_default = pd.to_datetime(props.get("estimated_start_date"), errors="coerce")
-            end_default = pd.to_datetime(props.get("estimated_end_date"), errors="coerce")
-            duration_default = pd.to_numeric(pd.Series([props.get("estimated_duration_days")]), errors="coerce").iloc[0]
-            with st.form("calendar_selected_job_form"):
-                assigned_crew_leader = st.text_input(
-                    "Crew Leader",
-                    value=text_value(props.get("assigned_crew_leader")),
-                )
-                estimated_start_date = st.date_input(
-                    "Estimated Start Date",
-                    value=start_default.date() if not pd.isna(start_default) else date.today(),
-                )
-                estimated_duration_days = st.number_input(
-                    "Estimated Duration Days",
-                    min_value=1.0,
-                    value=float(duration_default) if not pd.isna(duration_default) and float(duration_default) > 0 else 1.0,
-                    step=0.5,
-                )
-                calculated_end = calculate_end_date(estimated_start_date, estimated_duration_days)
-                selected_end_default = end_default if not pd.isna(end_default) else pd.to_datetime(calculated_end, errors="coerce")
-                estimated_end_date = st.date_input(
-                    "Estimated End Date",
-                    value=selected_end_default.date()
-                    if not pd.isna(selected_end_default)
-                    else estimated_start_date,
-                )
-                schedule_status = st.text_input("Schedule Status", value=text_value(props.get("schedule_status")))
-                priority = st.text_input("Priority", value=text_value(props.get("priority")))
-                blocking_issue = st.text_area("Blocking Issue", value=text_value(props.get("blocking_issue")), height=80)
-                schedule_notes = st.text_area("Schedule Notes", value=text_value(props.get("schedule_notes")), height=120)
-                submitted = st.form_submit_button("Save Calendar Changes", type="primary")
-
-            if submitted:
-                row = pd.DataFrame(
-                    [
-                        {
-                            "schedule_id": props.get("schedule_id") or selected_event.get("id"),
-                            "job_id": props.get("job_id"),
-                            "assigned_crew_leader": assigned_crew_leader,
-                            "estimated_start_date": estimated_start_date,
-                            "estimated_duration_days": estimated_duration_days,
-                            "estimated_end_date": estimated_end_date,
-                            "schedule_status": schedule_status,
-                            "priority": priority,
-                            "blocking_issue": blocking_issue,
-                            "schedule_notes": schedule_notes,
-                        }
-                    ]
-                )
-                save_schedule_rows(row)
-                st.success("Calendar changes saved.")
-                st.rerun()
+    clicked_event = find_calendar_event(calendar_result, calendar_events)
+    clicked_event_id = text_value(clicked_event.get("id")) if clicked_event else ""
+    if clicked_event_id and clicked_event_id != text_value(st.session_state.get("schedule_board_selected_event_id")):
+        st.session_state["schedule_board_selected_event_id"] = clicked_event_id
+        st.rerun()
 
     if show_unscheduled:
         scheduled_job_ids = set(schedule_df["job_id"].dropna().astype(str)) if "job_id" in schedule_df.columns else set()
