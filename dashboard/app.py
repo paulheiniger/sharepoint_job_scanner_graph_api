@@ -10125,6 +10125,32 @@ def load_operations_dashboard_prepared() -> tuple[pd.DataFrame, pd.DataFrame]:
     tracking = load_job_tracking_dashboard_summary()
     backlog = query_view("dashboard_contracted_backlog")
     backlog_source = backlog if not backlog.empty else all_jobs
+    if (
+        not backlog_source.empty
+        and not all_jobs.empty
+        and "job_id" in backlog_source.columns
+        and "job_id" in all_jobs.columns
+    ):
+        context_cols = [
+            column
+            for column in ["job_id", "has_job_spec", "folder_pipeline_bucket", "sales_stage", "project"]
+            if column in all_jobs.columns
+        ]
+        if len(context_cols) > 1:
+            backlog_source = backlog_source.merge(
+                all_jobs[context_cols].drop_duplicates("job_id"),
+                on="job_id",
+                how="left",
+                suffixes=("", "_jobboard"),
+            )
+            for column in [name for name in context_cols if name != "job_id"]:
+                source_column = f"{column}_jobboard"
+                if source_column in backlog_source.columns:
+                    if column in backlog_source.columns:
+                        backlog_source[column] = backlog_source[column].combine_first(backlog_source[source_column])
+                    else:
+                        backlog_source[column] = backlog_source[source_column]
+                    backlog_source = backlog_source.drop(columns=[source_column])
     ops = normalize_operations_jobs(backlog_source, schedule=schedule, tracking=tracking)
     return all_jobs, ops
 
@@ -10136,7 +10162,8 @@ def normalized_readiness_status(row: pd.Series) -> str:
     ).lower()
     has_start = not pd.isna(row.get("estimated_start_date_parsed"))
     in_contracted_folder = folder_pipeline_bucket_for_row(row) == "Contracted Folder"
-    has_job_spec = truthy_bool(row.get("has_job_spec"))
+    has_job_spec_known = "has_job_spec" in row.index and text_value(row.get("has_job_spec")) != ""
+    has_job_spec = truthy_bool(row.get("has_job_spec")) if has_job_spec_known else None
     if any(token in source_text for token in ["customer hold", "waiting on customer", "customer delay", "owner hold"]):
         return "Customer Hold"
     if any(token in source_text for token in ["material", "submittal", "lead time"]):
@@ -10149,7 +10176,7 @@ def normalized_readiness_status(row: pd.Series) -> str:
         return "Scheduled"
     if not in_contracted_folder:
         return "Not Contracted Folder"
-    if not has_job_spec:
+    if has_job_spec is False:
         return "Missing Job Spec"
     return "Ready To Schedule"
 
@@ -10321,13 +10348,17 @@ def readiness_summary(ops: pd.DataFrame) -> pd.DataFrame:
     if ops.empty:
         return pd.DataFrame(columns=columns)
     unscheduled = ops[ops["readiness_status"].isin(READINESS_STATUSES)]
-    return (
+    summary = (
         unscheduled.groupby("readiness_status", dropna=False)
         .agg(jobs=("readiness_status", "size"), revenue=("operations_value", "sum"), avg_days_waiting=("days_waiting", "mean"))
-        .reindex(READINESS_STATUSES, fill_value=0)
         .reset_index()
         .rename(columns={"readiness_status": "status"})
     )
+    if summary.empty:
+        return pd.DataFrame(columns=columns)
+    order = {status: index for index, status in enumerate(READINESS_STATUSES)}
+    summary["_status_order"] = summary["status"].map(order).fillna(len(order))
+    return summary.sort_values(["_status_order", "revenue"], ascending=[True, False]).drop(columns=["_status_order"])
 
 
 def first_existing_value(row: pd.Series, columns: list[str]) -> object:
@@ -12243,15 +12274,22 @@ def operations_dashboard_page() -> None:
         waiting_statuses = [status for status in READINESS_STATUSES if status != "Scheduled"]
         waiting = ops[ops["readiness_status"].isin(waiting_statuses)].copy()
         waiting = waiting[waiting["estimated_start_date_parsed"].isna()]
+        spec_known = (
+            waiting["has_job_spec"].map(truthy_bool)
+            if "has_job_spec" in waiting.columns
+            else pd.Series(False, index=waiting.index)
+        )
+        spec_review = waiting["readiness_status"].isin(["Missing Job Spec", "Not Contracted Folder"])
         metric_row(
             [
-                ("Ready Jobs", number_metric((waiting["readiness_status"] == "Ready To Schedule").sum())),
-                ("Ready Value", money_metric(waiting.loc[waiting["readiness_status"] == "Ready To Schedule", "operations_value"].sum())),
-                ("Hold Jobs", number_metric((waiting["readiness_status"] != "Ready To Schedule").sum())),
-                ("Hold Value", money_metric(waiting.loc[waiting["readiness_status"] != "Ready To Schedule", "operations_value"].sum())),
+                ("Unscheduled Jobs", number_metric(len(waiting))),
+                ("Unscheduled Value", money_metric(waiting["operations_value"].sum())),
+                ("With Job Spec", number_metric(spec_known.sum())),
+                ("Needs Spec / Folder Review", number_metric(spec_review.sum())),
             ]
         )
-        show_table(readiness_summary(waiting), ["status", "jobs", "revenue", "avg_days_waiting"], height=250)
+        st.caption("This is the unscheduled queue. Statuses are shown only when rows currently exist for them.")
+        show_table(readiness_summary(waiting), ["status", "jobs", "revenue", "avg_days_waiting"], height=230)
         show_table(
             waiting,
             [
@@ -12263,6 +12301,7 @@ def operations_dashboard_page() -> None:
                 "ready_date",
                 "days_waiting",
                 "readiness_status",
+                "has_job_spec",
                 "production_risk_summary",
                 "estimated_duration_days",
                 "estimated_labor_hours",
@@ -19014,7 +19053,6 @@ def main() -> None:
         render_database_target_debug()
         filters = sidebar_filters(jobs_for_filters)
         core_pages = [
-            "Owner Overview",
             "Sales Dashboard",
             "Operations Dashboard",
             "Job Board",
@@ -19028,6 +19066,7 @@ def main() -> None:
             "Admin / Health",
         ]
         legacy_pages = [
+            "Owner Overview",
             "Pipeline / Money",
             "Sales Follow-Up",
             "Contracted Backlog / Scheduling",
