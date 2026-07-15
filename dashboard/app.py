@@ -2352,6 +2352,8 @@ def load_schedule_job_spec_content(job_id: str) -> pd.DataFrame:
                         d.sharepoint_url,
                         d.modified_at,
                         c.page_number,
+                        c.sheet_name,
+                        c.row_number,
                         c.source_locator,
                         c.text_content,
                         CASE
@@ -2359,7 +2361,13 @@ def load_schedule_job_spec_content(job_id: str) -> pd.DataFrame:
                             WHEN LOWER(COALESCE(d.document_type, '')) = 'job_tracking' THEN 3
                             WHEN LOWER(COALESCE(d.file_name, '') || ' ' || COALESCE(d.relative_path, '')) ~ :candidate_pattern THEN 2
                             ELSE 1
-                        END AS spec_score
+                        END AS spec_score,
+                        CASE
+                            WHEN LOWER(COALESCE(c.sheet_name, '') || ' ' || COALESCE(c.source_locator, '')) ~ '(job[ _-]*spec|jobspec|job specification|scope of work|work scope)' THEN 5
+                            WHEN LOWER(COALESCE(c.text_content, '')) ~ '(scope of work|materials needed|job specification|est\\. # of days|est\\. crew size)' THEN 3
+                            WHEN LOWER(COALESCE(c.sheet_name, '') || ' ' || COALESCE(c.source_locator, '')) ~ '(estimate|materials|people|sq ft calculation)' THEN 0
+                            ELSE 1
+                        END AS content_spec_score
                     FROM document_content c
                     JOIN documents d ON d.document_id = c.document_id
                     WHERE (
@@ -2381,8 +2389,8 @@ def load_schedule_job_spec_content(job_id: str) -> pd.DataFrame:
                          )
                       )
                       AND NULLIF(BTRIM(c.text_content), '') IS NOT NULL
-                    ORDER BY spec_score DESC, d.modified_at DESC NULLS LAST, d.file_name, c.page_number NULLS LAST, c.source_locator
-                    LIMIT 20
+                    ORDER BY spec_score DESC, content_spec_score DESC, d.modified_at DESC NULLS LAST, d.file_name, c.page_number NULLS LAST, c.sheet_name NULLS LAST, c.row_number NULLS LAST, c.source_locator
+                    LIMIT 80
                     """
                 ),
                 conn,
@@ -2479,11 +2487,14 @@ def render_schedule_job_spec_preview(job_id: object) -> None:
         return
     first = spec_rows.iloc[0]
     file_name = text_value(first.get("file_name")) or "Job spec"
+    sheet_name = text_value(first.get("sheet_name"))
     url = text_value(first.get("sharepoint_url"))
     if url:
         st.link_button(f"Open {file_name}", url)
     else:
         st.caption(file_name)
+    if sheet_name:
+        st.caption(f"Showing extracted content starting from sheet: {sheet_name}")
     combined = "\n\n".join(
         text_value(row.get("text_content"))
         for row in spec_rows.to_dict(orient="records")
@@ -11267,45 +11278,27 @@ def schedule_calendar_page() -> None:
         tracking_events = calendar_events_from_tracking_entries(tracking_entries)
     calendar_events = events + tracking_events
     calendar_options = {
-        "initialView": "compactQuarter",
-        "views": {
-            "compactQuarter": {
-                "type": "multiMonth",
-                "duration": {"months": 3},
-                "buttonText": "90 days",
-                "multiMonthMaxColumns": 1,
-            }
-        },
+        "initialView": "dayGridMonth",
         "editable": True,
         "eventStartEditable": True,
         "eventDurationEditable": True,
         "selectable": True,
-        "height": "auto",
-        "contentHeight": "auto",
+        "height": 650,
+        "contentHeight": 620,
         "aspectRatio": 1.35,
         "fixedWeekCount": False,
-        "dayMaxEventRows": 1,
+        "dayMaxEventRows": 3,
         "moreLinkClick": "popover",
         "headerToolbar": {
             "left": "prev,next today",
             "center": "title",
-            "right": "compactQuarter,dayGridMonth,listWeek",
+            "right": "dayGridMonth,timeGridWeek,listWeek",
         },
         "eventDisplay": "block",
     }
     calendar_custom_css = """
-    .fc .fc-multimonth {
-        border: 0;
-    }
-    .fc .fc-multimonth-month {
-        padding: 0 0 8px 0;
-    }
-    .fc .fc-multimonth-title {
-        font-size: 0.95rem;
-        padding: 4px 0;
-    }
     .fc .fc-daygrid-day-frame {
-        min-height: 34px;
+        min-height: 74px;
         padding: 1px;
     }
     .fc .fc-daygrid-day-number {
