@@ -5,6 +5,8 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import subprocess
 import time
 import zipfile
 from dataclasses import dataclass
@@ -21,7 +23,7 @@ from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError, Pending
 from .graph_client import GraphClient, GraphError, SharePointTarget
 from .job_search import first_nonblank, normalize_search_text, tokenize_search_text
 
-SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".xlsm", ".txt", ".csv"}
+SUPPORTED_EXTENSIONS = {".pdf", ".doc", ".docx", ".xlsx", ".xlsm", ".txt", ".csv"}
 JOB_SPEC_CANDIDATE_PATTERN = r"(job[ _-]*spec|jobspec|job specification|spec form|scope of work|work scope|(^|\\s)spec(\\s|$)|job tracking|tracking form|field notes|site notes|inspection notes|estimator notes)"
 JOB_SPEC_EXCLUDE_PATTERN = r"(submittal|submittals|sds|pds|tds|technical data|data sheet|sales sheet|brochure|certificate of liability|cert tracking)"
 ESTIMATOR_RELEVANT_DOCUMENT_TYPES = [
@@ -468,6 +470,48 @@ def extract_docx(path: Path) -> ExtractionResult:
     return ExtractionResult(rows=rows, extraction_method="docx-xml")
 
 
+def extract_legacy_doc(path: Path) -> ExtractionResult:
+    converters = [
+        ("textutil", ["textutil", "-convert", "txt", "-stdout", str(path)]),
+        ("antiword", ["antiword", str(path)]),
+        ("catdoc", ["catdoc", str(path)]),
+    ]
+    errors: list[str] = []
+    for name, command in converters:
+        if not shutil.which(name):
+            continue
+        try:
+            result = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=45,
+            )
+        except Exception as exc:
+            errors.append(f"{name}: {exc}")
+            continue
+        text_content = (result.stdout or "").strip()
+        if result.returncode == 0 and len(text_content) >= TEXT_EMPTY_THRESHOLD:
+            return ExtractionResult(
+                rows=[
+                    ExtractedContent(
+                        content_type="legacy_doc_text",
+                        source_locator="file",
+                        text_content=text_content,
+                    )
+                ],
+                extraction_method=name,
+            )
+        error = (result.stderr or result.stdout or "").strip()
+        errors.append(f"{name}: {error or 'no text extracted'}")
+    detail = "; ".join(errors) if errors else "no supported converter found"
+    raise RuntimeError(
+        "Legacy .doc extraction requires textutil, antiword, or catdoc on the runtime. "
+        f"Attempted converters: {detail}"
+    )
+
+
 def _xlsx_cell_text(cell: Any) -> str | None:
     return text_or_none(getattr(cell, "value", None))
 
@@ -533,6 +577,8 @@ def extract_document_file(path: Path, document: dict[str, Any]) -> ExtractionRes
     extension = (first_nonblank(document.get("file_extension")) or path.suffix).lower()
     if extension == ".pdf":
         return extract_pdf(path)
+    if extension == ".doc":
+        return extract_legacy_doc(path)
     if extension == ".docx":
         return extract_docx(path)
     if extension in {".xlsx", ".xlsm"}:

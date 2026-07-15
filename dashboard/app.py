@@ -1749,6 +1749,199 @@ def load_job_tracking_dashboard_daily() -> pd.DataFrame:
     return df
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def load_schedule_job_tracking_summary(job_id: str) -> pd.DataFrame:
+    job_id_text = text_value(job_id)
+    tracking_cols = relation_columns("job_tracking_summary")
+    if not job_id_text or "job_id" not in tracking_cols:
+        return pd.DataFrame()
+    numeric_fields = [
+        "actual_work_day_count",
+        "actual_labor_hours",
+        "actual_travel_hours",
+        "actual_load_hours",
+        "actual_os_hours",
+        "actual_mileage",
+        "actual_foam_sqft",
+        "actual_foam_yield",
+        "actual_base_coat_1",
+        "actual_base_coat_2",
+        "actual_granules",
+        "actual_af_buttergrade",
+        "actual_caulk",
+        "actual_primer",
+        "actual_sf",
+        "estimated_labor_hours",
+        "labor_hours_variance",
+        "foam_sqft_variance",
+        "granules_variance",
+    ]
+    date_fields = ["actual_first_work_date", "actual_last_work_date", "updated_at"]
+    text_fields = ["tracking_file", "tracking_notes", "tracking_warnings", "source_file", "source_path"]
+    select_parts = [f"{sql_column('t', tracking_cols, 'job_id')} AS job_id"]
+    select_parts.extend(f"{sql_column('t', tracking_cols, field)} AS {field}" for field in text_fields)
+    select_parts.extend(f"{sql_column('t', tracking_cols, field)} AS {field}" for field in numeric_fields)
+    select_parts.extend(f"{sql_column('t', tracking_cols, field)} AS {field}" for field in date_fields)
+    try:
+        engine = get_engine()
+        with engine.connect() as conn:
+            df = pd.read_sql_query(
+                text(
+                    f"""
+                    SELECT {', '.join(select_parts)}
+                    FROM job_tracking_summary t
+                    WHERE t.job_id = :job_id
+                    ORDER BY t.actual_last_work_date DESC NULLS LAST, t.updated_at DESC NULLS LAST
+                    LIMIT 5
+                    """
+                ),
+                conn,
+                params={"job_id": job_id_text},
+            )
+    except Exception:
+        return pd.DataFrame()
+    if df.empty:
+        return df
+    for column in numeric_fields:
+        if column in df.columns:
+            df[column] = pd.to_numeric(df[column], errors="coerce")
+    for column in date_fields:
+        if column in df.columns:
+            df[column] = pd.to_datetime(df[column], errors="coerce")
+    return df
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_schedule_job_tracking_daily_entries(job_id: str) -> pd.DataFrame:
+    job_id_text = text_value(job_id)
+    daily_cols = relation_columns("job_tracking_daily_entries")
+    if not job_id_text or "job_id" not in daily_cols:
+        return pd.DataFrame()
+    text_fields = ["tracking_file", "crew", "notes", "source_sheet"]
+    numeric_fields = [
+        "labor_hours",
+        "travel_hours",
+        "load_hours",
+        "os_hours",
+        "mileage",
+        "os_mileage",
+        "foam_sqft",
+        "foam_yield",
+        "base_coat_1",
+        "base_coat_2",
+        "granules",
+        "af_buttergrade",
+        "caulk",
+        "primer",
+        "sf",
+    ]
+    select_parts = [
+        f"{sql_column('d', daily_cols, 'job_id')} AS job_id",
+        f"{sql_column('d', daily_cols, 'work_date')} AS work_date",
+        f"{sql_column('d', daily_cols, 'source_row')} AS source_row",
+    ]
+    select_parts.extend(f"{sql_column('d', daily_cols, field)} AS {field}" for field in text_fields)
+    select_parts.extend(f"{sql_column('d', daily_cols, field)} AS {field}" for field in numeric_fields)
+    try:
+        engine = get_engine()
+        with engine.connect() as conn:
+            df = pd.read_sql_query(
+                text(
+                    f"""
+                    SELECT {', '.join(select_parts)}
+                    FROM job_tracking_daily_entries d
+                    WHERE d.job_id = :job_id
+                    ORDER BY d.work_date DESC NULLS LAST, d.source_row DESC NULLS LAST
+                    LIMIT 50
+                    """
+                ),
+                conn,
+                params={"job_id": job_id_text},
+            )
+    except Exception:
+        return pd.DataFrame()
+    if df.empty:
+        return df
+    for column in numeric_fields:
+        if column in df.columns:
+            df[column] = pd.to_numeric(df[column], errors="coerce")
+    if "work_date" in df.columns:
+        df["work_date"] = pd.to_datetime(df["work_date"], errors="coerce")
+    total_hours = pd.Series(0.0, index=df.index)
+    for column in ["labor_hours", "travel_hours", "load_hours", "os_hours"]:
+        if column in df.columns:
+            total_hours = total_hours.add(numeric_series(df, column).reindex(df.index).fillna(0), fill_value=0)
+    df["total_hours"] = total_hours
+    return df
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_schedule_job_tracking_calendar_entries(job_ids: tuple[str, ...]) -> pd.DataFrame:
+    clean_job_ids = tuple(sorted({text_value(job_id) for job_id in job_ids if text_value(job_id)}))
+    daily_cols = relation_columns("job_tracking_daily_entries")
+    if not clean_job_ids or "job_id" not in daily_cols or "work_date" not in daily_cols:
+        return pd.DataFrame()
+    job_cols = relation_columns("dashboard_jobs")
+    has_jobs = bool(job_cols)
+    join_sql = "LEFT JOIN dashboard_jobs j ON j.job_id = d.job_id" if has_jobs and "job_id" in job_cols else ""
+    text_fields = {
+        "job_id": sql_column("d", daily_cols, "job_id"),
+        "tracking_file": sql_column("d", daily_cols, "tracking_file"),
+        "work_date": sql_column("d", daily_cols, "work_date"),
+        "crew": sql_column("d", daily_cols, "crew"),
+        "notes": sql_column("d", daily_cols, "notes"),
+        "source_sheet": sql_column("d", daily_cols, "source_sheet"),
+        "source_row": sql_column("d", daily_cols, "source_row"),
+        "customer": sql_column("j", job_cols, "customer") if has_jobs else "NULL",
+        "job_name": sql_column("j", job_cols, "job_name") if has_jobs else "NULL",
+    }
+    numeric_fields = [
+        "labor_hours",
+        "travel_hours",
+        "load_hours",
+        "os_hours",
+        "foam_sqft",
+        "base_coat_1",
+        "base_coat_2",
+        "granules",
+        "caulk",
+        "primer",
+        "sf",
+    ]
+    select_parts = [f"{expr} AS {alias}" for alias, expr in text_fields.items()]
+    select_parts.extend(f"{sql_column('d', daily_cols, field)} AS {field}" for field in numeric_fields)
+    try:
+        engine = get_engine()
+        query = text(
+            f"""
+            SELECT {', '.join(select_parts)}
+            FROM job_tracking_daily_entries d
+            {join_sql}
+            WHERE d.job_id IN :job_ids
+              AND d.work_date IS NOT NULL
+            ORDER BY d.work_date DESC NULLS LAST, d.job_id, d.source_row DESC NULLS LAST
+            LIMIT 1500
+            """
+        ).bindparams(bindparam("job_ids", expanding=True))
+        with engine.connect() as conn:
+            df = pd.read_sql_query(query, conn, params={"job_ids": clean_job_ids})
+    except Exception:
+        return pd.DataFrame()
+    if df.empty:
+        return df
+    for column in numeric_fields:
+        if column in df.columns:
+            df[column] = pd.to_numeric(df[column], errors="coerce")
+    if "work_date" in df.columns:
+        df["work_date"] = pd.to_datetime(df["work_date"], errors="coerce")
+    total_hours = pd.Series(0.0, index=df.index)
+    for column in ["labor_hours", "travel_hours", "load_hours", "os_hours"]:
+        if column in df.columns:
+            total_hours = total_hours.add(numeric_series(df, column).reindex(df.index).fillna(0), fill_value=0)
+    df["total_hours"] = total_hours
+    return df
+
+
 def load_schedule_df() -> pd.DataFrame:
     try:
         return load_df("SELECT * FROM crew_schedule")
@@ -2299,6 +2492,100 @@ def render_schedule_job_spec_preview(job_id: object) -> None:
     st.text_area("Extracted job spec text", value=combined[:12000], height=320, disabled=True, key=f"job_spec_preview_{job_id_text}")
 
 
+def render_schedule_job_tracking_preview(job_id: object) -> None:
+    job_id_text = text_value(job_id)
+    st.subheader("Production Notes")
+    if not job_id_text:
+        st.info("Select a job to view job tracking.")
+        return
+
+    summary = load_schedule_job_tracking_summary(job_id_text)
+    daily = load_schedule_job_tracking_daily_entries(job_id_text)
+    if summary.empty and daily.empty:
+        st.info("No structured job tracking entries have been loaded for this job yet.")
+        return
+
+    summary_row = summary.iloc[0].to_dict() if not summary.empty else {}
+    daily_has_rows = not daily.empty
+    if daily_has_rows:
+        latest_work = pd.to_datetime(daily.get("work_date"), errors="coerce").max() if "work_date" in daily.columns else None
+        work_days = daily["work_date"].dropna().dt.date.nunique() if "work_date" in daily.columns else None
+        actual_hours = float(numeric_series(daily, "total_hours").sum()) if "total_hours" in daily.columns else 0.0
+        actual_foam_sqft = float(numeric_series(daily, "foam_sqft").sum()) if "foam_sqft" in daily.columns else 0.0
+    else:
+        actual_hours = 0.0
+        for column in ["actual_labor_hours", "actual_travel_hours", "actual_load_hours", "actual_os_hours"]:
+            value = pd.to_numeric(pd.Series([summary_row.get(column)]), errors="coerce").iloc[0]
+            if not pd.isna(value):
+                actual_hours += float(value)
+        latest_work = summary_row.get("actual_last_work_date")
+        work_days = summary_row.get("actual_work_day_count")
+        actual_foam_sqft = summary_row.get("actual_foam_sqft")
+
+    metric_row(
+        [
+            ("Last Touch", text_value(clean_db_value(latest_work)) or "-"),
+            ("Work Days", fmt_count(pd.to_numeric(pd.Series([work_days]), errors="coerce").iloc[0])),
+            ("Actual Hours", fmt_count(actual_hours)),
+            ("Actual Foam Sq Ft", fmt_count(actual_foam_sqft)),
+        ],
+        max_columns=4,
+    )
+
+    note_parts: list[str] = []
+    tracking_notes = text_value(summary_row.get("tracking_notes"))
+    if tracking_notes:
+        note_parts.append(tracking_notes)
+    if not daily.empty and "notes" in daily.columns:
+        for note in daily["notes"].dropna().astype(str).str.strip():
+            if note and note not in note_parts:
+                note_parts.append(note)
+            if len(note_parts) >= 4:
+                break
+    if note_parts:
+        st.caption("Latest tracking notes")
+        st.write("\n\n".join(f"- {note}" for note in note_parts[:4]))
+
+    if not daily.empty:
+        display = daily.copy()
+        if "work_date" in display.columns:
+            display["work_date"] = pd.to_datetime(display["work_date"], errors="coerce").dt.date
+        display_columns = [
+            "work_date",
+            "crew",
+            "total_hours",
+            "labor_hours",
+            "travel_hours",
+            "load_hours",
+            "foam_sqft",
+            "foam_yield",
+            "base_coat_1",
+            "base_coat_2",
+            "granules",
+            "caulk",
+            "primer",
+            "sf",
+            "notes",
+            "tracking_file",
+        ]
+        show_table(
+            display,
+            display_columns,
+            height=260,
+            default_visible_columns=[
+                "work_date",
+                "crew",
+                "total_hours",
+                "labor_hours",
+                "foam_sqft",
+                "base_coat_1",
+                "base_coat_2",
+                "granules",
+                "notes",
+            ],
+        )
+
+
 def load_schedule_contracted_job_board_df(scheduled_job_ids: set[str]) -> pd.DataFrame:
     jobs = load_job_board_df()
     if not isinstance(jobs, pd.DataFrame) or jobs.empty or "job_id" not in jobs.columns:
@@ -2371,6 +2658,119 @@ def calendar_events_from_schedule(df: pd.DataFrame) -> list[dict[str, object]]:
             }
         )
     return events
+
+
+def calendar_events_from_tracking_entries(df: pd.DataFrame) -> list[dict[str, object]]:
+    events: list[dict[str, object]] = []
+    if df.empty:
+        return events
+    for row in df.to_dict(orient="records"):
+        work_date = pd.to_datetime(row.get("work_date"), errors="coerce")
+        if pd.isna(work_date):
+            continue
+        job_id = text_value(row.get("job_id"))
+        crew = text_value(row.get("crew")) or "Actual work"
+        customer = text_value(row.get("customer"))
+        job_name = text_value(row.get("job_name")) or job_id
+        total_hours = pd.to_numeric(pd.Series([row.get("total_hours")]), errors="coerce").iloc[0]
+        hours_label = f"{float(total_hours):.1f}h" if not pd.isna(total_hours) and float(total_hours) > 0 else "touch"
+        title_parts = ["Actual", hours_label, crew]
+        if customer or job_name:
+            title_parts.append(customer or job_name)
+        event_key = "|".join(
+            [
+                job_id,
+                work_date.date().isoformat(),
+                text_value(row.get("source_sheet")),
+                text_value(row.get("source_row")),
+                text_value(row.get("crew")),
+                text_value(row.get("notes"))[:80],
+            ]
+        )
+        event_id = f"tracking-{hashlib.sha1(event_key.encode('utf-8')).hexdigest()[:20]}"
+        props = {key: clean_db_value(value) for key, value in row.items()}
+        props["event_kind"] = "job_tracking_actual"
+        props["schedule_id"] = event_id
+        props["customer"] = customer
+        props["job_name"] = job_name
+        events.append(
+            {
+                "id": event_id,
+                "title": " | ".join(part for part in title_parts if part),
+                "start": work_date.date().isoformat(),
+                "end": (work_date.date() + timedelta(days=1)).isoformat(),
+                "backgroundColor": "#64748b",
+                "borderColor": "#334155",
+                "textColor": "#ffffff",
+                "editable": False,
+                "durationEditable": False,
+                "startEditable": False,
+                "extendedProps": props,
+            }
+        )
+    return events
+
+
+def render_schedule_crew_lane_board(events: list[dict[str, object]], *, horizon_days: int = 90) -> None:
+    st.subheader("Crew Lanes")
+    if not events:
+        st.info("No scheduled jobs are available for the crew board.")
+        return
+    today_ts = pd.Timestamp(date.today())
+    horizon_ts = today_ts + pd.Timedelta(days=horizon_days)
+    event_rows: list[dict[str, object]] = []
+    for event in events:
+        props = event.get("extendedProps") if isinstance(event.get("extendedProps"), dict) else {}
+        start = pd.to_datetime(event.get("start"), errors="coerce")
+        end_raw = pd.to_datetime(event.get("end"), errors="coerce")
+        end = end_raw - pd.Timedelta(days=1) if not pd.isna(end_raw) else start
+        if pd.isna(start):
+            continue
+        if start > horizon_ts or (not pd.isna(end) and end < today_ts):
+            continue
+        crew = text_value(props.get("assigned_crew_leader")) or "Unassigned"
+        event_rows.append({"event": event, "props": props, "start": start, "end": end, "crew": crew})
+    if not event_rows:
+        st.info(f"No jobs are scheduled in the next {horizon_days} days.")
+        return
+
+    event_rows.sort(key=lambda row: (str(row["crew"]).lower(), row["start"]))
+    crews = sorted({str(row["crew"]) for row in event_rows}, key=lambda value: (value == "Unassigned", value.lower()))
+    selected_id = text_value(st.session_state.get("schedule_board_selected_event_id"))
+    for start_idx in range(0, len(crews), 5):
+        columns = st.columns(min(5, len(crews) - start_idx))
+        for column, crew in zip(columns, crews[start_idx : start_idx + 5]):
+            crew_rows = [row for row in event_rows if row["crew"] == crew]
+            with column:
+                st.markdown(f"**{crew}**")
+                for row in crew_rows:
+                    event = row["event"]
+                    props = row["props"]
+                    event_id = text_value(event.get("id"))
+                    customer = text_value(props.get("customer")) or "Unknown customer"
+                    job_name = text_value(props.get("job_name"))
+                    title = customer if not job_name else f"{customer} - {job_name}"
+                    date_line = f"{row['start'].date().isoformat()} to {row['end'].date().isoformat() if not pd.isna(row['end']) else row['start'].date().isoformat()}"
+                    status_line = " · ".join(
+                        part
+                        for part in [
+                            text_value(props.get("schedule_status")),
+                            text_value(props.get("priority")),
+                            format_summary_value(props.get("estimated_duration_days"), kind="number") + " days"
+                            if text_value(props.get("estimated_duration_days"))
+                            else "",
+                        ]
+                        if part
+                    )
+                    button_type = "primary" if event_id and event_id == selected_id else "secondary"
+                    if st.button(title[:80], key=f"schedule_board_select_{event_id}", type=button_type, width="stretch"):
+                        st.session_state["schedule_board_selected_event_id"] = event_id
+                        st.rerun()
+                    st.caption(date_line)
+                    if status_line:
+                        st.caption(status_line)
+                    if text_value(props.get("blocking_issue")):
+                        st.warning(text_value(props.get("blocking_issue"))[:180])
 
 
 def find_calendar_event(calendar_result: object, events: list[dict[str, object]]) -> dict[str, object] | None:
@@ -10748,6 +11148,7 @@ def schedule_calendar_page() -> None:
     division_filter = sidebar.multiselect("Calendar Division", options_from(schedule_df, "division"))
     status_filter = sidebar.multiselect("Calendar Schedule Status", options_from(schedule_df, "schedule_status"))
     show_unscheduled = sidebar.checkbox("Show unscheduled contracted jobs", value=True)
+    show_tracking_events = sidebar.checkbox("Show job tracking entries on calendar", value=True)
 
     filtered = schedule_df.copy()
     if crew_filter and "assigned_crew_leader" in filtered.columns:
@@ -10758,6 +11159,12 @@ def schedule_calendar_page() -> None:
         filtered = filtered[filtered["schedule_status"].astype(str).isin(status_filter)]
 
     events = calendar_events_from_schedule(filtered)
+    scheduled_job_ids = set(filtered["job_id"].dropna().astype(str)) if "job_id" in filtered.columns else set()
+    tracking_events: list[dict[str, object]] = []
+    if show_tracking_events and scheduled_job_ids:
+        tracking_entries = load_schedule_job_tracking_calendar_entries(tuple(scheduled_job_ids))
+        tracking_events = calendar_events_from_tracking_entries(tracking_entries)
+    calendar_events = events + tracking_events
     calendar_options = {
         "initialView": "compactQuarter",
         "views": {
@@ -10822,24 +11229,33 @@ def schedule_calendar_page() -> None:
     # TODO: add Teams send button from selected calendar day.
     # TODO: add weather delay/push schedule feature.
     # TODO: add true crew availability table.
+    render_schedule_crew_lane_board(events)
     calendar_col, detail_col = st.columns([2, 1])
+    calendar_result: object = {}
     with calendar_col:
-        calendar_result = calendar(
-            events=events,
-            options=calendar_options,
-            custom_css=calendar_custom_css,
-            key="schedule_calendar",
-        )
-        with st.expander("Calendar event debug"):
-            st.write(calendar_result)
+        with st.expander("Calendar Grid", expanded=False):
+            calendar_result = calendar(
+                events=calendar_events,
+                options=calendar_options,
+                custom_css=calendar_custom_css,
+                key="schedule_calendar",
+            )
+            with st.expander("Calendar event debug"):
+                st.write(calendar_result)
 
     change = parse_calendar_change(calendar_result)
-    if change:
+    if change and not text_value(change.get("event_id")).startswith("tracking-"):
         update_calendar_schedule_dates(change["event_id"], change["start"], change.get("end"))
         st.success("Schedule updated")
         st.rerun()
 
-    selected_event = find_calendar_event(calendar_result, events)
+    selected_event = find_calendar_event(calendar_result, calendar_events)
+    if not selected_event:
+        selected_board_event_id = text_value(st.session_state.get("schedule_board_selected_event_id"))
+        selected_event = next(
+            (event for event in events if text_value(event.get("id")) == selected_board_event_id),
+            None,
+        )
     with detail_col:
         st.subheader("Selected Job")
         if not selected_event:
@@ -10848,6 +11264,39 @@ def schedule_calendar_page() -> None:
             props = selected_event.get("extendedProps", {})
             if not isinstance(props, dict):
                 props = {}
+            selected_actual_props: dict[str, object] | None = None
+            if text_value(props.get("event_kind")) == "job_tracking_actual":
+                selected_actual_props = props
+                matched_schedule_event = next(
+                    (
+                        event
+                        for event in events
+                        if text_value((event.get("extendedProps") or {}).get("job_id"))
+                        == text_value(selected_actual_props.get("job_id"))
+                    ),
+                    None,
+                )
+                if matched_schedule_event and isinstance(matched_schedule_event.get("extendedProps"), dict):
+                    props = matched_schedule_event["extendedProps"]
+                st.info("Selected calendar event is an actual job-tracking entry.")
+                actual_details = [
+                    ("Work Date", selected_actual_props.get("work_date")),
+                    ("Crew", selected_actual_props.get("crew")),
+                    ("Total Hours", selected_actual_props.get("total_hours")),
+                    ("Labor Hours", selected_actual_props.get("labor_hours")),
+                    ("Travel Hours", selected_actual_props.get("travel_hours")),
+                    ("Load Hours", selected_actual_props.get("load_hours")),
+                    ("Foam Sq Ft", selected_actual_props.get("foam_sqft")),
+                    ("Base Coat 1", selected_actual_props.get("base_coat_1")),
+                    ("Base Coat 2", selected_actual_props.get("base_coat_2")),
+                    ("Granules", selected_actual_props.get("granules")),
+                    ("Notes", selected_actual_props.get("notes")),
+                    ("Tracking File", selected_actual_props.get("tracking_file")),
+                ]
+                st.write("**Actual Work Entry**")
+                for label, value in actual_details:
+                    if text_value(value):
+                        st.write(f"**{label}:** {text_value(value)}")
             details = [
                 ("Customer", props.get("customer")),
                 ("Job Name", props.get("job_name")),
@@ -10872,6 +11321,7 @@ def schedule_calendar_page() -> None:
             if folder_link:
                 render_document_access("Open Job Folder", folder_link)
             render_schedule_job_spec_preview(props.get("job_id"))
+            render_schedule_job_tracking_preview(props.get("job_id"))
 
             st.subheader("Proposal Summary")
             summary_fields = [
@@ -11038,6 +11488,7 @@ def schedule_calendar_page() -> None:
                 )
 
             render_schedule_job_spec_preview(selected_job_id)
+            render_schedule_job_tracking_preview(selected_job_id)
 
             with st.form("add_unscheduled_job_form"):
                 assigned_crew_leader = st.text_input("Crew Leader", key="unscheduled_crew_leader")
