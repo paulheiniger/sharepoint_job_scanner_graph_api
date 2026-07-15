@@ -144,6 +144,77 @@ def write_tracking_workbook(path: Path) -> None:
     wb.save(path)
 
 
+def write_direct_header_tracking_workbook(path: Path) -> None:
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    headers = [
+        "Pegasus 39 Pearce - Various Repairs 2026",
+        "Labor Hours",
+        "Travel Hours",
+        "Load Hours",
+        "OS Hours",
+        "Mileage",
+        "OS Mileage",
+        "Top Coat",
+        "Sq. Ft. (Top)",
+        "Gal/Sq. (Top)",
+        "Granules",
+        "Caulk",
+        "Primer",
+        "SF",
+        "Crew",
+        "Notes",
+    ]
+    for col, value in enumerate(headers, start=1):
+        ws.cell(row=2, column=col).value = value
+
+    rows = [
+        ("07.06.26", 34.85, 3, 1.5, None, 10, None, None, None, None, None, None, None, None, "Santos", "Power washed 7000 sq ft."),
+        ("07.07.26", 53.65, 3.7, 2.75, None, 13, None, None, None, None, None, 48, 6, 10, "Santos", "Sprayed primer, caulk, and SF."),
+    ]
+    for row_num, row in enumerate(rows, start=3):
+        for col, value in enumerate(row, start=1):
+            ws.cell(row=row_num, column=col).value = value
+
+    ws["A18"] = "Insert Additional Lines Here"
+    ws["A20"] = "Daily Totals"
+    ws["B20"] = 88.5
+    ws["C20"] = 6.7
+    ws["D20"] = 4.25
+    ws["F20"] = 23
+    ws["L20"] = 48
+    ws["M20"] = 6
+    ws["N20"] = 10
+
+    ws["A22"] = "Estimated Amounts"
+    for col, value in enumerate(headers[1:14], start=2):
+        ws.cell(row=23, column=col).value = value
+    ws["B24"] = 880
+    ws["C24"] = 127.5
+    ws["D24"] = 34
+    ws["F24"] = 340
+    ws["H24"] = 350
+    ws["I24"] = 15250
+    ws["J24"] = 1.5
+    ws["L24"] = 160
+    ws["M24"] = 61
+    ws["N24"] = 40
+
+    ws["A25"] = "Over/Under"
+    for col, value in enumerate(headers[1:14], start=2):
+        ws.cell(row=26, column=col).value = value
+    ws["B27"] = 791.5
+    ws["C27"] = 120.8
+    ws["D27"] = 29.75
+    ws["L27"] = 112
+    ws["M27"] = 55
+    ws["N27"] = 30
+    wb.save(path)
+
+
 def test_job_tracking_extractor_reads_daily_summary_and_estimates() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -217,6 +288,37 @@ def test_job_tracking_extractor_reads_daily_summary_and_estimates() -> None:
     assert row["labor_hours_variance"] == -102.59
 
 
+def test_job_tracking_extractor_reads_direct_header_tracking_form() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        job = root / "Pegasus 39 Pearce"
+        job.mkdir()
+        path = job / "Job Tracking Form - Pegasus 39 Pearce Repairs (2026).xlsx"
+        write_direct_header_tracking_workbook(path)
+        record = scan_root(root, scan_context="2026 Roofing/Contracted")[0]
+
+        summaries, daily = extract_job_tracking_file(path, root, record)
+
+    summary = summaries[0]
+    assert len(daily) == 2
+    assert daily[0]["work_date"] == "2026-07-06"
+    assert daily[0]["labor_hours"] == 34.85
+    assert daily[1]["caulk"] == 48
+    assert summary["actual_first_work_date"] == "2026-07-06"
+    assert summary["actual_last_work_date"] == "2026-07-07"
+    assert summary["actual_work_day_count"] == 2
+    assert summary["actual_labor_hours"] == 88.5
+    assert summary["actual_travel_hours"] == 6.7
+    assert summary["actual_load_hours"] == 4.25
+    assert summary["actual_caulk"] == 48
+    assert summary["actual_primer"] == 6
+    assert summary["actual_sf"] == 10
+    assert summary["estimated_labor_hours"] == 880
+    assert summary["estimated_caulk"] == 160
+    assert summary["labor_hours_variance"] == 791.5
+    assert not summary["tracking_warnings"]
+
+
 def test_scan_job_tracking_for_records_finds_tracking_workbook() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -229,3 +331,24 @@ def test_scan_job_tracking_for_records_finds_tracking_workbook() -> None:
 
     assert len(summaries) == 1
     assert len(daily) == 8
+
+
+def test_job_tracking_extractor_skips_empty_tracking_workbook() -> None:
+    import openpyxl
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        job = root / "Empty Tracking"
+        job.mkdir()
+        path = job / "Job Tracking Form - Empty.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Sheet1"
+        ws.delete_rows(1, ws.max_row)
+        wb.save(path)
+        record = scan_root(root, scan_context="2026 Roofing/Contracted")[0]
+
+        summaries, daily = extract_job_tracking_file(path, root, record)
+
+    assert summaries == []
+    assert daily == []

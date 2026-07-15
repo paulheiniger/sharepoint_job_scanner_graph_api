@@ -134,7 +134,10 @@ def extract_job_tracking_file(path: Path, root: Path, record: JobRecord) -> tupl
     summaries: list[dict[str, Any]] = []
     daily_entries: list[dict[str, Any]] = []
     for ws in tracking_sheets(wb, path):
-        summary, daily = extract_tracking_sheet(ws, path, root, record)
+        try:
+            summary, daily = extract_tracking_sheet(ws, path, root, record)
+        except Exception:
+            continue
         summaries.append(summary)
         daily_entries.extend(daily)
     return summaries, daily_entries
@@ -180,9 +183,15 @@ def tracking_sheets(wb: Any, path: Path) -> list[Any]:
     filename_match = "job tracking" in path.name.lower()
     matches = []
     for ws in wb.worksheets:
+        if not sheet_has_any_value(ws):
+            continue
         if filename_match or "job tracking" in ws.title.lower() or sheet_has_tracking_markers(ws):
             matches.append(ws)
     return matches
+
+
+def sheet_has_any_value(ws: Any) -> bool:
+    return any(cell.value is not None for row in ws.iter_rows() for cell in row)
 
 
 def sheet_has_tracking_markers(ws: Any) -> bool:
@@ -206,7 +215,11 @@ def extract_tracking_sheet(ws: Any, path: Path, root: Path, record: JobRecord) -
         else:
             warnings.append("Missing Actual Amounts header row")
     else:
-        warnings.append("Missing Actual Amounts section")
+        header_row, actual_columns = find_tracking_header(ws, 1, min(ws.max_row, 6))
+        if header_row:
+            daily_entries, actual_totals = extract_daily_entries(ws, header_row, actual_columns, source_path, record)
+        else:
+            warnings.append("Missing Actual Amounts section")
 
     estimated = extract_values_section(ws, estimated_marker.row if estimated_marker else None, prefix="estimated")
     variance = extract_values_section(ws, over_under_marker.row if over_under_marker else None, prefix="", variance=True)
@@ -218,7 +231,7 @@ def extract_tracking_sheet(ws: Any, path: Path, root: Path, record: JobRecord) -
         "job_id": record.job_id,
         "tracking_file": source_path,
         "customer": record.customer,
-        "job_name": record.job_name or tracking_job_name(ws, actual_marker.row + 1 if actual_marker else None),
+        "job_name": record.job_name or tracking_job_name(ws, header_row if header_row else actual_marker.row + 1 if actual_marker else None),
         "division": record.division,
         "pipeline_status": record.pipeline_status,
         "actual_first_work_date": min(dates) if dates else None,
@@ -295,12 +308,21 @@ def extract_values_section(ws: Any, marker_row: int | None, *, prefix: str, vari
 
 
 def find_tracking_header(ws: Any, start_row: int, end_row: int) -> tuple[int | None, dict[str, int]]:
-    for row_num in range(start_row, min(end_row, ws.max_row) + 1):
+    max_row = ws.max_row or 0
+    if max_row <= 0:
+        return None, {}
+    first_row = max(1, start_row)
+    last_row = min(end_row, max_row)
+    if last_row < first_row:
+        return None, {}
+    for row_num, row in enumerate(ws.iter_rows(min_row=first_row, max_row=last_row), start=first_row):
         columns: dict[str, int] = {}
-        for cell in ws[row_num]:
+        for cell in row:
             key = tracking_key(cell.value)
             if key:
-                columns[key] = cell.column
+                column = getattr(cell, "column", None)
+                if column is not None:
+                    columns[key] = column
         if {"labor_hours", "travel_hours", "load_hours"}.issubset(columns):
             return row_num, columns
     return None, {}

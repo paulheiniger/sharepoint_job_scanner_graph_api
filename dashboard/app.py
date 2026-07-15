@@ -2644,23 +2644,7 @@ def render_schedule_job_tracking_preview(job_id: object) -> None:
 def is_schedule_candidate_row(row: pd.Series | dict[str, Any]) -> bool:
     if not hasattr(row, "get"):
         return False
-    if truthy_bool(row.get("closed_did_not_get")):
-        return False
-    contract_bucket = job_board_contract_completion_bucket(row)
-    if contract_bucket in {"Completed", "Closed / Did Not Get"}:
-        return False
-    folder_bucket = folder_pipeline_bucket_for_row(row)
-    if folder_bucket in {"Completed Folder", "Closed Lost Folder"}:
-        return False
-    status_text = " ".join(
-        text_value(row.get(column))
-        for column in ["workflow_status", "pipeline_status", "status", "sales_stage", "opportunity_freshness"]
-        if hasattr(row, "get")
-    ).lower()
-    status_normalized = re.sub(r"[^a-z0-9]+", " ", status_text)
-    if re.search(r"\b(completed?|cancelled|canceled|did not get|closed lost|lost)\b", status_normalized):
-        return False
-    return folder_bucket in {"Contracted Folder", "Proposal Pipeline"}
+    return bool(text_value(row.get("job_id")))
 
 
 def load_schedule_candidate_job_board_df(scheduled_job_ids: set[str]) -> pd.DataFrame:
@@ -2703,6 +2687,28 @@ def format_summary_value(value: object, *, kind: str = "text") -> str:
             return fmt_dollar(number)
         return fmt_count(number)
     return text_value(value) or "-"
+
+
+def actionable_schedule_warning_text(value: object) -> str:
+    warning_text = text_value(value)
+    if not warning_text:
+        return ""
+    noise_patterns = [
+        r"^section not recognized:",
+        r"^skipped blank row:",
+        r"^blank row:",
+        r"^empty row:",
+    ]
+    warnings: list[str] = []
+    for part in re.split(r";+\s*", warning_text):
+        item = part.strip()
+        if not item:
+            continue
+        item_lower = item.lower()
+        if any(re.search(pattern, item_lower) for pattern in noise_patterns):
+            continue
+        warnings.append(item)
+    return "; ".join(dict.fromkeys(warnings))
 
 
 def calendar_events_from_schedule(df: pd.DataFrame) -> list[dict[str, object]]:
@@ -11419,6 +11425,7 @@ def schedule_calendar_page() -> None:
             render_schedule_job_tracking_preview(props.get("job_id"))
 
             st.subheader("Proposal Summary")
+            actionable_warnings = actionable_schedule_warning_text(props.get("warnings"))
             summary_fields = [
                 ("Estimated Value", props.get("estimated_value"), "money"),
                 ("Estimated Sq Ft", props.get("estimated_sqft"), "number"),
@@ -11435,8 +11442,9 @@ def schedule_calendar_page() -> None:
                 ("Material Subtotal", props.get("material_subtotal"), "money"),
                 ("Labor Subtotal", props.get("labor_subtotal"), "money"),
                 ("Schedule Notes", props.get("schedule_notes"), "text"),
-                ("Warnings", props.get("warnings"), "text"),
             ]
+            if actionable_warnings:
+                summary_fields.append(("Warnings", actionable_warnings, "text"))
             for label, value, kind in summary_fields:
                 st.write(f"**{label}:** {format_summary_value(value, kind=kind)}")
 
@@ -11514,11 +11522,15 @@ def schedule_calendar_page() -> None:
         scheduled_job_ids = set(schedule_df["job_id"].dropna().astype(str)) if "job_id" in schedule_df.columns else set()
         unscheduled = load_schedule_candidate_job_board_df(scheduled_job_ids)
         st.subheader("Add Job To Schedule")
-        st.caption("Search active proposed or contracted jobs that have not been closed out.")
+        st.caption("Search all job-board jobs not already on the schedule. Status and folder flags are shown for context but do not hide picker results.")
         schedule_job_board_columns = [
             "project",
             "project_category",
             "sales_stage",
+            "pipeline_status",
+            "status",
+            "folder_pipeline_bucket",
+            "closed_did_not_get",
             "sales_value",
             "opportunity_freshness",
             "proposal_modified_at",
@@ -11551,8 +11563,11 @@ def schedule_calendar_page() -> None:
                         "job_name",
                         "job_id",
                         "sales_stage",
+                        "pipeline_status",
+                        "status",
                         "project_category",
                         "folder",
+                        "folder_pipeline_bucket",
                         "folder_link_or_path",
                         "substrate_display",
                         "material_system_display",
@@ -11629,6 +11644,8 @@ def schedule_calendar_page() -> None:
             detail_bits = [
                 f"**Project:** {text_value(selected_row.get('project')) or '-'}",
                 f"**Category:** {text_value(selected_row.get('project_category')) or '-'}",
+                f"**Folder / Status:** {text_value(selected_row.get('folder_pipeline_bucket')) or '-'} / {text_value(selected_row.get('sales_stage')) or text_value(selected_row.get('status')) or '-'}",
+                f"**Closed / Did Not Get Flag:** {'Yes' if truthy_bool(selected_row.get('closed_did_not_get')) else 'No'}",
                 f"**System:** {text_value(selected_row.get('material_system_display')) or '-'}",
                 f"**Warranty:** {text_value(selected_row.get('warranty_display')) or '-'}",
             ]
