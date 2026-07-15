@@ -5184,6 +5184,10 @@ ASK_SPRAYTEC_STRUCTURED_TARGETS = {
     "pricing_catalog",
     "product_catalog",
     "crew_schedule",
+    "job_tracking_summary",
+    "job_tracking_daily_entries",
+    "office_timesheet_entries",
+    "operations_dashboard",
 }
 
 
@@ -5450,6 +5454,79 @@ def plan_ask_spraytec_query(prompt: str, interpreted: dict[str, Any]) -> dict[st
         " weather ",
         " equipment allocation ",
     )
+    tracking_markers = (
+        " job tracking ",
+        " tracking ",
+        " actual ",
+        " actuals ",
+        " actual vs estimate ",
+        " production note ",
+        " production notes ",
+        " daily entry ",
+        " daily entries ",
+        " material usage ",
+        " material used ",
+        " labor hours ",
+        " travel hours ",
+        " foam strokes ",
+        " foam yield ",
+        " primer used ",
+        " membrane ",
+        " progress ",
+        " percent complete ",
+    )
+    timesheet_markers = (
+        " timesheet ",
+        " time sheet ",
+        " touch ",
+        " touched ",
+        " touches ",
+        " project touch ",
+        " project touches ",
+        " worked on ",
+        " work on ",
+        " employee ",
+        " employees ",
+        " office time ",
+        " admin ",
+        " sales call ",
+        " pre-bid ",
+        " job walk ",
+    )
+    operations_markers = (
+        " operations ",
+        " active ",
+        " active job ",
+        " active jobs ",
+        " behind ",
+        " blocked ",
+        " risk ",
+        " risks ",
+        " over budget ",
+        " overrun ",
+        " ready to schedule ",
+        " waiting to schedule ",
+        " job spec ",
+        " job specs ",
+        " starting soon ",
+        " project health ",
+        " health ",
+        " follow up ",
+        " follow-up ",
+    )
+    sales_pipeline_markers = (
+        " proposal ",
+        " proposals ",
+        " submitted ",
+        " contracted ",
+        " stale ",
+        " follow up ",
+        " follow-up ",
+        " negotiation ",
+        " edited ",
+        " estimator ",
+    )
+    prompt_words = set(re.findall(r"[a-z0-9]+", normalized))
 
     if document_type not in (None, "") or _prompt_has_any(normalized, document_markers):
         targets.update({"documents", "document_content"})
@@ -5466,6 +5543,27 @@ def plan_ask_spraytec_query(prompt: str, interpreted: dict[str, Any]) -> dict[st
     if _prompt_has_any(normalized, schedule_markers):
         targets.add("crew_schedule")
         reasons.append("schedule terms")
+    if _prompt_has_any(normalized, tracking_markers):
+        targets.update({"job_tracking_summary", "job_tracking_daily_entries", "operations_dashboard"})
+        reasons.append("job tracking / production terms")
+    if _prompt_has_any(normalized, timesheet_markers):
+        targets.add("office_timesheet_entries")
+        reasons.append("timesheet / job touch terms")
+    if _prompt_has_any(normalized, operations_markers):
+        targets.update({"operations_dashboard", "crew_schedule", "job_tracking_summary"})
+        reasons.append("operations dashboard terms")
+    if _prompt_has_any(normalized, sales_pipeline_markers):
+        targets.update({"jobs", "estimates", "operations_dashboard"})
+        reasons.append("sales pipeline terms")
+    if {"ready", "schedule"}.issubset(prompt_words) or {"waiting", "schedule"}.issubset(prompt_words):
+        targets.update({"operations_dashboard", "crew_schedule", "job_tracking_summary"})
+        reasons.append("schedule readiness terms")
+    if {"starting", "soon"}.issubset(prompt_words) or {"starts", "soon"}.issubset(prompt_words):
+        targets.update({"operations_dashboard", "crew_schedule", "job_tracking_summary"})
+        reasons.append("starting soon terms")
+    if {"production", "activity"}.issubset(prompt_words):
+        targets.update({"job_tracking_summary", "job_tracking_daily_entries", "office_timesheet_entries", "operations_dashboard"})
+        reasons.append("production activity terms")
 
     if document_type not in (None, "", "all"):
         targets.update({"documents", "document_content"})
@@ -5487,7 +5585,13 @@ def plan_ask_spraytec_query(prompt: str, interpreted: dict[str, Any]) -> dict[st
     if targets <= {"jobs", "pricing_catalog", "product_catalog"} and targets & {"pricing_catalog", "product_catalog"}:
         targets.discard("jobs")
 
-    needs_clarification = bool({"documents", "document_content"} & targets) and not search_text and not interpreted.get("is_follow_up")
+    structured_targets = targets & (ASK_SPRAYTEC_STRUCTURED_TARGETS - {"jobs"})
+    needs_clarification = (
+        bool({"documents", "document_content"} & targets)
+        and not search_text
+        and not interpreted.get("is_follow_up")
+        and not structured_targets
+    )
     mode = "job_lookup"
     if attribute_query.get("enabled"):
         mode = "attribute_job_search"
@@ -5495,13 +5599,39 @@ def plan_ask_spraytec_query(prompt: str, interpreted: dict[str, Any]) -> dict[st
         mode = "mixed_answer"
     elif {"documents", "document_content"} & targets:
         mode = "document_lookup"
-    elif targets & {"estimates", "estimate_line_items", "estimate_template_rows", "pricing_catalog", "product_catalog", "crew_schedule"}:
+    elif targets & {
+        "estimates",
+        "estimate_line_items",
+        "estimate_template_rows",
+        "pricing_catalog",
+        "product_catalog",
+        "crew_schedule",
+        "job_tracking_summary",
+        "job_tracking_daily_entries",
+        "office_timesheet_entries",
+        "operations_dashboard",
+    }:
         mode = "structured_answer"
 
     return {
         "mode": mode,
         "targets": sorted(targets),
-        "requires_job_context": bool(targets & {"jobs", "documents", "document_content", "estimates", "estimate_line_items", "estimate_template_rows", "crew_schedule"}),
+        "requires_job_context": bool(
+            targets
+            & {
+                "jobs",
+                "documents",
+                "document_content",
+                "estimates",
+                "estimate_line_items",
+                "estimate_template_rows",
+                "crew_schedule",
+                "job_tracking_summary",
+                "job_tracking_daily_entries",
+                "office_timesheet_entries",
+                "operations_dashboard",
+            }
+        ),
         "needs_clarification": needs_clarification,
         "clarification": "Which job, customer, project, product, or file should I search for?" if needs_clarification else "",
         "use_llm_answer": mode in {"mixed_answer", "structured_answer"} or is_data_answer_request(prompt),
@@ -6405,6 +6535,174 @@ def _json_ready_record(row: dict[str, Any]) -> dict[str, Any]:
 
 def _query_rows(connection: Any, sql: Any, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     return [_json_ready_record(dict(row)) for row in connection.execute(sql, params or {}).mappings().all()]
+
+
+ASK_QUERY_STOP_WORDS = {
+    "a",
+    "about",
+    "active",
+    "actual",
+    "actuals",
+    "and",
+    "are",
+    "at",
+    "behind",
+    "did",
+    "do",
+    "does",
+    "for",
+    "have",
+    "health",
+    "how",
+    "is",
+    "job",
+    "jobs",
+    "last",
+    "me",
+    "note",
+    "notes",
+    "of",
+    "on",
+    "or",
+    "over",
+    "project",
+    "projects",
+    "ready",
+    "risk",
+    "schedule",
+    "show",
+    "status",
+    "summary",
+    "tell",
+    "the",
+    "this",
+    "time",
+    "timesheet",
+    "to",
+    "touch",
+    "touched",
+    "touches",
+    "tracking",
+    "was",
+    "we",
+    "week",
+    "what",
+    "when",
+    "where",
+    "which",
+    "who",
+    "with",
+    "worked",
+}
+
+
+def _ask_relevant_tokens(query: str) -> list[str]:
+    return [
+        token_value
+        for token_value in tokenize_search_text(query)
+        if token_value.lower() not in ASK_QUERY_STOP_WORDS and len(token_value) >= 2
+    ]
+
+
+def _ask_date_window_from_query(query: str) -> tuple[date | None, date | None]:
+    normalized = " " + " ".join(str(query or "").lower().split()) + " "
+    today = date.today()
+    if " today " in normalized:
+        return today, today
+    if " yesterday " in normalized:
+        yesterday = today - timedelta(days=1)
+        return yesterday, yesterday
+    if " last week " in normalized:
+        this_week_start = today - timedelta(days=today.weekday())
+        start = this_week_start - timedelta(days=7)
+        return start, start + timedelta(days=6)
+    if " this week " in normalized or " week " in normalized:
+        return today - timedelta(days=today.weekday()), today
+    if " last 30 " in normalized or " past 30 " in normalized or " past month " in normalized:
+        return today - timedelta(days=30), today
+    if " this month " in normalized:
+        return today.replace(day=1), today
+    return None, None
+
+
+def _ask_add_job_filter(where: list[str], params: dict[str, Any], alias: str, columns: set[str], job_ids: list[str]) -> Any:
+    if job_ids and "job_id" in columns:
+        where.append(f"{alias}.job_id IN :job_ids")
+        params["job_ids"] = job_ids
+        return bindparam("job_ids", expanding=True)
+    return None
+
+
+def _ask_add_token_filter(
+    where: list[str],
+    params: dict[str, Any],
+    *,
+    alias: str,
+    columns: set[str],
+    fields: list[str],
+    query: str,
+    prefix: str,
+    require_all: bool = False,
+) -> None:
+    tokens = _ask_relevant_tokens(query)
+    present_fields = [field for field in fields if field in columns]
+    if not tokens or not present_fields:
+        return
+    token_clauses: list[str] = []
+    for index, token_value in enumerate(tokens[:5]):
+        key = f"{prefix}_token_{index}"
+        params[key] = f"%{token_value.lower()}%"
+        field_clause = " OR ".join(f"LOWER(COALESCE({alias}.{field}::text, '')) LIKE :{key}" for field in present_fields)
+        token_clauses.append(f"({field_clause})")
+    if token_clauses:
+        joiner = " AND " if require_all else " OR "
+        where.append("(" + joiner.join(token_clauses) + ")")
+
+
+def _ask_add_multi_source_token_filter(
+    where: list[str],
+    params: dict[str, Any],
+    *,
+    sources: list[tuple[str, set[str], list[str]]],
+    query: str,
+    prefix: str,
+    require_all: bool = False,
+) -> None:
+    tokens = _ask_relevant_tokens(query)
+    field_refs: list[str] = []
+    for alias, columns, fields in sources:
+        field_refs.extend(f"{alias}.{field}" for field in fields if field in columns)
+    if not tokens or not field_refs:
+        return
+    token_clauses: list[str] = []
+    for index, token_value in enumerate(tokens[:5]):
+        key = f"{prefix}_token_{index}"
+        params[key] = f"%{token_value.lower()}%"
+        token_clauses.append(
+            "(" + " OR ".join(f"LOWER(COALESCE({field_ref}::text, '')) LIKE :{key}" for field_ref in field_refs) + ")"
+        )
+    if token_clauses:
+        joiner = " AND " if require_all else " OR "
+        where.append("(" + joiner.join(token_clauses) + ")")
+
+
+def _ask_add_date_window(
+    where: list[str],
+    params: dict[str, Any],
+    *,
+    alias: str,
+    columns: set[str],
+    column: str,
+    query: str,
+) -> None:
+    if column not in columns:
+        return
+    start, end = _ask_date_window_from_query(query)
+    if start is None or end is None:
+        return
+    where.append(f"{alias}.{column} BETWEEN :{column}_start AND :{column}_end")
+    params[f"{column}_start"] = start
+    params[f"{column}_end"] = end
 
 
 def _attribute_text_expr(alias: str, columns: set[str], fields: list[str]) -> str:
@@ -7398,6 +7696,296 @@ def build_structured_evidence_pack(
     elif wants("crew_schedule"):
         evidence["skipped_sources"].append("crew_schedule table unavailable")
 
+    if wants("job_tracking_summary"):
+        tracking_columns = _connection_table_columns(connection, "job_tracking_summary")
+        job_context_columns = _connection_table_columns(connection, "dashboard_jobs")
+        if tracking_columns:
+            selected = [
+                f"{sql_column('t', tracking_columns, 'job_id')} AS job_id",
+                f"{sql_column('j', job_context_columns, 'customer')} AS customer",
+                f"{sql_column('j', job_context_columns, 'job_name')} AS job_name",
+                f"{sql_column('j', job_context_columns, 'division')} AS division",
+                f"{sql_column('t', tracking_columns, 'actual_first_work_date')} AS first_work_date",
+                f"{sql_column('t', tracking_columns, 'actual_last_work_date')} AS last_work_date",
+                f"{sql_column('t', tracking_columns, 'actual_work_day_count')} AS actual_work_day_count",
+                f"{sql_column('t', tracking_columns, 'actual_labor_hours')} AS actual_labor_hours",
+                f"{sql_column('t', tracking_columns, 'estimated_labor_hours')} AS estimated_labor_hours",
+                f"{sql_column('t', tracking_columns, 'labor_hours_variance')} AS labor_hours_variance",
+                f"{sql_column('t', tracking_columns, 'actual_travel_hours')} AS actual_travel_hours",
+                f"{sql_column('t', tracking_columns, 'actual_load_hours')} AS actual_load_hours",
+                f"{sql_column('t', tracking_columns, 'actual_mileage')} AS actual_mileage",
+                f"{sql_column('t', tracking_columns, 'estimated_mileage')} AS estimated_mileage",
+                f"{sql_column('t', tracking_columns, 'actual_foam_sqft')} AS actual_foam_sqft",
+                f"{sql_column('t', tracking_columns, 'estimated_foam_sqft')} AS estimated_foam_sqft",
+                f"{sql_column('t', tracking_columns, 'foam_sqft_variance')} AS foam_sqft_variance",
+                f"{sql_column('t', tracking_columns, 'actual_foam_yield')} AS actual_foam_yield",
+                f"{sql_column('t', tracking_columns, 'estimated_foam_yield')} AS estimated_foam_yield",
+                f"{sql_column('t', tracking_columns, 'actual_granules')} AS actual_granules",
+                f"{sql_column('t', tracking_columns, 'estimated_granules')} AS estimated_granules",
+                f"{sql_column('t', tracking_columns, 'granules_variance')} AS granules_variance",
+                f"{sql_column('t', tracking_columns, 'actual_primer')} AS actual_primer",
+                f"{sql_column('t', tracking_columns, 'estimated_primer')} AS estimated_primer",
+                f"{sql_column('t', tracking_columns, 'primer_variance')} AS primer_variance",
+                f"{sql_column('t', tracking_columns, 'actual_sf')} AS actual_sf",
+                f"{sql_column('t', tracking_columns, 'estimated_sf')} AS estimated_sf",
+                f"{sql_column('t', tracking_columns, 'sf_variance')} AS sf_variance",
+                f"{sql_column('t', tracking_columns, 'tracking_notes')} AS tracking_notes",
+                f"{sql_column('t', tracking_columns, 'tracking_file')} AS tracking_file",
+            ]
+            where: list[str] = []
+            params: dict[str, Any] = {"limit": max_rows}
+            bind = _ask_add_job_filter(where, params, "t", tracking_columns, clean_job_ids)
+            if not clean_job_ids:
+                _ask_add_multi_source_token_filter(
+                    where,
+                    params,
+                    sources=[
+                        ("t", tracking_columns, ["tracking_file", "tracking_notes", "source_file", "source_path"]),
+                        ("j", job_context_columns, ["customer", "job_name", "folder_name", "folder_path", "division", "job_type"]),
+                    ],
+                    query=query,
+                    prefix="tracking",
+                    require_all=True,
+                )
+            _ask_add_date_window(where, params, alias="t", columns=tracking_columns, column="actual_last_work_date", query=query)
+            order_expr = "t.actual_last_work_date DESC NULLS LAST" if "actual_last_work_date" in tracking_columns else "t.updated_at DESC NULLS LAST"
+            statement = text(
+                f"""
+                SELECT {', '.join(selected)}
+                FROM job_tracking_summary t
+                LEFT JOIN dashboard_jobs j ON j.job_id = t.job_id
+                {('WHERE ' + ' AND '.join(where)) if where else ''}
+                ORDER BY {order_expr}
+                LIMIT :limit
+                """
+            )
+            if bind is not None:
+                statement = statement.bindparams(bind)
+            evidence["facts"]["job_tracking_summary"] = _query_rows(connection, statement, params)
+        else:
+            evidence["skipped_sources"].append("job_tracking_summary table unavailable")
+
+    if wants("job_tracking_daily_entries"):
+        daily_columns = _connection_table_columns(connection, "job_tracking_daily_entries")
+        job_context_columns = _connection_table_columns(connection, "dashboard_jobs")
+        if daily_columns:
+            selected = [
+                f"{sql_column('d', daily_columns, 'tracking_entry_id')} AS tracking_entry_id",
+                f"{sql_column('d', daily_columns, 'job_id')} AS job_id",
+                f"{sql_column('j', job_context_columns, 'customer')} AS customer",
+                f"{sql_column('j', job_context_columns, 'job_name')} AS job_name",
+                f"{sql_column('j', job_context_columns, 'division')} AS division",
+                f"{sql_column('d', daily_columns, 'work_date')} AS work_date",
+                f"{sql_column('d', daily_columns, 'crew')} AS crew",
+                f"{sql_column('d', daily_columns, 'labor_hours')} AS labor_hours",
+                f"{sql_column('d', daily_columns, 'travel_hours')} AS travel_hours",
+                f"{sql_column('d', daily_columns, 'load_hours')} AS load_hours",
+                f"{sql_column('d', daily_columns, 'mileage')} AS mileage",
+                f"{sql_column('d', daily_columns, 'foam_strokes')} AS foam_strokes",
+                f"{sql_column('d', daily_columns, 'foam_sqft')} AS foam_sqft",
+                f"{sql_column('d', daily_columns, 'foam_yield')} AS foam_yield",
+                f"{sql_column('d', daily_columns, 'base_coat_1')} AS base_coat_1",
+                f"{sql_column('d', daily_columns, 'base_coat_2')} AS base_coat_2",
+                f"{sql_column('d', daily_columns, 'granules')} AS granules",
+                f"{sql_column('d', daily_columns, 'primer')} AS primer",
+                f"{sql_column('d', daily_columns, 'sf')} AS sf",
+                f"{sql_column('d', daily_columns, 'notes')} AS notes",
+                f"{sql_column('d', daily_columns, 'tracking_file')} AS tracking_file",
+            ]
+            where = []
+            params = {"limit": max_rows}
+            bind = _ask_add_job_filter(where, params, "d", daily_columns, clean_job_ids)
+            if not clean_job_ids:
+                _ask_add_multi_source_token_filter(
+                    where,
+                    params,
+                    sources=[
+                        ("d", daily_columns, ["tracking_file", "crew", "notes", "source_sheet"]),
+                        ("j", job_context_columns, ["customer", "job_name", "folder_name", "folder_path", "division", "job_type"]),
+                    ],
+                    query=query,
+                    prefix="tracking_daily",
+                    require_all=True,
+                )
+            _ask_add_date_window(where, params, alias="d", columns=daily_columns, column="work_date", query=query)
+            statement = text(
+                f"""
+                SELECT {', '.join(selected)}
+                FROM job_tracking_daily_entries d
+                LEFT JOIN dashboard_jobs j ON j.job_id = d.job_id
+                {('WHERE ' + ' AND '.join(where)) if where else ''}
+                ORDER BY d.work_date DESC NULLS LAST, d.updated_at DESC NULLS LAST
+                LIMIT :limit
+                """
+            )
+            if bind is not None:
+                statement = statement.bindparams(bind)
+            evidence["facts"]["job_tracking_daily_entries"] = _query_rows(connection, statement, params)
+        else:
+            evidence["skipped_sources"].append("job_tracking_daily_entries table unavailable")
+
+    if wants("operations_dashboard"):
+        job_columns = _connection_table_columns(connection, "dashboard_jobs")
+        schedule_columns = _connection_table_columns(connection, "crew_schedule")
+        tracking_columns = _connection_table_columns(connection, "job_tracking_summary")
+        if job_columns:
+            value_expr = sql_coalesce(
+                [
+                    sql_column("j", job_columns, "estimated_value"),
+                    sql_column("j", job_columns, "final_price"),
+                    sql_column("j", job_columns, "total_job_cost"),
+                ],
+                default="0",
+            )
+            selected = [
+                f"{sql_column('j', job_columns, 'job_id')} AS job_id",
+                f"{sql_column('j', job_columns, 'job_name')} AS project",
+                f"{sql_column('j', job_columns, 'customer')} AS customer",
+                f"{sql_column('j', job_columns, 'division')} AS division",
+                f"{sql_column('j', job_columns, 'job_type')} AS job_type",
+                f"{value_expr} AS operations_value",
+                f"{sql_column('j', job_columns, 'pipeline_status')} AS pipeline_status",
+                f"{sql_column('j', job_columns, 'status')} AS status",
+                f"{sql_column('j', job_columns, 'has_job_spec')} AS has_job_spec",
+                f"{sql_column('j', job_columns, 'missing_job_spec')} AS missing_job_spec",
+                f"{sql_column('j', job_columns, 'folder_url')} AS folder_url",
+                f"{sql_column('j', job_columns, 'folder_path')} AS folder_path",
+                f"{sql_column('cs', schedule_columns, 'assigned_crew_leader')} AS assigned_crew_leader",
+                f"{sql_column('cs', schedule_columns, 'estimated_start_date')} AS estimated_start_date",
+                f"{sql_column('cs', schedule_columns, 'estimated_end_date')} AS estimated_end_date",
+                f"{sql_column('cs', schedule_columns, 'estimated_duration_days')} AS estimated_duration_days",
+                f"{sql_column('cs', schedule_columns, 'schedule_status')} AS schedule_status",
+                f"{sql_column('cs', schedule_columns, 'ready_to_schedule')} AS ready_to_schedule",
+                f"{sql_column('cs', schedule_columns, 'blocking_issue')} AS blocking_issue",
+                f"{sql_column('cs', schedule_columns, 'schedule_notes')} AS schedule_notes",
+                f"{sql_column('t', tracking_columns, 'actual_last_work_date')} AS last_work_date",
+                f"{sql_column('t', tracking_columns, 'actual_labor_hours')} AS actual_labor_hours",
+                f"{sql_column('t', tracking_columns, 'estimated_labor_hours')} AS estimated_labor_hours",
+                f"{sql_column('t', tracking_columns, 'labor_hours_variance')} AS labor_hours_variance",
+                f"{sql_column('t', tracking_columns, 'actual_foam_sqft')} AS actual_foam_sqft",
+                f"{sql_column('t', tracking_columns, 'estimated_foam_sqft')} AS estimated_foam_sqft",
+                f"{sql_column('t', tracking_columns, 'foam_sqft_variance')} AS foam_sqft_variance",
+                f"{sql_column('t', tracking_columns, 'tracking_notes')} AS latest_tracking_notes",
+            ]
+            where = []
+            params = {"limit": max_rows}
+            bind = _ask_add_job_filter(where, params, "j", job_columns, clean_job_ids)
+            if not clean_job_ids:
+                _ask_add_multi_source_token_filter(
+                    where,
+                    params,
+                    sources=[
+                        ("j", job_columns, ["customer", "job_name", "folder_name", "folder_path", "division", "job_type", "status", "pipeline_status"]),
+                        ("cs", schedule_columns, ["assigned_crew_leader", "schedule_status", "blocking_issue", "schedule_notes"]),
+                        ("t", tracking_columns, ["tracking_file", "tracking_notes"]),
+                    ],
+                    query=query,
+                    prefix="operations",
+                    require_all=True,
+                )
+            normalized_query = " " + " ".join(str(query or "").lower().split()) + " "
+            terminal_filter = []
+            if "status" in job_columns:
+                terminal_filter.append("LOWER(COALESCE(j.status, '')) NOT LIKE '%completed%'")
+                terminal_filter.append("LOWER(COALESCE(j.status, '')) NOT LIKE '%did not get%'")
+                terminal_filter.append("LOWER(COALESCE(j.status, '')) NOT LIKE '%cancel%'")
+                terminal_filter.append("LOWER(COALESCE(j.status, '')) NOT LIKE '%lost%'")
+            if terminal_filter and any(token in normalized_query for token in [" active ", " ready ", " schedule ", " waiting ", " risk ", " behind "]):
+                where.extend(terminal_filter)
+            if "ready to schedule" in normalized_query or "waiting to schedule" in normalized_query:
+                if "estimated_start_date" in schedule_columns:
+                    where.append("cs.estimated_start_date IS NULL")
+                if "has_job_spec" in job_columns:
+                    where.append("COALESCE(j.has_job_spec, false) IS TRUE")
+            if any(token in normalized_query for token in [" behind ", " risk ", " risks ", " overrun ", " over budget "]):
+                risk_clauses = []
+                if "estimated_end_date" in schedule_columns:
+                    risk_clauses.append("cs.estimated_end_date < CURRENT_DATE")
+                if "labor_hours_variance" in tracking_columns:
+                    risk_clauses.append("t.labor_hours_variance > 0")
+                if "foam_sqft_variance" in tracking_columns:
+                    risk_clauses.append("t.foam_sqft_variance > 0")
+                if "blocking_issue" in schedule_columns:
+                    risk_clauses.append("NULLIF(cs.blocking_issue, '') IS NOT NULL")
+                if risk_clauses:
+                    where.append("(" + " OR ".join(risk_clauses) + ")")
+            statement = text(
+                f"""
+                SELECT {', '.join(selected)}
+                FROM dashboard_jobs j
+                LEFT JOIN crew_schedule cs ON cs.job_id = j.job_id
+                LEFT JOIN job_tracking_summary t ON t.job_id = j.job_id
+                {('WHERE ' + ' AND '.join(where)) if where else ''}
+                ORDER BY {value_expr} DESC NULLS LAST, cs.estimated_start_date NULLS LAST, j.updated_at DESC NULLS LAST
+                LIMIT :limit
+                """
+            )
+            if bind is not None:
+                statement = statement.bindparams(bind)
+            evidence["facts"]["operations_dashboard"] = _query_rows(connection, statement, params)
+        else:
+            evidence["skipped_sources"].append("dashboard_jobs table unavailable for operations evidence")
+
+    if wants("office_timesheet_entries"):
+        timesheet_columns = _connection_table_columns(connection, "office_timesheet_entries")
+        if timesheet_columns:
+            selected = _select_columns(
+                timesheet_columns,
+                [
+                    "entry_id",
+                    "employee",
+                    "work_date",
+                    "project_name",
+                    "code",
+                    "duration_hours",
+                    "row_type",
+                    "notes",
+                    "source_file",
+                    "warnings",
+                ],
+            )
+            where = []
+            params = {"limit": max_rows}
+            timesheet_query = query
+            if clean_job_ids:
+                job_context = _fetch_ask_job_rows(connection, clean_job_ids)
+                timesheet_query = " ".join(
+                    [
+                        query,
+                        *[
+                            " ".join(
+                                text_value(row.get(field))
+                                for field in ["customer", "job_name", "site_address", "city", "state"]
+                            )
+                            for row in job_context.values()
+                        ],
+                    ]
+                )
+            _ask_add_token_filter(
+                where,
+                params,
+                alias="t",
+                columns=timesheet_columns,
+                fields=["employee", "project_name", "code", "notes", "source_file"],
+                query=timesheet_query,
+                prefix="timesheet",
+                require_all=True,
+            )
+            _ask_add_date_window(where, params, alias="t", columns=timesheet_columns, column="work_date", query=query)
+            if selected:
+                statement = text(
+                    f"""
+                    SELECT {', '.join(f't.{column}' for column in selected)}
+                    FROM office_timesheet_entries t
+                    {('WHERE ' + ' AND '.join(where)) if where else ''}
+                    ORDER BY t.work_date DESC NULLS LAST, t.updated_at DESC NULLS LAST
+                    LIMIT :limit
+                    """
+                )
+                evidence["facts"]["office_timesheet_entries"] = _query_rows(connection, statement, params)
+        else:
+            evidence["skipped_sources"].append("office_timesheet_entries table unavailable")
+
     evidence["facts"] = {key: value for key, value in evidence["facts"].items() if value}
     return evidence
 
@@ -7433,6 +8021,25 @@ def fallback_document_answer(prompt: str, chunks: list[dict[str, Any]], structur
     return "\n".join(lines)
 
 
+def ask_spraytec_recent_chat_context(limit: int = 6) -> list[dict[str, str]]:
+    try:
+        messages = st.session_state.get("ask_spraytec_messages", [])
+    except Exception:
+        return []
+    if not isinstance(messages, list):
+        return []
+    context: list[dict[str, str]] = []
+    for message in messages[-limit:]:
+        if not isinstance(message, dict):
+            continue
+        role = text_value(message.get("role"))
+        content = text_value(message.get("content"))
+        if role not in {"user", "assistant"} or not content:
+            continue
+        context.append({"role": role, "content": content[:1200]})
+    return context
+
+
 def llm_grounded_document_answer(prompt: str, chunks: list[dict[str, Any]], structured_evidence: dict[str, Any] | None = None) -> str:
     structured_evidence = structured_evidence or {}
     if not chunks and not structured_evidence.get("facts"):
@@ -7459,19 +8066,24 @@ def llm_grounded_document_answer(prompt: str, chunks: list[dict[str, Any]], stru
     system = (
         "You are Ask Spray-Tec, a grounded assistant for Spray-Tec operational data. "
         "Answer only from the provided extracted document sources and structured database evidence. Cite document claims with source ids like [S1]. "
-        "For structured database facts, name the source table such as jobs, estimates, estimate_template_rows, pricing_catalog, or product_catalog. "
+        "For structured database facts, name the source table such as jobs, estimates, estimate_template_rows, pricing_catalog, product_catalog, "
+        "crew_schedule, job_tracking_summary, job_tracking_daily_entries, office_timesheet_entries, or operations_dashboard. "
         "If the sources do not answer the question, say what is missing. Do not invent facts, totals, dates, warranty terms, or scope."
     )
     user_payload = {
         "question": prompt,
+        "recent_conversation_context": ask_spraytec_recent_chat_context(),
         "sources": sources,
         "structured_evidence": structured_evidence,
         "instructions": [
-            "Start with a concise answer.",
-            "Use bullets when useful.",
-            "Include a Sources section listing the source ids used.",
-            "Include a Data checked line naming structured tables used when relevant.",
-            "Mention uncertainty or missing documents when the evidence is weak.",
+            "Start with a direct answer in 1-3 sentences.",
+            "When the question asks for jobs, work, risk, schedule, or follow-up, include a compact markdown table with the most important rows and columns.",
+            "Use owner-friendly headings: Answer, Key details, What I checked, Gaps or uncertainty.",
+            "Keep explanations concise and operational; do not dump raw JSON.",
+            "For document claims, cite source ids like [S1].",
+            "For structured facts, name tables in What I checked.",
+            "If evidence is weak or missing, say exactly what data is missing.",
+            "Suggest one useful follow-up question only when it naturally helps the user continue.",
         ],
     }
     try:
@@ -7510,15 +8122,57 @@ def concise_job_candidates_response(results: list[dict[str, Any]], interpreted: 
     return "\n".join(chunks).strip()
 
 
+ASK_SPRAYTEC_SAMPLE_QUESTIONS: dict[str, list[str]] = {
+    "Owner": [
+        "Which active jobs are behind or at risk?",
+        "What jobs are ready to schedule?",
+        "Which proposals need follow-up?",
+        "Show me stale proposals over 90 days old.",
+    ],
+    "Operations": [
+        "What jobs are starting soon?",
+        "Show me job tracking notes for Pegasus 39 Pearce.",
+        "Which jobs have actual labor over estimate?",
+        "What projects had production activity this week?",
+    ],
+    "Sales": [
+        "Who edited the latest proposals?",
+        "Find roofing jobs that required coating and foam.",
+        "Show me proposals submitted but not contracted.",
+        "What did Carlos touch this week?",
+    ],
+    "Documents": [
+        "Find the Living Waters Church proposal.",
+        "Show me the job spec for UK WT Young.",
+        "Find documents for Canadian Solar.",
+        "Generate field notes from proposal scope for Mudd's Furniture Roof B.",
+    ],
+}
+
+
+def render_ask_spraytec_sample_questions() -> str:
+    selected_prompt = ""
+    with st.expander("Try asking", expanded=True):
+        st.caption("Examples use jobs, schedule, job tracking, timesheets, estimates, proposals, and extracted document text when available.")
+        for category, questions in ASK_SPRAYTEC_SAMPLE_QUESTIONS.items():
+            st.markdown(f"**{category}**")
+            columns = st.columns(2)
+            for index, question in enumerate(questions):
+                with columns[index % 2]:
+                    if st.button(question, key=f"ask_spraytec_sample_{category}_{index}", width="stretch"):
+                        selected_prompt = question
+    return selected_prompt
+
+
 def ask_spraytec_page() -> None:
     st.title("Ask Spray-Tec")
-    st.caption("Conversational job and document finder. This searches structured job data, stored document links, and any extracted document text.")
+    st.caption("Ask questions across jobs, estimates, proposals, schedules, job tracking, timesheets, pricing, products, and extracted document text.")
 
     if "ask_spraytec_messages" not in st.session_state:
         st.session_state["ask_spraytec_messages"] = [
             {
                 "role": "assistant",
-                "content": "Ask me to find a job or document, like “Find the Mudd furniture job” or “Show me the Canadian Solar estimate.”",
+                "content": "Ask me about jobs, schedules, tracking notes, proposals, estimates, timesheets, or documents.",
             }
         ]
     selected_job = st.session_state.get("ask_spraytec_selected_job")
@@ -7560,11 +8214,15 @@ def ask_spraytec_page() -> None:
             else:
                 st.caption("No extracted document content is indexed for this job yet.")
 
+    sample_prompt = render_ask_spraytec_sample_questions()
+
     for message in st.session_state["ask_spraytec_messages"]:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    prompt = st.chat_input("Find a job or document")
+    prompt = st.chat_input("Ask about jobs, schedules, estimates, proposals, tracking notes, timesheets, or documents")
+    if not prompt:
+        prompt = sample_prompt
     if not prompt:
         return
 

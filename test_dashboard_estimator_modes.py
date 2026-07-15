@@ -820,6 +820,46 @@ def test_ask_spraytec_query_planner_routes_schedule_questions() -> None:
     assert plan["requires_job_context"] is True
 
 
+def test_ask_spraytec_query_planner_routes_owner_operations_questions() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    prompt = "Which active jobs are behind or at risk?"
+    interpreted = app.interpret_search_request(prompt)
+    plan = app.plan_ask_spraytec_query(prompt, interpreted)
+
+    assert plan["mode"] == "structured_answer"
+    assert "operations_dashboard" in plan["targets"]
+    assert "job_tracking_summary" in plan["targets"]
+    assert "crew_schedule" in plan["targets"]
+    assert plan["needs_clarification"] is False
+    assert plan["use_llm_answer"] is True
+
+
+def test_ask_spraytec_query_planner_routes_tracking_and_timesheet_questions() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    tracking_prompt = "Show me job tracking notes for Pegasus 39 Pearce."
+    tracking_plan = app.plan_ask_spraytec_query(
+        tracking_prompt,
+        app.interpret_search_request(tracking_prompt),
+    )
+
+    assert "job_tracking_summary" in tracking_plan["targets"]
+    assert "job_tracking_daily_entries" in tracking_plan["targets"]
+    assert "operations_dashboard" in tracking_plan["targets"]
+    assert tracking_plan["needs_clarification"] is False
+
+    timesheet_prompt = "What did Carlos touch this week?"
+    timesheet_plan = app.plan_ask_spraytec_query(
+        timesheet_prompt,
+        app.interpret_search_request(timesheet_prompt),
+    )
+
+    assert timesheet_plan["mode"] == "structured_answer"
+    assert "office_timesheet_entries" in timesheet_plan["targets"]
+    assert timesheet_plan["needs_clarification"] is False
+
+
 def test_ask_spraytec_query_planner_routes_attribute_job_search() -> None:
     app = importlib.import_module("dashboard.app")
 
