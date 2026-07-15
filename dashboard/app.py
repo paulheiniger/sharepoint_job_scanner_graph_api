@@ -4920,6 +4920,137 @@ def render_sidebar_brand() -> None:
     st.sidebar.caption("Operations Dashboard")
 
 
+def render_global_theme() -> None:
+    st.markdown(
+        """
+        <style>
+        :root {
+            --spraytec-paper: #fdfdf8;
+            --spraytec-panel: #ecebe3;
+            --spraytec-panel-strong: #e4e4e0;
+            --spraytec-ink: #3d3a2a;
+            --spraytec-muted: #6f6a58;
+            --spraytec-border: #d3d2ca;
+            --spraytec-red: #ef2b2a;
+            --spraytec-red-dark: #b92320;
+            --spraytec-clay: #cb785c;
+        }
+
+        html, body, [data-testid="stAppViewContainer"] {
+            background: var(--spraytec-paper);
+            color: var(--spraytec-ink);
+            font-family: "SpaceGrotesk", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        }
+
+        [data-testid="stHeader"] {
+            background: rgba(253, 253, 248, 0.9);
+            border-bottom: 1px solid rgba(211, 210, 202, 0.72);
+            backdrop-filter: blur(8px);
+        }
+
+        [data-testid="stSidebar"] {
+            background: linear-gradient(180deg, #f0f0ec 0%, #ecebe3 100%);
+            border-right: 1px solid var(--spraytec-border);
+        }
+
+        [data-testid="stSidebar"] [data-testid="stImage"] img {
+            border-radius: 6px;
+        }
+
+        [data-testid="stSidebar"] .stRadio > div {
+            gap: 0.2rem;
+        }
+
+        [data-testid="stSidebar"] label {
+            color: var(--spraytec-ink);
+        }
+
+        h1, h2, h3 {
+            color: var(--spraytec-ink);
+            font-family: "SpaceGrotesk", Inter, ui-sans-serif, system-ui, sans-serif;
+            font-weight: 600;
+            letter-spacing: 0;
+        }
+
+        h1 {
+            padding-bottom: 0.25rem;
+        }
+
+        p, li, .stCaptionContainer, [data-testid="stMarkdownContainer"] {
+            color: var(--spraytec-ink);
+        }
+
+        code, pre, kbd, [data-testid="stCodeBlock"],
+        div[data-testid="stMetricValue"],
+        div[data-testid="stMetricDelta"] {
+            font-family: "SpaceMono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        }
+
+        div[data-testid="stMetric"] {
+            background: rgba(255, 255, 251, 0.76);
+            border: 1px solid var(--spraytec-border);
+            border-radius: 8px;
+            padding: 0.85rem 0.95rem;
+            box-shadow: 0 1px 2px rgba(31, 27, 22, 0.04);
+        }
+
+        button[kind="primary"],
+        div.stButton > button:first-child,
+        div.stDownloadButton > button:first-child,
+        [data-testid="stFormSubmitButton"] button {
+            border-radius: 8px;
+            border: 1px solid var(--spraytec-border);
+            box-shadow: none;
+        }
+
+        button[kind="primary"] {
+            background: var(--spraytec-clay);
+            border-color: var(--spraytec-clay);
+            color: #ffffff;
+        }
+
+        div.stButton > button:first-child:hover,
+        div.stDownloadButton > button:first-child:hover,
+        [data-testid="stFormSubmitButton"] button:hover {
+            border-color: var(--spraytec-clay);
+            color: var(--spraytec-red-dark);
+        }
+
+        [data-testid="stTabs"] button {
+            border-radius: 8px 8px 0 0;
+        }
+
+        [data-testid="stTabs"] [aria-selected="true"] {
+            color: var(--spraytec-clay);
+            border-bottom-color: var(--spraytec-clay);
+        }
+
+        [data-testid="stExpander"] {
+            background: rgba(255, 255, 251, 0.62);
+            border: 1px solid var(--spraytec-border);
+            border-radius: 8px;
+        }
+
+        [data-testid="stDataFrame"],
+        [data-testid="stDataEditor"] {
+            border: 1px solid var(--spraytec-border);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .stAlert {
+            border-radius: 8px;
+        }
+
+        input, textarea, [data-baseweb="select"] > div {
+            border-radius: 8px;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 @st.cache_data(show_spinner=False)
 def image_data_uri(path: str) -> str:
     image_path = Path(path)
@@ -20313,6 +20444,7 @@ def main() -> None:
             page_options,
         )
 
+    render_global_theme()
     render_page_watermark()
 
     if database_startup_error and page not in {"Estimating Assistant", "Admin / Health"}:
