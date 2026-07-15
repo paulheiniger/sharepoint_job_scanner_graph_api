@@ -13,7 +13,7 @@ import pandas as pd
 from sqlalchemy import bindparam, create_engine, inspect, text
 from sqlalchemy.engine import Connection, Engine
 
-PARSER_VERSION = "document-content-template-v3"
+PARSER_VERSION = "document-content-template-v4"
 TEMPLATE_TYPE_ROOFING = "roofing"
 TEMPLATE_TYPE_INSULATION = "insulation"
 TEMPLATE_TYPE_FLOORING = "flooring"
@@ -551,6 +551,55 @@ def numeric_at(cell_values: dict[str, Any], row_number: int, column: str) -> flo
     return to_float(value_at(cell_values, row_number, column))
 
 
+def bounded_numeric_at(
+    cell_values: dict[str, Any],
+    row_number: int,
+    column: str,
+    *,
+    min_value: float | None = None,
+    max_value: float | None = None,
+) -> float | None:
+    value = numeric_at(cell_values, row_number, column)
+    if value is None:
+        return None
+    if min_value is not None and value < min_value:
+        return None
+    if max_value is not None and value > max_value:
+        return None
+    return value
+
+
+def _drop_implausible_number(
+    row: dict[str, Any],
+    field: str,
+    *,
+    min_value: float | None = None,
+    max_value: float | None = None,
+) -> None:
+    value = to_float(row.get(field))
+    if value is None:
+        return
+    if (min_value is not None and value < min_value) or (max_value is not None and value > max_value):
+        row[field] = None
+        row["needs_review"] = True
+        row["parsed_confidence"] = min(float(row.get("parsed_confidence") or 0.55), 0.65)
+
+
+def _sanitize_estimator_template_row_numbers(row: dict[str, Any]) -> None:
+    bucket = normalize_label_text(row.get("template_bucket"))
+    if bucket in {"foam", "roofing foam", "roofing_foam"}:
+        _drop_implausible_number(row, "thickness_inches", min_value=0.01, max_value=24.0)
+        _drop_implausible_number(row, "yield_or_coverage", min_value=100.0, max_value=20000.0)
+        if row.get("yield_or_coverage") is None:
+            row["yield_factor"] = None
+        if row.get("thickness_inches") is None or row.get("yield_or_coverage") is None:
+            row["units_per_sqft_per_inch"] = None
+            row["sets_per_sqft_per_inch"] = None
+            row["cost_per_sqft_per_inch"] = None
+    _drop_implausible_number(row, "crew_size", min_value=0.01, max_value=20.0)
+    _drop_implausible_number(row, "crew_selector_code", min_value=0.01, max_value=20.0)
+
+
 def normalize_label_text(value: Any) -> str:
     text = str(value or "").strip().lower()
     text = text.replace("&", " and ")
@@ -558,6 +607,29 @@ def normalize_label_text(value: Any) -> str:
     text = text.replace("-", " ")
     text = re.sub(r"\s+", " ", text)
     return text
+
+
+def label_bucket_override(row_label: Any, raw_text: Any = "") -> str | None:
+    text = normalize_label_text(f"{row_label or ''} {raw_text or ''}")
+    if any(term in text for term in ("sales/inspect", "sales inspect", "sales inspection", "sales trip")):
+        return "sales_inspection_trips"
+    if any(term in text for term in ("truck exp", "truck expense", "truck mileage")):
+        return "truck_expense"
+    return None
+
+
+def first_numeric_at(cell_values: dict[str, Any], row_number: int, *columns: str) -> float | None:
+    for column in columns:
+        value = numeric_at(cell_values, row_number, column)
+        if value is not None:
+            return value
+    return None
+
+
+def insulation_foam_uses_shifted_formula_layout(cell_values: dict[str, Any], row_number: int) -> bool:
+    if numeric_at(cell_values, row_number, "C") is not None:
+        return False
+    return any(numeric_at(cell_values, row_number, column) is not None for column in ("E", "F", "G", "H", "J", "K"))
 
 
 def _label_matches(text: str, phrase: str) -> bool:
@@ -730,6 +802,9 @@ def parse_document_content_row(row: dict[str, Any] | pd.Series, template_type: s
     bucket = template_bucket_by_row(template_type).get(row_number, "unknown")
     row_label = value_at(cell_values, row_number, "A")
     selected_item_name = value_at(cell_values, row_number, "B")
+    label_override_bucket = label_bucket_override(row_label, raw_text)
+    if label_override_bucket:
+        bucket = label_override_bucket
     bucket_mapping: dict[str, Any] = {}
     if row_number in ADDER_ROWS:
         label_text = adder_label_text(row_label, cell_values, raw_text)
@@ -739,7 +814,7 @@ def parse_document_content_row(row: dict[str, Any] | pd.Series, template_type: s
         bucket, kind = classify_estimate_adder(label_text)
         section = "estimate_adders"
     else:
-        if template_type == TEMPLATE_TYPE_ROOFING and (
+        if template_type == TEMPLATE_TYPE_ROOFING and not label_override_bucket and (
             bucket in ROOFING_LABOR_BUCKET_SET
             or bucket == "unknown"
             or row_number in ROOFING_LABOR_ROW_HINTS
@@ -769,7 +844,7 @@ def parse_document_content_row(row: dict[str, Any] | pd.Series, template_type: s
         "raw_text": raw_text,
         "cell_values": cell_values,
         "formula_cells": formula_cells,
-        "selected_item_name": selected_item_name,
+        "selected_item_name": row_label if bucket in {"sales_inspection_trips", "truck_expense"} else selected_item_name,
         "package_tags": bucket_mapping.get("package_tags", []),
         "secondary_buckets": bucket_mapping.get("secondary_buckets", []),
         "bucket_mapping_reason": bucket_mapping.get("mapping_reason", ""),
@@ -780,7 +855,7 @@ def parse_document_content_row(row: dict[str, Any] | pd.Series, template_type: s
         "estimated_units": None,
         "estimated_cost": None,
         "selector_code": None,
-        "resolved_item_name": selected_item_name,
+        "resolved_item_name": row_label if bucket in {"sales_inspection_trips", "truck_expense"} else selected_item_name,
         "area_sqft": None,
         "thickness_inches": None,
         "yield_or_coverage": None,
@@ -829,11 +904,29 @@ def parse_document_content_row(row: dict[str, Any] | pd.Series, template_type: s
             out["selector_code"] = numeric_at(cell_values, row_number, "A")
             out["resolved_item_name"] = selected_item_name
             if row_number in {19, 20, 21}:
-                out["area_sqft"] = numeric_at(cell_values, row_number, "C")
-                out["thickness_inches"] = numeric_at(cell_values, row_number, "D")
-                out["yield_or_coverage"] = numeric_at(cell_values, row_number, "F")
+                shifted_foam_layout = insulation_foam_uses_shifted_formula_layout(cell_values, row_number)
+                area_column = "E" if shifted_foam_layout else "C"
+                thickness_column = "F" if shifted_foam_layout else "D"
+                unit_price_column = "G" if shifted_foam_layout else "E"
+                yield_column = "H" if shifted_foam_layout else "F"
+                estimated_units_column = "J" if shifted_foam_layout else "G"
+                estimated_cost_column = "K" if shifted_foam_layout else "H"
+                out["area_sqft"] = numeric_at(cell_values, row_number, area_column)
+                out["quantity"] = out["area_sqft"]
+                out["unit_price"] = numeric_at(cell_values, row_number, unit_price_column)
+                out["estimated_cost"] = numeric_at(cell_values, row_number, estimated_cost_column)
+                raw_thickness = numeric_at(cell_values, row_number, thickness_column)
+                raw_yield = numeric_at(cell_values, row_number, yield_column)
+                out["thickness_inches"] = bounded_numeric_at(cell_values, row_number, thickness_column, min_value=0.01, max_value=24.0)
+                out["yield_or_coverage"] = bounded_numeric_at(cell_values, row_number, yield_column, min_value=100.0, max_value=20000.0)
+                if raw_thickness is not None and out["thickness_inches"] is None:
+                    out["needs_review"] = True
+                    out["parsed_confidence"] = min(float(out.get("parsed_confidence") or 0.55), 0.65)
+                if raw_yield is not None and out["yield_or_coverage"] is None:
+                    out["needs_review"] = True
+                    out["parsed_confidence"] = min(float(out.get("parsed_confidence") or 0.55), 0.65)
                 out["yield_factor"] = out["yield_or_coverage"]
-                out["estimated_units"] = numeric_at(cell_values, row_number, "G")
+                out["estimated_units"] = numeric_at(cell_values, row_number, estimated_units_column)
                 if out["estimated_units"] is not None:
                     out["estimated_sets"] = out["estimated_units"] / 1000
                 density_match = re.search(r"(\d+(?:\.\d+)?)\s*lb", str(out["resolved_item_name"] or ""), flags=re.IGNORECASE)
@@ -891,8 +984,9 @@ def parse_document_content_row(row: dict[str, Any] | pd.Series, template_type: s
     if bucket in {"sales_inspection_trips", "truck_expense"}:
         out["trips"] = numeric_at(cell_values, row_number, "B")
         out["round_trip_miles"] = numeric_at(cell_values, row_number, "C")
-        out["cost_per_mile"] = numeric_at(cell_values, row_number, "E")
-        out["estimated_cost"] = numeric_at(cell_values, row_number, "H")
+        out["cost_per_mile"] = first_numeric_at(cell_values, row_number, "E", "D")
+        out["estimated_cost"] = first_numeric_at(cell_values, row_number, "H", "K")
+        out["calculated_cost"] = out["estimated_cost"]
     if template_type in {TEMPLATE_TYPE_ROOFING, TEMPLATE_TYPE_FLOORING} and 116 <= row_number <= 134:
         out["days"] = numeric_at(cell_values, row_number, "B")
         out["crew_size"] = numeric_at(cell_values, row_number, "C")
@@ -903,7 +997,7 @@ def parse_document_content_row(row: dict[str, Any] | pd.Series, template_type: s
         out["calculated_cost"] = out["estimated_cost"]
         out["daily_rate"] = numeric_at(cell_values, row_number, "J")
         out["formula_mode"] = "mixed_formula"
-    if template_type == TEMPLATE_TYPE_INSULATION and row_number in {78, 80, 82, 84, 86, 88, 90, 92}:
+    if template_type == TEMPLATE_TYPE_INSULATION and bucket not in {"sales_inspection_trips", "truck_expense"} and row_number in {78, 80, 82, 84, 86, 88, 90, 92}:
         out["days"] = numeric_at(cell_values, row_number, "B")
         out["crew_size"] = numeric_at(cell_values, row_number, "C")
         out["crew_selector_code"] = out["crew_size"]
@@ -967,6 +1061,7 @@ def parse_document_content_row(row: dict[str, Any] | pd.Series, template_type: s
         elif has_numeric_amount and not has_label:
             out["needs_review"] = True
             out["parsed_confidence"] = 0.55
+    _sanitize_estimator_template_row_numbers(out)
     return out
 
 

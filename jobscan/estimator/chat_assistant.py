@@ -1019,6 +1019,11 @@ def _build_estimator_context_summary(data: EstimatorData | None, *, scope: dict[
         decisions_per_example=80,
         decision_menu=decision_menu,
     )
+    summary["historical_answer_key_decision_cues"] = _historical_answer_key_decision_cues(
+        summary["historical_answer_key_examples"],
+        decision_menu,
+        limit=60,
+    )
     return summary
 
 
@@ -1063,11 +1068,156 @@ def _empty_chat_decision_context(scope: dict[str, Any] | None) -> dict[str, Any]
         "historical_context_decision_guidance": [],
         "historical_template_examples": {"matched_examples": []},
         "historical_answer_key_examples": {"matched_answer_keys": []},
+        "historical_answer_key_decision_cues": [],
     }
     route_mileage = _route_mileage_context(scope or {})
     if route_mileage:
         summary["route_mileage"] = route_mileage
     return summary
+
+
+def _historical_answer_key_decision_cues(
+    answer_key_examples: dict[str, Any],
+    decision_menu: list[dict[str, Any]],
+    *,
+    limit: int = 60,
+) -> list[dict[str, Any]]:
+    """Return compact, row-addressed decision cues from the most similar answer keys.
+
+    This is deliberately evidence-only context for the AI chat. It does not apply an answer key;
+    it makes the historical pattern easier for the model to use without traversing nested examples.
+    """
+
+    menu_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for row in decision_menu or []:
+        if not isinstance(row, dict):
+            continue
+        key = (
+            _clean_string(row.get("section")),
+            _clean_string(row.get("decision_id")),
+            _safe_row_number(row.get("workbook_row")),
+        )
+        if key[1] or key[2]:
+            menu_by_key[key] = row
+
+    grouped: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for example in (answer_key_examples or {}).get("matched_answer_keys") or []:
+        if not isinstance(example, dict):
+            continue
+        score = _safe_positive_number(example.get("similarity_score"))
+        example_label = _clean_string(
+            example.get("job_name")
+            or example.get("customer")
+            or example.get("source_file")
+            or example.get("job_id")
+        )
+        example_ref = {
+            "job_id": _clean_string(example.get("job_id")),
+            "label": example_label,
+            "similarity_score": round(score, 3),
+            "match_reasons": [str(item) for item in (example.get("match_reasons") or [])[:5]],
+        }
+        answer_key = example.get("reference_answer_key") if isinstance(example.get("reference_answer_key"), dict) else {}
+        for decision in answer_key.get("decisions") or []:
+            if not isinstance(decision, dict):
+                continue
+            section = _clean_string(decision.get("section"))
+            decision_id = _clean_string(decision.get("decision_id"))
+            workbook_row = _safe_row_number(decision.get("workbook_row"))
+            if not decision_id and not workbook_row:
+                continue
+            key = (section, decision_id, workbook_row)
+            bucket = _clean_string(decision.get("template_bucket"))
+            inputs = _compact_decision_values(decision.get("inputs") if isinstance(decision.get("inputs"), dict) else {})
+            outputs = _compact_decision_values(
+                decision.get("calculated_outputs") if isinstance(decision.get("calculated_outputs"), dict) else {}
+            )
+            target = grouped.setdefault(
+                key,
+                {
+                    "section": section,
+                    "decision_id": decision_id,
+                    "template_bucket": bucket,
+                    "workbook_row": workbook_row,
+                    "line_item": _clean_string(decision.get("line_item") or decision.get("template_option")),
+                    "support_count": 0,
+                    "best_similarity_score": 0.0,
+                    "examples": [],
+                    "sample_inputs": {},
+                    "sample_outputs": {},
+                    "required_inputs": [],
+                },
+            )
+            target["support_count"] = int(target.get("support_count") or 0) + 1
+            if score >= float(target.get("best_similarity_score") or 0.0):
+                target["best_similarity_score"] = round(score, 3)
+                if inputs:
+                    target["sample_inputs"] = inputs
+                if outputs:
+                    target["sample_outputs"] = outputs
+                if bucket:
+                    target["template_bucket"] = bucket
+                line_item = _clean_string(decision.get("line_item") or decision.get("template_option"))
+                if line_item:
+                    target["line_item"] = line_item
+            if len(target["examples"]) < 3 and example_ref not in target["examples"]:
+                target["examples"].append(example_ref)
+            menu_row = menu_by_key.get(key)
+            if menu_row and menu_row.get("formula_requirements"):
+                target["required_inputs"] = list(menu_row.get("formula_requirements") or [])
+
+    cues = list(grouped.values())
+    cues.sort(
+        key=lambda row: (
+            int(row.get("support_count") or 0),
+            float(row.get("best_similarity_score") or 0.0),
+            bool(row.get("sample_inputs")),
+        ),
+        reverse=True,
+    )
+    return cues[: max(0, int(limit or 60))]
+
+
+def _compact_decision_values(values: dict[str, Any], *, limit: int = 12) -> dict[str, Any]:
+    keep_fields = (
+        "selector_code",
+        "resolved_template_option",
+        "selected_pricing_candidate",
+        "basis_sqft",
+        "area_sqft",
+        "board_area_sqft",
+        "thickness_inches",
+        "yield_or_coverage",
+        "estimated_units",
+        "estimated_sets",
+        "estimated_gallons",
+        "gal_per_100_sqft",
+        "unit_price",
+        "price_per_square",
+        "unit_price_per_thousand",
+        "linear_ft",
+        "days",
+        "hours_per_day",
+        "people_count",
+        "trip_count",
+        "round_trip_miles",
+        "crew_size",
+        "daily_rate",
+        "hourly_rate",
+        "total_hours",
+        "amount",
+        "estimated_cost",
+        "calculated_cost",
+    )
+    compact: dict[str, Any] = {}
+    for field in keep_fields:
+        value = values.get(field)
+        if value in (None, "", [], {}):
+            continue
+        compact[field] = value
+        if len(compact) >= limit:
+            break
+    return compact
 
 
 def _build_template_decision_menu(data: EstimatorData, *, template_type: str) -> list[dict[str, Any]]:
@@ -2769,6 +2919,10 @@ def _chat_prompt_messages(
         "the most similar historical estimate answer keys found for this scope. Use match_reasons and reference_answer_key.decisions "
         "as evidence for included rows, product/system choices, labor/logistics patterns, markup/warranty assumptions, and typical "
         "formula inputs. Still scale quantities to the current job and mark review_required when the prompt evidence is incomplete. "
+        "If estimator_context.historical_answer_key_decision_cues is present, use it as the compact first-pass checklist of likely "
+        "workbook rows. Each cue is mined from similar historical answer keys and includes support_count, examples, sample_inputs, "
+        "sample_outputs, and required_inputs. Prefer these cues over generic package cooccurrence when deciding what rows to propose, "
+        "but never copy quantities blindly; adjust to current area/thickness/trips or mark review_required. "
         "Use matched profiles as evidence for normal package inclusion and scope assumptions, but do not invent values that are not "
         "supported by the current prompt, workbook history, product guidance, or estimator memory. "
         "Ask questions only when the answer materially changes scope, safety/code compliance, system selection, warranty eligibility, or price. "

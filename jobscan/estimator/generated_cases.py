@@ -53,8 +53,37 @@ DECISION_FIELD_CANDIDATES = (
     "daily_rate",
     "hourly_rate",
     "unit_price",
+    "price_per_square",
+    "unit_price_per_thousand",
+    "trips",
+    "round_trip_miles",
+    "cost_per_mile",
+    "linear_ft",
+    "units",
+    "amount",
+    "calculated_cost",
     "estimated_cost",
 )
+
+
+def _safe_decision_field_value(bucket: str, field: str, value: Any) -> Any:
+    if value in (None, ""):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return value
+    if not math.isfinite(number):
+        return None
+    normalized_bucket = _lower(bucket).replace(" ", "_")
+    if field == "thickness_inches" and normalized_bucket in {"foam", "roofing_foam"}:
+        return number if 0.01 <= number <= 24.0 else None
+    if field in {"yield_or_coverage", "yield_factor"} and normalized_bucket in {"foam", "roofing_foam"}:
+        return number if 100.0 <= number <= 20000.0 else None
+    if field in {"crew_size", "crew_selector_code"}:
+        return number if 0.01 <= number <= 20.0 else None
+    return number if isinstance(value, (int, float)) else value
+
 
 PROMPT_CONTEXT_EXCLUDED_BUCKETS = {
     "address",
@@ -221,9 +250,40 @@ def _merge_job_context(rows: pd.DataFrame, data: EstimatorData | Any) -> pd.Data
 
 
 def _row_has_decision(row: pd.Series) -> bool:
-    for field in DECISION_FIELD_CANDIDATES:
-        if field in row.index and str(row.get(field) or "").strip():
-            return True
+    bucket = _clean_text(row.get("template_bucket")).lower()
+    kind = _clean_text(row.get("line_item_kind")).lower()
+
+    def positive(*fields: str) -> float:
+        for field in fields:
+            if field not in row.index:
+                continue
+            value = _safe_float(row.get(field), 0.0)
+            if value > 0:
+                return value
+        return 0.0
+
+    if positive("estimated_cost", "calculated_cost", "amount") > 0:
+        return True
+    if kind == "labor" or bucket.startswith("labor_"):
+        return (
+            positive("days") > 0
+            and positive("crew_size", "crew_selector_code") > 0
+            and positive("daily_rate", "hourly_rate", "unit_price") > 0
+        ) or (positive("total_hours") > 0 and positive("hourly_rate", "unit_price") > 0)
+    if bucket in {"sales_inspection_trips", "sales_trips", "truck_expense"}:
+        return positive("trips") > 0 and positive("round_trip_miles") > 0 and positive("cost_per_mile", "unit_price") > 0
+    if bucket in {"fasteners", "plates"}:
+        return positive("estimated_units", "quantity", "units") > 0 and positive("unit_price_per_thousand", "unit_price") > 0
+    if bucket == "board_stock":
+        return positive("area_sqft", "quantity", "board_area_sqft") > 0 and positive("price_per_square", "unit_price") > 0
+    if bucket in {"foam", "roofing_foam"}:
+        return positive("area_sqft", "quantity") > 0 and positive("unit_price") > 0
+    if bucket in {"coating", "primer", "granules", "thermal_barrier_coating"}:
+        return positive("area_sqft", "quantity", "estimated_units", "estimated_gallons") > 0 and positive("unit_price") > 0
+    if bucket in {"caulk_detail", "caulk_sealant", "fabric", "membrane", "seams_misc", "seam_treatment"}:
+        return positive("estimated_units", "quantity", "units", "linear_ft") > 0 and positive("unit_price") > 0
+    if kind in {"equipment", "travel"} or bucket in {"lift", "generator", "dumpster", "dumpsters", "delivery_fee", "freight"}:
+        return positive("quantity", "estimated_units", "units", "days", "trips") > 0 and positive("unit_price", "cost_per_mile") > 0
     return False
 
 
@@ -386,7 +446,9 @@ def _expected_decisions_from_rows(group: pd.DataFrame, template_type: str) -> li
             if field in row.index:
                 value = row.get(field)
                 if value not in (None, "") and not (isinstance(value, float) and math.isnan(value)):
-                    payload[field] = value
+                    safe_value = _safe_decision_field_value(bucket, field, value)
+                    if safe_value is not None:
+                        payload[field] = safe_value
         decisions.append(payload)
     return _dedupe_expected_decisions(decisions)
 

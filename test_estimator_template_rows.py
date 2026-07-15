@@ -228,6 +228,41 @@ def test_row_108_truck_expense_extracts_travel_fields() -> None:
     assert parsed["estimated_cost"] == 202.5
 
 
+def test_insulation_variant_sales_and_truck_rows_are_not_labor() -> None:
+    sales = tr.parse_document_content_row(
+        content_row(
+            88,
+            "A88: Sales/Inspect. | B88: 2 | C88: 105 | D88: 0.75 | J88: 210 | K88: 157.5 | M88: Yes",
+            template_type=tr.TEMPLATE_TYPE_INSULATION,
+        )
+    )
+    truck = tr.parse_document_content_row(
+        content_row(
+            90,
+            "A90: Truck Exp. | B90: 2 | C90: 105 | D90: 1.25 | J90: 210 | K90: 262.5 | M90: Yes",
+            template_type=tr.TEMPLATE_TYPE_INSULATION,
+        )
+    )
+
+    assert sales["template_bucket"] == "sales_inspection_trips"
+    assert sales["line_item_kind"] == "travel"
+    assert sales["selected_item_name"] == "Sales/Inspect."
+    assert sales["trips"] == 2
+    assert sales["round_trip_miles"] == 105
+    assert sales["cost_per_mile"] == 0.75
+    assert sales["estimated_cost"] == 157.5
+    assert sales["crew_size"] is None
+
+    assert truck["template_bucket"] == "truck_expense"
+    assert truck["line_item_kind"] == "travel"
+    assert truck["selected_item_name"] == "Truck Exp."
+    assert truck["trips"] == 2
+    assert truck["round_trip_miles"] == 105
+    assert truck["cost_per_mile"] == 1.25
+    assert truck["estimated_cost"] == 262.5
+    assert truck["crew_size"] is None
+
+
 def test_row_116_labor_prep_extracts_labor_fields() -> None:
     parsed = tr.parse_document_content_row(
         content_row(116, "A116: Pwash/Prep | B116: 4 | C116: 5 | D116: 220 | H116: 7607.6 | J116: 1901.9")
@@ -521,6 +556,45 @@ def test_parse_existing_persists_insulation_foam_formula_fields() -> None:
     assert row["estimated_sets"] == 1.82016
     assert row["unit_price"] == 1.6
     assert row["formula_model"] == "foam_sets_from_area_thickness_yield"
+
+
+def test_insulation_shifted_foam_layout_uses_formula_cells_not_product_columns() -> None:
+    parsed = tr.parse_document_content_row(
+        content_row(
+            21,
+            "A21: AccuFoam | B21: AF1 | C21: Open Cell | D21: AF1 | E21: 2400 | F21: 9 | G21: 1.8 | H21: 15000 | J21: 1440 | K21: 2592 | M21: Yes",
+            template_type=tr.TEMPLATE_TYPE_INSULATION,
+        )
+    )
+
+    assert parsed["template_bucket"] == "foam"
+    assert parsed["area_sqft"] == 2400
+    assert parsed["quantity"] == 2400
+    assert parsed["thickness_inches"] == 9
+    assert parsed["unit_price"] == 1.8
+    assert parsed["yield_or_coverage"] == 15000
+    assert parsed["estimated_units"] == 1440
+    assert parsed["estimated_sets"] == 1.44
+    assert parsed["estimated_cost"] == 2592
+
+
+def test_insulation_shifted_foam_layout_does_not_treat_product_model_as_thickness() -> None:
+    parsed = tr.parse_document_content_row(
+        content_row(
+            20,
+            "A20: Gaco | B20: RoofFoam | C20: 2.7 Resin | D20: 2733 | G20: 2.56 | J20: =IF(E20=\"\",0,((E20/IF(H20=0,1,H20))*F20)*1000) | K20: =G20*J20 | M20: Yes",
+            template_type=tr.TEMPLATE_TYPE_INSULATION,
+        )
+    )
+
+    assert parsed["template_bucket"] == "foam"
+    assert parsed["resolved_item_name"] == "RoofFoam"
+    assert parsed["area_sqft"] is None
+    assert parsed["thickness_inches"] is None
+    assert parsed["yield_or_coverage"] is None
+    assert parsed["estimated_units"] is None
+    assert parsed["unit_price"] == 2.56
+    assert parsed["needs_review"] is False
 
 
 def test_parse_existing_persists_insulation_waste_margin_cell_reference() -> None:

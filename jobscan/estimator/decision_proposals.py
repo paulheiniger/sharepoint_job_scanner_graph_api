@@ -686,6 +686,11 @@ def _reference_row_compatible(row: dict[str, Any], template_type: str) -> bool:
         if bucket.startswith("labor_"):
             return False
         return True
+    if _norm(template_type) == "insulation" and (
+        (bucket == "sales_inspection_trips" and row_number == "88")
+        or (bucket == "truck_expense" and row_number == "90")
+    ):
+        return True
     return row_number in allowed_rows
 
 
@@ -849,9 +854,11 @@ def _reference_target_for_row(row: dict[str, Any], template_type: str) -> dict[s
         if bucket == "foam":
             return {"section": "insulation_foam_template_decisions", "decision_id": "insulation_foam_template_selector", "template_bucket": "foam", "workbook_row": "19-21"}
         if bucket == "thermal_barrier_coating":
-            return {"section": "insulation_thermal_barrier_template_decisions", "decision_id": "insulation_thermal_barrier_row_30", "template_bucket": "thermal_barrier_coating", "workbook_row": "30"}
+            row_number = row_number if row_number in {"30", "31", "32"} else "30"
+            return {"section": "insulation_thermal_barrier_template_decisions", "decision_id": f"insulation_thermal_barrier_row_{row_number}", "template_bucket": "thermal_barrier_coating", "workbook_row": row_number}
         if bucket in {"caulk_detail", "caulk_sealant"}:
-            return {"section": "insulation_detail_material_template_decisions", "decision_id": "insulation_caulk_sealant_row_41", "template_bucket": "caulk_sealant", "workbook_row": "41"}
+            row_number = row_number if row_number in {"41", "43"} else "41"
+            return {"section": "insulation_detail_material_template_decisions", "decision_id": f"insulation_caulk_sealant_row_{row_number}", "template_bucket": "caulk_sealant", "workbook_row": row_number}
         if kind == "labor" or bucket.startswith("labor_"):
             if not row_number:
                 return None
@@ -1094,11 +1101,12 @@ def _chat_target_for_preference(template_type: str, item: dict[str, Any]) -> dic
                 "workbook_row": "19-21",
             }
         if bucket == "thermal_barrier_coating":
+            resolved_row = workbook_row if workbook_row in {"30", "31", "32"} else "30"
             return {
                 "section": "insulation_thermal_barrier_template_decisions",
-                "decision_id": decision_id or "insulation_thermal_barrier_row_30",
+                "decision_id": decision_id or f"insulation_thermal_barrier_row_{resolved_row}",
                 "template_bucket": "thermal_barrier_coating",
-                "workbook_row": workbook_row if workbook_row in {"30", "31", "32"} else "30",
+                "workbook_row": resolved_row,
             }
         if bucket in {"membrane", "primer"}:
             resolved_row = workbook_row if workbook_row in {"24", "26"} else ("24" if bucket == "membrane" else "26")
@@ -1108,14 +1116,20 @@ def _chat_target_for_preference(template_type: str, item: dict[str, Any]) -> dic
                 "template_bucket": bucket,
                 "workbook_row": resolved_row,
             }
-        if bucket in {"thinner", "drum_disposal", "disposal", "misc_materials", "misc", "freight", "abaa_audit", "abaa_fee", "sales_tax"}:
+        if bucket in {"abaa_audit", "abaa_fee"}:
+            resolved_row = workbook_row if workbook_row in {"61", "63"} else ("61" if bucket == "abaa_audit" else "63")
+            return {
+                "section": "insulation_compliance_template_decisions",
+                "decision_id": decision_id or f"insulation_{bucket}_row_{resolved_row}",
+                "template_bucket": bucket,
+                "workbook_row": resolved_row,
+            }
+        if bucket in {"thinner", "drum_disposal", "disposal", "misc_materials", "misc", "freight", "sales_tax"}:
             row_defaults = {
                 "thinner": "37",
                 "misc_materials": "57",
                 "misc": "57",
                 "freight": "59",
-                "abaa_audit": "61",
-                "abaa_fee": "63",
                 "drum_disposal": "65",
                 "disposal": "65",
                 "sales_tax": "73",
@@ -1132,11 +1146,12 @@ def _chat_target_for_preference(template_type: str, item: dict[str, Any]) -> dic
                 "workbook_row": resolved_row,
             }
         if bucket in {"caulk_detail", "caulk_sealant"}:
+            resolved_row = workbook_row if workbook_row in {"41", "43"} else "41"
             return {
                 "section": "insulation_detail_material_template_decisions",
-                "decision_id": decision_id or "insulation_caulk_sealant_row_41",
+                "decision_id": decision_id or f"insulation_caulk_sealant_row_{resolved_row}",
                 "template_bucket": "caulk_sealant",
-                "workbook_row": workbook_row if workbook_row in {"41", "43"} else "41",
+                "workbook_row": resolved_row,
             }
         if bucket in {"lift", "delivery_fee", "generator", "space_heater", "sales_inspection_trips", "truck_expense"}:
             row_defaults = {
@@ -2302,6 +2317,18 @@ def _ai_scope_debug(recommendation: Any) -> dict[str, Any]:
 
 
 def _is_insulation_scope(scope: dict[str, Any]) -> bool:
+    template_type = _norm(scope.get("template_type"))
+    estimate_mode = _norm(scope.get("estimate_mode"))
+    division = _norm(scope.get("division"))
+    project_type = _norm(scope.get("project_type"))
+    if template_type == "insulation" or estimate_mode == "insulation":
+        return True
+    if template_type in {"roofing", "repair", "flooring"} or estimate_mode in {"roofing", "roof restoration", "roof coating", "restoration"}:
+        return False
+    if division == "insulation":
+        return True
+    if division == "roofing" or "roof coating" in project_type or "roof restoration" in project_type:
+        return False
     text = " ".join(_norm(scope.get(key)) for key in ("division", "template_type", "project_type", "estimate_mode", "building_type"))
     return "insulation" in text or "spray foam" in text
 

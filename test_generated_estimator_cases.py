@@ -468,6 +468,77 @@ def test_expected_decisions_filter_mismatched_template_layout_rows() -> None:
     assert any(row.get("template_bucket") == "foam" for row in candidate["expected_decisions"])
 
 
+def test_expected_decisions_exclude_selector_only_template_rows() -> None:
+    data = generated_case_data()
+    selector_only_rows = pd.DataFrame(
+        [
+            {
+                "job_id": "R0",
+                "source_file": "sharepoint/roofing/R0.xlsx",
+                "template_type": "roofing",
+                "division": "Roofing",
+                "sheet_name": "Estimate",
+                "row_number": 73,
+                "template_bucket": "lift",
+                "line_item_kind": "equipment",
+                "resolved_item_name": "Forklift",
+                "selected_item_name": "Forklift",
+            },
+            {
+                "job_id": "R0",
+                "source_file": "sharepoint/roofing/R0.xlsx",
+                "template_type": "roofing",
+                "division": "Roofing",
+                "sheet_name": "Estimate",
+                "row_number": 58,
+                "template_bucket": "board_stock",
+                "line_item_kind": "material",
+                "resolved_item_name": "ISO Board",
+                "selected_item_name": "ISO Board",
+                "unit_price": 30,
+            },
+            {
+                "job_id": "R0",
+                "source_file": "sharepoint/roofing/R0.xlsx",
+                "template_type": "roofing",
+                "division": "Roofing",
+                "sheet_name": "Estimate",
+                "row_number": 99,
+                "template_bucket": "generator",
+                "line_item_kind": "equipment",
+                "quantity": 3,
+                "unit_price": 50,
+            },
+        ]
+    )
+    data.template_rows = pd.concat([data.template_rows, selector_only_rows], ignore_index=True)
+
+    candidate = select_historical_candidates(data, limit=1, template_types=("roofing",), seed=1)[0]
+    keys = {(row.get("template_bucket"), row.get("workbook_row")) for row in candidate["expected_decisions"]}
+
+    assert ("lift", 73) not in keys
+    assert ("board_stock", 58) not in keys
+    assert ("generator", 99) in keys
+
+
+def test_expected_decisions_drop_implausible_answer_key_inputs() -> None:
+    data = generated_case_data()
+    data.template_rows.loc[data.template_rows["template_bucket"].eq("foam"), "thickness_inches"] = 2733
+    data.template_rows.loc[data.template_rows["template_bucket"].eq("foam"), "yield_or_coverage"] = 4
+    data.template_rows.loc[data.template_rows["template_bucket"].eq("labor_foam"), "crew_size"] = 105
+
+    candidate = select_historical_candidates(data, limit=1, template_types=("insulation",), seed=1)[0]
+    foam = next(row for row in candidate["expected_decisions"] if row.get("template_bucket") == "foam")
+    labor = next(row for row in candidate["expected_decisions"] if row.get("template_bucket") == "labor_foam")
+
+    assert "thickness_inches" not in foam
+    assert "yield_or_coverage" not in foam
+    assert "yield_factor" not in foam
+    assert "crew_size" not in labor
+    assert "crew_selector_code" not in labor
+    assert labor["total_hours"] == 30
+
+
 def test_ai_output_validator_rejects_changed_area_and_decision_leakage() -> None:
     candidate = select_historical_candidates(generated_case_data(), limit=1, template_types=("roofing",))[0]
     facts = build_case_facts(candidate)

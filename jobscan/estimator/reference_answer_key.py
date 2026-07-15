@@ -114,6 +114,34 @@ def _optional_number(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
+def _bounded_number(
+    value: Any,
+    *,
+    min_value: float | None = None,
+    max_value: float | None = None,
+) -> float | None:
+    number = _optional_number(value)
+    if number is None:
+        return None
+    if min_value is not None and number < min_value:
+        return None
+    if max_value is not None and number > max_value:
+        return None
+    return round(number, 6)
+
+
+def _bounded_first_present(
+    *values: Any,
+    min_value: float | None = None,
+    max_value: float | None = None,
+) -> float | None:
+    for value in values:
+        number = _bounded_number(value, min_value=min_value, max_value=max_value)
+        if number is not None:
+            return number
+    return None
+
+
 def _clean_value(value: Any) -> Any:
     if isinstance(value, float):
         if not math.isfinite(value):
@@ -342,11 +370,17 @@ def _proposed_values(row: dict[str, Any], target: dict[str, str]) -> dict[str, A
         if gal_per_100 is not None:
             values["gal_per_100_sqft"] = gal_per_100
     if bucket in {"foam", "roofing_foam", "board_stock"}:
-        thickness = _first_present(row.get("thickness_inches"), _cell_value(row, "D"))
+        thickness = _bounded_first_present(row.get("thickness_inches"), _cell_value(row, "D"), min_value=0.01, max_value=24.0)
         if thickness is not None:
             values["thickness_inches"] = thickness
     if bucket in {"foam", "roofing_foam"}:
-        yield_value = _first_present(row.get("yield_or_coverage"), row.get("yield_factor"), _cell_value(row, "F"))
+        yield_value = _bounded_first_present(
+            row.get("yield_or_coverage"),
+            row.get("yield_factor"),
+            _cell_value(row, "F"),
+            min_value=100.0,
+            max_value=20000.0,
+        )
         if yield_value is not None:
             values["yield_or_coverage"] = yield_value
         estimated_sets = _first_present(row.get("estimated_sets"))
@@ -396,6 +430,8 @@ def _proposed_values(row: dict[str, Any], target: dict[str, str]) -> dict[str, A
             ("formula_mode", "formula_mode"),
         ):
             value = row.get(source)
+            if source in {"crew_size", "crew_selector_code"}:
+                value = _bounded_number(value, min_value=0.01, max_value=20.0)
             if value not in (None, ""):
                 values[target_key] = value
     if bucket in {"labor_loading", "labor_traveling", "infrared_scan", "meals_lodging"}:
@@ -407,6 +443,8 @@ def _proposed_values(row: dict[str, Any], target: dict[str, str]) -> dict[str, A
             field_map = {"total_hours": "hours_per_day", "crew_size": "people_count", "unit_price": "unit_price"}
         for source, target_key in field_map.items():
             value = row.get(source)
+            if source == "crew_size":
+                value = _bounded_number(value, min_value=0.01, max_value=20.0)
             if value not in (None, ""):
                 values[target_key] = value
     if bucket in {"lift", "delivery_fee", "generator", "space_heater"}:
@@ -569,6 +607,40 @@ def _decision_has_active_formula_basis(target: dict[str, str], values: dict[str,
     return physical_units > 0 and unit_rate > 0
 
 
+def _sanitize_answer_key_values_for_target(target: dict[str, Any], values: dict[str, Any]) -> dict[str, Any]:
+    cleaned = dict(values or {})
+    bucket = _norm(target.get("template_bucket"))
+    if bucket in {"foam", "roofing_foam", "board_stock"}:
+        thickness = _bounded_number(cleaned.get("thickness_inches"), min_value=0.01, max_value=24.0)
+        if thickness is None:
+            cleaned.pop("thickness_inches", None)
+        else:
+            cleaned["thickness_inches"] = thickness
+    if bucket in {"foam", "roofing_foam"}:
+        yield_value = _bounded_number(cleaned.get("yield_or_coverage"), min_value=100.0, max_value=20000.0)
+        if yield_value is None:
+            cleaned.pop("yield_or_coverage", None)
+        else:
+            cleaned["yield_or_coverage"] = yield_value
+    for field in ("crew_size", "crew_people_selection", "crew_selector_code", "people_count"):
+        if field not in cleaned:
+            continue
+        crew_value = _bounded_number(cleaned.get(field), min_value=0.01, max_value=20.0)
+        if crew_value is None:
+            cleaned.pop(field, None)
+        else:
+            cleaned[field] = crew_value
+    if bucket == "generator" and _positive_value(cleaned.get("days")) <= 0:
+        days = _first_positive_value(cleaned.get("estimated_units"), cleaned.get("units"), cleaned.get("quantity"), cleaned.get("period"))
+        if days > 0:
+            cleaned["days"] = days
+    if bucket in {"lift", "space_heater"} and _positive_value(cleaned.get("period")) <= 0:
+        period = _first_positive_value(cleaned.get("estimated_units"), cleaned.get("units"), cleaned.get("quantity"), cleaned.get("days"))
+        if period > 0:
+            cleaned["period"] = period
+    return cleaned
+
+
 def _merge_duplicate_answer_key_preferences(preferences: list[dict[str, Any]]) -> list[dict[str, Any]]:
     merged: list[dict[str, Any]] = []
     by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
@@ -729,7 +801,11 @@ def answer_key_to_workbook_decision_preferences(answer_key: dict[str, Any]) -> l
         target = _normalize_answer_key_target(template_type, target, source_row=decision.get("source_row"))
         if not target["section"] or not target["decision_id"]:
             continue
+        proposed_values = _sanitize_answer_key_values_for_target(target, proposed_values)
         outputs = dict(decision.get("calculated_outputs") or {})
+        output_cost = _first_positive_value(outputs.get("estimated_cost"), outputs.get("calculated_cost"))
+        if output_cost > 0 and not _decision_has_active_formula_basis(target, proposed_values, {}):
+            proposed_values.setdefault("amount", output_cost)
         if not _decision_has_active_formula_basis(target, proposed_values, outputs):
             continue
         source_row = _text(decision.get("source_row"))

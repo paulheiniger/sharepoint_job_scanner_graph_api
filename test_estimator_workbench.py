@@ -87,6 +87,94 @@ def test_auto_included_zero_cost_row_detects_missing_formula_inputs_without_exis
     assert any("unit_price" in reason for reason in row["proposal_review_reasons"])
 
 
+def test_auto_included_zero_cost_row_with_quantity_but_no_price_is_unchecked() -> None:
+    workbench = {
+        "scope": {"template_type": "insulation", "division": "Insulation"},
+        "insulation_support_material_template_decisions": [
+                {
+                    "include": True,
+                    "proposal_source": "chat_estimator",
+                    "workbook_row": "65",
+                    "template_bucket": "drum_disposal",
+                    "template_line": "Drum Disposal",
+                "estimated_units": 3.0,
+                "unit_price": 0.0,
+                "estimated_cost": 0.0,
+                "formula_model": "insulation_drum_disposal_from_material_quantities",
+                "formula_source": "dependent_material_quantities",
+                "cost_source": "current_pricing_missing",
+                "compatibility_warnings": [],
+            }
+        ],
+    }
+
+    guarded = workbench_module._guard_included_zero_cost_auto_rows(workbench)
+    row = guarded["insulation_support_material_template_decisions"][0]
+
+    assert row["include"] is False
+    assert row["include_source"] == "calculation_basis_guard"
+    assert row["compatibility_status"] == "not_included"
+    assert any("unit_price" in warning for warning in row["compatibility_warnings"])
+
+
+def test_auto_included_granules_zero_cost_without_price_is_unchecked() -> None:
+    workbench = {
+        "scope": {"template_type": "roofing", "division": "Roofing"},
+        "roofing_granules_template_decisions": [
+            {
+                "include": True,
+                "workbook_row": "36",
+                "template_bucket": "granules",
+                "template_line": "3M",
+                "basis_sqft": 872.0,
+                "estimated_units": 4.36,
+                "unit_price": 0.0,
+                "estimated_cost": 0.0,
+                "formula_model": "granules_units_from_area_rate",
+                "formula_source": "area_coverage_bag_weight",
+                "compatibility_warnings": [],
+            }
+        ],
+    }
+
+    guarded = workbench_module._guard_included_zero_cost_auto_rows(workbench)
+    row = guarded["roofing_granules_template_decisions"][0]
+
+    assert row["include"] is False
+    assert row["include_source"] == "calculation_basis_guard"
+    assert row["compatibility_status"] == "not_included"
+    assert any("unit_price" in warning for warning in row["compatibility_warnings"])
+
+
+def test_reference_answer_key_insulation_travel_amount_is_not_cleared_as_scaffold() -> None:
+    workbench = {
+        "scope": {"template_type": "insulation", "division": "Insulation", "notes": "Pole barn spray foam."},
+        "insulation_equipment_logistics_template_decisions": [
+            {
+                "include": True,
+                "proposal_source": "reference_estimate_answer_key",
+                "workbook_row": "68",
+                "template_bucket": "sales_inspection_trips",
+                "template_line": "Sales / Inspection Trips",
+                "amount": 157.5,
+                "estimated_cost": 0.0,
+                "calculated_output": 0.0,
+                "trip_count": 4.0,
+                "round_trip_miles": 0.0,
+                "unit_price": 0.75,
+                "formula_model": "insulation_travel_cost_from_trips_miles_rate",
+                "formula_source": "reference_estimated_cost",
+            }
+        ],
+    }
+
+    guarded = workbench_module._guard_insulation_scaffold_auto_includes(workbench)
+    row = guarded["insulation_equipment_logistics_template_decisions"][0]
+
+    assert row["include"] is True
+    assert row.get("include_source") != "calculation_basis_guard"
+
+
 def test_reference_zero_cost_rows_stay_checked_but_are_marked_review() -> None:
     workbench = {
         "scope": {"template_type": "roofing", "division": "Roofing"},
@@ -623,6 +711,39 @@ def test_roofing_dumpster_uses_explicit_debris_thickness_when_available() -> Non
     assert dumpster["thickness_inches"] == 2.0
     assert not any("foam repair/replacement thickness" in warning for warning in dumpster["compatibility_warnings"])
     assert dumpster["estimated_cost"] > 0
+
+
+def test_roofing_dumpster_can_cost_explicit_reference_quantity_without_thickness() -> None:
+    data = roofing_primer_detail_pricing_data()
+    recommendation = roofing_recommendation()
+    recommendation.parsed_fields.update(
+        {
+            "net_sqft": 10478,
+            "estimated_sqft": 10478,
+            "notes": "Historical answer key included one dumpster but did not capture debris thickness.",
+        }
+    )
+    workbench = build_estimating_workbench(recommendation, data)
+    for row in workbench.get("roofing_equipment_template_decisions") or []:
+        if row.get("template_bucket") == "dumpster":
+            row.update(
+                {
+                    "include": True,
+                    "proposal_source": "reference_estimate_answer_key",
+                    "estimated_units": 1,
+                    "unit_price": 400,
+                    "debris_thickness_inches": 0,
+                    "thickness_inches": 0,
+                }
+            )
+
+    recalculated = recalculate_workbench_tables(workbench, data=data)
+    dumpster = next(row for row in recalculated["roofing_equipment_template_decisions"] if row["template_bucket"] == "dumpster")
+
+    assert dumpster["include"] is True
+    assert dumpster["estimated_units"] == 1
+    assert dumpster["estimated_cost"] == 400
+    assert dumpster["formula_source"] == "reference_direct_quantity"
 
 
 def test_roofing_unchecked_rows_still_show_available_unit_prices() -> None:

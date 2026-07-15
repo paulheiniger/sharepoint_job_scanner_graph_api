@@ -867,7 +867,15 @@ def _apply_direct_quantity_cost_fallback(
 
     if safe_number(formula.get("estimated_cost"), 0.0) > 0:
         return formula
-    explicit_cost = safe_number(row.get("estimated_cost"), 0.0)
+    explicit_cost = safe_number(
+        first_nonblank(
+            row.get("estimated_cost"),
+            row.get("amount"),
+            row.get("calculated_cost"),
+            row.get("calculated_output"),
+        ),
+        0.0,
+    )
     explicit_quantity = positive_number(*(row.get(field) for field in quantity_fields), default=0.0)
     price = safe_number(first_nonblank(unit_price, row.get("unit_price")), 0.0)
     if explicit_cost <= 0 and explicit_quantity > 0 and price > 0:
@@ -5561,7 +5569,19 @@ def _calculate_insulation_decision_formula(
     amount = safe_number(first_nonblank(existing.get("amount"), existing.get("editable_value"), source_row.get("editable_value"), source_row.get("estimated_cost")), 0.0)
     basis_sqft = safe_number(first_nonblank(existing.get("basis_sqft"), source_row.get("editable_basis_sqft"), source_row.get("default_basis_sqft"), area), 0.0)
     linear_ft = safe_number(first_nonblank(existing.get("linear_ft"), source_row.get("linear_ft"), source_row.get("calculated_quantity")), 0.0)
-    quantity = safe_number(first_nonblank(existing.get("quantity"), source_row.get("quantity"), source_row.get("calculated_quantity"), amount), 0.0)
+    quantity = safe_number(
+        first_nonblank(
+            existing.get("quantity"),
+            existing.get("estimated_units"),
+            existing.get("units"),
+            source_row.get("quantity"),
+            source_row.get("estimated_units"),
+            source_row.get("units"),
+            source_row.get("calculated_quantity"),
+            amount,
+        ),
+        0.0,
+    )
     days = safe_number(first_nonblank(existing.get("days"), source_row.get("days"), source_row.get("editable_days"), 0), 0.0)
     period = safe_number(first_nonblank(existing.get("period"), existing.get("rental_period"), source_row.get("period"), source_row.get("rental_period"), days), 0.0)
     hours_per_day = safe_number(
@@ -5605,6 +5625,17 @@ def _calculate_insulation_decision_formula(
         max_hours = 2.0 if str(spec.get("template_bucket") or "") == "labor_loading" else 6.0
         if hours_per_day > max_hours:
             hours_per_day = safe_number(spec.get("default_hours_per_day"), 0.0)
+
+    if formula_kind == "abaa_fee":
+        abaa_area = positive_number(
+            existing.get("estimated_units"),
+            existing.get("units"),
+            source_row.get("estimated_units"),
+            source_row.get("units"),
+            default=0.0,
+        )
+        if abaa_area > 0:
+            basis_sqft = abaa_area
 
     if formula_kind == "membrane":
         formula = calculate_insulation_membrane(linear_ft=linear_ft, unit_price=unit_price, include=include)
@@ -5664,6 +5695,25 @@ def _calculate_insulation_decision_formula(
     else:
         formula = calculate_insulation_direct_cost(amount=amount, include=include)
 
+    if include and amount > 0 and safe_number(formula.get("estimated_cost"), 0.0) <= 0:
+        formula = _apply_direct_quantity_cost_fallback(
+            formula,
+            {**source_row, **existing, "estimated_cost": amount},
+            unit_price=unit_price,
+            quantity_fields=("estimated_units", "estimated_gallons", "units", "quantity", "calculated_quantity"),
+            quantity_output_field="estimated_units",
+            source="reference_estimated_cost",
+        )
+
+    if include and formula_kind in {"caulk_sealant", "thermal_barrier", "primer", "units_cost", "abaa_fee"}:
+        formula = _apply_direct_quantity_cost_fallback(
+            formula,
+            {**source_row, **existing},
+            unit_price=unit_price,
+            quantity_fields=("estimated_units", "estimated_gallons", "units", "quantity", "calculated_quantity"),
+            quantity_output_field="estimated_units",
+        )
+
     inputs = {
         "basis_sqft": round(basis_sqft, 4),
         "linear_ft": round(linear_ft, 4),
@@ -5710,12 +5760,13 @@ def _missing_calculation_inputs_for_zero_cost_row(row: dict[str, Any]) -> list[s
     formula_source = str(row.get("formula_source") or "").strip().lower()
     cost_source = str(row.get("cost_source") or "").strip().lower()
     bucket = _normalized(first_nonblank(row.get("template_bucket"), row.get("package_key"), row.get("source_decision_id")))
+    bucket_key = bucket.replace(" ", "_")
 
     area_fields = ("basis_sqft", "area_sqft", "editable_basis_sqft", "board_area_sqft")
     price_fields = ("unit_price", "current_unit_price", "current_price", "price_per_square", "unit_price_per_thousand")
     quantity_fields = ("estimated_units", "units", "quantity", "calculated_quantity")
 
-    if "foam_sets_from_area_thickness_yield" in formula_model or bucket == "foam":
+    if "foam_sets_from_area_thickness_yield" in formula_model or bucket_key == "foam":
         return _missing_positive_fields(
             row,
             (
@@ -5725,24 +5776,28 @@ def _missing_calculation_inputs_for_zero_cost_row(row: dict[str, Any]) -> list[s
                 price_fields,
             ),
         )
-    if "coating_gallons_from_area_rate_waste" in formula_model or bucket in {"coating", "thermal_barrier_coating"}:
+    if "coating_gallons_from_area_rate_waste" in formula_model or bucket_key in {"coating", "thermal_barrier_coating"}:
         return _missing_positive_fields(row, (area_fields, ("gal_per_100_sqft", "gal_per_sqft"), price_fields))
-    if "primer_units_from_area_coverage" in formula_model or bucket == "primer":
+    if "primer_units_from_area_coverage" in formula_model or bucket_key == "primer":
         return _missing_positive_fields(row, (area_fields, ("coverage_sqft_per_unit", "coverage"), price_fields))
-    if "fastener_units_from_board_area" in formula_model or bucket in {"fasteners", "plates", "fastener_treatment"}:
+    if "granules_units_from_area_rate" in formula_model or bucket_key == "granules":
+        return _missing_positive_fields(row, (("basis_sqft", "area_sqft", "estimated_units", "units", "quantity"), price_fields))
+    if "fastener_units_from_board_area" in formula_model or bucket_key in {"fasteners", "plates", "fastener_treatment"}:
         return _missing_positive_fields(row, (("board_area_sqft", "basis_sqft", "area_sqft"), ("unit_price_per_thousand", "unit_price", "current_unit_price")))
-    if "linear_feet" in formula_model or bucket in {"fabric", "seams_misc", "membrane"}:
+    if "linear_feet" in formula_model or bucket_key in {"fabric", "seams_misc", "membrane"}:
         return _missing_positive_fields(row, (("linear_ft", "calculated_quantity", "estimated_units"), price_fields))
-    if "travel_cost_from_trips_miles_rate" in formula_model or bucket in {"sales_trips", "sales_inspection_trips", "truck_expense"}:
+    if "travel_cost_from_trips_miles_rate" in formula_model or bucket_key in {"sales_trips", "sales_inspection_trips", "truck_expense"}:
         return _missing_positive_fields(row, (("trip_count",), ("round_trip_miles",), price_fields))
-    if "hours_people_rate_trip_count" in formula_model or bucket in {"labor_loading", "labor_traveling"}:
+    if "hours_people_rate_trip_count" in formula_model or bucket_key in {"labor_loading", "labor_traveling"}:
         return _missing_positive_fields(row, (("hours_per_day", "hours", "total_hours"), ("people_count", "crew_size"), price_fields))
     if "hours_rate" in formula_model:
         return _missing_positive_fields(row, (("hours_per_day", "hours", "total_hours"), price_fields))
     if "days_people_rate" in formula_model:
         return _missing_positive_fields(row, (("days",), ("people_count", "crew_size"), price_fields))
-    if "days_rate" in formula_model or bucket == "generator":
+    if "days_rate" in formula_model or bucket_key == "generator":
         return _missing_positive_fields(row, (("days", "period"), price_fields))
+    if bucket_key == "drum_disposal":
+        return _missing_positive_fields(row, (quantity_fields, price_fields))
     if "labor_cost_from_days_crew_rate" in formula_model:
         if _row_has_positive_value(row, "daily_rate") and _row_has_positive_value(row, "days"):
             return []
@@ -5751,7 +5806,7 @@ def _missing_calculation_inputs_for_zero_cost_row(row: dict[str, Any]) -> list[s
         return _missing_positive_fields(row, (("days", "total_hours", "calculated_hours"), ("daily_rate", "hourly_rate")))
     if "units_cost" in formula_model or "manual_units_cost" in formula_model:
         return _missing_positive_fields(row, (quantity_fields, price_fields))
-    if "direct" in formula_model or bucket in {"freight", "misc", "warranty", "misc_insurance", "permits"}:
+    if "direct" in formula_model or bucket_key in {"freight", "misc", "warranty", "misc_insurance", "permits"}:
         return _missing_positive_fields(row, (("amount", "editable_value", "estimated_cost"),))
 
     if formula_source.startswith("insufficient_formula_inputs") or cost_source.endswith("missing"):
@@ -5867,7 +5922,16 @@ def _insulation_should_include_decision(
             notes_text,
             ["travel", "traveling", "truck", "truck expense", "mileage", "miles", "round trip", "sales trip", "inspection trip"],
         )
-        if not explicit_note and not (_insulation_explicit_travel_basis(source) or _insulation_explicit_travel_basis(existing)):
+        explicit_amount = positive_number(
+            existing.get("amount"),
+            existing.get("estimated_cost"),
+            source.get("amount"),
+            source.get("estimated_cost"),
+            default=0.0,
+        )
+        if not explicit_note and explicit_amount <= 0 and not (
+            _insulation_explicit_travel_basis(source) or _insulation_explicit_travel_basis(existing)
+        ):
             return False
     if formula_kind == "markup" and bucket in {"overhead", "profit"}:
         pct_or_amount = positive_number(
@@ -5928,7 +5992,8 @@ def _guard_insulation_scaffold_auto_includes(workbench: dict[str, Any]) -> dict[
                     notes_text,
                     ["travel", "traveling", "truck", "truck expense", "mileage", "miles", "round trip", "sales trip", "inspection trip"],
                 )
-                if not explicit_note and not _insulation_explicit_travel_basis(row):
+                explicit_amount = positive_number(row.get("amount"), row.get("estimated_cost"), row.get("calculated_output"), default=0.0)
+                if not explicit_note and explicit_amount <= 0 and not _insulation_explicit_travel_basis(row):
                     _clear_auto_included_insulation_scaffold_row(
                         row,
                         "Auto-included travel scaffold row was left unchecked because no truck/trip/mileage basis was available.",
@@ -6022,41 +6087,43 @@ def _guard_included_zero_cost_auto_rows(workbench: dict[str, Any]) -> dict[str, 
             )
             if estimated_cost > 0:
                 continue
-            source = str(first_nonblank(row.get("include_source"), row.get("proposal_source"), "")).strip().lower()
+            include_source = str(row.get("include_source") or "").strip().lower()
+            proposal_source = str(row.get("proposal_source") or "").strip().lower()
+            source = str(first_nonblank(include_source, proposal_source, "")).strip().lower()
+            protected_reference_source = (
+                include_source in {"reference_project", "reference_template_summary", "reference_estimate_answer_key"}
+                or proposal_source in {"reference_project", "reference_template_summary", "reference_estimate_answer_key"}
+            )
             warning_text = " ".join(str(warning) for warning in row.get("compatibility_warnings") or [])
             evidence_text = str(row.get("formula_evidence_summary") or "")
             row_bucket = str(first_nonblank(row.get("template_bucket"), row.get("package_key"), row.get("source_decision_id")) or "").strip().lower()
+            row_bucket_key = row_bucket.replace(" ", "_")
             missing_formula_inputs = (
                 "Formula preview needs estimator input" in warning_text
                 or "insufficient_formula_inputs" in evidence_text
             )
             missing_inputs = _missing_calculation_inputs_for_zero_cost_row(row)
-            risky_auto_source = source in {
-                "deterministic_rule",
-                "historical_companion",
-                "chat_estimator",
-                "ai_chat",
-                "photo_scope",
-                "ai_scope",
-            } or (
-                not source
-                and missing_formula_inputs
-                and row_bucket not in {"sales_inspection_trips", "truck_expense", "drum_disposal"}
-                and not _row_has_positive_value(
-                    row,
-                    "estimated_units",
-                    "units",
-                    "quantity",
-                    "calculated_quantity",
-                    "estimated_gallons",
-                    "estimated_drums",
+            risky_auto_source = False if protected_reference_source else (
+                source in {
+                    "deterministic_rule",
+                    "historical_companion",
+                    "chat_estimator",
+                    "ai_chat",
+                    "photo_scope",
+                    "ai_scope",
+                }
+                or (
+                    not source
+                    and row_bucket_key not in {"drum_disposal", "sales_inspection_trips", "truck_expense"}
+                    and (missing_formula_inputs or row_bucket_key in {"granules"})
+                    and (missing_formula_inputs or bool(missing_inputs))
                 )
             )
             explicit_proposal_source = bool(source) and source not in {"selected_item", "historical_default", "template_default"}
             if missing_inputs and (explicit_proposal_source or _manual_include_locked(row)):
                 missing_formula_inputs = True
             calculation_only_detail_row = section == "roofing_detail_quantity_template_decisions"
-            if not (missing_formula_inputs or calculation_only_detail_row):
+            if not (missing_formula_inputs or calculation_only_detail_row or (missing_inputs and risky_auto_source)):
                 continue
             reason = (
                 "Unchecked because this included row had no calculable cost. "
@@ -8528,6 +8595,15 @@ def _build_roofing_granules_template_decisions(
         cost_per_sqft=granules_row.get("historical_cost_per_sqft"),
         include=include,
     )
+    if include:
+        formula = _apply_direct_quantity_cost_fallback(
+            formula,
+            existing,
+            unit_price=unit_price,
+            quantity_fields=("estimated_units", "estimated_gallons", "units", "quantity", "calculated_quantity"),
+            quantity_output_field="estimated_units",
+            source="reference_estimated_cost",
+        )
     compatibility = _roofing_granules_candidate_compatibility(
         template_option=resolved_option,
         candidate=selected_candidate,
@@ -8716,6 +8792,14 @@ def _build_roofing_equipment_template_decisions(
         margin_pct=margin_pct,
         include=include,
     )
+    if include:
+        formula = _apply_direct_quantity_cost_fallback(
+            formula,
+            existing,
+            unit_price=unit_price,
+            quantity_fields=("estimated_units", "units", "quantity", "calculated_quantity"),
+            quantity_output_field="estimated_units",
+        )
     warnings = []
     if include and basis_sqft <= 0:
         warnings.append("Dumpster area is missing.")
@@ -12368,6 +12452,37 @@ def _seed_insulation_foam_rows_from_proposals(
     return workbench
 
 
+def _seed_roofing_rows_from_proposals(
+    workbench: dict[str, Any],
+    proposals: Iterable[dict[str, Any]],
+) -> dict[str, Any]:
+    if _is_insulation_scope(workbench.get("scope") or {}):
+        return workbench
+    for proposal in proposals or []:
+        if not isinstance(proposal, dict):
+            continue
+        section = str(proposal.get("section") or "").strip()
+        workbook_row = str(proposal.get("workbook_row") or "").strip()
+        if not section.startswith("roofing_") or section not in WORKBENCH_DECISION_SECTIONS or not workbook_row:
+            continue
+        rows = [row for row in workbench.get(section) or [] if isinstance(row, dict)]
+        if any(str(row.get("workbook_row") or "").strip() == workbook_row for row in rows):
+            continue
+        rows.append(
+            {
+                "include": False,
+                "section": section,
+                "decision_id": proposal.get("decision_id"),
+                "source_decision_id": proposal.get("decision_id"),
+                "template_bucket": proposal.get("template_bucket"),
+                "workbook_row": workbook_row,
+                "template_rows": workbook_row,
+            }
+        )
+        workbench[section] = rows
+    return workbench
+
+
 def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float = DEFAULT_HOURLY_RATE, data: Any = None) -> dict[str, Any]:
     updated = deepcopy(workbench)
     existing_scope = updated.get("scope")
@@ -12386,6 +12501,7 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
         if str((proposal or {}).get("source") or "") != "historical_companion"
     ]
     updated = _seed_insulation_foam_rows_from_proposals(updated, base_decision_proposals)
+    updated = _seed_roofing_rows_from_proposals(updated, base_decision_proposals)
     if base_decision_proposals:
         updated = apply_decision_proposals_to_workbench(
             updated,

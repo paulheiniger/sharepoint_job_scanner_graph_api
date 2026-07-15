@@ -39,6 +39,35 @@ def test_weak_ai_only_proposal_is_review_marked() -> None:
     assert all(row["confidence"] < 0.5 for row in coating)
 
 
+def test_explicit_roofing_template_type_wins_over_spray_foam_text() -> None:
+    proposals = build_decision_proposals(
+        {
+            "template_type": "roofing",
+            "division": "Roofing",
+            "project_type": "roofing estimate with spray foam repair",
+            "estimator_chat": {
+                "source": "answer_key_audit",
+                "workbook_decision_preferences": [
+                    {
+                        "template_type": "roofing",
+                        "section": "roofing_coating_template_decisions",
+                        "decision_id": "roofing_coating_system_row_27",
+                        "template_bucket": "coating",
+                        "workbook_row": "27",
+                        "include": True,
+                        "source": "reference_estimate_answer_key",
+                        "proposed_values": {"basis_sqft": 46000, "gal_per_100_sqft": 1.725, "unit_price": 36},
+                    }
+                ],
+            },
+        }
+    )
+
+    assert len(proposals) == 1
+    assert proposals[0]["section"] == "roofing_coating_template_decisions"
+    assert proposals[0]["workbook_row"] == "27"
+
+
 def test_estimator_chat_preferences_create_canonical_foam_proposal() -> None:
     proposals = build_decision_proposals(
         {

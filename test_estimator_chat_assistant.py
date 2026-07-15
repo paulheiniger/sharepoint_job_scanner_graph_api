@@ -291,6 +291,7 @@ def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
         assert "historical_context_decision_guidance" in messages[1]["content"]
         assert "historical_template_examples" in messages[1]["content"]
         assert "historical_answer_key_examples" in messages[1]["content"]
+        assert "historical_answer_key_decision_cues" in messages[1]["content"]
         assert "insulation_thermal_barrier_coating" in messages[1]["content"]
         assert "foam_yield_history_digest" in messages[1]["content"]
         assert "template_fallback_defaults" in messages[1]["content"]
@@ -338,6 +339,14 @@ def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
     assert answer_key_examples
     assert answer_key_examples[0]["job_id"] == "I-HIST-1"
     assert answer_key_examples[0]["reference_answer_key"]["decisions"][0]["decision_id"] == "insulation_foam_template_selector"
+    cues = context["historical_answer_key_decision_cues"]
+    assert cues
+    foam_cue = next(row for row in cues if row["decision_id"] == "insulation_foam_template_selector")
+    assert foam_cue["template_bucket"] == "foam"
+    assert foam_cue["sample_inputs"]["basis_sqft"] == 2226
+    assert foam_cue["sample_inputs"]["yield_or_coverage"] == 4500
+    assert foam_cue["sample_outputs"]["estimated_cost"] == 4800
+    assert foam_cue["examples"][0]["job_id"] == "I-HIST-1"
     assert context["template_fallback_defaults"]["insulation_foam"]["yield_or_coverage"] == 2600
     assert context["template_fallback_defaults"]["insulation_foam"]["unit_price"] == 2.25
     loading = next(row for row in context["decision_menu"] if row["template_bucket"] == "labor_loading")
@@ -373,6 +382,87 @@ def test_estimator_chat_marks_explicit_learning_messages() -> None:
     assert result.scope_overrides["explicit_learning_intent"] is True
     assert result.scope_overrides["learning_reference_template_mapped_row_count"] > 0
     assert "Learning mode is on" in result.assistant_message
+
+
+def test_estimator_context_builds_compact_historical_answer_key_decision_cues() -> None:
+    answer_key = {
+        "schema_version": "reference_estimate_answer_key.v1",
+        "template_type": "roofing",
+        "decisions": [
+            {
+                "section": "roofing_coating_template_decisions",
+                "decision_id": "roofing_coating_system_row_26",
+                "template_bucket": "coating",
+                "workbook_row": "26",
+                "line_item": "Gaco Silicone",
+                "inputs": {"basis_sqft": 9600, "gal_per_100_sqft": 1.5, "unit_price": 32},
+                "calculated_outputs": {"estimated_cost": 5299.2},
+            },
+            {
+                "section": "roofing_labor_template_decisions",
+                "decision_id": "roofing_labor_top_coat_row_124",
+                "template_bucket": "labor_top_coat",
+                "workbook_row": "124",
+                "line_item": "Top Coat",
+                "inputs": {"days": 1.0, "crew_size": 5, "daily_rate": 1835.66},
+                "calculated_outputs": {"estimated_cost": 1835.66},
+            },
+        ],
+        "summary": {"decision_count": 2, "unmapped_count": 0},
+    }
+    data = EstimatorData(
+        template_examples=pd.DataFrame(
+            [
+                {
+                    "example_id": "roof-1",
+                    "job_id": "R1",
+                    "job_name": "Metal Roof Coating A",
+                    "template_type": "roofing",
+                    "project_class": "roofing_restoration",
+                    "substrate": "metal",
+                    "material_system": "silicone coating",
+                    "material_packages_json": json.dumps(["coating", "labor_top_coat"]),
+                    "area_sqft": 9600,
+                    "scope_summary": "Metal roof silicone coating.",
+                    "decision_summary": "coating and top coat labor",
+                    "answer_key_json": json.dumps(answer_key),
+                },
+                {
+                    "example_id": "roof-2",
+                    "job_id": "R2",
+                    "job_name": "Metal Roof Coating B",
+                    "template_type": "roofing",
+                    "project_class": "roofing_restoration",
+                    "substrate": "metal",
+                    "material_system": "silicone coating",
+                    "material_packages_json": json.dumps(["coating"]),
+                    "area_sqft": 10000,
+                    "scope_summary": "Metal roof silicone restoration.",
+                    "decision_summary": "coating",
+                    "answer_key_json": json.dumps(answer_key),
+                },
+            ]
+        )
+    )
+
+    context = estimator_context_summary(
+        data,
+        scope={
+            "template_type": "roofing",
+            "estimated_sqft": 9800,
+            "substrate": "metal",
+            "raw_input_notes": "metal roof coating restoration",
+        },
+    )
+
+    cues = context["historical_answer_key_decision_cues"]
+    coating = next(row for row in cues if row["decision_id"] == "roofing_coating_system_row_26")
+    top_coat = next(row for row in cues if row["decision_id"] == "roofing_labor_top_coat_row_124")
+    assert coating["support_count"] == 2
+    assert coating["sample_inputs"]["gal_per_100_sqft"] == 1.5
+    assert coating["sample_outputs"]["estimated_cost"] == 5299.2
+    assert len(coating["examples"]) == 2
+    assert top_coat["support_count"] == 2
 
 
 def test_estimator_chat_detects_answer_key_modes() -> None:

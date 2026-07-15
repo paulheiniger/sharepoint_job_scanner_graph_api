@@ -147,6 +147,64 @@ def test_build_reference_estimate_answer_key_from_template_rows() -> None:
     assert by_id["roofing_fasteners_row_63"]["inputs"]["unit_price_per_thousand"] == 250
 
 
+def test_reference_answer_key_drops_implausible_template_row_values() -> None:
+    data = EstimatorData(
+        template_rows=pd.DataFrame(
+            [
+                {
+                    "template_row_id": "r20",
+                    "document_id": "D1",
+                    "job_id": "J1",
+                    "source_file": "Estimate Insulation - Polluted.xlsx",
+                    "template_type": "insulation",
+                    "row_number": 20,
+                    "template_bucket": "foam",
+                    "template_section": "materials",
+                    "line_item_kind": "material",
+                    "selected_item_name": "Gaco 0.5 lb.",
+                    "resolved_item_name": "Gaco 0.5 lb.",
+                    "quantity": 1200,
+                    "unit_price": 1.6,
+                    "estimated_units": 3.2,
+                    "estimated_cost": 5120,
+                    "thickness_inches": 2733,
+                    "yield_or_coverage": 4,
+                    "parsed_confidence": 0.95,
+                    "needs_review": False,
+                },
+                {
+                    "template_row_id": "r86",
+                    "document_id": "D1",
+                    "job_id": "J1",
+                    "source_file": "Estimate Insulation - Polluted.xlsx",
+                    "template_type": "insulation",
+                    "row_number": 86,
+                    "template_bucket": "labor_foam",
+                    "template_section": "labor",
+                    "line_item_kind": "labor",
+                    "days": 1,
+                    "crew_size": 105,
+                    "daily_rate": 1200,
+                    "estimated_cost": 1200,
+                    "parsed_confidence": 0.95,
+                    "needs_review": False,
+                },
+            ]
+        )
+    )
+
+    answer_key = build_reference_estimate_answer_key(data, job_id="J1")
+    by_id = {row["decision_id"]: row for row in answer_key["decisions"]}
+
+    foam_inputs = by_id["insulation_foam_row_20"]["inputs"]
+    assert "thickness_inches" not in foam_inputs
+    assert "yield_or_coverage" not in foam_inputs
+    labor_inputs = by_id["insulation_labor_foam_row_86"]["inputs"]
+    assert "crew_size" not in labor_inputs
+    assert "crew_selector_code" not in labor_inputs
+    assert labor_inputs["daily_rate"] == 1200
+
+
 def test_answer_key_json_maps_to_chat_decision_preferences() -> None:
     answer_key = {
         "schema_version": SCHEMA_VERSION,
@@ -199,6 +257,116 @@ def test_answer_key_json_maps_to_chat_decision_preferences() -> None:
     coating_proposal = next(row for row in proposals if row["decision_id"] == "roofing_coating_system_row_26")
     assert coating_proposal["source"] == "reference_estimate_answer_key"
     assert coating_proposal["evidence"]["reference_estimate_answer_key"][0]["source_row"] == "26"
+
+
+def test_answer_key_preferences_drop_implausible_existing_values() -> None:
+    answer_key = {
+        "schema_version": SCHEMA_VERSION,
+        "template_type": "insulation",
+        "decisions": [
+            {
+                "source_row": "19",
+                "workbook_row": "19",
+                "section": "insulation_foam_template_decisions",
+                "decision_id": "insulation_foam_row_19",
+                "template_bucket": "foam",
+                "include": True,
+                "inputs": {
+                    "basis_sqft": 1200,
+                    "thickness_inches": 2733,
+                    "yield_or_coverage": 4,
+                    "unit_price": 1.6,
+                },
+                "calculated_outputs": {"estimated_cost": 5000},
+            },
+            {
+                "source_row": "86",
+                "workbook_row": "86",
+                "section": "insulation_labor_template_decisions",
+                "decision_id": "insulation_labor_foam_row_86",
+                "template_bucket": "labor_foam",
+                "include": True,
+                "inputs": {"days": 1, "crew_size": 105, "daily_rate": 1200},
+                "calculated_outputs": {"estimated_cost": 1200},
+            },
+        ],
+    }
+
+    preferences = answer_key_to_workbook_decision_preferences(answer_key)
+    by_id = {row["decision_id"]: row for row in preferences}
+
+    foam_values = by_id["insulation_foam_row_19"]["proposed_values"]
+    assert "thickness_inches" not in foam_values
+    assert "yield_or_coverage" not in foam_values
+    labor_values = by_id["insulation_labor_foam_row_86"]["proposed_values"]
+    assert "crew_size" not in labor_values
+    assert labor_values["daily_rate"] == 1200
+
+
+def test_reference_answer_key_normalizes_insulation_variant_trip_rows() -> None:
+    data = EstimatorData(
+        template_rows=pd.DataFrame(
+            [
+                {
+                    "template_row_id": "sales-old-row",
+                    "document_id": "D1",
+                    "job_id": "J1",
+                    "source_file": "Estimate - Insulation - TEMPLATE - Massey Pole Barn.xlsx",
+                    "template_type": "insulation",
+                    "row_number": 88,
+                    "template_bucket": "sales_inspection_trips",
+                    "template_section": "travel",
+                    "line_item_kind": "travel",
+                    "row_label": "Sales/Inspect.",
+                    "selected_item_name": "Sales/Inspect.",
+                    "resolved_item_name": "Sales/Inspect.",
+                    "trips": 2,
+                    "round_trip_miles": 105,
+                    "cost_per_mile": 0.75,
+                    "estimated_cost": 157.5,
+                    "parsed_confidence": 0.95,
+                    "needs_review": False,
+                },
+                {
+                    "template_row_id": "truck-old-row",
+                    "document_id": "D1",
+                    "job_id": "J1",
+                    "source_file": "Estimate - Insulation - TEMPLATE - Massey Pole Barn.xlsx",
+                    "template_type": "insulation",
+                    "row_number": 90,
+                    "template_bucket": "truck_expense",
+                    "template_section": "travel",
+                    "line_item_kind": "travel",
+                    "row_label": "Truck Exp.",
+                    "selected_item_name": "Truck Exp.",
+                    "resolved_item_name": "Truck Exp.",
+                    "trips": 2,
+                    "round_trip_miles": 105,
+                    "cost_per_mile": 1.25,
+                    "estimated_cost": 262.5,
+                    "parsed_confidence": 0.95,
+                    "needs_review": False,
+                },
+            ]
+        )
+    )
+
+    answer_key = build_reference_estimate_answer_key(data, job_id="J1")
+    by_id = {row["decision_id"]: row for row in answer_key["decisions"]}
+
+    sales = by_id["insulation_sales_inspection_trips"]
+    assert sales["source_row"] == "88"
+    assert sales["workbook_row"] == "68"
+    assert sales["inputs"]["trip_count"] == 2
+    assert sales["inputs"]["round_trip_miles"] == 105
+    assert sales["inputs"]["unit_price"] == 0.75
+
+    truck = by_id["insulation_truck_expense"]
+    assert truck["source_row"] == "90"
+    assert truck["workbook_row"] == "70"
+    assert truck["inputs"]["trip_count"] == 2
+    assert truck["inputs"]["round_trip_miles"] == 105
+    assert truck["inputs"]["unit_price"] == 1.25
 
 
 def test_reference_answer_key_maps_secondary_roofing_rows_from_history() -> None:
@@ -520,6 +688,9 @@ def test_reference_answer_key_skips_inactive_mapped_template_options() -> None:
     assert by_id["roofing_primer_system_row_39"]["inputs"]["estimated_units"] == 38.4
     assert by_id["roofing_caulk_sealant_row_43"]["inputs"]["estimated_units"] == 96
     assert by_id["roofing_generator_row_99"]["inputs"]["estimated_units"] == 7
+    preferences = answer_key_to_workbook_decision_preferences(answer_key)
+    generator_pref = next(row for row in preferences if row["decision_id"] == "roofing_generator_row_99")
+    assert generator_pref["proposed_values"]["days"] == 7
     assert by_id["roofing_truck_expense_row_108"]["inputs"]["trip_count"] == 14
     assert by_id["roofing_labor_prime_row_118"]["inputs"]["days"] == 1.25
     assert by_id["pricing_overhead"]["inputs"]["markup_pct"] == 35
