@@ -2496,18 +2496,234 @@ def load_schedule_job_spec_documents(job_id: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def render_schedule_job_spec_preview(job_id: object) -> None:
+CELL_DUMP_RE = re.compile(r"([A-Z]{1,3})(\d+):\s*(.*?)(?=\s+\|\s+[A-Z]{1,3}\d+:|$)")
+
+
+def parse_cell_dump_row(text: object) -> list[dict[str, object]]:
+    row_text = text_value(text)
+    if not row_text:
+        return []
+    cells: list[dict[str, object]] = []
+    for match in CELL_DUMP_RE.finditer(row_text):
+        value = match.group(3).strip()
+        if not value:
+            continue
+        cells.append(
+            {
+                "cell": f"{match.group(1)}{match.group(2)}",
+                "column": match.group(1),
+                "row": int(match.group(2)),
+                "value": value,
+            }
+        )
+    return cells
+
+
+def parse_schedule_spec_rows(spec_rows: pd.DataFrame) -> dict[str, object]:
+    parsed: dict[str, object] = {
+        "source_file": "",
+        "source_sheet": "",
+        "has_spec": False,
+        "general": {},
+        "scope": [],
+        "materials": [],
+        "notes": [],
+        "tracking_totals": {},
+        "tracking_recent": [],
+        "raw_preview": "",
+    }
+    if spec_rows.empty:
+        return parsed
+
+    first = spec_rows.iloc[0]
+    parsed["source_file"] = text_value(first.get("file_name")) or "Job spec"
+    parsed["source_sheet"] = text_value(first.get("sheet_name"))
+
+    general_labels = {
+        "job name",
+        "address",
+        "city, state, zip",
+        "contact name",
+        "phone #",
+        "email",
+        "est. start date",
+        "est. # of days",
+        "est. # of hours",
+        "est. crew size",
+        "warranty",
+        "deck",
+        "roof type",
+        "building type",
+        "total sq. ft.",
+        "total sq ft",
+        "sq. ft.",
+        "sales / estimator",
+        "estimator/sales",
+    }
+    tracking_total_labels = {
+        "labor hours",
+        "travel hours",
+        "load hours",
+        "os hours",
+        "mileage",
+        "os mileage",
+        "foam strokes",
+        "thickness (in.)",
+        "sq. ft. (foam)",
+        "foam yield",
+        "sq. ft. (base)",
+        "gal/sq. (base)",
+        "sq. ft. (top)",
+        "gal/sq. (top)",
+        "granules",
+        "caulk",
+        "primer",
+        "sf",
+        "densdeck sq. ft.",
+    }
+
+    current_section = ""
+    tracking_headers: list[str] = []
+    tracking_header_by_column: dict[str, str] = {}
+    tracking_header_row: int | None = None
+    combined_parts: list[str] = []
+    general: dict[str, str] = {}
+    scope: list[str] = []
+    materials: list[str] = []
+    notes: list[str] = []
+    tracking_recent: list[dict[str, object]] = []
+    tracking_totals: dict[str, object] = {}
+
+    rows = spec_rows.to_dict(orient="records")
+    for source_row in rows:
+        row_text = text_value(source_row.get("text_content"))
+        if row_text:
+            combined_parts.append(row_text)
+        cells = parse_cell_dump_row(row_text)
+        if not cells:
+            if row_text and current_section in {"scope", "notes"}:
+                target = scope if current_section == "scope" else notes
+                target.append(row_text)
+            continue
+        values = [text_value(cell.get("value")) for cell in cells if text_value(cell.get("value"))]
+        lower_values = [value.lower().strip(":") for value in values]
+        row_lower = " | ".join(lower_values)
+
+        if any(value in {"job specification", "job spec"} for value in lower_values) or re.search(
+            r"\bjob specification\b|\bjob spec\b", row_lower
+        ):
+            parsed["has_spec"] = True
+        if any("scope of work" in value for value in lower_values):
+            current_section = "scope"
+            parsed["has_spec"] = True
+        elif any("materials needed" in value for value in lower_values):
+            current_section = "materials"
+            parsed["has_spec"] = True
+        elif lower_values and (lower_values[0] == "notes" or lower_values[0].startswith("notes:")):
+            current_section = "notes"
+        elif any("actual amounts" in value for value in lower_values):
+            current_section = "tracking"
+        elif any("estimated amounts" in value for value in lower_values):
+            current_section = "tracking_estimated"
+        elif any("over/under" in value for value in lower_values):
+            current_section = "tracking_variance"
+
+        if current_section in {"tracking", "tracking_estimated", "tracking_variance"} and len(values) > 4:
+            maybe_headers = [value for value in values[1:] if value.lower().strip(":") in tracking_total_labels or value.lower() == "notes"]
+            if len(maybe_headers) >= 3:
+                tracking_headers = values[1:]
+                tracking_header_by_column = {
+                    text_value(cell.get("column")): text_value(cell.get("value"))
+                    for cell in cells[1:]
+                    if text_value(cell.get("column")) and text_value(cell.get("value"))
+                }
+                tracking_header_row = cells[0]["row"]
+                continue
+
+        if current_section == "tracking" and tracking_headers and tracking_header_by_column and tracking_header_row is not None:
+            first_value = values[0] if values else ""
+            parsed_date = pd.to_datetime(first_value, errors="coerce")
+            if not pd.isna(parsed_date):
+                entry = {}
+                for cell in cells[1:]:
+                    header = tracking_header_by_column.get(text_value(cell.get("column")))
+                    value = text_value(cell.get("value"))
+                    if header and value:
+                        entry[header] = value
+                entry["Work Date"] = parsed_date.date().isoformat()
+                if entry:
+                    tracking_recent.append(entry)
+                continue
+            if "daily totals" in first_value.lower() and len(values) > 1:
+                for cell in cells[1:]:
+                    header = tracking_header_by_column.get(text_value(cell.get("column")))
+                    value = text_value(cell.get("value"))
+                    if header and value:
+                        tracking_totals[header] = value
+                continue
+
+        # Adjacent-cell label/value pairs from Job Spec style forms.
+        for index, cell in enumerate(cells):
+            label = text_value(cell.get("value")).strip().rstrip(":")
+            normalized = label.lower()
+            if normalized not in general_labels:
+                continue
+            value = ""
+            for next_cell in cells[index + 1 :]:
+                candidate = text_value(next_cell.get("value")).strip()
+                if candidate and candidate.lower().rstrip(":") not in general_labels:
+                    value = candidate
+                    break
+            if value:
+                general[label] = value
+                parsed["has_spec"] = True
+
+        if current_section == "scope":
+            cleaned = re.sub(r"^[A-Z]{1,3}\d+:\s*", "", row_text).strip()
+            cleaned = re.sub(r"^\s*Scope of Work:?\s*", "", cleaned, flags=re.IGNORECASE).strip()
+            parts = re.split(r"(?:\s*[•◦▪]\s+|\s+-\s+|\s+o\s+)", cleaned)
+            for part in parts:
+                item = re.sub(r"\s+", " ", part).strip(" -;")
+                if item and not re.fullmatch(r"scope of work:?", item, flags=re.IGNORECASE):
+                    scope.append(item)
+        elif current_section == "materials":
+            material_values = [
+                value
+                for value in values
+                if not value.lower().startswith(("materials needed", "manuf.", "manufacturer", "quantity", "size", "color"))
+            ]
+            if len(material_values) >= 2:
+                materials.append(" | ".join(material_values))
+        elif current_section == "notes":
+            cleaned = re.sub(r"^[A-Z]{1,3}\d+:\s*", "", row_text).strip()
+            cleaned = re.sub(r"^\s*Notes:?\s*", "", cleaned, flags=re.IGNORECASE).strip()
+            if cleaned and not re.fullmatch(r"notes:?", cleaned, flags=re.IGNORECASE):
+                notes.append(cleaned)
+
+    parsed["general"] = general
+    parsed["scope"] = list(dict.fromkeys(scope))[:12]
+    parsed["materials"] = list(dict.fromkeys(materials))[:12]
+    parsed["notes"] = list(dict.fromkeys(notes))[:8]
+    parsed["tracking_totals"] = tracking_totals
+    parsed["tracking_recent"] = tracking_recent[-8:]
+    parsed["raw_preview"] = "\n\n".join(combined_parts)[:12000]
+    if not parsed["has_spec"] and (general or scope or materials):
+        parsed["has_spec"] = True
+    return parsed
+
+
+def render_schedule_job_spec_preview(job_id: object) -> bool:
     job_id_text = text_value(job_id)
     st.subheader("Job Spec")
     if not job_id_text:
         st.info("Select a job to view the extracted job spec.")
-        return
+        return False
     spec_rows = load_schedule_job_spec_content(job_id_text)
     if spec_rows.empty:
         candidate_docs = load_schedule_job_spec_documents(job_id_text)
         if candidate_docs.empty:
             st.info("No indexed job spec or job tracking document was found for this job yet.")
-            return
+            return False
         st.info("Job spec/tracking candidates exist, but extracted text is not available yet.")
         display_cols = [
             col
@@ -2515,23 +2731,59 @@ def render_schedule_job_spec_preview(job_id: object) -> None:
             if col in candidate_docs.columns
         ]
         st.dataframe(candidate_docs[display_cols], width="stretch", hide_index=True)
-        return
-    first = spec_rows.iloc[0]
-    file_name = text_value(first.get("file_name")) or "Job spec"
-    sheet_name = text_value(first.get("sheet_name"))
-    url = text_value(first.get("sharepoint_url"))
+        return False
+    parsed = parse_schedule_spec_rows(spec_rows)
+    file_name = text_value(parsed.get("source_file")) or "Job spec"
+    sheet_name = text_value(parsed.get("source_sheet"))
+    url = text_value(spec_rows.iloc[0].get("sharepoint_url"))
     if url:
         st.link_button(f"Open {file_name}", url)
     else:
         st.caption(file_name)
     if sheet_name:
         st.caption(f"Showing extracted content starting from sheet: {sheet_name}")
-    combined = "\n\n".join(
-        text_value(row.get("text_content"))
-        for row in spec_rows.to_dict(orient="records")
-        if text_value(row.get("text_content"))
-    )
-    st.text_area("Extracted job spec text", value=combined[:12000], height=320, disabled=True, key=f"job_spec_preview_{job_id_text}")
+    general = parsed.get("general") if isinstance(parsed.get("general"), dict) else {}
+    if general:
+        summary_rows = [{"Field": key, "Value": value} for key, value in general.items()]
+        st.dataframe(pd.DataFrame(summary_rows), width="stretch", hide_index=True)
+    scope = parsed.get("scope") if isinstance(parsed.get("scope"), list) else []
+    if scope:
+        st.write("**Scope of Work**")
+        for item in scope:
+            st.markdown(f"- {item}")
+    materials = parsed.get("materials") if isinstance(parsed.get("materials"), list) else []
+    if materials:
+        st.write("**Materials Needed**")
+        for item in materials:
+            st.markdown(f"- {item}")
+    notes = parsed.get("notes") if isinstance(parsed.get("notes"), list) else []
+    if notes:
+        st.write("**Notes**")
+        for item in notes:
+            st.markdown(f"- {item}")
+    tracking_totals = parsed.get("tracking_totals") if isinstance(parsed.get("tracking_totals"), dict) else {}
+    if tracking_totals:
+        compact_totals = [
+            {"Metric": key, "Value": value}
+            for key, value in tracking_totals.items()
+            if text_value(value) and not str(value).startswith("=")
+        ]
+        if compact_totals:
+            st.write("**Tracking Totals**")
+            st.dataframe(pd.DataFrame(compact_totals), width="stretch", hide_index=True)
+    tracking_recent = parsed.get("tracking_recent") if isinstance(parsed.get("tracking_recent"), list) else []
+    if tracking_recent:
+        st.write("**Recent Tracking Entries**")
+        st.dataframe(pd.DataFrame(tracking_recent), width="stretch", hide_index=True)
+    with st.expander("Raw extracted text", expanded=False):
+        st.text_area(
+            "Raw extracted job spec text",
+            value=text_value(parsed.get("raw_preview")),
+            height=260,
+            disabled=True,
+            key=f"job_spec_preview_{job_id_text}",
+        )
+    return bool(parsed.get("has_spec"))
 
 
 def concise_tracking_note(value: object, max_chars: int = 220) -> str:
@@ -11453,32 +11705,33 @@ def schedule_calendar_page() -> None:
             folder_link = text_value(props.get("folder_link_or_path"))
             if folder_link:
                 render_document_access("Open Job Folder", folder_link)
-            render_schedule_job_spec_preview(props.get("job_id"))
+            has_readable_job_spec = render_schedule_job_spec_preview(props.get("job_id"))
             render_schedule_job_tracking_preview(props.get("job_id"))
 
-            st.subheader("Proposal Summary")
-            actionable_warnings = actionable_schedule_warning_text(props.get("warnings"))
-            summary_fields = [
-                ("Estimated Value", props.get("estimated_value"), "money"),
-                ("Estimated Sq Ft", props.get("estimated_sqft"), "number"),
-                ("Price / Sq Ft", props.get("price_per_sqft"), "money"),
-                ("Estimated Duration Days", props.get("estimated_duration_days"), "number"),
-                ("Estimated Labor Hours", props.get("estimated_labor_hours"), "number"),
-                ("Estimated Crew Size", props.get("estimated_crew_size"), "number"),
-                ("Job Type", props.get("job_type"), "text"),
-                ("Coating Type", props.get("coating_type"), "text"),
-                ("Foam Type", props.get("foam_type"), "text"),
-                ("Warranty Amount", props.get("warranty_amount"), "money"),
-                ("Equipment Rental Amount", props.get("equipment_rental_amount"), "money"),
-                ("Subcontractor Amount", props.get("subcontractor_amount"), "money"),
-                ("Material Subtotal", props.get("material_subtotal"), "money"),
-                ("Labor Subtotal", props.get("labor_subtotal"), "money"),
-                ("Schedule Notes", props.get("schedule_notes"), "text"),
-            ]
-            if actionable_warnings:
-                summary_fields.append(("Warnings", actionable_warnings, "text"))
-            for label, value, kind in summary_fields:
-                st.write(f"**{label}:** {format_summary_value(value, kind=kind)}")
+            if not has_readable_job_spec:
+                st.subheader("Proposal Summary")
+                actionable_warnings = actionable_schedule_warning_text(props.get("warnings"))
+                summary_fields = [
+                    ("Estimated Value", props.get("estimated_value"), "money"),
+                    ("Estimated Sq Ft", props.get("estimated_sqft"), "number"),
+                    ("Price / Sq Ft", props.get("price_per_sqft"), "money"),
+                    ("Estimated Duration Days", props.get("estimated_duration_days"), "number"),
+                    ("Estimated Labor Hours", props.get("estimated_labor_hours"), "number"),
+                    ("Estimated Crew Size", props.get("estimated_crew_size"), "number"),
+                    ("Job Type", props.get("job_type"), "text"),
+                    ("Coating Type", props.get("coating_type"), "text"),
+                    ("Foam Type", props.get("foam_type"), "text"),
+                    ("Warranty Amount", props.get("warranty_amount"), "money"),
+                    ("Equipment Rental Amount", props.get("equipment_rental_amount"), "money"),
+                    ("Subcontractor Amount", props.get("subcontractor_amount"), "money"),
+                    ("Material Subtotal", props.get("material_subtotal"), "money"),
+                    ("Labor Subtotal", props.get("labor_subtotal"), "money"),
+                    ("Schedule Notes", props.get("schedule_notes"), "text"),
+                ]
+                if actionable_warnings:
+                    summary_fields.append(("Warnings", actionable_warnings, "text"))
+                for label, value, kind in summary_fields:
+                    st.write(f"**{label}:** {format_summary_value(value, kind=kind)}")
 
             st.subheader("Job Documents")
             # TODO: generate true SharePoint web links for estimate/proposal files.
