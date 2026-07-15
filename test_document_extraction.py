@@ -41,9 +41,11 @@ class FakeConnection:
         self.deleted = False
         self.updated_failure = False
         self.inserted = []
+        self.executed = []
 
     def execute(self, stmt, params=None):
         sql = str(stmt)
+        self.executed.append((sql, params or {}))
         if "information_schema.tables" in sql:
             return FakeScalar(True)
         if "DELETE FROM document_content" in sql:
@@ -445,13 +447,59 @@ def test_search_results_include_source_metadata_and_exact_url() -> None:
 def test_one_document_and_one_job_cli_routes(monkeypatch, capsys) -> None:
     docs = [{"document_id": "DOC", "job_id": "JOB", "file_name": "Estimate.xlsx", "file_extension": ".xlsx"}]
     monkeypatch.setattr(de, "create_engine", lambda _url, future=True: FakeEngine(docs))
-    monkeypatch.setattr(de, "extract_one_document", lambda conn, document, cache_root, force=False: ("extracted", 3))
+    monkeypatch.setattr(de, "extract_one_document_with_retry", lambda engine, document, cache_root, force=False: ("extracted", 3))
 
     assert de.main(["--document-id", "DOC", "--database-url", "postgresql://example"]) == 0
     assert "[1/1] Estimate.xlsx — extracted 3 content rows" in capsys.readouterr().out
 
     assert de.main(["--job-id", "JOB", "--database-url", "postgresql://example"]) == 0
     assert "[1/1] Estimate.xlsx — extracted 3 content rows" in capsys.readouterr().out
+
+
+def test_document_extraction_cli_continues_after_document_transient_failure(monkeypatch, capsys) -> None:
+    docs = [
+        {"document_id": "DOC1", "job_id": "JOB", "file_name": "Large Bid.pdf", "file_extension": ".pdf"},
+        {"document_id": "DOC2", "job_id": "JOB", "file_name": "Job Spec.pdf", "file_extension": ".pdf"},
+    ]
+    calls: list[str] = []
+    monkeypatch.setattr(de, "create_engine", lambda _url, future=True: FakeEngine(docs))
+
+    def fake_extract_one_document_with_retry(engine, document, cache_root, force=False):
+        calls.append(document["document_id"])
+        if document["document_id"] == "DOC1":
+            raise de.TransientDocumentDatabaseError("simulated transient database failure")
+        return "extracted", 2
+
+    monkeypatch.setattr(de, "extract_one_document_with_retry", fake_extract_one_document_with_retry)
+
+    assert de.main(["--pending", "--limit", "2", "--database-url", "postgresql://example"]) == 1
+
+    output = capsys.readouterr().out
+    assert calls == ["DOC1", "DOC2"]
+    assert "[1/2] Large Bid.pdf — database connection failure" in output
+    assert "[2/2] Job Spec.pdf — extracted 2 content rows" in output
+    assert "transient_document_failures: 1" in output
+
+
+def test_document_extraction_cli_fail_fast_stops_after_document_transient_failure(monkeypatch, capsys) -> None:
+    docs = [
+        {"document_id": "DOC1", "job_id": "JOB", "file_name": "Large Bid.pdf", "file_extension": ".pdf"},
+        {"document_id": "DOC2", "job_id": "JOB", "file_name": "Job Spec.pdf", "file_extension": ".pdf"},
+    ]
+    calls: list[str] = []
+    monkeypatch.setattr(de, "create_engine", lambda _url, future=True: FakeEngine(docs))
+
+    def fake_extract_one_document_with_retry(engine, document, cache_root, force=False):
+        calls.append(document["document_id"])
+        raise de.TransientDocumentDatabaseError("simulated transient database failure")
+
+    monkeypatch.setattr(de, "extract_one_document_with_retry", fake_extract_one_document_with_retry)
+
+    assert de.main(["--pending", "--limit", "2", "--fail-fast", "--database-url", "postgresql://example"]) == 1
+
+    output = capsys.readouterr().out
+    assert calls == ["DOC1"]
+    assert "Stopping extraction because document failure limit was reached." in output
 
 
 def test_cached_metadata_backfill_reads_manifest_and_updates_rows(tmp_path: Path) -> None:
@@ -485,6 +533,93 @@ def test_cached_metadata_backfill_reads_manifest_and_updates_rows(tmp_path: Path
         }
     ]
     assert de.backfill_document_drive_metadata(FakeConnection(), tmp_path / ".cache") == 1
+
+
+def test_document_extraction_limit_zero_means_unbounded() -> None:
+    conn = FakeConnection(
+        [
+            {"document_id": "DOC1", "file_extension": ".pdf"},
+            {"document_id": "DOC2", "file_extension": ".xlsx"},
+        ]
+    )
+
+    rows = de.load_documents_for_extraction(conn, pending=True, limit=0)
+
+    assert [row["document_id"] for row in rows] == ["DOC1", "DOC2"]
+    assert "LIMIT :limit" not in conn.executed[-1][0]
+    assert "limit" not in conn.executed[-1][1]
+
+
+def test_document_selection_estimator_relevant_targets_core_estimate_docs() -> None:
+    where_sql, params = de.document_selection_sql(
+        document_id=None,
+        job_id=None,
+        pending=True,
+        estimator_relevant=True,
+    )
+
+    assert "document_type = ANY(:estimator_relevant_document_types)" in where_sql
+    assert "estimate" in params["estimator_relevant_document_types"]
+    assert "proposal" in params["estimator_relevant_document_types"]
+    assert "job_tracking" in params["estimator_relevant_document_types"]
+    assert "bid package" in params["estimator_relevant_exclude_pattern"]
+    assert "(extraction_status IS NULL OR extraction_status IN ('not_started', 'pending'))" in where_sql
+
+
+def test_document_extraction_positive_limit_is_bounded() -> None:
+    conn = FakeConnection([{"document_id": "DOC1", "file_extension": ".pdf"}])
+
+    de.load_documents_for_extraction(conn, pending=True, limit=25)
+
+    assert "LIMIT :limit" in conn.executed[-1][0]
+    assert conn.executed[-1][1]["limit"] == 25
+
+
+def test_metadata_backfill_limit_zero_processes_all_manifest_rows(tmp_path: Path) -> None:
+    manifest_dir = tmp_path / ".cache" / "Site" / "Root"
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / ".jobscan_manifest.json").write_text(
+        """
+        {
+          "drive_id": "drive-root",
+          "documents": [
+            {"name": "One.pdf", "drive_item_id": "item-1", "webUrl": "https://sharepoint.example/one.pdf", "relative_path": "Job/One.pdf"},
+            {"name": "Two.pdf", "drive_item_id": "item-2", "webUrl": "https://sharepoint.example/two.pdf", "relative_path": "Job/Two.pdf"}
+          ]
+        }
+        """,
+        encoding="utf-8",
+    )
+    conn = FakeConnection()
+
+    updated = de.backfill_document_drive_metadata(conn, tmp_path / ".cache", limit=0)
+
+    assert updated == 2
+    update_calls = [sql for sql, _params in conn.executed if "UPDATE documents" in sql]
+    assert len(update_calls) == 2
+
+
+def test_metadata_backfill_progress_logging(tmp_path: Path, capsys) -> None:
+    manifest_dir = tmp_path / ".cache" / "Site" / "Root"
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / ".jobscan_manifest.json").write_text(
+        """
+        {
+          "drive_id": "drive-root",
+          "documents": [
+            {"name": "One.pdf", "drive_item_id": "item-1", "webUrl": "https://sharepoint.example/one.pdf", "relative_path": "Job/One.pdf"},
+            {"name": "Two.pdf", "drive_item_id": "item-2", "webUrl": "https://sharepoint.example/two.pdf", "relative_path": "Job/Two.pdf"}
+          ]
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    de.backfill_document_drive_metadata(FakeConnection(), tmp_path / ".cache", limit=0, progress_every=1)
+
+    output = capsys.readouterr().out
+    assert "Cached manifest metadata candidates: 2" in output
+    assert "Backfill metadata progress: 2/2 candidates, 2 rows updated" in output
 
 
 class FakeGraphClient:

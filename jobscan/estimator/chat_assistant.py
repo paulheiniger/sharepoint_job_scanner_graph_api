@@ -235,6 +235,7 @@ def run_estimator_chat_turn(
                 "Reference answer key/template summary detected but not applied. Say 'apply this answer key' to fill the current workbook, "
                 "'learn from this answer key' to save it as memory, or use it only for evaluation."
             )
+        result = _align_decision_preferences_with_deterministic_scope(result)
         return _apply_learning_intent(
             result,
             learning_intent,
@@ -248,7 +249,7 @@ def run_estimator_chat_turn(
         )
     deterministic_baseline.warnings.append("OPENAI_API_KEY is not configured; used deterministic estimator-chat fallback.")
     return _apply_learning_intent(
-        _attach_context_retrieval_summary(deterministic_baseline, context),
+        _align_decision_preferences_with_deterministic_scope(_attach_context_retrieval_summary(deterministic_baseline, context)),
         learning_intent,
         _best_learning_reference_summary(
             reference_summary,
@@ -1433,6 +1434,44 @@ def _template_type_for_scope(scope: dict[str, Any]) -> str:
     return "roofing"
 
 
+def _template_type_from_hint(value: str | None) -> str:
+    text = _clean_string(value).lower()
+    if "insulation" in text:
+        return "insulation"
+    if "floor" in text:
+        return "flooring"
+    if "repair" in text and "roof restoration" not in text:
+        return "repair"
+    if "roof" in text or "coating" in text:
+        return "roofing"
+    return ""
+
+
+def _template_type_from_chat_text(text: str) -> str:
+    normalized = " ".join(str(text or "").lower().split())
+    if not normalized:
+        return ""
+    if re.search(r"\b(polyaspartic|epoxy floor|floor system|concrete floor|flake broadcast)\b", normalized):
+        return "flooring"
+    insulation_signal = re.search(
+        r"\b(insulat(?:e|ed|ion)?|open[- ]?cell|closed[- ]?cell|r[- ]?\d+|thermal barrier|dc315|"
+        r"attic|crawlspace|outside walls?|wall cavities?|metal building|pole barn|underside of (?:the )?roof deck)\b",
+        normalized,
+    )
+    roofing_signal = re.search(
+        r"\b(roof restoration|roof repair|roof coating|membrane|tpo|epdm|bur|silicone coating|ponding|"
+        r"blister|fasteners?|seams?|curbs?|drains?|tear[- ]?out)\b",
+        normalized,
+    )
+    if insulation_signal and not roofing_signal:
+        return "insulation"
+    if insulation_signal and re.search(r"\b(insulat(?:e|ed|ion)?|open[- ]?cell|closed[- ]?cell|r[- ]?\d+|outside walls?|metal building|pole barn)\b", normalized):
+        return "insulation"
+    if roofing_signal or re.search(r"\broof(?:ing)?\b", normalized):
+        return "roofing"
+    return ""
+
+
 def _historical_decision_evidence(data: EstimatorData, *, template_type: str) -> list[dict[str, Any]]:
     frame = data.estimator_decision_recommendations
     if not isinstance(frame, pd.DataFrame) or frame.empty:
@@ -1851,7 +1890,9 @@ def _merge_reference_template_summary(
         reference_summary.workbook_decision_preferences,
     )
     reference_area = _basis_sqft_from_decision_preferences(merged_preferences)
-    template_type = "roofing" if _clean_string(template_type_hint).lower() == "roofing" else ""
+    template_type = _template_type_from_hint(template_type_hint)
+    if not template_type:
+        template_type = _template_type_for_scope(result.scope_overrides)
     if not template_type:
         template_type = "roofing"
     scope_payload = {
@@ -2603,12 +2644,14 @@ def deterministic_chat_fallback(
     scope: dict[str, Any] = {}
     assumptions: list[str] = []
     questions: list[str] = []
-    template_hint = template_type_hint.lower()
-    if "roof" in template_hint:
+    text_template = _template_type_from_chat_text(text)
+    hint_template = _template_type_from_hint(template_type_hint)
+    template_hint = text_template or hint_template
+    if template_hint == "roofing":
         scope["template_type"] = "roofing"
         scope["division"] = "Roofing"
         scope["project_type"] = "roofing estimate"
-    elif "insulation" in template_hint or re.search(r"\bfoam|spray|insulat", text, re.I):
+    elif template_hint == "insulation" or re.search(r"\bfoam|spray|insulat", text, re.I):
         scope["template_type"] = "insulation"
         scope["division"] = "Insulation"
         scope["project_type"] = "spray foam insulation"
@@ -3191,6 +3234,84 @@ def _merge_chat_scopes(baseline_scope: dict[str, Any], ai_scope: dict[str, Any])
     if baseline.get("foam_thickness_inches") and not merged.get("foam_thickness_inches"):
         merged["foam_thickness_inches"] = baseline["foam_thickness_inches"]
     return _clean_scope(merged)
+
+
+def _align_decision_preferences_with_deterministic_scope(result: EstimatorChatResult) -> EstimatorChatResult:
+    scope = _clean_scope(result.scope_overrides or {})
+    if scope.get("template_type") != "insulation":
+        return result
+    total_area = _safe_positive_number(scope.get("net_insulation_area_sqft") or scope.get("estimated_sqft"))
+    if total_area <= 0:
+        return result
+    rows = [dict(row) for row in (result.workbook_decision_preferences or []) if isinstance(row, dict)]
+    if not rows:
+        return result
+    foam_indexes = [
+        index
+        for index, row in enumerate(rows)
+        if bool(row.get("include"))
+        and _clean_string(row.get("template_type") or scope.get("template_type")).lower() in {"", "insulation"}
+        and (
+            _clean_string(row.get("template_bucket")).lower().replace(" ", "_").replace("-", "_") == "foam"
+            or _clean_string(row.get("section")).lower().startswith("insulation_foam")
+            or _safe_row_number(row.get("workbook_row")) in {"19", "20", "21"}
+        )
+    ]
+    if not foam_indexes:
+        return result
+    net_wall_area = _safe_positive_number(scope.get("gross_wall_area_sqft")) - _safe_positive_number(scope.get("opening_area_known_sqft"))
+    if net_wall_area <= 0:
+        net_wall_area = _safe_positive_number(scope.get("net_wall_area_sqft") or scope.get("wall_area_sqft"))
+    ceiling_area = _safe_positive_number(scope.get("ceiling_area_sqft") or scope.get("roof_deck_area_sqft") or scope.get("footprint_area_sqft"))
+    changed = False
+    for index in foam_indexes:
+        row = rows[index]
+        proposed_values = dict(row.get("proposed_values") or {})
+        target_area = 0.0
+        if len(foam_indexes) == 1:
+            target_area = total_area
+        else:
+            row_text = _clean_string(
+                " ".join(
+                    str(row.get(key) or "")
+                    for key in ("decision_id", "line_item", "template_bucket", "section", "description", "surface", "notes")
+                )
+                + " "
+                + " ".join(str(proposed_values.get(key) or "") for key in ("surface", "surface_type", "area_label", "description"))
+            ).lower()
+            if "wall" in row_text and net_wall_area > 0:
+                target_area = net_wall_area
+            elif any(term in row_text for term in ("ceiling", "roof deck", "underside")) and ceiling_area > 0:
+                target_area = ceiling_area
+        if target_area <= 0:
+            continue
+        current_area = _safe_positive_number(
+            proposed_values.get("basis_sqft") or proposed_values.get("area_sqft") or row.get("basis_sqft") or row.get("area_sqft")
+        )
+        if current_area > 0 and abs(current_area - target_area) < 0.01:
+            continue
+        proposed_values["basis_sqft"] = round(target_area, 2)
+        proposed_values["area_sqft"] = round(target_area, 2)
+        row["proposed_values"] = proposed_values
+        evidence = row.get("evidence")
+        if isinstance(evidence, dict):
+            evidence = dict(evidence)
+        else:
+            evidence = {}
+        evidence["deterministic_takeoff_area_sqft"] = round(target_area, 2)
+        evidence["deterministic_takeoff_total_sqft"] = round(total_area, 2)
+        row["evidence"] = evidence
+        rows[index] = row
+        changed = True
+    if not changed:
+        return result
+    warnings = list(result.warnings or [])
+    warning = "Insulation foam decision area was aligned to deterministic wall/ceiling takeoff from the notes."
+    if warning not in warnings:
+        warnings.append(warning)
+    result.workbook_decision_preferences = rows
+    result.warnings = warnings
+    return result
 
 
 def _merge_chat_notes(baseline_notes: str, ai_notes: str) -> str:

@@ -360,6 +360,17 @@ CREATE TABLE IF NOT EXISTS document_content (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS job_document_signals (
+    job_id TEXT PRIMARY KEY,
+    document_substrate TEXT,
+    document_material_system TEXT,
+    document_warranty_type TEXT,
+    document_warranty_years NUMERIC,
+    signal_document_count INTEGER DEFAULT 0,
+    signal_content_row_count INTEGER DEFAULT 0,
+    refreshed_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS estimate_template_rows (
     template_row_id TEXT PRIMARY KEY,
     document_id TEXT NOT NULL,
@@ -429,6 +440,7 @@ CREATE INDEX IF NOT EXISTS idx_document_content_job_id ON document_content(job_i
 CREATE INDEX IF NOT EXISTS idx_document_content_page_number ON document_content(page_number);
 CREATE INDEX IF NOT EXISTS idx_document_content_sheet_name ON document_content(sheet_name);
 CREATE INDEX IF NOT EXISTS idx_document_content_content_type ON document_content(content_type);
+CREATE INDEX IF NOT EXISTS idx_job_document_signals_refreshed_at ON job_document_signals(refreshed_at);
 CREATE INDEX IF NOT EXISTS idx_documents_extraction_status ON documents(extraction_status);
 CREATE INDEX IF NOT EXISTS idx_estimate_template_rows_document_id ON estimate_template_rows(document_id);
 CREATE INDEX IF NOT EXISTS idx_estimate_template_rows_job_id ON estimate_template_rows(job_id);

@@ -1107,15 +1107,69 @@ def estimator_reference_memory_capture_enabled(chat_result: dict[str, Any] | Non
 
 def _normalize_reference_template_type(value: Any) -> str:
     normalized = " ".join(str(value or "").strip().lower().replace("_", " ").replace("-", " ").split())
-    if normalized in {"insulation", "spray foam insulation"}:
+    if normalized in {"insulation", "spray foam insulation"} or "insulation" in normalized:
         return "insulation"
-    if normalized in {"roofing", "roof", "roof restoration", "roof coating"}:
+    if normalized in {"roofing", "roof", "roof restoration", "roof coating"} or "roof" in normalized or "coating" in normalized:
         return "roofing"
-    if normalized in {"repair", "repairs"}:
+    if normalized in {"repair", "repairs"} or normalized == "service repair":
         return "repair"
-    if normalized == "flooring":
+    if normalized == "flooring" or "floor" in normalized:
         return "flooring"
     return ""
+
+
+def _template_type_for_estimate_type(estimate_type: Any) -> str:
+    normalized = " ".join(str(estimate_type or "").strip().lower().replace("_", " ").replace("-", " ").split())
+    if "insulation" in normalized:
+        return "insulation"
+    if "floor" in normalized:
+        return "flooring"
+    if "repair" in normalized and "restoration" not in normalized:
+        return "repair"
+    if "roof" in normalized or "coating" in normalized:
+        return "roofing"
+    return ""
+
+
+def scope_with_template_type(scope: dict[str, Any], template_type: str) -> dict[str, Any]:
+    resolved_scope = dict(scope or {})
+    normalized = _normalize_reference_template_type(template_type)
+    if not normalized:
+        return resolved_scope
+    resolved_scope["template_type"] = normalized
+    resolved_scope["estimate_mode"] = normalized
+    if normalized == "insulation":
+        resolved_scope["division"] = "Insulation"
+        project_type = str(resolved_scope.get("project_type") or "").lower()
+        if not project_type or "roof" in project_type:
+            resolved_scope["project_type"] = "spray foam insulation"
+    elif normalized == "roofing":
+        resolved_scope["division"] = "Roofing"
+        if not resolved_scope.get("project_type"):
+            resolved_scope["project_type"] = "roofing estimate"
+    elif normalized == "flooring":
+        resolved_scope["division"] = "Flooring"
+    elif normalized == "repair":
+        resolved_scope["division"] = "Repair"
+    return resolved_scope
+
+
+def protect_scope_template_type_with_notes(scope: dict[str, Any], notes: str | None) -> dict[str, Any]:
+    resolved_scope = dict(scope or {})
+    note_template_type = _template_type_for_estimate_type(classify_estimate_type_from_notes(notes))
+    if not note_template_type:
+        return resolved_scope
+    current_template_type = _normalize_reference_template_type(
+        resolved_scope.get("template_type") or resolved_scope.get("estimate_mode") or resolved_scope.get("division")
+    )
+    if not current_template_type:
+        return scope_with_template_type(resolved_scope, note_template_type)
+    if current_template_type == note_template_type:
+        return resolved_scope
+    # Treat explicit non-roof notes as authoritative over stale chat/reference state.
+    if note_template_type in {"insulation", "flooring"}:
+        return scope_with_template_type(resolved_scope, note_template_type)
+    return resolved_scope
 
 
 def _reference_template_type_from_context(
@@ -1162,20 +1216,7 @@ def scope_with_reference_template_type(
     template_type = _reference_template_type_from_context(reference_answer_key, decision_preferences)
     if not template_type:
         return resolved_scope
-    resolved_scope["template_type"] = template_type
-    resolved_scope["estimate_mode"] = template_type
-    if template_type == "insulation":
-        resolved_scope["division"] = "Insulation"
-        project_type = str(resolved_scope.get("project_type") or "").lower()
-        if not project_type or "roof" in project_type:
-            resolved_scope["project_type"] = "spray foam insulation"
-    elif template_type == "roofing":
-        resolved_scope["division"] = "Roofing"
-    elif template_type == "flooring":
-        resolved_scope["division"] = "Flooring"
-    elif template_type == "repair":
-        resolved_scope["division"] = "Repair"
-    return resolved_scope
+    return scope_with_template_type(resolved_scope, template_type)
 
 
 def preserve_attached_reference_answer_key_context(
@@ -1709,7 +1750,11 @@ def load_job_tracking_dashboard_daily() -> pd.DataFrame:
 
 
 def load_schedule_df() -> pd.DataFrame:
-    return safe_load("SELECT * FROM crew_schedule")
+    try:
+        return load_df("SELECT * FROM crew_schedule")
+    except Exception as exc:
+        show_database_error(exc)
+        st.stop()
 
 
 def save_schedule_rows(df: pd.DataFrame) -> int:
@@ -1962,6 +2007,7 @@ def sql_coalesce(expressions: list[str], default: str = "NULL") -> str:
     return f"COALESCE({', '.join(available)})"
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def load_schedule_calendar_df() -> pd.DataFrame:
     jobs_cols = relation_columns("dashboard_jobs")
     backlog_cols = relation_columns("dashboard_contracted_backlog")
@@ -2063,7 +2109,11 @@ def load_schedule_calendar_df() -> pd.DataFrame:
         ) e ON cs.job_id = e.job_id
         WHERE cs.estimated_start_date IS NOT NULL
     """
-    return safe_load(query)
+    try:
+        return load_df(query)
+    except Exception as exc:
+        show_database_error(exc)
+        st.stop()
 
 
 def load_unscheduled_backlog_df(scheduled_job_ids: set[str]) -> pd.DataFrame:
@@ -2631,7 +2681,11 @@ def safe_load(query: str) -> pd.DataFrame:
 def query_view(view_name: str) -> pd.DataFrame:
     if view_name not in VIEWS:
         raise ValueError(f"Unsupported dashboard view: {view_name}")
-    return safe_load(f"SELECT * FROM {view_name}")
+    try:
+        return load_df(f"SELECT * FROM {view_name}")
+    except Exception as exc:
+        show_database_error(exc)
+        st.stop()
 
 
 def sql_identifier(name: str) -> str:
@@ -3428,10 +3482,16 @@ def safe_count_true(df: pd.DataFrame, column: str) -> int:
     return int(bool_series(df, column).sum()) if column in df.columns else 0
 
 
-def metric_row(metrics: list[tuple[str, str]]) -> None:
-    columns = st.columns(len(metrics))
-    for column, (label, value) in zip(columns, metrics):
-        column.metric(label, value)
+def metric_row(metrics: list[tuple[str, str]], *, max_columns: int = 4) -> None:
+    clean_metrics = [(str(label), str(value)) for label, value in metrics]
+    if not clean_metrics:
+        return
+    column_count = max(1, min(max_columns, len(clean_metrics)))
+    for start in range(0, len(clean_metrics), column_count):
+        chunk = clean_metrics[start : start + column_count]
+        columns = st.columns(len(chunk))
+        for column, (label, value) in zip(columns, chunk):
+            column.metric(label, value)
 
 
 def options_from(df: pd.DataFrame, column: str) -> list[str]:
@@ -4675,9 +4735,11 @@ def ask_spraytec_option_selection_index(prompt: str) -> int | None:
 def finalize_generated_field_notes_candidate(candidate: dict[str, Any], *, candidates: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     selected = dict(candidate or {})
     selected["status"] = "selected"
+    source_scope_row = selected.get("_rewrite_scope_row") if isinstance(selected.get("_rewrite_scope_row"), dict) else {}
+    selected["source_scope_text"] = text_value(source_scope_row.get("scope_text"))
     generated_note_result = _rewrite_generated_field_notes_from_scope(
         example=selected.get("_rewrite_example") if isinstance(selected.get("_rewrite_example"), dict) else {},
-        scope_row=selected.get("_rewrite_scope_row") if isinstance(selected.get("_rewrite_scope_row"), dict) else {},
+        scope_row=source_scope_row,
         answer_key=selected.get("answer_key") if isinstance(selected.get("answer_key"), dict) else {},
     )
     selected["generated_notes"] = text_value(generated_note_result.get("generated_notes"))
@@ -6912,6 +6974,30 @@ def load_job_board_template_enrichment() -> pd.DataFrame:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_job_board_document_signal_enrichment() -> pd.DataFrame:
+    signal_cols = relation_columns("job_document_signals")
+    required_signal_cols = {
+        "job_id",
+        "document_substrate",
+        "document_material_system",
+        "document_warranty_type",
+        "document_warranty_years",
+    }
+    if required_signal_cols.issubset(signal_cols):
+        try:
+            return load_df(
+                """
+                SELECT
+                    job_id,
+                    document_substrate,
+                    document_material_system,
+                    document_warranty_type,
+                    document_warranty_years
+                FROM job_document_signals
+                """
+            )
+        except Exception:
+            pass
+
     cols = relation_columns("document_content")
     if not {"job_id", "text_content"}.issubset(cols):
         return pd.DataFrame()
@@ -7204,19 +7290,23 @@ def load_job_board_warnings() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def load_job_board_df() -> pd.DataFrame:
+def load_job_board_df(include_document_signals: bool = True) -> pd.DataFrame:
     jobs = load_job_board_jobs()
     if not isinstance(jobs, pd.DataFrame):
         return pd.DataFrame()
     if jobs.empty or "job_id" not in jobs.columns:
         return jobs
     jobs = with_folder_link(jobs)
-    jobs = merge_job_board_enrichments(
-        jobs,
+    enrichments = [
         load_job_board_vsimple_enrichment(),
         load_job_board_template_enrichment(),
-        load_job_board_document_signal_enrichment(),
-        load_job_board_estimate_labor_enrichment(),
+    ]
+    if include_document_signals:
+        enrichments.append(load_job_board_document_signal_enrichment())
+    enrichments.append(load_job_board_estimate_labor_enrichment())
+    jobs = merge_job_board_enrichments(
+        jobs,
+        *enrichments,
     )
     document_dates = load_job_board_document_dates()
     if not document_dates.empty and "job_id" in document_dates.columns:
@@ -7583,20 +7673,72 @@ def prepare_timesheet_activity_rows(timesheets: pd.DataFrame, jobs: pd.DataFrame
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def load_timesheet_dashboard_activity() -> dict[str, Any]:
+def load_timesheet_job_match_context() -> pd.DataFrame:
+    cols = relation_columns("dashboard_jobs")
+    if not cols:
+        return pd.DataFrame()
+    fields = {
+        "job_id": "job_id",
+        "customer": "customer",
+        "job_name": "job_name",
+        "division": "division",
+        "job_type": "job_type",
+        "project_type": "project_type",
+        "pipeline_status": "pipeline_status",
+        "status": "status",
+        "estimated_value": "estimated_value",
+        "final_price": "final_price",
+        "estimated_sqft": "estimated_sqft",
+        "site_address": "site_address",
+        "city": "city",
+        "folder_path": "folder_path",
+        "estimate_file": "estimate_file",
+        "proposal_file": "proposal_file",
+        "contract_file": "contract_file",
+    }
+    select_parts: list[str] = []
+    for source, alias in fields.items():
+        select_parts.append(f"{sql_column('j', cols, source)} AS {alias}")
+    select_parts.append(
+        f"{sql_coalesce([sql_nonblank_column('j', cols, 'folder_url'), sql_nonblank_column('j', cols, 'folder_path')])} AS folder_link_or_path"
+    )
+    try:
+        return load_df(f"SELECT {', '.join(select_parts)} FROM dashboard_jobs j")
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_timesheet_dashboard_inputs() -> dict[str, Any]:
     timings: list[dict[str, Any]] = []
     start = time.perf_counter()
     timesheets = load_office_timesheet_entries()
     timings.append({"name": "office timesheet entry load", "seconds": round(time.perf_counter() - start, 4), "row_count": len(timesheets)})
     start = time.perf_counter()
-    jobs = load_job_board_df()
-    timings.append({"name": "job board load for timesheets", "seconds": round(time.perf_counter() - start, 4), "row_count": len(jobs)})
+    jobs = load_timesheet_job_match_context()
+    timings.append({"name": "job match context load for timesheets", "seconds": round(time.perf_counter() - start, 4), "row_count": len(jobs)})
+    return {
+        "timesheet_rows": len(timesheets) if isinstance(timesheets, pd.DataFrame) else 0,
+        "job_rows": len(jobs) if isinstance(jobs, pd.DataFrame) else 0,
+        "timesheets": timesheets,
+        "jobs": jobs,
+        "build_timings": timings,
+    }
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_timesheet_dashboard_activity() -> dict[str, Any]:
+    inputs = load_timesheet_dashboard_inputs()
+    timings: list[dict[str, Any]] = list(inputs.get("build_timings") or [])
+    timesheets = inputs.get("timesheets") if isinstance(inputs, dict) else pd.DataFrame()
+    jobs = inputs.get("jobs") if isinstance(inputs, dict) else pd.DataFrame()
     start = time.perf_counter()
     activity = prepare_timesheet_activity_rows(timesheets, jobs)
     timings.append({"name": "timesheet job matching prep", "seconds": round(time.perf_counter() - start, 4), "row_count": len(activity)})
     return {
         "timesheet_rows": len(timesheets) if isinstance(timesheets, pd.DataFrame) else 0,
         "job_rows": len(jobs) if isinstance(jobs, pd.DataFrame) else 0,
+        "jobs": jobs,
         "activity": activity,
         "build_timings": timings,
     }
@@ -8023,13 +8165,6 @@ def row_first_positive_number(row: pd.Series, columns: Iterable[str]) -> float:
 
 
 def normalized_sales_stage(row: pd.Series) -> str:
-    terminal_bucket = job_board_contract_completion_bucket(row)
-    if terminal_bucket == "Closed / Did Not Get":
-        return "Closed Lost"
-    if terminal_bucket == "Completed":
-        return "Closed Won"
-    if terminal_bucket == "Contracted / Active":
-        return "Contract Pending"
     source_text = " ".join(
         row_first_nonblank(row, [column])
         for column in [
@@ -8046,6 +8181,13 @@ def normalized_sales_stage(row: pd.Series) -> str:
         return "Closed Lost"
     if any(token in source_text for token in ["closed won", "won", "completed", "complete", "invoiced"]):
         return "Closed Won"
+    terminal_bucket = job_board_contract_completion_bucket(row)
+    if terminal_bucket == "Closed / Did Not Get":
+        return "Closed Lost"
+    if terminal_bucket == "Completed":
+        return "Closed Won"
+    if terminal_bucket == "Contracted / Active":
+        return "Contract Pending"
     if any(token in source_text for token in ["contract pending", "pending contract", "signed", "contracted", "awarded"]):
         return "Contract Pending"
     if any(token in source_text for token in ["follow", "negotiat", "revision", "revised"]):
@@ -8223,6 +8365,89 @@ def prepare_job_board_dashboard_rows(jobs: pd.DataFrame) -> pd.DataFrame:
     )
     out["folder"] = out.get("folder_link_or_path", "")
     return out
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_job_board_prepared_rows() -> pd.DataFrame:
+    jobs = load_job_board_df()
+    if not isinstance(jobs, pd.DataFrame) or jobs.empty:
+        return pd.DataFrame()
+    jobs = jobs.copy()
+    for column in JOB_BOARD_FIELDS:
+        if column not in jobs.columns:
+            jobs[column] = None
+    for column in [
+        "workflow_status",
+        "deal_owner",
+        "assigned_user",
+        "follow_up_date",
+        "priority",
+        "closed_did_not_get",
+        "review_mark_contracted",
+        "review_mark_completed",
+        "internal_notes",
+        "updated_by",
+        "updated_at",
+        "assigned_crew_leader",
+        "estimated_start_date",
+        "estimated_end_date",
+        "estimated_duration_days",
+        "estimated_labor_hours",
+        "estimated_crew_size",
+        "schedule_status",
+        "schedule_priority",
+        "blocking_issue",
+        "schedule_notes",
+        "warning_count",
+        "warning_summary",
+        "proposal_created_at",
+        "estimate_created_at",
+        "proposal_modified_at",
+        "estimate_modified_at",
+        "proposal_modified_by",
+        "estimate_modified_by",
+        "proposal_date_for_stale",
+        "proposal_age_days",
+        "proposal_stale",
+        "proposal_status_flag",
+        "folder_pipeline_bucket",
+        "opportunity_freshness",
+    ]:
+        if column not in jobs.columns:
+            jobs[column] = None
+
+    jobs["job_id"] = jobs["job_id"].fillna("").astype(str)
+    for checkbox_column in JOB_BOARD_REVIEW_CHECKBOX_FIELDS:
+        jobs[checkbox_column] = jobs[checkbox_column].apply(truthy_bool)
+    jobs["folder_pipeline_bucket"] = jobs.apply(folder_pipeline_bucket_for_row, axis=1)
+    jobs["opportunity_freshness"] = jobs.apply(job_board_freshness_for_row, axis=1)
+    jobs["board_status"] = jobs.apply(board_status_for_row, axis=1)
+
+    dashboard_rows = prepare_job_board_dashboard_rows(jobs)
+    if dashboard_rows.empty:
+        return dashboard_rows
+    for checkbox_column in JOB_BOARD_REVIEW_CHECKBOX_FIELDS:
+        if checkbox_column in dashboard_rows.columns:
+            dashboard_rows[checkbox_column] = dashboard_rows[checkbox_column].apply(truthy_bool)
+    if "folder_pipeline_bucket" not in dashboard_rows.columns:
+        dashboard_rows["folder_pipeline_bucket"] = dashboard_rows.apply(folder_pipeline_bucket_for_row, axis=1)
+    if "opportunity_freshness" not in dashboard_rows.columns:
+        dashboard_rows["opportunity_freshness"] = dashboard_rows.apply(job_board_freshness_for_row, axis=1)
+    if "board_status" not in dashboard_rows.columns:
+        dashboard_rows["board_status"] = dashboard_rows.apply(board_status_for_row, axis=1)
+    dashboard_rows["material_system_warranty"] = dashboard_rows.apply(
+        lambda row: " / ".join(
+            part
+            for part in [
+                text_value(row.get("material_system_display")),
+                text_value(row.get("warranty_display")),
+            ]
+            if part and part != "Not Captured"
+        )
+        or "Not Captured",
+        axis=1,
+    )
+    return dashboard_rows
 
 
 def sales_pipeline_rollup(jobs: pd.DataFrame) -> pd.DataFrame:
@@ -8409,6 +8634,27 @@ def normalize_operations_jobs(jobs: pd.DataFrame, schedule: pd.DataFrame | None 
     out["equipment_readiness"] = out.apply(lambda row: readiness_flag(row, ["equipment", "rig", "lift"], "Equipment review"), axis=1)
     out["customer_communication"] = out.apply(lambda row: readiness_flag(row, ["customer", "communicat", "expectation", "promise"], "Customer review"), axis=1)
     return out
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_sales_dashboard_jobs_prepared() -> pd.DataFrame:
+    base_jobs = load_job_board_df(include_document_signals=False)
+    if not isinstance(base_jobs, pd.DataFrame):
+        return pd.DataFrame()
+    return normalize_sales_jobs(base_jobs)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_operations_dashboard_prepared() -> tuple[pd.DataFrame, pd.DataFrame]:
+    base_jobs = load_job_board_df(include_document_signals=False)
+    if not isinstance(base_jobs, pd.DataFrame):
+        base_jobs = pd.DataFrame()
+    all_jobs = normalize_sales_jobs(base_jobs)
+    schedule = load_schedule_df() if relation_columns("crew_schedule") else pd.DataFrame()
+    backlog = query_view("dashboard_contracted_backlog")
+    backlog_source = backlog if not backlog.empty else all_jobs
+    ops = normalize_operations_jobs(backlog_source, schedule=schedule)
+    return all_jobs, ops
 
 
 def normalized_readiness_status(row: pd.Series) -> str:
@@ -8733,63 +8979,12 @@ def job_board_page() -> None:
     # TODO: add true drag/drop kanban if moving away from Streamlit.
     # TODO: connect VSimple export/API if available.
 
-    jobs = load_job_board_df()
+    jobs = load_job_board_prepared_rows()
     if jobs.empty:
         show_empty("No jobs are available for the board.")
         return
-
-    for column in JOB_BOARD_FIELDS:
-        if column not in jobs.columns:
-            jobs[column] = None
-    for column in [
-        "workflow_status",
-        "deal_owner",
-        "assigned_user",
-        "follow_up_date",
-        "priority",
-        "closed_did_not_get",
-        "review_mark_contracted",
-        "review_mark_completed",
-        "internal_notes",
-        "updated_by",
-        "updated_at",
-        "assigned_crew_leader",
-        "estimated_start_date",
-        "estimated_end_date",
-        "estimated_duration_days",
-        "estimated_labor_hours",
-        "estimated_crew_size",
-        "schedule_status",
-        "schedule_priority",
-        "blocking_issue",
-        "schedule_notes",
-        "warning_count",
-        "warning_summary",
-        "proposal_created_at",
-        "estimate_created_at",
-        "proposal_modified_at",
-        "estimate_modified_at",
-        "proposal_modified_by",
-        "estimate_modified_by",
-        "proposal_date_for_stale",
-        "proposal_age_days",
-        "proposal_stale",
-        "proposal_status_flag",
-        "folder_pipeline_bucket",
-        "opportunity_freshness",
-    ]:
-        if column not in jobs.columns:
-            jobs[column] = None
-
-    jobs["job_id"] = jobs["job_id"].fillna("").astype(str)
-    for checkbox_column in JOB_BOARD_REVIEW_CHECKBOX_FIELDS:
-        jobs[checkbox_column] = jobs[checkbox_column].apply(truthy_bool)
-    jobs["folder_pipeline_bucket"] = jobs.apply(folder_pipeline_bucket_for_row, axis=1)
-    jobs["opportunity_freshness"] = jobs.apply(job_board_freshness_for_row, axis=1)
-    jobs = normalize_sales_jobs(jobs)
     terminal_folder_buckets = ["Closed Lost Folder", "Contracted Folder", "Completed Folder"]
     overall_folder_excluded_count = int(jobs["folder_pipeline_bucket"].isin(terminal_folder_buckets).sum())
-    jobs["board_status"] = jobs.apply(board_status_for_row, axis=1)
     selected_job_id = str(st.session_state.get("selected_job_board_job_id", "") or "")
     if selected_job_id:
         st.caption(f"Selected job_id: {selected_job_id}")
@@ -8879,26 +9074,7 @@ def job_board_page() -> None:
         ]
     )
 
-    dashboard_rows = prepare_job_board_dashboard_rows(filtered)
-    for checkbox_column in JOB_BOARD_REVIEW_CHECKBOX_FIELDS:
-        if checkbox_column in dashboard_rows.columns:
-            dashboard_rows[checkbox_column] = dashboard_rows[checkbox_column].apply(truthy_bool)
-    if "folder_pipeline_bucket" not in dashboard_rows.columns:
-        dashboard_rows["folder_pipeline_bucket"] = dashboard_rows.apply(folder_pipeline_bucket_for_row, axis=1)
-    if "opportunity_freshness" not in dashboard_rows.columns:
-        dashboard_rows["opportunity_freshness"] = dashboard_rows.apply(job_board_freshness_for_row, axis=1)
-    dashboard_rows["material_system_warranty"] = dashboard_rows.apply(
-        lambda row: " / ".join(
-            part
-            for part in [
-                text_value(row.get("material_system_display")),
-                text_value(row.get("warranty_display")),
-            ]
-            if part and part != "Not Captured"
-        )
-        or "Not Captured",
-        axis=1,
-    )
+    dashboard_rows = filtered.copy()
 
     job_board_default_columns = [
         "project",
@@ -9157,9 +9333,8 @@ def job_board_page() -> None:
             if column_df.empty:
                 continue
             with st.expander(f"{board_status}: {len(column_df):,} jobs | {fmt_dollar(safe_sum(column_df, 'estimated_value'))}"):
-                compact_cards = prepare_job_board_dashboard_rows(column_df)
                 show_table(
-                    compact_cards,
+                    column_df,
                     [
                         "customer_display",
                         "project",
@@ -9183,8 +9358,7 @@ def job_board_page() -> None:
                 st.rerun()
             return
         row = selected_rows.iloc[0]
-        prepared_detail = prepare_job_board_dashboard_rows(pd.DataFrame([row.to_dict()]))
-        display_row = prepared_detail.iloc[0] if not prepared_detail.empty else row
+        display_row = row
         st.divider()
         st.header("Job Detail")
         detail_cols = st.columns(3)
@@ -9353,8 +9527,8 @@ def timesheet_job_touches_page() -> None:
     if show_perf:
         reset_dashboard_perf_timings()
 
-    with dashboard_perf_step("timesheet cached activity load"):
-        dashboard_data = load_timesheet_dashboard_activity()
+    with dashboard_perf_step("timesheet cached input load"):
+        dashboard_data = load_timesheet_dashboard_inputs()
     if show_perf and isinstance(dashboard_data, dict):
         for timing in dashboard_data.get("build_timings") or []:
             if isinstance(timing, dict):
@@ -9363,7 +9537,8 @@ def timesheet_job_touches_page() -> None:
                     seconds=float(timing.get("seconds") or 0.0),
                     row_count=int(timing.get("row_count") or 0),
                 )
-    activity_all = dashboard_data.get("activity") if isinstance(dashboard_data, dict) else pd.DataFrame()
+    timesheets_all = dashboard_data.get("timesheets") if isinstance(dashboard_data, dict) else pd.DataFrame()
+    jobs = dashboard_data.get("jobs") if isinstance(dashboard_data, dict) else pd.DataFrame()
     timesheet_rows = int(dashboard_data.get("timesheet_rows") or 0) if isinstance(dashboard_data, dict) else 0
     job_rows = int(dashboard_data.get("job_rows") or 0) if isinstance(dashboard_data, dict) else 0
     if timesheet_rows <= 0:
@@ -9373,13 +9548,27 @@ def timesheet_job_touches_page() -> None:
         show_empty("No job board rows are loaded, so timesheets cannot be matched to jobs yet.")
         return
 
-    if not isinstance(activity_all, pd.DataFrame) or activity_all.empty:
+    if not isinstance(timesheets_all, pd.DataFrame) or timesheets_all.empty:
         show_empty("No timesheet activity rows are available.")
         return
+    if not isinstance(jobs, pd.DataFrame):
+        jobs = pd.DataFrame()
+
+    timesheet_source = timesheets_all.copy()
+    for column in ("employee", "project_name", "code", "row_type", "notes", "source_file", "source_sheet", "warnings"):
+        if column not in timesheet_source.columns:
+            timesheet_source[column] = ""
+        timesheet_source[column] = timesheet_source[column].fillna("").astype(str)
+    if "duration_hours" not in timesheet_source.columns:
+        timesheet_source["duration_hours"] = 0.0
+    timesheet_source["duration_hours"] = pd.to_numeric(timesheet_source["duration_hours"], errors="coerce").fillna(0.0)
+    if "work_date" not in timesheet_source.columns:
+        timesheet_source["work_date"] = pd.NaT
+    timesheet_source["work_date_parsed"] = pd.to_datetime(timesheet_source["work_date"], errors="coerce")
 
     date_col1, date_col2, date_col3, date_col4 = st.columns(4)
-    min_date = activity_all["work_date_parsed"].dropna().min()
-    max_date = activity_all["work_date_parsed"].dropna().max()
+    min_date = timesheet_source["work_date_parsed"].dropna().min()
+    max_date = timesheet_source["work_date_parsed"].dropna().max()
     default_end = max_date.date() if not pd.isna(max_date) else date.today()
     default_start = max(min_date.date(), default_end - timedelta(days=29)) if not pd.isna(min_date) else default_end - timedelta(days=29)
     with date_col1:
@@ -9395,24 +9584,9 @@ def timesheet_job_touches_page() -> None:
             key="timesheet_touches_end_date",
         )
     with date_col3:
-        employee_filter = st.multiselect("Employee", options_from(activity_all, "employee"), key="timesheet_touches_employee")
+        employee_filter = st.multiselect("Employee", options_from(timesheet_source, "employee"), key="timesheet_touches_employee")
     with date_col4:
-        code_filter = st.multiselect("Code", options_from(activity_all, "code"), key="timesheet_touches_code")
-
-    filter_col1, filter_col2, filter_col3, filter_col4 = st.columns([1.2, 1.2, 1.2, 2.2])
-    with filter_col1:
-        division_filter = st.multiselect("Division", options_from(activity_all, "division"), key="timesheet_touches_division")
-    with filter_col2:
-        job_type_filter = st.multiselect("Job Type", options_from(activity_all, "job_type"), key="timesheet_touches_job_type")
-    with filter_col3:
-        status_filter = st.multiselect(
-            "Match Status",
-            ["Exact/Strong", "Strong", "Review", "Weak", "Unmatched"],
-            default=["Exact/Strong", "Strong", "Review"],
-            key="timesheet_touches_match_status",
-        )
-    with filter_col4:
-        search = st.text_input("Search project/job/customer", key="timesheet_touches_search").strip()
+        code_filter = st.multiselect("Code", options_from(timesheet_source, "code"), key="timesheet_touches_code")
 
     weight_col1, weight_col2 = st.columns([1.2, 1.2])
     with weight_col1:
@@ -9432,16 +9606,44 @@ def timesheet_job_touches_page() -> None:
             key="timesheet_touches_weighted_employee_count",
         )
 
-    with dashboard_perf_step("timesheet filter application", row_count=len(activity_all)):
-        activity = activity_all.copy()
+    with dashboard_perf_step("timesheet raw filter application", row_count=len(timesheet_source)):
+        filtered_timesheets = timesheet_source.copy()
         if start_date:
-            activity = activity[activity["work_date_parsed"].isna() | (activity["work_date_parsed"].dt.date >= start_date)]
+            filtered_timesheets = filtered_timesheets[
+                filtered_timesheets["work_date_parsed"].isna() | (filtered_timesheets["work_date_parsed"].dt.date >= start_date)
+            ]
         if end_date:
-            activity = activity[activity["work_date_parsed"].isna() | (activity["work_date_parsed"].dt.date <= end_date)]
+            filtered_timesheets = filtered_timesheets[
+                filtered_timesheets["work_date_parsed"].isna() | (filtered_timesheets["work_date_parsed"].dt.date <= end_date)
+            ]
         if employee_filter:
-            activity = activity[activity["employee"].astype(str).isin(employee_filter)]
+            filtered_timesheets = filtered_timesheets[filtered_timesheets["employee"].astype(str).isin(employee_filter)]
         if code_filter:
-            activity = activity[activity["code"].astype(str).isin(code_filter)]
+            filtered_timesheets = filtered_timesheets[filtered_timesheets["code"].astype(str).isin(code_filter)]
+
+    if filtered_timesheets.empty:
+        show_empty("No timesheet rows match the current filters.")
+        return
+
+    with dashboard_perf_step("timesheet job matching prep", row_count=len(filtered_timesheets)):
+        activity = prepare_timesheet_activity_rows(filtered_timesheets, jobs)
+
+    filter_col1, filter_col2, filter_col3, filter_col4 = st.columns([1.2, 1.2, 1.2, 2.2])
+    with filter_col1:
+        division_filter = st.multiselect("Division", options_from(activity, "division"), key="timesheet_touches_division")
+    with filter_col2:
+        job_type_filter = st.multiselect("Job Type", options_from(activity, "job_type"), key="timesheet_touches_job_type")
+    with filter_col3:
+        status_filter = st.multiselect(
+            "Match Status",
+            ["Exact/Strong", "Strong", "Review", "Weak", "Unmatched"],
+            default=["Exact/Strong", "Strong", "Review"],
+            key="timesheet_touches_match_status",
+        )
+    with filter_col4:
+        search = st.text_input("Search project/job/customer", key="timesheet_touches_search").strip()
+
+    with dashboard_perf_step("timesheet matched filter application", row_count=len(activity)):
         if division_filter and "division" in activity.columns:
             activity = activity[activity["division"].astype(str).isin(division_filter)]
         if job_type_filter and "job_type" in activity.columns:
@@ -9643,7 +9845,6 @@ def timesheet_job_touches_page() -> None:
     with tab_review:
         st.subheader("Match Review")
         project_summary = office_timesheet_project_summary(activity)
-        jobs = load_job_board_df()
         matched_projects = match_timesheet_projects_to_jobs(project_summary, jobs)
         show_table(
             matched_projects,
@@ -10019,10 +10220,7 @@ def sales_dashboard_page() -> None:
     st.title("Sales Dashboard")
     st.caption("Sales rollups are inferred from current job, estimate, workflow, and pipeline fields. Missing estimator, lead-source, or outcome data is shown as Not Captured.")
 
-    base_jobs = load_job_board_df()
-    if not isinstance(base_jobs, pd.DataFrame):
-        base_jobs = pd.DataFrame()
-    jobs = normalize_sales_jobs(apply_basic_filters(base_jobs))
+    jobs = apply_basic_filters(load_sales_dashboard_jobs_prepared())
     if jobs.empty:
         show_empty("No sales jobs match the current filters.")
         return
@@ -10347,14 +10545,9 @@ def operations_dashboard_page() -> None:
         "QuickBooks-only metrics and true field progress are flagged where source data is not captured yet."
     )
 
-    base_jobs = load_job_board_df()
-    if not isinstance(base_jobs, pd.DataFrame):
-        base_jobs = pd.DataFrame()
-    all_jobs = normalize_sales_jobs(apply_basic_filters(base_jobs))
-    schedule = load_schedule_df() if relation_columns("crew_schedule") else pd.DataFrame()
-    backlog = apply_basic_filters(query_view("dashboard_contracted_backlog"))
-    backlog_source = backlog if not backlog.empty else all_jobs
-    ops = normalize_operations_jobs(backlog_source, schedule=schedule)
+    all_jobs_unfiltered, ops_unfiltered = load_operations_dashboard_prepared()
+    all_jobs = apply_basic_filters(all_jobs_unfiltered)
+    ops = apply_basic_filters(ops_unfiltered)
 
     if all_jobs.empty and ops.empty:
         show_empty("No operational jobs match the current filters.")
@@ -12173,6 +12366,8 @@ def _choice_product_summary(row: dict[str, Any]) -> str:
 def _choice_full_explanation(row: dict[str, Any]) -> str:
     parts: list[str] = []
     _choice_add_unique(parts, _choice_include_summary(row))
+    _choice_add_unique(parts, row.get("decision_evidence_summary"))
+    _choice_add_unique(parts, row.get("proposal_evidence_summary"))
     _choice_add_unique(parts, row.get("reference_project_evidence_summary"))
     _choice_add_unique(parts, row.get("chat_estimator_evidence_summary"))
     _choice_add_unique(parts, row.get("historical_evidence_summary"))
@@ -13461,11 +13656,18 @@ def render_estimator_chat_draft_panel(
         )
         with st.spinner("Drafting estimate intake..."):
             context_cache_before = estimator_context_cache_stats()
+            chat_template_type_hint = estimate_type
+            detected_message_type = resolve_estimate_type(
+                ESTIMATE_TYPE_AUTO,
+                "\n\n".join(part for part in [notes, user_message] if str(part or "").strip()),
+            )
+            if detected_message_type != ESTIMATE_TYPE_RESTORATION or estimate_type == ESTIMATE_TYPE_RESTORATION:
+                chat_template_type_hint = detected_message_type
             with estimator_perf_step("chat context and response"):
                 result = run_estimator_chat_turn(
                     messages,
                     data=data,
-                    template_type_hint=estimate_type,
+                    template_type_hint=chat_template_type_hint,
                     existing_scope=existing_scope,
                     attached_reference_answer_key=attached_reference_answer_key,
                 )
@@ -13501,7 +13703,7 @@ def render_estimator_chat_draft_panel(
             history=messages,
             result=result_payload,
             estimator_notes=str(st.session_state.get("estimator_notes") or ""),
-            estimate_type=estimate_type,
+            estimate_type=chat_template_type_hint,
         )
         if image_message:
             st.session_state[image_message_applied_key] = True
@@ -14240,6 +14442,10 @@ def estimator_prototype_page() -> None:
             active_chat_context.get("reference_answer_key") if isinstance(active_chat_context.get("reference_answer_key"), dict) else None,
             active_chat_context.get("workbook_decision_preferences") if isinstance(active_chat_context.get("workbook_decision_preferences"), list) else [],
         )
+        active_chat_context["scope_overrides"] = protect_scope_template_type_with_notes(
+            active_chat_context.get("scope_overrides") or {},
+            active_chat_context.get("estimator_notes") or st.session_state.get("estimator_notes") or notes,
+        )
     chat_template_type = ""
     if active_chat_context and isinstance(active_chat_context.get("scope_overrides"), dict):
         chat_template_type = text_value(active_chat_context.get("scope_overrides", {}).get("template_type")).lower()
@@ -14267,6 +14473,10 @@ def estimator_prototype_page() -> None:
         estimator_chat_scope_overrides,
         active_chat_context.get("reference_answer_key") if active_chat_context and isinstance(active_chat_context.get("reference_answer_key"), dict) else None,
         active_chat_context.get("workbook_decision_preferences") if active_chat_context else [],
+    )
+    estimator_chat_scope_overrides = protect_scope_template_type_with_notes(
+        estimator_chat_scope_overrides,
+        active_chat_context.get("estimator_notes") if active_chat_context else latest_notes,
     )
     active_photo_context = (
         active_chat_context.get("photo_context")

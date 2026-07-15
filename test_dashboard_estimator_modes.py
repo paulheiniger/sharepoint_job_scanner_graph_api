@@ -272,34 +272,40 @@ def test_operations_dashboard_rollups_classify_readiness_and_schedule_health() -
     day_after_tomorrow = date.today() + timedelta(days=2)
     jobs = pd.DataFrame(
         [
-            {
-                "job_id": "J1",
-                "customer": "ABC Church",
-                "job_name": "Roof coating",
-                "division": "Roofing",
-                "pipeline_status": "Contracted",
-                "estimated_value": 125000,
-                "estimate_date": "2026-06-10",
-                "schedule_notes": "Ready to schedule",
-            },
+                {
+                    "job_id": "J1",
+                    "customer": "ABC Church",
+                    "job_name": "Roof coating",
+                    "division": "Roofing",
+                    "pipeline_status": "Contracted",
+                    "folder_path": "2026 ROOFING/CONTRACTED/ABC Church",
+                    "has_job_spec": True,
+                    "estimated_value": 125000,
+                    "estimate_date": "2026-06-10",
+                    "schedule_notes": "Ready to schedule",
+                },
             {
                 "job_id": "J2",
                 "customer": "XYZ Manufacturing",
-                "job_name": "SPF Roof",
-                "division": "Roofing",
-                "pipeline_status": "Contracted",
-                "estimated_value": 380000,
-                "estimate_date": "2026-06-12",
-                "blocking_issue": "Waiting on materials",
+                    "job_name": "SPF Roof",
+                    "division": "Roofing",
+                    "pipeline_status": "Contracted",
+                    "folder_path": "2026 ROOFING/CONTRACTED/XYZ Manufacturing",
+                    "has_job_spec": True,
+                    "estimated_value": 380000,
+                    "estimate_date": "2026-06-12",
+                    "blocking_issue": "Waiting on materials",
             },
             {
                 "job_id": "J3",
                 "customer": "School System",
-                "job_name": "Repairs",
-                "division": "Repairs",
-                "pipeline_status": "Contracted",
-                "estimated_value": 18000,
-                "estimate_date": "2026-06-14",
+                    "job_name": "Repairs",
+                    "division": "Repairs",
+                    "pipeline_status": "Contracted",
+                    "folder_path": "2026 ROOFING/CONTRACTED/School System",
+                    "has_job_spec": True,
+                    "estimated_value": 18000,
+                    "estimate_date": "2026-06-14",
                 "estimated_start_date": tomorrow.isoformat(),
                 "estimated_end_date": day_after_tomorrow.isoformat(),
                 "assigned_crew_leader": "Crew A",
@@ -315,6 +321,53 @@ def test_operations_dashboard_rollups_classify_readiness_and_schedule_health() -
     assert ops.loc[ops["job_id"] == "J3", "schedule_health"].iloc[0] in {"Starting Soon", "On Track"}
     assert summary.loc[summary["status"] == "Ready To Schedule", "revenue"].iloc[0] == 125000
     assert summary.loc[summary["status"] == "Material Hold", "jobs"].iloc[0] == 1
+
+
+def test_schedule_calendar_loader_uses_cached_database_reader(monkeypatch) -> None:
+    app = importlib.import_module("dashboard.app")
+    queries: list[str] = []
+
+    def fake_relation_columns(relation_name: str) -> set[str]:
+        if relation_name == "dashboard_jobs":
+            return {
+                "job_id",
+                "customer",
+                "job_name",
+                "division",
+                "pipeline_status",
+                "status",
+                "estimated_value",
+                "folder_url",
+                "folder_path",
+                "estimate_file",
+                "proposal_file",
+                "contract_file",
+                "job_tracking_file",
+                "has_proposal",
+                "has_signed_contract",
+                "has_job_tracking_form",
+                "has_aerial",
+                "photo_count",
+                "warnings",
+            }
+        if relation_name == "dashboard_contracted_backlog":
+            return {"job_id", "customer", "job_name", "division", "pipeline_status", "status", "estimated_value"}
+        if relation_name == "dashboard_estimates":
+            return {"job_id", "estimated_sqft", "estimated_labor_hours", "estimated_crew_size", "estimated_value"}
+        return set()
+
+    def fake_load_df(query: str) -> pd.DataFrame:
+        queries.append(query)
+        return pd.DataFrame([{"schedule_id": "S1", "job_id": "J1"}])
+
+    monkeypatch.setattr(app, "relation_columns", fake_relation_columns)
+    monkeypatch.setattr(app, "load_df", fake_load_df)
+
+    out = app.load_schedule_calendar_df.__wrapped__()
+
+    assert out.loc[0, "job_id"] == "J1"
+    assert queries
+    assert "FROM crew_schedule cs" in queries[0]
 
 
 def test_job_board_dashboard_rows_project_business_fields() -> None:
@@ -404,6 +457,48 @@ def test_job_board_enrichment_fills_business_fields_from_vsimple_and_documents()
     assert row["substrate_display"] == "Metal"
     assert row["material_system_display"] == "Gaco Silicone"
     assert row["warranty_display"] == "15 Gaco"
+
+
+def test_job_board_document_signal_enrichment_prefers_materialized_table(monkeypatch) -> None:
+    app = importlib.import_module("dashboard.app")
+    required_cols = {
+        "job_id",
+        "document_substrate",
+        "document_material_system",
+        "document_warranty_type",
+        "document_warranty_years",
+    }
+    queries: list[str] = []
+
+    def fake_relation_columns(relation_name: str) -> set[str]:
+        if relation_name == "job_document_signals":
+            return required_cols
+        if relation_name == "document_content":
+            raise AssertionError("document_content should not be scanned when materialized signals exist")
+        return set()
+
+    def fake_load_df(query: str) -> pd.DataFrame:
+        queries.append(query)
+        return pd.DataFrame(
+            [
+                {
+                    "job_id": "J1",
+                    "document_substrate": "Metal",
+                    "document_material_system": "Silicone",
+                    "document_warranty_type": "Gaco",
+                    "document_warranty_years": 15,
+                }
+            ]
+        )
+
+    monkeypatch.setattr(app, "relation_columns", fake_relation_columns)
+    monkeypatch.setattr(app, "load_df", fake_load_df)
+
+    out = app.load_job_board_document_signal_enrichment.__wrapped__()
+
+    assert out.loc[0, "document_material_system"] == "Silicone"
+    assert queries
+    assert "FROM job_document_signals" in queries[0]
 
 
 def test_pricing_catalog_and_vsimple_tables_are_visible_in_dashboard_views() -> None:
@@ -808,7 +903,9 @@ def test_ask_spraytec_generates_field_notes_with_attached_answer_key() -> None:
     response = app.generated_field_notes_response(case)
 
     assert case["status"] == "selected"
-    assert "Roof B restoration scope" in case["generated_notes"]
+    assert "Roof B restoration scope" in case["source_scope_text"]
+    assert "Roof B" in case["generated_notes"]
+    assert "coating" in case["generated_notes"].lower()
     assert case["answer_key_summary"]["decision_count"] == 1
     assert len(case["workbook_decision_preferences"]) == 1
     assert case["workbook_decision_preferences"][0]["source"] == "reference_estimate_answer_key"
@@ -1038,6 +1135,52 @@ def test_timesheet_project_matching_scores_job_candidates() -> None:
     assert by_project["Estimate"]["match_status"] == "Unmatched"
 
 
+def test_timesheet_dashboard_activity_uses_fast_job_board_context(monkeypatch) -> None:
+    app = importlib.import_module("dashboard.app")
+    calls: list[str] = []
+    timesheets = pd.DataFrame(
+        [
+            {
+                "project_name": "Mudd's Furniture",
+                "duration_hours": 1.0,
+                "work_date": "2026-07-01",
+                "employee": "Haley",
+                "code": "Estimating",
+                "row_type": "timed_entry",
+                "notes": "Estimate review",
+            }
+        ]
+    )
+    jobs = pd.DataFrame(
+        [
+            {
+                "job_id": "J-MUDD-B",
+                "customer": "Mudd's Furniture",
+                "job_name": "Mudd's Furniture Showroom Roof B",
+                "division": "Roofing",
+                "pipeline_status": "Proposed",
+                "status": "Open",
+                "folder_path": "2026 ROOFING/Mudd's Furniture Roof B",
+            }
+        ]
+    )
+
+    def fake_load_timesheet_job_match_context() -> pd.DataFrame:
+        calls.append("match_context")
+        return jobs
+
+    monkeypatch.setattr(app, "load_office_timesheet_entries", lambda: timesheets)
+    monkeypatch.setattr(app, "load_timesheet_job_match_context", fake_load_timesheet_job_match_context)
+
+    result = app.load_timesheet_dashboard_activity.__wrapped__()
+
+    assert calls == ["match_context"]
+    assert result["job_rows"] == 1
+    assert result["timesheet_rows"] == 1
+    assert isinstance(result["jobs"], pd.DataFrame)
+    assert not result["activity"].empty
+
+
 def test_timesheet_activity_rollups_preserve_employee_and_job_context() -> None:
     app = importlib.import_module("dashboard.app")
     timesheets = pd.DataFrame(
@@ -1257,7 +1400,9 @@ def test_ask_spraytec_generated_field_notes_falls_back_to_template_scope_summary
 
     assert case["status"] == "selected"
     assert case["used_scope_summary_fallback"] is True
-    assert "Living Waters Church roofing scope" in case["generated_notes"]
+    assert "Living Waters Church roofing scope" in case["source_scope_text"]
+    assert "Living Waters Church" in case["generated_notes"]
+    assert "roof" in case["generated_notes"].lower()
     assert len(case["workbook_decision_preferences"]) == 1
 
 
@@ -2404,6 +2549,21 @@ def test_auto_detect_classifies_spray_foam_building_email_as_insulation() -> Non
     )
 
     assert mode == app.ESTIMATE_TYPE_INSULATION
+
+
+def test_scope_template_guard_keeps_explicit_insulation_notes_insulation() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    scope = {"template_type": "roofing", "division": "Roofing", "project_type": "roofing estimate"}
+    protected = app.protect_scope_template_type_with_notes(
+        scope,
+        "I need a quote for foam sprayed in a 30x40 metal building with 9' walls. "
+        "Insulate outside walls and ceiling with open-cell spray foam.",
+    )
+
+    assert protected["template_type"] == "insulation"
+    assert protected["division"] == "Insulation"
+    assert protected["project_type"] == "spray foam insulation"
 
 
 def test_auto_detect_classifies_concrete_floor_coating_as_flooring() -> None:

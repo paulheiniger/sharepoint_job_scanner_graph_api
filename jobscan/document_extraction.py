@@ -24,6 +24,26 @@ from .job_search import first_nonblank, normalize_search_text, tokenize_search_t
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".xlsm", ".txt", ".csv"}
 JOB_SPEC_CANDIDATE_PATTERN = r"(job[ _-]*spec|jobspec|job specification|spec form|scope of work|work scope|(^|\\s)spec(\\s|$)|job tracking|tracking form|field notes|site notes|inspection notes|estimator notes)"
 JOB_SPEC_EXCLUDE_PATTERN = r"(submittal|submittals|sds|pds|tds|technical data|data sheet|sales sheet|brochure|certificate of liability|cert tracking)"
+ESTIMATOR_RELEVANT_DOCUMENT_TYPES = [
+    "estimate",
+    "proposal",
+    "contract",
+    "warranty",
+    "job_tracking",
+    "specification",
+    "field_notes",
+    "site_notes",
+]
+ESTIMATOR_RELEVANT_CANDIDATE_PATTERN = (
+    r"(estimate|proposal|quote|scope of work|work scope|job[ _-]*spec|jobspec|job specification|"
+    r"job tracking|tracking form|field notes|site notes|inspection notes|estimator notes|"
+    r"contract|agreement|warranty)"
+)
+ESTIMATOR_RELEVANT_EXCLUDE_PATTERN = (
+    r"(submittal|submittals|sds|pds|tds|technical data|data sheet|sales sheet|brochure|"
+    r"certificate of liability|cert tracking|aerial|eagleview|drone|photo|photos|picture|image|"
+    r"bid package|bid documents)"
+)
 TEXT_EMPTY_THRESHOLD = 20
 MAX_XLSX_ROWS_PER_SHEET = 5000
 MAX_XLSX_COLUMNS_PER_SHEET = 120
@@ -265,12 +285,22 @@ def manifest_metadata_rows(cache_root: Path) -> list[dict[str, Any]]:
     return out
 
 
-def backfill_document_drive_metadata(connection: Connection, cache_root: Path, *, limit: int | None = None, job_id: str | None = None) -> int:
+def backfill_document_drive_metadata(
+    connection: Connection,
+    cache_root: Path,
+    *,
+    limit: int | None = None,
+    job_id: str | None = None,
+    progress_every: int = 0,
+) -> int:
     candidates = manifest_metadata_rows(cache_root)
-    if limit is not None:
-        candidates = candidates[: max(limit, 0)]
+    if limit is not None and limit > 0:
+        candidates = candidates[:limit]
+    total = len(candidates)
+    if progress_every and progress_every > 0:
+        print(f"Cached manifest metadata candidates: {total}", flush=True)
     updated = 0
-    for candidate in candidates:
+    for index, candidate in enumerate(candidates, start=1):
         params = {
             "drive_id": candidate.get("drive_id"),
             "drive_item_id": candidate.get("drive_item_id"),
@@ -297,6 +327,8 @@ def backfill_document_drive_metadata(connection: Connection, cache_root: Path, *
             params,
         )
         updated += int(result.rowcount or 0)
+        if progress_every and progress_every > 0 and (index % progress_every == 0 or index == total):
+            print(f"Backfill metadata progress: {index}/{total} candidates, {updated} rows updated", flush=True)
     return updated
 
 
@@ -713,6 +745,58 @@ def extract_one_document(connection: Connection, document: dict[str, Any], cache
         return "failed", 0
 
 
+def prepare_document_extraction(document: dict[str, Any], cache_root: Path, *, force: bool = False) -> tuple[str, Path, str, ExtractionResult | None]:
+    document_id = first_nonblank(document.get("document_id"))
+    if not document_id:
+        raise RuntimeError("Document row is missing document_id.")
+    path = ensure_local_document(document, cache_root, force_download=force)
+    current_hash = file_sha1(path)
+    if should_skip_extraction(document, current_hash, force=force):
+        return "skipped", path, current_hash, None
+    result = extract_document_file(path, document)
+    return "prepared", path, current_hash, result
+
+
+def write_prepared_document_extraction(
+    connection: Connection,
+    document: dict[str, Any],
+    path: Path,
+    current_hash: str,
+    result: ExtractionResult,
+) -> tuple[str, int]:
+    if result.requires_ocr and not result.rows:
+        mark_ocr_required(connection, document, path, current_hash, result)
+        return "ocr_required", 0
+    row_count = replace_document_content(connection, document, path, result, current_hash)
+    return "extracted", row_count
+
+
+def record_document_failure_with_retry(
+    engine: Engine,
+    document: dict[str, Any],
+    error: str,
+    *,
+    cached_file_path: str | None = None,
+    retries: int = 2,
+    backoff_seconds: float = 0.25,
+) -> None:
+    document_id = first_nonblank(document.get("document_id"))
+    max_attempts = max(1, retries + 1)
+    for attempt in range(1, max_attempts + 1):
+        try:
+            with engine.begin() as connection:
+                update_document_failure(connection, document_id, error, cached_file_path=cached_file_path)
+            return
+        except Exception as exc:
+            if not is_transient_database_error(exc) or attempt >= max_attempts:
+                raise
+            try:
+                engine.dispose()
+            except Exception:
+                pass
+            time.sleep(min(1.0, backoff_seconds * (2 ** (attempt - 1))))
+
+
 def extract_one_document_with_retry(
     engine: Engine,
     document: dict[str, Any],
@@ -722,11 +806,38 @@ def extract_one_document_with_retry(
     retries: int = 2,
     backoff_seconds: float = 0.25,
 ) -> tuple[str, int]:
+    try:
+        status, path, current_hash, result = prepare_document_extraction(document, cache_root, force=force)
+    except Exception as exc:
+        if is_transient_database_error(exc):
+            raise TransientDocumentDatabaseError(
+                "Database connection dropped during document acquisition; retry/resume safely."
+            ) from exc
+        cached_file_path = None
+        try:
+            path = stable_cache_path(document, cache_root)
+            if path.exists():
+                cached_file_path = str(path)
+        except Exception:
+            cached_file_path = None
+        record_document_failure_with_retry(
+            engine,
+            document,
+            str(exc),
+            cached_file_path=cached_file_path,
+            retries=retries,
+            backoff_seconds=backoff_seconds,
+        )
+        return "failed", 0
+    if status == "skipped" or result is None:
+        return status, 0
+
     max_attempts = max(1, retries + 1)
     for attempt in range(1, max_attempts + 1):
+        connection: Connection | None = None
         try:
             with engine.begin() as connection:
-                return extract_one_document(connection, document, cache_root, force=force)
+                return write_prepared_document_extraction(connection, document, path, current_hash, result)
         except TransientDocumentDatabaseError:
             print(
                 "Database connection dropped during document extraction; rolled back and will retry/resume safely.",
@@ -739,6 +850,22 @@ def extract_one_document_with_retry(
             if attempt >= max_attempts:
                 raise
             time.sleep(min(1.0, backoff_seconds * (2 ** (attempt - 1))))
+        except Exception as exc:
+            if not is_transient_database_error(exc):
+                raise
+            if connection is not None:
+                rollback_connection(connection)
+            print(
+                "Database connection dropped during document extraction write; rolled back and will retry/resume safely.",
+                flush=True,
+            )
+            try:
+                engine.dispose()
+            except Exception:
+                pass
+            if attempt >= max_attempts:
+                raise TransientDocumentDatabaseError("Database connection dropped during document extraction write.") from exc
+            time.sleep(min(1.0, backoff_seconds * (2 ** (attempt - 1))))
     raise TransientDocumentDatabaseError("Database connection dropped during document extraction.")
 
 
@@ -750,6 +877,7 @@ def document_selection_sql(
     failed: bool = False,
     document_type: str | None = None,
     job_spec_candidates: bool = False,
+    estimator_relevant: bool = False,
 ) -> tuple[str, dict[str, Any]]:
     where: list[str] = []
     params: dict[str, Any] = {}
@@ -778,6 +906,21 @@ def document_selection_sql(
         params["job_spec_note_document_types"] = ["field_notes", "job_tracking", "site_notes"]
         params["job_spec_candidate_pattern"] = JOB_SPEC_CANDIDATE_PATTERN
         params["job_spec_exclude_pattern"] = JOB_SPEC_EXCLUDE_PATTERN
+    if estimator_relevant:
+        where.append(
+            """
+            (
+                document_type = ANY(:estimator_relevant_document_types)
+                OR (
+                    LOWER(COALESCE(file_name, '') || ' ' || COALESCE(relative_path, '')) ~ :estimator_relevant_candidate_pattern
+                    AND LOWER(COALESCE(file_name, '') || ' ' || COALESCE(relative_path, '')) !~ :estimator_relevant_exclude_pattern
+                )
+            )
+            """
+        )
+        params["estimator_relevant_document_types"] = ESTIMATOR_RELEVANT_DOCUMENT_TYPES
+        params["estimator_relevant_candidate_pattern"] = ESTIMATOR_RELEVANT_CANDIDATE_PATTERN
+        params["estimator_relevant_exclude_pattern"] = ESTIMATOR_RELEVANT_EXCLUDE_PATTERN
     if pending:
         where.append("(extraction_status IS NULL OR extraction_status IN ('not_started', 'pending'))")
     if failed:
@@ -797,6 +940,7 @@ def load_documents_for_extraction(
     failed: bool = False,
     document_type: str | None = None,
     job_spec_candidates: bool = False,
+    estimator_relevant: bool = False,
     limit: int = 10,
 ) -> list[dict[str, Any]]:
     where_sql, params = document_selection_sql(
@@ -806,14 +950,17 @@ def load_documents_for_extraction(
         failed=failed,
         document_type=document_type,
         job_spec_candidates=job_spec_candidates,
+        estimator_relevant=estimator_relevant,
     )
-    params["limit"] = limit
+    limit_sql = ""
+    if limit and limit > 0:
+        params["limit"] = limit
+        limit_sql = "\n        LIMIT :limit"
     sql = f"""
         SELECT *
         FROM documents
         {where_sql}
-        ORDER BY updated_at NULLS FIRST, file_name
-        LIMIT :limit
+        ORDER BY updated_at NULLS FIRST, file_name{limit_sql}
     """
     return [dict(row) for row in connection.execute(text(sql), params).mappings().all()]
 
@@ -1004,6 +1151,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Limit extraction to job spec, scope, job tracking, and field-note candidate documents.",
     )
+    parser.add_argument(
+        "--estimator-relevant",
+        action="store_true",
+        help="Limit extraction to estimate/proposal/spec/job tracking/note/warranty/contract documents and matching filenames.",
+    )
     parser.add_argument("--limit", type=int, default=10)
     parser.add_argument("--cache-root", type=Path, default=Path(".cache/sharepoint"))
     parser.add_argument("--site-url", help="SharePoint site URL for --resolve-metadata.")
@@ -1011,6 +1163,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--root-folder", default="", help="Optional library-relative root folder prepended to document relative_path for --resolve-metadata.")
     parser.add_argument("--database-url", default=os.getenv("DATABASE_URL") or os.getenv("NEON_DATABASE_URL"))
     parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--progress-every", type=int, default=1000, help="Print progress every N records for metadata backfill/extraction loops. Use 0 to silence progress.")
+    parser.add_argument("--fail-fast", action="store_true", help="Stop the extraction batch on the first document-level transient failure.")
+    parser.add_argument("--max-document-failures", type=int, default=0, help="Stop after N document-level transient failures. Use 0 for no failure cap.")
     return parser.parse_args(argv)
 
 
@@ -1029,7 +1184,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.backfill_metadata:
         with engine.begin() as conn:
-            updated = backfill_document_drive_metadata(conn, args.cache_root, limit=args.limit, job_id=args.job_id)
+            updated = backfill_document_drive_metadata(
+                conn,
+                args.cache_root,
+                limit=args.limit,
+                job_id=args.job_id,
+                progress_every=args.progress_every,
+            )
         print(f"Drive identifiers backfilled from cached manifests: {updated}")
         return 0
     if args.resolve_metadata:
@@ -1066,8 +1227,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Identifiers resolved: {resolved}")
         print(f"Identifier resolution failures: {failed}")
         return 0
-    if not any([args.document_id, args.job_id, args.pending, args.failed, args.job_spec_candidates]):
-        raise SystemExit("Choose --document-id, --job-id, --pending, --failed, --job-spec-candidates, or --status.")
+    if not any([args.document_id, args.job_id, args.pending, args.failed, args.job_spec_candidates, args.estimator_relevant]):
+        raise SystemExit("Choose --document-id, --job-id, --pending, --failed, --job-spec-candidates, --estimator-relevant, or --status.")
 
     with engine.connect() as conn:
         documents = load_documents_for_extraction(
@@ -1078,23 +1239,39 @@ def main(argv: list[str] | None = None) -> int:
             failed=args.failed,
             document_type=args.document_type,
             job_spec_candidates=args.job_spec_candidates,
+            estimator_relevant=args.estimator_relevant,
             limit=args.limit,
         )
     total = len(documents)
+    status_counts: dict[str, int] = {}
+    transient_failures: list[str] = []
     for index, document in enumerate(documents, start=1):
+        label = first_nonblank(document.get("file_name"), document.get("document_id"))
         try:
             status, count = extract_one_document_with_retry(engine, document, args.cache_root, force=args.force or args.failed)
         except TransientDocumentDatabaseError as exc:
-            label = first_nonblank(document.get("file_name"), document.get("document_id"))
+            transient_failures.append(str(label))
             print(f"[{index}/{total}] {label} — database connection failure: {str(exc)[:240]}", flush=True)
-            return 1
-        label = first_nonblank(document.get("file_name"), document.get("document_id"))
+            if args.fail_fast or (args.max_document_failures > 0 and len(transient_failures) >= args.max_document_failures):
+                print("Stopping extraction because document failure limit was reached.", flush=True)
+                return 1
+            continue
+        status_counts[status] = status_counts.get(status, 0) + 1
         acquisition_method = planned_acquisition_method(document, args.cache_root, force_download=args.force)
         print(f"[{index}/{total}] {label} — {status} {count} content rows — acquisition: {acquisition_method}")
         if args.debug:
             print(f"  document_id: {document.get('document_id')}")
             print(f"  sharepoint_url: {document.get('sharepoint_url') or '-'}")
-    return 0
+    print("Document extraction run summary:")
+    print(f"  documents_selected: {total}")
+    for status, count in sorted(status_counts.items()):
+        print(f"  {status}: {count}")
+    print(f"  transient_document_failures: {len(transient_failures)}")
+    if transient_failures:
+        print("  first_failed_documents:")
+        for label in transient_failures[:10]:
+            print(f"    - {label}")
+    return 1 if transient_failures else 0
 
 
 if __name__ == "__main__":

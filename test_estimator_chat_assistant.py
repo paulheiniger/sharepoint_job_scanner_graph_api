@@ -102,6 +102,21 @@ def test_estimator_chat_fallback_extracts_insulation_takeoff_without_inventing_t
     assert any("thickness" in question.lower() for question in result.missing_questions)
 
 
+def test_estimator_chat_insulation_message_overrides_stale_roof_hint(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    result = run_estimator_chat_turn(
+        [{"role": "user", "content": COLLINS_NOTE}],
+        template_type_hint="Roof Restoration / Coating",
+    )
+
+    scope = result.scope_overrides
+
+    assert scope["template_type"] == "insulation"
+    assert scope["division"] == "Insulation"
+    assert scope["net_insulation_area_sqft"] == 2226
+
+
 def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
     data = EstimatorData(
         template_rows=pd.DataFrame(
@@ -1104,6 +1119,82 @@ def test_estimator_chat_preserves_full_takeoff_across_followup_answers() -> None
     assert scope["r_value_per_inch_assumption"] == 3.8
     assert scope["foam_thickness_inches"] == 5.53
     assert "30x40 metal building" in result.estimator_notes
+
+
+def test_estimator_chat_aligns_single_insulation_foam_decision_to_deterministic_area() -> None:
+    def provider(messages, model):
+        return {
+            "assistant_message": "Drafted insulation estimate.",
+            "estimator_notes": "Open cell foam for outside walls and ceiling.",
+            "scope_overrides": {
+                "template_type": "insulation",
+                "foam_type": "open_cell",
+                "foam_thickness_inches": 3.68,
+            },
+            "workbook_decision_preferences": [
+                {
+                    "decision_id": "insulation_foam_template_selector",
+                    "template_bucket": "foam",
+                    "include": True,
+                    "proposed_values": {
+                        "foam_type": "open_cell",
+                        "basis_sqft": 1113,
+                        "thickness_inches": 3.68,
+                        "unit_price": 1.6,
+                    },
+                }
+            ],
+            "confidence": 0.74,
+        }
+
+    result = run_estimator_chat_turn(
+        [{"role": "user", "content": COLLINS_NOTE + " Use R14 at 3.8 R/in."}],
+        template_type_hint="insulation",
+        provider=provider,
+        model="test-model",
+    )
+
+    foam = result.workbook_decision_preferences[0]
+    assert result.scope_overrides["net_insulation_area_sqft"] == 2226
+    assert foam["proposed_values"]["basis_sqft"] == 2226
+    assert foam["proposed_values"]["area_sqft"] == 2226
+    assert foam["proposed_values"]["thickness_inches"] == 3.68
+    assert "deterministic_takeoff_area_sqft" in foam["evidence"]
+
+
+def test_estimator_chat_aligns_wall_and_ceiling_foam_decisions_to_surface_areas() -> None:
+    def provider(messages, model):
+        return {
+            "assistant_message": "Drafted two foam rows.",
+            "estimator_notes": "Open cell foam for walls and underside of roof deck.",
+            "scope_overrides": {"template_type": "insulation", "foam_type": "open_cell"},
+            "workbook_decision_preferences": [
+                {
+                    "decision_id": "insulation_foam_walls",
+                    "template_bucket": "foam",
+                    "include": True,
+                    "proposed_values": {"surface": "walls", "basis_sqft": 2853, "thickness_inches": 5.5},
+                },
+                {
+                    "decision_id": "insulation_foam_ceiling",
+                    "template_bucket": "foam",
+                    "include": True,
+                    "proposed_values": {"surface": "ceiling", "basis_sqft": 3491, "thickness_inches": 8},
+                },
+            ],
+            "confidence": 0.74,
+        }
+
+    result = run_estimator_chat_turn(
+        [{"role": "user", "content": COLLINS_NOTE}],
+        template_type_hint="insulation",
+        provider=provider,
+        model="test-model",
+    )
+
+    rows = {row["decision_id"]: row["proposed_values"] for row in result.workbook_decision_preferences}
+    assert rows["insulation_foam_walls"]["basis_sqft"] == 1026
+    assert rows["insulation_foam_ceiling"]["basis_sqft"] == 1200
 
 
 def test_estimator_chat_applies_basis_sqft_multiplier_to_existing_scope() -> None:

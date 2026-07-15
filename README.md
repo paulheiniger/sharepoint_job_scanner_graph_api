@@ -453,6 +453,20 @@ python -m jobscan.document_extraction \
   --database-url "$DATABASE_URL"
 ```
 
+Extract all pending documents:
+
+```bash
+python -m jobscan.document_extraction \
+  --pending \
+  --estimator-relevant \
+  --limit 0 \
+  --cache-root .cache/sharepoint \
+  --progress-every 100 \
+  --database-url "$DATABASE_URL"
+```
+
+Use `--estimator-relevant` for the normal estimating/dashboard text backfill. It targets estimate, proposal, contract, warranty, job tracking, specification, field-note, site-note, and matching scope/quote filenames while avoiding generic bid-package, aerial/photo, product-data, and certificate files. Omit it only when intentionally extracting every supported document type.
+
 Extract one job's indexed documents:
 
 ```bash
@@ -479,7 +493,7 @@ Backfill download identifiers from existing SharePoint scanner manifests without
 python -m jobscan.document_extraction \
   --backfill-metadata \
   --cache-root .cache/sharepoint \
-  --limit 1000 \
+  --limit 0 \
   --database-url "$DATABASE_URL"
 ```
 
@@ -527,7 +541,23 @@ python -m jobscan.document_extraction \
   --database-url "$DATABASE_URL"
 ```
 
-By default, extraction reuses existing files under `.cache/sharepoint` and records failures on the document row instead of stopping the whole batch. Successful content is replaced transactionally per document; prior extracted content is left in place if a later extraction fails. Re-run a previously completed or failed unchanged file with `--force`.
+Retry failed documents:
+
+```bash
+python -m jobscan.document_extraction \
+  --failed \
+  --limit 0 \
+  --cache-root .cache/sharepoint \
+  --database-url "$DATABASE_URL"
+```
+
+By default, extraction reuses existing files under `.cache/sharepoint` and records failures on the document row instead of stopping the whole batch. Successful content is replaced transactionally per document; prior extracted content is left in place if a later extraction fails. Re-run a previously completed or failed unchanged file with `--force`. Use `--limit 0` for an unbounded extraction/backfill run; positive values keep the run bounded. Large unattended extraction runs continue after isolated document-level transient database failures and print a run summary at the end; add `--fail-fast` if you intentionally want the old stop-on-first-transient-failure behavior.
+
+Refresh the Job Board document-signal cache after document extraction:
+
+```bash
+psql "$DATABASE_URL" -f db/refresh_job_document_signals.sql
+```
 
 Limitations: image-only PDFs are marked `requires_ocr`; this patch does not perform OCR, embeddings, vector search, or LLM document answers. If the local SharePoint cache does not contain a file and the document row lacks download identifiers, extraction records a failure for that document.
 
@@ -862,7 +892,20 @@ psql "$NEON_DATABASE_URL" -f db/add_estimate_template_rows.sql
 
 python -m jobscan.estimator.template_rows \
   --parse-existing \
+  --only-unparsed \
   --database-url "$NEON_DATABASE_URL"
+```
+
+Refresh estimator calibration tables after template row parsing:
+
+```bash
+python -m jobscan.estimator.foam_yield_history \
+  --write-db \
+  --database-url "$NEON_DATABASE_URL"
+
+python -m jobscan.estimator.decision_history \
+  --db-url "$NEON_DATABASE_URL" \
+  --write-db
 ```
 
 Parse a single extracted estimate workbook document:
@@ -1054,7 +1097,16 @@ Run the parser after document extraction, then open Streamlit:
 ```bash
 python -m jobscan.estimator.template_rows \
   --parse-existing \
+  --only-unparsed \
   --database-url "$NEON_DATABASE_URL"
+
+python -m jobscan.estimator.foam_yield_history \
+  --write-db \
+  --database-url "$NEON_DATABASE_URL"
+
+python -m jobscan.estimator.decision_history \
+  --db-url "$NEON_DATABASE_URL" \
+  --write-db
 ```
 
 Limitations:
