@@ -24,6 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
@@ -1957,6 +1958,76 @@ def load_schedule_job_tracking_calendar_entries(job_ids: tuple[str, ...]) -> pd.
     return df
 
 
+def summarize_job_tracking_daily_for_dashboard(daily: pd.DataFrame) -> pd.DataFrame:
+    if daily.empty:
+        return pd.DataFrame()
+    df = daily.copy()
+    if "work_date" in df.columns:
+        df["work_date"] = pd.to_datetime(df["work_date"], errors="coerce")
+    group_cols = [
+        column
+        for column in ["job_id", "project", "customer", "job_name", "division", "source_file"]
+        if column in df.columns
+    ]
+    if not group_cols:
+        return pd.DataFrame()
+    numeric_map = {
+        "labor_hours": "actual_labor_hours",
+        "travel_hours": "actual_travel_hours",
+        "load_hours": "actual_load_hours",
+        "os_hours": "actual_os_hours",
+        "mileage": "actual_mileage",
+        "os_mileage": "actual_os_mileage",
+        "foam_strokes": "actual_foam_strokes",
+        "foam_thickness_inches": "actual_foam_thickness_inches",
+        "foam_sqft": "actual_foam_sqft",
+        "foam_yield": "actual_foam_yield",
+        "base_coat_1": "actual_base_coat_1",
+        "base_coat_2": "actual_base_coat_2",
+        "granules": "actual_granules",
+        "af_buttergrade": "actual_af_buttergrade",
+        "caulk": "actual_caulk",
+        "primer": "actual_primer",
+        "sf": "actual_sf",
+        "total_hours": "actual_total_hours",
+    }
+    agg: dict[str, object] = {}
+    if "work_date" in df.columns:
+        agg["first_work_date"] = ("work_date", "min")
+        agg["last_work_date"] = ("work_date", "max")
+    for source, target in numeric_map.items():
+        if source in df.columns:
+            agg[target] = (source, "sum")
+    if "notes" in df.columns:
+        agg["tracking_notes"] = ("notes", lambda values: "; ".join(dict.fromkeys(text_value(value) for value in values if text_value(value)))[:2000])
+    summary = df.groupby(group_cols, dropna=False).agg(**agg).reset_index()
+    if "actual_labor_hours" not in summary.columns:
+        summary["actual_labor_hours"] = np.nan
+    if "actual_total_hours" not in summary.columns:
+        total_hours = pd.Series(0.0, index=summary.index)
+        for column in ["actual_labor_hours", "actual_travel_hours", "actual_load_hours", "actual_os_hours"]:
+            if column in summary.columns:
+                total_hours = total_hours.add(numeric_series(summary, column).reindex(summary.index).fillna(0), fill_value=0)
+        summary["actual_total_hours"] = total_hours
+    summary["estimated_labor_hours"] = np.nan
+    summary["estimated_total_hours"] = np.nan
+    summary["labor_delta_hours"] = np.nan
+    summary["labor_hours_used_pct"] = np.nan
+    summary["estimated_value"] = np.nan
+    summary["project_category"] = ""
+    summary["material_system_display"] = ""
+    summary["substrate_display"] = ""
+    summary["warranty_display"] = ""
+    summary["pipeline_status"] = ""
+    summary["status"] = ""
+    summary["tracking_warnings"] = ""
+    today = pd.Timestamp(date.today())
+    last_work = pd.to_datetime(summary.get("last_work_date"), errors="coerce")
+    recent_mask = last_work.notna() & ((today - last_work).dt.days <= 21)
+    summary["tracking_status"] = np.where(recent_mask, "Recently touched", "Historical / proposed")
+    return with_folder_link(summary)
+
+
 def load_schedule_df() -> pd.DataFrame:
     try:
         return load_df("SELECT * FROM crew_schedule")
@@ -3077,6 +3148,49 @@ def calendar_events_from_tracking_entries(df: pd.DataFrame) -> list[dict[str, ob
                 "end": (work_date.date() + timedelta(days=1)).isoformat(),
                 "backgroundColor": "#64748b",
                 "borderColor": "#334155",
+                "textColor": "#ffffff",
+                "editable": False,
+                "durationEditable": False,
+                "startEditable": False,
+                "extendedProps": props,
+            }
+        )
+    return events
+
+
+def calendar_events_from_job_tracking_daily(df: pd.DataFrame) -> list[dict[str, object]]:
+    events: list[dict[str, object]] = []
+    if df.empty:
+        return events
+    for row in df.to_dict(orient="records"):
+        work_date = pd.to_datetime(row.get("work_date"), errors="coerce")
+        if pd.isna(work_date):
+            continue
+        project = text_value(row.get("project")) or text_value(row.get("job_name")) or text_value(row.get("job_id"))
+        crew = text_value(row.get("crew")) or "Crew not captured"
+        total_hours = pd.to_numeric(pd.Series([row.get("total_hours")]), errors="coerce").iloc[0]
+        hours_label = f"{float(total_hours):.1f}h" if not pd.isna(total_hours) and float(total_hours) > 0 else "touch"
+        note = concise_tracking_note(row.get("notes"), max_chars=90)
+        event_key = "|".join(
+            [
+                text_value(row.get("job_id")),
+                work_date.date().isoformat(),
+                text_value(row.get("source_file")),
+                text_value(row.get("crew")),
+                text_value(row.get("notes"))[:120],
+            ]
+        )
+        event_id = f"tracking-dashboard-{hashlib.sha1(event_key.encode('utf-8')).hexdigest()[:20]}"
+        props = {key: clean_db_value(value) for key, value in row.items()}
+        props["event_kind"] = "job_tracking_daily_detail"
+        events.append(
+            {
+                "id": event_id,
+                "title": " | ".join(part for part in [project, hours_label, crew, note] if part),
+                "start": work_date.date().isoformat(),
+                "end": (work_date.date() + timedelta(days=1)).isoformat(),
+                "backgroundColor": "#2563eb",
+                "borderColor": "#1d4ed8",
                 "textColor": "#ffffff",
                 "editable": False,
                 "durationEditable": False,
@@ -10720,15 +10834,19 @@ def job_tracking_dashboard_page() -> None:
 
     summary_all = load_job_tracking_dashboard_summary()
     daily_all = load_job_tracking_dashboard_daily()
-    if summary_all.empty:
-        show_empty("No job tracking summary rows are loaded yet.")
+    if summary_all.empty and not daily_all.empty:
+        st.warning("No job tracking summary rows are loaded yet. Showing a job-level rollup built from daily entries.")
+        summary_all = summarize_job_tracking_daily_for_dashboard(daily_all)
+    if summary_all.empty and daily_all.empty:
+        show_empty("No job tracking summary or daily entry rows are loaded yet.")
         return
 
+    filter_source = summary_all if not summary_all.empty else daily_all
     filter_col1, filter_col2, filter_col3, filter_col4 = st.columns([1.1, 1.2, 1.4, 2.0])
     with filter_col1:
         active_only = st.checkbox("Active / recent only", value=True, key="job_tracking_active_recent_only")
     with filter_col2:
-        division_filter = st.multiselect("Division", options_from(summary_all, "division"), key="job_tracking_division")
+        division_filter = st.multiselect("Division", options_from(filter_source, "division"), key="job_tracking_division")
     with filter_col3:
         status_filter = st.multiselect("Tracking Status", options_from(summary_all, "tracking_status"), key="job_tracking_status")
     with filter_col4:
@@ -10753,12 +10871,29 @@ def job_tracking_dashboard_page() -> None:
         summary = summary[mask]
 
     daily = daily_all.copy()
+    if active_only and not daily.empty and "work_date" in daily.columns:
+        work_date = pd.to_datetime(daily["work_date"], errors="coerce")
+        daily = daily[work_date.notna() & ((pd.Timestamp(date.today()) - work_date).dt.days <= 45)]
+    if division_filter and "division" in daily.columns:
+        daily = daily[daily["division"].astype(str).isin(division_filter)]
+    if search and not daily.empty:
+        search_columns = [
+            column
+            for column in ["project", "customer", "job_name", "source_file", "notes", "crew"]
+            if column in daily.columns
+        ]
+        daily_mask = pd.Series(False, index=daily.index)
+        for column in search_columns:
+            daily_mask = daily_mask | daily[column].fillna("").astype(str).str.contains(search, case=False, na=False)
+        daily = daily[daily_mask]
     if not daily.empty and "job_id" in daily.columns and "job_id" in summary.columns:
         daily = daily[daily["job_id"].astype(str).isin(summary["job_id"].dropna().astype(str))]
 
-    if summary.empty:
+    if summary.empty and daily.empty:
         show_empty("No job tracking rows match the current filters.")
         return
+    if summary.empty and not daily.empty:
+        summary = summarize_job_tracking_daily_for_dashboard(daily)
 
     over_labor = summary[
         numeric_series(summary, "estimated_labor_hours").gt(0)
@@ -10873,6 +11008,40 @@ def job_tracking_dashboard_page() -> None:
             st.caption("No daily job tracking entries match the current filters.")
         else:
             recent_daily = daily.sort_values("work_date", ascending=False, na_position="last")
+            if calendar is not None:
+                tracking_calendar_events = calendar_events_from_job_tracking_daily(recent_daily)
+                calendar_options = {
+                    "initialView": "dayGridMonth",
+                    "height": 620,
+                    "contentHeight": 590,
+                    "fixedWeekCount": False,
+                    "dayMaxEventRows": 4,
+                    "moreLinkClick": "popover",
+                    "headerToolbar": {
+                        "left": "prev,next today",
+                        "center": "title",
+                        "right": "dayGridMonth,listWeek",
+                    },
+                    "eventDisplay": "block",
+                }
+                st.caption("Daily field entries by work date. Use the table below for full notes and material detail.")
+                calendar(
+                    events=tracking_calendar_events,
+                    options=calendar_options,
+                    custom_css="""
+                    .fc .fc-daygrid-event {
+                        font-size: 0.68rem;
+                        line-height: 1.05;
+                        padding: 0 2px;
+                    }
+                    .fc .fc-daygrid-day-number {
+                        font-size: 0.72rem;
+                    }
+                    """,
+                    key="job_tracking_daily_calendar",
+                )
+            else:
+                st.caption("Install streamlit-calendar to show the daily entry calendar.")
             show_table(
                 recent_daily,
                 [
@@ -10885,11 +11054,22 @@ def job_tracking_dashboard_page() -> None:
                     "os_hours",
                     "total_hours",
                     "mileage",
+                    "os_mileage",
+                    "foam_strokes",
+                    "foam_thickness_inches",
+                    "foam_sqft",
+                    "foam_yield",
+                    "base_coat_1",
+                    "base_coat_2",
+                    "granules",
+                    "primer",
+                    "sf",
+                    "caulk",
                     "crew",
                     "notes",
                     "source_file",
                 ],
-                height=560,
+                height=640,
             )
 
     with tab_foam:
