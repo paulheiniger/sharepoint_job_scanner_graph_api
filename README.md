@@ -559,6 +559,12 @@ Refresh the Job Board document-signal cache after document extraction:
 psql "$DATABASE_URL" -f db/refresh_job_document_signals.sql
 ```
 
+Refresh the optional static Job Board snapshot after document extraction or estimate-template backfills. The Streamlit app uses this cache when present and falls back to live enrichment queries when it is absent:
+
+```bash
+psql "$DATABASE_URL" -f db/refresh_job_board_static_snapshot.sql
+```
+
 Limitations: image-only PDFs are marked `requires_ocr`; this patch does not perform OCR, embeddings, vector search, or LLM document answers. If the local SharePoint cache does not contain a file and the document row lacks download identifiers, extraction records a failure for that document.
 
 For faster conversational job lookup, apply the optional search indexes after the base schema:

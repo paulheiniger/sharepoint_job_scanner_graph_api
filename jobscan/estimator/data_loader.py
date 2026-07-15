@@ -75,7 +75,12 @@ TEMPLATE_ROW_COLUMNS = [
 
 ESTIMATOR_LOAD_PROFILE_FULL = "full"
 ESTIMATOR_LOAD_PROFILE_INTERACTIVE = "interactive"
-ESTIMATOR_LOAD_PROFILES = {ESTIMATOR_LOAD_PROFILE_FULL, ESTIMATOR_LOAD_PROFILE_INTERACTIVE}
+ESTIMATOR_LOAD_PROFILE_CHAT = "chat"
+ESTIMATOR_LOAD_PROFILES = {
+    ESTIMATOR_LOAD_PROFILE_FULL,
+    ESTIMATOR_LOAD_PROFILE_INTERACTIVE,
+    ESTIMATOR_LOAD_PROFILE_CHAT,
+}
 
 INTERACTIVE_TEMPLATE_ROW_WHERE = """
 WHERE (
@@ -110,6 +115,29 @@ WHERE co_occurrence_rate >= 0.5
 """
 
 INTERACTIVE_RELATIONSHIP_COOCCURRENCE_ORDER_LIMIT = "ORDER BY job_count DESC, co_occurrence_rate DESC LIMIT 5000"
+
+INTERACTIVE_TEMPLATE_EXAMPLE_COLUMNS = [
+    "example_id",
+    "job_id",
+    "document_id",
+    "source_file",
+    "customer",
+    "job_name",
+    "template_type",
+    "project_class",
+    "market_segment",
+    "building_type",
+    "substrate",
+    "material_system",
+    "material_packages_json",
+    "warranty_years",
+    "area_sqft",
+    "area_bucket",
+    "scope_summary",
+    "decision_summary",
+    "source",
+    "confidence",
+]
 
 ESTIMATOR_NUMERIC_COLUMNS = [
     "estimated_cost",
@@ -315,7 +343,52 @@ def _read_sql_dataframe(connection: Any, query: str) -> pd.DataFrame:
     return pd.read_sql_query(text(query), connection)
 
 
+def _relation_cache_key(relation_name: str) -> str:
+    relation_name = str(relation_name or "").strip()
+    if not relation_name:
+        return ""
+    if "." in relation_name:
+        schema, table = relation_name.split(".", 1)
+        schema = schema.strip('"')
+        table = table.strip('"')
+        return f"{schema}.{table}"
+    return relation_name.strip('"')
+
+
+def _relation_column_cache(connection: Any) -> dict[str, list[str]]:
+    try:
+        info = getattr(connection, "info", None)
+    except Exception:
+        info = None
+    if isinstance(info, dict) and isinstance(info.get("estimator_relation_columns"), dict):
+        return info["estimator_relation_columns"]
+    try:
+        rows = connection.execute(
+            text(
+                """
+                SELECT table_schema, table_name, column_name
+                FROM information_schema.columns
+                WHERE table_schema IN ('public', 'analytics')
+                ORDER BY table_schema, table_name, ordinal_position
+                """
+            )
+        ).fetchall()
+    except Exception:
+        return {}
+    cache: dict[str, list[str]] = {}
+    for schema, table_name, column_name in rows:
+        if schema == "public":
+            cache.setdefault(str(table_name), []).append(str(column_name))
+        cache.setdefault(f"{schema}.{table_name}", []).append(str(column_name))
+    if isinstance(info, dict):
+        info["estimator_relation_columns"] = cache
+    return cache
+
+
 def relation_columns(connection: Any, relation_name: str) -> list[str]:
+    cached_columns = _relation_column_cache(connection).get(_relation_cache_key(relation_name))
+    if cached_columns is not None:
+        return list(cached_columns)
     try:
         result = connection.execute(text(f"SELECT * FROM {relation_name} LIMIT 0"))
         return list(result.keys())
@@ -417,8 +490,11 @@ def load_estimator_data_from_database(database_url: str, *, load_profile: str = 
     if load_profile not in ESTIMATOR_LOAD_PROFILES:
         raise ValueError(f"Unknown estimator load profile: {load_profile}")
     interactive = load_profile == ESTIMATOR_LOAD_PROFILE_INTERACTIVE
+    chat = load_profile == ESTIMATOR_LOAD_PROFILE_CHAT
+    lightweight = interactive or chat
     engine = create_resilient_engine(database_url)
     data = EstimatorData()
+    data.database_url = database_url
     with engine.connect() as connection:
         if relation_exists(connection, "dashboard_jobs"):
             data.jobs = _read_sql_dataframe(connection, "SELECT * FROM dashboard_jobs")
@@ -435,33 +511,33 @@ def load_estimator_data_from_database(database_url: str, *, load_profile: str = 
         else:
             data.warnings.append("estimates table not found; estimate summary history is unavailable.")
 
-        if not interactive and relation_exists(connection, "estimate_line_items"):
+        if not lightweight and relation_exists(connection, "estimate_line_items"):
             data.line_items = _read_sql_dataframe(connection, "SELECT * FROM estimate_line_items")
             data.source_files_used.append("database: estimate_line_items")
-        elif not interactive:
+        elif not lightweight:
             data.warnings.append("estimate_line_items table not found; using estimate_template_rows only.")
 
-        if relation_exists(connection, "estimate_template_rows"):
+        if not chat and relation_exists(connection, "estimate_template_rows"):
             template_where = INTERACTIVE_TEMPLATE_ROW_WHERE if interactive else ""
             data.template_rows = read_relation_columns(connection, "estimate_template_rows", TEMPLATE_ROW_COLUMNS, where=template_where)
             data.source_files_used.append("database: estimate_template_rows")
-        else:
+        elif not chat:
             data.warnings.append(
                 "estimate_template_rows table not found; run python -m jobscan.estimator.template_rows --parse-existing."
             )
 
-        if not interactive and relation_exists(connection, "estimate_line_item_classifications"):
+        if not lightweight and relation_exists(connection, "estimate_line_item_classifications"):
             data.classified_line_items = _read_sql_dataframe(connection, "SELECT * FROM estimate_line_item_classifications")
             data.line_item_classifications = data.classified_line_items
             data.source_files_used.append("database: estimate_line_item_classifications")
-        elif not interactive:
+        elif not lightweight:
             data.warnings.append("estimate_line_item_classifications table not found; using estimate_template_rows only")
 
-        if not interactive and relation_exists(connection, "job_tracking_summary"):
+        if not lightweight and relation_exists(connection, "job_tracking_summary"):
             data.tracking_summary = _read_sql_dataframe(connection, "SELECT * FROM job_tracking_summary")
             data.source_files_used.append("database: job_tracking_summary")
 
-        if not interactive and relation_exists(connection, "job_tracking_daily_entries"):
+        if not lightweight and relation_exists(connection, "job_tracking_daily_entries"):
             data.tracking_daily = _read_sql_dataframe(connection, "SELECT * FROM job_tracking_daily_entries")
             data.source_files_used.append("database: job_tracking_daily_entries")
 
@@ -474,8 +550,8 @@ def load_estimator_data_from_database(database_url: str, *, load_profile: str = 
             data.source_files_used.append("database: relationship_material_qty_ratios")
 
         if relation_exists(connection, "relationship_package_cooccurrence"):
-            relationship_where = INTERACTIVE_RELATIONSHIP_COOCCURRENCE_WHERE if interactive else ""
-            relationship_suffix = INTERACTIVE_RELATIONSHIP_COOCCURRENCE_ORDER_LIMIT if interactive else ""
+            relationship_where = INTERACTIVE_RELATIONSHIP_COOCCURRENCE_WHERE if lightweight else ""
+            relationship_suffix = INTERACTIVE_RELATIONSHIP_COOCCURRENCE_ORDER_LIMIT if lightweight else ""
             data.relationship_package_cooccurrence = read_relation_columns(
                 connection,
                 "relationship_package_cooccurrence",
@@ -484,7 +560,7 @@ def load_estimator_data_from_database(database_url: str, *, load_profile: str = 
             )
             data.source_files_used.append("database: relationship_package_cooccurrence")
 
-        if relation_exists(connection, "job_package_summary"):
+        if not chat and relation_exists(connection, "job_package_summary"):
             data.job_package_summary = _read_sql_dataframe(connection, "SELECT * FROM job_package_summary")
             data.source_files_used.append("database: job_package_summary")
 
@@ -514,7 +590,7 @@ def load_estimator_data_from_database(database_url: str, *, load_profile: str = 
                 setattr(data, attr, _read_sql_dataframe(connection, f"SELECT * FROM {relation_name}"))
                 data.source_files_used.append(f"database: {relation_name}")
 
-        if not interactive:
+        if not lightweight:
             decision_history_tables: dict[str, pd.DataFrame] = {}
             for table_name in DECISION_TABLES:
                 relation_name = f"analytics.{table_name}"
@@ -535,7 +611,14 @@ def load_estimator_data_from_database(database_url: str, *, load_profile: str = 
 
         template_examples_relation = "analytics.estimator_template_examples"
         if relation_exists(connection, template_examples_relation):
-            data.template_examples = _read_sql_dataframe(connection, f"SELECT * FROM {template_examples_relation}")
+            if lightweight:
+                data.template_examples = read_relation_columns(
+                    connection,
+                    template_examples_relation,
+                    INTERACTIVE_TEMPLATE_EXAMPLE_COLUMNS,
+                )
+            else:
+                data.template_examples = _read_sql_dataframe(connection, f"SELECT * FROM {template_examples_relation}")
             data.source_files_used.append(f"database: {template_examples_relation}")
 
         recommendation_relation = "analytics.estimator_decision_recommendations"
@@ -563,7 +646,7 @@ def load_estimator_data_from_database(database_url: str, *, load_profile: str = 
             )
             data.source_files_used.append("database: estimator_memory")
 
-        if not interactive:
+        if not lightweight:
             data.historical_scope_texts = load_historical_scope_texts(connection)
             if not data.historical_scope_texts.empty:
                 data.source_files_used.append("database: historical proposal scope text")
@@ -573,14 +656,14 @@ def load_estimator_data_from_database(database_url: str, *, load_profile: str = 
     if not data.source_files_used:
         raise RuntimeError("No estimator database tables were available.")
     data.source_files_used.append("Postgres database")
-    if data.template_rows.empty:
+    if data.template_rows.empty and not chat:
         data.warnings.append(
             "estimate_template_rows is empty; run python -m jobscan.estimator.template_rows --parse-existing."
         )
     if data.pricing_catalog.empty:
         data.warnings.append("pricing_catalog is empty; current material pricing is limited.")
-    if interactive:
-        data.source_files_used.append("estimator load profile: interactive")
+    if lightweight:
+        data.source_files_used.append("estimator load profile: chat" if chat else "estimator load profile: interactive")
     return normalize_estimator_data(data)
 
 

@@ -279,6 +279,7 @@ def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
         calls.append((messages, model))
         assert "Critical calculation rule" in messages[0]["content"]
         assert "if include is true, proposed_values must provide the row's required calculation inputs" in messages[0]["content"]
+        assert "estimator_context.decision_menu and estimator_context.formula_requirements" in messages[0]["content"]
         assert "common_template_buckets" in messages[1]["content"]
         assert "decision_recommendation_examples" in messages[1]["content"]
         assert "decision_menu" in messages[1]["content"]
@@ -713,6 +714,79 @@ def test_estimator_chat_context_retrieves_similar_answer_keys_by_scope_packages(
     decision_ids = [row["decision_id"] for row in matches[0]["reference_answer_key"]["decisions"]]
     assert set(decision_ids[:2]) == {"roofing_coating_system_row_26", "roofing_foam_row_19"}
     assert decision_ids.index("roofing_edge_metal_row_82") > 1
+
+
+def test_estimator_chat_context_hydrates_answer_keys_for_compact_examples(monkeypatch) -> None:
+    import jobscan.estimator.template_examples as template_examples
+
+    answer_key = {
+        "schema_version": "reference_estimate_answer_key.v1",
+        "template_type": "insulation",
+        "source_workbook": {"file_name": "Estimate Insulation - Compact Example.xlsx"},
+        "decisions": [
+            {
+                "section": "insulation_foam_template_decisions",
+                "decision_id": "insulation_foam_template_selector",
+                "template_bucket": "foam",
+                "workbook_row": "19-21",
+                "line_item": "Open Cell SPF",
+                "inputs": {
+                    "basis_sqft": 2226,
+                    "thickness_inches": 3.68,
+                    "yield_or_coverage": 4500,
+                    "unit_price": 1600,
+                },
+                "calculated_outputs": {"estimated_cost": 5041.03},
+            }
+        ],
+        "summary": {"decision_count": 1, "unmapped_count": 0},
+    }
+    fetch_calls = []
+
+    def fake_fetch(data, rows):
+        fetch_calls.append(rows)
+        return {"example_id:compact-insulation": answer_key}
+
+    monkeypatch.setattr(template_examples, "_fetch_answer_keys_for_examples", fake_fetch)
+    data = EstimatorData(
+        database_url="postgresql://example.invalid/db",
+        template_examples=pd.DataFrame(
+            [
+                {
+                    "example_id": "compact-insulation",
+                    "job_id": "I-COMPACT",
+                    "customer": "Collins",
+                    "job_name": "Metal Building Insulation",
+                    "template_type": "insulation",
+                    "project_class": "insulation_pole_barn",
+                    "building_type": "metal_building",
+                    "substrate": "metal",
+                    "material_system": "Open Cell SPF",
+                    "material_packages_json": json.dumps(["foam", "labor_foam"]),
+                    "area_sqft": 2226,
+                    "scope_summary": "Metal building walls and ceiling with open cell foam.",
+                    "decision_summary": "foam Open Cell SPF",
+                }
+            ]
+        ),
+    )
+
+    context = estimator_context_summary(
+        data,
+        scope={
+            "template_type": "insulation",
+            "estimated_sqft": 2226,
+            "substrate": "metal",
+            "foam_type": "open_cell",
+            "raw_input_notes": "30x40 metal building, open cell foam, walls and ceiling",
+        },
+    )
+
+    matches = context["historical_answer_key_examples"]["matched_answer_keys"]
+    assert fetch_calls
+    assert matches
+    assert matches[0]["job_id"] == "I-COMPACT"
+    assert matches[0]["reference_answer_key"]["decisions"][0]["decision_id"] == "insulation_foam_template_selector"
 
 
 def test_estimator_chat_apply_matched_answer_key_uses_full_labor_rows() -> None:

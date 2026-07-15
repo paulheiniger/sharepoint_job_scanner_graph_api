@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 
 from jobscan.db_connections import create_resilient_engine
 
@@ -341,6 +341,98 @@ def _answer_key_for_example(data: Any, row: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _example_lookup_value(row: dict[str, Any], field: str) -> str:
+    return _text(row.get(field))
+
+
+def _fetch_answer_keys_for_examples(data: Any, rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    database_url = _text(getattr(data, "database_url", ""))
+    if not database_url or not rows:
+        return {}
+    example_ids = sorted(
+        {
+            _example_lookup_value(row, "example_id")
+            for row in rows
+            if _example_lookup_value(row, "example_id")
+        }
+    )
+    document_ids = sorted(
+        {
+            _example_lookup_value(row, "document_id")
+            for row in rows
+            if _example_lookup_value(row, "document_id")
+        }
+    )
+    source_files = sorted(
+        {
+            _example_lookup_value(row, "source_file")
+            for row in rows
+            if _example_lookup_value(row, "source_file")
+        }
+    )
+    if not example_ids and not document_ids and not source_files:
+        return {}
+    filters: list[str] = []
+    params: dict[str, Any] = {}
+    if example_ids:
+        filters.append("example_id IN :example_ids")
+        params["example_ids"] = example_ids
+    if document_ids:
+        filters.append("document_id IN :document_ids")
+        params["document_ids"] = document_ids
+    if source_files:
+        filters.append("source_file IN :source_files")
+        params["source_files"] = source_files
+    statement = text(
+        f"""
+        SELECT example_id, document_id, source_file, answer_key_json
+        FROM analytics.estimator_template_examples
+        WHERE answer_key_json IS NOT NULL
+          AND ({' OR '.join(filters)})
+        """
+    )
+    if example_ids:
+        statement = statement.bindparams(bindparam("example_ids", expanding=True))
+    if document_ids:
+        statement = statement.bindparams(bindparam("document_ids", expanding=True))
+    if source_files:
+        statement = statement.bindparams(bindparam("source_files", expanding=True))
+    hydrated: dict[str, dict[str, Any]] = {}
+    try:
+        engine = create_resilient_engine(database_url)
+        with engine.connect() as connection:
+            records = connection.execute(statement, params).mappings().all()
+    except Exception:
+        return {}
+    for record in records:
+        answer_key = _json_dict(record.get("answer_key_json"))
+        if not answer_key:
+            continue
+        for field in ("example_id", "document_id", "source_file"):
+            value = _text(record.get(field))
+            if value:
+                hydrated.setdefault(f"{field}:{value}", answer_key)
+    return hydrated
+
+
+def _hydrated_answer_key_for_row(
+    data: Any,
+    row: dict[str, Any],
+    hydrated_answer_keys: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    answer_key = _json_dict(row.get("answer_key_json"))
+    if answer_key:
+        return answer_key
+    for field in ("example_id", "document_id", "source_file"):
+        value = _text(row.get(field))
+        if not value:
+            continue
+        answer_key = hydrated_answer_keys.get(f"{field}:{value}")
+        if answer_key:
+            return answer_key
+    return _answer_key_for_example(data, row)
+
+
 def _scope_answer_key_text(scope: dict[str, Any]) -> str:
     fields = (
         "template_type",
@@ -617,9 +709,7 @@ def build_similar_answer_key_digest(
     preferred_buckets.update(_scope_answer_key_packages(scope))
     scored: list[tuple[float, dict[str, Any], dict[str, Any], list[str]]] = []
     for row in examples.fillna("").to_dict(orient="records"):
-        answer_key = _answer_key_for_example(data, row)
-        if not answer_key or not answer_key.get("decisions"):
-            continue
+        answer_key = _json_dict(row.get("answer_key_json"))
         score, reasons = _answer_key_example_score(
             row,
             answer_key,
@@ -631,7 +721,13 @@ def build_similar_answer_key_digest(
         scored.append((score, row, answer_key, reasons))
     scored.sort(key=lambda item: item[0], reverse=True)
     matched: list[dict[str, Any]] = []
-    for score, row, answer_key, reasons in scored[: max(0, int(limit or 5))]:
+    candidate_window = scored[: max(max(0, int(limit or 5)) * 4, max(0, int(limit or 5)))]
+    hydrated_answer_keys = _fetch_answer_keys_for_examples(data, [row for _, row, _, _ in candidate_window])
+    for score, row, answer_key, reasons in candidate_window:
+        if not answer_key or not answer_key.get("decisions"):
+            answer_key = _hydrated_answer_key_for_row(data, row, hydrated_answer_keys)
+        if not answer_key or not answer_key.get("decisions"):
+            continue
         compact = _compact_answer_key(
             answer_key,
             limit=decisions_per_example,
@@ -659,6 +755,8 @@ def build_similar_answer_key_digest(
                 "reference_answer_key": compact,
             }
         )
+        if len(matched) >= max(0, int(limit or 5)):
+            break
     return {
         "matched_answer_keys": matched,
         "retrieval": {

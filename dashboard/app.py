@@ -18,7 +18,7 @@ from io import BytesIO
 from contextlib import contextmanager
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -6646,6 +6646,17 @@ def load_job_board_jobs() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
+def load_job_board_static_snapshot() -> pd.DataFrame:
+    cols = relation_columns("job_board_static_snapshot")
+    if "job_id" not in cols:
+        return pd.DataFrame()
+    try:
+        return load_df("SELECT * FROM job_board_static_snapshot")
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
 def load_job_board_document_dates() -> pd.DataFrame:
     document_cols = relation_columns("documents")
     if not {"job_id", "file_name"}.issubset(document_cols):
@@ -7291,27 +7302,31 @@ def load_job_board_warnings() -> pd.DataFrame:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_job_board_df(include_document_signals: bool = True) -> pd.DataFrame:
-    jobs = load_job_board_jobs()
-    if not isinstance(jobs, pd.DataFrame):
-        return pd.DataFrame()
-    if jobs.empty or "job_id" not in jobs.columns:
-        return jobs
-    jobs = with_folder_link(jobs)
-    enrichments = [
-        load_job_board_vsimple_enrichment(),
-        load_job_board_template_enrichment(),
-    ]
-    if include_document_signals:
-        enrichments.append(load_job_board_document_signal_enrichment())
-    enrichments.append(load_job_board_estimate_labor_enrichment())
-    jobs = merge_job_board_enrichments(
-        jobs,
-        *enrichments,
-    )
-    document_dates = load_job_board_document_dates()
-    if not document_dates.empty and "job_id" in document_dates.columns:
-        jobs = jobs.merge(document_dates, on="job_id", how="left")
-    jobs = merge_job_board_document_folder_dates(jobs, load_job_board_document_folder_dates())
+    jobs = load_job_board_static_snapshot() if include_document_signals else pd.DataFrame()
+    if not isinstance(jobs, pd.DataFrame) or jobs.empty or "job_id" not in jobs.columns:
+        jobs = load_job_board_jobs()
+        if not isinstance(jobs, pd.DataFrame):
+            return pd.DataFrame()
+        if jobs.empty or "job_id" not in jobs.columns:
+            return jobs
+        jobs = with_folder_link(jobs)
+        enrichments = [
+            load_job_board_vsimple_enrichment(),
+            load_job_board_template_enrichment(),
+        ]
+        if include_document_signals:
+            enrichments.append(load_job_board_document_signal_enrichment())
+        enrichments.append(load_job_board_estimate_labor_enrichment())
+        jobs = merge_job_board_enrichments(
+            jobs,
+            *enrichments,
+        )
+        document_dates = load_job_board_document_dates()
+        if not document_dates.empty and "job_id" in document_dates.columns:
+            jobs = jobs.merge(document_dates, on="job_id", how="left")
+        jobs = merge_job_board_document_folder_dates(jobs, load_job_board_document_folder_dates())
+    else:
+        jobs = with_folder_link(merge_job_board_enrichments(jobs))
     jobs = add_job_board_proposal_stale_columns(jobs)
     overrides = load_job_workflow_overrides()
     if "job_id" in overrides.columns:
@@ -13560,8 +13575,18 @@ def render_estimator_chat_draft_panel(
     *,
     notes: str,
     estimate_type: str,
-    data: EstimatorData,
+    data: EstimatorData | None = None,
+    data_loader: Callable[[], EstimatorData] | None = None,
 ) -> dict[str, Any] | None:
+    def ensure_chat_data() -> EstimatorData:
+        nonlocal data
+        if data is None:
+            if data_loader is None:
+                data = load_estimator_data_for_ui("chat")
+            else:
+                data = data_loader()
+        return data
+
     thread_id = current_estimator_chat_thread_id()
     chat_key = str(thread_id)
     history_key = f"estimator_chat_history_{chat_key}"
@@ -13663,10 +13688,11 @@ def render_estimator_chat_draft_panel(
             )
             if detected_message_type != ESTIMATE_TYPE_RESTORATION or estimate_type == ESTIMATE_TYPE_RESTORATION:
                 chat_template_type_hint = detected_message_type
+            chat_data = ensure_chat_data()
             with estimator_perf_step("chat context and response"):
                 result = run_estimator_chat_turn(
                     messages,
-                    data=data,
+                    data=chat_data,
                     template_type_hint=chat_template_type_hint,
                     existing_scope=existing_scope,
                     attached_reference_answer_key=attached_reference_answer_key,
@@ -14376,7 +14402,16 @@ def estimator_prototype_page() -> None:
     st.title("Estimating Assistant")
     st.caption("Describe the job, review what was parsed, then build the workbook draft. Estimator review is required before quoting.")
 
-    data = load_estimator_data_for_ui("interactive")
+    estimator_data_by_profile: dict[str, EstimatorData] = {}
+
+    def ensure_estimator_data(load_profile: str = "interactive") -> EstimatorData:
+        cached = estimator_data_by_profile.get(load_profile)
+        if cached is not None:
+            return cached
+        loaded = load_estimator_data_for_ui(load_profile)
+        estimator_data_by_profile[load_profile] = loaded
+        return loaded
+
     with st.expander("Examples, routing, and data status", expanded=False):
         estimate_type_selection = st.selectbox(
             "Estimate Type",
@@ -14390,34 +14425,36 @@ def estimator_prototype_page() -> None:
             if column.button(label, key=f"estimator_sample_{label}"):
                 st.session_state["estimator_notes"] = sample
                 st.session_state["estimator_chat_pending_message"] = sample
-        st.write("Files used:", getattr(data, "source_files_used", []) or [])
-        data_warnings = getattr(data, "warnings", []) or []
-        if data_warnings:
-            st.warning("\n".join(str(warning) for warning in data_warnings))
-        st.write(
-            {
-                "load_profile": "interactive",
-                "jobs": estimator_data_table_count(data, "jobs"),
-                "estimates": estimator_data_table_count(data, "estimates"),
-                "line_items": estimator_data_table_count(data, "line_items"),
-                "template_rows": estimator_data_table_count(data, "template_rows"),
-                "template_row_catalog": estimator_data_table_count(data, "template_row_catalog"),
-                "template_formula_models": estimator_data_table_count(data, "template_formula_models"),
-                "classified_line_items": estimator_data_table_count(data, "classified_line_items"),
-                "tracking_summary": estimator_data_table_count(data, "tracking_summary"),
-                "tracking_daily": estimator_data_table_count(data, "tracking_daily"),
-                "pricing": estimator_data_table_count(data, "pricing"),
-                "pricing_catalog": estimator_data_table_count(data, "pricing_catalog"),
-                "relationship_labor_rates": estimator_data_table_count(data, "relationship_labor_rates"),
-                "relationship_material_qty_ratios": estimator_data_table_count(data, "relationship_material_qty_ratios"),
-                "relationship_package_cooccurrence": estimator_data_table_count(data, "relationship_package_cooccurrence"),
-                "job_context_profiles": estimator_data_table_count(data, "job_context_profiles"),
-                "template_examples": estimator_data_table_count(data, "template_examples"),
-                "foam_yield_history": estimator_data_table_count(data, "foam_yield_history"),
-                "estimator_decision_recommendations": estimator_data_table_count(data, "estimator_decision_recommendations"),
-                "estimator_memory": estimator_data_table_count(data, "estimator_memory"),
-            }
-        )
+        if st.checkbox("Show estimator data status", value=False, key="estimator_show_data_status"):
+            status_data = ensure_estimator_data("interactive")
+            st.write("Files used:", getattr(status_data, "source_files_used", []) or [])
+            data_warnings = getattr(status_data, "warnings", []) or []
+            if data_warnings:
+                st.warning("\n".join(str(warning) for warning in data_warnings))
+            st.write(
+                {
+                    "load_profile": "interactive",
+                    "jobs": estimator_data_table_count(status_data, "jobs"),
+                    "estimates": estimator_data_table_count(status_data, "estimates"),
+                    "line_items": estimator_data_table_count(status_data, "line_items"),
+                    "template_rows": estimator_data_table_count(status_data, "template_rows"),
+                    "template_row_catalog": estimator_data_table_count(status_data, "template_row_catalog"),
+                    "template_formula_models": estimator_data_table_count(status_data, "template_formula_models"),
+                    "classified_line_items": estimator_data_table_count(status_data, "classified_line_items"),
+                    "tracking_summary": estimator_data_table_count(status_data, "tracking_summary"),
+                    "tracking_daily": estimator_data_table_count(status_data, "tracking_daily"),
+                    "pricing": estimator_data_table_count(status_data, "pricing"),
+                    "pricing_catalog": estimator_data_table_count(status_data, "pricing_catalog"),
+                    "relationship_labor_rates": estimator_data_table_count(status_data, "relationship_labor_rates"),
+                    "relationship_material_qty_ratios": estimator_data_table_count(status_data, "relationship_material_qty_ratios"),
+                    "relationship_package_cooccurrence": estimator_data_table_count(status_data, "relationship_package_cooccurrence"),
+                    "job_context_profiles": estimator_data_table_count(status_data, "job_context_profiles"),
+                    "template_examples": estimator_data_table_count(status_data, "template_examples"),
+                    "foam_yield_history": estimator_data_table_count(status_data, "foam_yield_history"),
+                    "estimator_decision_recommendations": estimator_data_table_count(status_data, "estimator_decision_recommendations"),
+                    "estimator_memory": estimator_data_table_count(status_data, "estimator_memory"),
+                }
+            )
     with st.expander("Estimator Memory Review", expanded=False):
         st.caption(
             "Approve answer-key or edit-derived memory here. Approved rows are loaded back into the chat context; "
@@ -14434,7 +14471,7 @@ def estimator_prototype_page() -> None:
     active_chat_context = render_estimator_chat_draft_panel(
         notes=notes,
         estimate_type=resolved_estimate_type,
-        data=data,
+        data_loader=lambda: ensure_estimator_data("chat"),
     )
     if active_chat_context and isinstance(active_chat_context.get("scope_overrides"), dict):
         active_chat_context["scope_overrides"] = scope_with_reference_template_type(
@@ -14504,7 +14541,7 @@ def estimator_prototype_page() -> None:
         use_historical_calibration = False
     else:
         use_historical_calibration = False
-    field_notes_data = data
+    field_notes_data: EstimatorData | None = None
     with st.expander("Job header and advanced options", expanded=False):
         f1, f2 = st.columns(2)
         with f1:
@@ -14529,9 +14566,9 @@ def estimator_prototype_page() -> None:
                 key="use_historical_calibration",
             )
             if use_historical_calibration:
-                field_notes_data = load_estimator_data_for_ui("full")
+                field_notes_data = ensure_estimator_data("full")
             else:
-                field_notes_data = data
+                field_notes_data = None
     estimator_input_notes = chat_augmented_notes
     build_requested = st.button("Build / Rebuild Filled Estimate Template", key="generate_field_estimate_recommendation")
     auto_build_requested = bool(st.session_state.pop("estimator_auto_build_requested", False))
@@ -14539,6 +14576,9 @@ def estimator_prototype_page() -> None:
         st.info("Learning mode requested a workbook rebuild automatically.")
     if build_requested or auto_build_requested:
         try:
+            build_data = ensure_estimator_data("interactive")
+            if field_notes_data is None:
+                field_notes_data = build_data
             photo_file_ids = (active_photo_context or {}).get("selected_image_ids") or []
             session_id = capture_estimator_session_event(
                 estimator_sessions.create_estimator_session,
@@ -14561,7 +14601,7 @@ def estimator_prototype_page() -> None:
                 site_address=field_site_address,
                 input_source_type="manual",
                 photos_present=bool(active_photo_context),
-                source_file_ids=[*(data.source_files_used or []), *photo_file_ids],
+                source_file_ids=[*(build_data.source_files_used or []), *photo_file_ids],
                 estimate_status="PARSING",
             )
             if session_id:
@@ -14632,7 +14672,7 @@ def estimator_prototype_page() -> None:
                         "site_address": field_site_address,
                         "city_state_zip": city_state_zip,
                     },
-                    field_notes_data=data,
+                    field_notes_data=build_data,
                 )
                 st.session_state["field_estimate_route"] = route
                 st.session_state["integrated_flooring_estimate_result"] = flooring_result.to_dict()
@@ -14884,9 +14924,10 @@ def estimator_prototype_page() -> None:
             return
         parsed_workbench = build_estimating_workbench_for_ui(
             field_recommendation,
-            data,
+            ensure_estimator_data("interactive"),
             timing_label="initial workbench build",
         )
+        render_data = ensure_estimator_data("interactive")
         workbench_key = str(parsed_workbench.get("estimate_id") or "current")
         debug_mode = st.checkbox(
             "Debug Mode",
@@ -14915,7 +14956,7 @@ def estimator_prototype_page() -> None:
             edited_penetrations = st.text_input("Penetrations", value=str(base_scope.get("penetrations_complexity") or ""), key=f"wb_penetrations_{workbench_key}")
         reference_defaults = parse_reference_job_ids(base_scope.get("reference_job_ids") or base_scope.get("reference_project_ids") or "")
         reference_options, reference_labels = estimator_reference_job_options(
-            data,
+            render_data,
             template_type=str(base_scope.get("template_type") or historical_filters_from_scope(base_scope).get("template_type") or ""),
         )
         selected_reference_defaults = [job_id for job_id in reference_defaults if job_id in reference_options]
@@ -15014,7 +15055,7 @@ def estimator_prototype_page() -> None:
         )
         filtered_default_workbench = build_estimating_workbench_for_ui(
             field_recommendation,
-            data,
+            render_data,
             scope_override=edited_scope,
             historical_filters=historical_filters,
             timing_label="filtered workbench build",
@@ -16325,7 +16366,7 @@ def estimator_prototype_page() -> None:
                 pricing_markup_editable_fields,
             )
 
-        edited_workbench = recalculate_workbench_tables_for_ui(edited_workbench, data=data)
+        edited_workbench = recalculate_workbench_tables_for_ui(edited_workbench, data=render_data)
         st.session_state[previous_workbench_key] = edited_workbench
         totals = summarize_workbench_totals(edited_workbench)
         labor_metric_rows = (

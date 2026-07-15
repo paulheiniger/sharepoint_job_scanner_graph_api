@@ -1015,7 +1015,7 @@ def _build_estimator_context_summary(data: EstimatorData | None, *, scope: dict[
         data,
         scope=scope,
         limit=5,
-        decisions_per_example=30,
+        decisions_per_example=80,
         decision_menu=decision_menu,
     )
     return summary
@@ -2783,7 +2783,7 @@ def _chat_prompt_messages(
         "workbook_decision_preferences should be a list of decisions with decision_id, template_bucket, include, proposed_values, "
         "evidence, confidence, and review_required. Include section and workbook_row when known. "
         "Critical calculation rule: if include is true, proposed_values must provide the row's required calculation inputs from "
-        "estimator_context.workbook_decision_menu, or cite a specific historical/template value that supplies them. "
+        "estimator_context.decision_menu and estimator_context.formula_requirements, or cite a specific historical/template value that supplies them. "
         "Do not check a row based only on relationship/history/product evidence when quantity, area, rate, yield, or unit price is missing. "
         "In that case set include false, review_required true, and explain which calculation fields are needed. "
         "Use proposed_values for editable workbook fields such as basis_sqft, thickness_inches, gal_per_100_sqft, unit_price, "

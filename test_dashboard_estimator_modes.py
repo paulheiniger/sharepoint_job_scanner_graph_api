@@ -91,11 +91,12 @@ def test_dashboard_imports_safely() -> None:
     assert hasattr(app, "operations_dashboard_page")
 
 
-def test_estimator_page_uses_loaded_data_for_default_field_parser() -> None:
+def test_estimator_page_loads_workbook_data_only_when_building() -> None:
     app = importlib.import_module("dashboard.app")
     source = inspect.getsource(app.estimator_prototype_page)
 
-    assert "field_notes_data = data" in source
+    assert "field_notes_data = None" in source
+    assert 'build_data = ensure_estimator_data("interactive")' in source
     assert "field_notes_data = EstimatorData()" not in source
 
 

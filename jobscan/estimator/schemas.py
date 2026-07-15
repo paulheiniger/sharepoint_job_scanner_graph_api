@@ -8,6 +8,7 @@ import pandas as pd
 
 @dataclass
 class EstimatorData:
+    database_url: str = ""
     jobs: pd.DataFrame = field(default_factory=pd.DataFrame)
     estimates: pd.DataFrame = field(default_factory=pd.DataFrame)
     line_items: pd.DataFrame = field(default_factory=pd.DataFrame)
