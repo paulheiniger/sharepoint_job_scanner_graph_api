@@ -206,6 +206,10 @@ def interpret_search_request(query: str) -> dict[str, Any]:
         "we",
         "for",
         "do",
+        "note",
+        "notes",
+        "form",
+        "forms",
     }
     words = [word for word in search_text.split() if word not in remove_terms and word not in stopwords]
     if city:

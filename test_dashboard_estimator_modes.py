@@ -839,11 +839,14 @@ def test_ask_spraytec_query_planner_routes_tracking_and_timesheet_questions() ->
     app = importlib.import_module("dashboard.app")
 
     tracking_prompt = "Show me job tracking notes for Pegasus 39 Pearce."
+    tracking_interpreted = app.interpret_search_request(tracking_prompt)
     tracking_plan = app.plan_ask_spraytec_query(
         tracking_prompt,
-        app.interpret_search_request(tracking_prompt),
+        tracking_interpreted,
     )
 
+    assert tracking_interpreted["search_text"] == "pegasus 39 pearce"
+    assert tracking_interpreted["tokens"] == ["pegasus", "39", "pearce"]
     assert "job_tracking_summary" in tracking_plan["targets"]
     assert "job_tracking_daily_entries" in tracking_plan["targets"]
     assert "operations_dashboard" in tracking_plan["targets"]
@@ -858,6 +861,20 @@ def test_ask_spraytec_query_planner_routes_tracking_and_timesheet_questions() ->
     assert timesheet_plan["mode"] == "structured_answer"
     assert "office_timesheet_entries" in timesheet_plan["targets"]
     assert timesheet_plan["needs_clarification"] is False
+
+
+def test_ask_spraytec_query_planner_routes_estimating_guidance_questions() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    prompt = "For roofing jobs with Gaco silicone and primer, what labor rows were usually included?"
+    plan = app.plan_ask_spraytec_query(prompt, app.interpret_search_request(prompt))
+
+    assert plan["mode"] == "structured_answer"
+    assert "historical_estimate_guidance" in plan["targets"]
+    assert "estimate_template_rows" in plan["targets"]
+    assert "estimate_line_items" in plan["targets"]
+    assert plan["needs_clarification"] is False
+    assert plan["use_llm_answer"] is True
 
 
 def test_ask_spraytec_query_planner_routes_attribute_job_search() -> None:

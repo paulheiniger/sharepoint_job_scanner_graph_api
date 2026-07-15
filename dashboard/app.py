@@ -5188,6 +5188,7 @@ ASK_SPRAYTEC_STRUCTURED_TARGETS = {
     "job_tracking_daily_entries",
     "office_timesheet_entries",
     "operations_dashboard",
+    "historical_estimate_guidance",
 }
 
 
@@ -5526,6 +5527,28 @@ def plan_ask_spraytec_query(prompt: str, interpreted: dict[str, Any]) -> dict[st
         " edited ",
         " estimator ",
     )
+    estimating_guidance_markers = (
+        " how to estimate ",
+        " estimate this ",
+        " estimating guidance ",
+        " what labor ",
+        " labor line item ",
+        " labor line items ",
+        " labor rows ",
+        " material rows ",
+        " companion materials ",
+        " companion rows ",
+        " usually include ",
+        " usually included ",
+        " typically include ",
+        " typically included ",
+        " what rows ",
+        " what else ",
+        " historical examples ",
+        " past estimates ",
+        " prior estimates ",
+        " similar estimates ",
+    )
     prompt_words = set(re.findall(r"[a-z0-9]+", normalized))
 
     if document_type not in (None, "") or _prompt_has_any(normalized, document_markers):
@@ -5555,6 +5578,13 @@ def plan_ask_spraytec_query(prompt: str, interpreted: dict[str, Any]) -> dict[st
     if _prompt_has_any(normalized, sales_pipeline_markers):
         targets.update({"jobs", "estimates", "operations_dashboard"})
         reasons.append("sales pipeline terms")
+    guidance_requested = _prompt_has_any(normalized, estimating_guidance_markers) or (
+        {"labor", "included"}.issubset(prompt_words)
+        and prompt_words & {"material", "materials", "coating", "foam", "primer", "silicone", "fasteners", "seams"}
+    )
+    if guidance_requested:
+        targets.update({"historical_estimate_guidance", "estimate_template_rows", "estimate_line_items", "estimates"})
+        reasons.append("historical estimating guidance terms")
     if {"ready", "schedule"}.issubset(prompt_words) or {"waiting", "schedule"}.issubset(prompt_words):
         targets.update({"operations_dashboard", "crew_schedule", "job_tracking_summary"})
         reasons.append("schedule readiness terms")
@@ -5569,7 +5599,7 @@ def plan_ask_spraytec_query(prompt: str, interpreted: dict[str, Any]) -> dict[st
         targets.update({"documents", "document_content"})
         reasons.append(f"requested {requested_document_label(document_type).lower()}")
 
-    if attribute_query.get("enabled"):
+    if attribute_query.get("enabled") and not guidance_requested:
         targets.difference_update({"pricing_catalog", "product_catalog", "documents"})
         reasons = [
             reason
@@ -5593,7 +5623,7 @@ def plan_ask_spraytec_query(prompt: str, interpreted: dict[str, Any]) -> dict[st
         and not structured_targets
     )
     mode = "job_lookup"
-    if attribute_query.get("enabled"):
+    if attribute_query.get("enabled") and not guidance_requested:
         mode = "attribute_job_search"
     elif {"documents", "document_content"} & targets and targets - {"jobs", "documents", "document_content"}:
         mode = "mixed_answer"
@@ -5610,6 +5640,7 @@ def plan_ask_spraytec_query(prompt: str, interpreted: dict[str, Any]) -> dict[st
         "job_tracking_daily_entries",
         "office_timesheet_entries",
         "operations_dashboard",
+        "historical_estimate_guidance",
     }:
         mode = "structured_answer"
 
@@ -5630,6 +5661,7 @@ def plan_ask_spraytec_query(prompt: str, interpreted: dict[str, Any]) -> dict[st
                 "job_tracking_daily_entries",
                 "office_timesheet_entries",
                 "operations_dashboard",
+                "historical_estimate_guidance",
             }
         ),
         "needs_clarification": needs_clarification,
@@ -6596,12 +6628,58 @@ ASK_QUERY_STOP_WORDS = {
 }
 
 
+ASK_ESTIMATING_GUIDANCE_STOP_WORDS = ASK_QUERY_STOP_WORDS | {
+    "companion",
+    "estimate",
+    "estimates",
+    "estimating",
+    "examples",
+    "historical",
+    "include",
+    "included",
+    "item",
+    "items",
+    "line",
+    "lines",
+    "material",
+    "materials",
+    "past",
+    "prior",
+    "row",
+    "rows",
+    "similar",
+    "typically",
+    "usually",
+}
+
+
 def _ask_relevant_tokens(query: str) -> list[str]:
     return [
         token_value
         for token_value in tokenize_search_text(query)
         if token_value.lower() not in ASK_QUERY_STOP_WORDS and len(token_value) >= 2
     ]
+
+
+def _ask_estimating_guidance_tokens(query: str) -> list[str]:
+    tokens = []
+    for token_value in tokenize_search_text(query):
+        lowered = token_value.lower()
+        if lowered in ASK_ESTIMATING_GUIDANCE_STOP_WORDS or len(lowered) < 2:
+            continue
+        tokens.append(lowered)
+    return list(dict.fromkeys(tokens))
+
+
+def _ask_template_type_filter_from_query(query: str) -> str:
+    normalized = " " + " ".join(str(query or "").lower().split()) + " "
+    if any(marker in normalized for marker in (" roofing ", " roof ", " coating ", " silicone ", " metal roof ")):
+        return "roofing"
+    if any(marker in normalized for marker in (" insulation ", " open cell ", " closed cell ", " thermal barrier ", " r-value ", " r value ")):
+        return "insulation"
+    if " flooring " in normalized or " floor " in normalized:
+        return "flooring"
+    return ""
 
 
 def _ask_date_window_from_query(query: str) -> tuple[date | None, date | None]:
@@ -7336,6 +7414,172 @@ def attribute_job_search_response(results: list[dict[str, Any]], attribute_query
     return "\n".join(lines).strip()
 
 
+def _historical_estimate_guidance_rows(connection: Any, query: str, *, limit: int) -> list[dict[str, Any]]:
+    template_columns = _connection_table_columns(connection, "estimate_template_rows")
+    if "job_id" not in template_columns:
+        return []
+    job_columns = _connection_table_columns(connection, "jobs")
+    tokens = _ask_estimating_guidance_tokens(query)
+    template_type = _ask_template_type_filter_from_query(query)
+    text_fields = [
+        field
+        for field in [
+            "template_type",
+            "template_bucket",
+            "template_section",
+            "line_item_kind",
+            "row_label",
+            "selected_item_name",
+            "resolved_item_name",
+            "raw_text",
+            "source_file",
+        ]
+        if field in template_columns
+    ]
+    if not text_fields:
+        return []
+    text_expr = "LOWER(CONCAT_WS(' ', " + ", ".join(f"COALESCE(r.{field}::text, '')" for field in text_fields) + "))"
+    cost_expr = "COALESCE(r.estimated_cost, r.calculated_cost, 0)" if "calculated_cost" in template_columns else "COALESCE(r.estimated_cost, 0)"
+    value_columns = [
+        column
+        for column in [
+            "quantity",
+            "estimated_units",
+            "estimated_sets",
+            "estimated_gallons",
+            "area_sqft",
+            "thickness_inches",
+            "gal_per_100_sqft",
+            "linear_ft",
+            "days",
+            "crew_size",
+            "total_hours",
+            "daily_rate",
+            "hourly_rate",
+            "trips",
+            "round_trip_miles",
+            "unit_price",
+        ]
+        if column in template_columns
+    ]
+    nonzero_value_expr = " OR ".join(f"COALESCE(r.{column}, 0) <> 0" for column in value_columns) or "FALSE"
+    where = [
+        "r.job_id IS NOT NULL",
+        "NULLIF(TRIM(COALESCE(r.row_label, '')), '') IS NOT NULL" if "row_label" in template_columns else "TRUE",
+        "COALESCE(r.template_section, '') NOT IN ('job_header', 'totals')" if "template_section" in template_columns else "TRUE",
+        f"{text_expr} NOT LIKE '%total job cost%'",
+        f"{text_expr} NOT LIKE '%worksheet price%'",
+        f"{text_expr} NOT LIKE '%work sheet price%'",
+        f"{text_expr} NOT LIKE '%subtotal%'",
+        f"{text_expr} NOT LIKE '%sub total%'",
+    ]
+    params: dict[str, Any] = {
+        "job_limit": max(3, min(limit, 12)),
+        "row_limit": max(limit * 10, 80),
+    }
+    if template_type and "template_type" in template_columns:
+        where.append("LOWER(COALESCE(r.template_type, '')) = :template_type")
+        params["template_type"] = template_type
+    token_clauses = []
+    score_terms = []
+    for index, token_value in enumerate(tokens[:6]):
+        key = f"guidance_token_{index}"
+        params[key] = f"%{token_value}%"
+        token_clauses.append(f"{text_expr} LIKE :{key}")
+        score_terms.append(f"CASE WHEN {text_expr} LIKE :{key} THEN 1 ELSE 0 END")
+    if token_clauses:
+        where.append("(" + " OR ".join(token_clauses) + ")")
+    score_expr = " + ".join(score_terms) if score_terms else "1"
+    source_key_expr = "COALESCE(r.document_id::text, r.source_file, r.job_id)" if "document_id" in template_columns else "COALESCE(r.source_file, r.job_id)"
+    row_source_key_expr = "COALESCE(r.document_id::text, r.source_file, r.job_id)" if "document_id" in template_columns else "COALESCE(r.source_file, r.job_id)"
+    selected_pairs = [
+        ("job_id", "job_id"),
+        ("source_file", "source_file"),
+        ("template_type", "template_type"),
+        ("template_section", "template_section"),
+        ("line_item_kind", "line_item_kind"),
+        ("template_bucket", "template_bucket"),
+        ("row_number", "row_number"),
+        ("row_label", "row_label"),
+        ("selected_item_name", "selected_item_name"),
+        ("resolved_item_name", "resolved_item_name"),
+        ("quantity", "quantity"),
+        ("unit", "unit"),
+        ("unit_price", "unit_price"),
+        ("estimated_units", "estimated_units"),
+        ("estimated_cost", "estimated_cost"),
+        ("calculated_cost", "calculated_cost"),
+        ("area_sqft", "area_sqft"),
+        ("thickness_inches", "thickness_inches"),
+        ("yield_or_coverage", "yield_or_coverage"),
+        ("estimated_sets", "estimated_sets"),
+        ("estimated_gallons", "estimated_gallons"),
+        ("gal_per_100_sqft", "gal_per_100_sqft"),
+        ("linear_ft", "linear_ft"),
+        ("days", "days"),
+        ("crew_size", "crew_size"),
+        ("total_hours", "total_hours"),
+        ("daily_rate", "daily_rate"),
+        ("hourly_rate", "hourly_rate"),
+        ("trips", "trips"),
+        ("round_trip_miles", "round_trip_miles"),
+        ("formula_model", "formula_model"),
+        ("warranty_years", "warranty_years"),
+    ]
+    selected = [f"r.{column} AS {alias}" for column, alias in selected_pairs if column in template_columns]
+    context_select = [
+        f"{sql_column('j', job_columns, 'customer')} AS customer",
+        f"{sql_column('j', job_columns, 'job_name')} AS job_name",
+        f"{sql_column('j', job_columns, 'division')} AS division",
+        f"{sql_column('j', job_columns, 'job_type')} AS job_type",
+    ]
+    kind_order = (
+        "CASE "
+        "WHEN LOWER(COALESCE(r.line_item_kind, r.template_section, '')) LIKE '%material%' THEN 1 "
+        "WHEN LOWER(COALESCE(r.line_item_kind, r.template_section, '')) LIKE '%labor%' THEN 2 "
+        "WHEN LOWER(COALESCE(r.template_section, '')) LIKE '%equipment%' THEN 3 "
+        "ELSE 4 END"
+    )
+    statement = text(
+        f"""
+        WITH matching_estimates AS (
+            SELECT
+                r.job_id,
+                {source_key_expr} AS source_key,
+                SUM({score_expr}) AS guidance_match_score,
+                MAX(r.updated_at) AS latest_template_update
+            FROM estimate_template_rows r
+            WHERE {' AND '.join(where)}
+            GROUP BY r.job_id, {source_key_expr}
+            ORDER BY SUM({score_expr}) DESC, MAX(r.updated_at) DESC NULLS LAST
+            LIMIT :job_limit
+        )
+        SELECT
+            'historical_estimate_guidance' AS source_table,
+            m.guidance_match_score,
+            {', '.join(context_select + selected)}
+        FROM estimate_template_rows r
+        JOIN matching_estimates m ON m.job_id = r.job_id AND m.source_key = {row_source_key_expr}
+        LEFT JOIN jobs j ON j.job_id = r.job_id
+        WHERE COALESCE(r.template_section, '') NOT IN ('job_header', 'totals')
+          AND NULLIF(TRIM(COALESCE(r.row_label, '')), '') IS NOT NULL
+          AND ({cost_expr} <> 0 OR {nonzero_value_expr})
+          AND {text_expr} NOT LIKE '%total job cost%'
+          AND {text_expr} NOT LIKE '%worksheet price%'
+          AND {text_expr} NOT LIKE '%work sheet price%'
+          AND {text_expr} NOT LIKE '%subtotal%'
+          AND {text_expr} NOT LIKE '%sub total%'
+        ORDER BY m.guidance_match_score DESC, r.job_id, {kind_order}, r.row_number
+        LIMIT :row_limit
+        """
+    )
+    rows = _query_rows(connection, statement, params)
+    for row in rows:
+        row["guidance_query_tokens"] = tokens[:6]
+        row["guidance_template_type_filter"] = template_type
+    return rows
+
+
 def build_structured_evidence_pack(
     connection: Any,
     *,
@@ -7473,6 +7717,13 @@ def build_structured_evidence_pack(
             evidence["facts"]["estimates"] = _query_rows(connection, statement, params)
     elif wants("estimates"):
         evidence["skipped_sources"].append("estimates table unavailable")
+
+    if wants("historical_estimate_guidance"):
+        guidance_rows = _historical_estimate_guidance_rows(connection, query, limit=max_rows)
+        if guidance_rows:
+            evidence["facts"]["historical_estimate_guidance"] = guidance_rows
+        elif not _connection_table_columns(connection, "estimate_template_rows"):
+            evidence["skipped_sources"].append("estimate_template_rows table unavailable for historical guidance")
 
     line_item_columns = _connection_table_columns(connection, "estimate_line_items")
     if wants("estimate_line_items") and line_item_columns and clean_job_ids:
@@ -7993,10 +8244,67 @@ def build_structured_evidence_pack(
 def structured_evidence_lines(evidence: dict[str, Any]) -> list[str]:
     lines: list[str] = []
     facts = evidence.get("facts") if isinstance(evidence.get("facts"), dict) else {}
-    for source_name, rows in facts.items():
+    source_names = sorted(facts, key=lambda name: 0 if name == "historical_estimate_guidance" else 1)
+    for source_name in source_names:
+        rows = facts.get(source_name)
         if not rows:
             continue
         lines.append(f"**{source_name}**")
+        if source_name == "historical_estimate_guidance":
+            by_job: dict[str, list[dict[str, Any]]] = {}
+            for row in rows:
+                job_id = text_value(row.get("job_id"))
+                source_file = text_value(row.get("source_file"))
+                job_key = (
+                    f"{job_id}|{source_file}"
+                    if job_id or source_file
+                    else text_value(row.get("source_file"))
+                    or "historical job"
+                )
+                by_job.setdefault(job_key, []).append(row)
+            for job_rows in list(by_job.values())[:4]:
+                first = job_rows[0]
+                title = text_value(first.get("job_name")) or text_value(first.get("customer")) or text_value(first.get("source_file")) or text_value(first.get("job_id"))
+                source_file = text_value(first.get("source_file"))
+                if source_file and source_file not in title:
+                    title = f"{title} ({source_file})"
+                material_rows = [
+                    row
+                    for row in job_rows
+                    if "material" in text_value(row.get("line_item_kind") or row.get("template_section")).lower()
+                ][:6]
+                labor_rows = [
+                    row
+                    for row in job_rows
+                    if "labor" in text_value(row.get("line_item_kind") or row.get("template_section")).lower()
+                ][:12]
+                def row_label(row: dict[str, Any]) -> str:
+                    row_name = text_value(row.get("row_label"))
+                    item_name = text_value(row.get("resolved_item_name") or row.get("selected_item_name"))
+                    if item_name.replace(".", "", 1).isdigit():
+                        item_name = ""
+                    bucket = text_value(row.get("template_bucket")).replace("_", " ")
+                    label = item_name or row_name or bucket
+                    if item_name and row_name and row_name != item_name and not row_name.replace(".", "", 1).isdigit():
+                        label = f"{row_name}: {item_name}"
+                    elif not label or label.replace(".", "", 1).isdigit():
+                        label = bucket or label
+                    values = []
+                    for field in ("estimated_units", "area_sqft", "days", "crew_size", "total_hours", "estimated_cost"):
+                        if row.get(field) not in (None, ""):
+                            values.append(f"{field}={row.get(field)}")
+                    return label + (f" ({', '.join(values)})" if values else "")
+
+                parts = []
+                if material_rows:
+                    parts.append("materials: " + "; ".join(row_label(row) for row in material_rows))
+                if labor_rows:
+                    parts.append("labor: " + "; ".join(row_label(row) for row in labor_rows))
+                if parts:
+                    lines.append(f"- {title}: " + " | ".join(parts))
+            if len(lines) > 1:
+                return lines
+            continue
         for row in rows[:5]:
             compact = {key: value for key, value in row.items() if value not in (None, "", [], {})}
             lines.append(f"- {json.dumps(compact, default=str)[:500]}")
@@ -8067,7 +8375,7 @@ def llm_grounded_document_answer(prompt: str, chunks: list[dict[str, Any]], stru
         "You are Ask Spray-Tec, a grounded assistant for Spray-Tec operational data. "
         "Answer only from the provided extracted document sources and structured database evidence. Cite document claims with source ids like [S1]. "
         "For structured database facts, name the source table such as jobs, estimates, estimate_template_rows, pricing_catalog, product_catalog, "
-        "crew_schedule, job_tracking_summary, job_tracking_daily_entries, office_timesheet_entries, or operations_dashboard. "
+        "crew_schedule, job_tracking_summary, job_tracking_daily_entries, office_timesheet_entries, operations_dashboard, or historical_estimate_guidance. "
         "If the sources do not answer the question, say what is missing. Do not invent facts, totals, dates, warranty terms, or scope."
     )
     user_payload = {
@@ -8140,6 +8448,12 @@ ASK_SPRAYTEC_SAMPLE_QUESTIONS: dict[str, list[str]] = {
         "Find roofing jobs that required coating and foam.",
         "Show me proposals submitted but not contracted.",
         "What did Carlos touch this week?",
+    ],
+    "Estimating Guidance": [
+        "For roofing jobs with Gaco silicone and primer, what labor rows were usually included?",
+        "When we include SPF roof foam and coating, what companion materials and labor usually show up?",
+        "For insulation jobs with open cell foam, what logistics rows are typically included?",
+        "For metal roof coating jobs with fasteners and seams, what detail labor should I expect?",
     ],
     "Documents": [
         "Find the Living Waters Church proposal.",
@@ -8412,6 +8726,7 @@ def ask_spraytec_page() -> None:
                 document_matches: list[dict[str, Any]] = []
                 document_chunks: list[dict[str, Any]] = []
                 structured_evidence: dict[str, Any] = {}
+                job_results: list[dict[str, Any]] = []
                 if "documents" in plan_targets and interpreted.get("search_text"):
                     document_matches = search_documents(
                         conn,
@@ -8428,11 +8743,14 @@ def ask_spraytec_page() -> None:
                             limit=ASK_DOCUMENT_CHUNK_LIMIT,
                         )
                 matched_job_ids = [text_value(doc.get("job_id")) for doc in document_matches if text_value(doc.get("job_id"))]
-                results = [] if document_matches or "jobs" not in plan_targets else search_jobs(conn, prompt, limit=10)
-                for result in results:
+                job_lookup_query = text_value(interpreted.get("search_text")) or prompt
+                if "jobs" in plan_targets:
+                    job_results = search_jobs(conn, job_lookup_query, limit=10)
+                results = [] if document_matches else job_results
+                for result in job_results:
                     result["_documents"] = get_preferred_job_documents(conn, result, interpreted.get("document_type"))
-                if not matched_job_ids:
-                    matched_job_ids = [text_value(result.get("job_id")) for result in results[:3] if text_value(result.get("job_id"))]
+                matched_job_ids.extend(text_value(result.get("job_id")) for result in job_results[:3] if text_value(result.get("job_id")))
+                matched_job_ids = list(dict.fromkeys(job_id for job_id in matched_job_ids if job_id))
                 structured_evidence = build_structured_evidence_pack(
                     conn,
                     query=prompt,
@@ -8501,7 +8819,8 @@ def ask_spraytec_page() -> None:
                 strong_results = [result for result in results if float(result.get("match_score") or 0) >= 45]
                 if query_plan.get("use_llm_answer") and structured_evidence.get("facts"):
                     response = llm_grounded_document_answer(prompt, [], structured_evidence)
-                    related = strong_results or results[:3]
+                    guidance_answer = bool((structured_evidence.get("facts") or {}).get("historical_estimate_guidance"))
+                    related = [] if guidance_answer else strong_results or results[:3]
                     if related:
                         response += "\n\nRelated job matches:\n"
                         response += "\n\n".join(
