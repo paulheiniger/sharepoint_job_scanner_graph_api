@@ -11358,7 +11358,13 @@ def schedule_calendar_page() -> None:
     calendar_col, detail_col = st.columns([2, 1])
     calendar_result: object = {}
     with calendar_col:
-        with st.expander("Calendar Grid", expanded=False):
+        show_calendar_grid = st.toggle(
+            "Show calendar grid",
+            value=False,
+            key="schedule_show_calendar_grid",
+            help="Open the full drag-and-drop calendar. Hidden by default to keep the scheduling board compact.",
+        )
+        if show_calendar_grid:
             calendar_result = calendar(
                 events=calendar_events,
                 options=calendar_options,
@@ -11367,6 +11373,8 @@ def schedule_calendar_page() -> None:
             )
             with st.expander("Calendar event debug"):
                 st.write(calendar_result)
+        else:
+            st.caption("Calendar grid is hidden. Turn it on to drag jobs or edit dates from the calendar.")
 
     change = parse_calendar_change(calendar_result)
     if change and not text_value(change.get("event_id")).startswith("tracking-"):
