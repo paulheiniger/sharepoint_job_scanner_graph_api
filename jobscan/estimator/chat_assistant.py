@@ -198,8 +198,11 @@ def run_estimator_chat_turn(
             result = _attach_context_retrieval_summary(result, context)
         except Exception as exc:
             deterministic_baseline.warnings.append(f"AI estimator chat failed; used deterministic fallback. {type(exc).__name__}: {exc}")
+            fallback_result = _attach_context_retrieval_summary(deterministic_baseline, context)
+            if not ((structured_answer_key.mapped_row_count or reference_summary.mapped_row_count) and not should_apply_reference):
+                fallback_result = _supplement_result_with_historical_context_preferences(fallback_result, context)
             return _apply_learning_intent(
-                _attach_context_retrieval_summary(deterministic_baseline, context),
+                _align_decision_preferences_with_deterministic_scope(fallback_result),
                 learning_intent,
                 _best_learning_reference_summary(
                     reference_summary,
@@ -236,6 +239,8 @@ def run_estimator_chat_turn(
                 "Reference answer key/template summary detected but not applied. Say 'apply this answer key' to fill the current workbook, "
                 "'learn from this answer key' to save it as memory, or use it only for evaluation."
             )
+        else:
+            result = _supplement_result_with_historical_context_preferences(result, context)
         result = _align_decision_preferences_with_deterministic_scope(result)
         return _apply_learning_intent(
             result,
@@ -249,8 +254,11 @@ def run_estimator_chat_turn(
             answer_key_mode=answer_key_mode,
         )
     deterministic_baseline.warnings.append("OPENAI_API_KEY is not configured; used deterministic estimator-chat fallback.")
+    deterministic_result = _attach_context_retrieval_summary(deterministic_baseline, context)
+    if not ((structured_answer_key.mapped_row_count or reference_summary.mapped_row_count) and not should_apply_reference):
+        deterministic_result = _supplement_result_with_historical_context_preferences(deterministic_result, context)
     return _apply_learning_intent(
-        _align_decision_preferences_with_deterministic_scope(_attach_context_retrieval_summary(deterministic_baseline, context)),
+        _align_decision_preferences_with_deterministic_scope(deterministic_result),
         learning_intent,
         _best_learning_reference_summary(
             reference_summary,
@@ -327,6 +335,148 @@ def _attach_context_retrieval_summary(result: EstimatorChatResult, context: dict
         **(result.raw_response or {}),
         "historical_answer_key_matches": rows,
     }
+    return result
+
+
+def _historical_context_preferences_from_context(context: dict[str, Any], *, template_type: str = "") -> list[dict[str, Any]]:
+    cues = context.get("historical_answer_key_decision_cues") if isinstance(context, dict) else []
+    if not isinstance(cues, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for cue in cues:
+        if not isinstance(cue, dict):
+            continue
+        if not cue.get("formula_ready"):
+            continue
+        preference = cue.get("suggested_preference") if isinstance(cue.get("suggested_preference"), dict) else {}
+        if not preference:
+            continue
+        proposed_values = preference.get("proposed_values") if isinstance(preference.get("proposed_values"), dict) else {}
+        if not proposed_values:
+            continue
+        support_count = int(_safe_positive_number(cue.get("support_count")))
+        best_score = _safe_positive_number(cue.get("best_similarity_score"))
+        confidence = _safe_positive_number(cue.get("confidence"))
+        if support_count < 2 and best_score < 120 and confidence < 0.58:
+            continue
+        copied = dict(preference)
+        copied["include"] = bool(copied.get("include", True))
+        copied["review_required"] = True
+        copied["source"] = "historical_answer_key_context"
+        copied["confidence"] = confidence or copied.get("confidence") or 0.58
+        copied["proposed_values"] = dict(proposed_values)
+        why = _clean_string(cue.get("why_suggested"))
+        review_reasons = list(copied.get("review_reasons") or [])
+        if why and why not in review_reasons:
+            review_reasons.append(why)
+        copied["review_reasons"] = review_reasons
+        copied["evidence"] = [
+            {
+                "source": "historical_answer_key_decision_cue",
+                "support_count": support_count,
+                "best_similarity_score": round(best_score, 3),
+                "examples": cue.get("examples") or [],
+                "sample_outputs": cue.get("sample_outputs") or {},
+            }
+        ]
+        rows.append(copied)
+    return _clean_decision_preferences(rows, template_type=template_type or _clean_string(context.get("template_type") if isinstance(context, dict) else ""))
+
+
+def _preference_matches(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    left_decision = _clean_string(left.get("decision_id"))
+    right_decision = _clean_string(right.get("decision_id"))
+    if left_decision and right_decision and left_decision == right_decision:
+        return True
+    left_row = _safe_row_number(left.get("workbook_row") or left.get("row_number"))
+    right_row = _safe_row_number(right.get("workbook_row") or right.get("row_number"))
+    if not left_row or not right_row or left_row != right_row:
+        return False
+    left_bucket = _clean_string(left.get("template_bucket")).lower().replace(" ", "_").replace("-", "_")
+    right_bucket = _clean_string(right.get("template_bucket")).lower().replace(" ", "_").replace("-", "_")
+    return not left_bucket or not right_bucket or left_bucket == right_bucket
+
+
+def _merge_preference_evidence(existing: Any, supplement: Any) -> list[Any]:
+    merged: list[Any] = []
+    for raw in (existing, supplement):
+        values = raw if isinstance(raw, list) else ([raw] if isinstance(raw, dict) else [])
+        for item in values:
+            if item not in merged:
+                merged.append(item)
+    return merged
+
+
+def _merge_historical_context_preferences(
+    existing: list[dict[str, Any]],
+    historical: list[dict[str, Any]],
+    *,
+    template_type: str = "",
+) -> list[dict[str, Any]]:
+    if not historical:
+        return existing or []
+    merged = [dict(row) for row in existing or [] if isinstance(row, dict)]
+    for supplement in historical:
+        if not isinstance(supplement, dict):
+            continue
+        matched_index = next((index for index, row in enumerate(merged) if _preference_matches(row, supplement)), None)
+        if matched_index is None:
+            merged.append(dict(supplement))
+            continue
+        current = dict(merged[matched_index])
+        current_values = dict(current.get("proposed_values") or {})
+        supplement_values = dict(supplement.get("proposed_values") or {})
+        filled_values = dict(supplement_values)
+        filled_values.update({key: value for key, value in current_values.items() if value not in (None, "", [], {})})
+        current["proposed_values"] = filled_values
+        for field in ("section", "template_bucket", "workbook_row", "decision_id"):
+            if current.get(field) in (None, "") and supplement.get(field) not in (None, ""):
+                current[field] = supplement.get(field)
+        if current.get("include") in (None, ""):
+            current["include"] = supplement.get("include", True)
+        current["review_required"] = bool(current.get("review_required", False) or supplement.get("review_required", False))
+        review_reasons = list(current.get("review_reasons") or [])
+        for reason in supplement.get("review_reasons") or []:
+            if reason not in review_reasons:
+                review_reasons.append(reason)
+        if review_reasons:
+            current["review_reasons"] = review_reasons
+        evidence = _merge_preference_evidence(current.get("evidence"), supplement.get("evidence"))
+        if evidence:
+            current["evidence"] = evidence
+        current.setdefault("source", supplement.get("source") or "historical_answer_key_context")
+        merged[matched_index] = current
+    return _clean_decision_preferences(merged, template_type=template_type)
+
+
+def _supplement_result_with_historical_context_preferences(
+    result: EstimatorChatResult,
+    context: dict[str, Any],
+) -> EstimatorChatResult:
+    template_type = _template_type_for_scope(result.scope_overrides or {}) or _clean_string(context.get("template_type") if isinstance(context, dict) else "")
+    historical = _historical_context_preferences_from_context(context, template_type=template_type)
+    if not historical:
+        return result
+    merged_preferences = _merge_historical_context_preferences(
+        result.workbook_decision_preferences,
+        historical,
+        template_type=template_type,
+    )
+    if len(merged_preferences) == len(result.workbook_decision_preferences or []):
+        # Existing rows may still have been filled with missing values.
+        if merged_preferences == (result.workbook_decision_preferences or []):
+            return result
+    result.workbook_decision_preferences = merged_preferences
+    result.raw_response = {
+        **(result.raw_response or {}),
+        "historical_context_preference_count": len(historical),
+        "historical_context_preferences_applied": True,
+    }
+    warning = f"Added {len(historical)} review-marked workbook decision suggestion(s) from similar historical answer keys."
+    warnings = list(result.warnings or [])
+    if warning not in warnings:
+        warnings.append(warning)
+    result.warnings = warnings
     return result
 
 
@@ -1089,16 +1239,28 @@ def _historical_answer_key_decision_cues(
     """
 
     menu_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
+    menu_by_decision_id: dict[str, dict[str, Any]] = {}
+    menu_by_row: dict[str, dict[str, Any]] = {}
+    menu_by_row_bucket: dict[tuple[str, str], dict[str, Any]] = {}
     for row in decision_menu or []:
         if not isinstance(row, dict):
             continue
+        decision_id = _clean_string(row.get("decision_id"))
+        workbook_row = _safe_row_number(row.get("workbook_row"))
+        bucket = _clean_string(row.get("template_bucket")).lower()
         key = (
             _clean_string(row.get("section")),
-            _clean_string(row.get("decision_id")),
-            _safe_row_number(row.get("workbook_row")),
+            decision_id,
+            workbook_row,
         )
         if key[1] or key[2]:
             menu_by_key[key] = row
+        if decision_id:
+            menu_by_decision_id.setdefault(decision_id, row)
+        if workbook_row:
+            menu_by_row.setdefault(workbook_row, row)
+        if workbook_row and bucket:
+            menu_by_row_bucket.setdefault((workbook_row, bucket), row)
 
     grouped: dict[tuple[str, str, str], dict[str, Any]] = {}
     for example in (answer_key_examples or {}).get("matched_answer_keys") or []:
@@ -1162,13 +1324,54 @@ def _historical_answer_key_decision_cues(
                     target["line_item"] = line_item
             if len(target["examples"]) < 3 and example_ref not in target["examples"]:
                 target["examples"].append(example_ref)
-            menu_row = menu_by_key.get(key)
+            menu_row = (
+                menu_by_key.get(key)
+                or menu_by_decision_id.get(decision_id)
+                or menu_by_row_bucket.get((workbook_row, bucket.lower()))
+                or menu_by_row.get(workbook_row)
+            )
             if menu_row and menu_row.get("formula_requirements"):
                 target["required_inputs"] = list(menu_row.get("formula_requirements") or [])
 
     cues = list(grouped.values())
+    for cue in cues:
+        required_inputs = [str(value) for value in cue.get("required_inputs") or [] if str(value or "").strip()]
+        sample_inputs = cue.get("sample_inputs") if isinstance(cue.get("sample_inputs"), dict) else {}
+        formula_ready = _historical_cue_formula_ready(sample_inputs, required_inputs)
+        missing_inputs = _historical_cue_missing_inputs(sample_inputs, required_inputs)
+        support_count = int(cue.get("support_count") or 0)
+        best_score = float(cue.get("best_similarity_score") or 0.0)
+        examples = cue.get("examples") if isinstance(cue.get("examples"), list) else []
+        example_labels = [
+            _clean_string(example.get("label") or example.get("job_id"))
+            for example in examples
+            if isinstance(example, dict) and _clean_string(example.get("label") or example.get("job_id"))
+        ]
+        cue["formula_ready"] = formula_ready
+        cue["missing_inputs"] = missing_inputs
+        cue["confidence"] = round(min(0.92, 0.48 + min(support_count, 5) * 0.07 + min(best_score / 1000.0, 0.16)), 2)
+        cue["recommendation"] = "include_with_review" if formula_ready else "review_only_missing_inputs"
+        cue["why_suggested"] = _clean_string(
+            f"Seen in {support_count} similar historical answer key"
+            f"{'' if support_count == 1 else 's'}"
+            + (f"; strongest examples: {', '.join(example_labels[:2])}" if example_labels else "")
+            + (f"; missing inputs: {', '.join(missing_inputs)}" if missing_inputs else "")
+        )
+        cue["suggested_preference"] = {
+            "section": cue.get("section"),
+            "decision_id": cue.get("decision_id"),
+            "template_bucket": cue.get("template_bucket"),
+            "workbook_row": cue.get("workbook_row"),
+            "include": bool(formula_ready),
+            "proposed_values": sample_inputs,
+            "confidence": cue["confidence"],
+            "review_required": True,
+            "review_reasons": [cue["why_suggested"]] if cue.get("why_suggested") else [],
+            "source": "historical_answer_key_context",
+        }
     cues.sort(
         key=lambda row: (
+            bool(row.get("formula_ready")),
             int(row.get("support_count") or 0),
             float(row.get("best_similarity_score") or 0.0),
             bool(row.get("sample_inputs")),
@@ -1176,6 +1379,42 @@ def _historical_answer_key_decision_cues(
         reverse=True,
     )
     return cues[: max(0, int(limit or 60))]
+
+
+def _historical_cue_formula_ready(values: dict[str, Any], requirements: list[str]) -> bool:
+    if not requirements:
+        return bool(values)
+    return not _historical_cue_missing_inputs(values, requirements)
+
+
+def _historical_cue_missing_inputs(values: dict[str, Any], requirements: list[str]) -> list[str]:
+    alternatives = _historical_cue_requirement_alternatives(requirements)
+    if not alternatives:
+        return []
+    for alternative in alternatives:
+        missing = [field for field in alternative if values.get(field) in (None, "", [], {})]
+        if not missing:
+            return []
+    shortest = min(alternatives, key=len)
+    return [field for field in shortest if values.get(field) in (None, "", [], {})]
+
+
+def _historical_cue_requirement_alternatives(requirements: list[str]) -> list[list[str]]:
+    text = " ".join(str(value or "").strip() for value in requirements if str(value or "").strip())
+    if not text:
+        return []
+    text = re.sub(r"\bor\s+", " or ", text, flags=re.I)
+    parts = [part.strip(" ,;") for part in re.split(r"\s+or\s+", text, flags=re.I) if part.strip(" ,;")]
+    alternatives: list[list[str]] = []
+    for part in parts:
+        fields = [
+            field
+            for field in re.findall(r"[a-zA-Z][a-zA-Z0-9_]*", part)
+            if field.lower() not in {"and", "or", "requires", "require"}
+        ]
+        if fields:
+            alternatives.append(fields)
+    return alternatives
 
 
 def _compact_decision_values(values: dict[str, Any], *, limit: int = 12) -> dict[str, Any]:
@@ -1576,6 +1815,15 @@ def _dedupe_fields(fields: list[str]) -> list[str]:
 
 
 def _template_type_for_scope(scope: dict[str, Any]) -> str:
+    explicit = _template_type_from_hint(
+        " ".join(
+            str(scope.get(key) or "")
+            for key in ("template_type", "division", "project_type", "estimate_mode")
+            if scope.get(key)
+        )
+    )
+    if explicit in {"roofing", "insulation", "flooring"}:
+        return explicit
     text = " ".join(
         str(scope.get(key) or "")
         for key in ("template_type", "division", "project_type", "raw_input_notes", "notes", "foam_type", "coating_type")
@@ -1614,9 +1862,15 @@ def _template_type_from_chat_text(text: str) -> str:
         r"blister|fasteners?|seams?|curbs?|drains?|tear[- ]?out)\b",
         normalized,
     )
+    explicit_insulation_scope = re.search(
+        r"\b(open[- ]?cell|closed[- ]?cell|spray foam|sprayed foam|r[- ]?\d+|thermal barrier|dc315|"
+        r"attic|crawlspace|outside walls?|wall cavities?|metal building|pole barn|underside of (?:the )?roof deck|"
+        r"tank insulation|insulation project)\b",
+        normalized,
+    )
     if insulation_signal and not roofing_signal:
         return "insulation"
-    if insulation_signal and re.search(r"\b(insulat(?:e|ed|ion)?|open[- ]?cell|closed[- ]?cell|r[- ]?\d+|outside walls?|metal building|pole barn)\b", normalized):
+    if insulation_signal and explicit_insulation_scope and not re.search(r"\broof(?:ing)?\s+(?:system|bid|replacement|recovery|repair|coating)\b", normalized):
         return "insulation"
     if roofing_signal or re.search(r"\broof(?:ing)?\b", normalized):
         return "roofing"
@@ -2795,6 +3049,8 @@ def deterministic_chat_fallback(
     scope: dict[str, Any] = {}
     assumptions: list[str] = []
     questions: list[str] = []
+    if text.strip():
+        scope["raw_input_notes"] = _clean_string(text)[:4000]
     text_template = _template_type_from_chat_text(text)
     hint_template = _template_type_from_hint(template_type_hint)
     template_hint = text_template or hint_template
@@ -2815,6 +3071,10 @@ def deterministic_chat_fallback(
         scope["site_address"] = site_address
         scope["address"] = site_address
         scope["destination_address"] = site_address
+    explicit_sqft = _parse_explicit_sqft(text)
+    if explicit_sqft:
+        scope["estimated_sqft"] = explicit_sqft
+        scope["area_sqft"] = explicit_sqft
 
     if scope.get("template_type") == "insulation":
         length, width = _parse_footprint(text)
@@ -2921,8 +3181,10 @@ def _chat_prompt_messages(
         "formula inputs. Still scale quantities to the current job and mark review_required when the prompt evidence is incomplete. "
         "If estimator_context.historical_answer_key_decision_cues is present, use it as the compact first-pass checklist of likely "
         "workbook rows. Each cue is mined from similar historical answer keys and includes support_count, examples, sample_inputs, "
-        "sample_outputs, and required_inputs. Prefer these cues over generic package cooccurrence when deciding what rows to propose, "
-        "but never copy quantities blindly; adjust to current area/thickness/trips or mark review_required. "
+        "sample_outputs, required_inputs, formula_ready, missing_inputs, why_suggested, and suggested_preference. Prefer these cues "
+        "over generic package cooccurrence when deciding what rows to propose. For formula_ready cues, start from suggested_preference "
+        "and adjust quantities to current area/thickness/trips when needed. For non-formula-ready cues, do not include the row unless "
+        "you can fill the missing_inputs from current notes or other trusted context; otherwise leave it review-marked and explain. "
         "Use matched profiles as evidence for normal package inclusion and scope assumptions, but do not invent values that are not "
         "supported by the current prompt, workbook history, product guidance, or estimator memory. "
         "Ask questions only when the answer materially changes scope, safety/code compliance, system selection, warranty eligibility, or price. "
@@ -3502,6 +3764,11 @@ def _frame_len(frame: Any) -> int:
 def _merge_chat_scopes(baseline_scope: dict[str, Any], ai_scope: dict[str, Any]) -> dict[str, Any]:
     merged = {**_clean_scope(baseline_scope or {}), **_clean_scope(ai_scope or {})}
     baseline = _clean_scope(baseline_scope or {})
+    if baseline.get("template_type_locked"):
+        for key in ("template_type", "division", "project_type", "estimate_mode"):
+            if baseline.get(key):
+                merged[key] = baseline[key]
+        merged["template_type_locked"] = True
     if baseline.get("template_type") == "insulation" and (
         baseline.get("net_insulation_area_sqft") or baseline.get("gross_insulation_area_sqft") or baseline.get("foam_type")
     ):
@@ -3630,6 +3897,32 @@ def _parse_footprint(text: str) -> tuple[float | None, float | None]:
     if not match:
         return None, None
     return float(match.group(1)), float(match.group(2))
+
+
+def _parse_explicit_sqft(text: str) -> float | None:
+    candidates: list[tuple[float, float]] = []
+    value_pattern = r"(\d+(?:,\d{3})*(?:\.\d+)?)"
+    unit_pattern = r"(?:sq\.?\s*ft\.?|square\s+feet|sqft|\bsf\b)"
+    for match in re.finditer(rf"\b{value_pattern}\s*{unit_pattern}\b", str(text or ""), re.I):
+        value = _parse_reference_number(match.group(1))
+        if not value or not (20 <= value <= 10_000_000):
+            continue
+        context = str(text or "")[max(0, match.start() - 70) : min(len(str(text or "")), match.end() + 70)].lower()
+        if re.search(r"\b(?:deduct|less|subtract|opening|openings|door|doors|window|windows|curb|curbs|equipment)\b", context):
+            if not re.search(r"\b(?:net|total|spray|roof|surface|work|project)\s+(?:area|sq|sf)\b", context):
+                continue
+        score = 1.0
+        if re.search(r"\bnet\b", context):
+            score += 60.0
+        if re.search(r"\b(?:total|spray|roof|surface|work|project|measured|estimated)\s+(?:area|sq|sf)\b", context):
+            score += 45.0
+        if re.search(r"\b(?:use|carry|working)\b", context):
+            score += 25.0
+        candidates.append((score, value))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return round(candidates[0][1], 2)
 
 
 def _parse_wall_height(text: str) -> float | None:

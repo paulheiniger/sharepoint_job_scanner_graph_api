@@ -85,6 +85,108 @@ DECISION_FIELD_CANDIDATES = (
 
 NON_DECISION_KINDS = {"header", "total", "subtotal", "metadata", "other"}
 
+ANSWER_KEY_TEXT_STOPWORDS = {
+    "above",
+    "address",
+    "all",
+    "and",
+    "applicable",
+    "are",
+    "bid",
+    "business",
+    "city",
+    "com",
+    "contact",
+    "contract",
+    "contractor",
+    "cost",
+    "customer",
+    "date",
+    "description",
+    "document",
+    "documents",
+    "drive",
+    "email",
+    "estimate",
+    "file",
+    "from",
+    "http",
+    "https",
+    "inc",
+    "job",
+    "kentucky",
+    "llc",
+    "louisville",
+    "name",
+    "page",
+    "phone",
+    "portal",
+    "price",
+    "project",
+    "proposal",
+    "provide",
+    "quote",
+    "respectfully",
+    "road",
+    "roof",
+    "shall",
+    "service",
+    "services",
+    "scope",
+    "source",
+    "state",
+    "street",
+    "submitted",
+    "the",
+    "this",
+    "time",
+    "total",
+    "web",
+    "will",
+    "with",
+    "work",
+    "www",
+}
+
+ANSWER_KEY_TECHNICAL_TOKEN_WEIGHTS = {
+    "acrylic": 1.5,
+    "board": 1.4,
+    "caulk": 1.4,
+    "ceiling": 1.4,
+    "cell": 1.4,
+    "closed": 1.6,
+    "cmu": 1.5,
+    "coating": 1.8,
+    "concrete": 1.5,
+    "curb": 1.3,
+    "deck": 1.3,
+    "drain": 1.3,
+    "epdm": 1.8,
+    "fabric": 1.4,
+    "fastener": 1.5,
+    "foam": 1.8,
+    "gaco": 1.3,
+    "granules": 1.5,
+    "industrial": 1.3,
+    "insulation": 1.6,
+    "metal": 1.7,
+    "open": 1.5,
+    "penetration": 1.4,
+    "polyurethane": 1.5,
+    "primer": 1.5,
+    "restoration": 1.4,
+    "seam": 1.4,
+    "silicone": 1.8,
+    "spray": 1.4,
+    "substrate": 1.3,
+    "tank": 1.6,
+    "tear": 1.5,
+    "tpo": 1.8,
+    "urethane": 1.5,
+    "wall": 1.4,
+    "warranty": 1.4,
+}
+
 
 def _text(value: Any) -> str:
     return str(value or "").strip()
@@ -92,6 +194,19 @@ def _text(value: Any) -> str:
 
 def _norm(value: Any) -> str:
     return re.sub(r"[^a-z0-9_]+", "_", _text(value).lower().replace("-", "_").replace(" ", "_")).strip("_")
+
+
+def _canonical_template_type(value: Any) -> str:
+    normalized = _norm(value)
+    if not normalized:
+        return ""
+    if "insulation" in normalized:
+        return "insulation"
+    if "roof" in normalized:
+        return "roofing"
+    if "floor" in normalized:
+        return "flooring"
+    return normalized
 
 
 def _number(value: Any, default: float = 0.0) -> float:
@@ -587,16 +702,87 @@ def _area_match_score(example_area: float, scope_area: float) -> tuple[float, st
     return (0.0, "")
 
 
+def _answer_key_similarity_tokens(value: str) -> set[str]:
+    tokens: set[str] = set()
+    for token in re.findall(r"[a-z0-9]{3,}", str(value or "").lower()):
+        if token.isdigit():
+            continue
+        if token in ANSWER_KEY_TEXT_STOPWORDS:
+            continue
+        if token.startswith("01x"):
+            continue
+        if re.fullmatch(r"\d+[a-z]{0,2}", token):
+            continue
+        tokens.add(token)
+    return tokens
+
+
 def _token_overlap_score(left: str, right: str) -> tuple[float, str]:
-    left_tokens = {token for token in re.findall(r"[a-z0-9]{3,}", left.lower()) if token not in {"roof", "job", "the", "and", "with"}}
-    right_tokens = {token for token in re.findall(r"[a-z0-9]{3,}", right.lower()) if token not in {"roof", "job", "the", "and", "with"}}
+    left_tokens = _answer_key_similarity_tokens(left)
+    right_tokens = _answer_key_similarity_tokens(right)
     if not left_tokens or not right_tokens:
         return (0.0, "")
     overlap = left_tokens & right_tokens
     if not overlap:
         return (0.0, "")
-    score = min(len(overlap) * 4.0, 32.0)
-    return (score, f"text overlap: {', '.join(sorted(overlap)[:5])}")
+    weighted = sorted(
+        ((ANSWER_KEY_TECHNICAL_TOKEN_WEIGHTS.get(token, 1.0), token) for token in overlap),
+        reverse=True,
+    )
+    score = min(sum(weight for weight, _token in weighted) * 5.0, 38.0)
+    return (score, f"text overlap: {', '.join(token for _weight, token in weighted[:5])}")
+
+
+def _name_overlap_score(scope_text: str, row: dict[str, Any]) -> tuple[float, str]:
+    stopwords = {
+        "hist",
+        "proposal",
+        "estimate",
+        "driveitem",
+        "source",
+        "roofing",
+        "insulation",
+        "flooring",
+        "roof",
+        "job",
+        "the",
+        "and",
+        "with",
+    }
+    name_text = " ".join(
+        _text(row.get(field))
+        for field in ("customer", "job_name", "source_file")
+        if _text(row.get(field))
+    )
+    name_tokens = {
+        token
+        for token in re.findall(r"[a-z0-9]{4,}", name_text.lower())
+        if token not in stopwords and not token.startswith("01x") and not token.isdigit()
+    }
+    if not name_tokens or not scope_text:
+        return (0.0, "")
+    scope_tokens = {
+        token
+        for token in re.findall(r"[a-z0-9]{4,}", scope_text.lower())
+        if token not in stopwords and not token.isdigit()
+    }
+    overlap = name_tokens & scope_tokens
+    if not overlap:
+        return (0.0, "")
+    score = min(len(overlap) * 18.0, 90.0)
+    return (score, f"name overlap: {', '.join(sorted(overlap)[:5])}")
+
+
+def _identity_match_enabled(scope: dict[str, Any]) -> bool:
+    if bool(scope.get("allow_identity_retrieval") or scope.get("target_job_id") or scope.get("reference_job_ids")):
+        return True
+    text = _scope_answer_key_text(scope)
+    return bool(
+        re.search(
+            r"\b(?:like|similar\s+to|same\s+as|based\s+on|use\s+the|reference\s+job|answer\s+key\s+for|find\s+(?:me\s+)?(?:the\s+)?job)\b",
+            text,
+        )
+    )
 
 
 def _answer_key_example_score(
@@ -665,6 +851,11 @@ def _answer_key_example_score(
         elif abs(scope_warranty - example_warranty) <= 5:
             score += 8
             reasons.append("near warranty")
+    if _identity_match_enabled(scope):
+        name_score, name_reason = _name_overlap_score(scope_text, row)
+        if name_score:
+            score += name_score
+            reasons.append(name_reason)
     text_score, text_reason = _token_overlap_score(scope_text, example_text)
     if text_score:
         score += text_score
@@ -708,7 +899,11 @@ def build_similar_answer_key_digest(
     }
     preferred_buckets.update(_scope_answer_key_packages(scope))
     scored: list[tuple[float, dict[str, Any], dict[str, Any], list[str]]] = []
+    scope_template_type = _canonical_template_type(scope.get("template_type") or scope.get("division") or scope.get("project_type"))
     for row in examples.fillna("").to_dict(orient="records"):
+        example_template_type = _canonical_template_type(row.get("template_type"))
+        if scope_template_type and example_template_type and scope_template_type != example_template_type:
+            continue
         answer_key = _json_dict(row.get("answer_key_json"))
         score, reasons = _answer_key_example_score(
             row,

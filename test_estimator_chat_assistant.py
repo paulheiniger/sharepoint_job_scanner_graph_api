@@ -117,6 +117,27 @@ def test_estimator_chat_insulation_message_overrides_stale_roof_hint(monkeypatch
     assert scope["net_insulation_area_sqft"] == 2226
 
 
+def test_estimator_chat_respects_locked_existing_template_type(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    result = run_estimator_chat_turn(
+        [{"role": "user", "content": COLLINS_NOTE}],
+        template_type_hint="Roof Restoration / Coating",
+        existing_scope={
+            "template_type": "roofing",
+            "division": "Roofing",
+            "project_type": "roofing estimate",
+            "template_type_locked": True,
+        },
+    )
+
+    scope = result.scope_overrides
+    assert scope["template_type"] == "roofing"
+    assert scope["division"] == "Roofing"
+    assert scope["project_type"] == "roofing estimate"
+    assert scope["template_type_locked"] is True
+
+
 def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
     data = EstimatorData(
         template_rows=pd.DataFrame(
@@ -332,6 +353,17 @@ def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
     assert result.confidence == 0.82
     assert result.scope_overrides["estimated_sqft"] == 2226
     assert result.workbook_decision_preferences[0]["template_bucket"] == "foam"
+    foam_preferences = [
+        row
+        for row in result.workbook_decision_preferences
+        if row.get("decision_id") == "insulation_foam_template_selector"
+    ]
+    assert len(foam_preferences) == 1
+    assert foam_preferences[0]["proposed_values"]["basis_sqft"] == 2226
+    assert foam_preferences[0]["proposed_values"]["thickness_inches"] == 5.5
+    assert foam_preferences[0]["proposed_values"]["yield_or_coverage"] == 4500
+    assert foam_preferences[0]["review_required"] is True
+    assert result.raw_response["historical_context_preferences_applied"] is True
 
     context = json.loads(calls[0][0][1]["content"])["estimator_context"]
     assert context["estimator_memory_guidance"][0]["template_bucket"] == "labor_loading"
@@ -407,8 +439,17 @@ def test_estimator_context_builds_compact_historical_answer_key_decision_cues() 
                 "inputs": {"days": 1.0, "crew_size": 5, "daily_rate": 1835.66},
                 "calculated_outputs": {"estimated_cost": 1835.66},
             },
+            {
+                "section": "roofing_primer_template_decisions",
+                "decision_id": "roofing_primer_row_39",
+                "template_bucket": "primer",
+                "workbook_row": "39",
+                "line_item": "Primer",
+                "inputs": {"basis_sqft": 9600},
+                "calculated_outputs": {},
+            },
         ],
-        "summary": {"decision_count": 2, "unmapped_count": 0},
+        "summary": {"decision_count": 3, "unmapped_count": 0},
     }
     data = EstimatorData(
         template_examples=pd.DataFrame(
@@ -458,11 +499,96 @@ def test_estimator_context_builds_compact_historical_answer_key_decision_cues() 
     cues = context["historical_answer_key_decision_cues"]
     coating = next(row for row in cues if row["decision_id"] == "roofing_coating_system_row_26")
     top_coat = next(row for row in cues if row["decision_id"] == "roofing_labor_top_coat_row_124")
+    primer = next(row for row in cues if row["decision_id"] == "roofing_primer_row_39")
     assert coating["support_count"] == 2
     assert coating["sample_inputs"]["gal_per_100_sqft"] == 1.5
     assert coating["sample_outputs"]["estimated_cost"] == 5299.2
+    assert coating["formula_ready"] is True
+    assert coating["missing_inputs"] == []
+    assert coating["suggested_preference"]["include"] is True
+    assert coating["suggested_preference"]["proposed_values"]["unit_price"] == 32
+    assert "similar historical answer keys" in coating["why_suggested"]
     assert len(coating["examples"]) == 2
     assert top_coat["support_count"] == 2
+    assert top_coat["formula_ready"] is True
+    assert primer["formula_ready"] is False
+    assert primer["suggested_preference"]["include"] is False
+    assert "coverage_sqft_per_unit" in primer["missing_inputs"]
+    assert "unit_price" in primer["missing_inputs"]
+
+
+def test_historical_context_supplements_but_does_not_override_ai_decision_values() -> None:
+    answer_key = {
+        "schema_version": "reference_estimate_answer_key.v1",
+        "template_type": "insulation",
+        "decisions": [
+            {
+                "section": "insulation_foam_template_decisions",
+                "decision_id": "insulation_foam_template_selector",
+                "template_bucket": "foam",
+                "workbook_row": "19",
+                "line_item": "Open Cell SPF",
+                "inputs": {
+                    "basis_sqft": 2226,
+                    "thickness_inches": 5.5,
+                    "yield_or_coverage": 4500,
+                    "unit_price": 1600,
+                },
+            }
+        ],
+        "summary": {"decision_count": 1, "unmapped_count": 0},
+    }
+    data = EstimatorData(
+        template_examples=pd.DataFrame(
+            [
+                {
+                    "example_id": "open-cell-metal-building",
+                    "job_id": "open-cell-metal-building",
+                    "template_type": "insulation",
+                    "project_class": "open_cell_insulation",
+                    "building_type": "metal building",
+                    "substrate": "metal",
+                    "material_system": "open cell foam",
+                    "material_packages_json": json.dumps(["foam"]),
+                    "area_sqft": 2226,
+                    "scope_summary": "Metal building open cell foam walls and ceiling.",
+                    "answer_key_json": json.dumps(answer_key),
+                }
+            ]
+        )
+    )
+
+    result = run_estimator_chat_turn(
+        [{"role": "user", "content": COLLINS_NOTE + " R21 open cell."}],
+        data=data,
+        template_type_hint="insulation",
+        provider=lambda messages, model: {
+            "assistant_message": "Drafted insulation estimate.",
+            "estimator_notes": "Open cell foam.",
+            "scope_overrides": {"template_type": "insulation", "estimated_sqft": 2226},
+            "workbook_decision_preferences": [
+                {
+                    "decision_id": "insulation_foam_template_selector",
+                    "template_bucket": "foam",
+                    "include": True,
+                    "proposed_values": {
+                        "basis_sqft": 2226,
+                        "thickness_inches": 5.53,
+                        "yield_or_coverage": 5000,
+                        "unit_price": 1.7,
+                    },
+                }
+            ],
+            "confidence": 0.8,
+        },
+        model="test-model",
+    )
+
+    foam = next(row for row in result.workbook_decision_preferences if row["decision_id"] == "insulation_foam_template_selector")
+    assert foam["proposed_values"]["thickness_inches"] == 5.53
+    assert foam["proposed_values"]["yield_or_coverage"] == 5000
+    assert foam["proposed_values"]["unit_price"] == 1.7
+    assert foam["evidence"][0]["source"] == "historical_answer_key_decision_cue"
 
 
 def test_estimator_chat_detects_answer_key_modes() -> None:
@@ -784,6 +910,38 @@ def test_estimator_chat_context_retrieves_similar_answer_keys_by_scope_packages(
                     "decision_summary": "caulk detail",
                     "answer_key_json": json.dumps(repair_answer_key),
                 },
+                {
+                    "example_id": "insulation-decoy",
+                    "job_id": "I-DECOY",
+                    "customer": "Metal Roof Named Insulation Decoy",
+                    "job_name": "Metal coating foam fasteners primer",
+                    "template_type": "insulation",
+                    "project_class": "spray_foam_insulation",
+                    "building_type": "commercial",
+                    "substrate": "metal",
+                    "material_system": "coating foam primer fasteners",
+                    "material_packages_json": json.dumps(["coating", "foam", "primer", "fasteners"]),
+                    "area_sqft": 9600,
+                    "scope_summary": "Metal roof coating with foam repair, primer and fasteners.",
+                    "decision_summary": "foam; coating; primer; fasteners",
+                    "answer_key_json": json.dumps(
+                        {
+                            "schema_version": "reference_estimate_answer_key.v1",
+                            "template_type": "insulation",
+                            "source_workbook": {"file_name": "Estimate Insulation - Decoy.xlsx"},
+                            "decisions": [
+                                {
+                                    "section": "insulation_foam_template_decisions",
+                                    "decision_id": "insulation_foam_row_19",
+                                    "template_bucket": "foam",
+                                    "workbook_row": "19",
+                                    "inputs": {"basis_sqft": 9600, "thickness_inches": 3.5},
+                                }
+                            ],
+                            "summary": {"decision_count": 1, "unmapped_count": 0},
+                        }
+                    ),
+                },
             ]
         )
     )
@@ -800,10 +958,86 @@ def test_estimator_chat_context_retrieves_similar_answer_keys_by_scope_packages(
 
     matches = context["historical_answer_key_examples"]["matched_answer_keys"]
     assert matches[0]["job_id"] == "R-COAT"
+    assert all(match["template_type"] == "roofing" for match in matches)
     assert "packages: coating" in "; ".join(matches[0]["match_reasons"])
     decision_ids = [row["decision_id"] for row in matches[0]["reference_answer_key"]["decisions"]]
     assert set(decision_ids[:2]) == {"roofing_coating_system_row_26", "roofing_foam_row_19"}
     assert decision_ids.index("roofing_edge_metal_row_82") > 1
+
+
+def test_estimator_chat_context_boosts_answer_key_name_overlap() -> None:
+    target_key = {
+        "schema_version": "reference_estimate_answer_key.v1",
+        "template_type": "roofing",
+        "source_workbook": {"file_name": "Estimate Roofing - Mudd Furniture Roof B.xlsx"},
+        "decisions": [
+            {
+                "section": "roofing_coating_template_decisions",
+                "decision_id": "roofing_coating_system_row_26",
+                "template_bucket": "coating",
+                "workbook_row": "26",
+                "inputs": {"basis_sqft": 5000, "gal_per_100_sqft": 1.5, "unit_price": 36},
+            }
+        ],
+        "summary": {"decision_count": 1, "unmapped_count": 0},
+    }
+    generic_key = {
+        "schema_version": "reference_estimate_answer_key.v1",
+        "template_type": "roofing",
+        "source_workbook": {"file_name": "Estimate Roofing - Generic High Detail.xlsx"},
+        "decisions": [
+            {
+                "section": "roofing_labor_template_decisions",
+                "decision_id": f"roofing_labor_row_{index}",
+                "template_bucket": "labor_base",
+                "workbook_row": str(110 + index),
+                "inputs": {"days": 1, "daily_rate": 1000},
+            }
+            for index in range(20)
+        ],
+        "summary": {"decision_count": 20, "unmapped_count": 0},
+    }
+    data = EstimatorData(
+        template_examples=pd.DataFrame(
+            [
+                {
+                    "example_id": "generic",
+                    "job_id": "GENERIC",
+                    "job_name": "Generic Roofing Restoration",
+                    "template_type": "roofing",
+                    "project_class": "roofing_restoration",
+                    "material_packages_json": json.dumps(["coating"]),
+                    "scope_summary": "Roofing restoration coating.",
+                    "answer_key_json": json.dumps(generic_key),
+                },
+                {
+                    "example_id": "mudd-b",
+                    "job_id": "MUDD-B",
+                    "customer": "Mudd's Furniture",
+                    "job_name": "Mudd Furniture Roof B",
+                    "source_file": "Proposal - Roof B.pdf",
+                    "template_type": "roofing",
+                    "project_class": "roofing_restoration",
+                    "material_packages_json": json.dumps(["coating"]),
+                    "scope_summary": "Roofing restoration coating.",
+                    "answer_key_json": json.dumps(target_key),
+                },
+            ]
+        )
+    )
+
+    context = estimator_context_summary(
+        data,
+        scope={
+            "template_type": "roofing",
+            "allow_identity_retrieval": True,
+            "raw_input_notes": "Generate field notes from proposal scope for Mudd's Furniture Roof B.",
+        },
+    )
+
+    matches = context["historical_answer_key_examples"]["matched_answer_keys"]
+    assert matches[0]["job_id"] == "MUDD-B"
+    assert any("name overlap" in reason for reason in matches[0]["match_reasons"])
 
 
 def test_estimator_chat_context_hydrates_answer_keys_for_compact_examples(monkeypatch) -> None:
@@ -1283,6 +1517,25 @@ def test_estimator_chat_preserves_full_takeoff_across_followup_answers() -> None
     assert scope["r_value_per_inch_assumption"] == 3.8
     assert scope["foam_thickness_inches"] == 5.53
     assert "30x40 metal building" in result.estimator_notes
+
+
+def test_deterministic_fallback_parses_explicit_sqft_without_identity_context() -> None:
+    result = chat_assistant.deterministic_chat_fallback(
+        [
+            {
+                "role": "user",
+                "content": (
+                    "Tank insulation scope. Existing surface area is approx. 975 sq. ft. "
+                    "Open cell foam, simple access. Deduct 36 square feet for hatch opening."
+                ),
+            }
+        ],
+        template_type_hint="insulation",
+    )
+
+    assert result.scope_overrides["template_type"] == "insulation"
+    assert result.scope_overrides["estimated_sqft"] == 975
+    assert result.scope_overrides["area_sqft"] == 975
 
 
 def test_estimator_chat_aligns_single_insulation_foam_decision_to_deterministic_area() -> None:
