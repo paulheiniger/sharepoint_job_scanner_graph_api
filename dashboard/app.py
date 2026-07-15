@@ -1501,6 +1501,221 @@ def ensure_job_workflow_overrides_table() -> None:
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_job_workflow_priority ON job_workflow_overrides(priority)"))
 
 
+def _first_positive_template_quantity(rows: pd.DataFrame, columns: list[str]) -> pd.Series:
+    result = pd.Series(np.nan, index=rows.index, dtype="float64")
+    for column in columns:
+        if column not in rows.columns:
+            continue
+        values = pd.to_numeric(rows[column], errors="coerce")
+        mask = (result.isna() | result.le(0)) & values.notna() & values.gt(0)
+        result.loc[mask] = values.loc[mask]
+    return result
+
+
+def _positive_sum(values: pd.Series) -> float:
+    numeric = pd.to_numeric(values, errors="coerce")
+    return float(numeric[numeric > 0].sum())
+
+
+def _positive_average(values: pd.Series, weights: pd.Series | None = None) -> float:
+    numeric = pd.to_numeric(values, errors="coerce")
+    mask = numeric.notna() & numeric.gt(0)
+    if not mask.any():
+        return float("nan")
+    if weights is not None:
+        weight_values = pd.to_numeric(weights, errors="coerce").reindex(numeric.index).fillna(0)
+        weight_values = weight_values.where(weight_values > 0, 0)
+        usable_weights = weight_values.loc[mask]
+        if usable_weights.sum() > 0:
+            return float(np.average(numeric.loc[mask], weights=usable_weights))
+    return float(numeric.loc[mask].mean())
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_job_tracking_estimated_material_enrichment(job_ids: tuple[str, ...]) -> pd.DataFrame:
+    clean_job_ids = tuple(sorted({text_value(job_id) for job_id in job_ids if text_value(job_id)}))
+    if not clean_job_ids:
+        return pd.DataFrame()
+    template_cols = relation_columns("estimate_template_rows")
+    if "job_id" not in template_cols:
+        return pd.DataFrame()
+    wanted_columns = [
+        "job_id",
+        "template_bucket",
+        "original_template_bucket",
+        "row_label",
+        "selected_item_name",
+        "area_sqft",
+        "thickness_inches",
+        "yield_or_coverage",
+        "yield_factor",
+        "estimated_units",
+        "estimated_gallons",
+        "estimated_sets",
+        "quantity",
+        "estimated_cost",
+    ]
+    selected_columns = [column for column in wanted_columns if column in template_cols]
+    if "job_id" not in selected_columns:
+        return pd.DataFrame()
+    try:
+        engine = get_engine()
+        statement = text(
+            f"""
+            SELECT {', '.join(selected_columns)}
+            FROM estimate_template_rows
+            WHERE job_id IN :job_ids
+            """
+        ).bindparams(bindparam("job_ids", expanding=True))
+        with engine.connect() as conn:
+            rows = pd.read_sql_query(statement, conn, params={"job_ids": clean_job_ids})
+    except Exception:
+        return pd.DataFrame()
+    if rows.empty:
+        return pd.DataFrame()
+
+    for column in [
+        "area_sqft",
+        "thickness_inches",
+        "yield_or_coverage",
+        "yield_factor",
+        "estimated_units",
+        "estimated_gallons",
+        "estimated_sets",
+        "quantity",
+        "estimated_cost",
+    ]:
+        if column in rows.columns:
+            rows[column] = pd.to_numeric(rows[column], errors="coerce")
+
+    text_columns = [column for column in ["template_bucket", "original_template_bucket", "row_label", "selected_item_name"] if column in rows.columns]
+    if text_columns:
+        rows["_material_text"] = (
+            rows[text_columns]
+            .fillna("")
+            .astype(str)
+            .agg(" ".join, axis=1)
+            .str.lower()
+        )
+    else:
+        rows["_material_text"] = ""
+    rows["_estimate_quantity"] = _first_positive_template_quantity(
+        rows,
+        ["estimated_gallons", "estimated_units", "quantity", "estimated_sets"],
+    )
+    foam_like_text = rows["_material_text"].str.contains(r"\bfoam\b|open cell|closed cell|spf|spray foam", regex=True, na=False)
+    active_basis = pd.Series(False, index=rows.index)
+    for column in ["estimated_cost", "estimated_units", "estimated_gallons", "estimated_sets", "quantity"]:
+        if column in rows.columns:
+            active_basis = active_basis | pd.to_numeric(rows[column], errors="coerce").fillna(0).gt(0)
+    if "area_sqft" in rows.columns and "thickness_inches" in rows.columns:
+        active_basis = active_basis | (
+            foam_like_text
+            & pd.to_numeric(rows["area_sqft"], errors="coerce").fillna(0).gt(0)
+            & pd.to_numeric(rows["thickness_inches"], errors="coerce").fillna(0).gt(0)
+        )
+    rows = rows[active_basis].copy()
+    if rows.empty:
+        return pd.DataFrame()
+
+    records: list[dict[str, Any]] = []
+    for job_id, group in rows.groupby("job_id", dropna=True):
+        text_series = group["_material_text"].fillna("")
+        foam_mask = text_series.str.contains(r"\bfoam\b|open cell|closed cell|spf|spray foam", regex=True, na=False)
+        primer_mask = text_series.str.contains(r"primer|e-?5320|mel-?prime", regex=True, na=False)
+        granules_mask = text_series.str.contains(r"granule", regex=True, na=False)
+        sf_mask = text_series.str.contains(r"sf-?2000|sf ?2000|s2000|liquid flashing", regex=True, na=False)
+        af_mask = text_series.str.contains(r"buttergrade|af butter", regex=True, na=False)
+        caulk_mask = text_series.str.contains(r"caulk|sausage|sealant", regex=True, na=False) & ~sf_mask
+        coating_mask = (
+            text_series.str.contains(r"coating|silicone|acrylic|base coat|top coat|gaco s20|s2000|s2022", regex=True, na=False)
+            & ~primer_mask
+            & ~granules_mask
+            & ~sf_mask
+            & ~caulk_mask
+            & ~foam_mask
+        )
+        tracked_material_mask = foam_mask | primer_mask | granules_mask | sf_mask | af_mask | caulk_mask | coating_mask
+        record: dict[str, Any] = {
+            "job_id": job_id,
+            "estimate_material_rows_used": int(tracked_material_mask.sum()),
+            "estimated_materials_source": "estimate_template_rows",
+        }
+        if foam_mask.any():
+            foam_rows = group.loc[foam_mask]
+            record["estimated_foam_sqft_from_estimate_rows"] = _positive_sum(foam_rows.get("area_sqft", pd.Series(dtype="float64")))
+            record["estimated_foam_thickness_inches_from_estimate_rows"] = _positive_average(
+                foam_rows.get("thickness_inches", pd.Series(dtype="float64")),
+                foam_rows.get("area_sqft", pd.Series(dtype="float64")),
+            )
+            yield_source = foam_rows.get("yield_or_coverage", pd.Series(dtype="float64"))
+            if not pd.to_numeric(yield_source, errors="coerce").fillna(0).gt(0).any():
+                yield_source = foam_rows.get("yield_factor", pd.Series(dtype="float64"))
+            record["estimated_foam_yield_from_estimate_rows"] = _positive_average(yield_source)
+        material_masks = {
+            "estimated_base_coat_1_from_estimate_rows": coating_mask,
+            "estimated_granules_from_estimate_rows": granules_mask,
+            "estimated_af_buttergrade_from_estimate_rows": af_mask,
+            "estimated_caulk_from_estimate_rows": caulk_mask,
+            "estimated_primer_from_estimate_rows": primer_mask,
+            "estimated_sf_from_estimate_rows": sf_mask,
+        }
+        for output_column, mask in material_masks.items():
+            if mask.any():
+                record[output_column] = _positive_sum(group.loc[mask, "_estimate_quantity"])
+        if any(pd.notna(value) and value != 0 for key, value in record.items() if key.endswith("_from_estimate_rows")):
+            records.append(record)
+    return pd.DataFrame(records)
+
+
+def enrich_job_tracking_summary_with_estimated_materials(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or "job_id" not in df.columns:
+        return df
+    job_ids = tuple(df["job_id"].dropna().astype(str).str.strip())
+    enrichment = load_job_tracking_estimated_material_enrichment(job_ids)
+    if enrichment.empty or "job_id" not in enrichment.columns:
+        return df
+    enriched = df.merge(enrichment, on="job_id", how="left")
+    fill_map = {
+        "estimated_foam_sqft": "estimated_foam_sqft_from_estimate_rows",
+        "estimated_foam_thickness_inches": "estimated_foam_thickness_inches_from_estimate_rows",
+        "estimated_foam_yield": "estimated_foam_yield_from_estimate_rows",
+        "estimated_base_coat_1": "estimated_base_coat_1_from_estimate_rows",
+        "estimated_granules": "estimated_granules_from_estimate_rows",
+        "estimated_af_buttergrade": "estimated_af_buttergrade_from_estimate_rows",
+        "estimated_caulk": "estimated_caulk_from_estimate_rows",
+        "estimated_primer": "estimated_primer_from_estimate_rows",
+        "estimated_sf": "estimated_sf_from_estimate_rows",
+    }
+    filled_any = pd.Series(False, index=enriched.index)
+    for target, source in fill_map.items():
+        if source not in enriched.columns:
+            continue
+        if target not in enriched.columns:
+            enriched[target] = np.nan
+        target_values = pd.to_numeric(enriched[target], errors="coerce")
+        source_values = pd.to_numeric(enriched[source], errors="coerce")
+        fill_mask = (target_values.isna() | target_values.le(0)) & source_values.notna() & source_values.gt(0)
+        if fill_mask.any():
+            enriched.loc[fill_mask, target] = source_values.loc[fill_mask]
+            filled_any = filled_any | fill_mask
+    if "estimated_materials_source" in enriched.columns:
+        enriched.loc[~filled_any, "estimated_materials_source"] = ""
+    variance_pairs = {
+        "foam_sqft_variance": ("actual_foam_sqft", "estimated_foam_sqft"),
+        "granules_variance": ("actual_granules", "estimated_granules"),
+        "primer_variance": ("actual_primer", "estimated_primer"),
+        "sf_variance": ("actual_sf", "estimated_sf"),
+    }
+    for variance_column, (actual_column, estimate_column) in variance_pairs.items():
+        if actual_column in enriched.columns and estimate_column in enriched.columns:
+            enriched[variance_column] = pd.to_numeric(enriched[actual_column], errors="coerce") - pd.to_numeric(
+                enriched[estimate_column],
+                errors="coerce",
+            )
+    return enriched
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def load_job_tracking_dashboard_summary() -> pd.DataFrame:
     tracking_cols = relation_columns("job_tracking_summary")
@@ -1631,6 +1846,7 @@ def load_job_tracking_dashboard_summary() -> pd.DataFrame:
     for column in date_fields + ["first_work_date", "last_work_date"]:
         if column in df.columns:
             df[column] = pd.to_datetime(df[column], errors="coerce")
+    df = enrich_job_tracking_summary_with_estimated_materials(df)
     for column in ["customer", "job_name"]:
         if column not in df.columns:
             df[column] = ""
@@ -3337,6 +3553,103 @@ def calendar_events_from_job_tracking_daily(df: pd.DataFrame) -> list[dict[str, 
             }
         )
     return events
+
+
+def render_job_tracking_daily_calendar(daily: pd.DataFrame) -> None:
+    st.subheader("Daily Tracking Calendar")
+    if daily.empty or "work_date" not in daily.columns:
+        st.caption("No dated daily job tracking entries match the current filters.")
+        return
+    if calendar is None:
+        st.caption("Install streamlit-calendar to show the daily tracking calendar.")
+        return
+
+    calendar_daily = daily.sort_values("work_date", ascending=False, na_position="last").copy()
+    tracking_calendar_events = calendar_events_from_job_tracking_daily(calendar_daily)
+    if not tracking_calendar_events:
+        st.caption("No daily tracking entries have usable work dates.")
+        return
+
+    calendar_options = {
+        "initialView": "dayGridMonth",
+        "height": 650,
+        "contentHeight": 610,
+        "fixedWeekCount": False,
+        "dayMaxEventRows": 5,
+        "moreLinkClick": "popover",
+        "headerToolbar": {
+            "left": "prev,next today",
+            "center": "title",
+            "right": "dayGridMonth,listWeek",
+        },
+        "eventDisplay": "block",
+    }
+    st.caption("Daily field entries by work date. Click an entry to review notes, crew, hours, and material quantities.")
+    calendar_result = calendar(
+        events=tracking_calendar_events,
+        options=calendar_options,
+        custom_css="""
+        .fc .fc-daygrid-day-frame {
+            min-height: 86px;
+            padding: 1px;
+        }
+        .fc .fc-daygrid-event {
+            font-size: 0.68rem;
+            line-height: 1.05;
+            padding: 0 2px;
+        }
+        .fc .fc-daygrid-day-number,
+        .fc .fc-col-header-cell-cushion {
+            font-size: 0.72rem;
+        }
+        """,
+        key="job_tracking_daily_calendar",
+    )
+    clicked_event = find_calendar_event(calendar_result, tracking_calendar_events)
+    if clicked_event:
+        clicked_id = text_value(clicked_event.get("id"))
+        if clicked_id:
+            st.session_state["job_tracking_selected_daily_event_id"] = clicked_id
+
+    selected_id = text_value(st.session_state.get("job_tracking_selected_daily_event_id"))
+    selected_event = next(
+        (event for event in tracking_calendar_events if text_value(event.get("id")) == selected_id),
+        None,
+    )
+    if not selected_event:
+        return
+    props = selected_event.get("extendedProps") if isinstance(selected_event.get("extendedProps"), dict) else {}
+    if not props:
+        return
+    st.write("**Selected Tracking Entry**")
+    detail_rows = [
+        ("Work Date", props.get("work_date")),
+        ("Project", props.get("project")),
+        ("Division", props.get("division")),
+        ("Crew", props.get("crew")),
+        ("Total Hours", props.get("total_hours")),
+        ("Labor Hours", props.get("labor_hours")),
+        ("Travel Hours", props.get("travel_hours")),
+        ("Load Hours", props.get("load_hours")),
+        ("Mileage", props.get("mileage")),
+        ("Foam Sq Ft", props.get("foam_sqft")),
+        ("Foam Yield", props.get("foam_yield")),
+        ("Base Coat 1", props.get("base_coat_1")),
+        ("Base Coat 2", props.get("base_coat_2")),
+        ("Granules", props.get("granules")),
+        ("Primer", props.get("primer")),
+        ("SF", props.get("sf")),
+        ("Caulk", props.get("caulk")),
+        ("Source File", props.get("source_file")),
+    ]
+    cols = st.columns(3)
+    for index, (label, value) in enumerate(detail_rows):
+        if text_value(value):
+            with cols[index % 3]:
+                st.write(f"**{label}:** {text_value(value)}")
+    if text_value(props.get("notes")):
+        st.write("**Notes**")
+        st.write(text_value(props.get("notes")))
 
 
 def schedule_status_is_terminal(value: object) -> bool:
@@ -11076,6 +11389,8 @@ def job_tracking_dashboard_page() -> None:
                 )
                 st.plotly_chart(fig, width="stretch")
 
+    render_job_tracking_daily_calendar(daily)
+
     tab_active, tab_variance, tab_daily, tab_foam = st.tabs(
         ["Active Projects", "Estimate vs Actual", "Daily Entries", "Foam / Materials"]
     )
@@ -11146,40 +11461,6 @@ def job_tracking_dashboard_page() -> None:
             st.caption("No daily job tracking entries match the current filters.")
         else:
             recent_daily = daily.sort_values("work_date", ascending=False, na_position="last")
-            if calendar is not None:
-                tracking_calendar_events = calendar_events_from_job_tracking_daily(recent_daily)
-                calendar_options = {
-                    "initialView": "dayGridMonth",
-                    "height": 620,
-                    "contentHeight": 590,
-                    "fixedWeekCount": False,
-                    "dayMaxEventRows": 4,
-                    "moreLinkClick": "popover",
-                    "headerToolbar": {
-                        "left": "prev,next today",
-                        "center": "title",
-                        "right": "dayGridMonth,listWeek",
-                    },
-                    "eventDisplay": "block",
-                }
-                st.caption("Daily field entries by work date. Use the table below for full notes and material detail.")
-                calendar(
-                    events=tracking_calendar_events,
-                    options=calendar_options,
-                    custom_css="""
-                    .fc .fc-daygrid-event {
-                        font-size: 0.68rem;
-                        line-height: 1.05;
-                        padding: 0 2px;
-                    }
-                    .fc .fc-daygrid-day-number {
-                        font-size: 0.72rem;
-                    }
-                    """,
-                    key="job_tracking_daily_calendar",
-                )
-            else:
-                st.caption("Install streamlit-calendar to show the daily entry calendar.")
             show_table(
                 recent_daily,
                 [
@@ -11215,6 +11496,8 @@ def job_tracking_dashboard_page() -> None:
         foam_summary_columns = [
             "project",
             "division",
+            "estimated_materials_source",
+            "estimate_material_rows_used",
             "actual_foam_strokes",
             "estimated_foam_strokes",
             "foam_strokes_variance",
@@ -11247,6 +11530,12 @@ def job_tracking_dashboard_page() -> None:
                 "actual_granules",
                 "actual_primer",
                 "actual_sf",
+                "estimated_foam_sqft",
+                "estimated_foam_yield",
+                "estimated_base_coat_1",
+                "estimated_granules",
+                "estimated_primer",
+                "estimated_sf",
             ]
         )
         if has_foam_values:
