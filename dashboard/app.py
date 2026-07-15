@@ -2470,18 +2470,20 @@ def save_job_workflow_override(
     st.cache_data.clear()
 
 
-CREW_COLOR_PALETTE = [
-    "#1f77b4",
-    "#ff7f0e",
-    "#2ca02c",
-    "#d62728",
-    "#9467bd",
-    "#8c564b",
-    "#e377c2",
-    "#7f7f7f",
-    "#bcbd22",
-    "#17becf",
+SPRAYTEC_CHART_COLOR_SEQUENCE = [
+    "#52718C",
+    "#5E8F63",
+    "#B88929",
+    "#CB785C",
+    "#8B6F9E",
+    "#C65F4C",
+    "#4F8F8A",
+    "#9A7B4F",
+    "#6F6A58",
+    "#A85F7A",
 ]
+
+CREW_COLOR_PALETTE = SPRAYTEC_CHART_COLOR_SEQUENCE
 
 
 def get_crew_color(crew_leader: object) -> str:
@@ -5197,7 +5199,15 @@ def bar_chart(
     chart_df = chart_df.sort_values(y, ascending=False)
     if top_n is not None and top_n > 0 and not color:
         chart_df = chart_df.head(top_n)
-    fig = px.bar(chart_df, x=x, y=y, color=color if color in chart_df.columns else None, title=title, labels=labels)
+    fig = px.bar(
+        chart_df,
+        x=x,
+        y=y,
+        color=color if color in chart_df.columns else None,
+        title=title,
+        labels=labels,
+        color_discrete_sequence=SPRAYTEC_CHART_COLOR_SEQUENCE,
+    )
     st.plotly_chart(fig, width="stretch")
 
 
@@ -10838,15 +10848,15 @@ def job_board_contract_completion_bucket(row: pd.Series | dict[str, Any]) -> str
 
 
 JOB_BOARD_FRESHNESS_COLORS = {
-    "Fresh / Active": "#e6f4ea",
-    "Aging": "#fff7d6",
-    "Stale": "#fde8e8",
-    "Contracted / Active": "#e8f0fe",
-    "Estimate, No Proposal": "#e8f0fe",
-    "Closed / Did Not Get": "#f3f4f6",
-    "Completed": "#f3f4f6",
-    "No Proposal Date": "#f3f4f6",
-    "Not Proposal Pipeline": "#f3f4f6",
+    "Fresh / Active": "#DCECDF",
+    "Aging": "#F7E7BD",
+    "Stale": "#F5D6CF",
+    "Contracted / Active": "#DDE7F0",
+    "Estimate, No Proposal": "#E8E1F2",
+    "Closed / Did Not Get": "#E8E8E3",
+    "Completed": "#E8E8E3",
+    "No Proposal Date": "#E8E8E3",
+    "Not Proposal Pipeline": "#E8E8E3",
 }
 
 
@@ -12117,7 +12127,7 @@ def job_board_page() -> None:
         dashboard_rows,
         available_job_board_columns,
         height=520,
-        sort_by="sales_value",
+        sort_by="proposal_modified_at",
         row_style_column="opportunity_freshness",
         row_style_colors=JOB_BOARD_FRESHNESS_COLORS,
         column_labels=job_board_column_labels,
@@ -12125,6 +12135,12 @@ def job_board_page() -> None:
     )
 
     review_dashboard_rows = dashboard_rows[dashboard_rows.apply(is_proposal_pipeline_review_row, axis=1)].copy()
+    if "proposal_modified_at" in review_dashboard_rows.columns:
+        review_dashboard_rows = review_dashboard_rows.sort_values(
+            "proposal_modified_at",
+            ascending=False,
+            na_position="last",
+        )
     review_rows = job_board_export_rows(review_dashboard_rows)
     if not review_rows.empty:
         st.subheader("Proposal / Estimate Follow-Up Review")
@@ -12650,6 +12666,7 @@ def timesheet_job_touches_page() -> None:
             markers=True,
             title="Daily Job Touches",
             labels={"activity_date": "date", "touch_count": "touches"},
+            color_discrete_sequence=SPRAYTEC_CHART_COLOR_SEQUENCE,
         )
         st.plotly_chart(fig, width="stretch")
     if weighted_employee_touches.empty:
@@ -12680,6 +12697,7 @@ def timesheet_job_touches_page() -> None:
                 "customers": True,
                 "codes": True,
             },
+            color_discrete_sequence=SPRAYTEC_CHART_COLOR_SEQUENCE,
         )
         st.plotly_chart(fig, width="stretch")
         st.caption(
@@ -12952,6 +12970,7 @@ def job_tracking_dashboard_page() -> None:
                     color="division",
                     title="Daily Tracked Hours by Division",
                     labels={"work_day": "date", "total_hours": "hours", "division": "division"},
+                    color_discrete_sequence=SPRAYTEC_CHART_COLOR_SEQUENCE,
                 )
                 st.plotly_chart(fig, width="stretch")
 
@@ -13540,7 +13559,14 @@ def contracted_backlog_scheduling_page() -> None:
                 var_name="missing_type",
                 value_name="job_count",
             )
-            fig = px.bar(missing_df, x="division", y="job_count", color="missing_type", title="Missing Duration / Labor / Crew Size by Division")
+            fig = px.bar(
+                missing_df,
+                x="division",
+                y="job_count",
+                color="missing_type",
+                title="Missing Duration / Labor / Crew Size by Division",
+                color_discrete_sequence=SPRAYTEC_CHART_COLOR_SEQUENCE,
+            )
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No data available for Missing Duration / Labor / Crew Size by Division.")
@@ -14683,7 +14709,13 @@ def estimate_adders_page() -> None:
             if by_cat.empty:
                 st.info("No non-zero adder cost available for Adder Cost by Business Category.")
             else:
-                fig = px.bar(by_cat, x="adder_business_category", y="extended_cost", title="Adder Cost by Business Category")
+                fig = px.bar(
+                    by_cat,
+                    x="adder_business_category",
+                    y="extended_cost",
+                    title="Adder Cost by Business Category",
+                    color_discrete_sequence=SPRAYTEC_CHART_COLOR_SEQUENCE,
+                )
                 st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No data available for Adder Cost by Business Category.")
@@ -14704,6 +14736,7 @@ def estimate_adders_page() -> None:
                     y="total_adder_cost",
                     color="adder_business_category",
                     title="Adder Cost by Pipeline Status",
+                    color_discrete_sequence=SPRAYTEC_CHART_COLOR_SEQUENCE,
                 )
                 st.plotly_chart(fig, use_container_width=True)
         else:
