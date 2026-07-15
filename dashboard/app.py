@@ -2485,6 +2485,20 @@ def get_crew_color(crew_leader: object) -> str:
     return CREW_COLOR_PALETTE[int(digest[:8], 16) % len(CREW_COLOR_PALETTE)]
 
 
+def text_color_for_background(hex_color: object) -> str:
+    color = text_value(hex_color).lstrip("#")
+    if len(color) != 6:
+        return "#ffffff"
+    try:
+        red = int(color[0:2], 16)
+        green = int(color[2:4], 16)
+        blue = int(color[4:6], 16)
+    except ValueError:
+        return "#ffffff"
+    luminance = (0.299 * red + 0.587 * green + 0.114 * blue) / 255
+    return "#111827" if luminance > 0.62 else "#ffffff"
+
+
 @st.cache_data(ttl=600, show_spinner=False)
 def relation_columns(relation_name: str) -> set[str]:
     try:
@@ -3494,15 +3508,16 @@ def calendar_events_from_tracking_entries(df: pd.DataFrame) -> list[dict[str, ob
         props["schedule_id"] = event_id
         props["customer"] = customer
         props["job_name"] = job_name
+        style = job_tracking_event_style(row)
         events.append(
             {
                 "id": event_id,
                 "title": " | ".join(part for part in title_parts if part),
                 "start": work_date.date().isoformat(),
                 "end": (work_date.date() + timedelta(days=1)).isoformat(),
-                "backgroundColor": "#64748b",
-                "borderColor": "#334155",
-                "textColor": "#ffffff",
+                "backgroundColor": style["background"],
+                "borderColor": style["border"],
+                "textColor": text_color_for_background(style["background"]),
                 "editable": False,
                 "durationEditable": False,
                 "startEditable": False,
@@ -3510,6 +3525,20 @@ def calendar_events_from_tracking_entries(df: pd.DataFrame) -> list[dict[str, ob
             }
         )
     return events
+
+
+def job_tracking_event_style(row: pd.Series | dict[str, Any]) -> dict[str, str]:
+    if not hasattr(row, "get"):
+        return {"background": "#64748b", "border": "#475569", "label": "Project not captured"}
+    project_key = (
+        text_value(row.get("job_id"))
+        or text_value(row.get("project"))
+        or " ".join(part for part in [text_value(row.get("customer")), text_value(row.get("job_name"))] if part)
+        or text_value(row.get("source_file"))
+        or "Project not captured"
+    )
+    color = get_crew_color(project_key)
+    return {"background": color, "border": color, "label": text_value(row.get("project")) or project_key}
 
 
 def calendar_events_from_job_tracking_daily(df: pd.DataFrame) -> list[dict[str, object]]:
@@ -3537,15 +3566,17 @@ def calendar_events_from_job_tracking_daily(df: pd.DataFrame) -> list[dict[str, 
         event_id = f"tracking-dashboard-{hashlib.sha1(event_key.encode('utf-8')).hexdigest()[:20]}"
         props = {key: clean_db_value(value) for key, value in row.items()}
         props["event_kind"] = "job_tracking_daily_detail"
+        style = job_tracking_event_style(row)
+        props["tracking_event_type"] = style["label"]
         events.append(
             {
                 "id": event_id,
                 "title": " | ".join(part for part in [project, hours_label, crew, note] if part),
                 "start": work_date.date().isoformat(),
                 "end": (work_date.date() + timedelta(days=1)).isoformat(),
-                "backgroundColor": "#2563eb",
-                "borderColor": "#1d4ed8",
-                "textColor": "#ffffff",
+                "backgroundColor": style["background"],
+                "borderColor": style["border"],
+                "textColor": text_color_for_background(style["background"]),
                 "editable": False,
                 "durationEditable": False,
                 "startEditable": False,
@@ -3584,7 +3615,7 @@ def render_job_tracking_daily_calendar(daily: pd.DataFrame) -> None:
         },
         "eventDisplay": "block",
     }
-    st.caption("Daily field entries by work date. Click an entry to review notes, crew, hours, and material quantities.")
+    st.caption("Daily field entries by work date. Colors are stable by project. Click an entry to review notes, crew, hours, and material quantities.")
     calendar_result = calendar(
         events=tracking_calendar_events,
         options=calendar_options,
@@ -9939,7 +9970,11 @@ def date_column_series(df: pd.DataFrame, columns: Iterable[str]) -> pd.Series:
     return values
 
 
-def normalize_operations_jobs(jobs: pd.DataFrame, schedule: pd.DataFrame | None = None) -> pd.DataFrame:
+def normalize_operations_jobs(
+    jobs: pd.DataFrame,
+    schedule: pd.DataFrame | None = None,
+    tracking: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     if not isinstance(jobs, pd.DataFrame):
         return pd.DataFrame()
     out = with_folder_link(jobs).copy()
@@ -9970,6 +10005,53 @@ def normalize_operations_jobs(jobs: pd.DataFrame, schedule: pd.DataFrame | None 
                 else:
                     out[column] = out[schedule_column]
                 out = out.drop(columns=[schedule_column])
+    if tracking is not None and not tracking.empty and "job_id" in out.columns and "job_id" in tracking.columns:
+        tracking_cols = [
+            column
+            for column in [
+                "job_id",
+                "tracking_status",
+                "actual_labor_hours",
+                "actual_total_hours",
+                "estimated_total_hours",
+                "labor_hours_used_pct",
+                "actual_foam_sqft",
+                "estimated_foam_sqft",
+                "actual_foam_yield",
+                "estimated_foam_yield",
+                "actual_base_coat_1",
+                "estimated_base_coat_1",
+                "actual_base_coat_2",
+                "estimated_base_coat_2",
+                "actual_granules",
+                "estimated_granules",
+                "actual_af_buttergrade",
+                "estimated_af_buttergrade",
+                "actual_caulk",
+                "estimated_caulk",
+                "actual_primer",
+                "estimated_primer",
+                "actual_sf",
+                "estimated_sf",
+                "first_work_date",
+                "last_work_date",
+                "tracking_notes",
+                "estimated_materials_source",
+            ]
+            if column in tracking.columns
+        ]
+        tracking_deduped = tracking[tracking_cols].sort_values(
+            "last_work_date" if "last_work_date" in tracking_cols else "job_id",
+            ascending=False,
+            na_position="last",
+        ).drop_duplicates("job_id")
+        out = out.merge(tracking_deduped, on="job_id", how="left", suffixes=("", "_tracking"))
+        if "estimated_total_hours_tracking" in out.columns:
+            if "estimated_total_hours" in out.columns:
+                out["estimated_total_hours"] = out["estimated_total_hours"].combine_first(out["estimated_total_hours_tracking"])
+            else:
+                out["estimated_total_hours"] = out["estimated_total_hours_tracking"]
+            out = out.drop(columns=["estimated_total_hours_tracking"])
     if out.empty:
         return out
     out["operations_value"] = out.apply(
@@ -9997,6 +10079,14 @@ def normalize_operations_jobs(jobs: pd.DataFrame, schedule: pd.DataFrame | None 
     )
     out["estimated_start_date_parsed"] = date_column_series(out, ["estimated_start_date"]) if "estimated_start_date" in out.columns else pd.NaT
     out["estimated_end_date_parsed"] = date_column_series(out, ["estimated_end_date"]) if "estimated_end_date" in out.columns else pd.NaT
+    duration_days = out.apply(lambda row: row_first_positive_number(row, ["estimated_duration_days"]), axis=1)
+    missing_end = out["estimated_end_date_parsed"].isna() & out["estimated_start_date_parsed"].notna() & pd.Series(duration_days, index=out.index).gt(0)
+    if missing_end.any():
+        out.loc[missing_end, "estimated_end_date_parsed"] = out.loc[missing_end].apply(
+            lambda row: pd.Timestamp(row["estimated_start_date_parsed"]).normalize()
+            + pd.Timedelta(days=max(row_first_positive_number(row, ["estimated_duration_days"]) - 1, 0)),
+            axis=1,
+        )
     today = pd.Timestamp(date.today())
     out["days_waiting"] = (today.normalize() - out["ready_date"].dt.normalize()).dt.days
     out.loc[out["days_waiting"].isna() | (out["days_waiting"] < 0), "days_waiting"] = 0
@@ -10004,6 +10094,12 @@ def normalize_operations_jobs(jobs: pd.DataFrame, schedule: pd.DataFrame | None 
     out["schedule_health"] = out.apply(normalized_schedule_health, axis=1)
     out["expected_pct_complete"] = out.apply(expected_percent_complete, axis=1)
     out["actual_pct_complete"] = out.apply(actual_percent_complete, axis=1)
+    out["actual_pct_source"] = out.apply(actual_percent_source, axis=1)
+    out["progress_delta_pct"] = pd.to_numeric(out["actual_pct_complete"], errors="coerce") - pd.to_numeric(
+        out["expected_pct_complete"],
+        errors="coerce",
+    )
+    out["project_health"] = out.apply(operation_project_health, axis=1)
     out["production_risk_summary"] = out.apply(production_risk_summary, axis=1)
     out["material_readiness"] = out.apply(lambda row: readiness_flag(row, ["material", "submittal"], "Material review"), axis=1)
     out["equipment_readiness"] = out.apply(lambda row: readiness_flag(row, ["equipment", "rig", "lift"], "Equipment review"), axis=1)
@@ -10026,9 +10122,10 @@ def load_operations_dashboard_prepared() -> tuple[pd.DataFrame, pd.DataFrame]:
         base_jobs = pd.DataFrame()
     all_jobs = normalize_sales_jobs(base_jobs)
     schedule = load_schedule_df() if relation_columns("crew_schedule") else pd.DataFrame()
+    tracking = load_job_tracking_dashboard_summary()
     backlog = query_view("dashboard_contracted_backlog")
     backlog_source = backlog if not backlog.empty else all_jobs
-    ops = normalize_operations_jobs(backlog_source, schedule=schedule)
+    ops = normalize_operations_jobs(backlog_source, schedule=schedule, tracking=tracking)
     return all_jobs, ops
 
 
@@ -10099,7 +10196,80 @@ def actual_percent_complete(row: pd.Series) -> float | None:
         if not pd.isna(value):
             numeric = float(value)
             return round(numeric / 100, 2) if numeric > 1 else round(numeric, 2)
+    components = actual_progress_components(row)
+    material_components = [component for component in components if component["kind"] == "material"]
+    selected_components = material_components or components
+    if selected_components:
+        ratios = [min(max(float(component["ratio"]), 0.0), 1.0) for component in selected_components]
+        return round(float(np.median(ratios)), 2)
     return None
+
+
+def actual_progress_components(row: pd.Series) -> list[dict[str, object]]:
+    component_specs = [
+        ("Foam Sq Ft", "actual_foam_sqft", "estimated_foam_sqft", "material"),
+        ("Base Coat 1", "actual_base_coat_1", "estimated_base_coat_1", "material"),
+        ("Base Coat 2", "actual_base_coat_2", "estimated_base_coat_2", "material"),
+        ("Granules", "actual_granules", "estimated_granules", "material"),
+        ("Primer", "actual_primer", "estimated_primer", "material"),
+        ("SF", "actual_sf", "estimated_sf", "material"),
+        ("Caulk", "actual_caulk", "estimated_caulk", "material"),
+        ("Labor Hours", "actual_total_hours", "estimated_total_hours", "labor"),
+        ("Labor Hours", "actual_labor_hours", "estimated_labor_hours", "labor"),
+    ]
+    components: list[dict[str, object]] = []
+    for label, actual_column, estimated_column, kind in component_specs:
+        actual = row_first_positive_number(row, [actual_column])
+        estimated = row_first_positive_number(row, [estimated_column])
+        if actual > 0 and estimated > 0:
+            components.append(
+                {
+                    "label": label,
+                    "actual": actual,
+                    "estimated": estimated,
+                    "ratio": actual / estimated,
+                    "kind": kind,
+                }
+            )
+    return components
+
+
+def actual_percent_source(row: pd.Series) -> str:
+    components = actual_progress_components(row)
+    material_components = [component for component in components if component["kind"] == "material"]
+    selected_components = material_components or components
+    if not selected_components:
+        return "No actual/estimate material or labor match yet"
+    pieces = []
+    for component in selected_components[:4]:
+        pieces.append(f"{component['label']} {float(component['ratio']):.0%}")
+    if len(selected_components) > 4:
+        pieces.append(f"+{len(selected_components) - 4} more")
+    return "; ".join(pieces)
+
+
+def operation_project_health(row: pd.Series) -> str:
+    schedule_health = text_value(row.get("schedule_health"))
+    if schedule_health == "Completed":
+        return "Completed"
+    expected = pd.to_numeric(pd.Series([row.get("expected_pct_complete")]), errors="coerce").iloc[0]
+    actual = pd.to_numeric(pd.Series([row.get("actual_pct_complete")]), errors="coerce").iloc[0]
+    labor_used = pd.to_numeric(pd.Series([row.get("labor_hours_used_pct")]), errors="coerce").iloc[0]
+    material_overrun = any(component["kind"] == "material" and float(component["ratio"]) > 1.1 for component in actual_progress_components(row))
+    if pd.isna(expected) and pd.isna(actual):
+        return "Needs schedule / actuals"
+    if pd.isna(actual):
+        return "No actuals yet"
+    if not pd.isna(labor_used) and labor_used > 1.1 and actual < 0.95:
+        return "Labor overrun risk"
+    if material_overrun and actual < 0.95:
+        return "Material overrun risk"
+    if not pd.isna(expected):
+        if actual + 0.2 < expected and expected >= 0.2:
+            return "Behind expected progress"
+        if actual >= expected - 0.1:
+            return "On track"
+    return "Monitor"
 
 
 def readiness_flag(row: pd.Series, keywords: list[str], default: str) -> str:
@@ -10115,6 +10285,19 @@ def readiness_flag(row: pd.Series, keywords: list[str], default: str) -> str:
 
 
 def production_risk_summary(row: pd.Series) -> str:
+    project_health = text_value(row.get("project_health"))
+    if project_health and project_health not in {"On track", "Completed"}:
+        expected = pd.to_numeric(pd.Series([row.get("expected_pct_complete")]), errors="coerce").iloc[0]
+        actual = pd.to_numeric(pd.Series([row.get("actual_pct_complete")]), errors="coerce").iloc[0]
+        source = text_value(row.get("actual_pct_source"))
+        pieces = [project_health]
+        if not pd.isna(expected):
+            pieces.append(f"expected {expected:.0%}")
+        if not pd.isna(actual):
+            pieces.append(f"actual {actual:.0%}")
+        if source and source != "No actual/estimate material or labor match yet":
+            pieces.append(source)
+        return "; ".join(pieces)[:240]
     notes = " ".join(
         row_first_nonblank(row, [column])
         for column in ["blocking_issue", "schedule_notes", "warnings", "warning_summary", "internal_notes"]
@@ -11492,7 +11675,7 @@ def job_tracking_dashboard_page() -> None:
             )
 
     with tab_foam:
-        st.subheader("Foam and Material Usage")
+        st.subheader("Foam Actual vs Estimate")
         foam_summary_columns = [
             "project",
             "division",
@@ -11507,16 +11690,6 @@ def job_tracking_dashboard_page() -> None:
             "foam_sqft_variance",
             "actual_foam_yield",
             "estimated_foam_yield",
-            "actual_base_coat_1",
-            "estimated_base_coat_1",
-            "actual_base_coat_2",
-            "estimated_base_coat_2",
-            "actual_granules",
-            "estimated_granules",
-            "actual_primer",
-            "estimated_primer",
-            "actual_sf",
-            "estimated_sf",
             "last_work_date",
             "source_file",
         ]
@@ -11527,41 +11700,95 @@ def job_tracking_dashboard_page() -> None:
                 "actual_foam_strokes",
                 "actual_foam_sqft",
                 "actual_foam_yield",
-                "actual_granules",
-                "actual_primer",
-                "actual_sf",
                 "estimated_foam_sqft",
                 "estimated_foam_yield",
-                "estimated_base_coat_1",
-                "estimated_granules",
-                "estimated_primer",
-                "estimated_sf",
             ]
         )
         if has_foam_values:
-            show_table(summary, available_foam_summary, height=420, sort_by="last_work_date")
+            show_table(summary, available_foam_summary, height=360, sort_by="last_work_date")
         else:
-            st.info("Foam/material tracking columns are ready, but no loaded rows contain those values yet.")
+            st.info("Foam tracking columns are ready, but no loaded rows contain foam actuals or estimates yet.")
 
-        daily_material_columns = [
+        roofing_summary_columns = [
+            "project",
+            "division",
+            "estimated_materials_source",
+            "estimate_material_rows_used",
+            "actual_base_coat_1",
+            "estimated_base_coat_1",
+            "actual_base_coat_2",
+            "estimated_base_coat_2",
+            "actual_granules",
+            "estimated_granules",
+            "actual_af_buttergrade",
+            "estimated_af_buttergrade",
+            "actual_primer",
+            "estimated_primer",
+            "actual_sf",
+            "estimated_sf",
+            "actual_caulk",
+            "estimated_caulk",
+            "last_work_date",
+            "source_file",
+        ]
+        available_roofing_summary = [column for column in roofing_summary_columns if column in summary.columns]
+        has_roofing_values = any(
+            column in summary.columns and numeric_series(summary, column).notna().any()
+            for column in [
+                "actual_base_coat_1",
+                "actual_base_coat_2",
+                "actual_granules",
+                "actual_af_buttergrade",
+                "actual_primer",
+                "actual_sf",
+                "actual_caulk",
+                "estimated_base_coat_1",
+                "estimated_granules",
+                "estimated_af_buttergrade",
+                "estimated_primer",
+                "estimated_sf",
+                "estimated_caulk",
+            ]
+        )
+        st.subheader("Roofing / Coating Materials Actual vs Estimate")
+        if has_roofing_values:
+            show_table(summary, available_roofing_summary, height=360, sort_by="last_work_date")
+        else:
+            st.info("Roofing material tracking columns are ready, but no loaded rows contain coating, primer, granule, SF, or caulk values yet.")
+
+        daily_foam_columns = [
             "work_date",
             "project",
             "foam_strokes",
             "foam_thickness_inches",
             "foam_sqft",
             "foam_yield",
+            "crew",
+            "notes",
+        ]
+        if not daily.empty and any(column in daily.columns and numeric_series(daily, column).notna().any() for column in ["foam_strokes", "foam_sqft", "foam_yield"]):
+            st.subheader("Daily Foam Entries")
+            show_table(daily, daily_foam_columns, height=360)
+
+        daily_roofing_columns = [
+            "work_date",
+            "project",
             "base_coat_1",
             "base_coat_2",
             "granules",
+            "af_buttergrade",
             "primer",
             "sf",
             "caulk",
             "crew",
             "notes",
         ]
-        if not daily.empty and any(column in daily.columns and numeric_series(daily, column).notna().any() for column in ["foam_strokes", "foam_sqft", "granules", "primer", "sf"]):
-            st.subheader("Daily Material Entries")
-            show_table(daily, daily_material_columns, height=420)
+        if not daily.empty and any(
+            column in daily.columns and numeric_series(daily, column).notna().any()
+            for column in ["base_coat_1", "base_coat_2", "granules", "af_buttergrade", "primer", "sf", "caulk"]
+        ):
+            st.subheader("Daily Roofing / Coating Material Entries")
+            show_table(daily, daily_roofing_columns, height=360)
 
 
 def owner_overview_page() -> None:
@@ -12002,8 +12229,8 @@ def operations_dashboard_page() -> None:
         [
             {"metric": "Revenue MTD vs Goal", "current_source": "QuickBooks goal not connected", "status": "Needs QB / goal source"},
             {"metric": "Gross Profit % MTD", "current_source": "Estimate costs available on some jobs", "status": "Needs QB actuals"},
-            {"metric": "Labor Efficiency %", "current_source": "Estimated labor captured; actual hours not connected", "status": "Needs time tracking"},
-            {"metric": "Material Usage vs Estimate", "current_source": "Estimated materials captured; actual usage not connected", "status": "Needs field/job-cost data"},
+            {"metric": "Labor Efficiency %", "current_source": "Estimated labor plus job tracking actual hours", "status": "Available where tracking forms are loaded"},
+            {"metric": "Material Usage vs Estimate", "current_source": "Estimate rows plus job tracking material entries", "status": "Available where tracking forms are loaded"},
             {"metric": "AR Over 60 Days", "current_source": "Not in current dashboard marts", "status": "Needs QuickBooks"},
         ]
     )
@@ -12047,16 +12274,32 @@ def operations_dashboard_page() -> None:
         )
 
     st.subheader("Production Status / Risk")
-    active = ops[ops["readiness_status"].eq("Scheduled") | ops["estimated_start_date_parsed"].notna()].copy() if not ops.empty else pd.DataFrame()
+    if not ops.empty:
+        active = ops[
+            ops["readiness_status"].eq("Scheduled")
+            | ops["estimated_start_date_parsed"].notna()
+            | ops.get("tracking_status", pd.Series("", index=ops.index)).isin(["Recently touched", "Contracted / active"])
+        ].copy()
+    else:
+        active = pd.DataFrame()
     if not active.empty:
+        metric_row(
+            [
+                ("Active / Touched Jobs", number_metric(len(active))),
+                ("At Risk Jobs", number_metric(active["project_health"].isin(["Behind expected progress", "Labor overrun risk", "Material overrun risk"]).sum())),
+                ("No Actuals Yet", number_metric((active["project_health"] == "No actuals yet").sum())),
+                ("Active Value", money_metric(active["operations_value"].sum())),
+            ]
+        )
         c1, c2 = st.columns(2)
         with c1:
-            bar_chart(active, "schedule_health", "operations_value", "Scheduled Value by Health")
+            bar_chart(active, "project_health", "operations_value", "Active Value by Project Health")
         with c2:
             bar_chart(active, "assigned_crew_leader", "operations_value", "Scheduled Value by Crew")
     show_table(
         active,
         [
+            "project_health",
             "schedule_health",
             "customer",
             "job_name",
@@ -12067,8 +12310,19 @@ def operations_dashboard_page() -> None:
             "estimated_end_date",
             "expected_pct_complete",
             "actual_pct_complete",
+            "progress_delta_pct",
+            "actual_pct_source",
+            "tracking_status",
+            "last_work_date",
             "estimated_sqft",
             "estimated_labor_hours",
+            "actual_total_hours",
+            "estimated_total_hours",
+            "labor_hours_used_pct",
+            "actual_foam_sqft",
+            "estimated_foam_sqft",
+            "actual_base_coat_1",
+            "estimated_base_coat_1",
             "estimated_crew_size",
             "material_readiness",
             "equipment_readiness",
