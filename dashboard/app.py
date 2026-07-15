@@ -9028,6 +9028,7 @@ def job_board_page() -> None:
             column_order=[
                 column
                 for column in [
+                    "project",
                     "closed_did_not_get",
                     "review_mark_contracted",
                     "review_mark_completed",
@@ -9042,7 +9043,6 @@ def job_board_page() -> None:
                     "estimate_modified_at",
                     "estimate_modified_by",
                     "customer_display",
-                    "project",
                     "sales_stage",
                     "sales_value",
                     "estimator_display",
@@ -10403,7 +10403,8 @@ def operations_dashboard_page() -> None:
     if ops.empty:
         show_empty("No contracted backlog rows are available.")
     else:
-        waiting = ops[ops["readiness_status"].isin(["Ready To Schedule", "Customer Hold", "Material Hold", "Permit Hold", "Weather Window"])].copy()
+        waiting_statuses = [status for status in READINESS_STATUSES if status != "Scheduled"]
+        waiting = ops[ops["readiness_status"].isin(waiting_statuses)].copy()
         waiting = waiting[waiting["estimated_start_date_parsed"].isna()]
         metric_row(
             [
