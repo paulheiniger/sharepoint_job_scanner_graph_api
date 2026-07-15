@@ -379,6 +379,40 @@ Incremental processing rules:
 - Office-timesheet SharePoint routing activates when those workbook roots are included in scan-root configuration; otherwise local-only full rebuild remains an explicit operation.
 - Scan-root, classification-rule, or parser-version changes can make previously unchanged files newly relevant. In that case run a bounded validation or explicit rebuild command rather than relying on delta changes alone.
 
+## Scheduled daily refresh
+
+Use `scripts/daily_refresh.sh` for the normal unattended daily refresh. It runs the
+delta-driven incremental scan, loads changed rows into Postgres, extracts pending
+estimator-relevant documents, refreshes dashboard/Power BI SQL views, and syncs
+changed jobs to the SharePoint Job Index list when changed job rows exist.
+
+```bash
+cd /Users/paulheiniger/Downloads/sharepoint_job_scanner_graph_api
+./scripts/daily_refresh.sh
+```
+
+The script loads `.env` when present and accepts environment overrides:
+
+```bash
+DOCUMENT_EXTRACT_LIMIT=0 \
+MAX_DOCUMENT_FAILURES=200 \
+RUN_SHAREPOINT_JOB_INDEX_SYNC=1 \
+RUN_DOCUMENT_EXTRACTION=1 \
+RUN_SQL_REFRESHES=1 \
+./scripts/daily_refresh.sh
+```
+
+Common switches:
+
+- `DOCUMENT_EXTRACT_LIMIT=0`: process all pending estimator-relevant documents.
+- `RUN_SHAREPOINT_JOB_INDEX_SYNC=0`: skip writing changed jobs back to the SharePoint list.
+- `RUN_DOCUMENT_EXTRACTION=0`: skip content extraction for a quick metadata-only refresh.
+- `RUN_SQL_REFRESHES=0`: skip dashboard/Power BI SQL refreshes.
+- `BACKFILL_DOCUMENT_METADATA=1`: administrative metadata backfill from cached manifests; keep off for normal daily runs.
+
+Logs are written to `output/refresh_logs/<run-id>.log`. A lock directory under
+`.cache/daily_refresh.lock` prevents overlapping scheduled runs.
+
 ## Build and load the document index
 
 The normalized `documents` table stores one row per discovered SharePoint file and links it to `jobs.job_id`. It is populated from existing `.cache/sharepoint/**/.jobscan_manifest.json` files plus `output/job_index.json`; it does not re-scan SharePoint or download document contents.

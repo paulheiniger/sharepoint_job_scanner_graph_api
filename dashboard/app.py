@@ -1657,8 +1657,26 @@ def load_job_tracking_estimated_material_enrichment(job_ids: tuple[str, ...]) ->
             if not pd.to_numeric(yield_source, errors="coerce").fillna(0).gt(0).any():
                 yield_source = foam_rows.get("yield_factor", pd.Series(dtype="float64"))
             record["estimated_foam_yield_from_estimate_rows"] = _positive_average(yield_source)
+        if coating_mask.any():
+            coating_rows = group.loc[coating_mask].copy()
+            coating_text = coating_rows["_material_text"].fillna("")
+            base_mask = coating_text.str.contains(r"base coat|basecoat|1st coat|first coat", regex=True, na=False)
+            top_mask = coating_text.str.contains(r"top coat|topcoat|2nd coat|second coat|finish coat", regex=True, na=False)
+            generic_mask = ~(base_mask | top_mask)
+            if generic_mask.any() and not base_mask.any() and not top_mask.any() and len(coating_rows) > 1:
+                generic_indexes = list(coating_rows.loc[generic_mask].index)
+                base_mask.loc[generic_indexes[0]] = True
+                if len(generic_indexes) > 1:
+                    top_mask.loc[generic_indexes[1:]] = True
+            elif generic_mask.any() and not base_mask.any():
+                base_mask = base_mask | generic_mask
+            elif generic_mask.any():
+                top_mask = top_mask | generic_mask
+            if base_mask.any():
+                record["estimated_base_coat_1_from_estimate_rows"] = _positive_sum(coating_rows.loc[base_mask, "_estimate_quantity"])
+            if top_mask.any():
+                record["estimated_base_coat_2_from_estimate_rows"] = _positive_sum(coating_rows.loc[top_mask, "_estimate_quantity"])
         material_masks = {
-            "estimated_base_coat_1_from_estimate_rows": coating_mask,
             "estimated_granules_from_estimate_rows": granules_mask,
             "estimated_af_buttergrade_from_estimate_rows": af_mask,
             "estimated_caulk_from_estimate_rows": caulk_mask,
@@ -1686,6 +1704,7 @@ def enrich_job_tracking_summary_with_estimated_materials(df: pd.DataFrame) -> pd
         "estimated_foam_thickness_inches": "estimated_foam_thickness_inches_from_estimate_rows",
         "estimated_foam_yield": "estimated_foam_yield_from_estimate_rows",
         "estimated_base_coat_1": "estimated_base_coat_1_from_estimate_rows",
+        "estimated_base_coat_2": "estimated_base_coat_2_from_estimate_rows",
         "estimated_granules": "estimated_granules_from_estimate_rows",
         "estimated_af_buttergrade": "estimated_af_buttergrade_from_estimate_rows",
         "estimated_caulk": "estimated_caulk_from_estimate_rows",
@@ -1708,7 +1727,11 @@ def enrich_job_tracking_summary_with_estimated_materials(df: pd.DataFrame) -> pd
         enriched.loc[~filled_any, "estimated_materials_source"] = ""
     variance_pairs = {
         "foam_sqft_variance": ("actual_foam_sqft", "estimated_foam_sqft"),
+        "base_coat_1_variance": ("actual_base_coat_1", "estimated_base_coat_1"),
+        "base_coat_2_variance": ("actual_base_coat_2", "estimated_base_coat_2"),
         "granules_variance": ("actual_granules", "estimated_granules"),
+        "af_buttergrade_variance": ("actual_af_buttergrade", "estimated_af_buttergrade"),
+        "caulk_variance": ("actual_caulk", "estimated_caulk"),
         "primer_variance": ("actual_primer", "estimated_primer"),
         "sf_variance": ("actual_sf", "estimated_sf"),
     }
@@ -1749,6 +1772,7 @@ def load_job_tracking_dashboard_summary() -> pd.DataFrame:
         "status": sql_column("j", job_cols, "status") if has_jobs else "NULL",
         "folder_path": sql_column("j", job_cols, "folder_path") if has_jobs else "NULL",
         "folder_url": sql_column("j", job_cols, "folder_url") if has_jobs else "NULL",
+        "tracking_file": sql_column("t", tracking_cols, "tracking_file"),
         "source_file": sql_column("t", tracking_cols, "source_file"),
         "tracking_notes": sql_column("t", tracking_cols, "tracking_notes"),
         "tracking_warnings": sql_column("t", tracking_cols, "tracking_warnings"),
@@ -1792,7 +1816,11 @@ def load_job_tracking_dashboard_summary() -> pd.DataFrame:
         "load_hours_variance",
         "foam_strokes_variance",
         "foam_sqft_variance",
+        "base_coat_1_variance",
+        "base_coat_2_variance",
         "granules_variance",
+        "af_buttergrade_variance",
+        "caulk_variance",
         "primer_variance",
         "sf_variance",
     ]
@@ -2252,6 +2280,85 @@ def summarize_job_tracking_daily_for_dashboard(daily: pd.DataFrame) -> pd.DataFr
     recent_mask = last_work.notna() & ((today - last_work).dt.days <= 21)
     summary["tracking_status"] = np.where(recent_mask, "Recently touched", "Historical / proposed")
     return with_folder_link(summary)
+
+
+ROOFING_TRACKING_MATERIAL_COLUMNS = (
+    "actual_base_coat_1",
+    "estimated_base_coat_1",
+    "actual_base_coat_2",
+    "estimated_base_coat_2",
+    "actual_granules",
+    "estimated_granules",
+    "actual_af_buttergrade",
+    "estimated_af_buttergrade",
+    "actual_primer",
+    "estimated_primer",
+    "actual_sf",
+    "estimated_sf",
+    "actual_caulk",
+    "estimated_caulk",
+    "base_coat_1",
+    "base_coat_2",
+    "granules",
+    "af_buttergrade",
+    "primer",
+    "sf",
+    "caulk",
+)
+
+FOAM_TRACKING_MATERIAL_COLUMNS = (
+    "actual_foam_strokes",
+    "estimated_foam_strokes",
+    "actual_foam_sqft",
+    "estimated_foam_sqft",
+    "actual_foam_yield",
+    "estimated_foam_yield",
+    "foam_strokes",
+    "foam_sqft",
+    "foam_yield",
+)
+
+
+def tracking_material_kind_for_row(row: pd.Series) -> str:
+    division = text_value(row.get("division")).lower()
+    if "roof" in division:
+        return "roofing"
+    if "insulation" in division:
+        return "insulation"
+
+    context_text = " ".join(
+        text_value(row.get(column))
+        for column in [
+            "project_category",
+            "material_system_display",
+            "source_file",
+            "tracking_file",
+            "project",
+            "customer",
+            "job_name",
+        ]
+    ).lower()
+    if any(token in context_text for token in ["roof", "coating", "silicone", "granule", "primer", "sf-2000", "s2000"]):
+        return "roofing"
+    if any(token in context_text for token in ["insulation", "open cell", "closed cell", "wall", "ceiling", "thermal"]):
+        return "insulation"
+
+    if any(row_first_positive_number(row, [column]) > 0 for column in ROOFING_TRACKING_MATERIAL_COLUMNS):
+        return "roofing"
+    if any(row_first_positive_number(row, [column]) > 0 for column in FOAM_TRACKING_MATERIAL_COLUMNS):
+        return "insulation"
+    return "other"
+
+
+def split_tracking_material_rows(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if df.empty:
+        return df.copy(), df.copy()
+    out = df.copy()
+    out["_tracking_material_kind"] = out.apply(tracking_material_kind_for_row, axis=1)
+    return (
+        out[out["_tracking_material_kind"].eq("roofing")].drop(columns=["_tracking_material_kind"], errors="ignore"),
+        out[out["_tracking_material_kind"].eq("insulation")].drop(columns=["_tracking_material_kind"], errors="ignore"),
+    )
 
 
 def load_schedule_df() -> pd.DataFrame:
@@ -4856,6 +4963,73 @@ def money_metric(value: int | float | None) -> str:
     return fmt_dollar(value)
 
 
+MONEY_COLUMN_EXACT_NAMES = {
+    "amount",
+    "base_total",
+    "contracted_value",
+    "cost",
+    "estimated_cost",
+    "estimated_invoice_target",
+    "estimated_material_cost_target",
+    "estimated_value",
+    "extended_cost",
+    "invoice_target",
+    "labor_subtotal",
+    "material_subtotal",
+    "open_proposal_value",
+    "operations_value",
+    "price",
+    "price_per_sqft",
+    "proposal_value",
+    "revenue",
+    "revenue_won",
+    "sales_value",
+    "subtotal_labor",
+    "subtotal_material",
+    "total_adder_cost",
+    "total_cost",
+    "total_estimated_value",
+    "total_job_cost",
+    "value",
+    "value_at_risk",
+    "work_sheet_price",
+    "worksheet_price",
+}
+
+MONEY_COLUMN_SUFFIXES = (
+    "_amount",
+    "_cost",
+    "_price",
+    "_revenue",
+    "_subtotal",
+    "_value",
+)
+
+MONEY_COLUMN_EXCLUDES = {
+    "confidence_value",
+    "duration_value",
+    "job_count",
+    "project_touch_count",
+    "source_line_count",
+    "touch_count",
+    "weighted_touch_score",
+}
+
+
+def is_money_column(column: object) -> bool:
+    name = str(column or "").strip().lower()
+    if not name or name in MONEY_COLUMN_EXCLUDES:
+        return False
+    if name in MONEY_COLUMN_EXACT_NAMES:
+        return True
+    return name.endswith(MONEY_COLUMN_SUFFIXES)
+
+
+def apply_money_axis_format(fig: Any, axis_column: object | None) -> None:
+    if is_money_column(axis_column):
+        fig.update_yaxes(tickprefix="$", tickformat=",.0f", separatethousands=True)
+
+
 def number_metric(value: int | float | None) -> str:
     return fmt_count(value)
 
@@ -5208,6 +5382,7 @@ def bar_chart(
         labels=labels,
         color_discrete_sequence=SPRAYTEC_CHART_COLOR_SEQUENCE,
     )
+    apply_money_axis_format(fig, y)
     st.plotly_chart(fig, width="stretch")
 
 
@@ -5241,13 +5416,24 @@ def show_table(
     if default_visible_columns is not None:
         visible_requested = unique_columns(default_visible_columns)
         column_order = [column for column in visible_requested if column in display_df.columns]
-    column_config = None
+    money_columns = [column for column in display_df.columns if is_money_column(column)]
+    for column in money_columns:
+        display_df[column] = pd.to_numeric(display_df[column], errors="coerce")
     if column_labels:
         column_config = {
             column: st.column_config.Column(label)
             for column, label in column_labels.items()
             if column in display_df.columns
         }
+    else:
+        column_config = {}
+    for column in money_columns:
+        column_config[column] = st.column_config.NumberColumn(
+            (column_labels or {}).get(column),
+            format="$%.0f",
+        )
+    if not column_config:
+        column_config = None
     if row_style_column and row_style_column in table_df.columns and row_style_colors:
         style_values = table_df.loc[display_df.index, row_style_column].fillna("").astype(str)
 
@@ -5255,8 +5441,13 @@ def show_table(
             color = row_style_colors.get(style_values.get(row.name, ""), "")
             return [f"background-color: {color}; color: #111827" if color else "" for _ in row]
 
+        styled_df = display_df.style.apply(row_style, axis=1)
+        if money_columns:
+            styled_df = styled_df.format(
+                {column: lambda value: "" if pd.isna(value) else f"${float(value):,.0f}" for column in money_columns}
+            )
         st.dataframe(
-            display_df.style.apply(row_style, axis=1),
+            styled_df,
             width="stretch",
             hide_index=True,
             height=height,
@@ -13077,8 +13268,10 @@ def job_tracking_dashboard_page() -> None:
             )
 
     with tab_foam:
-        st.subheader("Foam Actual vs Estimate")
-        foam_summary_columns = [
+        roofing_summary, insulation_summary = split_tracking_material_rows(summary)
+        roofing_daily, insulation_daily = split_tracking_material_rows(daily)
+
+        material_summary_columns = [
             "project",
             "division",
             "estimated_materials_source",
@@ -13092,30 +13285,6 @@ def job_tracking_dashboard_page() -> None:
             "foam_sqft_variance",
             "actual_foam_yield",
             "estimated_foam_yield",
-            "last_work_date",
-            "source_file",
-        ]
-        available_foam_summary = [column for column in foam_summary_columns if column in summary.columns]
-        has_foam_values = any(
-            column in summary.columns and numeric_series(summary, column).notna().any()
-            for column in [
-                "actual_foam_strokes",
-                "actual_foam_sqft",
-                "actual_foam_yield",
-                "estimated_foam_sqft",
-                "estimated_foam_yield",
-            ]
-        )
-        if has_foam_values:
-            show_table(summary, available_foam_summary, height=360, sort_by="last_work_date")
-        else:
-            st.info("Foam tracking columns are ready, but no loaded rows contain foam actuals or estimates yet.")
-
-        roofing_summary_columns = [
-            "project",
-            "division",
-            "estimated_materials_source",
-            "estimate_material_rows_used",
             "actual_base_coat_1",
             "estimated_base_coat_1",
             "actual_base_coat_2",
@@ -13133,10 +13302,17 @@ def job_tracking_dashboard_page() -> None:
             "last_work_date",
             "source_file",
         ]
-        available_roofing_summary = [column for column in roofing_summary_columns if column in summary.columns]
+
+        st.subheader("Roofing Materials Actual vs Estimate")
+        available_roofing_summary = [column for column in material_summary_columns if column in roofing_summary.columns]
         has_roofing_values = any(
-            column in summary.columns and numeric_series(summary, column).notna().any()
+            column in roofing_summary.columns and numeric_series(roofing_summary, column).notna().any()
             for column in [
+                "actual_foam_strokes",
+                "actual_foam_sqft",
+                "actual_foam_yield",
+                "estimated_foam_sqft",
+                "estimated_foam_yield",
                 "actual_base_coat_1",
                 "actual_base_coat_2",
                 "actual_granules",
@@ -13145,6 +13321,7 @@ def job_tracking_dashboard_page() -> None:
                 "actual_sf",
                 "actual_caulk",
                 "estimated_base_coat_1",
+                "estimated_base_coat_2",
                 "estimated_granules",
                 "estimated_af_buttergrade",
                 "estimated_primer",
@@ -13152,29 +13329,65 @@ def job_tracking_dashboard_page() -> None:
                 "estimated_caulk",
             ]
         )
-        st.subheader("Roofing / Coating Materials Actual vs Estimate")
         if has_roofing_values:
-            show_table(summary, available_roofing_summary, height=360, sort_by="last_work_date")
+            show_table(roofing_summary, available_roofing_summary, height=360, sort_by="last_work_date")
         else:
-            st.info("Roofing material tracking columns are ready, but no loaded rows contain coating, primer, granule, SF, or caulk values yet.")
+            st.info("No roofing material actual/estimate rows match the current filters.")
 
-        daily_foam_columns = [
+        st.subheader("Insulation Materials Actual vs Estimate")
+        insulation_summary_columns = [
+            "project",
+            "division",
+            "estimated_materials_source",
+            "estimate_material_rows_used",
+            "actual_foam_strokes",
+            "estimated_foam_strokes",
+            "foam_strokes_variance",
+            "actual_foam_thickness_inches",
+            "actual_foam_sqft",
+            "estimated_foam_sqft",
+            "foam_sqft_variance",
+            "actual_foam_yield",
+            "estimated_foam_yield",
+            "actual_primer",
+            "estimated_primer",
+            "actual_sf",
+            "estimated_sf",
+            "actual_caulk",
+            "estimated_caulk",
+            "last_work_date",
+            "source_file",
+        ]
+        available_insulation_summary = [column for column in insulation_summary_columns if column in insulation_summary.columns]
+        has_insulation_values = any(
+            column in insulation_summary.columns and numeric_series(insulation_summary, column).notna().any()
+            for column in [
+                "actual_foam_strokes",
+                "actual_foam_sqft",
+                "actual_foam_yield",
+                "estimated_foam_sqft",
+                "estimated_foam_yield",
+                "actual_primer",
+                "estimated_primer",
+                "actual_sf",
+                "estimated_sf",
+                "actual_caulk",
+                "estimated_caulk",
+            ]
+        )
+        if has_insulation_values:
+            show_table(insulation_summary, available_insulation_summary, height=360, sort_by="last_work_date")
+        else:
+            st.info("No insulation material actual/estimate rows match the current filters.")
+
+        daily_material_columns = [
             "work_date",
             "project",
+            "division",
             "foam_strokes",
             "foam_thickness_inches",
             "foam_sqft",
             "foam_yield",
-            "crew",
-            "notes",
-        ]
-        if not daily.empty and any(column in daily.columns and numeric_series(daily, column).notna().any() for column in ["foam_strokes", "foam_sqft", "foam_yield"]):
-            st.subheader("Daily Foam Entries")
-            show_table(daily, daily_foam_columns, height=360)
-
-        daily_roofing_columns = [
-            "work_date",
-            "project",
             "base_coat_1",
             "base_coat_2",
             "granules",
@@ -13185,12 +13398,18 @@ def job_tracking_dashboard_page() -> None:
             "crew",
             "notes",
         ]
-        if not daily.empty and any(
-            column in daily.columns and numeric_series(daily, column).notna().any()
-            for column in ["base_coat_1", "base_coat_2", "granules", "af_buttergrade", "primer", "sf", "caulk"]
+        if not roofing_daily.empty and any(
+            column in roofing_daily.columns and numeric_series(roofing_daily, column).notna().any()
+            for column in ["foam_strokes", "foam_sqft", "foam_yield", "base_coat_1", "base_coat_2", "granules", "af_buttergrade", "primer", "sf", "caulk"]
         ):
-            st.subheader("Daily Roofing / Coating Material Entries")
-            show_table(daily, daily_roofing_columns, height=360)
+            st.subheader("Daily Roofing Material Entries")
+            show_table(roofing_daily, [column for column in daily_material_columns if column in roofing_daily.columns], height=360)
+        if not insulation_daily.empty and any(
+            column in insulation_daily.columns and numeric_series(insulation_daily, column).notna().any()
+            for column in ["foam_strokes", "foam_sqft", "foam_yield", "primer", "sf", "caulk"]
+        ):
+            st.subheader("Daily Insulation Material Entries")
+            show_table(insulation_daily, [column for column in daily_material_columns if column in insulation_daily.columns], height=360)
 
 
 def owner_overview_page() -> None:
@@ -13567,6 +13786,7 @@ def contracted_backlog_scheduling_page() -> None:
                 title="Missing Duration / Labor / Crew Size by Division",
                 color_discrete_sequence=SPRAYTEC_CHART_COLOR_SEQUENCE,
             )
+            apply_money_axis_format(fig, "job_count")
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No data available for Missing Duration / Labor / Crew Size by Division.")
@@ -14716,6 +14936,7 @@ def estimate_adders_page() -> None:
                     title="Adder Cost by Business Category",
                     color_discrete_sequence=SPRAYTEC_CHART_COLOR_SEQUENCE,
                 )
+                apply_money_axis_format(fig, "extended_cost")
                 st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No data available for Adder Cost by Business Category.")
@@ -14738,6 +14959,7 @@ def estimate_adders_page() -> None:
                     title="Adder Cost by Pipeline Status",
                     color_discrete_sequence=SPRAYTEC_CHART_COLOR_SEQUENCE,
                 )
+                apply_money_axis_format(fig, "total_adder_cost")
                 st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No data available for Adder Cost by Pipeline Status.")
