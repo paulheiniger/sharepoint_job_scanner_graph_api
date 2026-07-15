@@ -288,6 +288,69 @@ def test_job_tracking_extractor_reads_daily_summary_and_estimates() -> None:
     assert row["labor_hours_variance"] == -102.59
 
 
+def test_job_tracking_extractor_combines_multiple_tracking_sheets_per_file() -> None:
+    import openpyxl
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        job = root / "WT Young"
+        job.mkdir()
+        path = job / "Job Tracking - Phase 2 WT Young.xlsx"
+        write_tracking_workbook(path)
+
+        wb = openpyxl.load_workbook(path)
+        ws = wb.create_sheet("Gregg")
+        ws["A1"] = "Actual Amounts"
+        headers = [
+            "UK WT Phase 2",
+            "Labor Hours",
+            "Travel Hours",
+            "Load Hours",
+            "OS Hours",
+            "Mileage",
+            "OS Mileage",
+            "Foam Strokes",
+            "Thickness (in.)",
+            "Sq. Ft. (Foam)",
+            "Foam Yield",
+            "Crew",
+            "Notes",
+        ]
+        for col, value in enumerate(headers, start=1):
+            ws.cell(row=2, column=col).value = value
+        ws["A3"] = "05.15.26"
+        ws["B3"] = 10
+        ws["C3"] = 2
+        ws["L3"] = "Gregg"
+        ws["M3"] = "Supplemental labor sheet."
+        ws["A8"] = "Daily Totals"
+        ws["B8"] = 10
+        ws["C8"] = 2
+        ws["A10"] = "Estimated Amounts"
+        ws["B11"] = "Labor Hours"
+        ws["C11"] = "Travel Hours"
+        ws["B12"] = 175
+        ws["C12"] = 50
+        ws["A13"] = "Over/Under"
+        wb.save(path)
+
+        record = scan_root(root, scan_context="2026 Roofing/Contracted")[0]
+        summaries, daily = extract_job_tracking_file(path, root, record)
+
+    assert len(summaries) == 1
+    summary = summaries[0]
+    assert len(daily) == 9
+    assert summary["actual_work_day_count"] == 9
+    assert summary["actual_labor_hours"] == 82.41
+    assert summary["actual_travel_hours"] == 11.72
+    assert summary["actual_foam_strokes"] == 6.5
+    assert summary["actual_foam_sqft"] == 800
+    assert summary["estimated_labor_hours"] == 175
+    assert summary["estimated_foam_sqft"] == 1000
+    assert summary["labor_hours_variance"] == 92.59
+    assert "Supplemental labor sheet." in summary["tracking_notes"]
+
+
 def test_job_tracking_extractor_reads_direct_header_tracking_form() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)

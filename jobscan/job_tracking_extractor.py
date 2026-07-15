@@ -140,7 +140,113 @@ def extract_job_tracking_file(path: Path, root: Path, record: JobRecord) -> tupl
             continue
         summaries.append(summary)
         daily_entries.extend(daily)
-    return summaries, daily_entries
+    if len(summaries) <= 1:
+        return summaries, daily_entries
+    return [combine_tracking_summaries(summaries, daily_entries)], daily_entries
+
+
+def combine_tracking_summaries(summaries: list[dict[str, Any]], daily_entries: list[dict[str, Any]]) -> dict[str, Any]:
+    combined: dict[str, Any] = {field: None for field in JOB_TRACKING_SUMMARY_FIELDS}
+    first = summaries[0]
+    for field in [
+        "job_id",
+        "tracking_file",
+        "customer",
+        "job_name",
+        "division",
+        "pipeline_status",
+        "source_file",
+        "source_path",
+    ]:
+        combined[field] = next((summary.get(field) for summary in summaries if summary.get(field)), first.get(field))
+
+    dates = sorted({entry.get("work_date") for entry in daily_entries if entry.get("work_date")})
+    combined["actual_first_work_date"] = dates[0] if dates else first_nonempty_summary_value(summaries, "actual_first_work_date")
+    combined["actual_last_work_date"] = dates[-1] if dates else first_nonempty_summary_value(summaries, "actual_last_work_date")
+    combined["actual_work_day_count"] = len(dates) if dates else first_nonempty_summary_value(summaries, "actual_work_day_count")
+
+    additive_actual_fields = [
+        "actual_labor_hours",
+        "actual_travel_hours",
+        "actual_load_hours",
+        "actual_os_hours",
+        "actual_mileage",
+        "actual_os_mileage",
+        "actual_foam_strokes",
+        "actual_foam_sqft",
+        "actual_base_coat_1",
+        "actual_base_coat_2",
+        "actual_granules",
+        "actual_af_buttergrade",
+        "actual_caulk",
+        "actual_primer",
+        "actual_sf",
+    ]
+    for field in additive_actual_fields:
+        combined[field] = sum_summary_values(summaries, field)
+
+    for field in ["actual_foam_thickness_inches", "actual_foam_yield"]:
+        combined[field] = average_summary_values(summaries, field)
+
+    for field in [
+        "estimated_labor_hours",
+        "estimated_travel_hours",
+        "estimated_load_hours",
+        "estimated_overhead",
+        "estimated_mileage",
+        "estimated_os_mileage",
+        "estimated_foam_strokes",
+        "estimated_foam_thickness_inches",
+        "estimated_foam_sqft",
+        "estimated_foam_yield",
+        "estimated_base_coat_1",
+        "estimated_base_coat_2",
+        "estimated_granules",
+        "estimated_af_buttergrade",
+        "estimated_caulk",
+        "estimated_primer",
+        "estimated_sf",
+    ]:
+        combined[field] = first_nonempty_summary_value(summaries, field)
+
+    for source_key, variance_key in VARIANCE_KEYS.items():
+        actual = combined.get(f"actual_{source_key}")
+        estimated = combined.get(f"estimated_{source_key}")
+        if isinstance(actual, (int, float)) and isinstance(estimated, (int, float)):
+            combined[variance_key] = clean_number(float(estimated) - float(actual))
+        else:
+            combined[variance_key] = first_nonempty_summary_value(summaries, variance_key)
+
+    notes = []
+    warnings = []
+    for summary in summaries:
+        notes.extend(part.strip() for part in str(summary.get("tracking_notes") or "").split(";") if part.strip())
+        warnings.extend(part.strip() for part in str(summary.get("tracking_warnings") or "").split(";") if part.strip())
+    combined["tracking_notes"] = "; ".join(dict.fromkeys(notes))
+    combined["tracking_warnings"] = "; ".join(dict.fromkeys(warnings))
+    return {field: combined.get(field) for field in JOB_TRACKING_SUMMARY_FIELDS}
+
+
+def first_nonempty_summary_value(summaries: list[dict[str, Any]], field: str) -> Any:
+    for summary in summaries:
+        value = summary.get(field)
+        if value is not None and value != "":
+            return value
+    return None
+
+
+def sum_summary_values(summaries: list[dict[str, Any]], field: str) -> int | float | None:
+    values = [summary.get(field) for summary in summaries if isinstance(summary.get(field), (int, float))]
+    if not values:
+        return None
+    return clean_number(float(sum(values)))
+
+
+def average_summary_values(summaries: list[dict[str, Any]], field: str) -> int | float | None:
+    values = [float(summary.get(field)) for summary in summaries if isinstance(summary.get(field), (int, float))]
+    if not values:
+        return None
+    return clean_number(sum(values) / len(values))
 
 
 def apply_job_tracking_to_record(record: JobRecord, folder: Path, root: Path, tracking_files: list[Path]) -> None:
