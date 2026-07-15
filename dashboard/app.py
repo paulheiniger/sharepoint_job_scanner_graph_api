@@ -6,6 +6,7 @@ load_dotenv()
 
 import hashlib
 import inspect
+import base64
 import json
 import logging
 import math
@@ -23,6 +24,10 @@ from typing import Any, Callable, Iterable
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+DASHBOARD_ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+SPRAYTEC_LOGO_PATH = DASHBOARD_ASSETS_DIR / "spraytec-logo.png"
+SPRAYTEC_WATERMARK_PATH = DASHBOARD_ASSETS_DIR / "spraytec-watermark-triangle.png"
 
 import numpy as np
 import pandas as pd
@@ -4907,10 +4912,60 @@ def load_sidebar_filter_jobs() -> pd.DataFrame:
     return load_df(f"SELECT DISTINCT {', '.join(select_parts)} FROM dashboard_jobs j")
 
 
+def render_sidebar_brand() -> None:
+    if not SPRAYTEC_LOGO_PATH.exists():
+        st.sidebar.title("Spray-Tec Ops")
+        return
+    st.sidebar.image(str(SPRAYTEC_LOGO_PATH), width="stretch")
+    st.sidebar.caption("Operations Dashboard")
+
+
+@st.cache_data(show_spinner=False)
+def image_data_uri(path: str) -> str:
+    image_path = Path(path)
+    if not image_path.exists():
+        return ""
+    encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
+    suffix = image_path.suffix.lower().lstrip(".") or "png"
+    return f"data:image/{suffix};base64,{encoded}"
+
+
+def render_page_watermark() -> None:
+    data_uri = image_data_uri(str(SPRAYTEC_WATERMARK_PATH))
+    if not data_uri:
+        return
+    st.markdown(
+        f"""
+        <style>
+        .spraytec-page-watermark {{
+            position: fixed;
+            top: 4.8rem;
+            right: 1.4rem;
+            width: min(19vw, 230px);
+            height: min(14vw, 172px);
+            background-image: url("{data_uri}");
+            background-repeat: no-repeat;
+            background-position: center;
+            background-size: contain;
+            opacity: 0.045;
+            pointer-events: none;
+            z-index: 0;
+        }}
+        @media (max-width: 900px) {{
+            .spraytec-page-watermark {{
+                display: none;
+            }}
+        }}
+        </style>
+        <div class="spraytec-page-watermark" aria-hidden="true"></div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def sidebar_filters(jobs: pd.DataFrame) -> dict[str, object]:
     global selected_divisions, selected_pipeline_statuses, selected_statuses, customer_search
 
-    st.sidebar.title("Spray-Tec Ops")
     st.sidebar.caption("Filters")
     selected_divisions = st.sidebar.multiselect("Division", options_from(jobs, "division"))
     selected_pipeline_statuses = st.sidebar.multiselect("Pipeline Status", options_from(jobs, "pipeline_status"))
@@ -5277,7 +5332,8 @@ def _normalized_contains_phrase(normalized: str, phrase: str) -> bool:
     phrase_norm = " ".join(re.sub(r"[^a-z0-9.#]+", " ", phrase.lower()).split())
     if not phrase_norm:
         return False
-    return f" {phrase_norm} " in normalized
+    pattern = re.escape(phrase_norm).replace(r"\ ", r"\s+")
+    return re.search(rf"(?<![a-z0-9]){pattern}(?![a-z0-9])", normalized) is not None
 
 
 def _parse_attribute_number(raw: str) -> float | None:
@@ -5666,7 +5722,7 @@ def plan_ask_spraytec_query(prompt: str, interpreted: dict[str, Any]) -> dict[st
         ),
         "needs_clarification": needs_clarification,
         "clarification": "Which job, customer, project, product, or file should I search for?" if needs_clarification else "",
-        "use_llm_answer": mode in {"mixed_answer", "structured_answer"} or is_data_answer_request(prompt),
+        "use_llm_answer": mode in {"mixed_answer", "structured_answer", "attribute_job_search"} or is_data_answer_request(prompt),
         "reason": "; ".join(dict.fromkeys(reasons)) or "job lookup",
         "attribute_query": attribute_query,
     }
@@ -6653,6 +6709,26 @@ ASK_ESTIMATING_GUIDANCE_STOP_WORDS = ASK_QUERY_STOP_WORDS | {
 }
 
 
+ASK_ENTITY_SEARCH_STOP_WORDS = ASK_QUERY_STOP_WORDS | {
+    "blocked",
+    "contracted",
+    "completed",
+    "follow",
+    "followup",
+    "lost",
+    "need",
+    "needs",
+    "open",
+    "proposal",
+    "proposals",
+    "submitted",
+    "up",
+}
+
+
+ASK_BROAD_STRUCTURED_MAX_ROWS = 250
+
+
 def _ask_relevant_tokens(query: str) -> list[str]:
     return [
         token_value
@@ -6669,6 +6745,72 @@ def _ask_estimating_guidance_tokens(query: str) -> list[str]:
             continue
         tokens.append(lowered)
     return list(dict.fromkeys(tokens))
+
+
+def ask_entity_tokens_for_job_lookup(query: str) -> list[str]:
+    return [
+        token_value
+        for token_value in tokenize_search_text(query)
+        if token_value.lower() not in ASK_ENTITY_SEARCH_STOP_WORDS and len(token_value) >= 2
+    ]
+
+
+def ask_is_broad_list_question(prompt: str, plan: dict[str, Any] | None = None) -> bool:
+    normalized = " " + " ".join(str(prompt or "").lower().split()) + " "
+    targets = set((plan or {}).get("targets") or [])
+    list_markers = (
+        " which ",
+        " what jobs ",
+        " what projects ",
+        " show all ",
+        " show me all ",
+        " list ",
+        " all ",
+    )
+    operations_markers = (
+        " active jobs ",
+        " behind ",
+        " at risk ",
+        " risks ",
+        " over budget ",
+        " ready to schedule ",
+        " waiting to schedule ",
+        " proposals need follow",
+        " need follow-up ",
+        " need follow up ",
+    )
+    return bool(
+        any(marker in normalized for marker in list_markers)
+        and (
+            any(marker in normalized for marker in operations_markers)
+            or bool(targets & {"operations_dashboard", "office_timesheet_entries"})
+        )
+    )
+
+
+def ask_structured_max_rows(prompt: str, plan: dict[str, Any] | None = None, *, default: int = 12) -> int:
+    targets = set((plan or {}).get("targets") or [])
+    if ask_is_broad_list_question(prompt, plan):
+        return ASK_BROAD_STRUCTURED_MAX_ROWS
+    if targets & {"operations_dashboard", "office_timesheet_entries"} and not ask_entity_tokens_for_job_lookup(prompt):
+        return ASK_BROAD_STRUCTURED_MAX_ROWS
+    return default
+
+
+def ask_should_use_job_lookup_for_structured_context(prompt: str, interpreted: dict[str, Any], plan: dict[str, Any]) -> bool:
+    targets = set(plan.get("targets") or [])
+    if not targets:
+        return False
+    if ask_is_broad_list_question(prompt, plan):
+        return False
+    if targets & {"documents", "document_content"} and text_value(interpreted.get("search_text")):
+        return True
+    if text_value(plan.get("mode")) == "job_lookup":
+        return True
+    entity_tokens = ask_entity_tokens_for_job_lookup(text_value(interpreted.get("search_text")) or prompt)
+    if targets & {"operations_dashboard", "crew_schedule", "job_tracking_summary", "job_tracking_daily_entries"}:
+        return len(entity_tokens) >= 2
+    return False
 
 
 def _ask_template_type_filter_from_query(query: str) -> str:
@@ -6826,7 +6968,6 @@ def _query_attribute_evidence_table(
             "raw_text",
             "selected_item_name",
             "resolved_item_name",
-            "source_file",
             "sheet_name",
         ]
         requested_fields = [
@@ -6862,8 +7003,6 @@ def _query_attribute_evidence_table(
             "description",
             "vendor",
             "notes",
-            "estimate_file",
-            "source_sheet",
         ]
         requested_fields = [
             "job_id",
@@ -7362,8 +7501,9 @@ def attribute_job_search_response(results: list[dict[str, Any]], attribute_query
         filter_parts.append("system " + ", ".join(attribute_query["systems"]))
     if attribute_query.get("sqft_filter"):
         filter_parts.append("sqft " + json.dumps(attribute_query["sqft_filter"], default=str))
+    concept_text = ", ".join(concepts)
     lines = [
-        f"Found {len(results):,} job{'s' if len(results) != 1 else ''} with historical estimate evidence for **{', '.join(concepts)}**.",
+        f"Found {len(results):,} job{'s' if len(results) != 1 else ''} that matched all requested historical estimate concepts: **{concept_text}**.",
         "",
     ]
     if filter_parts:
@@ -7412,6 +7552,58 @@ def attribute_job_search_response(results: list[dict[str, Any]], attribute_query
     if len(results) > len(shown):
         lines.append(f"Showing {len(shown)}. Add a year, customer, warranty, substrate, or size filter to narrow the list.")
     return "\n".join(lines).strip()
+
+
+def attribute_job_search_evidence_pack(
+    results: list[dict[str, Any]],
+    attribute_query: dict[str, Any],
+    *,
+    limit: int = 20,
+) -> dict[str, Any]:
+    concepts = [text_value(concept) for concept in attribute_query.get("concepts", []) if text_value(concept)]
+    rows: list[dict[str, Any]] = []
+    for job in results[:limit]:
+        evidence_by_concept = job.get("match_evidence") if isinstance(job.get("match_evidence"), dict) else {}
+        concept_evidence = {
+            concept: [_attribute_evidence_label(row) for row in (evidence_by_concept.get(concept) or [])[:3]]
+            for concept in concepts
+        }
+        rows.append(
+            {
+                "job_id": job.get("job_id"),
+                "project": job.get("job_name"),
+                "customer": job.get("customer"),
+                "division": job.get("division"),
+                "status": job.get("pipeline_status") or job.get("status"),
+                "value": job.get("final_price") or job.get("worksheet_price") or job.get("total_job_cost"),
+                "estimated_sqft": _attribute_best_sqft(job),
+                "warranty_years": _attribute_best_warranty_years(job),
+                "document_substrate": job.get("document_substrate"),
+                "document_material_system": job.get("document_material_system"),
+                "matched_concepts": job.get("matched_concepts") or concepts,
+                "match_reason": job.get("match_reason"),
+                "match_evidence_count": job.get("match_evidence_count"),
+                "concept_evidence": concept_evidence,
+                "folder_url": job.get("folder_url"),
+            }
+        )
+    if not rows:
+        return {"facts": {}}
+    return {
+        "facts": {"attribute_job_matches": rows},
+        "attribute_query": attribute_query,
+        "retrieval_note": "Each attribute_job_matches row matched all requested estimate concepts before AI summarization.",
+    }
+
+
+def ask_spraytec_llm_available() -> bool:
+    if not os.getenv("OPENAI_API_KEY"):
+        return False
+    try:
+        import openai  # noqa: F401
+    except ImportError:
+        return False
+    return True
 
 
 def _historical_estimate_guidance_rows(connection: Any, query: str, *, limit: int) -> list[dict[str, Any]]:
@@ -8136,13 +8328,31 @@ def build_structured_evidence_pack(
                 )
             normalized_query = " " + " ".join(str(query or "").lower().split()) + " "
             terminal_filter = []
+            terminal_terms = ["completed", "did not get", "cancel", "lost"]
             if "status" in job_columns:
-                terminal_filter.append("LOWER(COALESCE(j.status, '')) NOT LIKE '%completed%'")
-                terminal_filter.append("LOWER(COALESCE(j.status, '')) NOT LIKE '%did not get%'")
-                terminal_filter.append("LOWER(COALESCE(j.status, '')) NOT LIKE '%cancel%'")
-                terminal_filter.append("LOWER(COALESCE(j.status, '')) NOT LIKE '%lost%'")
+                terminal_filter.extend(f"LOWER(COALESCE(j.status, '')) NOT LIKE '%{term}%'" for term in terminal_terms)
+            if "pipeline_status" in job_columns:
+                terminal_filter.extend(f"LOWER(COALESCE(j.pipeline_status, '')) NOT LIKE '%{term}%'" for term in terminal_terms)
+            for field in ("customer", "folder_path", "folder_name"):
+                if field in job_columns:
+                    terminal_filter.extend(
+                        f"LOWER(COALESCE(j.{field}, '')) NOT LIKE '%{term}%'"
+                        for term in ("did not get", "cancel", "lost")
+                    )
             if terminal_filter and any(token in normalized_query for token in [" active ", " ready ", " schedule ", " waiting ", " risk ", " behind "]):
                 where.extend(terminal_filter)
+            if " active " in normalized_query and not clean_job_ids:
+                active_clauses = []
+                if "pipeline_status" in job_columns:
+                    active_clauses.append("LOWER(COALESCE(j.pipeline_status, '')) LIKE '%contracted%'")
+                if "estimated_end_date" in schedule_columns:
+                    active_clauses.append("cs.estimated_end_date >= CURRENT_DATE - INTERVAL '14 days'")
+                elif "estimated_start_date" in schedule_columns:
+                    active_clauses.append("cs.estimated_start_date >= CURRENT_DATE - INTERVAL '30 days'")
+                if "actual_last_work_date" in tracking_columns:
+                    active_clauses.append("t.actual_last_work_date >= CURRENT_DATE - INTERVAL '45 days'")
+                if active_clauses:
+                    where.append("(" + " OR ".join(active_clauses) + ")")
             if "ready to schedule" in normalized_query or "waiting to schedule" in normalized_query:
                 if "estimated_start_date" in schedule_columns:
                     where.append("cs.estimated_start_date IS NULL")
@@ -8151,7 +8361,11 @@ def build_structured_evidence_pack(
             if any(token in normalized_query for token in [" behind ", " risk ", " risks ", " overrun ", " over budget "]):
                 risk_clauses = []
                 if "estimated_end_date" in schedule_columns:
-                    risk_clauses.append("cs.estimated_end_date < CURRENT_DATE")
+                    schedule_status_expr = "LOWER(COALESCE(cs.schedule_status, ''))"
+                    risk_clauses.append(
+                        "(cs.estimated_end_date < CURRENT_DATE AND "
+                        f"{schedule_status_expr} NOT LIKE '%complete%')"
+                    )
                 if "labor_hours_variance" in tracking_columns:
                     risk_clauses.append("t.labor_hours_variance > 0")
                 if "foam_sqft_variance" in tracking_columns:
@@ -8162,18 +8376,34 @@ def build_structured_evidence_pack(
                     where.append("(" + " OR ".join(risk_clauses) + ")")
             statement = text(
                 f"""
-                SELECT {', '.join(selected)}
-                FROM dashboard_jobs j
-                LEFT JOIN crew_schedule cs ON cs.job_id = j.job_id
-                LEFT JOIN job_tracking_summary t ON t.job_id = j.job_id
-                {('WHERE ' + ' AND '.join(where)) if where else ''}
-                ORDER BY {value_expr} DESC NULLS LAST, cs.estimated_start_date NULLS LAST, j.updated_at DESC NULLS LAST
+                WITH operations_rows AS (
+                    SELECT
+                        {', '.join(selected)},
+                        ROW_NUMBER() OVER (
+                            PARTITION BY {sql_column('j', job_columns, 'job_id')}
+                            ORDER BY
+                                {sql_column('cs', schedule_columns, 'estimated_start_date')} DESC NULLS LAST,
+                                {sql_column('t', tracking_columns, 'actual_last_work_date')} DESC NULLS LAST,
+                                {value_expr} DESC NULLS LAST
+                        ) AS ask_row_rank
+                    FROM dashboard_jobs j
+                    LEFT JOIN crew_schedule cs ON cs.job_id = j.job_id
+                    LEFT JOIN job_tracking_summary t ON t.job_id = j.job_id
+                    {('WHERE ' + ' AND '.join(where)) if where else ''}
+                )
+                SELECT *
+                FROM operations_rows
+                WHERE ask_row_rank = 1
+                ORDER BY operations_value DESC NULLS LAST, estimated_start_date NULLS LAST
                 LIMIT :limit
                 """
             )
             if bind is not None:
                 statement = statement.bindparams(bind)
-            evidence["facts"]["operations_dashboard"] = _query_rows(connection, statement, params)
+            operations_rows = _query_rows(connection, statement, params)
+            for row in operations_rows:
+                row.pop("ask_row_rank", None)
+            evidence["facts"]["operations_dashboard"] = operations_rows
         else:
             evidence["skipped_sources"].append("dashboard_jobs table unavailable for operations evidence")
 
@@ -8375,7 +8605,8 @@ def llm_grounded_document_answer(prompt: str, chunks: list[dict[str, Any]], stru
         "You are Ask Spray-Tec, a grounded assistant for Spray-Tec operational data. "
         "Answer only from the provided extracted document sources and structured database evidence. Cite document claims with source ids like [S1]. "
         "For structured database facts, name the source table such as jobs, estimates, estimate_template_rows, pricing_catalog, product_catalog, "
-        "crew_schedule, job_tracking_summary, job_tracking_daily_entries, office_timesheet_entries, operations_dashboard, or historical_estimate_guidance. "
+        "crew_schedule, job_tracking_summary, job_tracking_daily_entries, office_timesheet_entries, operations_dashboard, "
+        "historical_estimate_guidance, or attribute_job_matches. "
         "If the sources do not answer the question, say what is missing. Do not invent facts, totals, dates, warranty terms, or scope."
     )
     user_payload = {
@@ -8390,6 +8621,7 @@ def llm_grounded_document_answer(prompt: str, chunks: list[dict[str, Any]], stru
             "Keep explanations concise and operational; do not dump raw JSON.",
             "For document claims, cite source ids like [S1].",
             "For structured facts, name tables in What I checked.",
+            "For attribute_job_matches, every listed row already matched all requested concepts; do not weaken the answer to only one concept.",
             "If evidence is weak or missing, say exactly what data is missing.",
             "Suggest one useful follow-up question only when it naturally helps the user continue.",
         ],
@@ -8651,7 +8883,11 @@ def ask_spraytec_page() -> None:
         except Exception as exc:
             show_database_error(exc)
             return
-        response = attribute_job_search_response(attribute_results, attribute_query)
+        fallback_response = attribute_job_search_response(attribute_results, attribute_query)
+        attribute_evidence = attribute_job_search_evidence_pack(attribute_results, attribute_query, limit=20)
+        response = fallback_response
+        if ask_spraytec_llm_available() and (attribute_evidence.get("facts") or {}):
+            response = llm_grounded_document_answer(prompt, [], attribute_evidence) or fallback_response
         debug_payload["attribute_results"] = [
             {
                 "job_id": result.get("job_id"),
@@ -8663,6 +8899,10 @@ def ask_spraytec_page() -> None:
             }
             for result in attribute_results[:25]
         ]
+        debug_payload["structured_evidence"] = {
+            key: len(value) if isinstance(value, list) else value
+            for key, value in (attribute_evidence.get("facts") or {}).items()
+        }
         if attribute_results:
             first_result = attribute_results[0]
             st.session_state["ask_spraytec_selected_job"] = first_result
@@ -8674,6 +8914,7 @@ def ask_spraytec_page() -> None:
             with get_engine().connect() as conn:
                 docs = get_preferred_job_documents(conn, active_job, requested_type) if "documents" in plan_targets else []
                 document_chunks = []
+                structured_max_rows = ask_structured_max_rows(prompt, query_plan)
                 if "document_content" in plan_targets:
                     document_chunks = fetch_document_content_chunks(
                         conn,
@@ -8688,6 +8929,7 @@ def ask_spraytec_page() -> None:
                     interpreted=interpreted,
                     job_ids=[str(selected_job_id or active_job.get("job_id") or "")],
                     targets=plan_targets & ASK_SPRAYTEC_STRUCTURED_TARGETS,
+                    max_rows=structured_max_rows,
                 )
         except Exception as exc:
             show_database_error(exc)
@@ -8743,8 +8985,9 @@ def ask_spraytec_page() -> None:
                             limit=ASK_DOCUMENT_CHUNK_LIMIT,
                         )
                 matched_job_ids = [text_value(doc.get("job_id")) for doc in document_matches if text_value(doc.get("job_id"))]
+                structured_max_rows = ask_structured_max_rows(prompt, query_plan)
                 job_lookup_query = text_value(interpreted.get("search_text")) or prompt
-                if "jobs" in plan_targets:
+                if "jobs" in plan_targets and ask_should_use_job_lookup_for_structured_context(prompt, interpreted, query_plan):
                     job_results = search_jobs(conn, job_lookup_query, limit=10)
                 results = [] if document_matches else job_results
                 for result in job_results:
@@ -8757,6 +9000,7 @@ def ask_spraytec_page() -> None:
                     interpreted=interpreted,
                     job_ids=matched_job_ids,
                     targets=plan_targets & ASK_SPRAYTEC_STRUCTURED_TARGETS,
+                    max_rows=structured_max_rows,
                 )
         except Exception as exc:
             show_database_error(exc)
@@ -20027,6 +20271,7 @@ def main() -> None:
         database_startup_error = exc
 
     with st.sidebar:
+        render_sidebar_brand()
         render_database_target_debug()
         filters = sidebar_filters(jobs_for_filters)
         core_pages = [
@@ -20067,6 +20312,8 @@ def main() -> None:
             "Page",
             page_options,
         )
+
+    render_page_watermark()
 
     if database_startup_error and page not in {"Estimating Assistant", "Admin / Health"}:
         show_database_error(database_startup_error)

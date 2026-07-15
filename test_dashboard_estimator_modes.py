@@ -833,6 +833,9 @@ def test_ask_spraytec_query_planner_routes_owner_operations_questions() -> None:
     assert "crew_schedule" in plan["targets"]
     assert plan["needs_clarification"] is False
     assert plan["use_llm_answer"] is True
+    assert app.ask_is_broad_list_question(prompt, plan) is True
+    assert app.ask_structured_max_rows(prompt, plan) == app.ASK_BROAD_STRUCTURED_MAX_ROWS
+    assert app.ask_should_use_job_lookup_for_structured_context(prompt, interpreted, plan) is False
 
 
 def test_ask_spraytec_query_planner_routes_tracking_and_timesheet_questions() -> None:
@@ -851,6 +854,11 @@ def test_ask_spraytec_query_planner_routes_tracking_and_timesheet_questions() ->
     assert "job_tracking_daily_entries" in tracking_plan["targets"]
     assert "operations_dashboard" in tracking_plan["targets"]
     assert tracking_plan["needs_clarification"] is False
+    assert app.ask_should_use_job_lookup_for_structured_context(
+        tracking_prompt,
+        tracking_interpreted,
+        tracking_plan,
+    ) is True
 
     timesheet_prompt = "What did Carlos touch this week?"
     timesheet_plan = app.plan_ask_spraytec_query(
@@ -889,6 +897,15 @@ def test_ask_spraytec_query_planner_routes_attribute_job_search() -> None:
     assert plan["attribute_query"]["division"] == "Roofing"
     assert "estimate_template_rows" in plan["targets"]
     assert "estimate_line_items" in plan["targets"]
+
+    punctuated_prompt = "Find roofing jobs that required coating and foam."
+    punctuated_plan = app.plan_ask_spraytec_query(
+        punctuated_prompt,
+        app.interpret_search_request(punctuated_prompt),
+    )
+
+    assert punctuated_plan["mode"] == "attribute_job_search"
+    assert punctuated_plan["attribute_query"]["concepts"] == ["coating", "foam"]
 
 
 def test_ask_spraytec_query_planner_routes_generated_field_notes() -> None:
@@ -1778,9 +1795,52 @@ def test_ask_spraytec_attribute_response_shows_evidence() -> None:
     )
 
     assert "Found 1 job" in response
+    assert "matched all requested historical estimate concepts" in response
     assert "Gaco S20" in response
     assert "Gaco Roof 2.7" in response
     assert "$125,000" in response
+
+    evidence = app.attribute_job_search_evidence_pack(
+        [
+            {
+                "job_id": "J1",
+                "customer": "Acme",
+                "job_name": "Acme Roof",
+                "division": "Roofing",
+                "final_price": 125000,
+                "match_reason": "Historical estimate rows matched all requested attributes: coating, foam",
+                "matched_concepts": ["coating", "foam"],
+                "match_evidence": {
+                    "coating": [
+                        {
+                            "source_table": "estimate_template_rows",
+                            "row_number": 22,
+                            "row_label": "Gaco Silicone",
+                            "selected_item_name": "Gaco S20",
+                            "area_sqft": 10000,
+                            "source_file": "Estimate Roofing.xlsx",
+                        }
+                    ],
+                    "foam": [
+                        {
+                            "source_table": "estimate_template_rows",
+                            "row_number": 18,
+                            "row_label": "Gaco Roof Foam",
+                            "selected_item_name": "Gaco Roof 2.7",
+                            "area_sqft": 10000,
+                            "source_file": "Estimate Roofing.xlsx",
+                        }
+                    ],
+                },
+            }
+        ],
+        {"concepts": ["coating", "foam"]},
+    )
+
+    rows = evidence["facts"]["attribute_job_matches"]
+    assert rows[0]["matched_concepts"] == ["coating", "foam"]
+    assert "Gaco S20" in rows[0]["concept_evidence"]["coating"][0]
+    assert "Gaco Roof 2.7" in rows[0]["concept_evidence"]["foam"][0]
 
 
 def test_ask_spraytec_attribute_response_shows_rich_filters() -> None:

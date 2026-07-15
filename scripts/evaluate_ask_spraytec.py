@@ -118,7 +118,13 @@ def answer_prompt(prompt: str, *, use_ai: bool, max_rows: int) -> dict[str, Any]
                     attribute_query=attribute_query,
                     limit=max_rows,
                 )
-                answer = app.attribute_job_search_response(attribute_results, attribute_query)
+                attribute_evidence = app.attribute_job_search_evidence_pack(attribute_results, attribute_query, limit=max_rows)
+                structured_evidence = attribute_evidence
+                answer = (
+                    _answer_from_evidence(prompt, [], attribute_evidence, use_ai=use_ai)
+                    if use_ai and (attribute_evidence.get("facts") or {})
+                    else app.attribute_job_search_response(attribute_results, attribute_query)
+                )
                 debug["attribute_results"] = [
                     {
                         "job_id": result.get("job_id"),
@@ -130,8 +136,10 @@ def answer_prompt(prompt: str, *, use_ai: bool, max_rows: int) -> dict[str, Any]
                     }
                     for result in attribute_results[:max_rows]
                 ]
+                debug["structured_evidence"] = attribute_evidence
             else:
                 job_results: list[dict[str, Any]] = []
+                structured_max_rows = app.ask_structured_max_rows(prompt, plan, default=max_rows)
                 if "documents" in targets and interpreted.get("search_text"):
                     document_matches = app.search_documents(
                         conn,
@@ -149,7 +157,7 @@ def answer_prompt(prompt: str, *, use_ai: bool, max_rows: int) -> dict[str, Any]
                         )
                 matched_job_ids = [_text(doc.get("job_id")) for doc in document_matches if _text(doc.get("job_id"))]
                 job_lookup_query = _text(interpreted.get("search_text")) or prompt
-                if "jobs" in targets:
+                if "jobs" in targets and app.ask_should_use_job_lookup_for_structured_context(prompt, interpreted, plan):
                     job_results = app.search_jobs(conn, job_lookup_query, limit=min(max_rows, 10))
                 matched_job_ids.extend(_text(result.get("job_id")) for result in job_results[:3] if _text(result.get("job_id")))
                 matched_job_ids = list(dict.fromkeys(job_id for job_id in matched_job_ids if job_id))
@@ -159,7 +167,7 @@ def answer_prompt(prompt: str, *, use_ai: bool, max_rows: int) -> dict[str, Any]
                     interpreted=interpreted,
                     job_ids=matched_job_ids,
                     targets=plan_targets,
-                    max_rows=max_rows,
+                    max_rows=structured_max_rows,
                 )
                 if document_matches:
                     if document_chunks or structured_evidence.get("facts"):
