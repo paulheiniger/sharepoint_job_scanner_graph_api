@@ -1466,6 +1466,21 @@ def calculate_end_date(start_value: object, duration_value: object) -> str | Non
     return (start.date() + timedelta(days=duration_days - 1)).isoformat()
 
 
+def schedule_date_iso(value: object) -> str | None:
+    parsed = pd.to_datetime(value, errors="coerce")
+    if pd.isna(parsed):
+        return None
+    return parsed.date().isoformat()
+
+
+def schedule_duration_from_dates(start_value: object, end_value: object) -> float | None:
+    start = pd.to_datetime(start_value, errors="coerce")
+    end = pd.to_datetime(end_value, errors="coerce")
+    if pd.isna(start) or pd.isna(end):
+        return None
+    return float(max((end.date() - start.date()).days + 1, 1))
+
+
 def ensure_daily_dispatch_table() -> None:
     engine = get_engine()
     with engine.begin() as conn:
@@ -2017,10 +2032,26 @@ def save_schedule_rows(df: pd.DataFrame) -> int:
         if not text_value(row.get("job_id")):
             continue
         row["schedule_id"] = text_value(row.get("schedule_id")) or schedule_id_for_job(row.get("job_id"))
-        row["estimated_end_date"] = calculate_end_date(
+        start_date = schedule_date_iso(row.get("estimated_start_date"))
+        explicit_end_date = schedule_date_iso(row.get("estimated_end_date"))
+        if start_date:
+            row["estimated_start_date"] = start_date
+        row["estimated_end_date"] = explicit_end_date or calculate_end_date(
             row.get("estimated_start_date"),
             row.get("estimated_duration_days"),
-        ) or clean_db_value(row.get("estimated_end_date"))
+        )
+        if (
+            start_date
+            and explicit_end_date
+            and pd.to_datetime(explicit_end_date, errors="coerce") < pd.to_datetime(start_date, errors="coerce")
+        ):
+            row["estimated_end_date"] = calculate_end_date(
+                row.get("estimated_start_date"),
+                row.get("estimated_duration_days"),
+            )
+        derived_duration = schedule_duration_from_dates(row.get("estimated_start_date"), row.get("estimated_end_date"))
+        if derived_duration is not None:
+            row["estimated_duration_days"] = derived_duration
         record = {column: clean_db_value(row.get(column)) for column in schedule_columns}
         record["raw"] = json.dumps(row, default=str)
         records.append(record)
@@ -11478,10 +11509,11 @@ def schedule_calendar_page() -> None:
                     step=0.5,
                 )
                 calculated_end = calculate_end_date(estimated_start_date, estimated_duration_days)
+                selected_end_default = end_default if not pd.isna(end_default) else pd.to_datetime(calculated_end, errors="coerce")
                 estimated_end_date = st.date_input(
                     "Estimated End Date",
-                    value=pd.to_datetime(calculated_end or end_default, errors="coerce").date()
-                    if not pd.isna(pd.to_datetime(calculated_end or end_default, errors="coerce"))
+                    value=selected_end_default.date()
+                    if not pd.isna(selected_end_default)
                     else estimated_start_date,
                 )
                 schedule_status = st.text_input("Schedule Status", value=text_value(props.get("schedule_status")))
@@ -11613,14 +11645,19 @@ def schedule_calendar_page() -> None:
                     pd.Series([selected_row.get("estimated_crew_size")]),
                     errors="coerce",
                 ).iloc[0]
-                st.session_state["schedule_new_duration_days"] = (
+                default_duration_days = (
                     int(selected_duration) if not pd.isna(selected_duration) and selected_duration > 0 else 1
                 )
+                st.session_state["schedule_new_duration_days"] = default_duration_days
                 st.session_state["schedule_new_labor_hours"] = (
                     float(selected_labor_hours) if not pd.isna(selected_labor_hours) else 0.0
                 )
                 st.session_state["schedule_new_crew_size"] = (
                     int(selected_crew_size) if not pd.isna(selected_crew_size) else 0
+                )
+                default_end = pd.to_datetime(calculate_end_date(date.today(), default_duration_days), errors="coerce")
+                st.session_state["schedule_new_end_date"] = (
+                    default_end.date() if not pd.isna(default_end) else date.today()
                 )
 
             st.write("**Selected Job**")
@@ -11659,6 +11696,15 @@ def schedule_calendar_page() -> None:
                     step=0.5,
                     key="schedule_new_duration_days",
                 )
+                if "schedule_new_end_date" not in st.session_state:
+                    default_end = pd.to_datetime(
+                        calculate_end_date(estimated_start_date, estimated_duration_days),
+                        errors="coerce",
+                    )
+                    st.session_state["schedule_new_end_date"] = (
+                        default_end.date() if not pd.isna(default_end) else estimated_start_date
+                    )
+                estimated_end_date = st.date_input("Estimated End Date", key="schedule_new_end_date")
                 estimated_labor_hours = st.number_input(
                     "Estimated Labor Hours",
                     min_value=0.0,
@@ -11671,8 +11717,6 @@ def schedule_calendar_page() -> None:
                     step=1,
                     key="schedule_new_crew_size",
                 )
-                estimated_end_date = calculate_end_date(estimated_start_date, estimated_duration_days)
-                st.write(f"**Estimated End Date:** {estimated_end_date or '-'}")
                 schedule_status = st.text_input("Schedule Status", value="Scheduled", key="unscheduled_status")
                 priority = st.text_input("Priority", key="unscheduled_priority")
                 schedule_notes = st.text_area("Schedule Notes", key="unscheduled_notes")
@@ -11699,6 +11743,7 @@ def schedule_calendar_page() -> None:
                 save_schedule_rows(row)
                 st.success("Job added to schedule.")
                 st.session_state.pop("schedule_selected_job_id", None)
+                st.session_state.pop("schedule_new_end_date", None)
                 st.rerun()
 
             with st.expander("Candidate list", expanded=False):
