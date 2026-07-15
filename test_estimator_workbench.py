@@ -55,6 +55,71 @@ def test_auto_included_zero_cost_insulation_rows_are_unchecked_when_inputs_missi
     assert any("Fill the required quantity/rate/price fields" in warning for warning in row["compatibility_warnings"])
 
 
+def test_auto_included_zero_cost_row_detects_missing_formula_inputs_without_existing_warning() -> None:
+    workbench = {
+        "scope": {"template_type": "roofing", "division": "Roofing"},
+        "roofing_coating_template_decisions": [
+            {
+                "include": True,
+                "proposal_source": "chat_estimator",
+                "workbook_row": "26",
+                "template_bucket": "coating",
+                "template_line": "Gaco Silicone",
+                "basis_sqft": 9600.0,
+                "gal_per_100_sqft": 1.5,
+                "unit_price": 0.0,
+                "estimated_cost": 0.0,
+                "formula_model": "coating_gallons_from_area_rate_waste",
+                "formula_source": "gal_per_100_sqft",
+                "cost_source": "current_pricing_missing",
+                "compatibility_warnings": [],
+            }
+        ],
+    }
+
+    guarded = workbench_module._guard_included_zero_cost_auto_rows(workbench)
+    row = guarded["roofing_coating_template_decisions"][0]
+
+    assert row["include"] is False
+    assert row["include_source"] == "calculation_basis_guard"
+    assert row["compatibility_status"] == "not_included"
+    assert any("unit_price" in warning for warning in row["compatibility_warnings"])
+    assert any("unit_price" in reason for reason in row["proposal_review_reasons"])
+
+
+def test_reference_zero_cost_rows_stay_checked_but_are_marked_review() -> None:
+    workbench = {
+        "scope": {"template_type": "roofing", "division": "Roofing"},
+        "roofing_travel_freight_template_decisions": [
+            {
+                "include": True,
+                "proposal_source": "reference_project",
+                "workbook_row": "108",
+                "template_bucket": "truck_expense",
+                "template_line": "Truck Exp.",
+                "trip_count": 2.0,
+                "round_trip_miles": 0.0,
+                "unit_price": 1.25,
+                "estimated_cost": 0.0,
+                "formula_model": "travel_cost_from_trips_miles_rate",
+                "formula_source": "insufficient_formula_inputs",
+                "cost_source": "current_pricing_missing",
+                "compatibility_warnings": [],
+            }
+        ],
+    }
+
+    guarded = workbench_module._guard_included_zero_cost_auto_rows(workbench)
+    row = guarded["roofing_travel_freight_template_decisions"][0]
+
+    assert row["include"] is True
+    assert row["proposal_source"] == "reference_project"
+    assert row["compatibility_status"] == "review"
+    assert row["proposal_review_required"] is True
+    assert any("round_trip_miles" in warning for warning in row["compatibility_warnings"])
+    assert any("round_trip_miles" in reason for reason in row["proposal_review_reasons"])
+
+
 def test_insulation_travel_basis_requires_mileage_not_just_unit_price() -> None:
     assert not workbench_module._insulation_explicit_travel_basis(
         {"trip_count": 1, "unit_price": 0.75, "round_trip_miles": 0}

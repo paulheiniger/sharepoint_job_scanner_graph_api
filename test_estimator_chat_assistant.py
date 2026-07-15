@@ -1214,6 +1214,7 @@ def test_estimator_chat_aligns_single_insulation_foam_decision_to_deterministic_
                         "foam_type": "open_cell",
                         "basis_sqft": 1113,
                         "thickness_inches": 3.68,
+                        "yield_or_coverage": 4500,
                         "unit_price": 1.6,
                     },
                 }
@@ -1236,6 +1237,46 @@ def test_estimator_chat_aligns_single_insulation_foam_decision_to_deterministic_
     assert "deterministic_takeoff_area_sqft" in foam["evidence"]
 
 
+def test_estimator_chat_unchecks_included_rows_missing_formula_inputs() -> None:
+    def provider(messages, model):
+        return {
+            "assistant_message": "Drafted roofing estimate.",
+            "estimator_notes": "Coating and labor.",
+            "scope_overrides": {"template_type": "roofing", "estimated_sqft": 9600},
+            "workbook_decision_preferences": [
+                {
+                    "decision_id": "roofing_coating_system_row_26",
+                    "template_bucket": "coating",
+                    "include": True,
+                    "proposed_values": {"basis_sqft": 9600, "gal_per_100_sqft": 1.5},
+                },
+                {
+                    "decision_id": "roofing_labor_prep_row_116",
+                    "template_bucket": "labor_prep",
+                    "include": True,
+                    "proposed_values": {"days": 0.5, "daily_rate": 1800},
+                },
+            ],
+            "confidence": 0.74,
+        }
+
+    result = run_estimator_chat_turn(
+        [{"role": "user", "content": "9600 sq ft metal roof coating. Include prep labor."}],
+        template_type_hint="roofing",
+        provider=provider,
+        model="test-model",
+    )
+
+    by_id = {row["decision_id"]: row for row in result.workbook_decision_preferences}
+    coating = by_id["roofing_coating_system_row_26"]
+    labor = by_id["roofing_labor_prep_row_116"]
+    assert coating["include"] is False
+    assert coating["review_required"] is True
+    assert any("unit_price" in reason for reason in coating["review_reasons"])
+    assert coating["evidence"]["missing_formula_inputs"] == ["unit_price"]
+    assert labor["include"] is True
+
+
 def test_estimator_chat_aligns_wall_and_ceiling_foam_decisions_to_surface_areas() -> None:
     def provider(messages, model):
         return {
@@ -1243,18 +1284,30 @@ def test_estimator_chat_aligns_wall_and_ceiling_foam_decisions_to_surface_areas(
             "estimator_notes": "Open cell foam for walls and underside of roof deck.",
             "scope_overrides": {"template_type": "insulation", "foam_type": "open_cell"},
             "workbook_decision_preferences": [
-                {
-                    "decision_id": "insulation_foam_walls",
-                    "template_bucket": "foam",
-                    "include": True,
-                    "proposed_values": {"surface": "walls", "basis_sqft": 2853, "thickness_inches": 5.5},
-                },
-                {
-                    "decision_id": "insulation_foam_ceiling",
-                    "template_bucket": "foam",
-                    "include": True,
-                    "proposed_values": {"surface": "ceiling", "basis_sqft": 3491, "thickness_inches": 8},
-                },
+                    {
+                        "decision_id": "insulation_foam_walls",
+                        "template_bucket": "foam",
+                        "include": True,
+                        "proposed_values": {
+                            "surface": "walls",
+                            "basis_sqft": 2853,
+                            "thickness_inches": 5.5,
+                            "yield_or_coverage": 4500,
+                            "unit_price": 1.6,
+                        },
+                    },
+                    {
+                        "decision_id": "insulation_foam_ceiling",
+                        "template_bucket": "foam",
+                        "include": True,
+                        "proposed_values": {
+                            "surface": "ceiling",
+                            "basis_sqft": 3491,
+                            "thickness_inches": 8,
+                            "yield_or_coverage": 4500,
+                            "unit_price": 1.6,
+                        },
+                    },
             ],
             "confidence": 0.74,
         }

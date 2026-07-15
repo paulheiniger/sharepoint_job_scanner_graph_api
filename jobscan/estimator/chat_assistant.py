@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import copy
 import hashlib
+import math
 import os
 import re
 from dataclasses import asdict, dataclass, field
@@ -3118,9 +3119,13 @@ def _clean_decision_preferences(value: Any, *, template_type: str = "") -> list[
             for stale_key in ("days", "crew_size", "daily_rate", "hourly_rate", "total_hours", "editable_total_hours"):
                 cleaned.pop(stale_key, None)
         elif bucket == "foam" or row_number in {"19", "20", "21"}:
-            proposed_values.pop("yield_or_coverage", None)
-            proposed_values.pop("foam_yield_or_coverage", None)
-            proposed_values.pop("foam_yield", None)
+            if proposed_values.get("yield_or_coverage") in (None, ""):
+                proposed_values["yield_or_coverage"] = _first_present(
+                    proposed_values,
+                    "foam_yield_or_coverage",
+                    "foam_yield",
+                    "estimated_yield",
+                )
         elif row_number in {"99", "141"} and bucket in {"infrared_scan", "labor_infrared_scan", ""}:
             if proposed_values.get("hours_per_day") in (None, ""):
                 proposed_values["hours_per_day"] = _first_present(proposed_values, "hours", "total_hours", "days")
@@ -3148,8 +3153,138 @@ def _clean_decision_preferences(value: Any, *, template_type: str = "") -> list[
             for stale_key in ("crew_size", "daily_rate", "hourly_rate", "total_hours", "editable_total_hours"):
                 cleaned.pop(stale_key, None)
         cleaned["proposed_values"] = proposed_values
+        cleaned = _enforce_decision_formula_inputs(cleaned, template_type=normalized_template_type)
         cleaned_rows.append(cleaned)
     return cleaned_rows
+
+
+FORMULA_INPUT_ALIASES: dict[str, tuple[str, ...]] = {
+    "amount": ("amount", "estimated_cost"),
+    "area_sqft": ("area_sqft", "basis_sqft", "estimated_sqft"),
+    "basis_sqft": ("basis_sqft", "area_sqft", "estimated_sqft", "net_sqft"),
+    "board_area_sqft": ("board_area_sqft", "basis_sqft", "area_sqft"),
+    "coverage_sqft_per_unit": ("coverage_sqft_per_unit", "coverage", "yield_or_coverage"),
+    "daily_rate": ("daily_rate",),
+    "days": ("days",),
+    "estimated_units": ("estimated_units", "units", "quantity"),
+    "feet_per_unit": ("feet_per_unit", "ft_per_unit", "coverage_sqft_per_unit"),
+    "gal_per_100_sqft": ("gal_per_100_sqft", "gallons_per_100_sqft"),
+    "hourly_rate": ("hourly_rate", "unit_price"),
+    "hours_per_day": ("hours_per_day", "hours"),
+    "linear_ft": ("linear_ft", "lineal_ft"),
+    "markup_pct": ("markup_pct", "percentage", "overhead_pct", "profit_pct"),
+    "people_count": ("people_count", "crew_size"),
+    "percentage": ("percentage", "markup_pct", "overhead_pct", "profit_pct"),
+    "period": ("period", "days"),
+    "price_per_square": ("price_per_square", "unit_price"),
+    "round_trip_miles": ("round_trip_miles", "miles"),
+    "thickness_inches": ("thickness_inches", "foam_thickness_inches"),
+    "total_hours": ("total_hours", "editable_total_hours"),
+    "trip_count": ("trip_count", "trips"),
+    "unit_price": ("unit_price", "hourly_rate", "daily_rate"),
+    "unit_price_per_thousand": ("unit_price_per_thousand", "unit_price"),
+    "units": ("units", "estimated_units", "quantity"),
+    "yield_or_coverage": ("yield_or_coverage", "foam_yield_or_coverage", "estimated_yield"),
+}
+
+
+def _decision_menu_row_for_preference(row: dict[str, Any], *, template_type: str) -> dict[str, Any]:
+    menu = CHAT_DECISION_MENU.get(_template_type_from_hint(template_type) or template_type, [])
+    if not menu:
+        return {}
+    decision_id = _clean_string(row.get("decision_id"))
+    workbook_row = _safe_row_number(row.get("workbook_row") or row.get("row_number"))
+    bucket = _clean_string(row.get("template_bucket")).lower().replace(" ", "_").replace("-", "_")
+    for menu_row in menu:
+        if decision_id and decision_id == _clean_string(menu_row.get("decision_id")):
+            return menu_row
+    for menu_row in menu:
+        if workbook_row and workbook_row == _safe_row_number(menu_row.get("workbook_row")):
+            return menu_row
+    for menu_row in menu:
+        if bucket and bucket == _clean_string(menu_row.get("template_bucket")).lower().replace(" ", "_").replace("-", "_"):
+            return menu_row
+    return {}
+
+
+def _requirement_fields(requirement: str) -> list[str]:
+    text = _clean_string(requirement).lower()
+    fields = []
+    for field in sorted(FORMULA_INPUT_ALIASES, key=len, reverse=True):
+        if re.search(rf"(?<![a-z0-9]){re.escape(field)}(?![a-z0-9])", text):
+            fields.append(field)
+    return list(dict.fromkeys(fields))
+
+
+def _formula_value_present(values: dict[str, Any], field: str) -> bool:
+    for key in FORMULA_INPUT_ALIASES.get(field, (field,)):
+        value = values.get(key)
+        if value in (None, "", [], {}):
+            continue
+        if isinstance(value, str) and value.strip().lower() in {"review_required", "unknown", "none", "n/a", "na"}:
+            continue
+        if isinstance(value, (int, float)):
+            return math.isfinite(float(value)) and float(value) > 0
+        try:
+            number = float(str(value).replace(",", "").replace("$", "").replace("%", "").strip())
+        except (TypeError, ValueError):
+            return bool(str(value).strip())
+        if math.isfinite(number) and number > 0:
+            return True
+    return False
+
+
+def _requirement_option_satisfied(values: dict[str, Any], requirement: str) -> bool:
+    fields = _requirement_fields(requirement)
+    if not fields:
+        return True
+    lowered = _clean_string(requirement).lower()
+    if " or " in lowered and " and " not in lowered:
+        return any(_formula_value_present(values, field) for field in fields)
+    return all(_formula_value_present(values, field) for field in fields)
+
+
+def _missing_formula_requirements(values: dict[str, Any], requirements: list[str]) -> list[str]:
+    required = [_clean_string(item) for item in requirements if _clean_string(item) and "optional" not in _clean_string(item).lower()]
+    if not required:
+        return []
+    if any(item.lower().startswith("or ") for item in required):
+        alternatives = [re.sub(r"^or\s+", "", item, flags=re.I).strip() for item in required]
+        if any(_requirement_option_satisfied(values, alternative) for alternative in alternatives):
+            return []
+        return ["/".join(alternatives)]
+    missing = [item for item in required if not _requirement_option_satisfied(values, item)]
+    return missing
+
+
+def _enforce_decision_formula_inputs(row: dict[str, Any], *, template_type: str) -> dict[str, Any]:
+    if not bool(row.get("include")):
+        return row
+    source = _clean_string(row.get("source")).lower()
+    if source.startswith("reference_") or source in {"estimator_edit", "manual_estimator_edit"}:
+        return row
+    menu_row = _decision_menu_row_for_preference(row, template_type=template_type)
+    requirements = menu_row.get("formula_requirements") if isinstance(menu_row, dict) else []
+    if not requirements:
+        return row
+    values = dict(row.get("proposed_values") or {})
+    missing = _missing_formula_requirements(values, [str(item) for item in requirements])
+    if not missing:
+        return row
+    updated = dict(row)
+    updated["include"] = False
+    updated["review_required"] = True
+    reasons = list(updated.get("review_reasons") or [])
+    reason = "Included row is missing required calculation input(s): " + ", ".join(missing)
+    if reason not in reasons:
+        reasons.append(reason)
+    updated["review_reasons"] = reasons
+    evidence = updated.get("evidence") if isinstance(updated.get("evidence"), dict) else {}
+    evidence = dict(evidence)
+    evidence["formula_requirements"] = list(requirements)
+    evidence["missing_formula_inputs"] = missing
+    updated["evidence"] = evidence
+    return updated
 
 
 def _loading_travel_alias(row: dict[str, Any]) -> str:

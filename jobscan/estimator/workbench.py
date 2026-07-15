@@ -8,7 +8,7 @@ import re
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import pandas as pd
 
@@ -5690,6 +5690,75 @@ def _manual_include_locked(row: dict[str, Any]) -> bool:
     return bool(row.get("manual_override")) or source in {"estimator_edit", "manual_override"}
 
 
+def _row_has_positive_value(row: dict[str, Any], *fields: str) -> bool:
+    return any(safe_number(row.get(field), 0.0) > 0 for field in fields)
+
+
+def _missing_positive_fields(row: dict[str, Any], field_groups: Iterable[tuple[str, ...]]) -> list[str]:
+    missing: list[str] = []
+    for group in field_groups:
+        if _row_has_positive_value(row, *group):
+            continue
+        missing.append(group[0])
+    return missing
+
+
+def _missing_calculation_inputs_for_zero_cost_row(row: dict[str, Any]) -> list[str]:
+    """Return required positive inputs for a checked row whose formula produced no cost."""
+
+    formula_model = str(first_nonblank(row.get("formula_model"), row.get("formula_kind"), row.get("formula")) or "").strip().lower()
+    formula_source = str(row.get("formula_source") or "").strip().lower()
+    cost_source = str(row.get("cost_source") or "").strip().lower()
+    bucket = _normalized(first_nonblank(row.get("template_bucket"), row.get("package_key"), row.get("source_decision_id")))
+
+    area_fields = ("basis_sqft", "area_sqft", "editable_basis_sqft", "board_area_sqft")
+    price_fields = ("unit_price", "current_unit_price", "current_price", "price_per_square", "unit_price_per_thousand")
+    quantity_fields = ("estimated_units", "units", "quantity", "calculated_quantity")
+
+    if "foam_sets_from_area_thickness_yield" in formula_model or bucket == "foam":
+        return _missing_positive_fields(
+            row,
+            (
+                area_fields,
+                ("thickness_inches",),
+                ("yield_or_coverage", "yield_factor", "foam_yield_or_coverage", "estimated_yield"),
+                price_fields,
+            ),
+        )
+    if "coating_gallons_from_area_rate_waste" in formula_model or bucket in {"coating", "thermal_barrier_coating"}:
+        return _missing_positive_fields(row, (area_fields, ("gal_per_100_sqft", "gal_per_sqft"), price_fields))
+    if "primer_units_from_area_coverage" in formula_model or bucket == "primer":
+        return _missing_positive_fields(row, (area_fields, ("coverage_sqft_per_unit", "coverage"), price_fields))
+    if "fastener_units_from_board_area" in formula_model or bucket in {"fasteners", "plates", "fastener_treatment"}:
+        return _missing_positive_fields(row, (("board_area_sqft", "basis_sqft", "area_sqft"), ("unit_price_per_thousand", "unit_price", "current_unit_price")))
+    if "linear_feet" in formula_model or bucket in {"fabric", "seams_misc", "membrane"}:
+        return _missing_positive_fields(row, (("linear_ft", "calculated_quantity", "estimated_units"), price_fields))
+    if "travel_cost_from_trips_miles_rate" in formula_model or bucket in {"sales_trips", "sales_inspection_trips", "truck_expense"}:
+        return _missing_positive_fields(row, (("trip_count",), ("round_trip_miles",), price_fields))
+    if "hours_people_rate_trip_count" in formula_model or bucket in {"labor_loading", "labor_traveling"}:
+        return _missing_positive_fields(row, (("hours_per_day", "hours", "total_hours"), ("people_count", "crew_size"), price_fields))
+    if "hours_rate" in formula_model:
+        return _missing_positive_fields(row, (("hours_per_day", "hours", "total_hours"), price_fields))
+    if "days_people_rate" in formula_model:
+        return _missing_positive_fields(row, (("days",), ("people_count", "crew_size"), price_fields))
+    if "days_rate" in formula_model or bucket == "generator":
+        return _missing_positive_fields(row, (("days", "period"), price_fields))
+    if "labor_cost_from_days_crew_rate" in formula_model:
+        if _row_has_positive_value(row, "daily_rate") and _row_has_positive_value(row, "days"):
+            return []
+        if _row_has_positive_value(row, "hourly_rate") and _row_has_positive_value(row, "total_hours", "calculated_hours"):
+            return []
+        return _missing_positive_fields(row, (("days", "total_hours", "calculated_hours"), ("daily_rate", "hourly_rate")))
+    if "units_cost" in formula_model or "manual_units_cost" in formula_model:
+        return _missing_positive_fields(row, (quantity_fields, price_fields))
+    if "direct" in formula_model or bucket in {"freight", "misc", "warranty", "misc_insurance", "permits"}:
+        return _missing_positive_fields(row, (("amount", "editable_value", "estimated_cost"),))
+
+    if formula_source.startswith("insufficient_formula_inputs") or cost_source.endswith("missing"):
+        return ["quantity/rate/price"]
+    return []
+
+
 def _is_chat_or_auto_source(row: dict[str, Any]) -> bool:
     source = str(first_nonblank(row.get("include_source"), row.get("proposal_source"), "")).strip().lower()
     return source in {"", "chat_estimator", "ai_chat", "deterministic_rule", "historical_default", "template_default", "selected_item"}
@@ -5796,7 +5865,7 @@ def _insulation_should_include_decision(
     if formula_kind == "travel" and bucket in {"truck_expense", "sales_inspection_trips"}:
         explicit_note = _contains_any_text(
             notes_text,
-            ["truck", "truck expense", "mileage", "miles", "round trip", "sales trip", "inspection trip"],
+            ["travel", "traveling", "truck", "truck expense", "mileage", "miles", "round trip", "sales trip", "inspection trip"],
         )
         if not explicit_note and not (_insulation_explicit_travel_basis(source) or _insulation_explicit_travel_basis(existing)):
             return False
@@ -5857,7 +5926,7 @@ def _guard_insulation_scaffold_auto_includes(workbench: dict[str, Any]) -> dict[
             if bucket in {"truck_expense", "sales_inspection_trips"}:
                 explicit_note = _contains_any_text(
                     notes_text,
-                    ["truck", "truck expense", "mileage", "miles", "round trip", "sales trip", "inspection trip"],
+                    ["travel", "traveling", "truck", "truck expense", "mileage", "miles", "round trip", "sales trip", "inspection trip"],
                 )
                 if not explicit_note and not _insulation_explicit_travel_basis(row):
                     _clear_auto_included_insulation_scaffold_row(
@@ -5956,39 +6025,64 @@ def _guard_included_zero_cost_auto_rows(workbench: dict[str, Any]) -> dict[str, 
             source = str(first_nonblank(row.get("include_source"), row.get("proposal_source"), "")).strip().lower()
             warning_text = " ".join(str(warning) for warning in row.get("compatibility_warnings") or [])
             evidence_text = str(row.get("formula_evidence_summary") or "")
+            row_bucket = str(first_nonblank(row.get("template_bucket"), row.get("package_key"), row.get("source_decision_id")) or "").strip().lower()
             missing_formula_inputs = (
                 "Formula preview needs estimator input" in warning_text
                 or "insufficient_formula_inputs" in evidence_text
             )
+            missing_inputs = _missing_calculation_inputs_for_zero_cost_row(row)
             risky_auto_source = source in {
-                "",
-                "selected_item",
-                "historical_default",
-                "template_default",
                 "deterministic_rule",
                 "historical_companion",
                 "chat_estimator",
                 "ai_chat",
                 "photo_scope",
                 "ai_scope",
-            }
+            } or (
+                not source
+                and missing_formula_inputs
+                and row_bucket not in {"sales_inspection_trips", "truck_expense", "drum_disposal"}
+                and not _row_has_positive_value(
+                    row,
+                    "estimated_units",
+                    "units",
+                    "quantity",
+                    "calculated_quantity",
+                    "estimated_gallons",
+                    "estimated_drums",
+                )
+            )
+            explicit_proposal_source = bool(source) and source not in {"selected_item", "historical_default", "template_default"}
+            if missing_inputs and (explicit_proposal_source or _manual_include_locked(row)):
+                missing_formula_inputs = True
             calculation_only_detail_row = section == "roofing_detail_quantity_template_decisions"
             if not (missing_formula_inputs or calculation_only_detail_row):
                 continue
-            if not risky_auto_source and not calculation_only_detail_row:
-                continue
             reason = (
                 "Unchecked because this included row had no calculable cost. "
-                "Fill the required quantity/rate/price fields before including it."
+                + (
+                    f"Missing required input(s): {', '.join(missing_inputs)}."
+                    if missing_inputs
+                    else "Fill the required quantity/rate/price fields before including it."
+                )
             )
             warnings = list(row.get("compatibility_warnings") or [])
-            if _manual_include_locked(row):
-                warnings.append("Included row has zero cost; enter the required quantity/rate/price fields before quoting.")
+            if _manual_include_locked(row) or not risky_auto_source:
+                review_reason = (
+                    f"Included row is missing required calculation input(s): {', '.join(missing_inputs)}."
+                    if missing_inputs
+                    else "Included row is missing required calculation inputs."
+                )
+                warnings.append(
+                    f"Included row has zero cost; enter {', '.join(missing_inputs)} before quoting."
+                    if missing_inputs
+                    else "Included row has zero cost; enter the required quantity/rate/price fields before quoting."
+                )
                 row["compatibility_warnings"] = list(dict.fromkeys(str(warning) for warning in warnings if warning))
                 row["compatibility_status"] = "review"
                 row["proposal_review_required"] = True
                 review_reasons = list(row.get("proposal_review_reasons") or [])
-                review_reasons.append("Included row is missing required calculation inputs.")
+                review_reasons.append(review_reason)
                 row["proposal_review_reasons"] = list(dict.fromkeys(str(item) for item in review_reasons if item))
                 continue
             row["include"] = False
