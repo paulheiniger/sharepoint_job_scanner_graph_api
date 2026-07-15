@@ -2492,6 +2492,66 @@ def render_schedule_job_spec_preview(job_id: object) -> None:
     st.text_area("Extracted job spec text", value=combined[:12000], height=320, disabled=True, key=f"job_spec_preview_{job_id_text}")
 
 
+def concise_tracking_note(value: object, max_chars: int = 220) -> str:
+    note = re.sub(r"\s+", " ", text_value(value)).strip()
+    if len(note) <= max_chars:
+        return note
+    return f"{note[: max_chars - 1].rstrip()}…"
+
+
+def tracking_note_bullets_from_daily(daily: pd.DataFrame, *, limit: int = 5) -> list[str]:
+    if daily.empty or "notes" not in daily.columns:
+        return []
+    display = daily.copy()
+    if "work_date" in display.columns:
+        display["_work_date_sort"] = pd.to_datetime(display["work_date"], errors="coerce")
+    else:
+        display["_work_date_sort"] = pd.NaT
+    if "source_row" in display.columns:
+        display["_source_row_sort"] = pd.to_numeric(display["source_row"], errors="coerce")
+    else:
+        display["_source_row_sort"] = 0
+    display = display.sort_values(["_work_date_sort", "_source_row_sort"], ascending=[False, False])
+
+    bullets: list[str] = []
+    seen_notes: set[str] = set()
+    for row in display.to_dict(orient="records"):
+        note = concise_tracking_note(row.get("notes"))
+        normalized_note = re.sub(r"\W+", " ", note.lower()).strip()
+        if not normalized_note or normalized_note in seen_notes:
+            continue
+        seen_notes.add(normalized_note)
+
+        work_date = pd.to_datetime(row.get("work_date"), errors="coerce")
+        date_text = f"{work_date.strftime('%b')} {work_date.day}" if not pd.isna(work_date) else ""
+        crew = text_value(row.get("crew"))
+        total_hours = pd.to_numeric(pd.Series([row.get("total_hours")]), errors="coerce").iloc[0]
+        hours_text = f"{float(total_hours):.1f}h" if not pd.isna(total_hours) and float(total_hours) > 0 else ""
+        prefix = " · ".join(part for part in [date_text, crew, hours_text] if part)
+        bullets.append(f"**{prefix}:** {note}" if prefix else note)
+        if len(bullets) >= limit:
+            break
+    return bullets
+
+
+def tracking_note_bullets_from_summary(summary_notes: object, *, limit: int = 5) -> list[str]:
+    notes_text = text_value(summary_notes)
+    if not notes_text:
+        return []
+    chunks = [concise_tracking_note(part) for part in re.split(r";+\s*", notes_text) if text_value(part)]
+    bullets: list[str] = []
+    seen_notes: set[str] = set()
+    for note in chunks:
+        normalized_note = re.sub(r"\W+", " ", note.lower()).strip()
+        if not normalized_note or normalized_note in seen_notes:
+            continue
+        seen_notes.add(normalized_note)
+        bullets.append(note)
+        if len(bullets) >= limit:
+            break
+    return bullets
+
+
 def render_schedule_job_tracking_preview(job_id: object) -> None:
     job_id_text = text_value(job_id)
     st.subheader("Production Notes")
@@ -2532,19 +2592,14 @@ def render_schedule_job_tracking_preview(job_id: object) -> None:
         max_columns=4,
     )
 
-    note_parts: list[str] = []
-    tracking_notes = text_value(summary_row.get("tracking_notes"))
-    if tracking_notes:
-        note_parts.append(tracking_notes)
-    if not daily.empty and "notes" in daily.columns:
-        for note in daily["notes"].dropna().astype(str).str.strip():
-            if note and note not in note_parts:
-                note_parts.append(note)
-            if len(note_parts) >= 4:
-                break
+    note_parts = tracking_note_bullets_from_daily(daily)
+    note_caption = "Latest tracking notes"
+    if not note_parts:
+        note_parts = tracking_note_bullets_from_summary(summary_row.get("tracking_notes"))
+        note_caption = "Tracking note summary"
     if note_parts:
-        st.caption("Latest tracking notes")
-        st.write("\n\n".join(f"- {note}" for note in note_parts[:4]))
+        st.caption(note_caption)
+        st.markdown("\n".join(f"- {note}" for note in note_parts))
 
     if not daily.empty:
         display = daily.copy()
@@ -2586,7 +2641,29 @@ def render_schedule_job_tracking_preview(job_id: object) -> None:
         )
 
 
-def load_schedule_contracted_job_board_df(scheduled_job_ids: set[str]) -> pd.DataFrame:
+def is_schedule_candidate_row(row: pd.Series | dict[str, Any]) -> bool:
+    if not hasattr(row, "get"):
+        return False
+    if truthy_bool(row.get("closed_did_not_get")):
+        return False
+    contract_bucket = job_board_contract_completion_bucket(row)
+    if contract_bucket in {"Completed", "Closed / Did Not Get"}:
+        return False
+    folder_bucket = folder_pipeline_bucket_for_row(row)
+    if folder_bucket in {"Completed Folder", "Closed Lost Folder"}:
+        return False
+    status_text = " ".join(
+        text_value(row.get(column))
+        for column in ["workflow_status", "pipeline_status", "status", "sales_stage", "opportunity_freshness"]
+        if hasattr(row, "get")
+    ).lower()
+    status_normalized = re.sub(r"[^a-z0-9]+", " ", status_text)
+    if re.search(r"\b(completed?|cancelled|canceled|did not get|closed lost|lost)\b", status_normalized):
+        return False
+    return folder_bucket in {"Contracted Folder", "Proposal Pipeline"}
+
+
+def load_schedule_candidate_job_board_df(scheduled_job_ids: set[str]) -> pd.DataFrame:
     jobs = load_job_board_df()
     if not isinstance(jobs, pd.DataFrame) or jobs.empty or "job_id" not in jobs.columns:
         return pd.DataFrame()
@@ -2599,8 +2676,7 @@ def load_schedule_contracted_job_board_df(scheduled_job_ids: set[str]) -> pd.Dat
         return pd.DataFrame()
     if "folder_pipeline_bucket" not in rows.columns:
         rows["folder_pipeline_bucket"] = rows.apply(folder_pipeline_bucket_for_row, axis=1)
-    contracted = rows[rows["folder_pipeline_bucket"].eq("Contracted Folder")].copy()
-    return contracted
+    return rows[rows.apply(is_schedule_candidate_row, axis=1)].copy()
 
 
 def is_url(value: object) -> bool:
@@ -2711,6 +2787,11 @@ def calendar_events_from_tracking_entries(df: pd.DataFrame) -> list[dict[str, ob
     return events
 
 
+def schedule_status_is_terminal(value: object) -> bool:
+    status = text_value(value).lower()
+    return bool(re.search(r"\b(completed?|cancelled|canceled|closed|did not get|lost)\b", status))
+
+
 def render_schedule_crew_lane_board(events: list[dict[str, object]], *, horizon_days: int = 90) -> None:
     st.subheader("Crew Lanes")
     if not events:
@@ -2726,15 +2807,27 @@ def render_schedule_crew_lane_board(events: list[dict[str, object]], *, horizon_
         end = end_raw - pd.Timedelta(days=1) if not pd.isna(end_raw) else start
         if pd.isna(start):
             continue
-        if start > horizon_ts or (not pd.isna(end) and end < today_ts):
+        is_overdue_active = not pd.isna(end) and end < today_ts and not schedule_status_is_terminal(
+            props.get("schedule_status")
+        )
+        if start > horizon_ts or (not pd.isna(end) and end < today_ts and not is_overdue_active):
             continue
         crew = text_value(props.get("assigned_crew_leader")) or "Unassigned"
-        event_rows.append({"event": event, "props": props, "start": start, "end": end, "crew": crew})
+        event_rows.append(
+            {
+                "event": event,
+                "props": props,
+                "start": start,
+                "end": end,
+                "crew": crew,
+                "is_overdue_active": is_overdue_active,
+            }
+        )
     if not event_rows:
         st.info(f"No jobs are scheduled in the next {horizon_days} days.")
         return
 
-    event_rows.sort(key=lambda row: (str(row["crew"]).lower(), row["start"]))
+    event_rows.sort(key=lambda row: (str(row["crew"]).lower(), not bool(row["is_overdue_active"]), row["start"]))
     crews = sorted({str(row["crew"]) for row in event_rows}, key=lambda value: (value == "Unassigned", value.lower()))
     selected_id = text_value(st.session_state.get("schedule_board_selected_event_id"))
     for start_idx in range(0, len(crews), 5):
@@ -2751,6 +2844,8 @@ def render_schedule_crew_lane_board(events: list[dict[str, object]], *, horizon_
                     job_name = text_value(props.get("job_name"))
                     title = customer if not job_name else f"{customer} - {job_name}"
                     date_line = f"{row['start'].date().isoformat()} to {row['end'].date().isoformat() if not pd.isna(row['end']) else row['start'].date().isoformat()}"
+                    if row.get("is_overdue_active"):
+                        date_line = f"Overdue / active · {date_line}"
                     status_line = " · ".join(
                         part
                         for part in [
@@ -11417,8 +11512,9 @@ def schedule_calendar_page() -> None:
 
     if show_unscheduled:
         scheduled_job_ids = set(schedule_df["job_id"].dropna().astype(str)) if "job_id" in schedule_df.columns else set()
-        unscheduled = load_schedule_contracted_job_board_df(scheduled_job_ids)
-        st.subheader("Contracted Jobs To Schedule")
+        unscheduled = load_schedule_candidate_job_board_df(scheduled_job_ids)
+        st.subheader("Add Job To Schedule")
+        st.caption("Search active proposed or contracted jobs that have not been closed out.")
         schedule_job_board_columns = [
             "project",
             "project_category",
@@ -11439,17 +11535,49 @@ def schedule_calendar_page() -> None:
             "estimate_modified_at",
             "estimate_modified_by",
         ]
-        show_table(
-            unscheduled,
-            schedule_job_board_columns,
-            height=360,
-            sort_by="sales_value",
-        )
-
         if not unscheduled.empty and "job_id" in unscheduled.columns:
+            search = st.text_input(
+                "Find job",
+                key="schedule_job_search",
+                placeholder="Search project, customer, address, stage, folder...",
+            )
+            candidate_rows = unscheduled.copy()
+            if search:
+                search_columns = [
+                    column
+                    for column in [
+                        "project",
+                        "customer_display",
+                        "job_name",
+                        "job_id",
+                        "sales_stage",
+                        "project_category",
+                        "folder",
+                        "folder_link_or_path",
+                        "substrate_display",
+                        "material_system_display",
+                        "warranty_display",
+                    ]
+                    if column in candidate_rows.columns
+                ]
+                mask = pd.Series(False, index=candidate_rows.index)
+                for column in search_columns:
+                    mask = mask | candidate_rows[column].fillna("").astype(str).str.contains(search, case=False, na=False)
+                candidate_rows = candidate_rows[mask]
+            st.caption(f"{len(candidate_rows):,} matching jobs")
+            if candidate_rows.empty:
+                st.info("No matching schedule candidates.")
+                with st.expander("Candidate list", expanded=False):
+                    show_table(
+                        unscheduled,
+                        schedule_job_board_columns,
+                        height=260,
+                        sort_by="sales_value",
+                    )
+                return
             unscheduled_by_id = {
                 text_value(row.get("job_id")): row
-                for row in unscheduled.to_dict(orient="records")
+                for row in candidate_rows.to_dict(orient="records")
                 if text_value(row.get("job_id"))
             }
             job_ids = list(unscheduled_by_id.keys())
@@ -11487,6 +11615,28 @@ def schedule_calendar_page() -> None:
                     int(selected_crew_size) if not pd.isna(selected_crew_size) else 0
                 )
 
+            st.write("**Selected Job**")
+            preview_metrics = [
+                ("Stage", text_value(selected_row.get("sales_stage")) or "-"),
+                (
+                    "Value",
+                    fmt_dollar(pd.to_numeric(pd.Series([selected_row.get("sales_value")]), errors="coerce").iloc[0]),
+                ),
+                ("Duration", f"{text_value(selected_row.get('estimated_duration_days')) or '-'} days"),
+                ("Crew Size", text_value(selected_row.get("estimated_crew_size")) or "-"),
+            ]
+            metric_row(preview_metrics, max_columns=4)
+            detail_bits = [
+                f"**Project:** {text_value(selected_row.get('project')) or '-'}",
+                f"**Category:** {text_value(selected_row.get('project_category')) or '-'}",
+                f"**System:** {text_value(selected_row.get('material_system_display')) or '-'}",
+                f"**Warranty:** {text_value(selected_row.get('warranty_display')) or '-'}",
+            ]
+            st.markdown("  \n".join(detail_bits))
+            folder_value = selected_row.get("folder") or selected_row.get("folder_link_or_path")
+            if folder_value:
+                render_document_access("Open Job Folder", folder_value)
+
             render_schedule_job_spec_preview(selected_job_id)
             render_schedule_job_tracking_preview(selected_job_id)
 
@@ -11513,19 +11663,6 @@ def schedule_calendar_page() -> None:
                 )
                 estimated_end_date = calculate_end_date(estimated_start_date, estimated_duration_days)
                 st.write(f"**Estimated End Date:** {estimated_end_date or '-'}")
-                st.write("**Selected Job Metadata**")
-                metadata = [
-                    ("Customer", selected_row.get("customer_display")),
-                    ("Job Name", selected_row.get("project")),
-                    ("Division", selected_row.get("division")),
-                    ("Estimated Value", fmt_dollar(pd.to_numeric(pd.Series([selected_row.get("sales_value")]), errors="coerce").iloc[0])),
-                    ("Estimated Duration Days", selected_row.get("estimated_duration_days")),
-                    ("Estimated Labor Hours", selected_row.get("estimated_labor_hours")),
-                    ("Estimated Crew Size", selected_row.get("estimated_crew_size")),
-                    ("Folder Link / Path", selected_row.get("folder") or selected_row.get("folder_link_or_path")),
-                ]
-                for label, value in metadata:
-                    st.write(f"**{label}:** {text_value(value) or '-'}")
                 schedule_status = st.text_input("Schedule Status", value="Scheduled", key="unscheduled_status")
                 priority = st.text_input("Priority", key="unscheduled_priority")
                 schedule_notes = st.text_area("Schedule Notes", key="unscheduled_notes")
@@ -11553,6 +11690,14 @@ def schedule_calendar_page() -> None:
                 st.success("Job added to schedule.")
                 st.session_state.pop("schedule_selected_job_id", None)
                 st.rerun()
+
+            with st.expander("Candidate list", expanded=False):
+                show_table(
+                    candidate_rows,
+                    schedule_job_board_columns,
+                    height=260,
+                    sort_by="sales_value",
+                )
 
 
 def project_scheduling_page() -> None:
