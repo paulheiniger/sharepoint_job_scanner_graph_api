@@ -6651,7 +6651,11 @@ def load_job_board_document_dates() -> pd.DataFrame:
                 *,
                 ROW_NUMBER() OVER (
                     PARTITION BY job_id, document_kind
-                    ORDER BY file_created_at DESC NULLS LAST, file_modified_at DESC NULLS LAST, file_name
+                    ORDER BY
+                        (NULLIF(file_modified_by, '') IS NULL),
+                        file_created_at DESC NULLS LAST,
+                        file_modified_at DESC NULLS LAST,
+                        file_name
                 ) AS rn,
                 COUNT(*) OVER (PARTITION BY job_id, document_kind) AS document_count
             FROM typed_documents
@@ -6682,6 +6686,131 @@ def load_job_board_document_dates() -> pd.DataFrame:
     )
     pivot.columns = [f"{kind}_{field}" for field, kind in pivot.columns]
     return pivot.reset_index()
+
+
+def job_folder_match_key(value: object) -> str:
+    text = text_value(value)
+    if not text:
+        return ""
+    first_segment = text.split("/")[0]
+    first_segment = re.sub(r"\([^)]*\)", " ", first_segment)
+    return re.sub(r"[^a-z0-9]+", "", first_segment.lower())
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_job_board_document_folder_dates() -> pd.DataFrame:
+    document_cols = relation_columns("documents")
+    if not {"file_name", "relative_path"}.issubset(document_cols):
+        return pd.DataFrame()
+    drive_cols = relation_columns("sharepoint_drive_items")
+    document_type_expr = sql_column("d", document_cols, "document_type", "''")
+    file_name_expr = sql_column("d", document_cols, "file_name", "''")
+    relative_path_expr = sql_column("d", document_cols, "relative_path", "NULL")
+    modified_expr = sql_column("d", document_cols, "modified_at", "NULL")
+
+    join_sql = ""
+    drive_created_expr = "NULL"
+    drive_modified_expr = "NULL"
+    modified_by_expr = "NULL"
+    if {"drive_id", "drive_item_id"}.issubset(document_cols) and {"drive_id", "drive_item_id"}.issubset(drive_cols):
+        join_sql = """
+        LEFT JOIN sharepoint_drive_items s
+          ON s.drive_id = d.drive_id
+         AND s.drive_item_id = d.drive_item_id
+        """
+        if "metadata_json" in drive_cols:
+            drive_created_expr = "NULLIF(s.metadata_json ->> 'createdDateTime', '')::timestamptz"
+            modified_by_expr = """
+            COALESCE(
+                NULLIF(s.metadata_json #>> '{lastModifiedBy,user,displayName}', ''),
+                NULLIF(s.metadata_json #>> '{lastModifiedBy,user,email}', ''),
+                NULLIF(s.metadata_json #>> '{lastModifiedBy,application,displayName}', '')
+            )
+            """
+        drive_modified_expr = sql_column("s", drive_cols, "last_modified_at", "NULL")
+
+    updated_expr = sql_coalesce([drive_modified_expr, modified_expr])
+    sql = f"""
+        SELECT
+            CASE
+                WHEN LOWER(COALESCE({document_type_expr}, '')) LIKE '%proposal%'
+                  OR LOWER(COALESCE({file_name_expr}, '')) LIKE '%proposal%'
+                    THEN 'proposal'
+                WHEN LOWER(COALESCE({document_type_expr}, '')) LIKE '%estimate%'
+                  OR LOWER(COALESCE({file_name_expr}, '')) LIKE '%estimate%'
+                    THEN 'estimate'
+                ELSE NULL
+            END AS document_kind,
+            {file_name_expr} AS file_name,
+            {relative_path_expr} AS relative_path,
+            {drive_created_expr} AS file_created_at,
+            {updated_expr} AS file_modified_at,
+            {modified_by_expr} AS file_modified_by
+        FROM documents d
+        {join_sql}
+        WHERE {relative_path_expr} IS NOT NULL
+          AND (
+            LOWER(COALESCE({document_type_expr}, '')) LIKE '%proposal%'
+            OR LOWER(COALESCE({file_name_expr}, '')) LIKE '%proposal%'
+            OR LOWER(COALESCE({document_type_expr}, '')) LIKE '%estimate%'
+            OR LOWER(COALESCE({file_name_expr}, '')) LIKE '%estimate%'
+          )
+    """
+    try:
+        docs = safe_load(sql)
+    except Exception:
+        return pd.DataFrame()
+    if docs.empty:
+        return pd.DataFrame()
+    docs["folder_match_key"] = docs["relative_path"].apply(job_folder_match_key)
+    docs = docs[docs["folder_match_key"].fillna("").astype(str).str.len() > 0].copy()
+    docs = docs[docs["document_kind"].isin(["proposal", "estimate"])].copy()
+    if docs.empty:
+        return pd.DataFrame()
+    docs["has_modified_by"] = docs["file_modified_by"].fillna("").astype(str).str.strip().ne("")
+    docs["file_created_at"] = pd.to_datetime(docs["file_created_at"], errors="coerce")
+    docs["file_modified_at"] = pd.to_datetime(docs["file_modified_at"], errors="coerce")
+    docs = docs.sort_values(
+        ["folder_match_key", "document_kind", "has_modified_by", "file_created_at", "file_modified_at", "file_name"],
+        ascending=[True, True, False, False, False, True],
+    )
+    docs = docs.drop_duplicates(["folder_match_key", "document_kind"], keep="first")
+    pivot = docs.pivot(
+        index="folder_match_key",
+        columns="document_kind",
+        values=["file_created_at", "file_modified_at", "file_modified_by", "file_name", "relative_path"],
+    )
+    pivot.columns = [f"folder_{kind}_{field}" for field, kind in pivot.columns]
+    return pivot.reset_index()
+
+
+def merge_job_board_document_folder_dates(jobs: pd.DataFrame, folder_dates: pd.DataFrame) -> pd.DataFrame:
+    if (
+        not isinstance(jobs, pd.DataFrame)
+        or jobs.empty
+        or not isinstance(folder_dates, pd.DataFrame)
+        or folder_dates.empty
+        or "folder_match_key" not in folder_dates.columns
+    ):
+        return jobs
+    out = jobs.copy()
+    out["_folder_match_key"] = out.get("folder_path", pd.Series("", index=out.index)).apply(job_folder_match_key)
+    out = out.merge(folder_dates.drop_duplicates("folder_match_key", keep="first"), left_on="_folder_match_key", right_on="folder_match_key", how="left")
+    for kind in ["proposal", "estimate"]:
+        for field in ["file_created_at", "file_modified_at", "file_modified_by", "file_name", "relative_path"]:
+            target = f"{kind}_{field}"
+            source = f"folder_{kind}_{field}"
+            if source not in out.columns:
+                continue
+            if target not in out.columns:
+                out[target] = pd.NA
+            target_text = out[target].fillna("").astype(str).str.strip()
+            source_text = out[source].fillna("").astype(str).str.strip()
+            mask = target_text.isin(["", "NaT", "nan", "None", "null"]) & ~source_text.isin(["", "NaT", "nan", "None", "null"])
+            out.loc[mask, target] = out.loc[mask, source]
+    drop_columns = [column for column in out.columns if column.startswith("folder_proposal_") or column.startswith("folder_estimate_")]
+    drop_columns.extend([column for column in ["_folder_match_key", "folder_match_key"] if column in out.columns])
+    return out.drop(columns=drop_columns)
 
 
 def add_job_board_proposal_stale_columns(jobs: pd.DataFrame) -> pd.DataFrame:
@@ -7092,6 +7221,7 @@ def load_job_board_df() -> pd.DataFrame:
     document_dates = load_job_board_document_dates()
     if not document_dates.empty and "job_id" in document_dates.columns:
         jobs = jobs.merge(document_dates, on="job_id", how="left")
+    jobs = merge_job_board_document_folder_dates(jobs, load_job_board_document_folder_dates())
     jobs = add_job_board_proposal_stale_columns(jobs)
     overrides = load_job_workflow_overrides()
     if "job_id" in overrides.columns:
@@ -7959,17 +8089,33 @@ def normalized_project_size(value: float) -> str:
     return "Unknown"
 
 
-def estimator_display_for_row(row: pd.Series) -> str:
+def estimator_identity_for_row(row: pd.Series) -> tuple[str, str]:
     explicit_estimator = row_first_nonblank(
         row,
         ["estimator", "salesperson", "sales_person", "deal_owner", "assigned_user", "owner", "project_manager"],
     )
+    vsimple_owner = row_first_nonblank(row, ["vsimple_estimator", "vsimple_deal_owner"])
     if explicit_estimator:
-        return explicit_estimator
+        if vsimple_owner and explicit_estimator == vsimple_owner:
+            return explicit_estimator, "vsimple_owner"
+        return explicit_estimator, "explicit_estimator"
+    if vsimple_owner:
+        return vsimple_owner, "vsimple_owner"
     proposal_editor = row_first_nonblank(row, ["proposal_modified_by", "proposal_file_modified_by"])
     if proposal_editor:
-        return proposal_editor
-    return "Not Captured"
+        return proposal_editor, "proposal_modified_by"
+    estimate_editor = row_first_nonblank(row, ["estimate_modified_by", "estimate_file_modified_by"])
+    if estimate_editor:
+        return estimate_editor, "estimate_modified_by"
+    return "Not Captured", "not_captured"
+
+
+def estimator_display_for_row(row: pd.Series) -> str:
+    return estimator_identity_for_row(row)[0]
+
+
+def estimator_source_for_row(row: pd.Series) -> str:
+    return estimator_identity_for_row(row)[1]
 
 
 def normalize_sales_jobs(df: pd.DataFrame) -> pd.DataFrame:
@@ -7986,7 +8132,9 @@ def normalize_sales_jobs(df: pd.DataFrame) -> pd.DataFrame:
         ),
         axis=1,
     )
-    out["estimator_display"] = out.apply(estimator_display_for_row, axis=1)
+    estimator_identity = out.apply(estimator_identity_for_row, axis=1)
+    out["estimator_display"] = estimator_identity.apply(lambda value: value[0])
+    out["estimator_source"] = estimator_identity.apply(lambda value: value[1])
     out["lead_source_display"] = out.apply(
         lambda row: row_first_nonblank(
             row,
@@ -8502,6 +8650,7 @@ def job_board_export_rows(rows: pd.DataFrame) -> pd.DataFrame:
         "sales_value",
         "project_category",
         "estimator_display",
+        "estimator_source",
         "lead_source_display",
         "workflow_status",
         "pipeline_status",
@@ -8821,6 +8970,7 @@ def job_board_page() -> None:
         "win_loss_status": "Win / Loss",
         "completion_date_display": "Completion Date",
         "estimator_display": "Estimator",
+        "estimator_source": "Estimator Source",
         "lead_source_display": "Lead Source",
         "readiness_status": "Readiness",
         "schedule_health": "Schedule Health",
@@ -9990,6 +10140,7 @@ def sales_dashboard_page() -> None:
             "sales_stage",
             "sales_value",
             "estimator_display",
+            "estimator_source",
             "lead_source_display",
             "folder_link_or_path",
         ],
