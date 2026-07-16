@@ -1,5 +1,6 @@
 ALTER TABLE job_tracking_summary
     ADD COLUMN IF NOT EXISTS actual_foam_strokes NUMERIC,
+    ADD COLUMN IF NOT EXISTS actual_foam_lbs NUMERIC,
     ADD COLUMN IF NOT EXISTS actual_foam_thickness_inches NUMERIC,
     ADD COLUMN IF NOT EXISTS actual_foam_sqft NUMERIC,
     ADD COLUMN IF NOT EXISTS actual_foam_yield NUMERIC,
@@ -11,6 +12,7 @@ ALTER TABLE job_tracking_summary
     ADD COLUMN IF NOT EXISTS actual_primer NUMERIC,
     ADD COLUMN IF NOT EXISTS actual_sf NUMERIC,
     ADD COLUMN IF NOT EXISTS estimated_foam_strokes NUMERIC,
+    ADD COLUMN IF NOT EXISTS estimated_foam_lbs NUMERIC,
     ADD COLUMN IF NOT EXISTS estimated_foam_thickness_inches NUMERIC,
     ADD COLUMN IF NOT EXISTS estimated_foam_sqft NUMERIC,
     ADD COLUMN IF NOT EXISTS estimated_foam_yield NUMERIC,
@@ -24,6 +26,7 @@ ALTER TABLE job_tracking_summary
     ADD COLUMN IF NOT EXISTS travel_hours_variance NUMERIC,
     ADD COLUMN IF NOT EXISTS load_hours_variance NUMERIC,
     ADD COLUMN IF NOT EXISTS foam_strokes_variance NUMERIC,
+    ADD COLUMN IF NOT EXISTS foam_lbs_variance NUMERIC,
     ADD COLUMN IF NOT EXISTS foam_sqft_variance NUMERIC,
     ADD COLUMN IF NOT EXISTS base_coat_1_variance NUMERIC,
     ADD COLUMN IF NOT EXISTS base_coat_2_variance NUMERIC,
@@ -35,6 +38,7 @@ ALTER TABLE job_tracking_summary
 
 ALTER TABLE job_tracking_daily_entries
     ADD COLUMN IF NOT EXISTS foam_strokes NUMERIC,
+    ADD COLUMN IF NOT EXISTS foam_lbs NUMERIC,
     ADD COLUMN IF NOT EXISTS foam_thickness_inches NUMERIC,
     ADD COLUMN IF NOT EXISTS foam_sqft NUMERIC,
     ADD COLUMN IF NOT EXISTS foam_yield NUMERIC,

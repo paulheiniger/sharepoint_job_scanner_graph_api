@@ -409,7 +409,7 @@ def test_job_tracking_rollup_merges_date_suffixed_same_job_ids() -> None:
     assert len(rolled) == 1
     row = rolled.iloc[0]
     assert row["job_id"] == "GRAVES-COUNTY-ATHLETIC-MULTIPURPOSE-FACILITY-07-01-26"
-    assert round(row["actual_labor_hours"], 2) == 1664.64
+    assert round(row["actual_labor_hours"], 2) == 843.64
     assert row["estimated_labor_hours"] == 205.5
 
 
@@ -480,3 +480,84 @@ def test_job_tracking_budget_health_disambiguates_repeated_project_labels(monkey
     assert budget_jobs["job_display"].nunique() == 2
     assert all("Schaefer Service Solutions" in value for value in budget_jobs["job_display"])
     assert budget_buckets["job_display"].nunique() == 2
+
+
+def test_job_tracking_budget_health_uses_source_job_ids_for_estimate_costs(monkeypatch) -> None:
+    import dashboard.app as app
+
+    summary = pd.DataFrame(
+        [
+            {
+                "job_id": "GRAVES-COUNTY-ATHLETIC-MULTIPURPOSE-FACILITY-07-01-26",
+                "source_job_ids": (
+                    "GRAVES-COUNTY-ATHLETIC-MULTIPURPOSE-FACILITY-07-01-26; "
+                    "GRAVES-COUNTY-ATHLETIC-MULTIPURPOSE-FACILITY"
+                ),
+                "project": "Graves County Athletic - Athletic Multipurpose Facility-Graves County Highschool",
+                "actual_foam_strokes": 1706.875,
+                "estimated_foam_strokes": 3343.24,
+                "estimated_foam_sqft": 40970,
+            }
+        ]
+    )
+
+    def fake_budget(job_ids: tuple[str, ...]) -> pd.DataFrame:
+        assert "GRAVES-COUNTY-ATHLETIC-MULTIPURPOSE-FACILITY" in job_ids
+        return pd.DataFrame(
+            [
+                {
+                    "job_id": "GRAVES-COUNTY-ATHLETIC-MULTIPURPOSE-FACILITY",
+                    "budget_bucket": "Foam / SPF",
+                    "estimated_bucket_cost": 37936.98,
+                    "estimate_budget_rows_used": 5,
+                }
+            ]
+        )
+
+    monkeypatch.setattr(app, "load_job_tracking_estimate_budget_enrichment", fake_budget)
+
+    _budget_jobs, budget_buckets = app.build_job_tracking_budget_health(summary)
+
+    foam = budget_buckets[budget_buckets["bucket"].eq("Foam / SPF")].iloc[0]
+    assert foam["estimated_cost"] == 37936.98
+    assert foam["quantity_unit"] == "strokes"
+    assert foam["actual_quantity"] == 1706.875
+    assert foam["estimated_quantity"] == 3343.24
+    assert foam["actual_cost"] > 0
+
+
+def test_job_tracking_budget_health_does_not_price_mixed_foam_units(monkeypatch) -> None:
+    import dashboard.app as app
+
+    summary = pd.DataFrame(
+        [
+            {
+                "job_id": "GRAVES-COUNTY-ATHLETIC-MULTIPURPOSE-FACILITY-07-01-26",
+                "project": "Graves County Athletic - Athletic Multipurpose Facility-Graves County Highschool",
+                "actual_foam_strokes": 2731,
+                "estimated_foam_sqft": 40970,
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        app,
+        "load_job_tracking_estimate_budget_enrichment",
+        lambda job_ids: pd.DataFrame(
+            [
+                {
+                    "job_id": "GRAVES-COUNTY-ATHLETIC-MULTIPURPOSE-FACILITY",
+                    "budget_bucket": "Foam / SPF",
+                    "estimated_bucket_cost": 37936.98,
+                    "estimate_budget_rows_used": 5,
+                }
+            ]
+        ),
+    )
+
+    _budget_jobs, budget_buckets = app.build_job_tracking_budget_health(summary)
+
+    foam = budget_buckets[budget_buckets["bucket"].eq("Foam / SPF")].iloc[0]
+    assert foam["actual_quantity"] == 2731
+    assert pd.isna(foam["estimated_quantity"])
+    assert pd.isna(foam["actual_cost"])
+    assert foam["budget_status"] == "Incomplete Baseline"

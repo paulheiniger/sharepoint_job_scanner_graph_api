@@ -1695,11 +1695,19 @@ def load_job_tracking_estimated_material_enrichment(job_ids: tuple[str, ...]) ->
 def enrich_job_tracking_summary_with_estimated_materials(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty or "job_id" not in df.columns:
         return df
-    job_ids = tuple(df["job_id"].dropna().astype(str).str.strip())
+    job_ids = tuple(
+        sorted(
+            {
+                candidate
+                for value in df["job_id"].dropna().astype(str).str.strip()
+                for candidate in candidate_job_id_variants(value)
+            }
+        )
+    )
     enrichment = load_job_tracking_estimated_material_enrichment(job_ids)
     if enrichment.empty or "job_id" not in enrichment.columns:
         return df
-    enriched = df.merge(enrichment, on="job_id", how="left")
+    enriched = df.copy()
     fill_map = {
         "estimated_foam_sqft": "estimated_foam_sqft_from_estimate_rows",
         "estimated_foam_thickness_inches": "estimated_foam_thickness_inches_from_estimate_rows",
@@ -1713,17 +1721,45 @@ def enrich_job_tracking_summary_with_estimated_materials(df: pd.DataFrame) -> pd
         "estimated_sf": "estimated_sf_from_estimate_rows",
     }
     filled_any = pd.Series(False, index=enriched.index)
-    for target, source in fill_map.items():
+    enrichment = enrichment.copy()
+    enrichment["_job_id_text"] = enrichment["job_id"].fillna("").astype(str).str.strip()
+    if "estimate_material_rows_used" in enrichment.columns:
+        enrichment["_material_rows_sort"] = pd.to_numeric(enrichment["estimate_material_rows_used"], errors="coerce").fillna(0)
+    else:
+        enrichment["_material_rows_sort"] = 0
+    for source in fill_map.values():
         if source not in enriched.columns:
+            enriched[source] = np.nan
+    if "estimated_materials_source" not in enriched.columns:
+        enriched["estimated_materials_source"] = ""
+    for row_index, row in enriched.iterrows():
+        raw_job_id = text_value(row.get("job_id"))
+        candidates = candidate_job_id_variants(raw_job_id)
+        if not candidates:
             continue
+        matches = enrichment[enrichment["_job_id_text"].isin(candidates)].copy()
+        if matches.empty:
+            continue
+        matches["_exact_rank"] = matches["_job_id_text"].eq(raw_job_id).astype(int)
+        matches = matches.sort_values(["_exact_rank", "_material_rows_sort"], ascending=[False, False], kind="mergesort")
+        matched = matches.iloc[0]
+        row_filled = False
+        for target, source in fill_map.items():
+            if source not in matched.index:
+                continue
+            if target not in enriched.columns:
+                enriched[target] = np.nan
+            target_value = pd.to_numeric(pd.Series([enriched.at[row_index, target]]), errors="coerce").iloc[0]
+            source_value = pd.to_numeric(pd.Series([matched.get(source)]), errors="coerce").iloc[0]
+            if (pd.isna(target_value) or target_value <= 0) and not pd.isna(source_value) and source_value > 0:
+                enriched.at[row_index, target] = source_value
+                row_filled = True
+        if row_filled:
+            filled_any.at[row_index] = True
+            enriched.at[row_index, "estimated_materials_source"] = text_value(matched.get("estimated_materials_source")) or "estimate_template_rows"
+    for target, source in fill_map.items():
         if target not in enriched.columns:
             enriched[target] = np.nan
-        target_values = pd.to_numeric(enriched[target], errors="coerce")
-        source_values = pd.to_numeric(enriched[source], errors="coerce")
-        fill_mask = (target_values.isna() | target_values.le(0)) & source_values.notna() & source_values.gt(0)
-        if fill_mask.any():
-            enriched.loc[fill_mask, target] = source_values.loc[fill_mask]
-            filled_any = filled_any | fill_mask
     if "estimated_materials_source" in enriched.columns:
         enriched.loc[~filled_any, "estimated_materials_source"] = ""
     variance_pairs = {
@@ -1786,6 +1822,7 @@ def load_job_tracking_dashboard_summary() -> pd.DataFrame:
         "actual_mileage",
         "actual_os_mileage",
         "actual_foam_strokes",
+        "actual_foam_lbs",
         "actual_foam_thickness_inches",
         "actual_foam_sqft",
         "actual_foam_yield",
@@ -1802,6 +1839,7 @@ def load_job_tracking_dashboard_summary() -> pd.DataFrame:
         "estimated_mileage",
         "estimated_os_mileage",
         "estimated_foam_strokes",
+        "estimated_foam_lbs",
         "estimated_foam_thickness_inches",
         "estimated_foam_sqft",
         "estimated_foam_yield",
@@ -1816,6 +1854,7 @@ def load_job_tracking_dashboard_summary() -> pd.DataFrame:
         "travel_hours_variance",
         "load_hours_variance",
         "foam_strokes_variance",
+        "foam_lbs_variance",
         "foam_sqft_variance",
         "base_coat_1_variance",
         "base_coat_2_variance",
@@ -1967,6 +2006,7 @@ def load_job_tracking_dashboard_daily() -> pd.DataFrame:
         "mileage",
         "os_mileage",
         "foam_strokes",
+        "foam_lbs",
         "foam_thickness_inches",
         "foam_sqft",
         "foam_yield",
@@ -2033,6 +2073,8 @@ def load_schedule_job_tracking_summary(job_id: str) -> pd.DataFrame:
         "actual_load_hours",
         "actual_os_hours",
         "actual_mileage",
+        "actual_foam_strokes",
+        "actual_foam_lbs",
         "actual_foam_sqft",
         "actual_foam_yield",
         "actual_base_coat_1",
@@ -2097,6 +2139,8 @@ def load_schedule_job_tracking_daily_entries(job_id: str) -> pd.DataFrame:
         "mileage",
         "os_mileage",
         "foam_sqft",
+        "foam_strokes",
+        "foam_lbs",
         "foam_yield",
         "base_coat_1",
         "base_coat_2",
@@ -2171,6 +2215,8 @@ def load_schedule_job_tracking_calendar_entries(job_ids: tuple[str, ...]) -> pd.
         "travel_hours",
         "load_hours",
         "os_hours",
+        "foam_strokes",
+        "foam_lbs",
         "foam_sqft",
         "base_coat_1",
         "base_coat_2",
@@ -2234,6 +2280,7 @@ def summarize_job_tracking_daily_for_dashboard(daily: pd.DataFrame) -> pd.DataFr
         "mileage": "actual_mileage",
         "os_mileage": "actual_os_mileage",
         "foam_strokes": "actual_foam_strokes",
+        "foam_lbs": "actual_foam_lbs",
         "foam_thickness_inches": "actual_foam_thickness_inches",
         "foam_sqft": "actual_foam_sqft",
         "foam_yield": "actual_foam_yield",
@@ -2389,12 +2436,15 @@ ROOFING_TRACKING_MATERIAL_COLUMNS = (
 
 FOAM_TRACKING_MATERIAL_COLUMNS = (
     "actual_foam_strokes",
+    "actual_foam_lbs",
     "estimated_foam_strokes",
+    "estimated_foam_lbs",
     "actual_foam_sqft",
     "estimated_foam_sqft",
     "actual_foam_yield",
     "estimated_foam_yield",
     "foam_strokes",
+    "foam_lbs",
     "foam_sqft",
     "foam_yield",
 )
@@ -2451,6 +2501,7 @@ TRACKING_ROLLUP_SUM_COLUMNS = (
     "actual_os_mileage",
     "actual_total_hours",
     "actual_foam_strokes",
+    "actual_foam_lbs",
     "actual_foam_sqft",
     "actual_base_coat_1",
     "actual_base_coat_2",
@@ -2476,6 +2527,7 @@ TRACKING_ROLLUP_ESTIMATE_COLUMNS = (
     "estimated_os_mileage",
     "estimated_total_hours",
     "estimated_foam_strokes",
+    "estimated_foam_lbs",
     "estimated_foam_sqft",
     "estimated_base_coat_1",
     "estimated_base_coat_2",
@@ -2492,6 +2544,7 @@ TRACKING_ROLLUP_VARIANCE_PAIRS = {
     "travel_hours_variance": ("actual_travel_hours", "estimated_travel_hours"),
     "load_hours_variance": ("actual_load_hours", "estimated_load_hours"),
     "foam_strokes_variance": ("actual_foam_strokes", "estimated_foam_strokes"),
+    "foam_lbs_variance": ("actual_foam_lbs", "estimated_foam_lbs"),
     "foam_sqft_variance": ("actual_foam_sqft", "estimated_foam_sqft"),
     "base_coat_1_variance": ("actual_base_coat_1", "estimated_base_coat_1"),
     "base_coat_2_variance": ("actual_base_coat_2", "estimated_base_coat_2"),
@@ -2520,6 +2573,19 @@ def unique_text_join(values: pd.Series, *, limit: int = 300) -> str:
         if text and text not in seen:
             seen.append(text)
     return "; ".join(seen)[:limit]
+
+
+def unique_full_text_join(values: pd.Series) -> str:
+    seen: list[str] = []
+    for value in values:
+        text = text_value(value)
+        if not text:
+            continue
+        for part in re.split(r"[;,]", text):
+            item = part.strip()
+            if item and item not in seen:
+                seen.append(item)
+    return "; ".join(seen)
 
 
 def first_positive_value(values: pd.Series) -> float:
@@ -2576,6 +2642,109 @@ def normalize_tracking_rollup_key(value: object) -> str:
     ):
         normalized_tokens = normalized_tokens[:-3]
     return "-".join(normalized_tokens)
+
+
+def candidate_job_id_variants(value: object) -> set[str]:
+    raw = text_value(value).strip()
+    if not raw:
+        return set()
+    candidates = {raw}
+    tokens = raw.split("-")
+    if len(tokens) >= 3 and all(token.isdigit() for token in tokens[-3:]) and len(tokens[-1]) in {2, 4}:
+        candidates.add("-".join(tokens[:-3]))
+    if "-E-TOWN" in raw:
+        candidates.add(raw.replace("-E-TOWN", "-ETOWN"))
+    if "-ETOWN" in raw:
+        candidates.add(raw.replace("-ETOWN", "-E-TOWN"))
+    return {candidate for candidate in candidates if candidate}
+
+
+def candidate_job_ids_for_rows(df: pd.DataFrame) -> tuple[str, ...]:
+    candidates: set[str] = set()
+    if "job_id" in df.columns:
+        for value in df["job_id"].dropna():
+            candidates.update(candidate_job_id_variants(value))
+    if "source_job_ids" in df.columns:
+        for value in df["source_job_ids"].dropna():
+            for part in re.split(r"[;,]", text_value(value)):
+                candidates.update(candidate_job_id_variants(part.strip()))
+    return tuple(sorted(candidates))
+
+
+def normalize_tracking_source_family(row: pd.Series) -> str:
+    source_text = ""
+    for column in ["source_file", "tracking_file"]:
+        if column in row.index:
+            source_text = text_value(row.get(column))
+            if source_text:
+                break
+    if not source_text:
+        return ""
+    source_text = source_text.replace("\\", "/")
+    source_text = next((part.strip() for part in reversed(source_text.split("/")) if part.strip()), source_text)
+    source_text = re.sub(r"\.(xlsx|xlsm|xls)$", "", source_text, flags=re.IGNORECASE)
+    source_text = re.sub(r"^(updated|revised|final)\s+", "", source_text, flags=re.IGNORECASE)
+    source_text = re.sub(r"\s+\(\d+\)$", "", source_text).strip()
+    return normalize_tracking_rollup_key(source_text)
+
+
+def drop_superseded_tracking_sources(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or "_tracking_rollup_key" not in df.columns:
+        return df
+    out = df.copy()
+    out["_tracking_source_family"] = out.apply(normalize_tracking_source_family, axis=1)
+    if out["_tracking_source_family"].fillna("").astype(str).str.strip().eq("").all():
+        return out.drop(columns=["_tracking_source_family"], errors="ignore")
+    source_text = pd.Series("", index=out.index)
+    for column in ["source_file", "tracking_file"]:
+        if column in out.columns:
+            source_text = source_text.str.cat(out[column].fillna("").astype(str), sep=" ")
+    out["_tracking_is_updated"] = source_text.str.contains(r"\b(?:updated|revised|final)\b", case=False, regex=True, na=False).astype(int)
+    out["_tracking_last_work_sort"] = (
+        pd.to_datetime(out["last_work_date"], errors="coerce")
+        if "last_work_date" in out.columns
+        else pd.Series(pd.NaT, index=out.index)
+    )
+    out["_tracking_updated_sort"] = (
+        pd.to_datetime(out["updated_at"], errors="coerce")
+        if "updated_at" in out.columns
+        else pd.Series(pd.NaT, index=out.index)
+    )
+    if "actual_work_day_count" in out.columns:
+        out["_tracking_work_days_sort"] = pd.to_numeric(out["actual_work_day_count"], errors="coerce").fillna(0)
+    else:
+        out["_tracking_work_days_sort"] = 0
+
+    family_mask = out["_tracking_source_family"].fillna("").astype(str).str.strip().ne("")
+    with_family = out[family_mask].copy()
+    without_family = out[~family_mask].copy()
+    if not with_family.empty:
+        with_family = with_family.sort_values(
+            [
+                "_tracking_rollup_key",
+                "_tracking_source_family",
+                "_tracking_is_updated",
+                "_tracking_last_work_sort",
+                "_tracking_updated_sort",
+                "_tracking_work_days_sort",
+            ],
+            ascending=[True, True, False, False, False, False],
+            kind="mergesort",
+        ).drop_duplicates(
+            subset=["_tracking_rollup_key", "_tracking_source_family"],
+            keep="first",
+        )
+    combined = pd.concat([with_family, without_family], ignore_index=False).sort_index(kind="mergesort")
+    return combined.drop(
+        columns=[
+            "_tracking_source_family",
+            "_tracking_is_updated",
+            "_tracking_last_work_sort",
+            "_tracking_updated_sort",
+            "_tracking_work_days_sort",
+        ],
+        errors="ignore",
+    )
 
 
 def clean_job_display_context(value: object) -> str:
@@ -2653,6 +2822,7 @@ def rollup_job_tracking_production_summary(df: pd.DataFrame) -> pd.DataFrame:
     ]
     if len(exact_duplicate_subset) > 1:
         out = out.drop_duplicates(subset=exact_duplicate_subset)
+    out = drop_superseded_tracking_sources(out)
 
     rows: list[dict[str, object]] = []
     text_columns = [
@@ -2681,6 +2851,8 @@ def rollup_job_tracking_production_summary(df: pd.DataFrame) -> pd.DataFrame:
         for column in joined_text_columns:
             if column in group.columns:
                 row[column] = unique_text_join(group[column])
+        if "job_id" in group.columns:
+            row["source_job_ids"] = unique_full_text_join(group["job_id"])
         if "tracking_notes" in group.columns:
             row["tracking_notes"] = unique_text_join(group["tracking_notes"], limit=2000)
         for column in ["first_work_date", "created_at"]:
@@ -2741,10 +2913,11 @@ JOB_TRACKING_BUDGET_BUCKETS = [
     },
     {
         "bucket": "Foam / SPF",
-        "actual_columns": ["actual_foam_sqft"],
-        "estimated_columns": ["estimated_foam_sqft"],
-        "quantity_unit": "sq ft",
+        "actual_columns": ["actual_foam_sqft", "actual_foam_strokes", "actual_foam_lbs"],
+        "estimated_columns": ["estimated_foam_sqft", "estimated_foam_strokes", "estimated_foam_lbs"],
+        "quantity_unit": "sq ft, strokes, or lbs",
         "kind": "material",
+        "pair_quantities": True,
     },
     {
         "bucket": "Coating",
@@ -2897,6 +3070,49 @@ def row_sum_positive_values(row: pd.Series, columns: list[str]) -> float | None:
     return float(sum(values))
 
 
+def row_first_positive_value(row: pd.Series, columns: list[str]) -> float | None:
+    for column in columns:
+        if column not in row.index:
+            continue
+        value = row_first_positive_number(row, [column])
+        if value > 0:
+            return float(value)
+    return None
+
+
+def row_paired_positive_values(
+    row: pd.Series,
+    actual_columns: list[str],
+    estimated_columns: list[str],
+) -> tuple[float | None, float | None, str | None]:
+    first_actual: tuple[float, str] | None = None
+    first_estimated: tuple[float, str] | None = None
+    for actual_column, estimated_column in zip(actual_columns, estimated_columns, strict=False):
+        actual_value = row_first_positive_value(row, [actual_column])
+        estimated_value = row_first_positive_value(row, [estimated_column])
+        if actual_value and estimated_value:
+            return actual_value, estimated_value, actual_column
+        if actual_value and first_actual is None:
+            first_actual = (actual_value, actual_column)
+        if estimated_value and first_estimated is None:
+            first_estimated = (estimated_value, estimated_column)
+    if first_actual:
+        return first_actual[0], None, first_actual[1]
+    if first_estimated:
+        return None, first_estimated[0], None
+    return None, None, None
+
+
+def job_tracking_quantity_unit(spec: dict[str, object], quantity_source_column: str | None) -> str:
+    if quantity_source_column == "actual_foam_strokes":
+        return "strokes"
+    if quantity_source_column == "actual_foam_lbs":
+        return "lbs"
+    if quantity_source_column == "actual_foam_sqft":
+        return "sq ft"
+    return text_value(spec.get("quantity_unit"))
+
+
 def build_job_tracking_budget_health(summary: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     job_columns = [
         "job_id",
@@ -2910,18 +3126,33 @@ def build_job_tracking_budget_health(summary: pd.DataFrame) -> tuple[pd.DataFram
         "source_file",
         "folder_path",
         "tracking_file",
+        "source_job_ids",
     ]
     if summary.empty or "job_id" not in summary.columns:
         return pd.DataFrame(), pd.DataFrame()
     summary = rollup_job_tracking_production_summary(summary)
     if summary.empty or "job_id" not in summary.columns:
         return pd.DataFrame(), pd.DataFrame()
-    job_ids = tuple(summary["job_id"].dropna().astype(str).str.strip())
+    job_ids = candidate_job_ids_for_rows(summary)
     budget_enrichment = load_job_tracking_estimate_budget_enrichment(job_ids)
+    source_to_rollup_job_id: dict[str, str] = {}
+    for _, row in summary.iterrows():
+        rolled_job_id = text_value(row.get("job_id"))
+        if not rolled_job_id:
+            continue
+        for candidate in candidate_job_ids_for_rows(pd.DataFrame([row])):
+            source_to_rollup_job_id[candidate] = rolled_job_id
     budget_lookup: dict[tuple[str, str], dict[str, object]] = {}
     if not budget_enrichment.empty:
         for _, row in budget_enrichment.iterrows():
-            budget_lookup[(text_value(row.get("job_id")), text_value(row.get("budget_bucket")))] = row.to_dict()
+            rolled_job_id = source_to_rollup_job_id.get(text_value(row.get("job_id")), text_value(row.get("job_id")))
+            bucket = text_value(row.get("budget_bucket"))
+            key = (rolled_job_id, bucket)
+            candidate = row.to_dict()
+            candidate["job_id"] = rolled_job_id
+            existing = budget_lookup.get(key)
+            if not existing or float(candidate.get("estimated_bucket_cost") or 0) > float(existing.get("estimated_bucket_cost") or 0):
+                budget_lookup[key] = candidate
     labor_rate_samples: list[float] = []
     if budget_lookup:
         for _, row in summary.iterrows():
@@ -2952,8 +3183,16 @@ def build_job_tracking_budget_health(summary: pd.DataFrame) -> tuple[pd.DataFram
             bucket = spec["bucket"]
             budget_row = budget_lookup.get((job_id, bucket), {})
             estimated_cost = pd.to_numeric(pd.Series([budget_row.get("estimated_bucket_cost")]), errors="coerce").iloc[0]
-            actual_quantity = row_sum_positive_values(row, spec["actual_columns"])
-            estimated_quantity = row_sum_positive_values(row, spec["estimated_columns"])
+            if spec.get("pair_quantities"):
+                actual_quantity, estimated_quantity, quantity_source_column = row_paired_positive_values(
+                    row,
+                    spec["actual_columns"],
+                    spec["estimated_columns"],
+                )
+            else:
+                actual_quantity = row_sum_positive_values(row, spec["actual_columns"])
+                estimated_quantity = row_sum_positive_values(row, spec["estimated_columns"])
+                quantity_source_column = None
             if not budget_row and actual_quantity is None and estimated_quantity is None:
                 continue
             cost_basis = "estimate_template_rows"
@@ -3000,6 +3239,8 @@ def build_job_tracking_budget_health(summary: pd.DataFrame) -> tuple[pd.DataFram
                 status = "No Cost Baseline"
             elif actual_quantity is None:
                 status = "No Actuals Yet"
+            elif estimated_quantity is None:
+                status = "Incomplete Baseline"
             elif not pd.isna(pct_used) and pct_used >= 0.9:
                 status = "Watch"
             else:
@@ -3011,7 +3252,7 @@ def build_job_tracking_budget_health(summary: pd.DataFrame) -> tuple[pd.DataFram
                     "bucket_kind": spec["kind"],
                     "actual_quantity": actual_quantity,
                     "estimated_quantity": estimated_quantity,
-                    "quantity_unit": spec["quantity_unit"],
+                    "quantity_unit": job_tracking_quantity_unit(spec, quantity_source_column),
                     "quantity_pct_used": quantity_pct_used,
                     "estimated_cost": estimated_cost if not pd.isna(estimated_cost) else np.nan,
                     "actual_cost": actual_cost,

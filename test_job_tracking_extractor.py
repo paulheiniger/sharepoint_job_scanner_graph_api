@@ -288,6 +288,29 @@ def test_job_tracking_extractor_reads_daily_summary_and_estimates() -> None:
     assert row["labor_hours_variance"] == -102.59
 
 
+def test_job_tracking_extractor_reads_foam_lbs_estimate_header() -> None:
+    import openpyxl
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        job = root / "Graves County Athletic Multipurpose Facility"
+        job.mkdir()
+        path = job / "Job Tracking Form - Graves County Athletic Multipurpose Facility.xlsx"
+        write_tracking_workbook(path)
+
+        wb = openpyxl.load_workbook(path)
+        ws = wb.active
+        ws["H23"] = "Foam (lbs.)"
+        ws["H24"] = 3343.24
+        wb.save(path)
+
+        records = scan_root(root, scan_context="2026 Roofing/Completed")
+        summaries, _daily = extract_job_tracking_file(path, root, records[0])
+
+    assert summaries[0]["estimated_foam_lbs"] == 3343.24
+    assert summaries[0]["estimated_foam_strokes"] is None
+
+
 def test_job_tracking_extractor_combines_multiple_tracking_sheets_per_file() -> None:
     import openpyxl
 
