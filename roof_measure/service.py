@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .calibration import clicked_known_length_calibration, feet_from_pixels, sqft_from_pixels
+from .calibration import clicked_known_length_calibration, detect_google_earth_scale_bar, feet_from_pixels, sqft_from_pixels
 from .confidence import area_uncertainty_factor, confidence_components, measurement_warnings
 from .geometry import polygon_area_pixels, polygon_perimeter_pixels, repair_polygon
 from .image_io import LoadedImage, image_to_array, load_image_bytes
@@ -61,6 +61,11 @@ def measure_roof_from_overhead_image(
         point_b=request.calibration_point_b,
         length_feet=request.calibration_length_feet,
     )
+    if not calibration.pixels_per_foot:
+        calibration = detect_google_earth_scale_bar(
+            loaded.inference_image,
+            label_hint=request.scale_bar_label_hint,
+        )
     for section in sections:
         section.area_sqft = sqft_from_pixels(section.area_pixels, calibration.pixels_per_foot)
         section.perimeter_ft = feet_from_pixels(section.perimeter_pixels, calibration.pixels_per_foot)

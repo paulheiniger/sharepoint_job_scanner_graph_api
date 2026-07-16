@@ -5,7 +5,13 @@ from io import BytesIO
 import numpy as np
 from PIL import Image
 
-from roof_measure.calibration import clicked_known_length_calibration, feet_from_pixels, sqft_from_pixels
+from roof_measure.calibration import (
+    clicked_known_length_calibration,
+    detect_google_earth_scale_bar,
+    feet_from_pixels,
+    parse_scale_label_feet,
+    sqft_from_pixels,
+)
 from roof_measure.confidence import measurement_warnings
 from roof_measure.exports import measurement_to_geojson
 from roof_measure.geometry import polygon_area_pixels, repair_polygon, simplify_ring
@@ -25,6 +31,23 @@ def _image_bytes(size: tuple[int, int] = (100, 80), *, fmt: str = "PNG") -> byte
     return buffer.getvalue()
 
 
+def _google_earth_scale_image_bytes(size: tuple[int, int] = (600, 400), *, bar_pixels: int = 200) -> bytes:
+    image = Image.new("RGB", size, "white")
+    pixels = image.load()
+    y = size[1] - 42
+    x0 = 40
+    x1 = x0 + bar_pixels
+    for x in range(x0, x1):
+        for dy in range(0, 4):
+            pixels[x, y + dy] = (0, 0, 0)
+    for x in (x0, x1 - 1):
+        for yy in range(y - 8, y + 12):
+            pixels[x, yy] = (0, 0, 0)
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
 def test_clicked_known_length_calibration_and_unit_conversion() -> None:
     calibration = clicked_known_length_calibration(
         point_a=(0, 0),
@@ -35,6 +58,25 @@ def test_clicked_known_length_calibration_and_unit_conversion() -> None:
     assert calibration.pixels_per_foot == 2
     assert sqft_from_pixels(400, calibration.pixels_per_foot) == 100
     assert feet_from_pixels(40, calibration.pixels_per_foot) == 20
+
+
+def test_parse_scale_label_feet_supports_common_google_earth_units() -> None:
+    assert parse_scale_label_feet("100 ft") == 100
+    assert parse_scale_label_feet("0.5 mi") == 2640
+    assert round(parse_scale_label_feet("10 m") or 0, 3) == 32.808
+    assert round(parse_scale_label_feet("1 km") or 0, 3) == 3280.84
+
+
+def test_google_earth_scale_bar_detection_uses_label_hint(tmp_path) -> None:
+    data = _google_earth_scale_image_bytes(bar_pixels=200)
+    image = load_image_bytes(data, file_name="earth.png", storage_root=tmp_path).inference_image
+
+    calibration = detect_google_earth_scale_bar(image, label_hint="100 ft")
+
+    assert calibration.calibration_type == "scale_bar"
+    assert calibration.length_feet == 100
+    assert calibration.pixel_distance == 200
+    assert calibration.pixels_per_foot == 2
 
 
 def test_polygon_area_supports_holes() -> None:
@@ -151,6 +193,29 @@ def test_measurement_service_uses_mock_segmentation_and_calibration(tmp_path) ->
     assert measurement.total_area_sqft == 150
     assert measurement.total_perimeter_ft == 50
     assert measurement.confidence["segmentation"] == 0.9
+
+
+def test_measurement_service_uses_scale_bar_when_manual_calibration_missing(tmp_path) -> None:
+    mask = np.zeros((400, 600), dtype=bool)
+    mask[100:300, 100:300] = True
+    request = RoofMeasureRequest(
+        overhead_image_name="earth.png",
+        positive_points=[(200, 200)],
+        scale_bar_label_hint="100 ft",
+        minimum_section_area_pixels=100,
+    )
+
+    result = measure_roof_from_overhead_image(
+        image_bytes=_google_earth_scale_image_bytes(bar_pixels=200),
+        request=request,
+        segmenter=MockRoofSegmenter([mask]),
+        storage_root=str(tmp_path),
+    )
+
+    measurement = result.report.measurement
+    assert measurement.calibration.calibration_type == "scale_bar"
+    assert measurement.calibration.pixels_per_foot == 2
+    assert measurement.total_area_sqft == 10000
 
 
 def test_missing_calibration_warns_and_omits_area(tmp_path) -> None:

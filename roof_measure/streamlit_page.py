@@ -62,6 +62,10 @@ def render_ai_roof_measure_page() -> None:
         st.warning("Image quality flags: " + ", ".join(loaded.metadata.quality_flags))
 
     st.subheader("Prompt and Calibration")
+    st.caption(
+        "If this is a Google Earth-style screenshot with a visible scale bar, leave manual calibration blank. "
+        "The app will try to read the scale label and detect the scale bar automatically."
+    )
     prompt_col1, prompt_col2, prompt_col3 = st.columns(3)
     with prompt_col1:
         prompt_x = st.number_input(
@@ -91,6 +95,13 @@ def render_ai_roof_measure_page() -> None:
         point_a_text = st.text_input("Calibration point A x,y", value="", placeholder="120, 400", key="roof_measure_cal_a")
     with cal_col3:
         point_b_text = st.text_input("Calibration point B x,y", value="", placeholder="620, 400", key="roof_measure_cal_b")
+    scale_hint = st.text_input(
+        "Scale label override (optional)",
+        value="",
+        placeholder="Example: 100 ft",
+        help="Use this if the scale bar is visible but OCR cannot read the Google Earth label.",
+        key="roof_measure_scale_hint",
+    )
 
     controls_col1, controls_col2, controls_col3 = st.columns(3)
     with controls_col1:
@@ -110,6 +121,7 @@ def render_ai_roof_measure_page() -> None:
         calibration_length_feet=known_length if known_length > 0 else None,
         calibration_point_a=point_a,
         calibration_point_b=point_b,
+        scale_bar_label_hint=scale_hint.strip() or None,
         simplification_tolerance=simplification_tolerance,
         minimum_section_area_pixels=minimum_section_area,
         edge_snap_strength=edge_snap_strength,

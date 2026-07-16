@@ -75,6 +75,7 @@ class RoofMeasureRequest(BaseModel):
     calibration_length_feet: float | None = None
     calibration_point_a: Point | None = None
     calibration_point_b: Point | None = None
+    scale_bar_label_hint: str | None = None
     simplification_tolerance: float = 2.0
     minimum_section_area_pixels: float = 400.0
     edge_snap_strength: float = 0.0
@@ -93,4 +94,3 @@ class MeasurementReport(BaseModel):
     user_corrections: list[dict[str, Any]] = Field(default_factory=list)
     model_name: str = "manual_fallback_segmenter"
     model_version: str = "roof-measure-mvp1"
-
