@@ -276,3 +276,59 @@ def test_job_tracking_budget_health_estimates_labor_cost_from_hours_without_temp
 
     bucket = budget_buckets[(budget_buckets["job_id"] == "JOB1") & (budget_buckets["bucket"] == "Labor")].iloc[0]
     assert bucket["cost_basis"] == "median_labor_hourly_rate"
+
+
+def test_job_tracking_summary_actuals_are_recovered_from_daily_rows() -> None:
+    import dashboard.app as app
+
+    summary = pd.DataFrame(
+        [
+            {
+                "job_id": "WTYOUNG",
+                "project": "UK WT Young",
+                "division": "Roofing",
+                "actual_labor_hours": 77.18,
+                "estimated_labor_hours": 5600,
+                "actual_foam_strokes": None,
+                "actual_foam_sqft": None,
+                "estimated_foam_sqft": 36500,
+            }
+        ]
+    )
+    daily = pd.DataFrame(
+        [
+            {
+                "job_id": "WTYOUNG",
+                "project": "UK WT Young",
+                "division": "Roofing",
+                "source_file": "Job Tracking - Phase 2 WT Young.xlsx",
+                "work_date": "2026-07-09",
+                "labor_hours": 47.1,
+                "foam_strokes": 1205,
+                "foam_sqft": 1350,
+                "primer": None,
+                "notes": "sprayed foam",
+            },
+            {
+                "job_id": "WTYOUNG",
+                "project": "UK WT Young",
+                "division": "Roofing",
+                "source_file": "Job Tracking - Phase 2 WT Young.xlsx",
+                "work_date": "2026-07-14",
+                "labor_hours": 45,
+                "foam_strokes": 1416,
+                "foam_sqft": 1976,
+                "primer": 2.5,
+                "notes": "sprayed foam and primer",
+            },
+        ]
+    )
+
+    recovered = app.merge_job_tracking_summary_actuals_from_daily(summary, daily)
+    row = recovered.iloc[0]
+
+    assert row["actual_labor_hours"] == 92.1
+    assert row["actual_foam_strokes"] == 2621
+    assert row["actual_foam_sqft"] == 3326
+    assert row["actual_primer"] == 2.5
+    assert row["foam_sqft_variance"] == -33174

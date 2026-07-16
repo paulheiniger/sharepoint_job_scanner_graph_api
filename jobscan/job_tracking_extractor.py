@@ -120,7 +120,7 @@ def scan_job_tracking_for_records(root: Path, records: list[JobRecord]) -> tuple
             file_summaries, file_daily = extract_job_tracking_file(path, root, record)
             summaries.extend(file_summaries)
             daily_entries.extend(file_daily)
-    return summaries, daily_entries
+    return combine_duplicate_tracking_summaries(summaries, daily_entries), daily_entries
 
 
 def extract_job_tracking_file(path: Path, root: Path, record: JobRecord) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -225,6 +225,39 @@ def combine_tracking_summaries(summaries: list[dict[str, Any]], daily_entries: l
     combined["tracking_notes"] = "; ".join(dict.fromkeys(notes))
     combined["tracking_warnings"] = "; ".join(dict.fromkeys(warnings))
     return {field: combined.get(field) for field in JOB_TRACKING_SUMMARY_FIELDS}
+
+
+def combine_duplicate_tracking_summaries(
+    summaries: list[dict[str, Any]],
+    daily_entries: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    order: list[tuple[str, str]] = []
+    for summary in summaries:
+        key = (
+            str(summary.get("job_id") or "").strip(),
+            str(summary.get("tracking_file") or summary.get("source_path") or summary.get("source_file") or "").strip(),
+        )
+        if key not in grouped:
+            grouped[key] = []
+            order.append(key)
+        grouped[key].append(summary)
+
+    combined_rows: list[dict[str, Any]] = []
+    for key in order:
+        group = grouped[key]
+        if len(group) == 1:
+            combined_rows.append(group[0])
+            continue
+        job_id, tracking_file = key
+        matching_daily = [
+            entry
+            for entry in daily_entries
+            if str(entry.get("job_id") or "").strip() == job_id
+            and str(entry.get("tracking_file") or "").strip() == tracking_file
+        ]
+        combined_rows.append(combine_tracking_summaries(group, matching_daily))
+    return combined_rows
 
 
 def first_nonempty_summary_value(summaries: list[dict[str, Any]], field: str) -> Any:

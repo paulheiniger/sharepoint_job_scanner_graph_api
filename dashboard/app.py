@@ -2283,6 +2283,86 @@ def summarize_job_tracking_daily_for_dashboard(daily: pd.DataFrame) -> pd.DataFr
     return with_folder_link(summary)
 
 
+def merge_job_tracking_summary_actuals_from_daily(summary: pd.DataFrame, daily: pd.DataFrame) -> pd.DataFrame:
+    if summary.empty or daily.empty or "job_id" not in summary.columns or "job_id" not in daily.columns:
+        return summary
+    daily_summary = summarize_job_tracking_daily_for_dashboard(daily)
+    if daily_summary.empty or "job_id" not in daily_summary.columns:
+        return summary
+    daily_summary = rollup_job_tracking_production_summary(daily_summary)
+    if daily_summary.empty or "job_id" not in daily_summary.columns:
+        return summary
+
+    actual_columns = list(TRACKING_ROLLUP_SUM_COLUMNS) + list(TRACKING_ROLLUP_AVERAGE_COLUMNS[:2])
+    date_columns = ["first_work_date", "last_work_date"]
+    merge_columns = ["job_id"] + [
+        column
+        for column in actual_columns + date_columns + ["tracking_notes"]
+        if column in daily_summary.columns
+    ]
+    if len(merge_columns) <= 1:
+        return summary
+
+    out = summary.merge(
+        daily_summary[merge_columns],
+        on="job_id",
+        how="left",
+        suffixes=("", "_daily_rollup"),
+    )
+    for column in actual_columns:
+        daily_column = f"{column}_daily_rollup"
+        if daily_column not in out.columns:
+            continue
+        if column not in out.columns:
+            out[column] = np.nan
+        current_values = pd.to_numeric(out[column], errors="coerce")
+        daily_values = pd.to_numeric(out[daily_column], errors="coerce")
+        replace_mask = daily_values.notna() & daily_values.gt(0) & (
+            current_values.isna() | current_values.le(0) | daily_values.gt(current_values)
+        )
+        out.loc[replace_mask, column] = daily_values.loc[replace_mask]
+        out = out.drop(columns=[daily_column])
+    for column in date_columns:
+        daily_column = f"{column}_daily_rollup"
+        if daily_column not in out.columns:
+            continue
+        if column not in out.columns:
+            out[column] = pd.NaT
+        current_dates = pd.to_datetime(out[column], errors="coerce")
+        daily_dates = pd.to_datetime(out[daily_column], errors="coerce")
+        if column == "first_work_date":
+            replace_mask = daily_dates.notna() & (current_dates.isna() | daily_dates.lt(current_dates))
+        else:
+            replace_mask = daily_dates.notna() & (current_dates.isna() | daily_dates.gt(current_dates))
+        out.loc[replace_mask, column] = daily_dates.loc[replace_mask]
+        out = out.drop(columns=[daily_column])
+    notes_column = "tracking_notes_daily_rollup"
+    if notes_column in out.columns:
+        if "tracking_notes" not in out.columns:
+            out["tracking_notes"] = ""
+        empty_notes = out["tracking_notes"].fillna("").astype(str).str.strip().eq("")
+        out.loc[empty_notes, "tracking_notes"] = out.loc[empty_notes, notes_column]
+        out = out.drop(columns=[notes_column])
+
+    if {"actual_labor_hours", "actual_travel_hours", "actual_load_hours", "actual_os_hours"}.intersection(out.columns):
+        total_hours = pd.Series(0.0, index=out.index)
+        for column in ["actual_labor_hours", "actual_travel_hours", "actual_load_hours", "actual_os_hours"]:
+            if column in out.columns:
+                total_hours = total_hours.add(numeric_series(out, column).reindex(out.index).fillna(0), fill_value=0)
+        out["actual_total_hours"] = total_hours
+    if "estimated_labor_hours" in out.columns and "actual_labor_hours" in out.columns:
+        out["labor_delta_hours"] = numeric_series(out, "actual_labor_hours") - numeric_series(out, "estimated_labor_hours")
+        out["labor_hours_used_pct"] = np.where(
+            numeric_series(out, "estimated_labor_hours") > 0,
+            numeric_series(out, "actual_labor_hours") / numeric_series(out, "estimated_labor_hours"),
+            np.nan,
+        )
+    for variance_column, (actual_column, estimate_column) in TRACKING_ROLLUP_VARIANCE_PAIRS.items():
+        if actual_column in out.columns and estimate_column in out.columns:
+            out[variance_column] = numeric_series(out, actual_column) - numeric_series(out, estimate_column)
+    return out
+
+
 ROOFING_TRACKING_MATERIAL_COLUMNS = (
     "actual_base_coat_1",
     "estimated_base_coat_1",
@@ -13744,6 +13824,8 @@ def job_tracking_dashboard_page() -> None:
     if summary_all.empty and not daily_all.empty:
         st.warning("No job tracking summary rows are loaded yet. Showing a job-level rollup built from daily entries.")
         summary_all = summarize_job_tracking_daily_for_dashboard(daily_all)
+    elif not summary_all.empty and not daily_all.empty:
+        summary_all = merge_job_tracking_summary_actuals_from_daily(summary_all, daily_all)
     if summary_all.empty and daily_all.empty:
         show_empty("No job tracking summary or daily entry rows are loaded yet.")
         return
