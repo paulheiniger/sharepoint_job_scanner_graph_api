@@ -934,8 +934,22 @@ def read_dataframe(connection: Any, statement: Any, params: dict[str, Any] | Non
     return pd.read_sql_query(statement, connection, params=params)
 
 
+def dashboard_sql_label(query: str, *, limit: int = 180) -> str:
+    label = re.sub(r"\s+", " ", str(query or "")).strip()
+    return label[:limit] + ("..." if len(label) > limit else "")
+
+
 def load_df_uncached(query: str, params: dict[str, Any] | None = None) -> ReadQueryResult:
-    return execute_read_with_retry(get_engine(), text(query), params=params, retries=1, read_fn=read_dataframe)
+    start = time.perf_counter()
+    result = execute_read_with_retry(get_engine(), text(query), params=params, retries=1, read_fn=read_dataframe)
+    row_count = len(result.value) if result.ok and isinstance(result.value, pd.DataFrame) else None
+    record_dashboard_perf_event(
+        "db read",
+        seconds=time.perf_counter() - start,
+        detail=dashboard_sql_label(query),
+        row_count=row_count,
+    )
+    return result
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -5331,6 +5345,7 @@ def update_calendar_schedule_dates(event_id: object, start_value: object, exclus
     st.cache_data.clear()
 
 
+@st.cache_data(ttl=120, show_spinner=False)
 def load_dispatch_jobs(dispatch_date: date) -> pd.DataFrame:
     ensure_daily_dispatch_table()
     query = """
@@ -5434,6 +5449,7 @@ def seed_dispatch_roster_from_people_templates() -> int:
     return int(result.rowcount or 0)
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def load_dispatch_roster() -> pd.DataFrame:
     ensure_daily_dispatch_table()
     result = load_df_uncached(
@@ -5505,6 +5521,7 @@ def save_dispatch_roster_person(person_name: object, *, person_role: str = "ad_h
     return True
 
 
+@st.cache_data(ttl=120, show_spinner=False)
 def load_dispatch_crew_assignments(dispatch_date: date) -> pd.DataFrame:
     ensure_daily_dispatch_table()
     result = load_df_uncached(
@@ -6121,6 +6138,7 @@ def production_material_records(production_entry: dict[str, Any]) -> list[dict[s
     return records
 
 
+@st.cache_data(ttl=120, show_spinner=False)
 def load_daily_production_jobs(work_date: date) -> pd.DataFrame:
     jobs = load_dispatch_jobs(work_date)
     if jobs.empty:
@@ -6142,6 +6160,7 @@ def load_daily_production_jobs(work_date: date) -> pd.DataFrame:
     return jobs
 
 
+@st.cache_data(ttl=120, show_spinner=False)
 def load_previous_daily_production_defaults(job_id: object, before_date: date) -> dict[str, Any]:
     ensure_daily_production_tables()
     result = load_df_uncached(
@@ -24159,6 +24178,65 @@ def admin_health_page() -> None:
     render_estimator_memory_admin()
 
 
+def render_dashboard_page(page: str) -> None:
+    if page == "Owner Overview":
+        owner_overview_page()
+    elif page == "Ask Spray-Tec":
+        ask_spraytec_page()
+    elif page == "Job Board":
+        job_board_page()
+    elif page == "Timesheet Job Touches":
+        timesheet_job_touches_page()
+    elif page == "Job Tracking":
+        job_tracking_dashboard_page()
+    elif page == "Sales Dashboard":
+        sales_dashboard_page()
+    elif page == "Operations Dashboard":
+        operations_dashboard_page()
+    elif page == "Schedule Calendar":
+        schedule_calendar_page()
+    elif page == "Estimating Assistant":
+        estimator_prototype_page()
+    elif page == "BidScope AI":
+        render_foamscope_page()
+    elif page == "Admin / Health":
+        admin_health_page()
+    elif page == "Pipeline / Money":
+        pipeline_money_page()
+    elif page == "Sales Follow-Up":
+        sales_followup_page()
+    elif page == "Contracted Backlog / Scheduling":
+        contracted_backlog_scheduling_page()
+    elif page == "Project Scheduling":
+        project_scheduling_page()
+    elif page == "Daily Crew Dispatch":
+        daily_crew_dispatch_page()
+    elif page == "Daily Production":
+        daily_production_page()
+    elif page == "Jobs Needing Action":
+        jobs_needing_action_page()
+    elif page == "Closeout / Billing Risk":
+        closeout_billing_risk_page()
+    elif page == "Documentation Risk":
+        documentation_risk_page()
+    elif page == "Job Warnings":
+        job_warnings_page()
+    elif page == "Estimate Analytics":
+        estimate_analytics_page()
+    elif page == "Estimate Quality Issues":
+        estimate_quality_issues_page()
+    elif page == "Line Item Analysis":
+        line_item_analysis_page()
+    elif page == "Estimate Adders":
+        estimate_adders_page()
+    elif page == "STAMP Tracking":
+        stamp_tracking_page()
+    elif page == "Pricing Catalog":
+        pricing_catalog_page()
+    else:
+        raw_tables_page()
+
+
 def main() -> None:
     database_startup_error: Exception | None = None
     try:
@@ -24218,62 +24296,15 @@ def main() -> None:
         show_database_error(database_startup_error)
         st.stop()
 
-    if page == "Owner Overview":
-        owner_overview_page()
-    elif page == "Ask Spray-Tec":
-        ask_spraytec_page()
-    elif page == "Job Board":
-        job_board_page()
-    elif page == "Timesheet Job Touches":
-        timesheet_job_touches_page()
-    elif page == "Job Tracking":
-        job_tracking_dashboard_page()
-    elif page == "Sales Dashboard":
-        sales_dashboard_page()
-    elif page == "Operations Dashboard":
-        operations_dashboard_page()
-    elif page == "Schedule Calendar":
-        schedule_calendar_page()
-    elif page == "Estimating Assistant":
-        estimator_prototype_page()
-    elif page == "BidScope AI":
-        render_foamscope_page()
-    elif page == "Admin / Health":
-        admin_health_page()
-    elif page == "Pipeline / Money":
-        pipeline_money_page()
-    elif page == "Sales Follow-Up":
-        sales_followup_page()
-    elif page == "Contracted Backlog / Scheduling":
-        contracted_backlog_scheduling_page()
-    elif page == "Project Scheduling":
-        project_scheduling_page()
-    elif page == "Daily Crew Dispatch":
-        daily_crew_dispatch_page()
-    elif page == "Daily Production":
-        daily_production_page()
-    elif page == "Jobs Needing Action":
-        jobs_needing_action_page()
-    elif page == "Closeout / Billing Risk":
-        closeout_billing_risk_page()
-    elif page == "Documentation Risk":
-        documentation_risk_page()
-    elif page == "Job Warnings":
-        job_warnings_page()
-    elif page == "Estimate Analytics":
-        estimate_analytics_page()
-    elif page == "Estimate Quality Issues":
-        estimate_quality_issues_page()
-    elif page == "Line Item Analysis":
-        line_item_analysis_page()
-    elif page == "Estimate Adders":
-        estimate_adders_page()
-    elif page == "STAMP Tracking":
-        stamp_tracking_page()
-    elif page == "Pricing Catalog":
-        pricing_catalog_page()
-    else:
-        raw_tables_page()
+    if show_perf_timings:
+        reset_dashboard_perf_timings()
+
+    with dashboard_perf_step("page render", detail=page):
+        render_dashboard_page(page)
+
+    if show_perf_timings:
+        with st.expander("Performance timings", expanded=False):
+            render_dashboard_perf_timings()
 
 
 if __name__ == "__main__":
