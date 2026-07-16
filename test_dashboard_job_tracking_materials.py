@@ -230,3 +230,49 @@ def test_job_tracking_material_rollup_collapses_duplicate_job_rows() -> None:
     assert insulation["estimated_foam_sqft"] == 600
     assert insulation["estimated_foam_yield"] == 3500
     assert insulation["foam_sqft_variance"] == -200
+
+
+def test_job_tracking_budget_health_estimates_labor_cost_from_hours_without_template_cost(monkeypatch) -> None:
+    import dashboard.app as app
+
+    summary = pd.DataFrame(
+        [
+            {
+                "job_id": "JOB1",
+                "project": "Tracked labor with no cost baseline",
+                "division": "Roofing",
+                "tracking_status": "Recently touched",
+                "actual_labor_hours": 12,
+                "estimated_labor_hours": 10,
+            },
+            {
+                "job_id": "JOB2",
+                "project": "Labor rate sample",
+                "division": "Roofing",
+                "tracking_status": "Recently touched",
+                "actual_labor_hours": 5,
+                "estimated_labor_hours": 20,
+            },
+        ]
+    )
+    budget_enrichment = pd.DataFrame(
+        [
+            {
+                "job_id": "JOB2",
+                "budget_bucket": "Labor",
+                "estimated_bucket_cost": 2000,
+                "estimate_budget_rows_used": 2,
+            },
+        ]
+    )
+    monkeypatch.setattr(app, "load_job_tracking_estimate_budget_enrichment", lambda job_ids: budget_enrichment)
+
+    budget_jobs, budget_buckets = app.build_job_tracking_budget_health(summary)
+
+    job = budget_jobs[budget_jobs["job_id"] == "JOB1"].iloc[0]
+    assert job["estimated_cost"] == 1000
+    assert job["actual_cost"] == 1200
+    assert job["budget_status"] == "Over Budget"
+
+    bucket = budget_buckets[(budget_buckets["job_id"] == "JOB1") & (budget_buckets["bucket"] == "Labor")].iloc[0]
+    assert bucket["cost_basis"] == "median_labor_hourly_rate"

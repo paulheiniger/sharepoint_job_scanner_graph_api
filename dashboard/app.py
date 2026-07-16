@@ -2422,6 +2422,8 @@ TRACKING_ROLLUP_VARIANCE_PAIRS = {
     "sf_variance": ("actual_sf", "estimated_sf"),
 }
 
+DEFAULT_JOB_TRACKING_LABOR_HOURLY_COST = 75.0
+
 
 def first_nonempty_value(values: pd.Series) -> object:
     for value in values:
@@ -2659,6 +2661,10 @@ def load_job_tracking_estimate_budget_enrichment(job_ids: tuple[str, ...]) -> pd
         "row_label",
         "selected_item_name",
         "estimated_cost",
+        "days",
+        "total_hours",
+        "hourly_rate",
+        "daily_rate",
     ]
     selected_columns = [column for column in wanted_columns if column in template_cols]
     try:
@@ -2676,19 +2682,31 @@ def load_job_tracking_estimate_budget_enrichment(job_ids: tuple[str, ...]) -> pd
         return pd.DataFrame()
     if rows.empty:
         return pd.DataFrame()
-    rows["estimated_cost"] = pd.to_numeric(rows["estimated_cost"], errors="coerce")
-    rows = rows[rows["estimated_cost"].fillna(0).gt(0)].copy()
-    if rows.empty:
-        return pd.DataFrame()
+    for column in ["estimated_cost", "days", "total_hours", "hourly_rate", "daily_rate"]:
+        if column in rows.columns:
+            rows[column] = pd.to_numeric(rows[column], errors="coerce")
     rows["budget_bucket"] = rows.apply(job_tracking_budget_bucket_for_template_row, axis=1)
     rows = rows[rows["budget_bucket"].ne("")]
+    if rows.empty:
+        return pd.DataFrame()
+    rows["_budget_cost"] = pd.to_numeric(rows.get("estimated_cost"), errors="coerce")
+    labor_mask = rows["budget_bucket"].eq("Labor")
+    if {"days", "daily_rate"}.issubset(rows.columns):
+        daily_labor_cost = rows["days"].fillna(0) * rows["daily_rate"].fillna(0)
+        fill_mask = labor_mask & (rows["_budget_cost"].isna() | rows["_budget_cost"].le(0)) & daily_labor_cost.gt(0)
+        rows.loc[fill_mask, "_budget_cost"] = daily_labor_cost.loc[fill_mask]
+    if {"total_hours", "hourly_rate"}.issubset(rows.columns):
+        hourly_labor_cost = rows["total_hours"].fillna(0) * rows["hourly_rate"].fillna(0)
+        fill_mask = labor_mask & (rows["_budget_cost"].isna() | rows["_budget_cost"].le(0)) & hourly_labor_cost.gt(0)
+        rows.loc[fill_mask, "_budget_cost"] = hourly_labor_cost.loc[fill_mask]
+    rows = rows[rows["_budget_cost"].fillna(0).gt(0)].copy()
     if rows.empty:
         return pd.DataFrame()
     grouped = (
         rows.groupby(["job_id", "budget_bucket"], dropna=False)
         .agg(
-            estimated_bucket_cost=("estimated_cost", "sum"),
-            estimate_budget_rows_used=("estimated_cost", "size"),
+            estimated_bucket_cost=("_budget_cost", "sum"),
+            estimate_budget_rows_used=("_budget_cost", "size"),
         )
         .reset_index()
     )
@@ -2731,6 +2749,25 @@ def build_job_tracking_budget_health(summary: pd.DataFrame) -> tuple[pd.DataFram
     if not budget_enrichment.empty:
         for _, row in budget_enrichment.iterrows():
             budget_lookup[(text_value(row.get("job_id")), text_value(row.get("budget_bucket")))] = row.to_dict()
+    labor_rate_samples: list[float] = []
+    if budget_lookup:
+        for _, row in summary.iterrows():
+            job_id = text_value(row.get("job_id"))
+            budget_row = budget_lookup.get((job_id, "Labor"), {})
+            estimated_labor_cost = pd.to_numeric(pd.Series([budget_row.get("estimated_bucket_cost")]), errors="coerce").iloc[0]
+            estimated_labor_hours = row_sum_positive_values(row, ["estimated_labor_hours"])
+            if (
+                estimated_labor_hours
+                and estimated_labor_hours > 0
+                and not pd.isna(estimated_labor_cost)
+                and estimated_labor_cost > 0
+            ):
+                labor_rate_samples.append(float(estimated_labor_cost) / float(estimated_labor_hours))
+    fallback_labor_hourly_cost = (
+        float(np.median(labor_rate_samples))
+        if labor_rate_samples
+        else DEFAULT_JOB_TRACKING_LABOR_HOURLY_COST
+    )
 
     bucket_rows: list[dict[str, object]] = []
     for _, row in summary.iterrows():
@@ -2746,6 +2783,19 @@ def build_job_tracking_budget_health(summary: pd.DataFrame) -> tuple[pd.DataFram
             estimated_quantity = row_sum_positive_values(row, spec["estimated_columns"])
             if not budget_row and actual_quantity is None and estimated_quantity is None:
                 continue
+            cost_basis = "estimate_template_rows"
+            if (
+                bucket == "Labor"
+                and (pd.isna(estimated_cost) or estimated_cost <= 0)
+                and estimated_quantity
+                and estimated_quantity > 0
+            ):
+                estimated_cost = float(estimated_quantity) * fallback_labor_hourly_cost
+                cost_basis = (
+                    "median_labor_hourly_rate"
+                    if labor_rate_samples
+                    else "default_labor_hourly_rate"
+                )
             unit_cost = (
                 float(estimated_cost) / float(estimated_quantity)
                 if not pd.isna(estimated_cost) and estimated_cost > 0 and estimated_quantity and estimated_quantity > 0
@@ -2796,6 +2846,7 @@ def build_job_tracking_budget_health(summary: pd.DataFrame) -> tuple[pd.DataFram
                     "budget_used_pct": pct_used,
                     "budget_status": status,
                     "estimate_budget_rows_used": budget_row.get("estimate_budget_rows_used"),
+                    "cost_basis": cost_basis if not pd.isna(estimated_cost) and estimated_cost > 0 else "",
                 }
             )
 
@@ -2869,11 +2920,10 @@ def render_job_tracking_budget_health(summary: pd.DataFrame) -> None:
 
     chart_df = budget_jobs[
         pd.to_numeric(budget_jobs["estimated_cost"], errors="coerce").gt(0)
-        & pd.to_numeric(budget_jobs["actual_cost"], errors="coerce").ge(0)
+        & pd.to_numeric(budget_jobs["actual_cost"], errors="coerce").gt(0)
     ].copy()
     if not chart_df.empty:
         chart_df["_chart_extent"] = chart_df[["estimated_cost", "actual_cost"]].max(axis=1)
-        chart_df = chart_df.sort_values("_chart_extent", ascending=False).head(20)
         chart_df = chart_df.sort_values("_chart_extent", ascending=True)
         status_colors = {
             "Over Budget": "#dc2626",
@@ -2924,6 +2974,7 @@ def render_job_tracking_budget_health(summary: pd.DataFrame) -> None:
             title="Budget Used by Job",
             barmode="overlay",
             bargap=0.35,
+            height=min(max(420, 32 * len(chart_df) + 140), 1800),
             xaxis_title="budget cost",
             yaxis_title="job",
             legend_title_text="",
