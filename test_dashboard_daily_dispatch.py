@@ -110,3 +110,43 @@ def test_daily_production_ids_are_stable() -> None:
     assert first == second
     assert first != different
     assert first.startswith("production-")
+
+
+def test_weather_time_parser_handles_common_dispatch_times() -> None:
+    import dashboard.app as app
+
+    assert app.parse_weather_time("7:30 AM") == (7, 30)
+    assert app.parse_weather_time("3 pm") == (15, 0)
+    assert app.parse_weather_time("12:15 AM") == (0, 15)
+    assert app.parse_weather_time("TBD") == (12, 0)
+
+
+def test_weather_values_from_open_meteo_hourly_uses_nearest_hour() -> None:
+    import dashboard.app as app
+
+    hourly = {
+        "time": ["2026-07-16T06:00", "2026-07-16T07:00", "2026-07-16T08:00"],
+        "temperature_2m": [70.2, 72.8, 75.1],
+        "relative_humidity_2m": [80, 77, 73],
+        "wind_speed_10m": [4.5, 5.2, 6.7],
+    }
+
+    values = app.weather_values_from_open_meteo_hourly(
+        hourly,
+        app.weather_target_datetime(date(2026, 7, 16), "7:20 AM"),
+    )
+
+    assert values["observed_at"] == "2026-07-16T07:00"
+    assert values["temperature_f"] == 72.8
+    assert values["humidity_pct"] == 77
+    assert values["wind_mph"] == 5.2
+
+
+def test_daily_production_checklist_options_round_trip() -> None:
+    import dashboard.app as app
+
+    stored = app.option_text(["Roof Edges", "", "Power Tools"])
+
+    assert stored == "Roof Edges, Power Tools"
+    assert app.selected_options(stored, app.DAILY_PRODUCTION_SAFETY_OPTIONS) == ["Roof Edges", "Power Tools"]
+    assert "Lockers Secured/Stocked" in app.DAILY_PRODUCTION_TRAILER_CLOSEOUT_OPTIONS

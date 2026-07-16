@@ -17,9 +17,10 @@ import sys
 import time
 from io import BytesIO
 from contextlib import contextmanager
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Iterable
+from urllib.parse import quote
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -33,6 +34,7 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import requests
 import streamlit as st
 from sqlalchemy import bindparam, text
 from sqlalchemy.exc import SQLAlchemyError
@@ -1462,18 +1464,43 @@ CREATE TABLE IF NOT EXISTS daily_production_entries (
     crew_members TEXT,
     start_time TEXT,
     end_time TEXT,
+    outbound_departure_time TEXT,
+    jobsite_arrival_time TEXT,
+    lunch_start_time TEXT,
+    lunch_end_time TEXT,
+    return_departure_time TEXT,
+    return_arrival_time TEXT,
     labor_hours NUMERIC,
     travel_hours NUMERIC,
     load_hours NUMERIC,
     os_hours NUMERIC,
     mileage NUMERIC,
     os_mileage NUMERIC,
+    truck_number TEXT,
+    trailer_number TEXT,
+    driver_name TEXT,
+    odometer_out NUMERIC,
+    odometer_in NUMERIC,
+    equipment_notes TEXT,
+    rain_observed BOOLEAN,
+    weather_condition TEXT,
     temperature_f NUMERIC,
     wind_mph NUMERIC,
     humidity_pct NUMERIC,
     weather_source TEXT,
+    interior_temperature_f NUMERIC,
+    substrate_temperature_f NUMERIC,
+    substrate_moisture NUMERIC,
+    proportioner_a_side_temp_f NUMERIC,
+    proportioner_b_side_temp_f NUMERIC,
+    proportioner_drum_temp_f NUMERIC,
+    proportioner_hose_temp_f NUMERIC,
+    hydraulic_pressure_psi NUMERIC,
+    safety_issue_options TEXT,
     safety_issues TEXT,
+    hazard_mitigation_options TEXT,
     hazard_mitigation_plan TEXT,
+    trailer_closeout_options TEXT,
     work_notes TEXT,
     submitted_by TEXT,
     submitted_at TIMESTAMPTZ DEFAULT NOW(),
@@ -1499,6 +1526,35 @@ CREATE TABLE IF NOT EXISTS daily_production_material_usage (
     UNIQUE (production_entry_id, material_type)
 )
 """
+
+
+DAILY_PRODUCTION_EXTRA_COLUMNS_SQL = [
+    "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS outbound_departure_time TEXT",
+    "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS jobsite_arrival_time TEXT",
+    "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS lunch_start_time TEXT",
+    "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS lunch_end_time TEXT",
+    "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS return_departure_time TEXT",
+    "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS return_arrival_time TEXT",
+    "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS truck_number TEXT",
+    "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS trailer_number TEXT",
+    "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS driver_name TEXT",
+    "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS odometer_out NUMERIC",
+    "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS odometer_in NUMERIC",
+    "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS equipment_notes TEXT",
+    "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS rain_observed BOOLEAN",
+    "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS weather_condition TEXT",
+    "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS interior_temperature_f NUMERIC",
+    "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS substrate_temperature_f NUMERIC",
+    "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS substrate_moisture NUMERIC",
+    "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS proportioner_a_side_temp_f NUMERIC",
+    "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS proportioner_b_side_temp_f NUMERIC",
+    "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS proportioner_drum_temp_f NUMERIC",
+    "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS proportioner_hose_temp_f NUMERIC",
+    "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS hydraulic_pressure_psi NUMERIC",
+    "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS safety_issue_options TEXT",
+    "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS hazard_mitigation_options TEXT",
+    "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS trailer_closeout_options TEXT",
+]
 
 
 JOB_WORKFLOW_OVERRIDES_TABLE_SQL = """
@@ -1631,6 +1687,8 @@ def ensure_daily_production_tables() -> None:
     engine = get_engine()
     with engine.begin() as conn:
         conn.execute(text(DAILY_PRODUCTION_ENTRIES_TABLE_SQL))
+        for column_sql in DAILY_PRODUCTION_EXTRA_COLUMNS_SQL:
+            conn.execute(text(column_sql))
         conn.execute(text(DAILY_PRODUCTION_MATERIAL_USAGE_TABLE_SQL))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_daily_production_entries_job_date ON daily_production_entries(job_id, work_date)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_daily_production_material_usage_entry ON daily_production_material_usage(production_entry_id)"))
@@ -5857,6 +5915,72 @@ DAILY_PRODUCTION_MATERIAL_FIELDS = [
 ]
 
 
+DAILY_PRODUCTION_SAFETY_OPTIONS = [
+    "Roof Edges",
+    "Ladders",
+    "Scaffolding",
+    "Lift",
+    "Chemicals",
+    "High Pressure",
+    "Deck Repair",
+    "Extension Cords",
+    "Cones",
+    "Barricades/Danger Signs/Caution Tape",
+    "Electrical Power",
+    "Power Tools",
+    "Hot Work",
+    "Other Trades in Area",
+    "Overspray",
+    "Moving Equipment",
+    "Crowded Jobsite",
+    "Slips",
+]
+
+
+DAILY_PRODUCTION_HAZARD_OPTIONS = [
+    "Hard Hats",
+    "Safety Glasses",
+    "Respirators",
+    "Harnesses",
+    "Warning Lines",
+    "Spray Socks",
+    "Gloves",
+    "Spray Suits",
+    "Ear Protection",
+    "Fire Extinguisher",
+    "Spill Kits",
+    "Ropes/Retractors",
+]
+
+
+DAILY_PRODUCTION_TRAILER_CLOSEOUT_OPTIONS = [
+    "Lockers Secured/Stocked",
+    "Trash Bagged/Stacked",
+    "Tools Properly Stored",
+    "Drums Strapped",
+    "Bungs/Caps on Drums",
+    "Gun(s) Cleaned",
+    "Air Oilers Fluid Levels Checked",
+    "Air Dryer Working",
+    "Flushed Foam Marked/Tagged",
+    "Let Quin Know of Needs",
+]
+
+
+DAILY_PRODUCTION_WEATHER_CONDITIONS = ["Sunny", "Partly Cloudy", "Mostly Cloudy"]
+
+
+def option_text(values: Iterable[object]) -> str | None:
+    selected = [text_value(value) for value in values if text_value(value)]
+    return ", ".join(selected) if selected else None
+
+
+def selected_options(value: object, allowed_options: list[str]) -> list[str]:
+    raw_values = [part.strip() for part in text_value(value).split(",") if part.strip()]
+    allowed_lookup = {option.lower(): option for option in allowed_options}
+    return [allowed_lookup[part.lower()] for part in raw_values if part.lower() in allowed_lookup]
+
+
 def production_number(value: Any) -> float | None:
     if value is None:
         return None
@@ -5920,10 +6044,21 @@ def load_previous_daily_production_defaults(job_id: object, before_date: date) -
         """
         SELECT safety_issues,
                hazard_mitigation_plan,
+               safety_issue_options,
+               hazard_mitigation_options,
                weather_source,
+               weather_condition,
                temperature_f,
                wind_mph,
                humidity_pct,
+               interior_temperature_f,
+               substrate_temperature_f,
+               substrate_moisture,
+               proportioner_a_side_temp_f,
+               proportioner_b_side_temp_f,
+               proportioner_drum_temp_f,
+               proportioner_hose_temp_f,
+               hydraulic_pressure_psi,
                work_date
         FROM daily_production_entries
         WHERE job_id = :job_id
@@ -5936,6 +6071,168 @@ def load_previous_daily_production_defaults(job_id: object, before_date: date) -
     if not result.ok or result.value.empty:
         return {}
     return result.value.iloc[0].to_dict()
+
+
+def mapbox_access_token() -> str:
+    return (
+        os.getenv("MAPBOX_ACCESS_TOKEN")
+        or os.getenv("MAPBOX_TOKEN")
+        or os.getenv("MAPBOX_API_KEY")
+        or ""
+    ).strip()
+
+
+def parse_weather_time(value: object) -> tuple[int, int]:
+    text = text_value(value).lower()
+    if not text:
+        return 12, 0
+    match = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)?\b", text)
+    if not match:
+        return 12, 0
+    hour = int(match.group(1))
+    minute = int(match.group(2) or 0)
+    meridiem = (match.group(3) or "").replace(".", "")
+    if meridiem == "pm" and hour < 12:
+        hour += 12
+    elif meridiem == "am" and hour == 12:
+        hour = 0
+    if hour > 23:
+        hour = 12
+    if minute > 59:
+        minute = 0
+    return hour, minute
+
+
+def weather_target_datetime(work_date: date, start_time: object) -> datetime:
+    hour, minute = parse_weather_time(start_time)
+    return datetime(work_date.year, work_date.month, work_date.day, hour, minute)
+
+
+def _parse_open_meteo_time(value: object) -> datetime | None:
+    text = text_value(value)
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.replace(tzinfo=None)
+    return parsed
+
+
+def _open_meteo_hourly_value(hourly: dict[str, Any], field: str, index: int) -> float | None:
+    values = hourly.get(field)
+    if not isinstance(values, list) or index >= len(values):
+        return None
+    return production_number(values[index])
+
+
+def weather_values_from_open_meteo_hourly(hourly: dict[str, Any], target_dt: datetime) -> dict[str, Any]:
+    times = hourly.get("time")
+    if not isinstance(times, list) or not times:
+        return {}
+    parsed_times = [_parse_open_meteo_time(value) for value in times]
+    indexed_times = [(index, parsed) for index, parsed in enumerate(parsed_times) if parsed is not None]
+    if not indexed_times:
+        return {}
+    index, matched_time = min(indexed_times, key=lambda item: abs(item[1] - target_dt))
+    temperature = _open_meteo_hourly_value(hourly, "temperature_2m", index)
+    wind = _open_meteo_hourly_value(hourly, "wind_speed_10m", index)
+    humidity = _open_meteo_hourly_value(hourly, "relative_humidity_2m", index)
+    return {
+        "temperature_f": None if temperature is None else round(temperature, 1),
+        "wind_mph": None if wind is None else round(wind, 1),
+        "humidity_pct": None if humidity is None else round(humidity),
+        "observed_at": matched_time.isoformat(timespec="minutes"),
+    }
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def geocode_address_with_mapbox(address: str) -> dict[str, Any]:
+    clean_address = text_value(address)
+    token = mapbox_access_token()
+    if not clean_address:
+        return {"ok": False, "error": "No site address is available for this job."}
+    if not token:
+        return {"ok": False, "error": "Mapbox token is not configured."}
+    url = f"https://api.mapbox.com/geocoding/v5/mapbox.places/{quote(clean_address)}.json"
+    try:
+        response = requests.get(
+            url,
+            params={"access_token": token, "limit": 1, "country": "us"},
+            timeout=10,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        return {"ok": False, "error": f"Mapbox geocoding failed: {exc}"}
+    features = payload.get("features") if isinstance(payload, dict) else []
+    if not features:
+        return {"ok": False, "error": "Mapbox did not find a matching address."}
+    feature = features[0]
+    center = feature.get("center") if isinstance(feature, dict) else None
+    if not isinstance(center, list) or len(center) < 2:
+        return {"ok": False, "error": "Mapbox result did not include coordinates."}
+    return {
+        "ok": True,
+        "longitude": production_number(center[0]),
+        "latitude": production_number(center[1]),
+        "place_name": text_value(feature.get("place_name")),
+        "relevance": production_number(feature.get("relevance")),
+    }
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_open_meteo_weather(latitude: float, longitude: float, work_date: date, start_time: str) -> dict[str, Any]:
+    if latitude is None or longitude is None:
+        return {"ok": False, "error": "Coordinates are missing."}
+    target_dt = weather_target_datetime(work_date, start_time)
+    is_archive = work_date < date.today()
+    endpoint = "https://archive-api.open-meteo.com/v1/archive" if is_archive else "https://api.open-meteo.com/v1/forecast"
+    try:
+        response = requests.get(
+            endpoint,
+            params={
+                "latitude": latitude,
+                "longitude": longitude,
+                "start_date": work_date.isoformat(),
+                "end_date": work_date.isoformat(),
+                "hourly": "temperature_2m,relative_humidity_2m,wind_speed_10m",
+                "temperature_unit": "fahrenheit",
+                "wind_speed_unit": "mph",
+                "timezone": "auto",
+            },
+            timeout=10,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        return {"ok": False, "error": f"Weather lookup failed: {exc}"}
+    values = weather_values_from_open_meteo_hourly(payload.get("hourly", {}), target_dt)
+    if not values:
+        return {"ok": False, "error": "Weather lookup did not return hourly values."}
+    values["ok"] = True
+    values["weather_source"] = f"Open-Meteo {'archive' if is_archive else 'forecast'} at {values.get('observed_at')}"
+    return values
+
+
+def autofill_weather_for_address(address: object, work_date: date, start_time: object) -> dict[str, Any]:
+    geocode = geocode_address_with_mapbox(text_value(address))
+    if not geocode.get("ok"):
+        return geocode
+    weather = fetch_open_meteo_weather(
+        geocode.get("latitude"),
+        geocode.get("longitude"),
+        work_date,
+        text_value(start_time),
+    )
+    if not weather.get("ok"):
+        return weather
+    place_name = text_value(geocode.get("place_name"))
+    if place_name:
+        weather["weather_source"] = f"{weather.get('weather_source')} via Mapbox: {place_name}"
+    return weather
 
 
 def upsert_daily_production_entry(production_entry: dict[str, Any]) -> str:
@@ -5963,9 +6260,19 @@ def upsert_daily_production_entry(production_entry: dict[str, Any]) -> str:
         "os_hours",
         "mileage",
         "os_mileage",
+        "odometer_out",
+        "odometer_in",
         "temperature_f",
         "wind_mph",
         "humidity_pct",
+        "interior_temperature_f",
+        "substrate_temperature_f",
+        "substrate_moisture",
+        "proportioner_a_side_temp_f",
+        "proportioner_b_side_temp_f",
+        "proportioner_drum_temp_f",
+        "proportioner_hose_temp_f",
+        "hydraulic_pressure_psi",
         "foam_strokes",
         "foam_lbs",
         "foam_thickness_inches",
@@ -5994,13 +6301,28 @@ def upsert_daily_production_entry(production_entry: dict[str, Any]) -> str:
         "crew_members",
         "start_time",
         "end_time",
+        "outbound_departure_time",
+        "jobsite_arrival_time",
+        "lunch_start_time",
+        "lunch_end_time",
+        "return_departure_time",
+        "return_arrival_time",
+        "truck_number",
+        "trailer_number",
+        "driver_name",
+        "equipment_notes",
+        "weather_condition",
         "weather_source",
+        "safety_issue_options",
         "safety_issues",
+        "hazard_mitigation_options",
         "hazard_mitigation_plan",
+        "trailer_closeout_options",
         "work_notes",
         "submitted_by",
     ]:
         production_entry[field] = clean_db_value(production_entry.get(field))
+    production_entry["rain_observed"] = bool(production_entry.get("rain_observed"))
     production_entry["dispatch_date"] = production_entry.get("dispatch_date") or work_date
 
     material_records = production_material_records(production_entry)
@@ -6008,6 +6330,7 @@ def upsert_daily_production_entry(production_entry: dict[str, Any]) -> str:
         {
             "source": "daily_production_app",
             "production_entry_id": production_entry_id,
+            "production_entry": production_entry,
             "materials": material_records,
         },
         default=str,
@@ -6029,18 +6352,43 @@ def upsert_daily_production_entry(production_entry: dict[str, Any]) -> str:
                     crew_members,
                     start_time,
                     end_time,
+                    outbound_departure_time,
+                    jobsite_arrival_time,
+                    lunch_start_time,
+                    lunch_end_time,
+                    return_departure_time,
+                    return_arrival_time,
                     labor_hours,
                     travel_hours,
                     load_hours,
                     os_hours,
                     mileage,
                     os_mileage,
+                    truck_number,
+                    trailer_number,
+                    driver_name,
+                    odometer_out,
+                    odometer_in,
+                    equipment_notes,
+                    rain_observed,
+                    weather_condition,
                     temperature_f,
                     wind_mph,
                     humidity_pct,
                     weather_source,
+                    interior_temperature_f,
+                    substrate_temperature_f,
+                    substrate_moisture,
+                    proportioner_a_side_temp_f,
+                    proportioner_b_side_temp_f,
+                    proportioner_drum_temp_f,
+                    proportioner_hose_temp_f,
+                    hydraulic_pressure_psi,
+                    safety_issue_options,
                     safety_issues,
+                    hazard_mitigation_options,
                     hazard_mitigation_plan,
+                    trailer_closeout_options,
                     work_notes,
                     submitted_by,
                     submitted_at,
@@ -6059,18 +6407,43 @@ def upsert_daily_production_entry(production_entry: dict[str, Any]) -> str:
                     :crew_members,
                     :start_time,
                     :end_time,
+                    :outbound_departure_time,
+                    :jobsite_arrival_time,
+                    :lunch_start_time,
+                    :lunch_end_time,
+                    :return_departure_time,
+                    :return_arrival_time,
                     :labor_hours,
                     :travel_hours,
                     :load_hours,
                     :os_hours,
                     :mileage,
                     :os_mileage,
+                    :truck_number,
+                    :trailer_number,
+                    :driver_name,
+                    :odometer_out,
+                    :odometer_in,
+                    :equipment_notes,
+                    :rain_observed,
+                    :weather_condition,
                     :temperature_f,
                     :wind_mph,
                     :humidity_pct,
                     :weather_source,
+                    :interior_temperature_f,
+                    :substrate_temperature_f,
+                    :substrate_moisture,
+                    :proportioner_a_side_temp_f,
+                    :proportioner_b_side_temp_f,
+                    :proportioner_drum_temp_f,
+                    :proportioner_hose_temp_f,
+                    :hydraulic_pressure_psi,
+                    :safety_issue_options,
                     :safety_issues,
+                    :hazard_mitigation_options,
                     :hazard_mitigation_plan,
+                    :trailer_closeout_options,
                     :work_notes,
                     :submitted_by,
                     NOW(),
@@ -6084,18 +6457,43 @@ def upsert_daily_production_entry(production_entry: dict[str, Any]) -> str:
                     crew_members = EXCLUDED.crew_members,
                     start_time = EXCLUDED.start_time,
                     end_time = EXCLUDED.end_time,
+                    outbound_departure_time = EXCLUDED.outbound_departure_time,
+                    jobsite_arrival_time = EXCLUDED.jobsite_arrival_time,
+                    lunch_start_time = EXCLUDED.lunch_start_time,
+                    lunch_end_time = EXCLUDED.lunch_end_time,
+                    return_departure_time = EXCLUDED.return_departure_time,
+                    return_arrival_time = EXCLUDED.return_arrival_time,
                     labor_hours = EXCLUDED.labor_hours,
                     travel_hours = EXCLUDED.travel_hours,
                     load_hours = EXCLUDED.load_hours,
                     os_hours = EXCLUDED.os_hours,
                     mileage = EXCLUDED.mileage,
                     os_mileage = EXCLUDED.os_mileage,
+                    truck_number = EXCLUDED.truck_number,
+                    trailer_number = EXCLUDED.trailer_number,
+                    driver_name = EXCLUDED.driver_name,
+                    odometer_out = EXCLUDED.odometer_out,
+                    odometer_in = EXCLUDED.odometer_in,
+                    equipment_notes = EXCLUDED.equipment_notes,
+                    rain_observed = EXCLUDED.rain_observed,
+                    weather_condition = EXCLUDED.weather_condition,
                     temperature_f = EXCLUDED.temperature_f,
                     wind_mph = EXCLUDED.wind_mph,
                     humidity_pct = EXCLUDED.humidity_pct,
                     weather_source = EXCLUDED.weather_source,
+                    interior_temperature_f = EXCLUDED.interior_temperature_f,
+                    substrate_temperature_f = EXCLUDED.substrate_temperature_f,
+                    substrate_moisture = EXCLUDED.substrate_moisture,
+                    proportioner_a_side_temp_f = EXCLUDED.proportioner_a_side_temp_f,
+                    proportioner_b_side_temp_f = EXCLUDED.proportioner_b_side_temp_f,
+                    proportioner_drum_temp_f = EXCLUDED.proportioner_drum_temp_f,
+                    proportioner_hose_temp_f = EXCLUDED.proportioner_hose_temp_f,
+                    hydraulic_pressure_psi = EXCLUDED.hydraulic_pressure_psi,
+                    safety_issue_options = EXCLUDED.safety_issue_options,
                     safety_issues = EXCLUDED.safety_issues,
+                    hazard_mitigation_options = EXCLUDED.hazard_mitigation_options,
                     hazard_mitigation_plan = EXCLUDED.hazard_mitigation_plan,
+                    trailer_closeout_options = EXCLUDED.trailer_closeout_options,
                     work_notes = EXCLUDED.work_notes,
                     submitted_by = EXCLUDED.submitted_by,
                     submitted_at = NOW(),
@@ -17244,6 +17642,36 @@ def daily_production_page() -> None:
     crew_members_default = text_value(selected_job.get("crew_members"))
     start_time_default = text_value(selected_job.get("start_time"))
     end_time_default = text_value(selected_job.get("end_time"))
+    temperature_key = f"prod_temp_{field_key}"
+    wind_key = f"prod_wind_{field_key}"
+    humidity_key = f"prod_humidity_{field_key}"
+    weather_source_key = f"prod_weather_source_{field_key}"
+
+    weather_button_cols = st.columns([1, 3])
+    with weather_button_cols[0]:
+        weather_autofill = st.button(
+            "Autofill Weather",
+            key=f"prod_weather_autofill_{field_key}",
+            disabled=not bool(address),
+        )
+    with weather_button_cols[1]:
+        if address:
+            st.caption("Uses the job address and start time. Review or overwrite the values before submitting.")
+        else:
+            st.caption("Add a site address on the dispatched job to enable weather autofill.")
+    if weather_autofill:
+        weather = autofill_weather_for_address(address, work_date, start_time_default)
+        if weather.get("ok"):
+            if weather.get("temperature_f") is not None:
+                st.session_state[temperature_key] = str(weather.get("temperature_f"))
+            if weather.get("wind_mph") is not None:
+                st.session_state[wind_key] = str(weather.get("wind_mph"))
+            if weather.get("humidity_pct") is not None:
+                st.session_state[humidity_key] = str(weather.get("humidity_pct"))
+            st.session_state[weather_source_key] = text_value(weather.get("weather_source")) or "weather autofill"
+            st.success("Weather fields autofilled. Review them before submitting.")
+        else:
+            st.warning(text_value(weather.get("error")) or "Weather autofill failed.")
 
     with st.form("daily_production_form"):
         st.subheader("Crew and Time")
@@ -17260,6 +17688,17 @@ def daily_production_page() -> None:
             start_time = st.text_input("Start Time", value=start_time_default, key=f"prod_start_{field_key}")
         with time_cols[1]:
             end_time = st.text_input("End Time", value=end_time_default, key=f"prod_end_{field_key}")
+
+        actual_time_cols = st.columns(3)
+        with actual_time_cols[0]:
+            outbound_departure_time = st.text_input("Depart Shop", key=f"prod_outbound_depart_{field_key}")
+            jobsite_arrival_time = st.text_input("Arrive Job", key=f"prod_jobsite_arrive_{field_key}")
+        with actual_time_cols[1]:
+            lunch_start_time = st.text_input("Lunch Start", key=f"prod_lunch_start_{field_key}")
+            lunch_end_time = st.text_input("Lunch End", key=f"prod_lunch_end_{field_key}")
+        with actual_time_cols[2]:
+            return_departure_time = st.text_input("Depart Job", key=f"prod_return_depart_{field_key}")
+            return_arrival_time = st.text_input("Arrive Shop", key=f"prod_return_arrive_{field_key}")
 
         hours_cols = st.columns(3)
         with hours_cols[0]:
@@ -17292,6 +17731,23 @@ def daily_production_page() -> None:
             mileage = st.number_input("Mileage", min_value=0.0, step=1.0, key=f"prod_mileage_{field_key}")
         with mileage_cols[1]:
             os_mileage = st.number_input("OS Mileage", min_value=0.0, step=1.0, key=f"prod_os_mileage_{field_key}")
+
+        st.subheader("Equipment")
+        equipment_cols = st.columns(3)
+        with equipment_cols[0]:
+            truck_number = st.text_input("Truck #", key=f"prod_truck_{field_key}")
+            trailer_number = st.text_input("Trailer #", key=f"prod_trailer_{field_key}")
+        with equipment_cols[1]:
+            driver_name = st.text_input("Driver", value=crew_leader_default, key=f"prod_driver_{field_key}")
+        with equipment_cols[2]:
+            odometer_out = st.number_input("Odometer Out", min_value=0.0, step=1.0, key=f"prod_odom_out_{field_key}")
+            odometer_in = st.number_input("Odometer In", min_value=0.0, step=1.0, key=f"prod_odom_in_{field_key}")
+        equipment_notes = st.text_area(
+            "Equipment Notes",
+            height=70,
+            key=f"prod_equipment_notes_{field_key}",
+            help="Truck/trailer issues, repairs needed, downtime, or other equipment notes.",
+        )
 
         st.subheader("Production Quantities")
         foam_cols = st.columns(2)
@@ -17331,45 +17787,138 @@ def daily_production_page() -> None:
             top_gal_per_sq = st.number_input("Top Gal/Sq", min_value=0.0, step=0.1, key=f"prod_top_gal_sq_{field_key}")
 
         st.subheader("Weather")
+        weather_condition_default = text_value(previous_defaults.get("weather_condition"))
+        weather_condition_index = (
+            DAILY_PRODUCTION_WEATHER_CONDITIONS.index(weather_condition_default)
+            if weather_condition_default in DAILY_PRODUCTION_WEATHER_CONDITIONS
+            else None
+        )
+        weather_condition = st.selectbox(
+            "Outside Weather",
+            DAILY_PRODUCTION_WEATHER_CONDITIONS,
+            index=weather_condition_index,
+            placeholder="Select condition",
+            key=f"prod_weather_condition_{field_key}",
+        )
+        rain_observed = st.checkbox("Rain observed", key=f"prod_rain_{field_key}")
         weather_cols = st.columns(3)
         with weather_cols[0]:
             temperature_f = st.text_input(
-                "Temperature F",
+                "Outside Temperature F",
                 value=text_value(previous_defaults.get("temperature_f")),
-                key=f"prod_temp_{field_key}",
+                key=temperature_key,
             )
         with weather_cols[1]:
             wind_mph = st.text_input(
                 "Wind MPH",
                 value=text_value(previous_defaults.get("wind_mph")),
-                key=f"prod_wind_{field_key}",
+                key=wind_key,
             )
         with weather_cols[2]:
             humidity_pct = st.text_input(
                 "Humidity %",
                 value=text_value(previous_defaults.get("humidity_pct")),
-                key=f"prod_humidity_{field_key}",
+                key=humidity_key,
             )
         weather_source = st.text_input(
             "Weather Source",
             value=text_value(previous_defaults.get("weather_source")) or "manual",
-            key=f"prod_weather_source_{field_key}",
+            key=weather_source_key,
         )
+
+        st.subheader("Jobsite Conditions")
+        condition_cols = st.columns(3)
+        with condition_cols[0]:
+            interior_temperature_f = st.number_input(
+                "Interior Temp F",
+                min_value=0.0,
+                step=1.0,
+                value=production_number(previous_defaults.get("interior_temperature_f")) or 0.0,
+                key=f"prod_interior_temp_{field_key}",
+            )
+            substrate_temperature_f = st.number_input(
+                "Substrate Temp F",
+                min_value=0.0,
+                step=1.0,
+                value=production_number(previous_defaults.get("substrate_temperature_f")) or 0.0,
+                key=f"prod_substrate_temp_{field_key}",
+            )
+            substrate_moisture = st.number_input(
+                "Substrate Moisture",
+                min_value=0.0,
+                step=0.1,
+                value=production_number(previous_defaults.get("substrate_moisture")) or 0.0,
+                key=f"prod_substrate_moisture_{field_key}",
+            )
+        with condition_cols[1]:
+            proportioner_a_side_temp_f = st.number_input(
+                "A-Side Temp F",
+                min_value=0.0,
+                step=1.0,
+                value=production_number(previous_defaults.get("proportioner_a_side_temp_f")) or 0.0,
+                key=f"prod_a_temp_{field_key}",
+            )
+            proportioner_b_side_temp_f = st.number_input(
+                "B-Side Temp F",
+                min_value=0.0,
+                step=1.0,
+                value=production_number(previous_defaults.get("proportioner_b_side_temp_f")) or 0.0,
+                key=f"prod_b_temp_{field_key}",
+            )
+            proportioner_drum_temp_f = st.number_input(
+                "Drum Temp F",
+                min_value=0.0,
+                step=1.0,
+                value=production_number(previous_defaults.get("proportioner_drum_temp_f")) or 0.0,
+                key=f"prod_drum_temp_{field_key}",
+            )
+        with condition_cols[2]:
+            proportioner_hose_temp_f = st.number_input(
+                "Hose Temp F",
+                min_value=0.0,
+                step=1.0,
+                value=production_number(previous_defaults.get("proportioner_hose_temp_f")) or 0.0,
+                key=f"prod_hose_temp_{field_key}",
+            )
+            hydraulic_pressure_psi = st.number_input(
+                "Hydraulic Pressure PSI",
+                min_value=0.0,
+                step=25.0,
+                value=production_number(previous_defaults.get("hydraulic_pressure_psi")) or 0.0,
+                key=f"prod_hydraulic_pressure_{field_key}",
+            )
 
         st.subheader("Safety and Notes")
         if previous_defaults:
             st.caption(f"Safety/hazard defaults copied from previous entry on {text_value(previous_defaults.get('work_date'))}.")
+        safety_issue_options = st.multiselect(
+            "Observable Safety Issues",
+            DAILY_PRODUCTION_SAFETY_OPTIONS,
+            default=selected_options(previous_defaults.get("safety_issue_options"), DAILY_PRODUCTION_SAFETY_OPTIONS),
+            key=f"prod_safety_options_{field_key}",
+        )
         safety_issues = st.text_area(
-            "Safety Issues",
+            "Safety Notes",
             value=text_value(previous_defaults.get("safety_issues")),
             height=90,
             key=f"prod_safety_{field_key}",
+        )
+        hazard_mitigation_options = st.multiselect(
+            "Hazard Mitigation / PPE Used",
+            DAILY_PRODUCTION_HAZARD_OPTIONS,
+            default=selected_options(previous_defaults.get("hazard_mitigation_options"), DAILY_PRODUCTION_HAZARD_OPTIONS),
+            key=f"prod_hazard_options_{field_key}",
         )
         hazard_mitigation_plan = st.text_area(
             "Hazard Mitigation Plan",
             value=text_value(previous_defaults.get("hazard_mitigation_plan")),
             height=90,
             key=f"prod_hazard_{field_key}",
+        )
+        trailer_closeout_options = st.multiselect(
+            "Trailer Closeout",
+            DAILY_PRODUCTION_TRAILER_CLOSEOUT_OPTIONS,
+            key=f"prod_trailer_closeout_{field_key}",
         )
         work_notes = st.text_area("Work Notes", height=120, key=f"prod_notes_{field_key}")
         submitted_by = st.text_input("Submitted By", value=crew_leader_default, key=f"prod_submitted_by_{field_key}")
@@ -17388,12 +17937,24 @@ def daily_production_page() -> None:
             "crew_members": crew_members,
             "start_time": start_time,
             "end_time": end_time,
+            "outbound_departure_time": outbound_departure_time,
+            "jobsite_arrival_time": jobsite_arrival_time,
+            "lunch_start_time": lunch_start_time,
+            "lunch_end_time": lunch_end_time,
+            "return_departure_time": return_departure_time,
+            "return_arrival_time": return_arrival_time,
             "labor_hours": labor_hours,
             "travel_hours": travel_hours,
             "load_hours": load_hours,
             "os_hours": os_hours if "os_hours" in locals() else 0,
             "mileage": mileage,
             "os_mileage": os_mileage,
+            "truck_number": truck_number,
+            "trailer_number": trailer_number,
+            "driver_name": driver_name,
+            "odometer_out": odometer_out,
+            "odometer_in": odometer_in,
+            "equipment_notes": equipment_notes,
             "foam_strokes": foam_strokes,
             "foam_lbs": foam_lbs,
             "foam_thickness_inches": foam_thickness_inches,
@@ -17412,12 +17973,25 @@ def daily_production_page() -> None:
             "caulk": caulk if "caulk" in locals() else 0,
             "primer": primer if "primer" in locals() else 0,
             "sf": sf if "sf" in locals() else 0,
+            "rain_observed": rain_observed,
+            "weather_condition": weather_condition,
             "temperature_f": temperature_f,
             "wind_mph": wind_mph,
             "humidity_pct": humidity_pct,
             "weather_source": weather_source,
+            "interior_temperature_f": interior_temperature_f,
+            "substrate_temperature_f": substrate_temperature_f,
+            "substrate_moisture": substrate_moisture,
+            "proportioner_a_side_temp_f": proportioner_a_side_temp_f,
+            "proportioner_b_side_temp_f": proportioner_b_side_temp_f,
+            "proportioner_drum_temp_f": proportioner_drum_temp_f,
+            "proportioner_hose_temp_f": proportioner_hose_temp_f,
+            "hydraulic_pressure_psi": hydraulic_pressure_psi,
+            "safety_issue_options": option_text(safety_issue_options),
             "safety_issues": safety_issues,
+            "hazard_mitigation_options": option_text(hazard_mitigation_options),
             "hazard_mitigation_plan": hazard_mitigation_plan,
+            "trailer_closeout_options": option_text(trailer_closeout_options),
             "work_notes": work_notes,
             "submitted_by": submitted_by,
         }
