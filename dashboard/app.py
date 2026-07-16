@@ -32,6 +32,7 @@ SPRAYTEC_WATERMARK_PATH = DASHBOARD_ASSETS_DIR / "spraytec-watermark-triangle.pn
 import numpy as np
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 from sqlalchemy import bindparam, text
 from sqlalchemy.exc import SQLAlchemyError
@@ -2361,6 +2362,202 @@ def split_tracking_material_rows(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Dat
     )
 
 
+TRACKING_ROLLUP_SUM_COLUMNS = (
+    "actual_labor_hours",
+    "actual_travel_hours",
+    "actual_load_hours",
+    "actual_os_hours",
+    "actual_mileage",
+    "actual_os_mileage",
+    "actual_total_hours",
+    "actual_foam_strokes",
+    "actual_foam_sqft",
+    "actual_base_coat_1",
+    "actual_base_coat_2",
+    "actual_granules",
+    "actual_af_buttergrade",
+    "actual_caulk",
+    "actual_primer",
+    "actual_sf",
+)
+
+TRACKING_ROLLUP_AVERAGE_COLUMNS = (
+    "actual_foam_thickness_inches",
+    "actual_foam_yield",
+    "estimated_foam_thickness_inches",
+    "estimated_foam_yield",
+)
+
+TRACKING_ROLLUP_ESTIMATE_COLUMNS = (
+    "estimated_labor_hours",
+    "estimated_travel_hours",
+    "estimated_load_hours",
+    "estimated_mileage",
+    "estimated_os_mileage",
+    "estimated_total_hours",
+    "estimated_foam_strokes",
+    "estimated_foam_sqft",
+    "estimated_base_coat_1",
+    "estimated_base_coat_2",
+    "estimated_granules",
+    "estimated_af_buttergrade",
+    "estimated_caulk",
+    "estimated_primer",
+    "estimated_sf",
+)
+
+TRACKING_ROLLUP_VARIANCE_PAIRS = {
+    "labor_delta_hours": ("actual_labor_hours", "estimated_labor_hours"),
+    "labor_hours_variance": ("actual_labor_hours", "estimated_labor_hours"),
+    "travel_hours_variance": ("actual_travel_hours", "estimated_travel_hours"),
+    "load_hours_variance": ("actual_load_hours", "estimated_load_hours"),
+    "foam_strokes_variance": ("actual_foam_strokes", "estimated_foam_strokes"),
+    "foam_sqft_variance": ("actual_foam_sqft", "estimated_foam_sqft"),
+    "base_coat_1_variance": ("actual_base_coat_1", "estimated_base_coat_1"),
+    "base_coat_2_variance": ("actual_base_coat_2", "estimated_base_coat_2"),
+    "granules_variance": ("actual_granules", "estimated_granules"),
+    "af_buttergrade_variance": ("actual_af_buttergrade", "estimated_af_buttergrade"),
+    "caulk_variance": ("actual_caulk", "estimated_caulk"),
+    "primer_variance": ("actual_primer", "estimated_primer"),
+    "sf_variance": ("actual_sf", "estimated_sf"),
+}
+
+
+def first_nonempty_value(values: pd.Series) -> object:
+    for value in values:
+        text = text_value(value)
+        if text:
+            return value
+    return np.nan
+
+
+def unique_text_join(values: pd.Series, *, limit: int = 300) -> str:
+    seen: list[str] = []
+    for value in values:
+        text = text_value(value)
+        if text and text not in seen:
+            seen.append(text)
+    return "; ".join(seen)[:limit]
+
+
+def first_positive_value(values: pd.Series) -> float:
+    numeric = pd.to_numeric(values, errors="coerce")
+    positive = numeric[numeric > 0]
+    if positive.empty:
+        return float("nan")
+    return float(positive.iloc[0])
+
+
+def sum_positive_values(values: pd.Series) -> float:
+    numeric = pd.to_numeric(values, errors="coerce")
+    positive = numeric[numeric > 0]
+    if positive.empty:
+        return float("nan")
+    return float(positive.sum())
+
+
+def rollup_job_tracking_production_summary(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df.copy()
+    out = df.copy()
+    exact_duplicate_subset = [
+        column
+        for column in ["job_id", "tracking_file", "source_file", "first_work_date", "last_work_date"]
+        if column in out.columns
+    ]
+    if exact_duplicate_subset:
+        out = out.drop_duplicates(subset=exact_duplicate_subset)
+
+    if "job_id" in out.columns:
+        job_key = out["job_id"].fillna("").astype(str).str.strip()
+    else:
+        job_key = pd.Series("", index=out.index)
+    fallback_key = pd.Series("", index=out.index)
+    for column in ["project", "job_name", "customer", "source_file"]:
+        if column in out.columns:
+            fallback_key = fallback_key.where(fallback_key.astype(str).str.strip().ne(""), out[column].fillna("").astype(str).str.strip())
+    out["_tracking_rollup_key"] = job_key.where(job_key.ne(""), fallback_key)
+    out = out[out["_tracking_rollup_key"].astype(str).str.strip().ne("")]
+    if out.empty:
+        return df.copy()
+
+    rows: list[dict[str, object]] = []
+    text_columns = [
+        "job_id",
+        "project",
+        "customer",
+        "job_name",
+        "division",
+        "tracking_status",
+        "pipeline_status",
+        "status",
+        "project_category",
+        "material_system_display",
+        "substrate_display",
+        "warranty_display",
+        "folder_path",
+        "folder_url",
+        "folder_link_or_path",
+    ]
+    joined_text_columns = ["source_file", "tracking_file", "estimated_materials_source", "tracking_warnings"]
+    for _, group in out.groupby("_tracking_rollup_key", dropna=False, sort=False):
+        row: dict[str, object] = {}
+        for column in text_columns:
+            if column in group.columns:
+                row[column] = first_nonempty_value(group[column])
+        for column in joined_text_columns:
+            if column in group.columns:
+                row[column] = unique_text_join(group[column])
+        if "tracking_notes" in group.columns:
+            row["tracking_notes"] = unique_text_join(group["tracking_notes"], limit=2000)
+        for column in ["first_work_date", "created_at"]:
+            if column in group.columns:
+                row[column] = pd.to_datetime(group[column], errors="coerce").min()
+        for column in ["last_work_date", "updated_at"]:
+            if column in group.columns:
+                row[column] = pd.to_datetime(group[column], errors="coerce").max()
+        for column in TRACKING_ROLLUP_SUM_COLUMNS:
+            if column in group.columns:
+                row[column] = sum_positive_values(group[column])
+        for column in TRACKING_ROLLUP_ESTIMATE_COLUMNS:
+            if column in group.columns:
+                row[column] = first_positive_value(group[column])
+        for column in TRACKING_ROLLUP_AVERAGE_COLUMNS:
+            if column in group.columns:
+                row[column] = _positive_average(group[column])
+        if "estimate_material_rows_used" in group.columns:
+            row["estimate_material_rows_used"] = first_positive_value(group["estimate_material_rows_used"])
+        if "estimated_value" in group.columns:
+            row["estimated_value"] = first_positive_value(group["estimated_value"])
+        rows.append(row)
+
+    rolled = pd.DataFrame(rows)
+    if rolled.empty:
+        return rolled
+    if "actual_total_hours" not in rolled.columns or rolled["actual_total_hours"].isna().all():
+        total_hours = pd.Series(0.0, index=rolled.index)
+        for column in ["actual_labor_hours", "actual_travel_hours", "actual_load_hours", "actual_os_hours"]:
+            if column in rolled.columns:
+                total_hours = total_hours.add(numeric_series(rolled, column).reindex(rolled.index).fillna(0), fill_value=0)
+        rolled["actual_total_hours"] = total_hours
+    if "estimated_total_hours" not in rolled.columns or rolled["estimated_total_hours"].isna().all():
+        total_hours = pd.Series(0.0, index=rolled.index)
+        for column in ["estimated_labor_hours", "estimated_travel_hours", "estimated_load_hours"]:
+            if column in rolled.columns:
+                total_hours = total_hours.add(numeric_series(rolled, column).reindex(rolled.index).fillna(0), fill_value=0)
+        rolled["estimated_total_hours"] = total_hours
+    for variance_column, (actual_column, estimate_column) in TRACKING_ROLLUP_VARIANCE_PAIRS.items():
+        if actual_column in rolled.columns and estimate_column in rolled.columns:
+            rolled[variance_column] = numeric_series(rolled, actual_column) - numeric_series(rolled, estimate_column)
+    if "actual_labor_hours" in rolled.columns and "estimated_labor_hours" in rolled.columns:
+        rolled["labor_hours_used_pct"] = np.where(
+            numeric_series(rolled, "estimated_labor_hours") > 0,
+            numeric_series(rolled, "actual_labor_hours") / numeric_series(rolled, "estimated_labor_hours"),
+            np.nan,
+        )
+    return rolled
+
+
 JOB_TRACKING_BUDGET_BUCKETS = [
     {
         "bucket": "Labor",
@@ -2525,6 +2722,9 @@ def build_job_tracking_budget_health(summary: pd.DataFrame) -> tuple[pd.DataFram
     ]
     if summary.empty or "job_id" not in summary.columns:
         return pd.DataFrame(), pd.DataFrame()
+    summary = rollup_job_tracking_production_summary(summary)
+    if summary.empty or "job_id" not in summary.columns:
+        return pd.DataFrame(), pd.DataFrame()
     job_ids = tuple(summary["job_id"].dropna().astype(str).str.strip())
     budget_enrichment = load_job_tracking_estimate_budget_enrichment(job_ids)
     budget_lookup: dict[tuple[str, str], dict[str, object]] = {}
@@ -2667,27 +2867,69 @@ def render_job_tracking_budget_health(summary: pd.DataFrame) -> None:
         ]
     )
 
-    chart_df = budget_jobs.dropna(subset=["budget_variance"]).copy()
+    chart_df = budget_jobs[
+        pd.to_numeric(budget_jobs["estimated_cost"], errors="coerce").gt(0)
+        & pd.to_numeric(budget_jobs["actual_cost"], errors="coerce").ge(0)
+    ].copy()
     if not chart_df.empty:
-        chart_df = chart_df.reindex(chart_df["budget_variance"].abs().sort_values(ascending=False).index).head(20)
-        fig = px.bar(
-            chart_df.sort_values("budget_variance"),
-            x="budget_variance",
-            y="project",
-            orientation="h",
-            color="budget_status",
-            title="Budget Variance by Job",
-            labels={"budget_variance": "actual minus estimate", "project": "job"},
-            color_discrete_map={
-                "Over Budget": "#dc2626",
-                "Watch": "#d97706",
-                "On Track": "#059669",
-                "No Actuals Yet": "#6b7280",
-                "Incomplete Baseline": "#2563eb",
-            },
+        chart_df["_chart_extent"] = chart_df[["estimated_cost", "actual_cost"]].max(axis=1)
+        chart_df = chart_df.sort_values("_chart_extent", ascending=False).head(20)
+        chart_df = chart_df.sort_values("_chart_extent", ascending=True)
+        status_colors = {
+            "Over Budget": "#dc2626",
+            "Watch": "#d97706",
+            "On Track": "#059669",
+            "No Actuals Yet": "#6b7280",
+            "Incomplete Baseline": "#2563eb",
+        }
+        fig = go.Figure()
+        fig.add_trace(
+            go.Bar(
+                x=chart_df["estimated_cost"],
+                y=chart_df["project"],
+                orientation="h",
+                name="Estimated budget",
+                marker={"color": "#d7d0c4"},
+                opacity=0.9,
+                hovertemplate="<b>%{y}</b><br>Estimated budget: $%{x:,.0f}<extra></extra>",
+            )
         )
-        fig.add_vline(x=0, line_width=1, line_color="#111827")
-        fig.update_xaxes(tickprefix="$", tickformat=",.0f", separatethousands=True)
+        fig.add_trace(
+            go.Bar(
+                x=chart_df["actual_cost"],
+                y=chart_df["project"],
+                orientation="h",
+                name="Actual cost used",
+                marker={"color": [status_colors.get(status, "#6b7280") for status in chart_df["budget_status"]]},
+                customdata=np.stack(
+                    [
+                        chart_df["estimated_cost"].fillna(0),
+                        chart_df["budget_variance"].fillna(0),
+                        chart_df["budget_used_pct_display"].fillna(""),
+                        chart_df["budget_status"].fillna(""),
+                    ],
+                    axis=-1,
+                ),
+                hovertemplate=(
+                    "<b>%{y}</b><br>"
+                    "Actual cost used: $%{x:,.0f}<br>"
+                    "Estimated budget: $%{customdata[0]:,.0f}<br>"
+                    "Variance: $%{customdata[1]:,.0f}<br>"
+                    "Used: %{customdata[2]}<br>"
+                    "Status: %{customdata[3]}<extra></extra>"
+                ),
+            )
+        )
+        fig.update_layout(
+            title="Budget Used by Job",
+            barmode="overlay",
+            bargap=0.35,
+            xaxis_title="budget cost",
+            yaxis_title="job",
+            legend_title_text="",
+            colorway=SPRAYTEC_CHART_COLOR_SEQUENCE,
+        )
+        fig.update_xaxes(tickprefix="$", tickformat=",.0f", separatethousands=True, rangemode="tozero")
         st.plotly_chart(fig, width="stretch")
 
     show_table(
@@ -13649,7 +13891,8 @@ def job_tracking_dashboard_page() -> None:
             )
 
     with tab_foam:
-        roofing_summary, insulation_summary = split_tracking_material_rows(summary)
+        material_summary = rollup_job_tracking_production_summary(summary)
+        roofing_summary, insulation_summary = split_tracking_material_rows(material_summary)
         roofing_daily, insulation_daily = split_tracking_material_rows(daily)
 
         material_summary_columns = [

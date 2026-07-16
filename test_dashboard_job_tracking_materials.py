@@ -157,3 +157,76 @@ def test_job_tracking_budget_health_uses_estimate_cost_baselines(monkeypatch) ->
     assert insulation_job["budget_status"] == "On Track"
     assert insulation_job["actual_cost"] == 1000
     assert insulation_job["estimated_cost"] == 2000
+
+
+def test_job_tracking_material_rollup_collapses_duplicate_job_rows() -> None:
+    import dashboard.app as app
+
+    summary = pd.DataFrame(
+        [
+            {
+                "job_id": "ROOF1",
+                "project": "LGE Tc Warranty",
+                "division": "Roofing",
+                "tracking_status": "Recently touched",
+                "source_file": "Tracking A.xlsx",
+                "actual_base_coat_1": 4,
+                "actual_foam_sqft": 100,
+                "estimated_base_coat_1": 20,
+                "estimated_foam_sqft": 400,
+                "estimate_material_rows_used": 8,
+            },
+            {
+                "job_id": "ROOF1",
+                "project": "LGE Tc Warranty",
+                "division": "Roofing",
+                "tracking_status": "Recently touched",
+                "source_file": "Tracking B.xlsx",
+                "actual_base_coat_1": 6,
+                "actual_foam_sqft": 50,
+                "estimated_base_coat_1": 20,
+                "estimated_foam_sqft": 400,
+                "estimate_material_rows_used": 8,
+            },
+            {
+                "job_id": "INS1",
+                "project": "Mcdaniel - McDaniel - 224 Hillview Dr.",
+                "division": "Insulation",
+                "tracking_status": "Recently touched",
+                "source_file": "Tracking C.xlsx",
+                "actual_foam_sqft": 150,
+                "estimated_foam_sqft": 600,
+                "estimated_foam_yield": 3500,
+            },
+            {
+                "job_id": "INS1",
+                "project": "Mcdaniel - McDaniel - 224 Hillview Dr.",
+                "division": "Insulation",
+                "tracking_status": "Recently touched",
+                "source_file": "Tracking D.xlsx",
+                "actual_foam_sqft": 250,
+                "estimated_foam_sqft": 600,
+                "estimated_foam_yield": 3500,
+            },
+        ]
+    )
+
+    rolled = app.rollup_job_tracking_production_summary(summary)
+    roofing_rows, insulation_rows = app.split_tracking_material_rows(rolled)
+
+    assert roofing_rows["project"].tolist() == ["LGE Tc Warranty"]
+    assert insulation_rows["project"].tolist() == ["Mcdaniel - McDaniel - 224 Hillview Dr."]
+
+    roof = roofing_rows.iloc[0]
+    assert roof["actual_base_coat_1"] == 10
+    assert roof["actual_foam_sqft"] == 150
+    assert roof["estimated_base_coat_1"] == 20
+    assert roof["estimated_foam_sqft"] == 400
+    assert roof["base_coat_1_variance"] == -10
+    assert roof["foam_sqft_variance"] == -250
+
+    insulation = insulation_rows.iloc[0]
+    assert insulation["actual_foam_sqft"] == 400
+    assert insulation["estimated_foam_sqft"] == 600
+    assert insulation["estimated_foam_yield"] == 3500
+    assert insulation["foam_sqft_variance"] == -200
