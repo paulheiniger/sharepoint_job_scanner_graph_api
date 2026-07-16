@@ -713,13 +713,21 @@ CREATE TABLE IF NOT EXISTS office_timesheet_entries (
     entry_id TEXT PRIMARY KEY,
     employee TEXT,
     work_date DATE,
+    job_id TEXT,
     project_name TEXT,
     code TEXT,
     duration_hours NUMERIC,
     row_type TEXT,
+    start_time TEXT,
+    end_time TEXT,
+    milestone TEXT,
+    next_action TEXT,
+    next_action_owner TEXT,
+    next_action_due DATE,
     notes TEXT,
     source_file TEXT,
     source_sheet TEXT,
+    source_app TEXT,
     source_row INTEGER,
     source_drive_id TEXT,
     source_drive_item_id TEXT,
@@ -728,6 +736,7 @@ CREATE TABLE IF NOT EXISTS office_timesheet_entries (
     source_content_hash TEXT,
     warnings TEXT,
     raw JSONB,
+    created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
 );
 
@@ -776,4 +785,7 @@ CREATE INDEX IF NOT EXISTS idx_job_workflow_status ON job_workflow_overrides(wor
 CREATE INDEX IF NOT EXISTS idx_job_workflow_priority ON job_workflow_overrides(priority);
 CREATE INDEX IF NOT EXISTS idx_tracking_summary_job_id ON job_tracking_summary(job_id);
 CREATE INDEX IF NOT EXISTS idx_timesheet_project_name ON office_timesheet_entries(project_name);
+CREATE INDEX IF NOT EXISTS idx_office_timesheet_job_id ON office_timesheet_entries(job_id);
+CREATE INDEX IF NOT EXISTS idx_office_timesheet_milestone ON office_timesheet_entries(milestone);
+CREATE INDEX IF NOT EXISTS idx_office_timesheet_next_action_due ON office_timesheet_entries(next_action_due);
 CREATE INDEX IF NOT EXISTS idx_office_timesheet_source_drive_item ON office_timesheet_entries(source_drive_id, source_drive_item_id);

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pandas as pd
+
+from dashboard.app import prepare_timesheet_activity_rows
 from jobscan.office_timesheet_sync import (
     _finalize_record,
     build_code_summary,
@@ -128,6 +131,49 @@ def test_summary_counts_timed_and_activity_rows() -> None:
         assert summary["missing_code_count"] == 2
 
 
+def test_prepare_activity_rows_uses_direct_job_id() -> None:
+    timesheets = pd.DataFrame(
+        [
+            {
+                "employee": "Aaron",
+                "work_date": "2026-07-16",
+                "job_id": "job-123",
+                "project_name": "Short hand that would not fuzzy match",
+                "code": "Proposal",
+                "duration_hours": 1.25,
+                "row_type": "timed_entry",
+                "notes": "Sent proposal",
+            }
+        ]
+    )
+    jobs = pd.DataFrame(
+        [
+            {
+                "job_id": "job-123",
+                "customer": "Living Waters Church",
+                "job_name": "Roof B",
+                "division": "Roofing",
+                "job_type": "Roof Restoration",
+                "project_type": "Coating",
+                "pipeline_status": "Proposed",
+                "status": "Open",
+                "estimated_value": 42000,
+                "final_price": None,
+                "estimated_sqft": 9600,
+                "folder_link_or_path": "https://example.invalid/job",
+            }
+        ]
+    )
+
+    activity = prepare_timesheet_activity_rows(timesheets, jobs)
+
+    assert activity.loc[0, "match_status"] == "Direct"
+    assert activity.loc[0, "match_score"] == 100.0
+    assert activity.loc[0, "customer"] == "Living Waters Church"
+    assert activity.loc[0, "job_name"] == "Roof B"
+    assert bool(activity.loc[0, "matched_job"]) is True
+
+
 if __name__ == "__main__":
     test_parse_duration_hours_examples()
     test_parse_approx_time_fractional_hours()
@@ -136,4 +182,5 @@ if __name__ == "__main__":
     test_activity_only_missing_code_is_not_warning()
     test_timed_entry_missing_code_is_warning()
     test_summary_counts_timed_and_activity_rows()
+    test_prepare_activity_rows_uses_direct_job_id()
     print("office timesheet duration parser ok")

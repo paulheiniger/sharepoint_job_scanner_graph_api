@@ -15,6 +15,7 @@ import copy
 import re
 import sys
 import time
+import uuid
 from io import BytesIO
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
@@ -1589,6 +1590,19 @@ CREATE TABLE IF NOT EXISTS daily_dispatch_crew_assignments (
 """
 
 
+OFFICE_TIMESHEET_APP_COLUMNS_SQL = [
+    "ALTER TABLE office_timesheet_entries ADD COLUMN IF NOT EXISTS job_id TEXT",
+    "ALTER TABLE office_timesheet_entries ADD COLUMN IF NOT EXISTS start_time TEXT",
+    "ALTER TABLE office_timesheet_entries ADD COLUMN IF NOT EXISTS end_time TEXT",
+    "ALTER TABLE office_timesheet_entries ADD COLUMN IF NOT EXISTS milestone TEXT",
+    "ALTER TABLE office_timesheet_entries ADD COLUMN IF NOT EXISTS next_action TEXT",
+    "ALTER TABLE office_timesheet_entries ADD COLUMN IF NOT EXISTS next_action_owner TEXT",
+    "ALTER TABLE office_timesheet_entries ADD COLUMN IF NOT EXISTS next_action_due DATE",
+    "ALTER TABLE office_timesheet_entries ADD COLUMN IF NOT EXISTS source_app TEXT",
+    "ALTER TABLE office_timesheet_entries ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()",
+]
+
+
 DAILY_PRODUCTION_ENTRIES_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS daily_production_entries (
     production_entry_id TEXT PRIMARY KEY,
@@ -1829,6 +1843,16 @@ def ensure_daily_dispatch_table() -> None:
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_daily_dispatch_job_id ON daily_dispatch(job_id)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_daily_dispatch_crew_assignments_date ON daily_dispatch_crew_assignments(dispatch_date)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_daily_dispatch_crew_assignments_job ON daily_dispatch_crew_assignments(job_id)"))
+
+
+def ensure_office_timesheet_app_columns() -> None:
+    engine = get_engine()
+    with engine.begin() as conn:
+        for column_sql in OFFICE_TIMESHEET_APP_COLUMNS_SQL:
+            conn.execute(text(column_sql))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_office_timesheet_job_id ON office_timesheet_entries(job_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_office_timesheet_milestone ON office_timesheet_entries(milestone)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_office_timesheet_next_action_due ON office_timesheet_entries(next_action_due)"))
 
 
 def ensure_daily_production_tables() -> None:
@@ -13281,6 +13305,11 @@ def load_job_board_df(include_document_signals: bool = True) -> pd.DataFrame:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_office_timesheet_entries() -> pd.DataFrame:
+    try:
+        ensure_office_timesheet_app_columns()
+        relation_columns.clear()
+    except Exception:
+        logger.exception("office timesheet app column check failed")
     cols = relation_columns("office_timesheet_entries")
     if not cols:
         return pd.DataFrame()
@@ -13288,13 +13317,21 @@ def load_office_timesheet_entries() -> pd.DataFrame:
         "entry_id": "entry_id",
         "employee": "employee",
         "work_date": "work_date",
+        "job_id": "job_id",
         "project_name": "project_name",
         "code": "code",
         "duration_hours": "duration_hours",
         "row_type": "row_type",
+        "start_time": "start_time",
+        "end_time": "end_time",
+        "milestone": "milestone",
+        "next_action": "next_action",
+        "next_action_owner": "next_action_owner",
+        "next_action_due": "next_action_due",
         "notes": "notes",
         "source_file": "source_file",
         "source_sheet": "source_sheet",
+        "source_app": "source_app",
         "warnings": "warnings",
     }
     select_parts = [f"{sql_column('t', cols, source)} AS {alias}" for source, alias in fields.items()]
@@ -13569,7 +13606,31 @@ def prepare_timesheet_activity_rows(timesheets: pd.DataFrame, jobs: pd.DataFrame
     if not isinstance(timesheets, pd.DataFrame) or timesheets.empty:
         return pd.DataFrame()
     df = timesheets.copy()
-    for column in ("employee", "project_name", "code", "row_type", "notes", "source_file", "source_sheet", "warnings"):
+    direct_job_id = (
+        df.get("job_id", pd.Series("", index=df.index))
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+    if "job_id" in df.columns:
+        df = df.drop(columns=["job_id"])
+    for column in (
+        "employee",
+        "project_name",
+        "code",
+        "row_type",
+        "notes",
+        "source_file",
+        "source_sheet",
+        "warnings",
+        "start_time",
+        "end_time",
+        "milestone",
+        "next_action",
+        "next_action_owner",
+        "next_action_due",
+        "source_app",
+    ):
         if column not in df.columns:
             df[column] = ""
         df[column] = df[column].fillna("").astype(str)
@@ -13593,12 +13654,39 @@ def prepare_timesheet_activity_rows(timesheets: pd.DataFrame, jobs: pd.DataFrame
         for column in match_columns:
             if column != "project_name":
                 df[column] = ""
+    df["_direct_job_id"] = direct_job_id
+    direct_mask = df["_direct_job_id"].fillna("").astype(str).str.strip().ne("")
+    if direct_mask.any() and isinstance(jobs, pd.DataFrame) and not jobs.empty and "job_id" in jobs.columns:
+        job_lookup = jobs.copy()
+        job_lookup["job_id"] = job_lookup["job_id"].fillna("").astype(str).str.strip()
+        job_lookup = job_lookup[job_lookup["job_id"].ne("")]
+        job_lookup = job_lookup.drop_duplicates("job_id").set_index("job_id")
+        for idx in df.index[direct_mask]:
+            job_id_text = text_value(df.at[idx, "_direct_job_id"])
+            if not job_id_text:
+                continue
+            df.at[idx, "job_id"] = job_id_text
+            if job_id_text in job_lookup.index:
+                matched_job = job_lookup.loc[job_id_text]
+                for field in TIMESHEET_JOB_CONTEXT_FIELDS:
+                    if field == "job_id":
+                        continue
+                    if field in matched_job.index:
+                        df.at[idx, field] = matched_job.get(field)
+                df.at[idx, "match_score"] = 100.0
+                df.at[idx, "match_status"] = "Direct"
+                df.at[idx, "match_reason"] = "selected from job list"
+            else:
+                df.at[idx, "match_score"] = 100.0
+                df.at[idx, "match_status"] = "Direct"
+                df.at[idx, "match_reason"] = "selected job ID not found in current job context"
     for column in ("match_score", "estimated_value", "final_price", "estimated_sqft"):
         if column in df.columns:
             df[column] = pd.to_numeric(df[column], errors="coerce").fillna(0.0)
     df["job_value"] = df.apply(timesheet_job_value, axis=1)
     df["value_band"] = df["job_value"].apply(timesheet_value_band)
     df["matched_job"] = df["job_id"].fillna("").astype(str).str.strip().ne("")
+    df = df.drop(columns=["_direct_job_id"], errors="ignore")
     return df
 
 
@@ -13672,6 +13760,300 @@ def load_timesheet_dashboard_activity() -> dict[str, Any]:
         "activity": activity,
         "build_timings": timings,
     }
+
+
+OFFICE_TIMESHEET_WORK_CODES = [
+    "",
+    "Estimating",
+    "Proposal",
+    "Job Spec",
+    "Follow-Up",
+    "Sales Call",
+    "Site Visit",
+    "Scheduling",
+    "Customer Service",
+    "Admin",
+    "Team Meeting",
+    "Other",
+]
+
+OFFICE_TIMESHEET_MILESTONES = [
+    "",
+    "Finished Estimate",
+    "Sent Proposal",
+    "Finished Job Spec",
+    "Customer Follow-Up Completed",
+    "Site Visit Completed",
+    "Revision Completed",
+    "Contract/Admin Handoff",
+    "Scheduling Handoff",
+]
+
+
+def office_timesheet_job_label(row: pd.Series | dict[str, Any]) -> str:
+    customer = text_value(row.get("customer"))
+    job_name = text_value(row.get("job_name"))
+    division = text_value(row.get("division"))
+    value = optional_positive_number(row.get("final_price")) or optional_positive_number(row.get("estimated_value")) or 0.0
+    parts = [part for part in [customer, job_name] if part]
+    label = " - ".join(parts) if parts else text_value(row.get("job_id"))
+    suffix = []
+    if division:
+        suffix.append(division)
+    if value:
+        suffix.append(money_metric(value))
+    return f"{label} ({' | '.join(suffix)})" if suffix else label
+
+
+def save_office_timesheet_app_entry(record: dict[str, Any]) -> str:
+    ensure_office_timesheet_app_columns()
+    entry_id = text_value(record.get("entry_id")) or f"office-app-{uuid.uuid4().hex}"
+    duration = optional_positive_number(record.get("duration_hours")) or 0.0
+    notes = text_value(record.get("notes"))
+    milestone = text_value(record.get("milestone"))
+    next_action = text_value(record.get("next_action"))
+    row_type = "timed_entry" if duration > 0 else "activity_only"
+    if duration <= 0 and not any([notes, milestone, next_action]):
+        raise ValueError("Enter time, a milestone, a next action, or notes before saving.")
+    payload = {
+        "entry_id": entry_id,
+        "employee": clean_db_value(record.get("employee")),
+        "work_date": clean_db_value(record.get("work_date")),
+        "job_id": clean_db_value(record.get("job_id")),
+        "project_name": clean_db_value(record.get("project_name")),
+        "code": clean_db_value(record.get("code")),
+        "duration_hours": duration if duration > 0 else None,
+        "row_type": row_type,
+        "start_time": clean_db_value(record.get("start_time")),
+        "end_time": clean_db_value(record.get("end_time")),
+        "milestone": clean_db_value(record.get("milestone")),
+        "next_action": clean_db_value(record.get("next_action")),
+        "next_action_owner": clean_db_value(record.get("next_action_owner")),
+        "next_action_due": clean_db_value(record.get("next_action_due")),
+        "notes": clean_db_value(record.get("notes")),
+        "source_file": "Streamlit Office Timesheet",
+        "source_sheet": "App",
+        "source_app": "office_timesheet_app",
+        "warnings": None,
+        "raw": json.dumps(record, default=str),
+    }
+    required = ["employee", "work_date", "project_name", "code"]
+    missing = [field for field in required if not text_value(payload.get(field))]
+    if missing:
+        raise ValueError(f"Missing required field(s): {', '.join(missing)}.")
+    upsert_sql = text(
+        """
+        INSERT INTO office_timesheet_entries (
+            entry_id,
+            employee,
+            work_date,
+            job_id,
+            project_name,
+            code,
+            duration_hours,
+            row_type,
+            start_time,
+            end_time,
+            milestone,
+            next_action,
+            next_action_owner,
+            next_action_due,
+            notes,
+            source_file,
+            source_sheet,
+            source_app,
+            warnings,
+            raw,
+            updated_at
+        )
+        VALUES (
+            :entry_id,
+            :employee,
+            :work_date,
+            :job_id,
+            :project_name,
+            :code,
+            :duration_hours,
+            :row_type,
+            :start_time,
+            :end_time,
+            :milestone,
+            :next_action,
+            :next_action_owner,
+            :next_action_due,
+            :notes,
+            :source_file,
+            :source_sheet,
+            :source_app,
+            :warnings,
+            CAST(:raw AS JSONB),
+            NOW()
+        )
+        ON CONFLICT (entry_id) DO UPDATE SET
+            employee = EXCLUDED.employee,
+            work_date = EXCLUDED.work_date,
+            job_id = EXCLUDED.job_id,
+            project_name = EXCLUDED.project_name,
+            code = EXCLUDED.code,
+            duration_hours = EXCLUDED.duration_hours,
+            row_type = EXCLUDED.row_type,
+            start_time = EXCLUDED.start_time,
+            end_time = EXCLUDED.end_time,
+            milestone = EXCLUDED.milestone,
+            next_action = EXCLUDED.next_action,
+            next_action_owner = EXCLUDED.next_action_owner,
+            next_action_due = EXCLUDED.next_action_due,
+            notes = EXCLUDED.notes,
+            source_file = EXCLUDED.source_file,
+            source_sheet = EXCLUDED.source_sheet,
+            source_app = EXCLUDED.source_app,
+            warnings = EXCLUDED.warnings,
+            raw = EXCLUDED.raw,
+            updated_at = NOW()
+        """
+    )
+    with get_engine().begin() as conn:
+        conn.execute(upsert_sql, payload)
+    st.cache_data.clear()
+    return entry_id
+
+
+def office_timesheet_entry_page() -> None:
+    st.title("Office Timesheet")
+    st.caption("Log estimator and office time against real jobs, milestones, and follow-up actions.")
+    saved_message = st.session_state.pop("office_timesheet_saved_message", "")
+    if saved_message:
+        st.success(saved_message)
+
+    jobs = load_timesheet_job_match_context()
+    existing_timesheets = load_office_timesheet_entries()
+    known_employees = options_from(existing_timesheets, "employee") if isinstance(existing_timesheets, pd.DataFrame) else []
+    recent_app_entries = pd.DataFrame()
+    if isinstance(existing_timesheets, pd.DataFrame) and not existing_timesheets.empty:
+        recent_app_entries = existing_timesheets[
+            existing_timesheets.get("source_app", pd.Series("", index=existing_timesheets.index)).fillna("").astype(str).eq("office_timesheet_app")
+        ].copy()
+
+    employee_col, date_col = st.columns([1.4, 1])
+    with employee_col:
+        default_employee = text_value(st.session_state.get("office_timesheet_employee"))
+        employee_options = [""] + known_employees + ["Other"]
+        selected_employee = st.selectbox(
+            "Employee",
+            employee_options,
+            index=employee_options.index(default_employee) if default_employee in employee_options else 0,
+            key="office_timesheet_employee_select",
+        )
+        if selected_employee == "Other" or not selected_employee:
+            employee = st.text_input("Employee name", value=default_employee if selected_employee != "Other" else "", key="office_timesheet_employee_text")
+        else:
+            employee = selected_employee
+    with date_col:
+        work_date = st.date_input("Work date", value=date.today(), key="office_timesheet_work_date")
+
+    job_rows_by_id: dict[str, dict[str, Any]] = {}
+    job_ids: list[str] = []
+    if isinstance(jobs, pd.DataFrame) and not jobs.empty and "job_id" in jobs.columns:
+        jobs_for_picker = jobs.copy()
+        jobs_for_picker["job_id"] = jobs_for_picker["job_id"].fillna("").astype(str).str.strip()
+        jobs_for_picker = jobs_for_picker[jobs_for_picker["job_id"].ne("")]
+        jobs_for_picker["_label"] = jobs_for_picker.apply(office_timesheet_job_label, axis=1)
+        jobs_for_picker = jobs_for_picker.sort_values(["customer", "job_name"], na_position="last")
+        job_rows_by_id = {
+            text_value(row.get("job_id")): row.to_dict()
+            for _, row in jobs_for_picker.iterrows()
+            if text_value(row.get("job_id"))
+        }
+        job_ids = list(job_rows_by_id.keys())
+
+    with st.form("office_timesheet_entry_form", clear_on_submit=True):
+        project_mode = st.radio("Work type", ["Job work", "Non-project work"], horizontal=True)
+        selected_job_id = ""
+        selected_job_row: dict[str, Any] = {}
+        project_name = ""
+        if project_mode == "Job work":
+            if job_ids:
+                selected_job_id = st.selectbox(
+                    "Job",
+                    job_ids,
+                    format_func=lambda job_id: office_timesheet_job_label(job_rows_by_id.get(job_id, {})),
+                    key="office_timesheet_job_id",
+                )
+                selected_job_row = job_rows_by_id.get(selected_job_id, {})
+                project_name = office_timesheet_job_label(selected_job_row)
+            else:
+                st.warning("No job list is available. Use non-project work or check the job board data load.")
+        else:
+            project_name = st.text_input("Project / activity", key="office_timesheet_non_project_name")
+
+        code_col, duration_col, time_col1, time_col2 = st.columns([1.2, 0.8, 0.8, 0.8])
+        with code_col:
+            code = st.selectbox("Code", OFFICE_TIMESHEET_WORK_CODES, index=0, key="office_timesheet_code")
+        with duration_col:
+            duration_hours = st.number_input("Hours", min_value=0.0, max_value=24.0, value=0.0, step=0.25, key="office_timesheet_hours")
+        with time_col1:
+            start_time_value = st.text_input("Start", placeholder="8:30 AM", key="office_timesheet_start_time")
+        with time_col2:
+            end_time_value = st.text_input("End", placeholder="10:00 AM", key="office_timesheet_end_time")
+
+        milestone_col, action_due_col = st.columns([1.4, 1])
+        with milestone_col:
+            milestone = st.selectbox("Milestone", OFFICE_TIMESHEET_MILESTONES, index=0, key="office_timesheet_milestone")
+        with action_due_col:
+            has_next_action_due = st.checkbox("Next action has due date", value=False, key="office_timesheet_has_next_action_due")
+            next_action_due = st.date_input("Next action due", value=date.today() + timedelta(days=2), key="office_timesheet_next_action_due") if has_next_action_due else None
+
+        next_action = st.text_input("Next action", placeholder="Follow up with customer, finish revision, stage job spec...", key="office_timesheet_next_action")
+        next_action_owner = st.text_input("Next action owner", value=employee, key="office_timesheet_next_action_owner")
+        notes = st.text_area("Notes", placeholder="Briefly describe what changed or what was accomplished.", height=100, key="office_timesheet_notes")
+
+        submitted = st.form_submit_button("Save Time Entry", width="stretch")
+        if submitted:
+            try:
+                saved_id = save_office_timesheet_app_entry(
+                    {
+                        "employee": employee,
+                        "work_date": work_date,
+                        "job_id": selected_job_id,
+                        "project_name": project_name,
+                        "code": code,
+                        "duration_hours": duration_hours,
+                        "start_time": start_time_value,
+                        "end_time": end_time_value,
+                        "milestone": milestone,
+                        "next_action": next_action,
+                        "next_action_owner": next_action_owner,
+                        "next_action_due": next_action_due,
+                        "notes": notes,
+                    }
+                )
+                st.session_state["office_timesheet_employee"] = employee
+                st.session_state["office_timesheet_saved_message"] = f"Saved time entry {saved_id}."
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Could not save time entry: {safe_exception_text(exc)}")
+
+    st.subheader("Recent App Entries")
+    if recent_app_entries.empty:
+        st.caption("No app-entered office timesheet rows yet.")
+    else:
+        show_table(
+            recent_app_entries,
+            [
+                "work_date",
+                "employee",
+                "project_name",
+                "code",
+                "duration_hours",
+                "milestone",
+                "next_action",
+                "next_action_owner",
+                "next_action_due",
+                "notes",
+            ],
+            height=360,
+            sort_by="work_date",
+        )
 
 
 def summarize_timesheet_by_employee(activity: pd.DataFrame) -> pd.DataFrame:
@@ -15776,8 +16158,8 @@ def timesheet_job_touches_page() -> None:
     with filter_col3:
         status_filter = st.multiselect(
             "Match Status",
-            ["Exact/Strong", "Strong", "Review", "Weak", "Unmatched"],
-            default=["Exact/Strong", "Strong", "Review"],
+            ["Direct", "Exact/Strong", "Strong", "Review", "Weak", "Unmatched"],
+            default=["Direct", "Exact/Strong", "Strong", "Review"],
             key="timesheet_touches_match_status",
         )
     with filter_col4:
@@ -24515,6 +24897,8 @@ def render_dashboard_page(page: str) -> None:
         ask_spraytec_page()
     elif page == "Job Board":
         job_board_page()
+    elif page == "Office Timesheet":
+        office_timesheet_entry_page()
     elif page == "Timesheet Job Touches":
         timesheet_job_touches_page()
     elif page == "Job Tracking":
@@ -24578,6 +24962,7 @@ def main() -> None:
             "Sales Dashboard",
             "Operations Dashboard",
             "Job Board",
+            "Office Timesheet",
             "Timesheet Job Touches",
             "Job Tracking",
             "Schedule Calendar",
