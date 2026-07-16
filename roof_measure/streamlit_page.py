@@ -45,7 +45,7 @@ from .image_io import load_image_bytes, uploaded_file_bytes
 from .map_reference import MapboxReferenceProvider
 from .models import RoofMeasureRequest, RoofSection
 from .service import RoofMeasureResult, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections
-from .visualization import annotated_overlay, image_png_bytes
+from .visualization import annotated_overlay, image_png_bytes, prompt_points_overlay
 
 
 def render_ai_roof_measure_page() -> None:
@@ -247,6 +247,22 @@ def render_ai_roof_measure_page() -> None:
             height=90,
             key="roof_measure_negative_points",
         )
+    preview_positive_points = [
+        (float(prompt_x), float(prompt_y)),
+        *_parse_points_text(extra_positive_points_text),
+    ]
+    preview_negative_points = _parse_points_text(negative_points_text)
+    if preview_positive_points or preview_negative_points:
+        with st.expander("Review Prompt Points", expanded=True):
+            st.caption("Green points should be inside roof surfaces. Red points should be inside areas to exclude, such as parking, grass, roads, or courtyards.")
+            st.image(
+                prompt_points_overlay(
+                    loaded.inference_image,
+                    positive_points=preview_positive_points,
+                    negative_points=preview_negative_points,
+                ),
+                caption="SAM prompt points",
+            )
 
     cal_col1, cal_col2, cal_col3 = st.columns(3)
     with cal_col1:
@@ -271,7 +287,15 @@ def render_ai_roof_measure_page() -> None:
 
     controls_col1, controls_col2, controls_col3 = st.columns(3)
     with controls_col1:
-        simplification_tolerance = st.slider("Simplification tolerance", min_value=0.0, max_value=20.0, value=2.0, step=0.5)
+        simplification_tolerance = st.slider(
+            "Boundary smoothing",
+            min_value=0.0,
+            max_value=40.0,
+            value=15.0,
+            step=1.0,
+            help="Higher values remove noisy mask stair-steps and favor straight roof/building edges.",
+            key="roof_measure_simplification_tolerance",
+        )
     with controls_col2:
         minimum_section_area = st.number_input("Minimum section size (pixels)", min_value=1.0, value=400.0, step=100.0)
     with controls_col3:

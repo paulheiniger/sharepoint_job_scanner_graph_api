@@ -55,11 +55,18 @@ def sections_from_mask(
         area_pixels = float(len(component))
         if area_pixels < minimum_section_area_pixels:
             continue
+        ys, xs = zip(*component)
+        component_width = max(xs) - min(xs) + 1
+        component_height = max(ys) - min(ys) + 1
+        effective_tolerance = min(
+            max(0.0, float(simplification_tolerance)),
+            max(1.0, min(component_width, component_height) * 0.15),
+        )
         polygon, holes = polygon_from_component(component)
-        polygon = simplify_ring(polygon, simplification_tolerance)
+        polygon = simplify_ring(polygon, effective_tolerance)
         polygon = snap_axis_aligned_edges(polygon, edge_snap_strength)
         holes = [
-            snap_axis_aligned_edges(simplify_ring(hole, simplification_tolerance), edge_snap_strength)
+            snap_axis_aligned_edges(simplify_ring(hole, effective_tolerance), edge_snap_strength)
             for hole in holes
         ]
         holes = [hole for hole in holes if hole]

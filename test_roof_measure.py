@@ -25,6 +25,7 @@ from roof_measure.segmentation import MockRoofSegmenter, Sam2RoofSegmenter, Segm
 from roof_measure.service import measure_roof_from_overhead_image, recalculate_report_from_corrected_sections
 from roof_measure.models import RoofMeasureRequest
 from roof_measure.streamlit_page import _canvas_json_to_sections, _format_points_text, _parse_points_text, _sections_to_canvas_initial_drawing
+from roof_measure.visualization import prompt_points_overlay
 
 
 def _image_bytes(size: tuple[int, int] = (100, 80), *, fmt: str = "PNG") -> bytes:
@@ -460,3 +461,16 @@ def test_ai_point_suggestion_payload_filters_out_of_bounds_points() -> None:
     assert suggestion.negative_points == [(20.0, 30.0)]
     assert suggestion.confidence == 1.0
     assert "multiple roof sections" in suggestion.notes
+
+
+def test_prompt_points_overlay_preserves_image_size() -> None:
+    image = Image.new("RGB", (120, 80), "white")
+
+    overlay = prompt_points_overlay(
+        image,
+        positive_points=[(30, 40)],
+        negative_points=[(90, 40)],
+    )
+
+    assert overlay.size == image.size
+    assert overlay.mode == "RGB"
