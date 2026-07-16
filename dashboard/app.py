@@ -1481,6 +1481,11 @@ CREATE TABLE IF NOT EXISTS daily_production_entries (
     driver_name TEXT,
     odometer_out NUMERIC,
     odometer_in NUMERIC,
+    truck_number_2 TEXT,
+    trailer_number_2 TEXT,
+    driver_name_2 TEXT,
+    odometer_out_2 NUMERIC,
+    odometer_in_2 NUMERIC,
     equipment_notes TEXT,
     rain_observed BOOLEAN,
     weather_condition TEXT,
@@ -1540,6 +1545,11 @@ DAILY_PRODUCTION_EXTRA_COLUMNS_SQL = [
     "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS driver_name TEXT",
     "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS odometer_out NUMERIC",
     "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS odometer_in NUMERIC",
+    "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS truck_number_2 TEXT",
+    "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS trailer_number_2 TEXT",
+    "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS driver_name_2 TEXT",
+    "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS odometer_out_2 NUMERIC",
+    "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS odometer_in_2 NUMERIC",
     "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS equipment_notes TEXT",
     "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS rain_observed BOOLEAN",
     "ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS weather_condition TEXT",
@@ -5981,6 +5991,100 @@ def selected_options(value: object, allowed_options: list[str]) -> list[str]:
     return [allowed_lookup[part.lower()] for part in raw_values if part.lower() in allowed_lookup]
 
 
+def daily_production_crew_names(crew_leader: object, crew_members: object) -> list[str]:
+    names: list[str] = []
+    for value in [crew_leader, crew_members]:
+        text = text_value(value)
+        if not text:
+            continue
+        for part in re.split(r"[,;\n]+", text):
+            name = part.strip()
+            if name:
+                names.append(name)
+    seen: set[str] = set()
+    unique_names: list[str] = []
+    for name in names:
+        normalized = name.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        unique_names.append(name)
+    return unique_names
+
+
+def daily_production_crew_count(crew_leader: object, crew_members: object) -> int:
+    return max(len(daily_production_crew_names(crew_leader, crew_members)), 1)
+
+
+def parse_daily_production_time_minutes(value: object) -> int | None:
+    text = text_value(value).lower()
+    if not text:
+        return None
+    match = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)?\b", text)
+    if not match:
+        return None
+    hour = int(match.group(1))
+    minute = int(match.group(2) or 0)
+    if hour > 23 or minute > 59:
+        return None
+    meridiem = (match.group(3) or "").replace(".", "")
+    if meridiem == "pm" and hour < 12:
+        hour += 12
+    elif meridiem == "am" and hour == 12:
+        hour = 0
+    return hour * 60 + minute
+
+
+def elapsed_daily_production_hours(start_value: object, end_value: object) -> float | None:
+    start_minutes = parse_daily_production_time_minutes(start_value)
+    end_minutes = parse_daily_production_time_minutes(end_value)
+    if start_minutes is None or end_minutes is None:
+        return None
+    while end_minutes < start_minutes:
+        end_minutes += 12 * 60
+    return max((end_minutes - start_minutes) / 60, 0)
+
+
+def calculate_daily_production_hours_from_times(
+    *,
+    crew_leader: object,
+    crew_members: object,
+    outbound_departure_time: object,
+    jobsite_arrival_time: object,
+    lunch_start_time: object,
+    lunch_end_time: object,
+    return_departure_time: object,
+    return_arrival_time: object,
+) -> dict[str, Any]:
+    crew_count = daily_production_crew_count(crew_leader, crew_members)
+    outbound_hours = elapsed_daily_production_hours(outbound_departure_time, jobsite_arrival_time)
+    return_hours = elapsed_daily_production_hours(return_departure_time, return_arrival_time)
+    onsite_hours = elapsed_daily_production_hours(jobsite_arrival_time, return_departure_time)
+    lunch_hours = elapsed_daily_production_hours(lunch_start_time, lunch_end_time)
+    missing: list[str] = []
+    if outbound_hours is None:
+        missing.append("depart shop / arrive job")
+        outbound_hours = 0
+    if return_hours is None:
+        missing.append("depart job / arrive shop")
+        return_hours = 0
+    if onsite_hours is None:
+        missing.append("arrive job / depart job")
+        onsite_hours = 0
+    if lunch_hours is None:
+        lunch_hours = 0
+    net_work_hours = max(onsite_hours - lunch_hours, 0)
+    return {
+        "ok": not missing,
+        "crew_count": crew_count,
+        "labor_hours": round(net_work_hours * crew_count, 2),
+        "travel_hours": round((outbound_hours + return_hours) * crew_count, 2),
+        "onsite_hours": round(net_work_hours, 2),
+        "travel_duration_hours": round(outbound_hours + return_hours, 2),
+        "missing": missing,
+    }
+
+
 def production_number(value: Any) -> float | None:
     if value is None:
         return None
@@ -6262,6 +6366,8 @@ def upsert_daily_production_entry(production_entry: dict[str, Any]) -> str:
         "os_mileage",
         "odometer_out",
         "odometer_in",
+        "odometer_out_2",
+        "odometer_in_2",
         "temperature_f",
         "wind_mph",
         "humidity_pct",
@@ -6310,6 +6416,9 @@ def upsert_daily_production_entry(production_entry: dict[str, Any]) -> str:
         "truck_number",
         "trailer_number",
         "driver_name",
+        "truck_number_2",
+        "trailer_number_2",
+        "driver_name_2",
         "equipment_notes",
         "weather_condition",
         "weather_source",
@@ -6369,6 +6478,11 @@ def upsert_daily_production_entry(production_entry: dict[str, Any]) -> str:
                     driver_name,
                     odometer_out,
                     odometer_in,
+                    truck_number_2,
+                    trailer_number_2,
+                    driver_name_2,
+                    odometer_out_2,
+                    odometer_in_2,
                     equipment_notes,
                     rain_observed,
                     weather_condition,
@@ -6424,6 +6538,11 @@ def upsert_daily_production_entry(production_entry: dict[str, Any]) -> str:
                     :driver_name,
                     :odometer_out,
                     :odometer_in,
+                    :truck_number_2,
+                    :trailer_number_2,
+                    :driver_name_2,
+                    :odometer_out_2,
+                    :odometer_in_2,
                     :equipment_notes,
                     :rain_observed,
                     :weather_condition,
@@ -6474,6 +6593,11 @@ def upsert_daily_production_entry(production_entry: dict[str, Any]) -> str:
                     driver_name = EXCLUDED.driver_name,
                     odometer_out = EXCLUDED.odometer_out,
                     odometer_in = EXCLUDED.odometer_in,
+                    truck_number_2 = EXCLUDED.truck_number_2,
+                    trailer_number_2 = EXCLUDED.trailer_number_2,
+                    driver_name_2 = EXCLUDED.driver_name_2,
+                    odometer_out_2 = EXCLUDED.odometer_out_2,
+                    odometer_in_2 = EXCLUDED.odometer_in_2,
                     equipment_notes = EXCLUDED.equipment_notes,
                     rain_observed = EXCLUDED.rain_observed,
                     weather_condition = EXCLUDED.weather_condition,
@@ -17646,6 +17770,27 @@ def daily_production_page() -> None:
     wind_key = f"prod_wind_{field_key}"
     humidity_key = f"prod_humidity_{field_key}"
     weather_source_key = f"prod_weather_source_{field_key}"
+    labor_hours_key = f"prod_labor_hours_{field_key}"
+    travel_hours_key = f"prod_travel_hours_{field_key}"
+    outbound_departure_key = f"prod_outbound_depart_{field_key}"
+    jobsite_arrival_key = f"prod_jobsite_arrive_{field_key}"
+    lunch_start_key = f"prod_lunch_start_{field_key}"
+    lunch_end_key = f"prod_lunch_end_{field_key}"
+    return_departure_key = f"prod_return_depart_{field_key}"
+    return_arrival_key = f"prod_return_arrive_{field_key}"
+    hours_autofill_key = f"prod_hours_autofill_{field_key}"
+    hours_autofill_message_key = f"prod_hours_autofill_message_{field_key}"
+
+    pending_hours_autofill = st.session_state.pop(hours_autofill_key, None)
+    if isinstance(pending_hours_autofill, dict):
+        st.session_state[labor_hours_key] = float(pending_hours_autofill.get("labor_hours") or 0)
+        st.session_state[travel_hours_key] = float(pending_hours_autofill.get("travel_hours") or 0)
+    hours_message = st.session_state.pop(hours_autofill_message_key, "")
+    if hours_message:
+        if "Missing" in hours_message:
+            st.warning(hours_message)
+        else:
+            st.success(hours_message)
 
     weather_button_cols = st.columns([1, 3])
     with weather_button_cols[0]:
@@ -17691,14 +17836,14 @@ def daily_production_page() -> None:
 
         actual_time_cols = st.columns(3)
         with actual_time_cols[0]:
-            outbound_departure_time = st.text_input("Depart Shop", key=f"prod_outbound_depart_{field_key}")
-            jobsite_arrival_time = st.text_input("Arrive Job", key=f"prod_jobsite_arrive_{field_key}")
+            outbound_departure_time = st.text_input("Depart Shop", key=outbound_departure_key)
+            jobsite_arrival_time = st.text_input("Arrive Job", key=jobsite_arrival_key)
         with actual_time_cols[1]:
-            lunch_start_time = st.text_input("Lunch Start", key=f"prod_lunch_start_{field_key}")
-            lunch_end_time = st.text_input("Lunch End", key=f"prod_lunch_end_{field_key}")
+            lunch_start_time = st.text_input("Lunch Start", key=lunch_start_key)
+            lunch_end_time = st.text_input("Lunch End", key=lunch_end_key)
         with actual_time_cols[2]:
-            return_departure_time = st.text_input("Depart Job", key=f"prod_return_depart_{field_key}")
-            return_arrival_time = st.text_input("Arrive Shop", key=f"prod_return_arrive_{field_key}")
+            return_departure_time = st.text_input("Depart Job", key=return_departure_key)
+            return_arrival_time = st.text_input("Arrive Shop", key=return_arrival_key)
 
         hours_cols = st.columns(3)
         with hours_cols[0]:
@@ -17706,16 +17851,16 @@ def daily_production_page() -> None:
                 "Labor Hours",
                 min_value=0.0,
                 step=0.25,
-                key=f"prod_labor_hours_{field_key}",
-                help="Total crew labor hours for the job/day.",
+                key=labor_hours_key,
+                help="Total crew-hours for the job/day. Can be auto-filled from arrival/departure/lunch times.",
             )
         with hours_cols[1]:
             travel_hours = st.number_input(
                 "Travel Hours",
                 min_value=0.0,
                 step=0.25,
-                key=f"prod_travel_hours_{field_key}",
-                help="Enter once for the crew, matching the current daily timesheet behavior.",
+                key=travel_hours_key,
+                help="Total crew travel hours for outbound and return travel. Can be auto-filled from travel times.",
             )
         with hours_cols[2]:
             load_hours = st.number_input(
@@ -17725,6 +17870,7 @@ def daily_production_page() -> None:
                 key=f"prod_load_hours_{field_key}",
                 help="Enter once for the crew.",
             )
+        autofill_hours = st.form_submit_button("Autofill Labor / Travel Hours From Times")
 
         mileage_cols = st.columns(2)
         with mileage_cols[0]:
@@ -17735,13 +17881,23 @@ def daily_production_page() -> None:
         st.subheader("Equipment")
         equipment_cols = st.columns(3)
         with equipment_cols[0]:
-            truck_number = st.text_input("Truck #", key=f"prod_truck_{field_key}")
-            trailer_number = st.text_input("Trailer #", key=f"prod_trailer_{field_key}")
+            truck_number = st.text_input("Truck # 1", key=f"prod_truck_{field_key}")
+            trailer_number = st.text_input("Trailer # 1", key=f"prod_trailer_{field_key}")
         with equipment_cols[1]:
-            driver_name = st.text_input("Driver", value=crew_leader_default, key=f"prod_driver_{field_key}")
+            driver_name = st.text_input("Driver 1", value=crew_leader_default, key=f"prod_driver_{field_key}")
         with equipment_cols[2]:
-            odometer_out = st.number_input("Odometer Out", min_value=0.0, step=1.0, key=f"prod_odom_out_{field_key}")
-            odometer_in = st.number_input("Odometer In", min_value=0.0, step=1.0, key=f"prod_odom_in_{field_key}")
+            odometer_out = st.number_input("Odometer Out 1", min_value=0.0, step=1.0, key=f"prod_odom_out_{field_key}")
+            odometer_in = st.number_input("Odometer In 1", min_value=0.0, step=1.0, key=f"prod_odom_in_{field_key}")
+        with st.expander("Second Truck / Trailer", expanded=False):
+            second_equipment_cols = st.columns(3)
+            with second_equipment_cols[0]:
+                truck_number_2 = st.text_input("Truck # 2", key=f"prod_truck_2_{field_key}")
+                trailer_number_2 = st.text_input("Trailer # 2", key=f"prod_trailer_2_{field_key}")
+            with second_equipment_cols[1]:
+                driver_name_2 = st.text_input("Driver 2", key=f"prod_driver_2_{field_key}")
+            with second_equipment_cols[2]:
+                odometer_out_2 = st.number_input("Odometer Out 2", min_value=0.0, step=1.0, key=f"prod_odom_out_2_{field_key}")
+                odometer_in_2 = st.number_input("Odometer In 2", min_value=0.0, step=1.0, key=f"prod_odom_in_2_{field_key}")
         equipment_notes = st.text_area(
             "Equipment Notes",
             height=70,
@@ -17925,7 +18081,42 @@ def daily_production_page() -> None:
 
         submitted = st.form_submit_button("Submit Daily Production", type="primary")
 
+    if autofill_hours:
+        hours_calc = calculate_daily_production_hours_from_times(
+            crew_leader=crew_leader,
+            crew_members=crew_members,
+            outbound_departure_time=outbound_departure_time,
+            jobsite_arrival_time=jobsite_arrival_time,
+            lunch_start_time=lunch_start_time,
+            lunch_end_time=lunch_end_time,
+            return_departure_time=return_departure_time,
+            return_arrival_time=return_arrival_time,
+        )
+        st.session_state[hours_autofill_key] = hours_calc
+        message = (
+            f"Auto-filled labor {hours_calc['labor_hours']} hrs and travel {hours_calc['travel_hours']} hrs "
+            f"using {hours_calc['crew_count']} crew members."
+        )
+        if hours_calc.get("missing"):
+            message += " Missing time pairs: " + ", ".join(hours_calc["missing"]) + "."
+        st.session_state[hours_autofill_message_key] = message
+        st.rerun()
+
     if submitted:
+        submit_hours_calc = calculate_daily_production_hours_from_times(
+            crew_leader=crew_leader,
+            crew_members=crew_members,
+            outbound_departure_time=outbound_departure_time,
+            jobsite_arrival_time=jobsite_arrival_time,
+            lunch_start_time=lunch_start_time,
+            lunch_end_time=lunch_end_time,
+            return_departure_time=return_departure_time,
+            return_arrival_time=return_arrival_time,
+        )
+        if labor_hours == 0 and submit_hours_calc.get("labor_hours"):
+            labor_hours = submit_hours_calc["labor_hours"]
+        if travel_hours == 0 and submit_hours_calc.get("travel_hours"):
+            travel_hours = submit_hours_calc["travel_hours"]
         production_entry = {
             "job_id": selected_job_id,
             "dispatch_date": work_date,
@@ -17954,6 +18145,11 @@ def daily_production_page() -> None:
             "driver_name": driver_name,
             "odometer_out": odometer_out,
             "odometer_in": odometer_in,
+            "truck_number_2": truck_number_2,
+            "trailer_number_2": trailer_number_2,
+            "driver_name_2": driver_name_2,
+            "odometer_out_2": odometer_out_2,
+            "odometer_in_2": odometer_in_2,
             "equipment_notes": equipment_notes,
             "foam_strokes": foam_strokes,
             "foam_lbs": foam_lbs,

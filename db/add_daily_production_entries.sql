@@ -27,6 +27,11 @@ CREATE TABLE IF NOT EXISTS daily_production_entries (
     driver_name TEXT,
     odometer_out NUMERIC,
     odometer_in NUMERIC,
+    truck_number_2 TEXT,
+    trailer_number_2 TEXT,
+    driver_name_2 TEXT,
+    odometer_out_2 NUMERIC,
+    odometer_in_2 NUMERIC,
     equipment_notes TEXT,
     rain_observed BOOLEAN,
     weather_condition TEXT,
@@ -66,6 +71,11 @@ ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS trailer_number TEX
 ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS driver_name TEXT;
 ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS odometer_out NUMERIC;
 ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS odometer_in NUMERIC;
+ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS truck_number_2 TEXT;
+ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS trailer_number_2 TEXT;
+ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS driver_name_2 TEXT;
+ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS odometer_out_2 NUMERIC;
+ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS odometer_in_2 NUMERIC;
 ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS equipment_notes TEXT;
 ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS rain_observed BOOLEAN;
 ALTER TABLE daily_production_entries ADD COLUMN IF NOT EXISTS weather_condition TEXT;

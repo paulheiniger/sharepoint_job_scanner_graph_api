@@ -150,3 +150,54 @@ def test_daily_production_checklist_options_round_trip() -> None:
     assert stored == "Roof Edges, Power Tools"
     assert app.selected_options(stored, app.DAILY_PRODUCTION_SAFETY_OPTIONS) == ["Roof Edges", "Power Tools"]
     assert "Lockers Secured/Stocked" in app.DAILY_PRODUCTION_TRAILER_CLOSEOUT_OPTIONS
+
+
+def test_daily_production_schema_supports_second_equipment_row() -> None:
+    import dashboard.app as app
+
+    assert "truck_number_2 TEXT" in app.DAILY_PRODUCTION_ENTRIES_TABLE_SQL
+    assert any("truck_number_2" in statement for statement in app.DAILY_PRODUCTION_EXTRA_COLUMNS_SQL)
+    assert any("odometer_in_2" in statement for statement in app.DAILY_PRODUCTION_EXTRA_COLUMNS_SQL)
+
+
+def test_daily_production_hours_from_times_use_crew_hours() -> None:
+    import dashboard.app as app
+
+    hours = app.calculate_daily_production_hours_from_times(
+        crew_leader="Carlos",
+        crew_members="Santos, Mariano",
+        outbound_departure_time="7:00",
+        jobsite_arrival_time="8:00",
+        lunch_start_time="12:00",
+        lunch_end_time="12:30",
+        return_departure_time="4:00",
+        return_arrival_time="5:00",
+    )
+
+    assert hours["ok"] is True
+    assert hours["crew_count"] == 3
+    assert hours["onsite_hours"] == 7.5
+    assert hours["travel_duration_hours"] == 2
+    assert hours["labor_hours"] == 22.5
+    assert hours["travel_hours"] == 6
+
+
+def test_daily_production_hours_roll_forward_for_afternoon_without_meridiem() -> None:
+    import dashboard.app as app
+
+    hours = app.calculate_daily_production_hours_from_times(
+        crew_leader="Mariano",
+        crew_members="Erik\nJose",
+        outbound_departure_time="7:05",
+        jobsite_arrival_time="7:50",
+        lunch_start_time="12:00",
+        lunch_end_time="12:40",
+        return_departure_time="6:15",
+        return_arrival_time="7:00",
+    )
+
+    assert hours["crew_count"] == 3
+    assert hours["onsite_hours"] == 9.75
+    assert hours["travel_duration_hours"] == 1.5
+    assert hours["labor_hours"] == 29.25
+    assert hours["travel_hours"] == 4.5
