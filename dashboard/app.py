@@ -76,6 +76,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 _render_foamscope_page_impl = None
+_render_ai_roof_measure_page_impl = None
 
 
 def render_foamscope_page_lazy() -> None:
@@ -85,6 +86,15 @@ def render_foamscope_page_lazy() -> None:
 
         _render_foamscope_page_impl = imported_render_foamscope_page
     _render_foamscope_page_impl()
+
+
+def render_ai_roof_measure_page_lazy() -> None:
+    global _render_ai_roof_measure_page_impl
+    if _render_ai_roof_measure_page_impl is None:
+        from roof_measure.streamlit_page import render_ai_roof_measure_page as imported_render_ai_roof_measure_page
+
+        _render_ai_roof_measure_page_impl = imported_render_ai_roof_measure_page
+    _render_ai_roof_measure_page_impl()
 
 EstimatorData = Any
 write_estimator_evidence_export = None
@@ -24911,6 +24921,8 @@ def render_dashboard_page(page: str) -> None:
         schedule_calendar_page()
     elif page == "Estimating Assistant":
         estimator_prototype_page()
+    elif page == "AI Roof Measure":
+        render_ai_roof_measure_page_lazy()
     elif page == "BidScope AI":
         render_foamscope_page_lazy()
     elif page == "Admin / Health":
@@ -24969,6 +24981,7 @@ def main() -> None:
             "Daily Crew Dispatch",
             "Daily Production",
             "Estimating Assistant",
+            "AI Roof Measure",
             "Pricing Catalog",
             "Ask Spray-Tec",
             "BidScope AI",
