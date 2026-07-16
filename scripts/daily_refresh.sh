@@ -143,6 +143,7 @@ fi
 
 if [[ "$RUN_SQL_REFRESHES" == "1" ]]; then
   run_step "Ensure job tracking material fields" run_sql_file "db/add_job_tracking_foam_fields.sql"
+  run_step "Ensure daily production tables" run_sql_file "db/add_daily_production_entries.sql"
   run_step "Refresh dashboard views" run_sql_file "db/dashboard_views.sql"
   run_step "Refresh job document signals" run_sql_file "db/refresh_job_document_signals.sql"
   run_step "Refresh job board static snapshot" run_sql_file "db/refresh_job_board_static_snapshot.sql"

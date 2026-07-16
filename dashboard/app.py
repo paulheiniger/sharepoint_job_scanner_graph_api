@@ -1449,6 +1449,58 @@ CREATE TABLE IF NOT EXISTS daily_dispatch_crew_assignments (
 """
 
 
+DAILY_PRODUCTION_ENTRIES_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS daily_production_entries (
+    production_entry_id TEXT PRIMARY KEY,
+    job_id TEXT REFERENCES jobs(job_id) ON DELETE SET NULL,
+    dispatch_date DATE NOT NULL,
+    work_date DATE NOT NULL,
+    customer TEXT,
+    job_name TEXT,
+    site_address TEXT,
+    crew_leader TEXT,
+    crew_members TEXT,
+    start_time TEXT,
+    end_time TEXT,
+    labor_hours NUMERIC,
+    travel_hours NUMERIC,
+    load_hours NUMERIC,
+    os_hours NUMERIC,
+    mileage NUMERIC,
+    os_mileage NUMERIC,
+    temperature_f NUMERIC,
+    wind_mph NUMERIC,
+    humidity_pct NUMERIC,
+    weather_source TEXT,
+    safety_issues TEXT,
+    hazard_mitigation_plan TEXT,
+    work_notes TEXT,
+    submitted_by TEXT,
+    submitted_at TIMESTAMPTZ DEFAULT NOW(),
+    raw JSONB,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (job_id, work_date, crew_leader)
+)
+"""
+
+
+DAILY_PRODUCTION_MATERIAL_USAGE_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS daily_production_material_usage (
+    material_usage_id TEXT PRIMARY KEY,
+    production_entry_id TEXT REFERENCES daily_production_entries(production_entry_id) ON DELETE CASCADE,
+    job_id TEXT REFERENCES jobs(job_id) ON DELETE SET NULL,
+    work_date DATE NOT NULL,
+    material_type TEXT NOT NULL,
+    quantity NUMERIC,
+    unit TEXT,
+    notes TEXT,
+    raw JSONB,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (production_entry_id, material_type)
+)
+"""
+
+
 JOB_WORKFLOW_OVERRIDES_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS job_workflow_overrides (
     job_id TEXT PRIMARY KEY,
@@ -1516,6 +1568,28 @@ def dispatch_assignment_id(dispatch_date: date, job_id: object, person_name: obj
     return f"assignment-{digest}"
 
 
+def production_entry_id_for(work_date: date, job_id: object, crew_leader: object) -> str:
+    key = f"{work_date.isoformat()}||{text_value(job_id)}||{text_value(crew_leader).lower()}"
+    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:24]
+    return f"production-{digest}"
+
+
+def production_material_usage_id(production_entry_id: object, material_type: object) -> str:
+    key = f"{text_value(production_entry_id)}||{text_value(material_type).lower()}"
+    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:24]
+    return f"prodmat-{digest}"
+
+
+def production_tracking_id_for(job_id: object) -> str:
+    digest = hashlib.sha1(text_value(job_id).encode("utf-8")).hexdigest()[:24]
+    return f"tracking-production-{digest}"
+
+
+def production_tracking_entry_id_for(production_entry_id: object) -> str:
+    digest = hashlib.sha1(text_value(production_entry_id).encode("utf-8")).hexdigest()[:24]
+    return f"tracking-entry-{digest}"
+
+
 def calculate_end_date(start_value: object, duration_value: object) -> str | None:
     start = pd.to_datetime(start_value, errors="coerce")
     duration = pd.to_numeric(pd.Series([duration_value]), errors="coerce").iloc[0]
@@ -1551,6 +1625,15 @@ def ensure_daily_dispatch_table() -> None:
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_daily_dispatch_job_id ON daily_dispatch(job_id)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_daily_dispatch_crew_assignments_date ON daily_dispatch_crew_assignments(dispatch_date)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_daily_dispatch_crew_assignments_job ON daily_dispatch_crew_assignments(job_id)"))
+
+
+def ensure_daily_production_tables() -> None:
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(text(DAILY_PRODUCTION_ENTRIES_TABLE_SQL))
+        conn.execute(text(DAILY_PRODUCTION_MATERIAL_USAGE_TABLE_SQL))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_daily_production_entries_job_date ON daily_production_entries(job_id, work_date)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_daily_production_material_usage_entry ON daily_production_material_usage(production_entry_id)"))
 
 
 def ensure_job_workflow_overrides_table() -> None:
@@ -5756,6 +5839,527 @@ def save_dispatch_draft(df: pd.DataFrame, message_text: str, dispatch_date: date
         conn.execute(upsert_sql, records)
     st.cache_data.clear()
     return len(records)
+
+
+DAILY_PRODUCTION_MATERIAL_FIELDS = [
+    ("foam_strokes", "Foam Strokes", "strokes"),
+    ("foam_lbs", "Foam Pounds", "lbs"),
+    ("foam_thickness_inches", "Foam Thickness", "inches"),
+    ("foam_sqft", "Foam Square Feet", "sq ft"),
+    ("foam_yield", "Foam Yield", "yield"),
+    ("primer", "Primer", "gal"),
+    ("sf", "SF / Silicone Flashing", "units"),
+    ("caulk", "Caulk", "units"),
+    ("base_coat_1", "Base Coat 1", "gal"),
+    ("base_coat_2", "Base Coat 2", "gal"),
+    ("granules", "Granules", "units"),
+    ("af_buttergrade", "AF Buttergrade", "units"),
+]
+
+
+def production_number(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def production_material_records(production_entry: dict[str, Any]) -> list[dict[str, Any]]:
+    production_entry_id = text_value(production_entry.get("production_entry_id"))
+    job_id = text_value(production_entry.get("job_id"))
+    work_date = production_entry.get("work_date")
+    records: list[dict[str, Any]] = []
+    for field, label, unit in DAILY_PRODUCTION_MATERIAL_FIELDS:
+        quantity = production_number(production_entry.get(field))
+        if quantity is None or quantity == 0:
+            continue
+        records.append(
+            {
+                "material_usage_id": production_material_usage_id(production_entry_id, field),
+                "production_entry_id": production_entry_id,
+                "job_id": job_id,
+                "work_date": work_date,
+                "material_type": field,
+                "quantity": quantity,
+                "unit": unit,
+                "notes": label,
+                "raw": json.dumps({"label": label, "source": "daily_production"}, default=str),
+            }
+        )
+    return records
+
+
+def load_daily_production_jobs(work_date: date) -> pd.DataFrame:
+    jobs = load_dispatch_jobs(work_date)
+    if jobs.empty:
+        return jobs
+    jobs = jobs.copy()
+    assignments = load_dispatch_crew_assignments(work_date)
+    if not assignments.empty:
+        assigned_members = (
+            assignments.groupby("job_id")["person_name"]
+            .apply(lambda values: ", ".join(dict.fromkeys(text_value(value) for value in values if text_value(value))))
+            .to_dict()
+        )
+        jobs["crew_members"] = jobs["job_id"].map(lambda value: assigned_members.get(text_value(value), ""))
+    jobs["job_display"] = (
+        jobs.get("customer", pd.Series("", index=jobs.index)).fillna("").astype(str).str.strip()
+        + " - "
+        + jobs.get("job_name", pd.Series("", index=jobs.index)).fillna("").astype(str).str.strip()
+    ).str.strip(" -")
+    return jobs
+
+
+def load_previous_daily_production_defaults(job_id: object, before_date: date) -> dict[str, Any]:
+    ensure_daily_production_tables()
+    result = load_df_uncached(
+        """
+        SELECT safety_issues,
+               hazard_mitigation_plan,
+               weather_source,
+               temperature_f,
+               wind_mph,
+               humidity_pct,
+               work_date
+        FROM daily_production_entries
+        WHERE job_id = :job_id
+          AND work_date < :before_date
+        ORDER BY work_date DESC, submitted_at DESC NULLS LAST
+        LIMIT 1
+        """,
+        params={"job_id": text_value(job_id), "before_date": before_date},
+    )
+    if not result.ok or result.value.empty:
+        return {}
+    return result.value.iloc[0].to_dict()
+
+
+def upsert_daily_production_entry(production_entry: dict[str, Any]) -> str:
+    ensure_daily_production_tables()
+    job_id = text_value(production_entry.get("job_id"))
+    work_date = production_entry.get("work_date")
+    crew_leader = text_value(production_entry.get("crew_leader"))
+    if not job_id:
+        raise ValueError("A job is required.")
+    if not isinstance(work_date, date):
+        raise ValueError("A work date is required.")
+    if not crew_leader:
+        raise ValueError("A crew leader is required.")
+
+    production_entry = dict(production_entry)
+    production_entry_id = production_entry.get("production_entry_id") or production_entry_id_for(work_date, job_id, crew_leader)
+    production_entry["production_entry_id"] = production_entry_id
+    tracking_id = production_tracking_id_for(job_id)
+    tracking_entry_id = production_tracking_entry_id_for(production_entry_id)
+
+    numeric_fields = [
+        "labor_hours",
+        "travel_hours",
+        "load_hours",
+        "os_hours",
+        "mileage",
+        "os_mileage",
+        "temperature_f",
+        "wind_mph",
+        "humidity_pct",
+        "foam_strokes",
+        "foam_lbs",
+        "foam_thickness_inches",
+        "foam_sqft",
+        "foam_yield",
+        "base_coat_1",
+        "base_sqft",
+        "base_gal_per_sq",
+        "base_coat_2",
+        "top_sqft",
+        "top_gal_per_sq",
+        "granules",
+        "af_buttergrade",
+        "caulk",
+        "primer",
+        "sf",
+    ]
+    for field in numeric_fields:
+        production_entry[field] = production_number(production_entry.get(field))
+    for field in [
+        "a_side_lot",
+        "b_side_lot",
+        "customer",
+        "job_name",
+        "site_address",
+        "crew_members",
+        "start_time",
+        "end_time",
+        "weather_source",
+        "safety_issues",
+        "hazard_mitigation_plan",
+        "work_notes",
+        "submitted_by",
+    ]:
+        production_entry[field] = clean_db_value(production_entry.get(field))
+    production_entry["dispatch_date"] = production_entry.get("dispatch_date") or work_date
+
+    material_records = production_material_records(production_entry)
+    raw_payload = json.dumps(
+        {
+            "source": "daily_production_app",
+            "production_entry_id": production_entry_id,
+            "materials": material_records,
+        },
+        default=str,
+    )
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO daily_production_entries (
+                    production_entry_id,
+                    job_id,
+                    dispatch_date,
+                    work_date,
+                    customer,
+                    job_name,
+                    site_address,
+                    crew_leader,
+                    crew_members,
+                    start_time,
+                    end_time,
+                    labor_hours,
+                    travel_hours,
+                    load_hours,
+                    os_hours,
+                    mileage,
+                    os_mileage,
+                    temperature_f,
+                    wind_mph,
+                    humidity_pct,
+                    weather_source,
+                    safety_issues,
+                    hazard_mitigation_plan,
+                    work_notes,
+                    submitted_by,
+                    submitted_at,
+                    raw,
+                    updated_at
+                )
+                VALUES (
+                    :production_entry_id,
+                    :job_id,
+                    :dispatch_date,
+                    :work_date,
+                    :customer,
+                    :job_name,
+                    :site_address,
+                    :crew_leader,
+                    :crew_members,
+                    :start_time,
+                    :end_time,
+                    :labor_hours,
+                    :travel_hours,
+                    :load_hours,
+                    :os_hours,
+                    :mileage,
+                    :os_mileage,
+                    :temperature_f,
+                    :wind_mph,
+                    :humidity_pct,
+                    :weather_source,
+                    :safety_issues,
+                    :hazard_mitigation_plan,
+                    :work_notes,
+                    :submitted_by,
+                    NOW(),
+                    CAST(:raw AS JSONB),
+                    NOW()
+                )
+                ON CONFLICT (job_id, work_date, crew_leader) DO UPDATE SET
+                    customer = EXCLUDED.customer,
+                    job_name = EXCLUDED.job_name,
+                    site_address = EXCLUDED.site_address,
+                    crew_members = EXCLUDED.crew_members,
+                    start_time = EXCLUDED.start_time,
+                    end_time = EXCLUDED.end_time,
+                    labor_hours = EXCLUDED.labor_hours,
+                    travel_hours = EXCLUDED.travel_hours,
+                    load_hours = EXCLUDED.load_hours,
+                    os_hours = EXCLUDED.os_hours,
+                    mileage = EXCLUDED.mileage,
+                    os_mileage = EXCLUDED.os_mileage,
+                    temperature_f = EXCLUDED.temperature_f,
+                    wind_mph = EXCLUDED.wind_mph,
+                    humidity_pct = EXCLUDED.humidity_pct,
+                    weather_source = EXCLUDED.weather_source,
+                    safety_issues = EXCLUDED.safety_issues,
+                    hazard_mitigation_plan = EXCLUDED.hazard_mitigation_plan,
+                    work_notes = EXCLUDED.work_notes,
+                    submitted_by = EXCLUDED.submitted_by,
+                    submitted_at = NOW(),
+                    raw = EXCLUDED.raw,
+                    updated_at = NOW()
+                """
+            ),
+            {
+                **production_entry,
+                "dispatch_date": production_entry.get("dispatch_date") or work_date,
+                "raw": raw_payload,
+            },
+        )
+        conn.execute(
+            text(
+                """
+                DELETE FROM daily_production_material_usage
+                WHERE production_entry_id = :production_entry_id
+                """
+            ),
+            {"production_entry_id": production_entry_id},
+        )
+        if material_records:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO daily_production_material_usage (
+                        material_usage_id,
+                        production_entry_id,
+                        job_id,
+                        work_date,
+                        material_type,
+                        quantity,
+                        unit,
+                        notes,
+                        raw,
+                        updated_at
+                    )
+                    VALUES (
+                        :material_usage_id,
+                        :production_entry_id,
+                        :job_id,
+                        :work_date,
+                        :material_type,
+                        :quantity,
+                        :unit,
+                        :notes,
+                        CAST(:raw AS JSONB),
+                        NOW()
+                    )
+                    ON CONFLICT (production_entry_id, material_type) DO UPDATE SET
+                        quantity = EXCLUDED.quantity,
+                        unit = EXCLUDED.unit,
+                        notes = EXCLUDED.notes,
+                        raw = EXCLUDED.raw,
+                        updated_at = NOW()
+                    """
+                ),
+                material_records,
+            )
+        conn.execute(
+            text(
+                """
+                INSERT INTO job_tracking_summary (
+                    tracking_id,
+                    job_id,
+                    tracking_file,
+                    source_file,
+                    raw,
+                    updated_at
+                )
+                VALUES (
+                    :tracking_id,
+                    :job_id,
+                    'Crew Production App',
+                    'daily_production_app',
+                    CAST(:raw AS JSONB),
+                    NOW()
+                )
+                ON CONFLICT (tracking_id) DO UPDATE SET
+                    job_id = EXCLUDED.job_id,
+                    tracking_file = EXCLUDED.tracking_file,
+                    source_file = EXCLUDED.source_file,
+                    raw = EXCLUDED.raw,
+                    updated_at = NOW()
+                """
+            ),
+            {"tracking_id": tracking_id, "job_id": job_id, "raw": raw_payload},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO job_tracking_daily_entries (
+                    tracking_entry_id,
+                    tracking_id,
+                    job_id,
+                    tracking_file,
+                    work_date,
+                    labor_hours,
+                    travel_hours,
+                    load_hours,
+                    os_hours,
+                    mileage,
+                    os_mileage,
+                    foam_strokes,
+                    foam_lbs,
+                    foam_thickness_inches,
+                    foam_sqft,
+                    foam_yield,
+                    a_side_lot,
+                    b_side_lot,
+                    base_coat_1,
+                    base_sqft,
+                    base_gal_per_sq,
+                    base_coat_2,
+                    top_sqft,
+                    top_gal_per_sq,
+                    granules,
+                    af_buttergrade,
+                    caulk,
+                    primer,
+                    sf,
+                    crew,
+                    notes,
+                    source_sheet,
+                    raw,
+                    updated_at
+                )
+                VALUES (
+                    :tracking_entry_id,
+                    :tracking_id,
+                    :job_id,
+                    'Crew Production App',
+                    :work_date,
+                    :labor_hours,
+                    :travel_hours,
+                    :load_hours,
+                    :os_hours,
+                    :mileage,
+                    :os_mileage,
+                    :foam_strokes,
+                    :foam_lbs,
+                    :foam_thickness_inches,
+                    :foam_sqft,
+                    :foam_yield,
+                    :a_side_lot,
+                    :b_side_lot,
+                    :base_coat_1,
+                    :base_sqft,
+                    :base_gal_per_sq,
+                    :base_coat_2,
+                    :top_sqft,
+                    :top_gal_per_sq,
+                    :granules,
+                    :af_buttergrade,
+                    :caulk,
+                    :primer,
+                    :sf,
+                    :crew_members,
+                    :work_notes,
+                    'Daily Production',
+                    CAST(:raw AS JSONB),
+                    NOW()
+                )
+                ON CONFLICT (tracking_entry_id) DO UPDATE SET
+                    labor_hours = EXCLUDED.labor_hours,
+                    travel_hours = EXCLUDED.travel_hours,
+                    load_hours = EXCLUDED.load_hours,
+                    os_hours = EXCLUDED.os_hours,
+                    mileage = EXCLUDED.mileage,
+                    os_mileage = EXCLUDED.os_mileage,
+                    foam_strokes = EXCLUDED.foam_strokes,
+                    foam_lbs = EXCLUDED.foam_lbs,
+                    foam_thickness_inches = EXCLUDED.foam_thickness_inches,
+                    foam_sqft = EXCLUDED.foam_sqft,
+                    foam_yield = EXCLUDED.foam_yield,
+                    a_side_lot = EXCLUDED.a_side_lot,
+                    b_side_lot = EXCLUDED.b_side_lot,
+                    base_coat_1 = EXCLUDED.base_coat_1,
+                    base_sqft = EXCLUDED.base_sqft,
+                    base_gal_per_sq = EXCLUDED.base_gal_per_sq,
+                    base_coat_2 = EXCLUDED.base_coat_2,
+                    top_sqft = EXCLUDED.top_sqft,
+                    top_gal_per_sq = EXCLUDED.top_gal_per_sq,
+                    granules = EXCLUDED.granules,
+                    af_buttergrade = EXCLUDED.af_buttergrade,
+                    caulk = EXCLUDED.caulk,
+                    primer = EXCLUDED.primer,
+                    sf = EXCLUDED.sf,
+                    crew = EXCLUDED.crew,
+                    notes = EXCLUDED.notes,
+                    raw = EXCLUDED.raw,
+                    updated_at = NOW()
+                """
+            ),
+            {
+                **production_entry,
+                "tracking_id": tracking_id,
+                "tracking_entry_id": tracking_entry_id,
+                "raw": raw_payload,
+            },
+        )
+        conn.execute(
+            text(
+                """
+                UPDATE job_tracking_summary s
+                SET actual_first_work_date = agg.actual_first_work_date,
+                    actual_last_work_date = agg.actual_last_work_date,
+                    actual_work_day_count = agg.actual_work_day_count,
+                    actual_labor_hours = agg.actual_labor_hours,
+                    actual_travel_hours = agg.actual_travel_hours,
+                    actual_load_hours = agg.actual_load_hours,
+                    actual_os_hours = agg.actual_os_hours,
+                    actual_mileage = agg.actual_mileage,
+                    actual_os_mileage = agg.actual_os_mileage,
+                    actual_foam_strokes = agg.actual_foam_strokes,
+                    actual_foam_lbs = agg.actual_foam_lbs,
+                    actual_foam_thickness_inches = agg.actual_foam_thickness_inches,
+                    actual_foam_sqft = agg.actual_foam_sqft,
+                    actual_foam_yield = agg.actual_foam_yield,
+                    actual_base_coat_1 = agg.actual_base_coat_1,
+                    actual_base_coat_2 = agg.actual_base_coat_2,
+                    actual_granules = agg.actual_granules,
+                    actual_af_buttergrade = agg.actual_af_buttergrade,
+                    actual_caulk = agg.actual_caulk,
+                    actual_primer = agg.actual_primer,
+                    actual_sf = agg.actual_sf,
+                    tracking_notes = agg.tracking_notes,
+                    updated_at = NOW()
+                FROM (
+                    SELECT tracking_id,
+                           MIN(work_date) AS actual_first_work_date,
+                           MAX(work_date) AS actual_last_work_date,
+                           COUNT(DISTINCT work_date) AS actual_work_day_count,
+                           SUM(labor_hours) AS actual_labor_hours,
+                           SUM(travel_hours) AS actual_travel_hours,
+                           SUM(load_hours) AS actual_load_hours,
+                           SUM(os_hours) AS actual_os_hours,
+                           SUM(mileage) AS actual_mileage,
+                           SUM(os_mileage) AS actual_os_mileage,
+                           SUM(foam_strokes) AS actual_foam_strokes,
+                           SUM(foam_lbs) AS actual_foam_lbs,
+                           AVG(NULLIF(foam_thickness_inches, 0)) AS actual_foam_thickness_inches,
+                           SUM(foam_sqft) AS actual_foam_sqft,
+                           AVG(NULLIF(foam_yield, 0)) AS actual_foam_yield,
+                           SUM(base_coat_1) AS actual_base_coat_1,
+                           SUM(base_coat_2) AS actual_base_coat_2,
+                           SUM(granules) AS actual_granules,
+                           SUM(af_buttergrade) AS actual_af_buttergrade,
+                           SUM(caulk) AS actual_caulk,
+                           SUM(primer) AS actual_primer,
+                           SUM(sf) AS actual_sf,
+                           STRING_AGG(NULLIF(notes, ''), '; ' ORDER BY work_date) AS tracking_notes
+                    FROM job_tracking_daily_entries
+                    WHERE tracking_id = :tracking_id
+                    GROUP BY tracking_id
+                ) agg
+                WHERE s.tracking_id = agg.tracking_id
+                """
+            ),
+            {"tracking_id": tracking_id},
+        )
+    st.cache_data.clear()
+    return production_entry_id
 
 
 def show_database_error(exc: Exception) -> None:
@@ -16591,6 +17195,239 @@ def daily_crew_dispatch_page() -> None:
             show_database_error(exc)
 
 
+def daily_production_page() -> None:
+    st.title("Daily Production")
+    st.caption("Crew leader daily entry. Select a dispatched job, confirm the crew, and record one set of job tracking values for the day.")
+
+    work_date = st.date_input("Work Date", value=date.today(), key="daily_production_work_date")
+    try:
+        jobs = load_daily_production_jobs(work_date)
+    except Exception as exc:
+        show_database_error(exc)
+        return
+
+    if jobs.empty:
+        show_empty("No Daily Dispatch jobs overlap this date. Add jobs to the schedule/dispatch first, then return here.")
+        return
+
+    jobs = jobs.copy()
+    jobs_by_id = {
+        text_value(row.get("job_id")): row
+        for row in jobs.to_dict(orient="records")
+        if text_value(row.get("job_id"))
+    }
+    job_ids = list(jobs_by_id.keys())
+
+    def production_job_label(job_id: str) -> str:
+        row = jobs_by_id.get(job_id, {})
+        label = text_value(row.get("job_display")) or text_value(row.get("job_name")) or job_id
+        leader = text_value(row.get("crew_leader")) or "Unassigned"
+        start_time = text_value(row.get("start_time")) or "TBD"
+        return f"{start_time} | {leader} | {label}"
+
+    selected_job_id = st.selectbox(
+        "Dispatched Job",
+        job_ids,
+        format_func=production_job_label,
+        key="daily_production_job_id",
+    )
+    selected_job = jobs_by_id.get(selected_job_id, {})
+    previous_defaults = load_previous_daily_production_defaults(selected_job_id, work_date)
+    field_key = f"{work_date.isoformat()}_{selected_job_id}"
+
+    st.markdown(f"**Job:** {text_value(selected_job.get('job_display')) or selected_job_id}")
+    address = text_value(selected_job.get("site_address"))
+    if address:
+        st.caption(address)
+
+    crew_leader_default = text_value(selected_job.get("crew_leader"))
+    crew_members_default = text_value(selected_job.get("crew_members"))
+    start_time_default = text_value(selected_job.get("start_time"))
+    end_time_default = text_value(selected_job.get("end_time"))
+
+    with st.form("daily_production_form"):
+        st.subheader("Crew and Time")
+        crew_leader = st.text_input("Crew Leader", value=crew_leader_default, key=f"prod_crew_leader_{field_key}")
+        crew_members = st.text_area(
+            "Crew Members",
+            value=crew_members_default,
+            height=80,
+            key=f"prod_crew_members_{field_key}",
+            help="One crew entry for the job/day. Travel and load time are entered once for the whole crew.",
+        )
+        time_cols = st.columns(2)
+        with time_cols[0]:
+            start_time = st.text_input("Start Time", value=start_time_default, key=f"prod_start_{field_key}")
+        with time_cols[1]:
+            end_time = st.text_input("End Time", value=end_time_default, key=f"prod_end_{field_key}")
+
+        hours_cols = st.columns(3)
+        with hours_cols[0]:
+            labor_hours = st.number_input(
+                "Labor Hours",
+                min_value=0.0,
+                step=0.25,
+                key=f"prod_labor_hours_{field_key}",
+                help="Total crew labor hours for the job/day.",
+            )
+        with hours_cols[1]:
+            travel_hours = st.number_input(
+                "Travel Hours",
+                min_value=0.0,
+                step=0.25,
+                key=f"prod_travel_hours_{field_key}",
+                help="Enter once for the crew, matching the current daily timesheet behavior.",
+            )
+        with hours_cols[2]:
+            load_hours = st.number_input(
+                "Load Hours",
+                min_value=0.0,
+                step=0.25,
+                key=f"prod_load_hours_{field_key}",
+                help="Enter once for the crew.",
+            )
+
+        mileage_cols = st.columns(2)
+        with mileage_cols[0]:
+            mileage = st.number_input("Mileage", min_value=0.0, step=1.0, key=f"prod_mileage_{field_key}")
+        with mileage_cols[1]:
+            os_mileage = st.number_input("OS Mileage", min_value=0.0, step=1.0, key=f"prod_os_mileage_{field_key}")
+
+        st.subheader("Production Quantities")
+        foam_cols = st.columns(2)
+        with foam_cols[0]:
+            foam_strokes = st.number_input("Foam Strokes", min_value=0.0, step=1.0, key=f"prod_foam_strokes_{field_key}")
+            foam_lbs = st.number_input("Foam Pounds", min_value=0.0, step=1.0, key=f"prod_foam_lbs_{field_key}")
+            foam_thickness_inches = st.number_input("Foam Thickness Inches", min_value=0.0, step=0.25, key=f"prod_foam_thickness_{field_key}")
+        with foam_cols[1]:
+            foam_sqft = st.number_input("Foam Sq Ft", min_value=0.0, step=1.0, key=f"prod_foam_sqft_{field_key}")
+            foam_yield = st.number_input("Foam Yield", min_value=0.0, step=1.0, key=f"prod_foam_yield_{field_key}")
+
+        lot_cols = st.columns(2)
+        with lot_cols[0]:
+            a_side_lot = st.text_input("A Side Lot", key=f"prod_a_side_lot_{field_key}")
+        with lot_cols[1]:
+            b_side_lot = st.text_input("B Side Lot", key=f"prod_b_side_lot_{field_key}")
+
+        with st.expander("Coating / Roofing Materials", expanded=False):
+            coating_cols = st.columns(2)
+            with coating_cols[0]:
+                primer = st.number_input("Primer", min_value=0.0, step=0.5, key=f"prod_primer_{field_key}")
+                sf = st.number_input("SF / Silicone Flashing", min_value=0.0, step=0.5, key=f"prod_sf_{field_key}")
+                caulk = st.number_input("Caulk", min_value=0.0, step=1.0, key=f"prod_caulk_{field_key}")
+                granules = st.number_input("Granules", min_value=0.0, step=1.0, key=f"prod_granules_{field_key}")
+            with coating_cols[1]:
+                base_coat_1 = st.number_input("Base Coat 1", min_value=0.0, step=0.5, key=f"prod_base1_{field_key}")
+                base_coat_2 = st.number_input("Base Coat 2", min_value=0.0, step=0.5, key=f"prod_base2_{field_key}")
+                af_buttergrade = st.number_input("AF Buttergrade", min_value=0.0, step=1.0, key=f"prod_buttergrade_{field_key}")
+                os_hours = st.number_input("OS Hours", min_value=0.0, step=0.25, key=f"prod_os_hours_{field_key}")
+            rate_cols = st.columns(3)
+            with rate_cols[0]:
+                base_sqft = st.number_input("Base Sq Ft", min_value=0.0, step=1.0, key=f"prod_base_sqft_{field_key}")
+            with rate_cols[1]:
+                base_gal_per_sq = st.number_input("Base Gal/Sq", min_value=0.0, step=0.1, key=f"prod_base_gal_sq_{field_key}")
+            with rate_cols[2]:
+                top_sqft = st.number_input("Top Sq Ft", min_value=0.0, step=1.0, key=f"prod_top_sqft_{field_key}")
+            top_gal_per_sq = st.number_input("Top Gal/Sq", min_value=0.0, step=0.1, key=f"prod_top_gal_sq_{field_key}")
+
+        st.subheader("Weather")
+        weather_cols = st.columns(3)
+        with weather_cols[0]:
+            temperature_f = st.text_input(
+                "Temperature F",
+                value=text_value(previous_defaults.get("temperature_f")),
+                key=f"prod_temp_{field_key}",
+            )
+        with weather_cols[1]:
+            wind_mph = st.text_input(
+                "Wind MPH",
+                value=text_value(previous_defaults.get("wind_mph")),
+                key=f"prod_wind_{field_key}",
+            )
+        with weather_cols[2]:
+            humidity_pct = st.text_input(
+                "Humidity %",
+                value=text_value(previous_defaults.get("humidity_pct")),
+                key=f"prod_humidity_{field_key}",
+            )
+        weather_source = st.text_input(
+            "Weather Source",
+            value=text_value(previous_defaults.get("weather_source")) or "manual",
+            key=f"prod_weather_source_{field_key}",
+        )
+
+        st.subheader("Safety and Notes")
+        if previous_defaults:
+            st.caption(f"Safety/hazard defaults copied from previous entry on {text_value(previous_defaults.get('work_date'))}.")
+        safety_issues = st.text_area(
+            "Safety Issues",
+            value=text_value(previous_defaults.get("safety_issues")),
+            height=90,
+            key=f"prod_safety_{field_key}",
+        )
+        hazard_mitigation_plan = st.text_area(
+            "Hazard Mitigation Plan",
+            value=text_value(previous_defaults.get("hazard_mitigation_plan")),
+            height=90,
+            key=f"prod_hazard_{field_key}",
+        )
+        work_notes = st.text_area("Work Notes", height=120, key=f"prod_notes_{field_key}")
+        submitted_by = st.text_input("Submitted By", value=crew_leader_default, key=f"prod_submitted_by_{field_key}")
+
+        submitted = st.form_submit_button("Submit Daily Production", type="primary")
+
+    if submitted:
+        production_entry = {
+            "job_id": selected_job_id,
+            "dispatch_date": work_date,
+            "work_date": work_date,
+            "customer": selected_job.get("customer"),
+            "job_name": selected_job.get("job_name"),
+            "site_address": selected_job.get("site_address"),
+            "crew_leader": crew_leader,
+            "crew_members": crew_members,
+            "start_time": start_time,
+            "end_time": end_time,
+            "labor_hours": labor_hours,
+            "travel_hours": travel_hours,
+            "load_hours": load_hours,
+            "os_hours": os_hours if "os_hours" in locals() else 0,
+            "mileage": mileage,
+            "os_mileage": os_mileage,
+            "foam_strokes": foam_strokes,
+            "foam_lbs": foam_lbs,
+            "foam_thickness_inches": foam_thickness_inches,
+            "foam_sqft": foam_sqft,
+            "foam_yield": foam_yield,
+            "a_side_lot": a_side_lot,
+            "b_side_lot": b_side_lot,
+            "base_coat_1": base_coat_1 if "base_coat_1" in locals() else 0,
+            "base_sqft": base_sqft if "base_sqft" in locals() else 0,
+            "base_gal_per_sq": base_gal_per_sq if "base_gal_per_sq" in locals() else 0,
+            "base_coat_2": base_coat_2 if "base_coat_2" in locals() else 0,
+            "top_sqft": top_sqft if "top_sqft" in locals() else 0,
+            "top_gal_per_sq": top_gal_per_sq if "top_gal_per_sq" in locals() else 0,
+            "granules": granules if "granules" in locals() else 0,
+            "af_buttergrade": af_buttergrade if "af_buttergrade" in locals() else 0,
+            "caulk": caulk if "caulk" in locals() else 0,
+            "primer": primer if "primer" in locals() else 0,
+            "sf": sf if "sf" in locals() else 0,
+            "temperature_f": temperature_f,
+            "wind_mph": wind_mph,
+            "humidity_pct": humidity_pct,
+            "weather_source": weather_source,
+            "safety_issues": safety_issues,
+            "hazard_mitigation_plan": hazard_mitigation_plan,
+            "work_notes": work_notes,
+            "submitted_by": submitted_by,
+        }
+        try:
+            production_entry_id = upsert_daily_production_entry(production_entry)
+            st.success(f"Daily production submitted. Entry: {production_entry_id}")
+        except Exception as exc:
+            show_database_error(exc)
+
+
 def closeout_billing_risk_page() -> None:
     st.title("Closeout / Billing Risk")
     risk = apply_basic_filters(load_df("SELECT * FROM dashboard_closeout_billing_risk"))
@@ -22572,6 +23409,7 @@ def main() -> None:
             "Job Tracking",
             "Schedule Calendar",
             "Daily Crew Dispatch",
+            "Daily Production",
             "Estimating Assistant",
             "Pricing Catalog",
             "Ask Spray-Tec",
@@ -22642,6 +23480,8 @@ def main() -> None:
         project_scheduling_page()
     elif page == "Daily Crew Dispatch":
         daily_crew_dispatch_page()
+    elif page == "Daily Production":
+        daily_production_page()
     elif page == "Jobs Needing Action":
         jobs_needing_action_page()
     elif page == "Closeout / Billing Risk":

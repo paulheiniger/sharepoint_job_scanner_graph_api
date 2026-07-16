@@ -76,3 +76,37 @@ def test_dispatch_swimlane_containers_round_trip_to_job_ids() -> None:
         "job-uk-wt-young": ["Carlos", "Quin"],
         "job-pegasus-39": ["Santos"],
     }
+
+
+def test_daily_production_material_records_skip_empty_values() -> None:
+    import dashboard.app as app
+
+    production_entry = {
+        "production_entry_id": "production-1",
+        "job_id": "job-1",
+        "work_date": date(2026, 7, 16),
+        "foam_lbs": 1200,
+        "primer": 2.5,
+        "caulk": 0,
+        "sf": None,
+    }
+
+    records = app.production_material_records(production_entry)
+
+    assert [record["material_type"] for record in records] == ["foam_lbs", "primer"]
+    assert records[0]["quantity"] == 1200
+    assert records[0]["unit"] == "lbs"
+    assert records[1]["quantity"] == 2.5
+    assert records[1]["unit"] == "gal"
+
+
+def test_daily_production_ids_are_stable() -> None:
+    import dashboard.app as app
+
+    first = app.production_entry_id_for(date(2026, 7, 16), "job-1", "Carlos")
+    second = app.production_entry_id_for(date(2026, 7, 16), "job-1", "Carlos")
+    different = app.production_entry_id_for(date(2026, 7, 16), "job-1", "Santos")
+
+    assert first == second
+    assert first != different
+    assert first.startswith("production-")
