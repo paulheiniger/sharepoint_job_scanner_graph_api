@@ -16980,7 +16980,37 @@ def operations_dashboard_page() -> None:
             with c1:
                 bar_chart(active, "project_health", "operations_value", "Active Value by Project Health")
             with c2:
-                bar_chart(active, "assigned_crew_leader", "operations_value", "Scheduled Value by Crew")
+                scheduled_for_crew = active[
+                    active["readiness_status"].eq("Scheduled")
+                    | active["estimated_start_date_parsed"].notna()
+                ].copy()
+                crew_series = (
+                    scheduled_for_crew.get("assigned_crew_leader", pd.Series("", index=scheduled_for_crew.index))
+                    .fillna("")
+                    .astype(str)
+                    .str.strip()
+                )
+                scheduled_missing_crew = scheduled_for_crew[crew_series.eq("")]
+                scheduled_for_crew = scheduled_for_crew[crew_series.ne("")]
+                bar_chart(scheduled_for_crew, "assigned_crew_leader", "operations_value", "Scheduled Value by Crew")
+                if not scheduled_missing_crew.empty:
+                    st.caption(
+                        f"{len(scheduled_missing_crew)} scheduled job(s) are missing a crew leader and are excluded from this chart."
+                    )
+                    show_table(
+                        scheduled_missing_crew,
+                        [
+                            "customer",
+                            "job_name",
+                            "operations_value",
+                            "estimated_start_date",
+                            "estimated_end_date",
+                            "schedule_status",
+                            "folder_link_or_path",
+                        ],
+                        height=180,
+                        sort_by="operations_value",
+                    )
         show_table(
             active,
             [
