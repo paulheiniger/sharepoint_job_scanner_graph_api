@@ -140,18 +140,18 @@ def test_job_tracking_budget_health_uses_estimate_cost_baselines(monkeypatch) ->
     budget_jobs, budget_buckets = app.build_job_tracking_budget_health(summary)
 
     roof_job = budget_jobs[budget_jobs["job_id"] == "ROOF1"].iloc[0]
-    assert roof_job["budget_status"] == "Over Budget"
+    assert roof_job["budget_status"] == "Usage Over Plan"
     assert roof_job["estimated_cost"] == 1800
     assert roof_job["actual_cost"] == 2050
     assert roof_job["budget_variance"] == 250
-    assert roof_job["over_budget_buckets"] == 2
+    assert roof_job["over_plan_buckets"] == 2
 
     roof_buckets = budget_buckets[budget_buckets["job_id"] == "ROOF1"].set_index("bucket")
     assert roof_buckets.loc["Labor", "actual_cost"] == 1200
-    assert roof_buckets.loc["Labor", "budget_status"] == "Over Budget"
+    assert roof_buckets.loc["Labor", "budget_status"] == "Usage Over Plan"
     assert roof_buckets.loc["Foam / SPF", "actual_cost"] == 400
     assert roof_buckets.loc["Coating", "actual_cost"] == 450
-    assert roof_buckets.loc["Coating", "budget_status"] == "Over Budget"
+    assert roof_buckets.loc["Coating", "budget_status"] == "Usage Over Plan"
 
     insulation_job = budget_jobs[budget_jobs["job_id"] == "INS1"].iloc[0]
     assert insulation_job["budget_status"] == "On Track"
@@ -272,7 +272,7 @@ def test_job_tracking_budget_health_estimates_labor_cost_from_hours_without_temp
     job = budget_jobs[budget_jobs["job_id"] == "JOB1"].iloc[0]
     assert job["estimated_cost"] == 1000
     assert job["actual_cost"] == 1200
-    assert job["budget_status"] == "Over Budget"
+    assert job["budget_status"] == "Usage Over Plan"
 
     bucket = budget_buckets[(budget_buckets["job_id"] == "JOB1") & (budget_buckets["bucket"] == "Labor")].iloc[0]
     assert bucket["cost_basis"] == "median_labor_hourly_rate"
@@ -561,3 +561,49 @@ def test_job_tracking_budget_health_does_not_price_mixed_foam_units(monkeypatch)
     assert pd.isna(foam["estimated_quantity"])
     assert pd.isna(foam["actual_cost"])
     assert foam["budget_status"] == "Incomplete Baseline"
+
+
+def test_job_tracking_completed_mask_catches_status_and_folder() -> None:
+    import dashboard.app as app
+
+    rows = pd.DataFrame(
+        [
+            {"tracking_status": "Completed", "folder_path": "2026 ROOFING/CONTRACTED/Job A"},
+            {"tracking_status": "Contracted / active", "folder_path": "2026 ROOFING/COMPLETED/Job B"},
+            {"tracking_status": "Recently touched", "folder_path": "2026 ROOFING/CONTRACTED/Job C"},
+        ]
+    )
+
+    assert app.job_tracking_completed_mask(rows).tolist() == [True, True, False]
+
+
+def test_job_tracking_rollup_prefers_change_order_tracking_source() -> None:
+    import dashboard.app as app
+
+    rows = pd.DataFrame(
+        [
+            {
+                "job_id": "PARK-TERRACE-CONDOS-LOUISVILLE",
+                "project": "Park Terrace Condos",
+                "source_file": "Job Tracking Form - Park Terrace Condos.xlsx",
+                "last_work_date": "2026-06-04",
+                "actual_labor_hours": 865.68,
+                "actual_foam_strokes": 4753,
+            },
+            {
+                "job_id": "PARK-TERRACE-CONDOS-LOUISVILLE",
+                "project": "Park Terrace Condos",
+                "source_file": "Job Tracking Form (+ CO1-3) - Park Terrace Condos.xlsx",
+                "last_work_date": "2026-06-04",
+                "actual_labor_hours": 865.68,
+                "actual_foam_strokes": 4753,
+            },
+        ]
+    )
+
+    rolled = app.rollup_job_tracking_production_summary(rows)
+
+    assert len(rolled) == 1
+    assert rolled.iloc[0]["actual_labor_hours"] == 865.68
+    assert rolled.iloc[0]["actual_foam_strokes"] == 4753
+    assert "CO1-3" in rolled.iloc[0]["source_file"]

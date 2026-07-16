@@ -2684,6 +2684,18 @@ def normalize_tracking_source_family(row: pd.Series) -> str:
     source_text = next((part.strip() for part in reversed(source_text.split("/")) if part.strip()), source_text)
     source_text = re.sub(r"\.(xlsx|xlsm|xls)$", "", source_text, flags=re.IGNORECASE)
     source_text = re.sub(r"^(updated|revised|final)\s+", "", source_text, flags=re.IGNORECASE)
+    source_text = re.sub(
+        r"\s*\(\s*\+?\s*co\s*#?\s*\d+(?:\s*[-–]\s*\d+)?\s*\)",
+        "",
+        source_text,
+        flags=re.IGNORECASE,
+    )
+    source_text = re.sub(
+        r"\s+\+?\s*co\s*#?\s*\d+(?:\s*[-–]\s*\d+)?\b",
+        "",
+        source_text,
+        flags=re.IGNORECASE,
+    )
     source_text = re.sub(r"\s+\(\d+\)$", "", source_text).strip()
     return normalize_tracking_rollup_key(source_text)
 
@@ -2699,7 +2711,12 @@ def drop_superseded_tracking_sources(df: pd.DataFrame) -> pd.DataFrame:
     for column in ["source_file", "tracking_file"]:
         if column in out.columns:
             source_text = source_text.str.cat(out[column].fillna("").astype(str), sep=" ")
-    out["_tracking_is_updated"] = source_text.str.contains(r"\b(?:updated|revised|final)\b", case=False, regex=True, na=False).astype(int)
+    out["_tracking_is_updated"] = source_text.str.contains(
+        r"\b(?:updated|revised|final)\b|(?:\+|\b)co\s*#?\s*\d|change\s*order",
+        case=False,
+        regex=True,
+        na=False,
+    ).astype(int)
     out["_tracking_last_work_sort"] = (
         pd.to_datetime(out["last_work_date"], errors="coerce")
         if "last_work_date" in out.columns
@@ -3234,7 +3251,7 @@ def build_job_tracking_budget_health(summary: pd.DataFrame) -> tuple[pd.DataFram
                 else np.nan
             )
             if not pd.isna(pct_used) and pct_used > 1.05:
-                status = "Over Budget"
+                status = "Usage Over Plan"
             elif pd.isna(estimated_cost) or estimated_cost <= 0:
                 status = "No Cost Baseline"
             elif actual_quantity is None:
@@ -3242,7 +3259,7 @@ def build_job_tracking_budget_health(summary: pd.DataFrame) -> tuple[pd.DataFram
             elif estimated_quantity is None:
                 status = "Incomplete Baseline"
             elif not pd.isna(pct_used) and pct_used >= 0.9:
-                status = "Watch"
+                status = "Near Plan"
             else:
                 status = "On Track"
             bucket_rows.append(
@@ -3289,7 +3306,7 @@ def build_job_tracking_budget_health(summary: pd.DataFrame) -> tuple[pd.DataFram
         tracking_file=("tracking_file", "first"),
         estimated_cost=("estimated_cost", "sum"),
         actual_cost=("actual_cost", "sum"),
-        over_budget_buckets=("budget_status", lambda values: int(sum(1 for value in values if value == "Over Budget"))),
+        over_plan_buckets=("budget_status", lambda values: int(sum(1 for value in values if value == "Usage Over Plan"))),
         no_baseline_buckets=("budget_status", lambda values: int(sum(1 for value in values if value == "No Cost Baseline"))),
         no_actual_buckets=("budget_status", lambda values: int(sum(1 for value in values if value == "No Actuals Yet"))),
     ).reset_index()
@@ -3304,12 +3321,12 @@ def build_job_tracking_budget_health(summary: pd.DataFrame) -> tuple[pd.DataFram
     )
     job_df["budget_status"] = np.select(
         [
-            job_df["over_budget_buckets"].gt(0),
+            job_df["budget_used_pct"].gt(1.05),
             job_df["budget_used_pct"].ge(0.9),
             job_df["no_baseline_buckets"].gt(0),
             job_df["actual_cost"].fillna(0).le(0),
         ],
-        ["Over Budget", "Watch", "Incomplete Baseline", "No Actuals Yet"],
+        ["Usage Over Plan", "Near Plan", "Incomplete Baseline", "No Actuals Yet"],
         default="On Track",
     )
     job_df = add_unique_job_display_labels(job_df)
@@ -3326,14 +3343,18 @@ def render_job_tracking_budget_health(summary: pd.DataFrame) -> None:
     if budget_jobs.empty:
         st.info("No budget health rows could be built yet. This needs estimate costs plus job tracking actuals.")
         return
+    st.caption(
+        "This is a production-plan signal, not accounting actual cost. "
+        "Tracked quantities and hours are compared to estimated quantities/hours, then valued with estimate-derived rates where comparable."
+    )
 
-    over_budget = budget_jobs[budget_jobs["budget_status"].eq("Over Budget")]
+    over_plan = budget_jobs[budget_jobs["budget_status"].eq("Usage Over Plan")]
     metric_row(
         [
             ("Jobs With Budget Signal", fmt_count(len(budget_jobs))),
-            ("Over Budget", fmt_count(len(over_budget))),
-            ("Calculated Actual Cost", fmt_dollar(safe_sum(budget_jobs, "actual_cost"))),
-            ("Calculated Variance", fmt_dollar(safe_sum(budget_jobs, "budget_variance"))),
+            ("Usage Over Plan", fmt_count(len(over_plan))),
+            ("Estimated Cost Used", fmt_dollar(safe_sum(budget_jobs, "actual_cost"))),
+            ("Estimated Over Plan", fmt_dollar(safe_sum(over_plan, "budget_variance"))),
         ]
     )
 
@@ -3345,8 +3366,8 @@ def render_job_tracking_budget_health(summary: pd.DataFrame) -> None:
         chart_label_column = "job_display" if "job_display" in chart_df.columns else "project"
         chart_df["_chart_extent"] = chart_df[["estimated_cost", "actual_cost"]].max(axis=1)
         status_colors = {
-            "Over Budget": "#dc2626",
-            "Watch": "#d97706",
+            "Usage Over Plan": "#dc2626",
+            "Near Plan": "#d97706",
             "On Track": "#059669",
             "No Actuals Yet": "#6b7280",
             "Incomplete Baseline": "#2563eb",
@@ -3373,7 +3394,7 @@ def render_job_tracking_budget_health(summary: pd.DataFrame) -> None:
                     x=chart_rows["actual_cost"],
                     y=chart_rows[chart_label_column],
                     orientation="h",
-                    name="Actual cost used",
+                    name="Estimated cost used",
                     marker={"color": [status_colors.get(status, "#6b7280") for status in chart_rows["budget_status"]]},
                     customdata=np.stack(
                         [
@@ -3386,9 +3407,9 @@ def render_job_tracking_budget_health(summary: pd.DataFrame) -> None:
                     ),
                     hovertemplate=(
                         "<b>%{y}</b><br>"
-                        "Actual cost used: $%{x:,.0f}<br>"
+                        "Estimated cost used: $%{x:,.0f}<br>"
                         "Estimated budget: $%{customdata[0]:,.0f}<br>"
-                        "Variance: $%{customdata[1]:,.0f}<br>"
+                        "Estimated variance: $%{customdata[1]:,.0f}<br>"
                         "Used: %{customdata[2]}<br>"
                         "Status: %{customdata[3]}<extra></extra>"
                     ),
@@ -3410,22 +3431,30 @@ def render_job_tracking_budget_health(summary: pd.DataFrame) -> None:
 
         top_chart = chart_df.sort_values("_chart_extent", ascending=False).head(5)
         remaining_chart = chart_df.drop(index=top_chart.index)
-        render_budget_fill_chart(top_chart, "Budget Used by Job - Top 5", show_legend=True)
+        render_budget_fill_chart(top_chart, "Estimated Production Plan Used by Job - Top 5", show_legend=True)
         if not remaining_chart.empty:
-            render_budget_fill_chart(remaining_chart, "Budget Used by Job - Remaining Jobs", show_legend=False)
+            render_budget_fill_chart(remaining_chart, "Estimated Production Plan Used by Job - Remaining Jobs", show_legend=False)
 
+    budget_jobs_display = budget_jobs.rename(
+        columns={
+            "actual_cost": "estimated_cost_used",
+            "budget_variance": "estimated_cost_variance",
+            "budget_used_pct_display": "estimated_cost_used_pct",
+            "over_plan_buckets": "usage_over_plan_buckets",
+        }
+    )
     show_table(
-        budget_jobs,
+        budget_jobs_display,
         [
             "budget_status",
-            "job_display" if "job_display" in budget_jobs.columns else "project",
+            "job_display" if "job_display" in budget_jobs_display.columns else "project",
             "division",
             "tracking_status",
             "estimated_cost",
-            "actual_cost",
-            "budget_variance",
-            "budget_used_pct_display",
-            "over_budget_buckets",
+            "estimated_cost_used",
+            "estimated_cost_variance",
+            "estimated_cost_used_pct",
+            "usage_over_plan_buckets",
             "no_baseline_buckets",
             "no_actual_buckets",
             "last_work_date",
@@ -3441,7 +3470,13 @@ def render_job_tracking_budget_health(summary: pd.DataFrame) -> None:
     options = budget_jobs[detail_label_column].fillna("").astype(str).tolist()
     selected_project = st.selectbox("Bucket detail", options=options, key="job_tracking_budget_detail_project")
     selected_job_ids = budget_jobs.loc[budget_jobs[detail_label_column].astype(str).eq(selected_project), "job_id"].astype(str).tolist()
-    detail = budget_buckets[budget_buckets["job_id"].astype(str).isin(selected_job_ids)].copy()
+    detail = budget_buckets[budget_buckets["job_id"].astype(str).isin(selected_job_ids)].copy().rename(
+        columns={
+            "actual_cost": "estimated_cost_used",
+            "budget_variance": "estimated_cost_variance",
+            "budget_used_pct_display": "estimated_cost_used_pct",
+        }
+    )
     show_table(
         detail,
         [
@@ -3449,9 +3484,9 @@ def render_job_tracking_budget_health(summary: pd.DataFrame) -> None:
             "bucket",
             "bucket_kind",
             "estimated_cost",
-            "actual_cost",
-            "budget_variance",
-            "budget_used_pct_display",
+            "estimated_cost_used",
+            "estimated_cost_variance",
+            "estimated_cost_used_pct",
             "actual_quantity",
             "estimated_quantity",
             "quantity_pct_used_display",
@@ -3461,6 +3496,16 @@ def render_job_tracking_budget_health(summary: pd.DataFrame) -> None:
         height=300,
         sort_by="budget_variance",
     )
+
+
+def job_tracking_completed_mask(df: pd.DataFrame) -> pd.Series:
+    if df.empty:
+        return pd.Series(False, index=df.index)
+    status_text = pd.Series("", index=df.index)
+    for column in ["tracking_status", "status", "pipeline_status", "folder_path", "source_file", "tracking_file"]:
+        if column in df.columns:
+            status_text = status_text.str.cat(df[column].fillna("").astype(str), sep=" ")
+    return status_text.str.contains(r"\bcompleted\b|\bcomplete\b|/completed/|\\completed\\", case=False, regex=True, na=False)
 
 
 def load_schedule_df() -> pd.DataFrame:
@@ -14172,17 +14217,21 @@ def job_tracking_dashboard_page() -> None:
         return
 
     filter_source = summary_all if not summary_all.empty else daily_all
-    filter_col1, filter_col2, filter_col3, filter_col4 = st.columns([1.1, 1.2, 1.4, 2.0])
+    filter_col1, filter_col2, filter_col3, filter_col4, filter_col5 = st.columns([1.1, 1.0, 1.2, 1.4, 2.0])
     with filter_col1:
         active_only = st.checkbox("Active / recent only", value=True, key="job_tracking_active_recent_only")
     with filter_col2:
-        division_filter = st.multiselect("Division", options_from(filter_source, "division"), key="job_tracking_division")
+        include_completed = st.checkbox("Include completed", value=False, key="job_tracking_include_completed")
     with filter_col3:
-        status_filter = st.multiselect("Tracking Status", options_from(summary_all, "tracking_status"), key="job_tracking_status")
+        division_filter = st.multiselect("Division", options_from(filter_source, "division"), key="job_tracking_division")
     with filter_col4:
+        status_filter = st.multiselect("Tracking Status", options_from(summary_all, "tracking_status"), key="job_tracking_status")
+    with filter_col5:
         search = st.text_input("Search customer, job, file, notes", key="job_tracking_search").strip()
 
     summary = summary_all.copy()
+    if not include_completed:
+        summary = summary[~job_tracking_completed_mask(summary)]
     if active_only and "tracking_status" in summary.columns:
         summary = summary[summary["tracking_status"].isin(["Recently touched", "Contracted / active"])]
     if division_filter and "division" in summary.columns:
@@ -14201,6 +14250,8 @@ def job_tracking_dashboard_page() -> None:
         summary = summary[mask]
 
     daily = daily_all.copy()
+    if not include_completed:
+        daily = daily[~job_tracking_completed_mask(daily)]
     if active_only and not daily.empty and "work_date" in daily.columns:
         work_date = pd.to_datetime(daily["work_date"], errors="coerce")
         daily = daily[work_date.notna() & ((pd.Timestamp(date.today()) - work_date).dt.days <= 45)]
