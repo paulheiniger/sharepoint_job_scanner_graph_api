@@ -43,7 +43,6 @@ from jobscan.env import load_project_env
 
 load_project_env()
 
-from foamscope_ui import render_foamscope_page
 from jobscan.db_connections import (
     ReadQueryResult,
     create_resilient_engine,
@@ -59,45 +58,8 @@ from jobscan.job_search import (
     search_jobs,
     tokenize_search_text,
 )
-try:
-    from jobscan.estimator import estimate_from_field_notes, load_estimator_data
-except ImportError:
-    from jobscan.estimator import load_estimator_data
-
-    estimate_from_field_notes = None
-from jobscan.estimator.schemas import EstimatorData
-from jobscan.estimator.evidence_export import write_estimator_evidence_export
-from jobscan.estimator import session_capture as estimator_sessions
-from jobscan.estimator.estimator_memory import delete_estimator_memory, estimator_memory_frame, update_estimator_memory_status
-from jobscan.estimator.workbench import (
-    append_edit_history,
-    apply_historical_filter_update,
-    build_edit_history_rows,
-    build_estimating_workbench,
-    historical_filter_hash,
-    historical_filters_from_scope,
-    recalculate_workbench_tables,
-    summarize_workbench_totals,
-    workbench_to_draft_workbook_inputs,
-)
-from jobscan.estimator.workbench_export import DEFAULT_WORKBENCH_EXPORT_DIR, export_workbench_review_package
-from jobscan.estimator.workbook_writer import DEFAULT_ESTIMATE_OUTPUT_DIR, generate_estimate_workbook, resolve_default_template_path
-from jobscan.estimator.photo_evidence import (
-    PHOTO_CATEGORY_OPTIONS,
-    PHOTO_SIGNAL_OPTIONS,
-    analyze_selected_photos_with_ai,
-    apply_photo_record_edits,
-    build_photo_scope_context,
-    merge_photo_ai_analysis,
-    stage_uploaded_images,
-)
-from jobscan.estimator.chat_assistant import estimator_context_cache_stats, run_estimator_chat_turn
-from jobscan.estimator.note_images import extract_notes_from_images_with_ai, stage_note_images
-from jobscan.estimator.reference_answer_key import (
-    answer_key_to_workbook_decision_preferences,
-    build_reference_estimate_answer_key,
-)
-from jobscan.estimator.template_examples import build_template_examples
+estimate_from_field_notes = None
+load_estimator_data = None
 
 try:
     from streamlit_calendar import calendar
@@ -111,6 +73,168 @@ except ImportError:
 
 
 logger = logging.getLogger(__name__)
+
+_render_foamscope_page_impl = None
+
+
+def render_foamscope_page_lazy() -> None:
+    global _render_foamscope_page_impl
+    if _render_foamscope_page_impl is None:
+        from foamscope_ui import render_foamscope_page as imported_render_foamscope_page
+
+        _render_foamscope_page_impl = imported_render_foamscope_page
+    _render_foamscope_page_impl()
+
+EstimatorData = Any
+write_estimator_evidence_export = None
+estimator_sessions = None
+delete_estimator_memory = None
+estimator_memory_frame = None
+update_estimator_memory_status = None
+append_edit_history = None
+apply_historical_filter_update = None
+build_edit_history_rows = None
+build_estimating_workbench = None
+historical_filter_hash = None
+historical_filters_from_scope = None
+recalculate_workbench_tables = None
+summarize_workbench_totals = None
+workbench_to_draft_workbook_inputs = None
+DEFAULT_WORKBENCH_EXPORT_DIR = Path("output/estimator_workbench_exports")
+export_workbench_review_package = None
+DEFAULT_ESTIMATE_OUTPUT_DIR = Path("output/estimates")
+generate_estimate_workbook = None
+resolve_default_template_path = None
+PHOTO_CATEGORY_OPTIONS: list[str] = []
+PHOTO_SIGNAL_OPTIONS: list[str] = []
+analyze_selected_photos_with_ai = None
+apply_photo_record_edits = None
+build_photo_scope_context = None
+merge_photo_ai_analysis = None
+stage_uploaded_images = None
+estimator_context_cache_stats = None
+run_estimator_chat_turn = None
+extract_notes_from_images_with_ai = None
+stage_note_images = None
+answer_key_to_workbook_decision_preferences = None
+build_reference_estimate_answer_key = None
+build_template_examples = None
+_ESTIMATOR_IMPORTS_LOADED = False
+
+
+def ensure_estimator_imports() -> None:
+    global _ESTIMATOR_IMPORTS_LOADED
+    global estimate_from_field_notes, load_estimator_data, EstimatorData
+    global write_estimator_evidence_export, estimator_sessions
+    global delete_estimator_memory, estimator_memory_frame, update_estimator_memory_status
+    global append_edit_history, apply_historical_filter_update, build_edit_history_rows
+    global build_estimating_workbench, historical_filter_hash, historical_filters_from_scope
+    global recalculate_workbench_tables, summarize_workbench_totals, workbench_to_draft_workbook_inputs
+    global DEFAULT_WORKBENCH_EXPORT_DIR, export_workbench_review_package
+    global DEFAULT_ESTIMATE_OUTPUT_DIR, generate_estimate_workbook, resolve_default_template_path
+    global PHOTO_CATEGORY_OPTIONS, PHOTO_SIGNAL_OPTIONS, analyze_selected_photos_with_ai
+    global apply_photo_record_edits, build_photo_scope_context, merge_photo_ai_analysis, stage_uploaded_images
+    global estimator_context_cache_stats, run_estimator_chat_turn
+    global extract_notes_from_images_with_ai, stage_note_images
+    global answer_key_to_workbook_decision_preferences, build_reference_estimate_answer_key
+    global build_template_examples
+
+    if _ESTIMATOR_IMPORTS_LOADED:
+        return
+
+    try:
+        from jobscan.estimator import estimate_from_field_notes as imported_estimate_from_field_notes
+    except ImportError:
+        imported_estimate_from_field_notes = None
+    from jobscan.estimator import load_estimator_data as imported_load_estimator_data
+    from jobscan.estimator.schemas import EstimatorData as ImportedEstimatorData
+    from jobscan.estimator.evidence_export import write_estimator_evidence_export as imported_write_estimator_evidence_export
+    from jobscan.estimator import session_capture as imported_estimator_sessions
+    from jobscan.estimator.estimator_memory import (
+        delete_estimator_memory as imported_delete_estimator_memory,
+        estimator_memory_frame as imported_estimator_memory_frame,
+        update_estimator_memory_status as imported_update_estimator_memory_status,
+    )
+    from jobscan.estimator.workbench import (
+        append_edit_history as imported_append_edit_history,
+        apply_historical_filter_update as imported_apply_historical_filter_update,
+        build_edit_history_rows as imported_build_edit_history_rows,
+        build_estimating_workbench as imported_build_estimating_workbench,
+        historical_filter_hash as imported_historical_filter_hash,
+        historical_filters_from_scope as imported_historical_filters_from_scope,
+        recalculate_workbench_tables as imported_recalculate_workbench_tables,
+        summarize_workbench_totals as imported_summarize_workbench_totals,
+        workbench_to_draft_workbook_inputs as imported_workbench_to_draft_workbook_inputs,
+    )
+    from jobscan.estimator.workbench_export import (
+        DEFAULT_WORKBENCH_EXPORT_DIR as imported_DEFAULT_WORKBENCH_EXPORT_DIR,
+        export_workbench_review_package as imported_export_workbench_review_package,
+    )
+    from jobscan.estimator.workbook_writer import (
+        DEFAULT_ESTIMATE_OUTPUT_DIR as imported_DEFAULT_ESTIMATE_OUTPUT_DIR,
+        generate_estimate_workbook as imported_generate_estimate_workbook,
+        resolve_default_template_path as imported_resolve_default_template_path,
+    )
+    from jobscan.estimator.photo_evidence import (
+        PHOTO_CATEGORY_OPTIONS as imported_PHOTO_CATEGORY_OPTIONS,
+        PHOTO_SIGNAL_OPTIONS as imported_PHOTO_SIGNAL_OPTIONS,
+        analyze_selected_photos_with_ai as imported_analyze_selected_photos_with_ai,
+        apply_photo_record_edits as imported_apply_photo_record_edits,
+        build_photo_scope_context as imported_build_photo_scope_context,
+        merge_photo_ai_analysis as imported_merge_photo_ai_analysis,
+        stage_uploaded_images as imported_stage_uploaded_images,
+    )
+    from jobscan.estimator.chat_assistant import (
+        estimator_context_cache_stats as imported_estimator_context_cache_stats,
+        run_estimator_chat_turn as imported_run_estimator_chat_turn,
+    )
+    from jobscan.estimator.note_images import (
+        extract_notes_from_images_with_ai as imported_extract_notes_from_images_with_ai,
+        stage_note_images as imported_stage_note_images,
+    )
+    from jobscan.estimator.reference_answer_key import (
+        answer_key_to_workbook_decision_preferences as imported_answer_key_to_workbook_decision_preferences,
+        build_reference_estimate_answer_key as imported_build_reference_estimate_answer_key,
+    )
+    from jobscan.estimator.template_examples import build_template_examples as imported_build_template_examples
+
+    estimate_from_field_notes = imported_estimate_from_field_notes
+    load_estimator_data = imported_load_estimator_data
+    EstimatorData = ImportedEstimatorData
+    write_estimator_evidence_export = imported_write_estimator_evidence_export
+    estimator_sessions = imported_estimator_sessions
+    delete_estimator_memory = imported_delete_estimator_memory
+    estimator_memory_frame = imported_estimator_memory_frame
+    update_estimator_memory_status = imported_update_estimator_memory_status
+    append_edit_history = imported_append_edit_history
+    apply_historical_filter_update = imported_apply_historical_filter_update
+    build_edit_history_rows = imported_build_edit_history_rows
+    build_estimating_workbench = imported_build_estimating_workbench
+    historical_filter_hash = imported_historical_filter_hash
+    historical_filters_from_scope = imported_historical_filters_from_scope
+    recalculate_workbench_tables = imported_recalculate_workbench_tables
+    summarize_workbench_totals = imported_summarize_workbench_totals
+    workbench_to_draft_workbook_inputs = imported_workbench_to_draft_workbook_inputs
+    DEFAULT_WORKBENCH_EXPORT_DIR = imported_DEFAULT_WORKBENCH_EXPORT_DIR
+    export_workbench_review_package = imported_export_workbench_review_package
+    DEFAULT_ESTIMATE_OUTPUT_DIR = imported_DEFAULT_ESTIMATE_OUTPUT_DIR
+    generate_estimate_workbook = imported_generate_estimate_workbook
+    resolve_default_template_path = imported_resolve_default_template_path
+    PHOTO_CATEGORY_OPTIONS = imported_PHOTO_CATEGORY_OPTIONS
+    PHOTO_SIGNAL_OPTIONS = imported_PHOTO_SIGNAL_OPTIONS
+    analyze_selected_photos_with_ai = imported_analyze_selected_photos_with_ai
+    apply_photo_record_edits = imported_apply_photo_record_edits
+    build_photo_scope_context = imported_build_photo_scope_context
+    merge_photo_ai_analysis = imported_merge_photo_ai_analysis
+    stage_uploaded_images = imported_stage_uploaded_images
+    estimator_context_cache_stats = imported_estimator_context_cache_stats
+    run_estimator_chat_turn = imported_run_estimator_chat_turn
+    extract_notes_from_images_with_ai = imported_extract_notes_from_images_with_ai
+    stage_note_images = imported_stage_note_images
+    answer_key_to_workbook_decision_preferences = imported_answer_key_to_workbook_decision_preferences
+    build_reference_estimate_answer_key = imported_build_reference_estimate_answer_key
+    build_template_examples = imported_build_template_examples
+    _ESTIMATOR_IMPORTS_LOADED = True
 
 DEFAULT_DATABASE_URL = "postgresql+psycopg2://spraytec:spraytec_dev_password@127.0.0.1:5433/spraytec_ops"
 ESTIMATOR_CHAT_SESSION_DIR = Path("output/estimator_chat_sessions")
@@ -1764,6 +1888,39 @@ def load_job_tracking_estimated_material_enrichment(job_ids: tuple[str, ...]) ->
     clean_job_ids = tuple(sorted({text_value(job_id) for job_id in job_ids if text_value(job_id)}))
     if not clean_job_ids:
         return pd.DataFrame()
+    snapshot_cols = relation_columns("job_tracking_estimated_material_snapshot")
+    if "job_id" in snapshot_cols:
+        wanted_snapshot_columns = [
+            "job_id",
+            "estimate_material_rows_used",
+            "estimated_materials_source",
+            "estimated_foam_sqft_from_estimate_rows",
+            "estimated_foam_thickness_inches_from_estimate_rows",
+            "estimated_foam_yield_from_estimate_rows",
+            "estimated_base_coat_1_from_estimate_rows",
+            "estimated_base_coat_2_from_estimate_rows",
+            "estimated_granules_from_estimate_rows",
+            "estimated_af_buttergrade_from_estimate_rows",
+            "estimated_caulk_from_estimate_rows",
+            "estimated_primer_from_estimate_rows",
+            "estimated_sf_from_estimate_rows",
+        ]
+        snapshot_columns = [column for column in wanted_snapshot_columns if column in snapshot_cols]
+        try:
+            engine = get_engine()
+            statement = text(
+                f"""
+                SELECT {', '.join(snapshot_columns)}
+                FROM job_tracking_estimated_material_snapshot
+                WHERE job_id IN :job_ids
+                """
+            ).bindparams(bindparam("job_ids", expanding=True))
+            with engine.connect() as conn:
+                snapshot_rows = pd.read_sql_query(statement, conn, params={"job_ids": clean_job_ids})
+            if not snapshot_rows.empty:
+                return snapshot_rows
+        except Exception:
+            pass
     template_cols = relation_columns("estimate_template_rows")
     if "job_id" not in template_cols:
         return pd.DataFrame()
@@ -2004,7 +2161,7 @@ def enrich_job_tracking_summary_with_estimated_materials(df: pd.DataFrame) -> pd
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def load_job_tracking_dashboard_summary() -> pd.DataFrame:
+def load_job_tracking_dashboard_summary(include_estimated_materials: bool = True) -> pd.DataFrame:
     tracking_cols = relation_columns("job_tracking_summary")
     if not tracking_cols:
         return pd.DataFrame()
@@ -2141,7 +2298,8 @@ def load_job_tracking_dashboard_summary() -> pd.DataFrame:
     for column in date_fields + ["first_work_date", "last_work_date"]:
         if column in df.columns:
             df[column] = pd.to_datetime(df[column], errors="coerce")
-    df = enrich_job_tracking_summary_with_estimated_materials(df)
+    if include_estimated_materials:
+        df = enrich_job_tracking_summary_with_estimated_materials(df)
     for column in ["customer", "job_name"]:
         if column not in df.columns:
             df[column] = ""
@@ -3234,6 +3392,33 @@ def load_job_tracking_estimate_budget_enrichment(job_ids: tuple[str, ...]) -> pd
     clean_job_ids = tuple(sorted({text_value(job_id) for job_id in job_ids if text_value(job_id)}))
     if not clean_job_ids:
         return pd.DataFrame()
+    snapshot_cols = relation_columns("job_tracking_estimate_budget_snapshot")
+    if {"job_id", "budget_bucket", "estimated_bucket_cost"}.issubset(snapshot_cols):
+        wanted_snapshot_columns = [
+            "job_id",
+            "budget_bucket",
+            "estimated_bucket_cost",
+            "estimate_budget_rows_used",
+        ]
+        snapshot_columns = [column for column in wanted_snapshot_columns if column in snapshot_cols]
+        try:
+            engine = get_engine()
+            statement = text(
+                f"""
+                SELECT {', '.join(snapshot_columns)}
+                FROM job_tracking_estimate_budget_snapshot
+                WHERE job_id IN :job_ids
+                """
+            ).bindparams(bindparam("job_ids", expanding=True))
+            with engine.connect() as conn:
+                snapshot_rows = pd.read_sql_query(statement, conn, params={"job_ids": clean_job_ids})
+            if not snapshot_rows.empty:
+                for column in ["estimated_bucket_cost", "estimate_budget_rows_used"]:
+                    if column in snapshot_rows.columns:
+                        snapshot_rows[column] = pd.to_numeric(snapshot_rows[column], errors="coerce")
+                return snapshot_rows
+        except Exception:
+            pass
     template_cols = relation_columns("estimate_template_rows")
     if "job_id" not in template_cols or "estimated_cost" not in template_cols:
         return pd.DataFrame()
@@ -7815,6 +8000,17 @@ def options_from(df: pd.DataFrame, column: str) -> list[str]:
     return sorted(value for value in values.unique() if value)
 
 
+def choose_dashboard_section(label: str, options: list[str], *, key: str, default: str | None = None) -> str:
+    if not options:
+        return ""
+    selected_default = default if default in options else options[0]
+    if hasattr(st, "segmented_control"):
+        selected = st.segmented_control(label, options, default=selected_default, key=key)
+    else:
+        selected = st.radio(label, options, index=options.index(selected_default), horizontal=True, key=key)
+    return selected or selected_default
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def load_sidebar_filter_jobs() -> pd.DataFrame:
     cols = relation_columns("dashboard_jobs")
@@ -8847,6 +9043,7 @@ def _json_dict_value(value: Any) -> dict[str, Any]:
 
 
 def _template_examples_for_generated_notes(data: EstimatorData) -> pd.DataFrame:
+    ensure_estimator_imports()
     examples = getattr(data, "template_examples", pd.DataFrame())
     if isinstance(examples, pd.DataFrame) and not examples.empty:
         return examples
@@ -12986,6 +13183,71 @@ def load_job_board_warnings() -> pd.DataFrame:
     return warnings
 
 
+def apply_job_board_operational_enrichments(jobs: pd.DataFrame) -> pd.DataFrame:
+    if not isinstance(jobs, pd.DataFrame) or jobs.empty:
+        return jobs
+    out = jobs.copy()
+    overrides = load_job_workflow_overrides()
+    if "job_id" in overrides.columns:
+        out = out.merge(overrides, on="job_id", how="left")
+    schedule = load_job_board_schedule()
+    if not schedule.empty and "job_id" in schedule.columns:
+        out = out.merge(schedule, on="job_id", how="left", suffixes=("", "_schedule"))
+        for column in [
+            "assigned_crew_leader",
+            "estimated_start_date",
+            "estimated_end_date",
+            "estimated_duration_days",
+            "estimated_labor_hours",
+            "estimated_crew_size",
+            "schedule_status",
+            "schedule_priority",
+            "blocking_issue",
+            "schedule_notes",
+        ]:
+            schedule_column = f"{column}_schedule"
+            if schedule_column not in out.columns:
+                continue
+            if column in out.columns:
+                out[column] = out[column].combine_first(out[schedule_column])
+            else:
+                out[column] = out[schedule_column]
+            out = out.drop(columns=[schedule_column])
+    warnings = load_job_board_warnings()
+    if not warnings.empty and "job_id" in warnings.columns:
+        out = out.merge(warnings, on="job_id", how="left")
+    if "warning_count" not in out.columns:
+        out["warning_count"] = out["warnings"].fillna("").astype(str).str.strip().ne("").astype(int) if "warnings" in out.columns else 0
+    if "warning_summary" not in out.columns:
+        out["warning_summary"] = out["warnings"] if "warnings" in out.columns else ""
+    return out
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_operations_job_context_df() -> pd.DataFrame:
+    snapshot = load_job_board_static_snapshot()
+    using_snapshot = isinstance(snapshot, pd.DataFrame) and not snapshot.empty and "job_id" in snapshot.columns
+    if using_snapshot:
+        jobs = snapshot
+    else:
+        jobs = load_job_board_jobs()
+    if not isinstance(jobs, pd.DataFrame):
+        return pd.DataFrame()
+    if jobs.empty or "job_id" not in jobs.columns:
+        return jobs
+    jobs = with_folder_link(jobs)
+    if using_snapshot:
+        jobs = merge_job_board_enrichments(jobs)
+    else:
+        jobs = merge_job_board_enrichments(
+            jobs,
+            load_job_board_vsimple_enrichment(),
+            load_job_board_template_enrichment(),
+            load_job_board_estimate_labor_enrichment(),
+        )
+    return apply_job_board_operational_enrichments(jobs)
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def load_job_board_df(include_document_signals: bool = True) -> pd.DataFrame:
     jobs = load_job_board_static_snapshot() if include_document_signals else pd.DataFrame()
@@ -13014,40 +13276,7 @@ def load_job_board_df(include_document_signals: bool = True) -> pd.DataFrame:
     else:
         jobs = with_folder_link(merge_job_board_enrichments(jobs))
     jobs = add_job_board_proposal_stale_columns(jobs)
-    overrides = load_job_workflow_overrides()
-    if "job_id" in overrides.columns:
-        jobs = jobs.merge(overrides, on="job_id", how="left")
-    schedule = load_job_board_schedule()
-    if not schedule.empty and "job_id" in schedule.columns:
-        jobs = jobs.merge(schedule, on="job_id", how="left", suffixes=("", "_schedule"))
-        for column in [
-            "assigned_crew_leader",
-            "estimated_start_date",
-            "estimated_end_date",
-            "estimated_duration_days",
-            "estimated_labor_hours",
-            "estimated_crew_size",
-            "schedule_status",
-            "schedule_priority",
-            "blocking_issue",
-            "schedule_notes",
-        ]:
-            schedule_column = f"{column}_schedule"
-            if schedule_column not in jobs.columns:
-                continue
-            if column in jobs.columns:
-                jobs[column] = jobs[column].combine_first(jobs[schedule_column])
-            else:
-                jobs[column] = jobs[schedule_column]
-            jobs = jobs.drop(columns=[schedule_column])
-    warnings = load_job_board_warnings()
-    if not warnings.empty and "job_id" in warnings.columns:
-        jobs = jobs.merge(warnings, on="job_id", how="left")
-    if "warning_count" not in jobs.columns:
-        jobs["warning_count"] = jobs["warnings"].fillna("").astype(str).str.strip().ne("").astype(int) if "warnings" in jobs.columns else 0
-    if "warning_summary" not in jobs.columns:
-        jobs["warning_summary"] = jobs["warnings"] if "warnings" in jobs.columns else ""
-    return jobs
+    return apply_job_board_operational_enrichments(jobs)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -14410,14 +14639,13 @@ def load_sales_dashboard_jobs_prepared() -> pd.DataFrame:
     return normalize_sales_jobs(base_jobs)
 
 
-@st.cache_data(ttl=300, show_spinner=False)
-def load_operations_dashboard_prepared() -> tuple[pd.DataFrame, pd.DataFrame]:
-    base_jobs = load_job_board_df(include_document_signals=False)
+def build_operations_dashboard_prepared_live() -> tuple[pd.DataFrame, pd.DataFrame]:
+    base_jobs = load_operations_job_context_df()
     if not isinstance(base_jobs, pd.DataFrame):
         base_jobs = pd.DataFrame()
     all_jobs = normalize_sales_jobs(base_jobs)
     schedule = load_schedule_df() if relation_columns("crew_schedule") else pd.DataFrame()
-    tracking = load_job_tracking_dashboard_summary()
+    tracking_all = load_job_tracking_dashboard_summary(include_estimated_materials=False)
     backlog = query_view("dashboard_contracted_backlog")
     backlog_source = backlog if not backlog.empty else all_jobs
     if (
@@ -14446,8 +14674,48 @@ def load_operations_dashboard_prepared() -> tuple[pd.DataFrame, pd.DataFrame]:
                     else:
                         backlog_source[column] = backlog_source[source_column]
                     backlog_source = backlog_source.drop(columns=[source_column])
+    tracking = tracking_all
+    if (
+        isinstance(tracking_all, pd.DataFrame)
+        and not tracking_all.empty
+        and "job_id" in tracking_all.columns
+        and isinstance(backlog_source, pd.DataFrame)
+        and not backlog_source.empty
+        and "job_id" in backlog_source.columns
+    ):
+        backlog_job_ids = set(backlog_source["job_id"].dropna().astype(str).str.strip())
+        tracking = tracking_all[tracking_all["job_id"].fillna("").astype(str).str.strip().isin(backlog_job_ids)].copy()
+    tracking = enrich_job_tracking_summary_with_estimated_materials(tracking)
     ops = normalize_operations_jobs(backlog_source, schedule=schedule, tracking=tracking)
     return all_jobs, ops
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_operations_dashboard_snapshot() -> tuple[pd.DataFrame, pd.DataFrame]:
+    all_cols = relation_columns("operations_dashboard_all_jobs_snapshot")
+    ops_cols = relation_columns("operations_dashboard_ops_snapshot")
+    if not all_cols or not ops_cols:
+        return pd.DataFrame(), pd.DataFrame()
+    try:
+        all_jobs = load_df("SELECT * FROM operations_dashboard_all_jobs_snapshot")
+        ops = load_df("SELECT * FROM operations_dashboard_ops_snapshot")
+    except Exception:
+        return pd.DataFrame(), pd.DataFrame()
+    if not isinstance(all_jobs, pd.DataFrame) or not isinstance(ops, pd.DataFrame) or all_jobs.empty or ops.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    for df in [all_jobs, ops]:
+        for column in df.columns:
+            if column.endswith("_date") or column.endswith("_at") or column.endswith("_parsed"):
+                df[column] = pd.to_datetime(df[column], errors="coerce")
+    return all_jobs, ops
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_operations_dashboard_prepared() -> tuple[pd.DataFrame, pd.DataFrame]:
+    all_jobs_snapshot, ops_snapshot = load_operations_dashboard_snapshot()
+    if not all_jobs_snapshot.empty and not ops_snapshot.empty:
+        return all_jobs_snapshot, ops_snapshot
+    return build_operations_dashboard_prepared_live()
 
 
 def normalized_readiness_status(row: pd.Series) -> str:
@@ -15478,24 +15746,6 @@ def timesheet_job_touches_page() -> None:
     with date_col4:
         code_filter = st.multiselect("Code", options_from(timesheet_source, "code"), key="timesheet_touches_code")
 
-    weight_col1, weight_col2 = st.columns([1.2, 1.2])
-    with weight_col1:
-        weighted_touch_scale = st.selectbox(
-            "Value weighting",
-            ["sqrt", "log", "linear"],
-            index=0,
-            key="timesheet_touches_value_weighting",
-            help="Weights each employee/project/day touch by matched job value. Sqrt is the default because raw linear dollars can make large jobs dominate.",
-        )
-    with weight_col2:
-        weighted_touch_top_n = st.slider(
-            "Employees in weighted trend",
-            min_value=3,
-            max_value=15,
-            value=8,
-            key="timesheet_touches_weighted_employee_count",
-        )
-
     with dashboard_perf_step("timesheet raw filter application", row_count=len(timesheet_source)):
         filtered_timesheets = timesheet_source.copy()
         if start_date:
@@ -15551,23 +15801,12 @@ def timesheet_job_touches_page() -> None:
         show_empty("No timesheet rows match the current filters.")
         return
 
-    with dashboard_perf_step("timesheet summary rollups", row_count=len(activity)):
-        employee_summary = summarize_timesheet_by_employee(activity)
-        job_rollup = summarize_timesheet_by_job(activity)
-        code_summary = summarize_timesheet_by_code(activity)
-        daily_summary = summarize_timesheet_daily_touches(activity)
-        job_type_summary = summarize_timesheet_job_type_touches(job_rollup, activity)
-        weighted_employee_touches = summarize_timesheet_employee_weighted_touches(
-            activity,
-            value_scale=weighted_touch_scale,
-            top_employee_count=weighted_touch_top_n,
-        )
-    matched_rows = activity[activity["matched_job"]]
-    unmatched_rows = activity[~activity["matched_job"]]
+    matched_mask = activity["matched_job"].fillna(False).astype(bool) if "matched_job" in activity.columns else pd.Series(False, index=activity.index)
+    unmatched_rows = activity[~matched_mask]
     metric_row(
         [
             ("Job Touches", fmt_count(len(activity))),
-            ("Jobs Touched", fmt_count(job_rollup["job_id"].nunique() if not job_rollup.empty else 0)),
+            ("Jobs Touched", fmt_count(activity.loc[matched_mask, "job_id"].nunique() if "job_id" in activity.columns else 0)),
             ("Project Strings", fmt_count(activity["project_name"].nunique())),
             ("Employees", fmt_count(activity["employee"].nunique())),
             ("Timed Hours", f"{safe_sum(activity, 'duration_hours'):,.1f}"),
@@ -15575,73 +15814,107 @@ def timesheet_job_touches_page() -> None:
         ]
     )
 
-    chart_col1, chart_col2 = st.columns(2)
-    with chart_col1:
-        bar_chart(activity, "employee", "touch_count", "Touches by Employee", top_n=12)
-    with chart_col2:
-        bar_chart(code_summary, "code", "touch_count", "Touches by Work Code", top_n=12)
-    chart_col3, chart_col4 = st.columns(2)
-    with chart_col3:
-        if job_type_summary.empty:
-            show_empty("No matched jobs available for job type chart.")
-        else:
-            bar_chart(job_type_summary, "job_type", "touch_count", "Touches by Job Type", top_n=12)
-    with chart_col4:
-        if job_rollup.empty:
-            show_empty("No matched jobs available for pipeline chart.")
-        else:
-            bar_chart(job_rollup, "pipeline_status", "touch_count", "Touches by Pipeline Status", top_n=10)
-    if not daily_summary.empty:
-        fig = px.line(
-            daily_summary,
-            x="activity_date",
-            y="touch_count",
-            markers=True,
-            title="Daily Job Touches",
-            labels={"activity_date": "date", "touch_count": "touches"},
-            color_discrete_sequence=SPRAYTEC_CHART_COLOR_SEQUENCE,
-        )
-        st.plotly_chart(fig, width="stretch")
-    if weighted_employee_touches.empty:
-        show_empty("No dated employee project touches are available for the weighted touch trend.")
-    else:
-        fig = px.line(
-            weighted_employee_touches,
-            x="activity_date",
-            y="weighted_touch_score",
-            color="employee",
-            markers=True,
-            title="Value-Weighted Project Touches Over Time by Employee",
-            labels={
-                "activity_date": "date",
-                "weighted_touch_score": "weighted touch score",
-                "employee": "employee",
-                "project_touch_count": "project touches",
-                "job_value_touched": "job value touched",
-                "projects": "projects",
-                "customers": "customers",
-                "codes": "codes",
-            },
-            hover_data={
-                "project_touch_count": True,
-                "job_value_touched": ":$,.0f",
-                "source_line_count": True,
-                "projects": True,
-                "customers": True,
-                "codes": True,
-            },
-            color_discrete_sequence=SPRAYTEC_CHART_COLOR_SEQUENCE,
-        )
-        st.plotly_chart(fig, width="stretch")
-        st.caption(
-            "Weighted score counts one touch per employee/project/day and weights it by matched job value. "
-            f"Current scale: {weighted_touch_scale}; unknown-value projects receive a small weight."
-        )
-
-    tab_jobs, tab_employee, tab_codes, tab_activity, tab_review = st.tabs(
-        ["Projects Moving", "By Employee", "By Code", "Recent Activity", "Match Review"]
+    section = choose_dashboard_section(
+        "Timesheet View",
+        ["Overview", "Projects Moving", "By Employee", "By Code", "Recent Activity", "Match Review"],
+        key="timesheet_job_touches_section",
+        default="Overview",
     )
-    with tab_jobs:
+
+    if section == "Overview":
+        weight_col1, weight_col2 = st.columns([1.2, 1.2])
+        with weight_col1:
+            weighted_touch_scale = st.selectbox(
+                "Value weighting",
+                ["sqrt", "log", "linear"],
+                index=0,
+                key="timesheet_touches_value_weighting",
+                help="Weights each employee/project/day touch by matched job value. Sqrt is the default because raw linear dollars can make large jobs dominate.",
+            )
+        with weight_col2:
+            weighted_touch_top_n = st.slider(
+                "Employees in weighted trend",
+                min_value=3,
+                max_value=15,
+                value=8,
+                key="timesheet_touches_weighted_employee_count",
+            )
+        with dashboard_perf_step("timesheet overview rollups", row_count=len(activity)):
+            code_summary = summarize_timesheet_by_code(activity)
+            job_rollup = summarize_timesheet_by_job(activity)
+            daily_summary = summarize_timesheet_daily_touches(activity)
+            job_type_summary = summarize_timesheet_job_type_touches(job_rollup, activity)
+            weighted_employee_touches = summarize_timesheet_employee_weighted_touches(
+                activity,
+                value_scale=weighted_touch_scale,
+                top_employee_count=weighted_touch_top_n,
+            )
+        chart_col1, chart_col2 = st.columns(2)
+        with chart_col1:
+            bar_chart(activity, "employee", "touch_count", "Touches by Employee", top_n=12)
+        with chart_col2:
+            bar_chart(code_summary, "code", "touch_count", "Touches by Work Code", top_n=12)
+        chart_col3, chart_col4 = st.columns(2)
+        with chart_col3:
+            if job_type_summary.empty:
+                show_empty("No matched jobs available for job type chart.")
+            else:
+                bar_chart(job_type_summary, "job_type", "touch_count", "Touches by Job Type", top_n=12)
+        with chart_col4:
+            if job_rollup.empty:
+                show_empty("No matched jobs available for pipeline chart.")
+            else:
+                bar_chart(job_rollup, "pipeline_status", "touch_count", "Touches by Pipeline Status", top_n=10)
+        if not daily_summary.empty:
+            fig = px.line(
+                daily_summary,
+                x="activity_date",
+                y="touch_count",
+                markers=True,
+                title="Daily Job Touches",
+                labels={"activity_date": "date", "touch_count": "touches"},
+                color_discrete_sequence=SPRAYTEC_CHART_COLOR_SEQUENCE,
+            )
+            st.plotly_chart(fig, width="stretch")
+        if weighted_employee_touches.empty:
+            show_empty("No dated employee project touches are available for the weighted touch trend.")
+        else:
+            fig = px.line(
+                weighted_employee_touches,
+                x="activity_date",
+                y="weighted_touch_score",
+                color="employee",
+                markers=True,
+                title="Value-Weighted Project Touches Over Time by Employee",
+                labels={
+                    "activity_date": "date",
+                    "weighted_touch_score": "weighted touch score",
+                    "employee": "employee",
+                    "project_touch_count": "project touches",
+                    "job_value_touched": "job value touched",
+                    "projects": "projects",
+                    "customers": "customers",
+                    "codes": "codes",
+                },
+                hover_data={
+                    "project_touch_count": True,
+                    "job_value_touched": ":$,.0f",
+                    "source_line_count": True,
+                    "projects": True,
+                    "customers": True,
+                    "codes": True,
+                },
+                color_discrete_sequence=SPRAYTEC_CHART_COLOR_SEQUENCE,
+            )
+            st.plotly_chart(fig, width="stretch")
+            st.caption(
+                "Weighted score counts one touch per employee/project/day and weights it by matched job value. "
+                f"Current scale: {weighted_touch_scale}; unknown-value projects receive a small weight."
+            )
+
+    elif section == "Projects Moving":
+        with dashboard_perf_step("timesheet job rollup", row_count=len(activity)):
+            job_rollup = summarize_timesheet_by_job(activity)
         st.subheader("Where Are We With This Project")
         if job_rollup.empty:
             st.caption("No matched jobs under the current filters.")
@@ -15671,7 +15944,9 @@ def timesheet_job_touches_page() -> None:
                 sort_by="last_touch",
             )
 
-    with tab_employee:
+    elif section == "By Employee":
+        with dashboard_perf_step("timesheet employee rollup", row_count=len(activity)):
+            employee_summary = summarize_timesheet_by_employee(activity)
         st.subheader("Who Touched What")
         show_table(
             employee_summary,
@@ -15691,7 +15966,9 @@ def timesheet_job_touches_page() -> None:
             sort_by="touch_count",
         )
 
-    with tab_codes:
+    elif section == "By Code":
+        with dashboard_perf_step("timesheet code rollup", row_count=len(activity)):
+            code_summary = summarize_timesheet_by_code(activity)
         st.subheader("What Kind of Work Is Happening")
         show_table(
             code_summary,
@@ -15710,7 +15987,7 @@ def timesheet_job_touches_page() -> None:
             sort_by="touch_count",
         )
 
-    with tab_activity:
+    elif section == "Recent Activity":
         st.subheader("Recent Timesheet Activity")
         recent_activity = activity.sort_values("work_date_parsed", ascending=False, na_position="last")
         show_table(
@@ -15734,7 +16011,7 @@ def timesheet_job_touches_page() -> None:
             height=560,
         )
 
-    with tab_review:
+    elif section == "Match Review":
         st.subheader("Match Review")
         project_summary = office_timesheet_project_summary(activity)
         matched_projects = match_timesheet_projects_to_jobs(project_summary, jobs)
@@ -15800,12 +16077,20 @@ def job_tracking_dashboard_page() -> None:
         "Use this to see active project touches and estimate-vs-actual production."
     )
 
-    summary_all = load_job_tracking_dashboard_summary()
-    daily_all = load_job_tracking_dashboard_daily()
+    section = choose_dashboard_section(
+        "Job Tracking View",
+        ["Budget Health", "Active Projects", "Estimate vs Actual", "Daily Calendar", "Daily Entries", "Foam / Materials"],
+        key="job_tracking_dashboard_section",
+        default="Budget Health",
+    )
+    daily_required = section in {"Daily Calendar", "Daily Entries", "Foam / Materials"}
+
+    summary_all = load_job_tracking_dashboard_summary(include_estimated_materials=False)
+    daily_all = load_job_tracking_dashboard_daily() if daily_required or summary_all.empty else pd.DataFrame()
     if summary_all.empty and not daily_all.empty:
         st.warning("No job tracking summary rows are loaded yet. Showing a job-level rollup built from daily entries.")
         summary_all = summarize_job_tracking_daily_for_dashboard(daily_all)
-    elif not summary_all.empty and not daily_all.empty:
+    elif daily_required and not summary_all.empty and not daily_all.empty:
         summary_all = merge_job_tracking_summary_actuals_from_daily(summary_all, daily_all)
     if summary_all.empty and daily_all.empty:
         show_empty("No job tracking summary or daily entry rows are loaded yet.")
@@ -15887,45 +16172,12 @@ def job_tracking_dashboard_page() -> None:
         ]
     )
 
-    chart_col1, chart_col2 = st.columns(2)
-    with chart_col1:
-        bar_chart(summary, "project", "actual_total_hours", "Top Tracked Jobs by Actual Hours", top_n=12)
-    with chart_col2:
-        if daily.empty or "work_date" not in daily.columns:
-            show_empty("No dated daily tracking rows are available.")
-        else:
-            daily_chart = daily.copy()
-            daily_chart["work_day"] = pd.to_datetime(daily_chart["work_date"], errors="coerce").dt.date
-            chart_group = (
-                daily_chart.dropna(subset=["work_day"])
-                .groupby(["work_day", "division"], dropna=False, as_index=False)["total_hours"]
-                .sum()
-            )
-            if chart_group.empty:
-                show_empty("No daily tracking hours are available.")
-            else:
-                fig = px.bar(
-                    chart_group,
-                    x="work_day",
-                    y="total_hours",
-                    color="division",
-                    title="Daily Tracked Hours by Division",
-                    labels={"work_day": "date", "total_hours": "hours", "division": "division"},
-                    color_discrete_sequence=SPRAYTEC_CHART_COLOR_SEQUENCE,
-                )
-                st.plotly_chart(fig, width="stretch")
-
-    render_job_tracking_daily_calendar(daily)
-
-    tab_budget, tab_active, tab_variance, tab_daily, tab_foam = st.tabs(
-        ["Budget Health", "Active Projects", "Estimate vs Actual", "Daily Entries", "Foam / Materials"]
-    )
-
-    with tab_budget:
+    if section == "Budget Health":
         st.subheader("Job Budget Health")
-        render_job_tracking_budget_health(summary)
+        budget_summary = enrich_job_tracking_summary_with_estimated_materials(summary)
+        render_job_tracking_budget_health(budget_summary)
 
-    with tab_active:
+    elif section == "Active Projects":
         st.subheader("Active Project Tracking")
         show_table(
             summary,
@@ -15952,7 +16204,7 @@ def job_tracking_dashboard_page() -> None:
             sort_by="last_work_date",
         )
 
-    with tab_variance:
+    elif section == "Estimate vs Actual":
         st.subheader("Estimate vs Actual")
         variance = summary[numeric_series(summary, "estimated_labor_hours").gt(0)].copy()
         if variance.empty:
@@ -15985,7 +16237,37 @@ def job_tracking_dashboard_page() -> None:
                 sort_by="labor_delta_hours",
             )
 
-    with tab_daily:
+    elif section == "Daily Calendar":
+        chart_col1, chart_col2 = st.columns(2)
+        with chart_col1:
+            bar_chart(summary, "project", "actual_total_hours", "Top Tracked Jobs by Actual Hours", top_n=12)
+        with chart_col2:
+            if daily.empty or "work_date" not in daily.columns:
+                show_empty("No dated daily tracking rows are available.")
+            else:
+                daily_chart = daily.copy()
+                daily_chart["work_day"] = pd.to_datetime(daily_chart["work_date"], errors="coerce").dt.date
+                chart_group = (
+                    daily_chart.dropna(subset=["work_day"])
+                    .groupby(["work_day", "division"], dropna=False, as_index=False)["total_hours"]
+                    .sum()
+                )
+                if chart_group.empty:
+                    show_empty("No daily tracking hours are available.")
+                else:
+                    fig = px.bar(
+                        chart_group,
+                        x="work_day",
+                        y="total_hours",
+                        color="division",
+                        title="Daily Tracked Hours by Division",
+                        labels={"work_day": "date", "total_hours": "hours", "division": "division"},
+                        color_discrete_sequence=SPRAYTEC_CHART_COLOR_SEQUENCE,
+                    )
+                    st.plotly_chart(fig, width="stretch")
+        render_job_tracking_daily_calendar(daily)
+
+    elif section == "Daily Entries":
         st.subheader("Daily Field Entries")
         if daily.empty:
             st.caption("No daily job tracking entries match the current filters.")
@@ -16021,8 +16303,9 @@ def job_tracking_dashboard_page() -> None:
                 height=640,
             )
 
-    with tab_foam:
-        material_summary = rollup_job_tracking_production_summary(summary)
+    elif section == "Foam / Materials":
+        enriched_summary = enrich_job_tracking_summary_with_estimated_materials(summary)
+        material_summary = rollup_job_tracking_production_summary(enriched_summary)
         roofing_summary, insulation_summary = split_tracking_material_rows(material_summary)
         roofing_daily, insulation_daily = split_tracking_material_rows(daily)
 
@@ -16608,172 +16891,184 @@ def operations_dashboard_page() -> None:
         ]
     )
 
-    st.subheader("Operational KPI Coverage")
-    coverage_rows = pd.DataFrame(
-        [
-            {"metric": "Revenue MTD vs Goal", "current_source": "QuickBooks goal not connected", "status": "Needs QB / goal source"},
-            {"metric": "Gross Profit % MTD", "current_source": "Estimate costs available on some jobs", "status": "Needs QB actuals"},
-            {"metric": "Labor Efficiency %", "current_source": "Estimated labor plus job tracking actual hours", "status": "Available where tracking forms are loaded"},
-            {"metric": "Material Usage vs Estimate", "current_source": "Estimate rows plus job tracking material entries", "status": "Available where tracking forms are loaded"},
-            {"metric": "AR Over 60 Days", "current_source": "Not in current dashboard marts", "status": "Needs QuickBooks"},
-        ]
+    section = choose_dashboard_section(
+        "Operations View",
+        ["Production Status / Risk", "Unscheduled Queue", "Jobs Starting Soon", "Recently Completed / Warranty", "KPI Coverage"],
+        key="operations_dashboard_section",
+        default="Production Status / Risk",
     )
-    show_table(coverage_rows, ["metric", "current_source", "status"], height=230)
 
-    st.subheader("Projects Waiting To Be Scheduled")
-    if ops.empty:
-        show_empty("No contracted backlog rows are available.")
-    else:
-        waiting_statuses = [status for status in READINESS_STATUSES if status != "Scheduled"]
-        waiting = ops[ops["readiness_status"].isin(waiting_statuses)].copy()
-        waiting = waiting[waiting["estimated_start_date_parsed"].isna()]
-        spec_known = (
-            waiting["has_job_spec"].map(truthy_bool)
-            if "has_job_spec" in waiting.columns
-            else pd.Series(False, index=waiting.index)
-        )
-        spec_review = waiting["readiness_status"].isin(["Missing Job Spec", "Not Contracted Folder"])
-        metric_row(
+    if section == "KPI Coverage":
+        st.subheader("Operational KPI Coverage")
+        coverage_rows = pd.DataFrame(
             [
-                ("Unscheduled Jobs", number_metric(len(waiting))),
-                ("Unscheduled Value", money_metric(waiting["operations_value"].sum())),
-                ("With Job Spec", number_metric(spec_known.sum())),
-                ("Needs Spec / Folder Review", number_metric(spec_review.sum())),
+                {"metric": "Revenue MTD vs Goal", "current_source": "QuickBooks goal not connected", "status": "Needs QB / goal source"},
+                {"metric": "Gross Profit % MTD", "current_source": "Estimate costs available on some jobs", "status": "Needs QB actuals"},
+                {"metric": "Labor Efficiency %", "current_source": "Estimated labor plus job tracking actual hours", "status": "Available where tracking forms are loaded"},
+                {"metric": "Material Usage vs Estimate", "current_source": "Estimate rows plus job tracking material entries", "status": "Available where tracking forms are loaded"},
+                {"metric": "AR Over 60 Days", "current_source": "Not in current dashboard marts", "status": "Needs QuickBooks"},
             ]
         )
-        st.caption("This is the unscheduled queue. Statuses are shown only when rows currently exist for them.")
-        show_table(readiness_summary(waiting), ["status", "jobs", "revenue", "avg_days_waiting"], height=230)
+        show_table(coverage_rows, ["metric", "current_source", "status"], height=230)
+
+    elif section == "Unscheduled Queue":
+        st.subheader("Projects Waiting To Be Scheduled")
+        if ops.empty:
+            show_empty("No contracted backlog rows are available.")
+        else:
+            waiting_statuses = [status for status in READINESS_STATUSES if status != "Scheduled"]
+            waiting = ops[ops["readiness_status"].isin(waiting_statuses)].copy()
+            waiting = waiting[waiting["estimated_start_date_parsed"].isna()]
+            spec_known = (
+                waiting["has_job_spec"].map(truthy_bool)
+                if "has_job_spec" in waiting.columns
+                else pd.Series(False, index=waiting.index)
+            )
+            spec_review = waiting["readiness_status"].isin(["Missing Job Spec", "Not Contracted Folder"])
+            metric_row(
+                [
+                    ("Unscheduled Jobs", number_metric(len(waiting))),
+                    ("Unscheduled Value", money_metric(waiting["operations_value"].sum())),
+                    ("With Job Spec", number_metric(spec_known.sum())),
+                    ("Needs Spec / Folder Review", number_metric(spec_review.sum())),
+                ]
+            )
+            st.caption("This is the unscheduled queue. Statuses are shown only when rows currently exist for them.")
+            show_table(readiness_summary(waiting), ["status", "jobs", "revenue", "avg_days_waiting"], height=230)
+            show_table(
+                waiting,
+                [
+                    "customer",
+                    "job_name",
+                    "division",
+                    "project_category",
+                    "operations_value",
+                    "ready_date",
+                    "days_waiting",
+                    "readiness_status",
+                    "has_job_spec",
+                    "production_risk_summary",
+                    "estimated_duration_days",
+                    "estimated_labor_hours",
+                    "estimated_crew_size",
+                    "folder_link_or_path",
+                ],
+                height=400,
+                sort_by="operations_value",
+            )
+
+    elif section == "Production Status / Risk":
+        st.subheader("Production Status / Risk")
+        if not ops.empty:
+            active = ops[
+                ops["readiness_status"].eq("Scheduled")
+                | ops["estimated_start_date_parsed"].notna()
+                | ops.get("tracking_status", pd.Series("", index=ops.index)).isin(["Recently touched", "Contracted / active"])
+            ].copy()
+        else:
+            active = pd.DataFrame()
+        if not active.empty:
+            metric_row(
+                [
+                    ("Active / Touched Jobs", number_metric(len(active))),
+                    ("At Risk Jobs", number_metric(active["project_health"].isin(["Behind expected progress", "Labor overrun risk", "Material overrun risk"]).sum())),
+                    ("No Actuals Yet", number_metric((active["project_health"] == "No actuals yet").sum())),
+                    ("Active Value", money_metric(active["operations_value"].sum())),
+                ]
+            )
+            c1, c2 = st.columns(2)
+            with c1:
+                bar_chart(active, "project_health", "operations_value", "Active Value by Project Health")
+            with c2:
+                bar_chart(active, "assigned_crew_leader", "operations_value", "Scheduled Value by Crew")
         show_table(
-            waiting,
+            active,
+            [
+                "project_health",
+                "schedule_health",
+                "customer",
+                "job_name",
+                "division",
+                "operations_value",
+                "assigned_crew_leader",
+                "estimated_start_date",
+                "estimated_end_date",
+                "expected_pct_complete",
+                "actual_pct_complete",
+                "progress_delta_pct",
+                "actual_pct_source",
+                "tracking_status",
+                "last_work_date",
+                "estimated_sqft",
+                "estimated_labor_hours",
+                "actual_total_hours",
+                "estimated_total_hours",
+                "labor_hours_used_pct",
+                "actual_foam_sqft",
+                "estimated_foam_sqft",
+                "actual_base_coat_1",
+                "estimated_base_coat_1",
+                "estimated_crew_size",
+                "material_readiness",
+                "equipment_readiness",
+                "customer_communication",
+                "production_risk_summary",
+                "folder_link_or_path",
+            ],
+            height=430,
+        )
+
+    elif section == "Jobs Starting Soon":
+        st.subheader("Jobs Starting Soon")
+        if not ops.empty:
+            starting_soon = ops[
+                ops["estimated_start_date_parsed"].notna()
+                & (ops["estimated_start_date_parsed"] >= today)
+                & (ops["estimated_start_date_parsed"] <= today + pd.Timedelta(days=14))
+            ].copy()
+        else:
+            starting_soon = pd.DataFrame()
+        show_table(
+            starting_soon,
             [
                 "customer",
                 "job_name",
                 "division",
-                "project_category",
                 "operations_value",
-                "ready_date",
-                "days_waiting",
-                "readiness_status",
-                "has_job_spec",
-                "production_risk_summary",
+                "estimated_start_date",
+                "assigned_crew_leader",
                 "estimated_duration_days",
                 "estimated_labor_hours",
-                "estimated_crew_size",
+                "material_readiness",
+                "equipment_readiness",
+                "customer_communication",
+                "production_risk_summary",
                 "folder_link_or_path",
             ],
-            height=400,
-            sort_by="operations_value",
+            height=330,
         )
 
-    st.subheader("Production Status / Risk")
-    if not ops.empty:
-        active = ops[
-            ops["readiness_status"].eq("Scheduled")
-            | ops["estimated_start_date_parsed"].notna()
-            | ops.get("tracking_status", pd.Series("", index=ops.index)).isin(["Recently touched", "Contracted / active"])
-        ].copy()
-    else:
-        active = pd.DataFrame()
-    if not active.empty:
-        metric_row(
+    elif section == "Recently Completed / Warranty":
+        st.subheader("Recently Completed / Warranty")
+        completed = completed_recent.copy()
+        if not completed.empty and "has_warranty" not in completed.columns:
+            completed["has_warranty"] = "Not Captured"
+        show_table(
+            completed,
             [
-                ("Active / Touched Jobs", number_metric(len(active))),
-                ("At Risk Jobs", number_metric(active["project_health"].isin(["Behind expected progress", "Labor overrun risk", "Material overrun risk"]).sum())),
-                ("No Actuals Yet", number_metric((active["project_health"] == "No actuals yet").sum())),
-                ("Active Value", money_metric(active["operations_value"].sum())),
-            ]
+                "customer",
+                "job_name",
+                "division",
+                "operations_value",
+                "completion_date",
+                "has_warranty",
+                "warranty_amount",
+                "estimated_sqft",
+                "project_category",
+                "folder_link_or_path",
+            ],
+            height=330,
         )
-        c1, c2 = st.columns(2)
-        with c1:
-            bar_chart(active, "project_health", "operations_value", "Active Value by Project Health")
-        with c2:
-            bar_chart(active, "assigned_crew_leader", "operations_value", "Scheduled Value by Crew")
-    show_table(
-        active,
-        [
-            "project_health",
-            "schedule_health",
-            "customer",
-            "job_name",
-            "division",
-            "operations_value",
-            "assigned_crew_leader",
-            "estimated_start_date",
-            "estimated_end_date",
-            "expected_pct_complete",
-            "actual_pct_complete",
-            "progress_delta_pct",
-            "actual_pct_source",
-            "tracking_status",
-            "last_work_date",
-            "estimated_sqft",
-            "estimated_labor_hours",
-            "actual_total_hours",
-            "estimated_total_hours",
-            "labor_hours_used_pct",
-            "actual_foam_sqft",
-            "estimated_foam_sqft",
-            "actual_base_coat_1",
-            "estimated_base_coat_1",
-            "estimated_crew_size",
-            "material_readiness",
-            "equipment_readiness",
-            "customer_communication",
-            "production_risk_summary",
-            "folder_link_or_path",
-        ],
-        height=430,
-    )
-
-    st.subheader("Jobs Starting Soon")
-    if not ops.empty:
-        starting_soon = ops[
-            ops["estimated_start_date_parsed"].notna()
-            & (ops["estimated_start_date_parsed"] >= today)
-            & (ops["estimated_start_date_parsed"] <= today + pd.Timedelta(days=14))
-        ].copy()
-    else:
-        starting_soon = pd.DataFrame()
-    show_table(
-        starting_soon,
-        [
-            "customer",
-            "job_name",
-            "division",
-            "operations_value",
-            "estimated_start_date",
-            "assigned_crew_leader",
-            "estimated_duration_days",
-            "estimated_labor_hours",
-            "material_readiness",
-            "equipment_readiness",
-            "customer_communication",
-            "production_risk_summary",
-            "folder_link_or_path",
-        ],
-        height=330,
-    )
-
-    st.subheader("Recently Completed / Warranty")
-    completed = completed_recent.copy()
-    if not completed.empty and "has_warranty" not in completed.columns:
-        completed["has_warranty"] = "Not Captured"
-    show_table(
-        completed,
-        [
-            "customer",
-            "job_name",
-            "division",
-            "operations_value",
-            "completion_date",
-            "has_warranty",
-            "warranty_amount",
-            "estimated_sqft",
-            "project_category",
-            "folder_link_or_path",
-        ],
-        height=330,
-    )
 
 
 def operations_scheduling_page() -> None:
@@ -18878,6 +19173,7 @@ def pricing_catalog_page() -> None:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_estimator_data_cached(load_profile: str = "interactive"):
+    ensure_estimator_imports()
     return load_estimator_data(Path.cwd(), database_url=DATABASE_URL, prefer_database=True, load_profile=load_profile)
 
 
@@ -18895,6 +19191,7 @@ def clear_estimator_data_caches() -> None:
 
 
 def load_estimator_data_for_ui(load_profile: str = "interactive") -> EstimatorData:
+    ensure_estimator_imports()
     cache_key = f"estimator_data_session_cache_{load_profile}"
     now = time.time()
     cached = st.session_state.get(cache_key)
@@ -18915,6 +19212,7 @@ def load_estimator_data_for_ui(load_profile: str = "interactive") -> EstimatorDa
 
 
 def optional_field_notes_estimator():
+    ensure_estimator_imports()
     if estimate_from_field_notes is None:
         return None, "Field notes estimator is not available in this deployment yet."
     return estimate_from_field_notes, None
@@ -21359,6 +21657,7 @@ def render_flooring_estimate_result(
 
 
 def estimator_prototype_page() -> None:
+    ensure_estimator_imports()
     reset_estimator_perf_timings()
     st.title("Estimating Assistant")
     st.caption("Describe the job, review what was parsed, then build the workbook draft. Estimator review is required before quoting.")
@@ -23909,6 +24208,7 @@ def raw_tables_page() -> None:
 
 
 def render_estimator_memory_admin() -> None:
+    ensure_estimator_imports()
     st.subheader("Estimator Memory")
     st.caption("Approved memory is exposed back to the Estimating Assistant chat. Answer-key learning is grouped into cue memories by default.")
     try:
@@ -24198,7 +24498,7 @@ def render_dashboard_page(page: str) -> None:
     elif page == "Estimating Assistant":
         estimator_prototype_page()
     elif page == "BidScope AI":
-        render_foamscope_page()
+        render_foamscope_page_lazy()
     elif page == "Admin / Health":
         admin_health_page()
     elif page == "Pipeline / Money":
@@ -24238,17 +24538,12 @@ def render_dashboard_page(page: str) -> None:
 
 
 def main() -> None:
-    database_startup_error: Exception | None = None
-    try:
-        jobs_for_filters = load_sidebar_filter_jobs()
-    except Exception as exc:
-        jobs_for_filters = pd.DataFrame()
-        database_startup_error = exc
+    global selected_divisions, selected_pipeline_statuses, selected_statuses, customer_search
 
+    database_startup_error: Exception | None = None
     with st.sidebar:
         render_sidebar_brand()
         render_database_target_debug()
-        filters = sidebar_filters(jobs_for_filters)
         core_pages = [
             "Sales Dashboard",
             "Operations Dashboard",
@@ -24288,6 +24583,36 @@ def main() -> None:
             "Page",
             page_options,
         )
+        global_filter_pages = {
+            "Owner Overview",
+            "Sales Dashboard",
+            "Operations Dashboard",
+            "Pipeline / Money",
+            "Sales Follow-Up",
+            "Contracted Backlog / Scheduling",
+            "Project Scheduling",
+            "Jobs Needing Action",
+            "Closeout / Billing Risk",
+            "Documentation Risk",
+            "Job Warnings",
+            "Estimate Analytics",
+            "Estimate Quality Issues",
+            "Line Item Analysis",
+            "Estimate Adders",
+            "STAMP Tracking",
+        }
+        if page in global_filter_pages:
+            try:
+                jobs_for_filters = load_sidebar_filter_jobs()
+            except Exception as exc:
+                jobs_for_filters = pd.DataFrame()
+                database_startup_error = exc
+            sidebar_filters(jobs_for_filters)
+        else:
+            selected_divisions = []
+            selected_pipeline_statuses = []
+            selected_statuses = []
+            customer_search = ""
 
     render_global_theme()
     render_page_watermark()

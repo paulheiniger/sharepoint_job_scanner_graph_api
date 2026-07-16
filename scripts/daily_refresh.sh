@@ -22,6 +22,8 @@ if [[ -z "${DATABASE_URL_EFFECTIVE}" ]]; then
   echo "ERROR: Set DATABASE_URL, NEON_DATABASE_URL, or NEON_PSQL_URL." >&2
   exit 2
 fi
+PSQL_URL_EFFECTIVE="${NEON_PSQL_URL:-${DATABASE_URL_EFFECTIVE}}"
+PSQL_URL_EFFECTIVE="${PSQL_URL_EFFECTIVE/postgresql+psycopg2:\/\//postgresql:\/\/}"
 
 SITE_URL="${SHAREPOINT_SITE_URL:-https://aro365531128.sharepoint.com/sites/Data}"
 LIBRARY="${SHAREPOINT_LIBRARY:-Documents}"
@@ -29,6 +31,10 @@ SCAN_CONFIG="${SCAN_CONFIG:-config/sharepoint_scan_roots.yaml}"
 OUTPUT_DIR="${OUTPUT_DIR:-output}"
 CACHE_ROOT="${CACHE_ROOT:-.cache/sharepoint}"
 TIMESHEET_CACHE_ROOT="${TIMESHEET_CACHE_ROOT:-.cache/office_timesheets/Data/Timesheets}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+if [[ -x ".venv/bin/python" && "${PYTHON_BIN}" == "python3" ]]; then
+  PYTHON_BIN=".venv/bin/python"
+fi
 
 LOG_DIR="${LOG_DIR:-output/refresh_logs}"
 RUN_ID="${RUN_ID:-daily-$(date -u +%Y%m%dT%H%M%SZ)}"
@@ -78,12 +84,12 @@ run_sql_file() {
     echo "ERROR: psql is required for SQL refreshes. Set RUN_SQL_REFRESHES=0 to skip." >&2
     return 127
   fi
-  psql "$DATABASE_URL_EFFECTIVE" -v ON_ERROR_STOP=1 -f "$file"
+  psql "$PSQL_URL_EFFECTIVE" -v ON_ERROR_STOP=1 -f "$file"
 }
 
 json_has_rows() {
   local path="$1"
-  python3 - "$path" <<'PY'
+  "$PYTHON_BIN" - "$path" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -108,7 +114,7 @@ echo "Output dir: ${OUTPUT_DIR}"
 echo "Document extraction limit: ${DOCUMENT_EXTRACT_LIMIT}"
 
 run_step "Incremental SharePoint delta scan and changed-only DB load" \
-  python3 -m jobscan.incremental_scan \
+  "$PYTHON_BIN" -m jobscan.incremental_scan \
     --delta \
     --site-url "$SITE_URL" \
     --library "$LIBRARY" \
@@ -121,7 +127,7 @@ run_step "Incremental SharePoint delta scan and changed-only DB load" \
 
 if [[ "$BACKFILL_DOCUMENT_METADATA" == "1" ]]; then
   run_step "Backfill document metadata from cached SharePoint manifests" \
-    python3 -m jobscan.document_extraction \
+    "$PYTHON_BIN" -m jobscan.document_extraction \
       --backfill-metadata \
       --cache-root "$CACHE_ROOT" \
       --limit 0 \
@@ -131,7 +137,7 @@ fi
 
 if [[ "$RUN_DOCUMENT_EXTRACTION" == "1" ]]; then
   run_step "Extract pending estimator-relevant document content" \
-    python3 -m jobscan.document_extraction \
+    "$PYTHON_BIN" -m jobscan.document_extraction \
       --pending \
       --estimator-relevant \
       --limit "$DOCUMENT_EXTRACT_LIMIT" \
@@ -147,6 +153,8 @@ if [[ "$RUN_SQL_REFRESHES" == "1" ]]; then
   run_step "Refresh dashboard views" run_sql_file "db/dashboard_views.sql"
   run_step "Refresh job document signals" run_sql_file "db/refresh_job_document_signals.sql"
   run_step "Refresh job board static snapshot" run_sql_file "db/refresh_job_board_static_snapshot.sql"
+  run_step "Refresh job tracking dashboard snapshots" run_sql_file "db/refresh_job_tracking_dashboard_snapshots.sql"
+  run_step "Refresh operations dashboard snapshots" "$PYTHON_BIN" scripts/refresh_dashboard_snapshots.py --operations
   run_step "Refresh Power BI marts" run_sql_file "db/powerbi_marts.sql"
 fi
 
@@ -154,7 +162,7 @@ if [[ "$RUN_SHAREPOINT_JOB_INDEX_SYNC" == "1" ]]; then
   CHANGED_JOBS_PATH="${OUTPUT_DIR}/changed_jobs.json"
   if json_has_rows "$CHANGED_JOBS_PATH"; then
     run_step "Sync changed jobs to SharePoint Job Index list" \
-      python3 -m jobscan.sharepoint_list_sync \
+      "$PYTHON_BIN" -m jobscan.sharepoint_list_sync \
         --input "$CHANGED_JOBS_PATH" \
         --site-url "$SITE_URL" \
         --list-name "${SHAREPOINT_JOB_INDEX_LIST_NAME:-Job Index}" \
@@ -171,7 +179,7 @@ fi
 
 if [[ "$RUN_DOCUMENT_STATUS" == "1" ]]; then
   run_step "Document extraction status" \
-    python3 -m jobscan.document_extraction \
+    "$PYTHON_BIN" -m jobscan.document_extraction \
       --status \
       --database-url "$DATABASE_URL_EFFECTIVE"
 fi
