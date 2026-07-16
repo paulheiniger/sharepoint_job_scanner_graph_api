@@ -2538,17 +2538,100 @@ def sum_positive_values(values: pd.Series) -> float:
     return float(positive.sum())
 
 
+TRACKING_ROLLUP_ABBREVIATIONS = {
+    "dr": "drive",
+    "rd": "road",
+    "st": "street",
+    "ave": "avenue",
+    "av": "avenue",
+    "blvd": "boulevard",
+    "ln": "lane",
+    "ct": "court",
+    "hwy": "highway",
+    "pkwy": "parkway",
+    "plz": "plaza",
+}
+
+
+def normalize_tracking_rollup_key(value: object) -> str:
+    text = text_value(value).lower()
+    if not text:
+        return ""
+    tokens = re.findall(r"[a-z0-9]+", text)
+    normalized_tokens = [TRACKING_ROLLUP_ABBREVIATIONS.get(token, token) for token in tokens]
+    compacted_tokens: list[str] = []
+    i = 0
+    while i < len(normalized_tokens):
+        if i + 1 < len(normalized_tokens) and normalized_tokens[i] == "e" and normalized_tokens[i + 1] == "town":
+            compacted_tokens.append("etown")
+            i += 2
+            continue
+        compacted_tokens.append(normalized_tokens[i])
+        i += 1
+    normalized_tokens = compacted_tokens
+    if (
+        len(normalized_tokens) >= 3
+        and all(token.isdigit() for token in normalized_tokens[-3:])
+        and len(normalized_tokens[-1]) in {2, 4}
+    ):
+        normalized_tokens = normalized_tokens[:-3]
+    return "-".join(normalized_tokens)
+
+
+def clean_job_display_context(value: object) -> str:
+    text = text_value(value)
+    if not text:
+        return ""
+    text = re.sub(r"\s+", " ", text.replace("\\", "/")).strip()
+    if "/" in text:
+        text = next((part.strip() for part in reversed(text.split("/")) if part.strip()), text)
+    text = re.sub(r"\.(xlsx|xlsm|xls|pdf|docx|doc)$", "", text, flags=re.IGNORECASE).strip()
+    text = re.sub(r"^(job tracking form|job tracking|estimate \+ spec|estimate|proposal)\s*[-–:]?\s*", "", text, flags=re.IGNORECASE)
+    return text[:90]
+
+
+def add_unique_job_display_labels(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    out = df.copy()
+    if "project" in out.columns:
+        base = out["project"].fillna("").astype(str).str.strip()
+    elif "job_id" in out.columns:
+        base = out["job_id"].fillna("").astype(str).str.strip()
+    else:
+        out["job_display"] = ""
+        return out
+    base = base.where(base.ne(""), out.get("job_id", pd.Series("", index=out.index)).fillna("").astype(str).str.strip())
+    normalized_base = base.map(normalize_tracking_rollup_key)
+    duplicate_base = normalized_base.duplicated(keep=False) & normalized_base.ne("")
+    out["job_display"] = base
+    for idx in out.index[duplicate_base]:
+        context = ""
+        for column in ["folder_path", "job_name", "source_file", "tracking_file", "job_id"]:
+            if column in out.columns:
+                context = clean_job_display_context(out.at[idx, column])
+                if context and normalize_tracking_rollup_key(context) != normalized_base.at[idx]:
+                    break
+        if context:
+            base_text = base.at[idx]
+            if normalize_tracking_rollup_key(context).startswith(normalized_base.at[idx]):
+                out.at[idx, "job_display"] = context
+            else:
+                out.at[idx, "job_display"] = f"{base_text} - {context}"
+    display_counts: dict[str, int] = {}
+    for idx, value in out["job_display"].fillna("").astype(str).items():
+        count = display_counts.get(value, 0) + 1
+        display_counts[value] = count
+        if count > 1:
+            suffix = clean_job_display_context(out.at[idx, "job_id"]) if "job_id" in out.columns else str(count)
+            out.at[idx, "job_display"] = f"{value} ({suffix or count})"
+    return out
+
+
 def rollup_job_tracking_production_summary(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df.copy()
     out = df.copy()
-    exact_duplicate_subset = [
-        column
-        for column in ["job_id", "tracking_file", "source_file", "first_work_date", "last_work_date"]
-        if column in out.columns
-    ]
-    if exact_duplicate_subset:
-        out = out.drop_duplicates(subset=exact_duplicate_subset)
 
     if "job_id" in out.columns:
         job_key = out["job_id"].fillna("").astype(str).str.strip()
@@ -2558,10 +2641,18 @@ def rollup_job_tracking_production_summary(df: pd.DataFrame) -> pd.DataFrame:
     for column in ["project", "job_name", "customer", "source_file"]:
         if column in out.columns:
             fallback_key = fallback_key.where(fallback_key.astype(str).str.strip().ne(""), out[column].fillna("").astype(str).str.strip())
-    out["_tracking_rollup_key"] = job_key.where(job_key.ne(""), fallback_key)
+    raw_rollup_key = job_key.where(job_key.ne(""), fallback_key)
+    out["_tracking_rollup_key"] = raw_rollup_key.map(normalize_tracking_rollup_key)
     out = out[out["_tracking_rollup_key"].astype(str).str.strip().ne("")]
     if out.empty:
         return df.copy()
+    exact_duplicate_subset = [
+        column
+        for column in ["_tracking_rollup_key", "source_file", "first_work_date", "last_work_date"]
+        if column in out.columns
+    ]
+    if len(exact_duplicate_subset) > 1:
+        out = out.drop_duplicates(subset=exact_duplicate_subset)
 
     rows: list[dict[str, object]] = []
     text_columns = [
@@ -2817,6 +2908,8 @@ def build_job_tracking_budget_health(summary: pd.DataFrame) -> tuple[pd.DataFram
         "estimated_value",
         "last_work_date",
         "source_file",
+        "folder_path",
+        "tracking_file",
     ]
     if summary.empty or "job_id" not in summary.columns:
         return pd.DataFrame(), pd.DataFrame()
@@ -2951,6 +3044,8 @@ def build_job_tracking_budget_health(summary: pd.DataFrame) -> tuple[pd.DataFram
         estimated_value=("estimated_value", "first"),
         last_work_date=("last_work_date", "first"),
         source_file=("source_file", "first"),
+        folder_path=("folder_path", "first"),
+        tracking_file=("tracking_file", "first"),
         estimated_cost=("estimated_cost", "sum"),
         actual_cost=("actual_cost", "sum"),
         over_budget_buckets=("budget_status", lambda values: int(sum(1 for value in values if value == "Over Budget"))),
@@ -2976,6 +3071,9 @@ def build_job_tracking_budget_health(summary: pd.DataFrame) -> tuple[pd.DataFram
         ["Over Budget", "Watch", "Incomplete Baseline", "No Actuals Yet"],
         default="On Track",
     )
+    job_df = add_unique_job_display_labels(job_df)
+    display_lookup = dict(zip(job_df["job_id"].astype(str), job_df["job_display"], strict=False))
+    bucket_df["job_display"] = bucket_df["job_id"].astype(str).map(display_lookup).fillna(bucket_df["project"])
     job_df["budget_used_pct_display"] = job_df["budget_used_pct"].map(lambda value: "" if pd.isna(value) else f"{value:.0%}")
     bucket_df["budget_used_pct_display"] = bucket_df["budget_used_pct"].map(lambda value: "" if pd.isna(value) else f"{value:.0%}")
     bucket_df["quantity_pct_used_display"] = bucket_df["quantity_pct_used"].map(lambda value: "" if pd.isna(value) else f"{value:.0%}")
@@ -3003,6 +3101,7 @@ def render_job_tracking_budget_health(summary: pd.DataFrame) -> None:
         & pd.to_numeric(budget_jobs["actual_cost"], errors="coerce").gt(0)
     ].copy()
     if not chart_df.empty:
+        chart_label_column = "job_display" if "job_display" in chart_df.columns else "project"
         chart_df["_chart_extent"] = chart_df[["estimated_cost", "actual_cost"]].max(axis=1)
         status_colors = {
             "Over Budget": "#dc2626",
@@ -3020,7 +3119,7 @@ def render_job_tracking_budget_health(summary: pd.DataFrame) -> None:
             fig.add_trace(
                 go.Bar(
                     x=chart_rows["estimated_cost"],
-                    y=chart_rows["project"],
+                    y=chart_rows[chart_label_column],
                     orientation="h",
                     name="Estimated budget",
                     marker={"color": "#d7d0c4"},
@@ -3031,7 +3130,7 @@ def render_job_tracking_budget_health(summary: pd.DataFrame) -> None:
             fig.add_trace(
                 go.Bar(
                     x=chart_rows["actual_cost"],
-                    y=chart_rows["project"],
+                    y=chart_rows[chart_label_column],
                     orientation="h",
                     name="Actual cost used",
                     marker={"color": [status_colors.get(status, "#6b7280") for status in chart_rows["budget_status"]]},
@@ -3078,7 +3177,7 @@ def render_job_tracking_budget_health(summary: pd.DataFrame) -> None:
         budget_jobs,
         [
             "budget_status",
-            "project",
+            "job_display" if "job_display" in budget_jobs.columns else "project",
             "division",
             "tracking_status",
             "estimated_cost",
@@ -3097,9 +3196,10 @@ def render_job_tracking_budget_health(summary: pd.DataFrame) -> None:
 
     if budget_buckets.empty:
         return
-    options = budget_jobs["project"].fillna("").astype(str).tolist()
+    detail_label_column = "job_display" if "job_display" in budget_jobs.columns else "project"
+    options = budget_jobs[detail_label_column].fillna("").astype(str).tolist()
     selected_project = st.selectbox("Bucket detail", options=options, key="job_tracking_budget_detail_project")
-    selected_job_ids = budget_jobs.loc[budget_jobs["project"].astype(str).eq(selected_project), "job_id"].astype(str).tolist()
+    selected_job_ids = budget_jobs.loc[budget_jobs[detail_label_column].astype(str).eq(selected_project), "job_id"].astype(str).tolist()
     detail = budget_buckets[budget_buckets["job_id"].astype(str).isin(selected_job_ids)].copy()
     show_table(
         detail,
