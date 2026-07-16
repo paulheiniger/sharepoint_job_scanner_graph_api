@@ -2361,6 +2361,383 @@ def split_tracking_material_rows(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Dat
     )
 
 
+JOB_TRACKING_BUDGET_BUCKETS = [
+    {
+        "bucket": "Labor",
+        "actual_columns": ["actual_labor_hours"],
+        "estimated_columns": ["estimated_labor_hours"],
+        "quantity_unit": "hours",
+        "kind": "labor",
+    },
+    {
+        "bucket": "Foam / SPF",
+        "actual_columns": ["actual_foam_sqft"],
+        "estimated_columns": ["estimated_foam_sqft"],
+        "quantity_unit": "sq ft",
+        "kind": "material",
+    },
+    {
+        "bucket": "Coating",
+        "actual_columns": ["actual_base_coat_1", "actual_base_coat_2"],
+        "estimated_columns": ["estimated_base_coat_1", "estimated_base_coat_2"],
+        "quantity_unit": "coating units",
+        "kind": "material",
+    },
+    {
+        "bucket": "Primer / Sealants",
+        "actual_columns": ["actual_primer", "actual_sf", "actual_caulk", "actual_af_buttergrade"],
+        "estimated_columns": ["estimated_primer", "estimated_sf", "estimated_caulk", "estimated_af_buttergrade"],
+        "quantity_unit": "detail units",
+        "kind": "material",
+    },
+    {
+        "bucket": "Granules",
+        "actual_columns": ["actual_granules"],
+        "estimated_columns": ["estimated_granules"],
+        "quantity_unit": "units",
+        "kind": "material",
+    },
+]
+
+
+def job_tracking_budget_bucket_for_template_row(row: pd.Series) -> str:
+    bucket_text = " ".join(
+        text_value(row.get(column))
+        for column in ["template_bucket", "original_template_bucket"]
+    ).lower()
+    label_text = " ".join(
+        text_value(row.get(column))
+        for column in ["row_label", "selected_item_name"]
+    ).lower()
+    source_text = f"{bucket_text} {label_text}".strip()
+    if not source_text.strip():
+        return ""
+    if "labor" in bucket_text:
+        return "Labor"
+    if any(token in source_text for token in ["foam", "spf", "open cell", "closed cell"]):
+        return "Foam / SPF"
+    if any(token in source_text for token in ["coating", "silicone", "acrylic", "base coat", "top coat", "u91", "u92"]):
+        return "Coating"
+    if any(token in source_text for token in ["primer", "caulk", "sealant", "sausage", "sf", "s2000", "sf-2000", "buttergrade", "membrane"]):
+        return "Primer / Sealants"
+    if "granule" in source_text:
+        return "Granules"
+    if any(token in source_text for token in ["board", "densdeck", "iso", "fastener", "plate"]):
+        return "Board / Fasteners / Plates"
+    if any(token in source_text for token in ["travel", "loading", "truck", "sales", "inspect", "generator", "lodging", "meal", "lift"]):
+        return "Equipment / Travel / Lodging"
+    if any(
+        token in label_text
+        for token in [
+            "set up",
+            "setup",
+            "prep",
+            "power wash",
+            "p wash",
+            "pwash",
+            "tear",
+            "spray labor",
+            "prime labor",
+            "top coat labor",
+            "clean up",
+            "cleanup",
+        ]
+    ):
+        return "Labor"
+    return ""
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_job_tracking_estimate_budget_enrichment(job_ids: tuple[str, ...]) -> pd.DataFrame:
+    clean_job_ids = tuple(sorted({text_value(job_id) for job_id in job_ids if text_value(job_id)}))
+    if not clean_job_ids:
+        return pd.DataFrame()
+    template_cols = relation_columns("estimate_template_rows")
+    if "job_id" not in template_cols or "estimated_cost" not in template_cols:
+        return pd.DataFrame()
+    wanted_columns = [
+        "job_id",
+        "template_bucket",
+        "original_template_bucket",
+        "row_label",
+        "selected_item_name",
+        "estimated_cost",
+    ]
+    selected_columns = [column for column in wanted_columns if column in template_cols]
+    try:
+        engine = get_engine()
+        statement = text(
+            f"""
+            SELECT {', '.join(selected_columns)}
+            FROM estimate_template_rows
+            WHERE job_id IN :job_ids
+            """
+        ).bindparams(bindparam("job_ids", expanding=True))
+        with engine.connect() as conn:
+            rows = pd.read_sql_query(statement, conn, params={"job_ids": clean_job_ids})
+    except Exception:
+        return pd.DataFrame()
+    if rows.empty:
+        return pd.DataFrame()
+    rows["estimated_cost"] = pd.to_numeric(rows["estimated_cost"], errors="coerce")
+    rows = rows[rows["estimated_cost"].fillna(0).gt(0)].copy()
+    if rows.empty:
+        return pd.DataFrame()
+    rows["budget_bucket"] = rows.apply(job_tracking_budget_bucket_for_template_row, axis=1)
+    rows = rows[rows["budget_bucket"].ne("")]
+    if rows.empty:
+        return pd.DataFrame()
+    grouped = (
+        rows.groupby(["job_id", "budget_bucket"], dropna=False)
+        .agg(
+            estimated_bucket_cost=("estimated_cost", "sum"),
+            estimate_budget_rows_used=("estimated_cost", "size"),
+        )
+        .reset_index()
+    )
+    return grouped
+
+
+def row_sum_positive_values(row: pd.Series, columns: list[str]) -> float | None:
+    values: list[float] = []
+    for column in columns:
+        if column not in row.index:
+            continue
+        value = row_first_positive_number(row, [column])
+        if value > 0:
+            values.append(value)
+    if not values:
+        return None
+    return float(sum(values))
+
+
+def build_job_tracking_budget_health(summary: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    job_columns = [
+        "job_id",
+        "project",
+        "customer",
+        "job_name",
+        "division",
+        "tracking_status",
+        "estimated_value",
+        "last_work_date",
+        "source_file",
+    ]
+    if summary.empty or "job_id" not in summary.columns:
+        return pd.DataFrame(), pd.DataFrame()
+    job_ids = tuple(summary["job_id"].dropna().astype(str).str.strip())
+    budget_enrichment = load_job_tracking_estimate_budget_enrichment(job_ids)
+    budget_lookup: dict[tuple[str, str], dict[str, object]] = {}
+    if not budget_enrichment.empty:
+        for _, row in budget_enrichment.iterrows():
+            budget_lookup[(text_value(row.get("job_id")), text_value(row.get("budget_bucket")))] = row.to_dict()
+
+    bucket_rows: list[dict[str, object]] = []
+    for _, row in summary.iterrows():
+        job_id = text_value(row.get("job_id"))
+        if not job_id:
+            continue
+        base = {column: row.get(column) for column in job_columns if column in row.index}
+        for spec in JOB_TRACKING_BUDGET_BUCKETS:
+            bucket = spec["bucket"]
+            budget_row = budget_lookup.get((job_id, bucket), {})
+            estimated_cost = pd.to_numeric(pd.Series([budget_row.get("estimated_bucket_cost")]), errors="coerce").iloc[0]
+            actual_quantity = row_sum_positive_values(row, spec["actual_columns"])
+            estimated_quantity = row_sum_positive_values(row, spec["estimated_columns"])
+            if not budget_row and actual_quantity is None and estimated_quantity is None:
+                continue
+            unit_cost = (
+                float(estimated_cost) / float(estimated_quantity)
+                if not pd.isna(estimated_cost) and estimated_cost > 0 and estimated_quantity and estimated_quantity > 0
+                else np.nan
+            )
+            actual_cost = (
+                float(actual_quantity) * float(unit_cost)
+                if actual_quantity and actual_quantity > 0 and not pd.isna(unit_cost) and unit_cost > 0
+                else np.nan
+            )
+            variance = (
+                float(actual_cost) - float(estimated_cost)
+                if not pd.isna(actual_cost) and not pd.isna(estimated_cost) and estimated_cost > 0
+                else np.nan
+            )
+            pct_used = (
+                float(actual_cost) / float(estimated_cost)
+                if not pd.isna(actual_cost) and not pd.isna(estimated_cost) and estimated_cost > 0
+                else np.nan
+            )
+            quantity_pct_used = (
+                float(actual_quantity) / float(estimated_quantity)
+                if actual_quantity and estimated_quantity and estimated_quantity > 0
+                else np.nan
+            )
+            if not pd.isna(pct_used) and pct_used > 1.05:
+                status = "Over Budget"
+            elif pd.isna(estimated_cost) or estimated_cost <= 0:
+                status = "No Cost Baseline"
+            elif actual_quantity is None:
+                status = "No Actuals Yet"
+            elif not pd.isna(pct_used) and pct_used >= 0.9:
+                status = "Watch"
+            else:
+                status = "On Track"
+            bucket_rows.append(
+                {
+                    **base,
+                    "bucket": bucket,
+                    "bucket_kind": spec["kind"],
+                    "actual_quantity": actual_quantity,
+                    "estimated_quantity": estimated_quantity,
+                    "quantity_unit": spec["quantity_unit"],
+                    "quantity_pct_used": quantity_pct_used,
+                    "estimated_cost": estimated_cost if not pd.isna(estimated_cost) else np.nan,
+                    "actual_cost": actual_cost,
+                    "budget_variance": variance,
+                    "budget_used_pct": pct_used,
+                    "budget_status": status,
+                    "estimate_budget_rows_used": budget_row.get("estimate_budget_rows_used"),
+                }
+            )
+
+    bucket_df = pd.DataFrame(bucket_rows)
+    if bucket_df.empty:
+        return pd.DataFrame(), bucket_df
+
+    numeric_columns = ["estimated_cost", "actual_cost", "budget_variance", "budget_used_pct", "quantity_pct_used"]
+    for column in numeric_columns:
+        if column in bucket_df.columns:
+            bucket_df[column] = pd.to_numeric(bucket_df[column], errors="coerce")
+    for column in job_columns:
+        if column not in bucket_df.columns:
+            bucket_df[column] = np.nan
+    job_group = bucket_df.groupby("job_id", dropna=False)
+    job_df = job_group.agg(
+        project=("project", "first"),
+        customer=("customer", "first"),
+        job_name=("job_name", "first"),
+        division=("division", "first"),
+        tracking_status=("tracking_status", "first"),
+        estimated_value=("estimated_value", "first"),
+        last_work_date=("last_work_date", "first"),
+        source_file=("source_file", "first"),
+        estimated_cost=("estimated_cost", "sum"),
+        actual_cost=("actual_cost", "sum"),
+        over_budget_buckets=("budget_status", lambda values: int(sum(1 for value in values if value == "Over Budget"))),
+        no_baseline_buckets=("budget_status", lambda values: int(sum(1 for value in values if value == "No Cost Baseline"))),
+        no_actual_buckets=("budget_status", lambda values: int(sum(1 for value in values if value == "No Actuals Yet"))),
+    ).reset_index()
+    job_df["budget_variance"] = pd.to_numeric(job_df["actual_cost"], errors="coerce") - pd.to_numeric(
+        job_df["estimated_cost"],
+        errors="coerce",
+    )
+    job_df["budget_used_pct"] = np.where(
+        pd.to_numeric(job_df["estimated_cost"], errors="coerce").gt(0),
+        pd.to_numeric(job_df["actual_cost"], errors="coerce") / pd.to_numeric(job_df["estimated_cost"], errors="coerce"),
+        np.nan,
+    )
+    job_df["budget_status"] = np.select(
+        [
+            job_df["over_budget_buckets"].gt(0),
+            job_df["budget_used_pct"].ge(0.9),
+            job_df["no_baseline_buckets"].gt(0),
+            job_df["actual_cost"].fillna(0).le(0),
+        ],
+        ["Over Budget", "Watch", "Incomplete Baseline", "No Actuals Yet"],
+        default="On Track",
+    )
+    job_df["budget_used_pct_display"] = job_df["budget_used_pct"].map(lambda value: "" if pd.isna(value) else f"{value:.0%}")
+    bucket_df["budget_used_pct_display"] = bucket_df["budget_used_pct"].map(lambda value: "" if pd.isna(value) else f"{value:.0%}")
+    bucket_df["quantity_pct_used_display"] = bucket_df["quantity_pct_used"].map(lambda value: "" if pd.isna(value) else f"{value:.0%}")
+    return job_df, bucket_df
+
+
+def render_job_tracking_budget_health(summary: pd.DataFrame) -> None:
+    budget_jobs, budget_buckets = build_job_tracking_budget_health(summary)
+    if budget_jobs.empty:
+        st.info("No budget health rows could be built yet. This needs estimate costs plus job tracking actuals.")
+        return
+
+    over_budget = budget_jobs[budget_jobs["budget_status"].eq("Over Budget")]
+    metric_row(
+        [
+            ("Jobs With Budget Signal", fmt_count(len(budget_jobs))),
+            ("Over Budget", fmt_count(len(over_budget))),
+            ("Calculated Actual Cost", fmt_dollar(safe_sum(budget_jobs, "actual_cost"))),
+            ("Calculated Variance", fmt_dollar(safe_sum(budget_jobs, "budget_variance"))),
+        ]
+    )
+
+    chart_df = budget_jobs.dropna(subset=["budget_variance"]).copy()
+    if not chart_df.empty:
+        chart_df = chart_df.reindex(chart_df["budget_variance"].abs().sort_values(ascending=False).index).head(20)
+        fig = px.bar(
+            chart_df.sort_values("budget_variance"),
+            x="budget_variance",
+            y="project",
+            orientation="h",
+            color="budget_status",
+            title="Budget Variance by Job",
+            labels={"budget_variance": "actual minus estimate", "project": "job"},
+            color_discrete_map={
+                "Over Budget": "#dc2626",
+                "Watch": "#d97706",
+                "On Track": "#059669",
+                "No Actuals Yet": "#6b7280",
+                "Incomplete Baseline": "#2563eb",
+            },
+        )
+        fig.add_vline(x=0, line_width=1, line_color="#111827")
+        fig.update_xaxes(tickprefix="$", tickformat=",.0f", separatethousands=True)
+        st.plotly_chart(fig, width="stretch")
+
+    show_table(
+        budget_jobs,
+        [
+            "budget_status",
+            "project",
+            "division",
+            "tracking_status",
+            "estimated_cost",
+            "actual_cost",
+            "budget_variance",
+            "budget_used_pct_display",
+            "over_budget_buckets",
+            "no_baseline_buckets",
+            "no_actual_buckets",
+            "last_work_date",
+            "source_file",
+        ],
+        height=360,
+        sort_by="budget_variance",
+    )
+
+    if budget_buckets.empty:
+        return
+    options = budget_jobs["project"].fillna("").astype(str).tolist()
+    selected_project = st.selectbox("Bucket detail", options=options, key="job_tracking_budget_detail_project")
+    selected_job_ids = budget_jobs.loc[budget_jobs["project"].astype(str).eq(selected_project), "job_id"].astype(str).tolist()
+    detail = budget_buckets[budget_buckets["job_id"].astype(str).isin(selected_job_ids)].copy()
+    show_table(
+        detail,
+        [
+            "budget_status",
+            "bucket",
+            "bucket_kind",
+            "estimated_cost",
+            "actual_cost",
+            "budget_variance",
+            "budget_used_pct_display",
+            "actual_quantity",
+            "estimated_quantity",
+            "quantity_pct_used_display",
+            "quantity_unit",
+            "estimate_budget_rows_used",
+        ],
+        height=300,
+        sort_by="budget_variance",
+    )
+
+
 def load_schedule_df() -> pd.DataFrame:
     try:
         return load_df("SELECT * FROM crew_schedule")
@@ -13167,9 +13544,13 @@ def job_tracking_dashboard_page() -> None:
 
     render_job_tracking_daily_calendar(daily)
 
-    tab_active, tab_variance, tab_daily, tab_foam = st.tabs(
-        ["Active Projects", "Estimate vs Actual", "Daily Entries", "Foam / Materials"]
+    tab_budget, tab_active, tab_variance, tab_daily, tab_foam = st.tabs(
+        ["Budget Health", "Active Projects", "Estimate vs Actual", "Daily Entries", "Foam / Materials"]
     )
+
+    with tab_budget:
+        st.subheader("Job Budget Health")
+        render_job_tracking_budget_health(summary)
 
     with tab_active:
         st.subheader("Active Project Tracking")
