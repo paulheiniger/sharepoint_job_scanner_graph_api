@@ -2924,7 +2924,6 @@ def render_job_tracking_budget_health(summary: pd.DataFrame) -> None:
     ].copy()
     if not chart_df.empty:
         chart_df["_chart_extent"] = chart_df[["estimated_cost", "actual_cost"]].max(axis=1)
-        chart_df = chart_df.sort_values("_chart_extent", ascending=True)
         status_colors = {
             "Over Budget": "#dc2626",
             "Watch": "#d97706",
@@ -2932,56 +2931,68 @@ def render_job_tracking_budget_health(summary: pd.DataFrame) -> None:
             "No Actuals Yet": "#6b7280",
             "Incomplete Baseline": "#2563eb",
         }
-        fig = go.Figure()
-        fig.add_trace(
-            go.Bar(
-                x=chart_df["estimated_cost"],
-                y=chart_df["project"],
-                orientation="h",
-                name="Estimated budget",
-                marker={"color": "#d7d0c4"},
-                opacity=0.9,
-                hovertemplate="<b>%{y}</b><br>Estimated budget: $%{x:,.0f}<extra></extra>",
+
+        def render_budget_fill_chart(chart_rows: pd.DataFrame, title: str, *, show_legend: bool = True) -> None:
+            if chart_rows.empty:
+                return
+            chart_rows = chart_rows.sort_values("_chart_extent", ascending=True)
+            fig = go.Figure()
+            fig.add_trace(
+                go.Bar(
+                    x=chart_rows["estimated_cost"],
+                    y=chart_rows["project"],
+                    orientation="h",
+                    name="Estimated budget",
+                    marker={"color": "#d7d0c4"},
+                    opacity=0.9,
+                    hovertemplate="<b>%{y}</b><br>Estimated budget: $%{x:,.0f}<extra></extra>",
+                )
             )
-        )
-        fig.add_trace(
-            go.Bar(
-                x=chart_df["actual_cost"],
-                y=chart_df["project"],
-                orientation="h",
-                name="Actual cost used",
-                marker={"color": [status_colors.get(status, "#6b7280") for status in chart_df["budget_status"]]},
-                customdata=np.stack(
-                    [
-                        chart_df["estimated_cost"].fillna(0),
-                        chart_df["budget_variance"].fillna(0),
-                        chart_df["budget_used_pct_display"].fillna(""),
-                        chart_df["budget_status"].fillna(""),
-                    ],
-                    axis=-1,
-                ),
-                hovertemplate=(
-                    "<b>%{y}</b><br>"
-                    "Actual cost used: $%{x:,.0f}<br>"
-                    "Estimated budget: $%{customdata[0]:,.0f}<br>"
-                    "Variance: $%{customdata[1]:,.0f}<br>"
-                    "Used: %{customdata[2]}<br>"
-                    "Status: %{customdata[3]}<extra></extra>"
-                ),
+            fig.add_trace(
+                go.Bar(
+                    x=chart_rows["actual_cost"],
+                    y=chart_rows["project"],
+                    orientation="h",
+                    name="Actual cost used",
+                    marker={"color": [status_colors.get(status, "#6b7280") for status in chart_rows["budget_status"]]},
+                    customdata=np.stack(
+                        [
+                            chart_rows["estimated_cost"].fillna(0),
+                            chart_rows["budget_variance"].fillna(0),
+                            chart_rows["budget_used_pct_display"].fillna(""),
+                            chart_rows["budget_status"].fillna(""),
+                        ],
+                        axis=-1,
+                    ),
+                    hovertemplate=(
+                        "<b>%{y}</b><br>"
+                        "Actual cost used: $%{x:,.0f}<br>"
+                        "Estimated budget: $%{customdata[0]:,.0f}<br>"
+                        "Variance: $%{customdata[1]:,.0f}<br>"
+                        "Used: %{customdata[2]}<br>"
+                        "Status: %{customdata[3]}<extra></extra>"
+                    ),
+                )
             )
-        )
-        fig.update_layout(
-            title="Budget Used by Job",
-            barmode="overlay",
-            bargap=0.35,
-            height=min(max(420, 32 * len(chart_df) + 140), 1800),
-            xaxis_title="budget cost",
-            yaxis_title="job",
-            legend_title_text="",
-            colorway=SPRAYTEC_CHART_COLOR_SEQUENCE,
-        )
-        fig.update_xaxes(tickprefix="$", tickformat=",.0f", separatethousands=True, rangemode="tozero")
-        st.plotly_chart(fig, width="stretch")
+            fig.update_layout(
+                title=title,
+                barmode="overlay",
+                bargap=0.35,
+                height=min(max(260, 32 * len(chart_rows) + 140), 1400),
+                xaxis_title="budget cost",
+                yaxis_title="job",
+                showlegend=show_legend,
+                legend_title_text="",
+                colorway=SPRAYTEC_CHART_COLOR_SEQUENCE,
+            )
+            fig.update_xaxes(tickprefix="$", tickformat=",.0f", separatethousands=True, rangemode="tozero")
+            st.plotly_chart(fig, width="stretch")
+
+        top_chart = chart_df.sort_values("_chart_extent", ascending=False).head(5)
+        remaining_chart = chart_df.drop(index=top_chart.index)
+        render_budget_fill_chart(top_chart, "Budget Used by Job - Top 5", show_legend=True)
+        if not remaining_chart.empty:
+            render_budget_fill_chart(remaining_chart, "Budget Used by Job - Remaining Jobs", show_legend=False)
 
     show_table(
         budget_jobs,
