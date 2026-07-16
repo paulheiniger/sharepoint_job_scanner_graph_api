@@ -102,6 +102,11 @@ try:
 except ImportError:
     calendar = None
 
+try:
+    from streamlit_sortables import sort_items
+except ImportError:
+    sort_items = None
+
 
 logger = logging.getLogger(__name__)
 
@@ -1391,6 +1396,7 @@ CREATE TABLE IF NOT EXISTS daily_dispatch (
     job_name TEXT,
     site_address TEXT,
     start_time TEXT,
+    end_time TEXT,
     crew_leader TEXT,
     crew_members TEXT,
     work_scope TEXT,
@@ -1405,6 +1411,40 @@ CREATE TABLE IF NOT EXISTS daily_dispatch (
     sent_at TIMESTAMPTZ,
     raw JSONB,
     updated_at TIMESTAMPTZ DEFAULT NOW()
+)
+"""
+
+DAILY_DISPATCH_ROSTER_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS daily_dispatch_roster (
+    roster_person_id TEXT PRIMARY KEY,
+    person_name TEXT NOT NULL,
+    person_role TEXT,
+    hourly_rate NUMERIC,
+    burden_rate NUMERIC,
+    source TEXT,
+    active BOOLEAN DEFAULT TRUE,
+    raw JSONB,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (person_name)
+)
+"""
+
+
+DAILY_DISPATCH_CREW_ASSIGNMENTS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS daily_dispatch_crew_assignments (
+    assignment_id TEXT PRIMARY KEY,
+    dispatch_date DATE NOT NULL,
+    job_id TEXT NOT NULL,
+    roster_person_id TEXT,
+    person_name TEXT NOT NULL,
+    person_role TEXT,
+    assignment_source TEXT,
+    start_time TEXT,
+    end_time TEXT,
+    sequence INTEGER,
+    notes TEXT,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (dispatch_date, job_id, person_name)
 )
 """
 
@@ -1464,6 +1504,18 @@ def dispatch_id_for(dispatch_date: date, job_id: object) -> str:
     return f"dispatch-{digest}"
 
 
+def dispatch_roster_person_id(person_name: object) -> str:
+    name = text_value(person_name).lower()
+    digest = hashlib.sha1(name.encode("utf-8")).hexdigest()[:20]
+    return f"person-{digest}"
+
+
+def dispatch_assignment_id(dispatch_date: date, job_id: object, person_name: object) -> str:
+    key = f"{dispatch_date.isoformat()}||{text_value(job_id)}||{text_value(person_name).lower()}"
+    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:24]
+    return f"assignment-{digest}"
+
+
 def calculate_end_date(start_value: object, duration_value: object) -> str | None:
     start = pd.to_datetime(start_value, errors="coerce")
     duration = pd.to_numeric(pd.Series([duration_value]), errors="coerce").iloc[0]
@@ -1492,8 +1544,13 @@ def ensure_daily_dispatch_table() -> None:
     engine = get_engine()
     with engine.begin() as conn:
         conn.execute(text(DAILY_DISPATCH_TABLE_SQL))
+        conn.execute(text("ALTER TABLE daily_dispatch ADD COLUMN IF NOT EXISTS end_time TEXT"))
+        conn.execute(text(DAILY_DISPATCH_ROSTER_TABLE_SQL))
+        conn.execute(text(DAILY_DISPATCH_CREW_ASSIGNMENTS_TABLE_SQL))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_daily_dispatch_date ON daily_dispatch(dispatch_date)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_daily_dispatch_job_id ON daily_dispatch(job_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_daily_dispatch_crew_assignments_date ON daily_dispatch_crew_assignments(dispatch_date)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_daily_dispatch_crew_assignments_job ON daily_dispatch_crew_assignments(job_id)"))
 
 
 def ensure_job_workflow_overrides_table() -> None:
@@ -5124,43 +5181,430 @@ def update_calendar_schedule_dates(event_id: object, start_value: object, exclus
 
 
 def load_dispatch_jobs(dispatch_date: date) -> pd.DataFrame:
-    query = text(
-        """
+    ensure_daily_dispatch_table()
+    query = """
         SELECT
             cs.schedule_id,
             cs.job_id,
-            j.customer,
-            j.job_name,
-            j.site_address,
-            cs.assigned_crew_leader AS crew_leader,
+            COALESCE(dd.customer, j.customer) AS customer,
+            COALESCE(dd.job_name, j.job_name) AS job_name,
+            COALESCE(dd.site_address, j.site_address) AS site_address,
+            COALESCE(dd.crew_leader, cs.assigned_crew_leader) AS crew_leader,
             cs.estimated_start_date,
             cs.estimated_end_date,
             cs.estimated_duration_days,
             cs.schedule_status,
             cs.priority,
-            cs.schedule_notes AS work_scope,
-            NULL::TEXT AS start_time,
-            NULL::TEXT AS crew_members,
-            NULL::TEXT AS equipment_notes,
-            NULL::TEXT AS material_notes,
-            NULL::TEXT AS work_notes,
-            NULL::TEXT AS safety_notes,
-            NULL::TEXT AS weather_notes,
-            NULL::TEXT AS special_instructions
+            COALESCE(dd.work_scope, cs.schedule_notes) AS work_scope,
+            dd.start_time,
+            dd.end_time,
+            dd.crew_members,
+            dd.equipment_notes,
+            dd.material_notes,
+            dd.work_scope AS work_notes,
+            dd.safety_notes,
+            dd.weather_notes,
+            dd.special_instructions,
+            dd.sent_status,
+            dd.updated_at AS dispatch_updated_at
         FROM crew_schedule cs
         LEFT JOIN dashboard_jobs j ON j.job_id = cs.job_id
+        LEFT JOIN daily_dispatch dd
+          ON dd.job_id = cs.job_id
+         AND dd.dispatch_date = :dispatch_date
         WHERE cs.estimated_start_date IS NOT NULL
           AND cs.estimated_end_date IS NOT NULL
           AND cs.estimated_start_date <= :dispatch_date
           AND cs.estimated_end_date >= :dispatch_date
-        ORDER BY cs.assigned_crew_leader NULLS LAST, cs.priority NULLS LAST, j.customer, j.job_name
+        ORDER BY COALESCE(dd.crew_leader, cs.assigned_crew_leader) NULLS LAST,
+                 dd.start_time NULLS LAST,
+                 cs.priority NULLS LAST,
+                 j.customer,
+                 j.job_name
         """
-    )
     result = load_df_uncached(query, params={"dispatch_date": dispatch_date})
     if result.ok:
         return result.value
     show_database_error(result.error or RuntimeError("Database read failed."))
     st.stop()
+
+
+def seed_dispatch_roster_from_people_templates() -> int:
+    ensure_daily_dispatch_table()
+    engine = get_engine()
+    with engine.begin() as conn:
+        table_exists = conn.execute(text("SELECT to_regclass('template_lookup_tables') IS NOT NULL")).scalar()
+        if not table_exists:
+            return 0
+        result = conn.execute(
+            text(
+                """
+                INSERT INTO daily_dispatch_roster (
+                    roster_person_id,
+                    person_name,
+                    person_role,
+                    hourly_rate,
+                    burden_rate,
+                    source,
+                    active,
+                    raw,
+                    updated_at
+                )
+                SELECT DISTINCT ON (LOWER(TRIM(values_json->>'A')))
+                    'person-' || SUBSTRING(MD5(LOWER(TRIM(values_json->>'A'))) FOR 20) AS roster_person_id,
+                    TRIM(values_json->>'A') AS person_name,
+                    CASE table_name
+                        WHEN 'crew_leaders' THEN 'crew_leader'
+                        WHEN 'temp_workers' THEN 'temp_worker'
+                        ELSE 'worker'
+                    END AS person_role,
+                    CASE WHEN values_json->>'B' ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (values_json->>'B')::NUMERIC END AS hourly_rate,
+                    CASE WHEN values_json->>'C' ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (values_json->>'C')::NUMERIC END AS burden_rate,
+                    'people_tab' AS source,
+                    TRUE AS active,
+                    values_json AS raw,
+                    NOW() AS updated_at
+                FROM template_lookup_tables
+                WHERE sheet_name = 'People'
+                  AND table_name IN ('crew_leaders', 'workers', 'temp_workers')
+                  AND NULLIF(TRIM(values_json->>'A'), '') IS NOT NULL
+                ORDER BY LOWER(TRIM(values_json->>'A')),
+                         CASE table_name WHEN 'crew_leaders' THEN 0 WHEN 'workers' THEN 1 ELSE 2 END
+                ON CONFLICT (person_name) DO UPDATE SET
+                    person_role = COALESCE(daily_dispatch_roster.person_role, EXCLUDED.person_role),
+                    hourly_rate = COALESCE(daily_dispatch_roster.hourly_rate, EXCLUDED.hourly_rate),
+                    burden_rate = COALESCE(daily_dispatch_roster.burden_rate, EXCLUDED.burden_rate),
+                    source = COALESCE(daily_dispatch_roster.source, EXCLUDED.source),
+                    active = TRUE,
+                    updated_at = NOW()
+                """
+            )
+        )
+    return int(result.rowcount or 0)
+
+
+def load_dispatch_roster() -> pd.DataFrame:
+    ensure_daily_dispatch_table()
+    result = load_df_uncached(
+        """
+        SELECT roster_person_id,
+               person_name,
+               person_role,
+               hourly_rate,
+               burden_rate,
+               source,
+               active
+        FROM daily_dispatch_roster
+        WHERE COALESCE(active, TRUE)
+        ORDER BY
+            CASE person_role WHEN 'crew_leader' THEN 0 WHEN 'worker' THEN 1 WHEN 'temp_worker' THEN 2 ELSE 3 END,
+            person_name
+        """
+    )
+    if result.ok:
+        return result.value
+    show_database_error(result.error or RuntimeError("Roster read failed."))
+    st.stop()
+
+
+def save_dispatch_roster_person(person_name: object, *, person_role: str = "ad_hoc", source: str = "ad_hoc") -> bool:
+    name = text_value(person_name)
+    if not name:
+        return False
+    ensure_daily_dispatch_table()
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO daily_dispatch_roster (
+                    roster_person_id,
+                    person_name,
+                    person_role,
+                    source,
+                    active,
+                    raw,
+                    updated_at
+                )
+                VALUES (
+                    :roster_person_id,
+                    :person_name,
+                    :person_role,
+                    :source,
+                    TRUE,
+                    CAST(:raw AS JSONB),
+                    NOW()
+                )
+                ON CONFLICT (person_name) DO UPDATE SET
+                    person_role = EXCLUDED.person_role,
+                    source = EXCLUDED.source,
+                    active = TRUE,
+                    updated_at = NOW()
+                """
+            ),
+            {
+                "roster_person_id": dispatch_roster_person_id(name),
+                "person_name": name,
+                "person_role": person_role,
+                "source": source,
+                "raw": json.dumps({"source": source}, default=str),
+            },
+        )
+    st.cache_data.clear()
+    return True
+
+
+def load_dispatch_crew_assignments(dispatch_date: date) -> pd.DataFrame:
+    ensure_daily_dispatch_table()
+    result = load_df_uncached(
+        """
+        SELECT assignment_id,
+               dispatch_date,
+               job_id,
+               roster_person_id,
+               person_name,
+               person_role,
+               assignment_source,
+               start_time,
+               end_time,
+               sequence,
+               notes
+        FROM daily_dispatch_crew_assignments
+        WHERE dispatch_date = :dispatch_date
+        ORDER BY job_id, sequence NULLS LAST, person_name
+        """,
+        params={"dispatch_date": dispatch_date},
+    )
+    if result.ok:
+        return result.value
+    show_database_error(result.error or RuntimeError("Dispatch assignments read failed."))
+    st.stop()
+
+
+def save_dispatch_crew_assignments(assignments: pd.DataFrame, dispatch_date: date, job_ids: list[str]) -> int:
+    ensure_daily_dispatch_table()
+    clean_job_ids = [text_value(job_id) for job_id in job_ids if text_value(job_id)]
+    engine = get_engine()
+    with engine.begin() as conn:
+        if clean_job_ids:
+            conn.execute(
+                text(
+                    """
+                    DELETE FROM daily_dispatch_crew_assignments
+                    WHERE dispatch_date = :dispatch_date
+                      AND job_id IN :job_ids
+                    """
+                ).bindparams(bindparam("job_ids", expanding=True)),
+                {"dispatch_date": dispatch_date, "job_ids": clean_job_ids},
+            )
+        records: list[dict[str, object]] = []
+        for row in assignments.to_dict(orient="records") if not assignments.empty else []:
+            job_id = text_value(row.get("job_id"))
+            person_name = text_value(row.get("person_name"))
+            if not job_id or not person_name:
+                continue
+            records.append(
+                {
+                    "assignment_id": dispatch_assignment_id(dispatch_date, job_id, person_name),
+                    "dispatch_date": dispatch_date.isoformat(),
+                    "job_id": job_id,
+                    "roster_person_id": clean_db_value(row.get("roster_person_id")) or dispatch_roster_person_id(person_name),
+                    "person_name": person_name,
+                    "person_role": clean_db_value(row.get("person_role")),
+                    "assignment_source": clean_db_value(row.get("assignment_source")) or "scheduler",
+                    "start_time": clean_db_value(row.get("start_time")),
+                    "end_time": clean_db_value(row.get("end_time")),
+                    "sequence": clean_db_value(row.get("sequence")),
+                    "notes": clean_db_value(row.get("notes")),
+                }
+            )
+        if records:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO daily_dispatch_crew_assignments (
+                        assignment_id,
+                        dispatch_date,
+                        job_id,
+                        roster_person_id,
+                        person_name,
+                        person_role,
+                        assignment_source,
+                        start_time,
+                        end_time,
+                        sequence,
+                        notes,
+                        updated_at
+                    )
+                    VALUES (
+                        :assignment_id,
+                        :dispatch_date,
+                        :job_id,
+                        :roster_person_id,
+                        :person_name,
+                        :person_role,
+                        :assignment_source,
+                        :start_time,
+                        :end_time,
+                        :sequence,
+                        :notes,
+                        NOW()
+                    )
+                    ON CONFLICT (dispatch_date, job_id, person_name) DO UPDATE SET
+                        roster_person_id = EXCLUDED.roster_person_id,
+                        person_role = EXCLUDED.person_role,
+                        assignment_source = EXCLUDED.assignment_source,
+                        start_time = EXCLUDED.start_time,
+                        end_time = EXCLUDED.end_time,
+                        sequence = EXCLUDED.sequence,
+                        notes = EXCLUDED.notes,
+                        updated_at = NOW()
+                    """
+                ),
+                records,
+            )
+    st.cache_data.clear()
+    return len(records)
+
+
+def clone_previous_dispatch_day(dispatch_date: date, job_ids: list[str]) -> tuple[date | None, int, int]:
+    ensure_daily_dispatch_table()
+    clean_job_ids = [text_value(job_id) for job_id in job_ids if text_value(job_id)]
+    if not clean_job_ids:
+        return None, 0, 0
+    engine = get_engine()
+    with engine.begin() as conn:
+        previous_date = conn.execute(
+            text(
+                """
+                SELECT MAX(dispatch_date) AS previous_date
+                FROM (
+                    SELECT dispatch_date FROM daily_dispatch WHERE dispatch_date < :dispatch_date
+                    UNION
+                    SELECT dispatch_date FROM daily_dispatch_crew_assignments WHERE dispatch_date < :dispatch_date
+                ) previous_dispatches
+                """
+            ),
+            {"dispatch_date": dispatch_date},
+        ).scalar()
+        if not previous_date:
+            return None, 0, 0
+        dispatch_result = conn.execute(
+            text(
+                """
+                INSERT INTO daily_dispatch (
+                    dispatch_id,
+                    dispatch_date,
+                    job_id,
+                    customer,
+                    job_name,
+                    site_address,
+                    start_time,
+                    end_time,
+                    crew_leader,
+                    crew_members,
+                    work_scope,
+                    equipment_notes,
+                    material_notes,
+                    safety_notes,
+                    weather_notes,
+                    special_instructions,
+                    message_text,
+                    send_method,
+                    sent_status,
+                    raw,
+                    updated_at
+                )
+                SELECT
+                    'dispatch-' || SUBSTRING(MD5(:dispatch_date::TEXT || '||' || job_id) FOR 20),
+                    :dispatch_date,
+                    job_id,
+                    customer,
+                    job_name,
+                    site_address,
+                    start_time,
+                    end_time,
+                    crew_leader,
+                    crew_members,
+                    work_scope,
+                    equipment_notes,
+                    material_notes,
+                    safety_notes,
+                    weather_notes,
+                    special_instructions,
+                    NULL,
+                    'draft',
+                    'draft',
+                    raw,
+                    NOW()
+                FROM daily_dispatch
+                WHERE dispatch_date = :previous_date
+                  AND job_id IN :job_ids
+                ON CONFLICT (dispatch_id) DO UPDATE SET
+                    start_time = EXCLUDED.start_time,
+                    end_time = EXCLUDED.end_time,
+                    crew_leader = EXCLUDED.crew_leader,
+                    crew_members = EXCLUDED.crew_members,
+                    work_scope = EXCLUDED.work_scope,
+                    equipment_notes = EXCLUDED.equipment_notes,
+                    material_notes = EXCLUDED.material_notes,
+                    safety_notes = EXCLUDED.safety_notes,
+                    weather_notes = EXCLUDED.weather_notes,
+                    special_instructions = EXCLUDED.special_instructions,
+                    sent_status = 'draft',
+                    updated_at = NOW()
+                """
+            ).bindparams(bindparam("job_ids", expanding=True)),
+            {"dispatch_date": dispatch_date, "previous_date": previous_date, "job_ids": clean_job_ids},
+        )
+        assignment_result = conn.execute(
+            text(
+                """
+                INSERT INTO daily_dispatch_crew_assignments (
+                    assignment_id,
+                    dispatch_date,
+                    job_id,
+                    roster_person_id,
+                    person_name,
+                    person_role,
+                    assignment_source,
+                    start_time,
+                    end_time,
+                    sequence,
+                    notes,
+                    updated_at
+                )
+                SELECT
+                    'assignment-' || SUBSTRING(MD5(:dispatch_date::TEXT || '||' || job_id || '||' || LOWER(person_name)) FOR 24),
+                    :dispatch_date,
+                    job_id,
+                    roster_person_id,
+                    person_name,
+                    person_role,
+                    'cloned_previous_day',
+                    start_time,
+                    end_time,
+                    sequence,
+                    notes,
+                    NOW()
+                FROM daily_dispatch_crew_assignments
+                WHERE dispatch_date = :previous_date
+                  AND job_id IN :job_ids
+                ON CONFLICT (dispatch_date, job_id, person_name) DO UPDATE SET
+                    roster_person_id = EXCLUDED.roster_person_id,
+                    person_role = EXCLUDED.person_role,
+                    assignment_source = EXCLUDED.assignment_source,
+                    start_time = EXCLUDED.start_time,
+                    end_time = EXCLUDED.end_time,
+                    sequence = EXCLUDED.sequence,
+                    notes = EXCLUDED.notes,
+                    updated_at = NOW()
+                """
+            ).bindparams(bindparam("job_ids", expanding=True)),
+            {"dispatch_date": dispatch_date, "previous_date": previous_date, "job_ids": clean_job_ids},
+        )
+    st.cache_data.clear()
+    return pd.to_datetime(previous_date).date(), int(dispatch_result.rowcount or 0), int(assignment_result.rowcount or 0)
 
 
 def generate_dispatch_message(df: pd.DataFrame, dispatch_date: date) -> str:
@@ -5175,11 +5619,13 @@ def generate_dispatch_message(df: pd.DataFrame, dispatch_date: date) -> str:
         lines.append(str(crew_leader))
         for _, row in group.iterrows():
             start_time = text_value(row.get("start_time")) or "TBD"
+            end_time = text_value(row.get("end_time"))
+            time_text = f"{start_time}-{end_time}" if end_time else start_time
             customer = text_value(row.get("customer")) or "Unknown customer"
             job_name = text_value(row.get("job_name")) or text_value(row.get("job_id"))
             address = text_value(row.get("site_address"))
             scope = text_value(row.get("work_notes")) or text_value(row.get("work_scope"))
-            lines.append(f"- {start_time} | {customer} - {job_name}")
+            lines.append(f"- {time_text} | {customer} - {job_name}")
             if address:
                 lines.append(f"  Site: {address}")
             if scope:
@@ -5213,6 +5659,7 @@ def save_dispatch_draft(df: pd.DataFrame, message_text: str, dispatch_date: date
             job_name,
             site_address,
             start_time,
+            end_time,
             crew_leader,
             crew_members,
             work_scope,
@@ -5235,6 +5682,7 @@ def save_dispatch_draft(df: pd.DataFrame, message_text: str, dispatch_date: date
             :job_name,
             :site_address,
             :start_time,
+            :end_time,
             :crew_leader,
             :crew_members,
             :work_scope,
@@ -5254,6 +5702,7 @@ def save_dispatch_draft(df: pd.DataFrame, message_text: str, dispatch_date: date
             job_name = EXCLUDED.job_name,
             site_address = EXCLUDED.site_address,
             start_time = EXCLUDED.start_time,
+            end_time = EXCLUDED.end_time,
             crew_leader = EXCLUDED.crew_leader,
             crew_members = EXCLUDED.crew_members,
             work_scope = EXCLUDED.work_scope,
@@ -5283,6 +5732,7 @@ def save_dispatch_draft(df: pd.DataFrame, message_text: str, dispatch_date: date
             "job_name": clean_db_value(row.get("job_name")),
             "site_address": clean_db_value(row.get("site_address")),
             "start_time": clean_db_value(row.get("start_time")),
+            "end_time": clean_db_value(row.get("end_time")),
             "crew_leader": clean_db_value(row.get("crew_leader")),
             "crew_members": clean_db_value(row.get("crew_members")),
             "work_scope": clean_db_value(row.get("work_notes")) or clean_db_value(row.get("work_scope")),
@@ -15800,6 +16250,87 @@ def project_scheduling_page() -> None:
             show_database_error(exc)
 
 
+UNASSIGNED_CREW_LANE_HEADER = "Unassigned Crew"
+
+
+def dispatch_lane_header(job_display: object, job_id: object) -> str:
+    label = text_value(job_display) or text_value(job_id) or "Scheduled Job"
+    label = re.sub(r"\s+", " ", label).strip()
+    if len(label) > 72:
+        label = f"{label[:69].rstrip()}..."
+    short_id = text_value(job_id)[:8]
+    return f"{label} [{short_id}]" if short_id else label
+
+
+def unique_text_values(values: Iterable[object]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        clean = text_value(value)
+        if clean and clean not in seen:
+            seen.add(clean)
+            result.append(clean)
+    return result
+
+
+def crew_member_names_from_text(value: object) -> list[str]:
+    return unique_text_values(part.strip() for part in text_value(value).split(","))
+
+
+def build_dispatch_swimlane_containers(
+    jobs: pd.DataFrame,
+    roster_options: list[str],
+    assigned_by_job: dict[str, list[str]],
+) -> tuple[list[dict[str, object]], dict[str, str]]:
+    header_to_job_id: dict[str, str] = {}
+    job_assignments: dict[str, list[str]] = {}
+    assigned_people: set[str] = set()
+    for _, row in jobs.iterrows():
+        job_id = text_value(row.get("job_id"))
+        if not job_id:
+            continue
+        members = assigned_by_job.get(job_id)
+        if not members:
+            members = crew_member_names_from_text(row.get("crew_members"))
+        members = unique_text_values(members)
+        job_assignments[job_id] = members
+        assigned_people.update(members)
+
+    roster_people = unique_text_values(roster_options)
+    unassigned = [person for person in roster_people if person not in assigned_people]
+
+    containers: list[dict[str, object]] = [
+        {"header": UNASSIGNED_CREW_LANE_HEADER, "items": unassigned},
+    ]
+    for _, row in jobs.iterrows():
+        job_id = text_value(row.get("job_id"))
+        if not job_id:
+            continue
+        header = dispatch_lane_header(row.get("job_display"), job_id)
+        header_to_job_id[header] = job_id
+        containers.append({"header": header, "items": job_assignments.get(job_id, [])})
+    return containers, header_to_job_id
+
+
+def selected_assignments_from_swimlane_containers(
+    containers: list[dict[str, object]],
+    header_to_job_id: dict[str, str],
+) -> dict[str, list[str]]:
+    selected: dict[str, list[str]] = {job_id: [] for job_id in header_to_job_id.values()}
+    for container in containers:
+        if not isinstance(container, dict):
+            continue
+        header = text_value(container.get("header"))
+        job_id = header_to_job_id.get(header)
+        if not job_id:
+            continue
+        items = container.get("items")
+        if not isinstance(items, list):
+            continue
+        selected[job_id] = unique_text_values(items)
+    return selected
+
+
 def daily_crew_dispatch_page() -> None:
     st.title("Daily Crew Dispatch")
     dispatch_date = st.date_input("Dispatch Date", value=date.today())
@@ -15808,31 +16339,244 @@ def daily_crew_dispatch_page() -> None:
     if jobs.empty:
         show_empty("No scheduled jobs overlap the selected dispatch date.")
         return
+    jobs = jobs.copy()
+    job_ids = [text_value(job_id) for job_id in jobs.get("job_id", pd.Series([], dtype=object)).dropna().tolist()]
+    seed_dispatch_roster_from_people_templates()
+    roster = load_dispatch_roster()
+    assignments = load_dispatch_crew_assignments(dispatch_date)
+    if not assignments.empty:
+        assigned_members = (
+            assignments.groupby("job_id")["person_name"]
+            .apply(lambda values: ", ".join(dict.fromkeys(text_value(value) for value in values if text_value(value))))
+            .to_dict()
+        )
+        jobs["crew_members"] = jobs["job_id"].map(lambda value: assigned_members.get(text_value(value), ""))
+    jobs["job_display"] = (
+        jobs.get("customer", pd.Series("", index=jobs.index)).fillna("").astype(str).str.strip()
+        + " - "
+        + jobs.get("job_name", pd.Series("", index=jobs.index)).fillna("").astype(str).str.strip()
+    ).str.strip(" -")
 
     editable_columns = [
         "job_id",
-        "customer",
-        "job_name",
+        "job_display",
         "site_address",
         "start_time",
+        "end_time",
         "crew_leader",
         "crew_members",
+        "work_scope",
         "equipment_notes",
         "material_notes",
         "work_notes",
+        "safety_notes",
+        "weather_notes",
         "special_instructions",
     ]
     for column in editable_columns:
         if column not in jobs.columns:
             jobs[column] = None
 
+    metric_row(
+        [
+            ("Dispatch Jobs", fmt_count(len(jobs))),
+            ("Assigned Leaders", fmt_count(jobs["crew_leader"].fillna("").astype(str).str.strip().replace("", np.nan).nunique())),
+            ("Missing Start Time", fmt_count(jobs["start_time"].fillna("").astype(str).str.strip().eq("").sum())),
+            ("Missing Crew Members", fmt_count(jobs["crew_members"].fillna("").astype(str).str.strip().eq("").sum())),
+        ],
+        max_columns=4,
+    )
+    st.caption(
+        "Edit the daily dispatch, assign crew, then save. The crew swimlanes write to the same dispatch assignment "
+        "records as the table fallback."
+    )
+
+    action_cols = st.columns([1, 1, 2])
+    with action_cols[0]:
+        if st.button("Clone Previous Dispatch Day", key="clone_previous_dispatch_day"):
+            previous_date, dispatch_count, assignment_count = clone_previous_dispatch_day(dispatch_date, job_ids)
+            if previous_date:
+                st.success(
+                    f"Cloned {dispatch_count:,} dispatch row(s) and {assignment_count:,} crew assignment(s) from {previous_date:%b %-d}."
+                )
+                st.rerun()
+            else:
+                st.info("No previous dispatch day was available to clone.")
+    with action_cols[1]:
+        ad_hoc_name = st.text_input("Add ad hoc crew member", key="dispatch_ad_hoc_person")
+    with action_cols[2]:
+        ad_hoc_role = st.selectbox(
+            "Role",
+            ["worker", "crew_leader", "temp_worker", "ad_hoc"],
+            key="dispatch_ad_hoc_role",
+        )
+        if st.button("Add Person", key="dispatch_add_ad_hoc_person"):
+            if save_dispatch_roster_person(ad_hoc_name, person_role=ad_hoc_role, source="ad_hoc"):
+                st.success(f"Added {text_value(ad_hoc_name)} to the dispatch roster.")
+                st.rerun()
+            else:
+                st.warning("Enter a person name to add.")
+
     edited = st.data_editor(
         jobs[editable_columns],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
-        height=420,
-        disabled=["job_id", "customer", "job_name", "site_address"],
+        height=520,
+        disabled=["job_id", "job_display", "site_address", "work_scope"],
+        column_config={
+            "job_id": st.column_config.TextColumn("Job ID"),
+            "job_display": st.column_config.TextColumn("Job"),
+            "site_address": st.column_config.TextColumn("Address"),
+            "start_time": st.column_config.TextColumn("Start Time", help="Example: 7:00 AM"),
+            "end_time": st.column_config.TextColumn("End Time", help="Example: 3:30 PM"),
+            "crew_leader": st.column_config.TextColumn("Crew Leader"),
+            "crew_members": st.column_config.TextColumn("Crew Members", help="Comma-separated crew members."),
+            "work_scope": st.column_config.TextColumn("Scheduled Scope"),
+            "equipment_notes": st.column_config.TextColumn("Equipment"),
+            "material_notes": st.column_config.TextColumn("Materials"),
+            "work_notes": st.column_config.TextColumn("Work Notes"),
+            "safety_notes": st.column_config.TextColumn("Safety"),
+            "weather_notes": st.column_config.TextColumn("Weather"),
+            "special_instructions": st.column_config.TextColumn("Special Instructions"),
+        },
     )
+    roster_options = roster["person_name"].fillna("").astype(str).str.strip().loc[lambda values: values.ne("")].drop_duplicates().tolist() if not roster.empty and "person_name" in roster.columns else []
+    roster_by_name = {
+        text_value(row.get("person_name")): row
+        for row in roster.to_dict(orient="records")
+        if text_value(row.get("person_name"))
+    }
+    assigned_by_job = {
+        text_value(job_id): [
+            text_value(value)
+            for value in group["person_name"].tolist()
+            if text_value(value)
+        ]
+        for job_id, group in assignments.groupby("job_id")
+    } if not assignments.empty and "job_id" in assignments.columns else {}
+    edited_by_job = {
+        text_value(row.get("job_id")): row
+        for row in edited.to_dict(orient="records")
+        if text_value(row.get("job_id"))
+    }
+    current_member_names: list[str] = []
+    for value in jobs.get("crew_members", pd.Series([], dtype=object)).tolist():
+        current_member_names.extend(crew_member_names_from_text(value))
+    if not assignments.empty and "person_name" in assignments.columns:
+        current_member_names.extend(assignments["person_name"].tolist())
+    roster_options = unique_text_values([*roster_options, *current_member_names])
+
+    st.subheader("Crew Assignments")
+    selected_assignments: dict[str, list[str]] = {}
+    assigned_people_all: set[str] = set()
+    if sort_items is not None and roster_options:
+        lane_containers, lane_header_to_job_id = build_dispatch_swimlane_containers(
+            jobs,
+            roster_options,
+            assigned_by_job,
+        )
+        st.caption("Drag crew cards between job lanes, then save crew assignments.")
+        sorted_lane_containers = sort_items(
+            lane_containers,
+            multi_containers=True,
+            direction="horizontal",
+            key=f"dispatch_swimlanes_{dispatch_date.isoformat()}",
+        )
+        if isinstance(sorted_lane_containers, list):
+            selected_assignments = selected_assignments_from_swimlane_containers(
+                sorted_lane_containers,
+                lane_header_to_job_id,
+            )
+        else:
+            selected_assignments = selected_assignments_from_swimlane_containers(
+                lane_containers,
+                lane_header_to_job_id,
+            )
+        for job_id, selected in selected_assignments.items():
+            assigned_people_all.update(selected)
+            if job_id in edited_by_job:
+                edited_by_job[job_id]["crew_members"] = ", ".join(selected)
+    else:
+        if sort_items is None:
+            st.info(
+                "Drag-and-drop crew swimlanes are unavailable until streamlit-sortables is installed. "
+                "Use the assignment selectors below as the fallback."
+            )
+        for _, row in jobs.iterrows():
+            job_id = text_value(row.get("job_id"))
+            if not job_id:
+                continue
+            label = text_value(row.get("job_display")) or job_id
+            default_members = assigned_by_job.get(job_id)
+            if not default_members:
+                default_members = crew_member_names_from_text(row.get("crew_members"))
+            default_members = [member for member in default_members if member in roster_options]
+            selected = st.multiselect(
+                label,
+                roster_options,
+                default=default_members,
+                key=f"dispatch_assignment_{dispatch_date.isoformat()}_{job_id}",
+                help="Assign available crew members to this scheduled job.",
+            )
+            selected_assignments[job_id] = selected
+            assigned_people_all.update(selected)
+            if job_id in edited_by_job:
+                edited_by_job[job_id]["crew_members"] = ", ".join(selected)
+
+    available_people = [person for person in roster_options if person not in assigned_people_all]
+    with st.expander("Available / Unassigned Crew", expanded=False):
+        if available_people:
+            st.write(", ".join(available_people))
+        else:
+            st.caption("All rostered people are assigned or no roster entries are available.")
+
+    assignment_records: list[dict[str, object]] = []
+    for job_id, people in selected_assignments.items():
+        dispatch_row = edited_by_job.get(job_id, {})
+        for sequence, person_name in enumerate(people, start=1):
+            roster_row = roster_by_name.get(person_name, {})
+            assignment_records.append(
+                {
+                    "job_id": job_id,
+                    "roster_person_id": roster_row.get("roster_person_id") or dispatch_roster_person_id(person_name),
+                    "person_name": person_name,
+                    "person_role": roster_row.get("person_role"),
+                    "assignment_source": "scheduler",
+                    "start_time": dispatch_row.get("start_time"),
+                    "end_time": dispatch_row.get("end_time"),
+                    "sequence": sequence,
+                }
+            )
+    assignment_df = pd.DataFrame(assignment_records)
+    if st.button("Save Crew Assignments", type="primary", key="save_daily_crew_assignments"):
+        try:
+            saved_assignments = save_dispatch_crew_assignments(assignment_df, dispatch_date, job_ids)
+            st.success(f"Saved {saved_assignments:,} crew assignment(s).")
+            st.rerun()
+        except Exception as exc:
+            show_database_error(exc)
+
+    edited = pd.DataFrame(list(edited_by_job.values())) if edited_by_job else edited
+    dispatch_lookup_columns = [
+        column
+        for column in [
+            "job_id",
+            "customer",
+            "job_name",
+            "estimated_start_date",
+            "estimated_end_date",
+            "estimated_duration_days",
+            "schedule_status",
+            "priority",
+        ]
+        if column in jobs.columns
+    ]
+    if "job_id" in edited.columns and dispatch_lookup_columns:
+        edited = edited.merge(
+            jobs[dispatch_lookup_columns].drop_duplicates(subset=["job_id"]),
+            on="job_id",
+            how="left",
+        )
 
     message_text = generate_dispatch_message(edited, dispatch_date)
     st.subheader("Dispatch Message")
@@ -21827,6 +22571,7 @@ def main() -> None:
             "Timesheet Job Touches",
             "Job Tracking",
             "Schedule Calendar",
+            "Daily Crew Dispatch",
             "Estimating Assistant",
             "Pricing Catalog",
             "Ask Spray-Tec",
@@ -21839,7 +22584,6 @@ def main() -> None:
             "Sales Follow-Up",
             "Contracted Backlog / Scheduling",
             "Project Scheduling",
-            "Daily Crew Dispatch",
             "Jobs Needing Action",
             "Closeout / Billing Risk",
             "Documentation Risk",
