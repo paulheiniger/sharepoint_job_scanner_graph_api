@@ -38,11 +38,55 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 from sqlalchemy import bindparam, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 
 from jobscan.env import load_project_env
 
 load_project_env()
+
+
+def clean_config_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    candidate = str(value).strip()
+    if not candidate or candidate.lower() in {"none", "null", '""', "''"}:
+        return None
+    return candidate
+
+
+def hydrate_environment_from_streamlit_secrets() -> dict[str, str]:
+    """Make cloud Streamlit secrets available to code that reads os.environ.
+
+    Local development continues to use .env via load_project_env(). In cloud,
+    most estimator/search helpers read os.getenv directly, so top-level scalar
+    secrets need to be mirrored into the process environment without overriding
+    existing nonblank env vars.
+    """
+
+    hydrated: dict[str, str] = {}
+    try:
+        secret_keys = list(st.secrets.keys())
+    except Exception:
+        return hydrated
+    for key in secret_keys:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(key)):
+            continue
+        try:
+            value = st.secrets.get(key)
+        except Exception:
+            continue
+        if not isinstance(value, (str, int, float, bool)):
+            continue
+        candidate = clean_config_value(value)
+        if not candidate or clean_config_value(os.environ.get(str(key))):
+            continue
+        os.environ[str(key)] = candidate
+        hydrated[str(key)] = "streamlit_secrets"
+    return hydrated
+
+
+STREAMLIT_SECRET_ENV_SOURCES = hydrate_environment_from_streamlit_secrets()
 
 from jobscan.db_connections import (
     ReadQueryResult,
@@ -990,15 +1034,76 @@ FLOORING_MODE_KEYWORDS = [
 ]
 
 
-def get_database_url() -> str:
+def clean_database_url_candidate(value: Any) -> str | None:
+    candidate = clean_config_value(value)
+    if not candidate:
+        return None
+    if candidate.startswith("postgres://"):
+        candidate = "postgresql://" + candidate[len("postgres://") :]
+    return candidate
+
+
+def valid_database_url_candidate(value: Any) -> str | None:
+    candidate = clean_database_url_candidate(value)
+    if not candidate:
+        return None
     try:
-        secret_url = st.secrets.get("DATABASE_URL")
+        make_url(candidate)
+    except Exception:
+        return None
+    return candidate
+
+
+def database_url_candidate_diagnostics() -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    sources: list[tuple[str, Any]] = []
+    try:
+        sources.append(("streamlit_secrets:DATABASE_URL", st.secrets.get("DATABASE_URL")))
+    except Exception:
+        sources.append(("streamlit_secrets:DATABASE_URL", None))
+    sources.extend(
+        (f"env:{key}", os.getenv(key))
+        for key in ("DATABASE_URL", "NEON_DATABASE_URL", "NEON_PSQL_URL", "LOCAL_DATABASE_URL")
+    )
+    for source, value in sources:
+        candidate = clean_database_url_candidate(value)
+        parse_status = "missing"
+        if candidate:
+            try:
+                make_url(candidate)
+                parse_status = "ok"
+            except Exception:
+                parse_status = "invalid"
+        rows.append(
+            {
+                "source": source,
+                "configured": bool(candidate),
+                "parse_status": parse_status,
+                "selected": False,
+            }
+        )
+    return rows
+
+
+def get_database_url_with_source() -> tuple[str, str]:
+    try:
+        secret_url = valid_database_url_candidate(st.secrets.get("DATABASE_URL"))
     except Exception:
         secret_url = None
-    return secret_url or os.getenv("DATABASE_URL") or DEFAULT_DATABASE_URL
+    if secret_url:
+        return secret_url, "streamlit_secrets:DATABASE_URL"
+    for key in ("DATABASE_URL", "NEON_DATABASE_URL", "NEON_PSQL_URL", "LOCAL_DATABASE_URL"):
+        candidate = valid_database_url_candidate(os.getenv(key))
+        if candidate:
+            return candidate, f"env:{key}"
+    return DEFAULT_DATABASE_URL, "default_local_dev"
 
 
-DATABASE_URL = get_database_url()
+def get_database_url() -> str:
+    return get_database_url_with_source()[0]
+
+
+DATABASE_URL, DATABASE_URL_SOURCE = get_database_url_with_source()
 
 VIEWS = [
     "dashboard_jobs",
@@ -1171,11 +1276,19 @@ def cached_download_bytes(path: Path) -> bytes:
 
 def database_target_debug_payload() -> dict[str, Any]:
     target = database_target(DATABASE_URL)
+    candidates = database_url_candidate_diagnostics()
+    for row in candidates:
+        row["selected"] = row["source"] == DATABASE_URL_SOURCE
     return {
+        "url_configured": bool(clean_database_url_candidate(DATABASE_URL)),
+        "url_source": DATABASE_URL_SOURCE,
+        "parse_status": "ok" if target.host or target.database else "unparsed",
         "host": target.host,
         "database": target.database,
         "appears_neon": target.is_neon,
         "uses_pooler": target.uses_pooler,
+        "streamlit_secret_env_hydrated_count": len(STREAMLIT_SECRET_ENV_SOURCES),
+        "url_candidates": candidates,
     }
 
 
@@ -5396,13 +5509,13 @@ def render_schedule_crew_lane_board(events: list[dict[str, object]], *, horizon_
         st.info("No scheduled jobs are available for the crew board.")
         return
     today_ts = pd.Timestamp(date.today())
-    horizon_ts = today_ts + pd.Timedelta(days=horizon_days)
+    horizon_ts = today_ts + timedelta(days=int(horizon_days))
     event_rows: list[dict[str, object]] = []
     for event in events:
         props = event.get("extendedProps") if isinstance(event.get("extendedProps"), dict) else {}
         start = pd.to_datetime(event.get("start"), errors="coerce")
         end_raw = pd.to_datetime(event.get("end"), errors="coerce")
-        end = end_raw - pd.Timedelta(days=1) if not pd.isna(end_raw) else start
+        end = end_raw - timedelta(days=1) if not pd.isna(end_raw) else start
         if pd.isna(start):
             continue
         is_overdue_active = not pd.isna(end) and end < today_ts and not schedule_status_is_terminal(
@@ -7127,9 +7240,7 @@ def show_database_error(exc: Exception) -> None:
         "Spray-Tec data is temporarily unavailable. "
         "The app attempted to reconnect but could not reach the database. Please retry in a moment."
     )
-    if st.button("Retry database connection", key="retry_database_connection"):
-        reset_database_connection()
-        st.rerun()
+    st.caption("Refresh the browser page to retry after checking the database connection.")
     with st.expander("Developer database diagnostics"):
         st.write(database_target_debug_payload())
         render_neon_pooler_warning()

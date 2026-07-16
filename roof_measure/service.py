@@ -9,7 +9,7 @@ from .calibration import clicked_known_length_calibration, detect_google_earth_s
 from .confidence import area_uncertainty_factor, confidence_components, measurement_warnings
 from .geometry import polygon_area_pixels, polygon_perimeter_pixels, repair_polygon
 from .image_io import LoadedImage, image_to_array, load_image_bytes
-from .models import MeasurementReport, MeasurementWarning, RoofMeasurement, RoofMeasureRequest, RoofSection
+from .models import CalibrationResult, MeasurementReport, MeasurementWarning, RoofMeasurement, RoofMeasureRequest, RoofSection
 from .polygonize import sections_from_mask
 from .segmentation import RoofSegmenter, SegmentationPrompts, choose_segmenter
 
@@ -56,15 +56,18 @@ def measure_roof_from_overhead_image(
             minimum_section_area_pixels=request.minimum_section_area_pixels,
             edge_snap_strength=request.edge_snap_strength,
         )
-    calibration = clicked_known_length_calibration(
-        point_a=request.calibration_point_a,
-        point_b=request.calibration_point_b,
-        length_feet=request.calibration_length_feet,
-    )
+    calibration = _metadata_calibration(request.metadata_pixels_per_foot)
+    if not calibration.pixels_per_foot:
+        calibration = clicked_known_length_calibration(
+            point_a=request.calibration_point_a,
+            point_b=request.calibration_point_b,
+            length_feet=request.calibration_length_feet,
+        )
     if not calibration.pixels_per_foot:
         calibration = detect_google_earth_scale_bar(
             loaded.inference_image,
             label_hint=request.scale_bar_label_hint,
+            use_ai_fallback=request.use_ai_scale_reader,
         )
     for section in sections:
         section.area_sqft = sqft_from_pixels(section.area_pixels, calibration.pixels_per_foot)
@@ -118,6 +121,23 @@ def _sum_optional(values: list[float | None]) -> float | None:
     if not present:
         return None
     return sum(present)
+
+
+def _metadata_calibration(pixels_per_foot: float | None) -> CalibrationResult:
+    try:
+        value = float(pixels_per_foot or 0)
+    except (TypeError, ValueError):
+        value = 0.0
+    if value <= 0:
+        return CalibrationResult(calibration_type="none", confidence="none")
+    return CalibrationResult(
+        calibration_type="metadata",
+        pixels_per_foot=value,
+        confidence="medium",
+        warning=(
+            "Calibrated from map imagery metadata. Verify against a known roof dimension before final use."
+        ),
+    )
 
 
 def load_overhead_image_for_overlay(image_bytes: bytes, file_name: str) -> LoadedImage:

@@ -1,6 +1,7 @@
 .DS_Store
 .env
 .venv/
+.venv-sam2/
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -9,3 +10,4 @@ output/
 data/
 context_export/
 product_documents/scraped/
+sam2/

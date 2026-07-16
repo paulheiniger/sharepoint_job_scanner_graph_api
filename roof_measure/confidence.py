@@ -54,7 +54,12 @@ def measurement_warnings(
         warnings.append(
             MeasurementWarning(
                 code="missing_calibration",
-                message="No valid pixel-to-feet calibration was supplied, so area and perimeter are unavailable.",
+                message=(
+                    "No valid pixel-to-feet calibration was supplied, so area and perimeter are unavailable. "
+                    + calibration.warning
+                    if calibration.warning
+                    else "No valid pixel-to-feet calibration was supplied, so area and perimeter are unavailable."
+                ),
                 severity="error",
             )
         )
@@ -94,4 +99,3 @@ def area_uncertainty_factor(confidence: dict[str, float]) -> float:
     if overall >= 0.45:
         return 0.18
     return 0.3
-

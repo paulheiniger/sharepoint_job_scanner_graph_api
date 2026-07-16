@@ -75,7 +75,9 @@ class RoofMeasureRequest(BaseModel):
     calibration_length_feet: float | None = None
     calibration_point_a: Point | None = None
     calibration_point_b: Point | None = None
+    metadata_pixels_per_foot: float | None = None
     scale_bar_label_hint: str | None = None
+    use_ai_scale_reader: bool = True
     simplification_tolerance: float = 2.0
     minimum_section_area_pixels: float = 400.0
     edge_snap_strength: float = 0.0

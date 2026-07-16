@@ -1,16 +1,48 @@
 from __future__ import annotations
 
+import os
+
 import pandas as pd
 import streamlit as st
 from PIL import Image
+
+
+def _install_streamlit_image_to_url_compat() -> None:
+    try:
+        import streamlit.elements.image as st_image
+    except Exception:
+        return
+    if hasattr(st_image, "image_to_url"):
+        return
+
+    def image_to_url(image, width, clamp, channels, output_format, image_id):  # noqa: ARG001
+        from io import BytesIO
+
+        from streamlit.runtime import Runtime
+
+        buffer = BytesIO()
+        image.convert("RGB").save(buffer, format="PNG")
+        return Runtime.instance().media_file_mgr.add(
+            buffer.getvalue(),
+            "image/png",
+            str(image_id),
+            file_name=f"{image_id}.png",
+        )
+
+    st_image.image_to_url = image_to_url
+
+
+_install_streamlit_image_to_url_compat()
 
 try:
     from streamlit_drawable_canvas import st_canvas
 except ImportError:  # pragma: no cover - exercised in environments without the optional component.
     st_canvas = None
 
+from .ai_points import suggest_roof_prompt_points
 from .exports import geojson_to_string, measurement_to_geojson, report_to_json
 from .image_io import load_image_bytes, uploaded_file_bytes
+from .map_reference import MapboxReferenceProvider
 from .models import RoofMeasureRequest, RoofSection
 from .service import RoofMeasureResult, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections
 from .visualization import annotated_overlay, image_png_bytes
@@ -27,7 +59,7 @@ def render_ai_roof_measure_page() -> None:
         st.markdown(
             """
 - Uses uploaded overhead imagery only for primary area calculation.
-- Requires a user-supplied known length and two calibration points before square footage is reported.
+- Can fetch calibrated Mapbox satellite imagery from an address or use uploaded screenshots with a visible scale bar.
 - SAM 2 is behind a provider interface but is not required in this runtime.
 - The current fallback mask is a prompt-centered candidate, not a roof-aware model.
 - Oblique images are stored as references only in this phase.
@@ -36,6 +68,58 @@ def render_ai_roof_measure_page() -> None:
 
     address = st.text_input("Address", key="roof_measure_address")
     job_id = st.text_input("Job ID (optional)", key="roof_measure_job_id")
+    mapbox_token = (os.getenv("MAPBOX_TOKEN") or os.getenv("MAPBOX_ACCESS_TOKEN") or "").strip()
+    extent_options = {
+        "Whole site / school": 17.5,
+        "Large campus / context": 16.5,
+        "Single building detail": 19.0,
+        "Close roof detail": 20.0,
+    }
+    map_col1, map_col2, map_col3, map_col4 = st.columns([1.4, 1, 1, 2])
+    with map_col1:
+        map_extent = st.selectbox(
+            "Image extent",
+            list(extent_options),
+            index=0,
+            help="Use wider extents for schools, campuses, and multi-building sites.",
+            key="roof_measure_map_extent",
+        )
+    with map_col2:
+        override_zoom = st.checkbox("Custom zoom", value=False, key="roof_measure_custom_zoom")
+    with map_col3:
+        preset_zoom = extent_options[map_extent]
+        map_zoom = (
+            st.number_input("Map zoom", min_value=14.0, max_value=22.0, value=preset_zoom, step=0.25, key="roof_measure_map_zoom")
+            if override_zoom
+            else preset_zoom
+        )
+        if not override_zoom:
+            st.metric("Zoom", f"{map_zoom:g}")
+    with map_col4:
+        fetch_map = st.button(
+            "Fetch Satellite Image",
+            width="stretch",
+            disabled=not bool(address.strip() and mapbox_token),
+            help="Uses Mapbox and the address to fetch calibrated north-up satellite imagery.",
+            key="roof_measure_fetch_mapbox",
+        )
+        if not mapbox_token:
+            st.caption("Set MAPBOX_TOKEN or MAPBOX_ACCESS_TOKEN to fetch imagery by address.")
+        elif not address.strip():
+            st.caption("Enter an address to fetch calibrated satellite imagery.")
+        else:
+            st.caption("Use whole-site extent first. Refetch at building detail only after the full roof area is visible.")
+    if fetch_map:
+        provider = MapboxReferenceProvider(mapbox_token)
+        fetched = provider.static_satellite_image(address, zoom=float(map_zoom))
+        if not fetched.ok or not fetched.image_bytes:
+            st.warning(fetched.warning or "Could not fetch Mapbox imagery.")
+        else:
+            st.session_state["roof_measure_mapbox_image_bytes"] = fetched.image_bytes
+            st.session_state["roof_measure_mapbox_file_name"] = fetched.file_name
+            st.session_state["roof_measure_mapbox_pixels_per_foot"] = fetched.pixels_per_foot
+            st.session_state["roof_measure_mapbox_warning"] = fetched.warning
+            st.success("Fetched calibrated satellite imagery from Mapbox.")
     overhead = st.file_uploader("Top-down or near-top-down aerial image", type=["jpg", "jpeg", "png"], key="roof_measure_overhead")
     oblique_files = st.file_uploader(
         "Optional oblique drone/reference images",
@@ -46,22 +130,81 @@ def render_ai_roof_measure_page() -> None:
     if oblique_files:
         st.caption(f"{len(oblique_files):,} oblique/reference image(s) attached. Milestone 1 does not use these for primary area.")
 
-    if overhead is None:
-        st.info("Upload an overhead image to start.")
+    mapbox_image_bytes = st.session_state.get("roof_measure_mapbox_image_bytes")
+    mapbox_file_name = str(st.session_state.get("roof_measure_mapbox_file_name") or "mapbox-satellite.png")
+    mapbox_pixels_per_foot = st.session_state.get("roof_measure_mapbox_pixels_per_foot")
+
+    if overhead is None and not mapbox_image_bytes:
+        st.info("Upload an overhead image or fetch calibrated satellite imagery by address to start.")
         return
 
-    image_bytes = uploaded_file_bytes(overhead)
+    image_source = "uploaded"
+    if overhead is not None:
+        image_bytes = uploaded_file_bytes(overhead)
+        image_name = overhead.name
+        metadata_pixels_per_foot = None
+    else:
+        image_bytes = bytes(mapbox_image_bytes)
+        image_name = mapbox_file_name
+        metadata_pixels_per_foot = float(mapbox_pixels_per_foot or 0) or None
+        image_source = "mapbox"
     try:
-        loaded = load_image_bytes(image_bytes, file_name=overhead.name)
+        loaded = load_image_bytes(image_bytes, file_name=image_name)
     except Exception as exc:
         st.error(f"Could not read overhead image: {exc}")
         return
 
-    st.image(loaded.inference_image, caption=f"{overhead.name} ({loaded.metadata.inference_width} x {loaded.metadata.inference_height} inference pixels)")
+    st.image(loaded.inference_image, caption=f"{image_name} ({loaded.metadata.inference_width} x {loaded.metadata.inference_height} inference pixels)")
+    if image_source == "mapbox" and metadata_pixels_per_foot:
+        st.caption(f"Mapbox metadata calibration: {metadata_pixels_per_foot:.4f} pixels per foot.")
     if loaded.metadata.quality_flags:
         st.warning("Image quality flags: " + ", ".join(loaded.metadata.quality_flags))
 
     st.subheader("Prompt and Calibration")
+    ai_points_col1, ai_points_col2 = st.columns([1, 2])
+    openai_available = bool(os.getenv("OPENAI_API_KEY"))
+    with ai_points_col1:
+        suggest_points = st.button(
+            "Suggest Roof Points with AI",
+            width="stretch",
+            disabled=not openai_available,
+            help="Sends the displayed overhead image to the configured OpenAI model to suggest SAM positive and exclude points.",
+            key="roof_measure_suggest_ai_points",
+        )
+    with ai_points_col2:
+        if openai_available:
+            st.caption("AI suggestions fill the point fields below. Review them before measuring.")
+        else:
+            st.caption("Set OPENAI_API_KEY to enable AI point suggestions.")
+    if suggest_points:
+        suggestion = suggest_roof_prompt_points(loaded.inference_image, address=address)
+        if suggestion.warnings:
+            for warning in suggestion.warnings:
+                st.warning(warning)
+        if suggestion.positive_points:
+            primary = suggestion.positive_points[0]
+            st.session_state["roof_measure_prompt_x"] = int(round(primary[0]))
+            st.session_state["roof_measure_prompt_y"] = int(round(primary[1]))
+            st.session_state["roof_measure_extra_positive_points"] = _format_points_text(suggestion.positive_points[1:])
+            st.session_state["roof_measure_negative_points"] = _format_points_text(suggestion.negative_points)
+            st.session_state["roof_measure_ai_point_notes"] = {
+                "confidence": suggestion.confidence,
+                "notes": suggestion.notes,
+                "positive_count": len(suggestion.positive_points),
+                "negative_count": len(suggestion.negative_points),
+            }
+            st.rerun()
+        else:
+            st.warning("AI did not return usable roof points for this image.")
+    ai_point_notes = st.session_state.get("roof_measure_ai_point_notes")
+    if isinstance(ai_point_notes, dict):
+        st.caption(
+            "AI point suggestion: "
+            f"{ai_point_notes.get('positive_count', 0)} roof point(s), "
+            f"{ai_point_notes.get('negative_count', 0)} exclude point(s), "
+            f"confidence {float(ai_point_notes.get('confidence') or 0):.2f}. "
+            + str(ai_point_notes.get("notes") or "")
+        )
     st.caption(
         "If this is a Google Earth-style screenshot with a visible scale bar, leave manual calibration blank. "
         "The app will try to read the scale label and detect the scale bar automatically."
@@ -87,6 +230,23 @@ def render_ai_roof_measure_page() -> None:
         )
     with prompt_col3:
         candidate_index = st.selectbox("Candidate mask", [1, 2, 3], index=0, key="roof_measure_candidate_index")
+    point_col1, point_col2 = st.columns(2)
+    with point_col1:
+        extra_positive_points_text = st.text_area(
+            "Additional roof points",
+            value="",
+            placeholder="One x,y per line. Use this for multiple school roof sections.",
+            height=90,
+            key="roof_measure_extra_positive_points",
+        )
+    with point_col2:
+        negative_points_text = st.text_area(
+            "Exclude points",
+            value="",
+            placeholder="One x,y per line on parking, grass, courtyards, or wrong masks.",
+            height=90,
+            key="roof_measure_negative_points",
+        )
 
     cal_col1, cal_col2, cal_col3 = st.columns(3)
     with cal_col1:
@@ -102,6 +262,12 @@ def render_ai_roof_measure_page() -> None:
         help="Use this if the scale bar is visible but OCR cannot read the Google Earth label.",
         key="roof_measure_scale_hint",
     )
+    use_ai_scale_reader = st.checkbox(
+        "Use AI to read scale bar if OCR fails",
+        value=True,
+        help="Sends only the bottom scale-bar crop to the configured OpenAI model when local OCR/bar detection fails.",
+        key="roof_measure_use_ai_scale_reader",
+    )
 
     controls_col1, controls_col2, controls_col3 = st.columns(3)
     with controls_col1:
@@ -110,22 +276,46 @@ def render_ai_roof_measure_page() -> None:
         minimum_section_area = st.number_input("Minimum section size (pixels)", min_value=1.0, value=400.0, step=100.0)
     with controls_col3:
         edge_snap_strength = st.slider("Edge snap strength", min_value=0.0, max_value=20.0, value=0.0, step=0.5)
+    configured_segmenter = (os.getenv("ROOF_MEASURE_SEGMENTER") or "manual_fallback").strip().lower()
+    segmenter_options = ["manual_fallback", "sam2_remote"]
+    segmenter_index = 1 if configured_segmenter in {"sam2", "sam_2", "sam 2", "sam2_remote", "remote_sam2"} else 0
+    segmenter_name = st.selectbox(
+        "Segmentation provider",
+        segmenter_options,
+        index=segmenter_index,
+        help="Use sam2_remote only when the local SAM2 segmentation service is running.",
+        key="roof_measure_segmenter_name",
+    )
+    if segmenter_name == "sam2_remote":
+        sam2_url = os.getenv("SAM2_SEGMENTATION_URL")
+        st.caption(
+            "SAM2 service: "
+            + (sam2_url if sam2_url else "not configured. Set SAM2_SEGMENTATION_URL before using this provider.")
+        )
 
     point_a = _parse_point(point_a_text)
     point_b = _parse_point(point_b_text)
+    positive_points = [
+        (float(prompt_x), float(prompt_y)),
+        *_parse_points_text(extra_positive_points_text),
+    ]
+    negative_points = _parse_points_text(negative_points_text)
     request = RoofMeasureRequest(
         address=address,
         job_id=job_id or None,
-        overhead_image_name=overhead.name,
-        positive_points=[(float(prompt_x), float(prompt_y))],
+        overhead_image_name=image_name,
+        positive_points=positive_points,
+        negative_points=negative_points,
         calibration_length_feet=known_length if known_length > 0 else None,
         calibration_point_a=point_a,
         calibration_point_b=point_b,
+        metadata_pixels_per_foot=metadata_pixels_per_foot,
         scale_bar_label_hint=scale_hint.strip() or None,
+        use_ai_scale_reader=use_ai_scale_reader,
         simplification_tolerance=simplification_tolerance,
         minimum_section_area_pixels=minimum_section_area,
         edge_snap_strength=edge_snap_strength,
-        segmenter_name="manual_fallback",
+        segmenter_name=segmenter_name,
     )
     if st.button("Measure Roof", type="primary", width="stretch"):
         try:
@@ -140,7 +330,7 @@ def render_ai_roof_measure_page() -> None:
         st.session_state["roof_measure_result"] = result
         st.session_state["roof_measure_original_result"] = result
         st.session_state["roof_measure_image_bytes"] = image_bytes
-        st.session_state["roof_measure_file_name"] = overhead.name
+        st.session_state["roof_measure_file_name"] = image_name
 
     stored_result = st.session_state.get("roof_measure_result")
     stored_image_bytes = st.session_state.get("roof_measure_image_bytes")
@@ -208,6 +398,19 @@ def _parse_point(value: str) -> tuple[float, float] | None:
         return float(parts[0]), float(parts[1])
     except ValueError:
         return None
+
+
+def _parse_points_text(value: str) -> list[tuple[float, float]]:
+    points: list[tuple[float, float]] = []
+    for raw_line in (value or "").replace(";", "\n").splitlines():
+        point = _parse_point(raw_line)
+        if point is not None:
+            points.append(point)
+    return points
+
+
+def _format_points_text(points: list[tuple[float, float]]) -> str:
+    return "\n".join(f"{int(round(x))},{int(round(y))}" for x, y in points)
 
 
 def _render_polygon_editor(result: RoofMeasureResult) -> None:
