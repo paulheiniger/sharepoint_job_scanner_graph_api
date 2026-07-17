@@ -208,6 +208,7 @@ def render_ai_roof_measure_page() -> None:
                 "positive_count": len(suggestion.positive_points),
                 "negative_count": len(suggestion.negative_points),
             }
+            _bump_prompt_points_revision()
             st.rerun()
         else:
             st.warning("AI did not return usable roof points for this image.")
@@ -487,6 +488,17 @@ def _format_points_text(points: list[tuple[float, float]]) -> str:
     return "\n".join(f"{int(round(x))},{int(round(y))}" for x, y in points)
 
 
+def _bump_prompt_points_revision() -> None:
+    st.session_state["roof_measure_prompt_points_revision"] = _prompt_points_revision() + 1
+
+
+def _prompt_points_revision() -> int:
+    try:
+        return int(st.session_state.get("roof_measure_prompt_points_revision", 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _load_reference_images(files: list | None) -> tuple[list[Image.Image], list[str]]:
     reference_images: list[Image.Image] = []
     warnings: list[str] = []
@@ -517,6 +529,9 @@ def _render_prompt_point_picker(image: Image.Image, *, image_key: str) -> None:
         canvas_width, canvas_height, scale_x, scale_y = _canvas_dimensions(image, max_width=1000)
         current_positive = _current_prompt_positive_points(image)
         current_negative = _parse_points_text(str(st.session_state.get("roof_measure_negative_points") or ""))
+        prompt_revision = _prompt_points_revision()
+        if current_positive or current_negative:
+            st.caption(f"Showing {len(current_positive)} roof point(s) and {len(current_negative)} exclude point(s).")
         mode_col, kind_col = st.columns([1, 1])
         with mode_col:
             point_action = st.radio(
@@ -552,7 +567,7 @@ def _render_prompt_point_picker(image: Image.Image, *, image_key: str) -> None:
             ),
             display_toolbar=True,
             point_display_radius=8,
-            key=f"roof_measure_prompt_point_canvas_{image_key}_{drawing_mode}",
+            key=f"roof_measure_prompt_point_canvas_{image_key}_{drawing_mode}_{prompt_revision}",
         )
         action_col1, action_col2 = st.columns(2)
         with action_col1:
@@ -577,12 +592,14 @@ def _render_prompt_point_picker(image: Image.Image, *, image_key: str) -> None:
                     "positive_count": len(positive_points),
                     "negative_count": len(negative_points),
                 }
+                _bump_prompt_points_revision()
                 st.rerun()
         with action_col2:
             if st.button("Clear Clicked Points", width="stretch", key=f"roof_measure_clear_clicked_points_{image_key}"):
                 st.session_state["roof_measure_extra_positive_points"] = ""
                 st.session_state["roof_measure_negative_points"] = ""
                 st.session_state.pop("roof_measure_ai_point_notes", None)
+                _bump_prompt_points_revision()
                 st.rerun()
 
 
