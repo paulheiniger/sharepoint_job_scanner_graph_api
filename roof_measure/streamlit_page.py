@@ -208,6 +208,9 @@ def render_ai_roof_measure_page() -> None:
                 "positive_count": len(suggestion.positive_points),
                 "negative_count": len(suggestion.negative_points),
             }
+            st.session_state[f"roof_measure_point_action_{loaded.metadata.image_id}"] = "Move/delete points"
+            st.session_state.pop("roof_measure_result", None)
+            st.session_state.pop("roof_measure_original_result", None)
             _bump_prompt_points_revision()
             st.rerun()
         else:
