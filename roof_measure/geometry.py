@@ -113,6 +113,139 @@ def snap_axis_aligned_edges(points: Ring, strength: float = 0.0) -> Ring:
     return repair_polygon(snapped)
 
 
+def straighten_architectural_ring(
+    points: Ring,
+    *,
+    angle_tolerance_degrees: float = 20.0,
+    max_area_drift: float = 0.03,
+) -> Ring:
+    """Fit near-orthogonal roof edges to the ring's dominant building axes."""
+    ring = repair_polygon(points)
+    vertices = ring[:-1]
+    if len(vertices) < 4:
+        return ring
+    original_area = polygon_area_pixels(ring)
+    if original_area <= 0:
+        return ring
+
+    tolerance = math.radians(max(0.0, min(float(angle_tolerance_degrees), 44.0)))
+    dominant_angle = _dominant_orthogonal_angle(vertices)
+    vertices = _collapse_same_axis_vertices(vertices, dominant_angle, tolerance)
+    if len(vertices) < 4:
+        return ring
+    dominant_angle = _dominant_orthogonal_angle(vertices)
+    fitted_lines: list[tuple[Point, float]] = []
+    classifications: list[int | None] = []
+    for index, start in enumerate(vertices):
+        end = vertices[(index + 1) % len(vertices)]
+        dx, dy = end[0] - start[0], end[1] - start[1]
+        length = math.hypot(dx, dy)
+        if length <= 1e-6:
+            return ring
+        angle = math.atan2(dy, dx)
+        axis_index, difference = _nearest_orthogonal_axis(angle, dominant_angle)
+        if difference > tolerance:
+            direction = (dx / length, dy / length)
+            classifications.append(None)
+        else:
+            axis_angle = dominant_angle + axis_index * math.pi / 2
+            direction = (math.cos(axis_angle), math.sin(axis_angle))
+            classifications.append(axis_index)
+        normal = (-direction[1], direction[0])
+        midpoint = ((start[0] + end[0]) / 2, (start[1] + end[1]) / 2)
+        fitted_lines.append((normal, normal[0] * midpoint[0] + normal[1] * midpoint[1]))
+
+    if sum(value is not None for value in classifications) < max(3, len(vertices) // 2):
+        return ring
+
+    fitted_vertices: Ring = []
+    for index, original_vertex in enumerate(vertices):
+        previous_line = fitted_lines[index - 1]
+        next_line = fitted_lines[index]
+        intersection = _line_intersection(previous_line, next_line)
+        fitted_vertices.append(intersection or original_vertex)
+    fitted = repair_polygon(fitted_vertices)
+    fitted_area = polygon_area_pixels(fitted)
+    if not fitted or fitted_area <= 0:
+        return ring
+
+    drift = abs(fitted_area - original_area) / original_area
+    if drift > max(0.0, float(max_area_drift)):
+        fitted = _scale_ring_to_area(fitted, target_area=original_area)
+        fitted_area = polygon_area_pixels(fitted)
+        drift = abs(fitted_area - original_area) / original_area if fitted_area > 0 else math.inf
+    return fitted if drift <= max(0.0, float(max_area_drift)) else ring
+
+
+def _collapse_same_axis_vertices(vertices: Ring, dominant_angle: float, tolerance: float) -> Ring:
+    kept: Ring = []
+    count = len(vertices)
+    for index, vertex in enumerate(vertices):
+        previous = vertices[(index - 1) % count]
+        following = vertices[(index + 1) % count]
+        incoming_angle = math.atan2(vertex[1] - previous[1], vertex[0] - previous[0])
+        outgoing_angle = math.atan2(following[1] - vertex[1], following[0] - vertex[0])
+        incoming_axis, incoming_difference = _nearest_orthogonal_axis(incoming_angle, dominant_angle)
+        outgoing_axis, outgoing_difference = _nearest_orthogonal_axis(outgoing_angle, dominant_angle)
+        if (
+            incoming_axis == outgoing_axis
+            and incoming_difference <= tolerance
+            and outgoing_difference <= tolerance
+        ):
+            continue
+        kept.append(vertex)
+    return kept
+
+
+def _dominant_orthogonal_angle(vertices: Ring) -> float:
+    sin_sum = 0.0
+    cos_sum = 0.0
+    for index, start in enumerate(vertices):
+        end = vertices[(index + 1) % len(vertices)]
+        dx, dy = end[0] - start[0], end[1] - start[1]
+        weight = math.hypot(dx, dy)
+        angle = math.atan2(dy, dx)
+        sin_sum += weight * math.sin(4 * angle)
+        cos_sum += weight * math.cos(4 * angle)
+    return (math.atan2(sin_sum, cos_sum) / 4) % (math.pi / 2)
+
+
+def _nearest_orthogonal_axis(angle: float, dominant_angle: float) -> tuple[int, float]:
+    candidates = [dominant_angle, dominant_angle + math.pi / 2]
+    differences = [abs((angle - candidate + math.pi / 2) % math.pi - math.pi / 2) for candidate in candidates]
+    axis_index = 0 if differences[0] <= differences[1] else 1
+    return axis_index, differences[axis_index]
+
+
+def _line_intersection(
+    first: tuple[Point, float],
+    second: tuple[Point, float],
+) -> Point | None:
+    (a1, b1), c1 = first
+    (a2, b2), c2 = second
+    determinant = a1 * b2 - a2 * b1
+    if abs(determinant) <= 1e-8:
+        return None
+    return (c1 * b2 - c2 * b1) / determinant, (a1 * c2 - a2 * c1) / determinant
+
+
+def _scale_ring_to_area(points: Ring, *, target_area: float) -> Ring:
+    ring = repair_polygon(points)
+    current_area = polygon_area_pixels(ring)
+    vertices = ring[:-1]
+    if current_area <= 0 or not vertices:
+        return ring
+    center_x = sum(point[0] for point in vertices) / len(vertices)
+    center_y = sum(point[1] for point in vertices) / len(vertices)
+    scale = math.sqrt(target_area / current_area)
+    return repair_polygon(
+        [
+            (center_x + (x - center_x) * scale, center_y + (y - center_y) * scale)
+            for x, y in vertices
+        ]
+    )
+
+
 def polygon_to_geojson_feature(polygon: Ring, holes: list[Ring] | None = None, properties: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "type": "Feature",
@@ -132,4 +265,3 @@ def polygon_to_geojson_feature(polygon: Ring, holes: list[Ring] | None = None, p
 
 def feature_collection(features: list[dict[str, Any]]) -> dict[str, Any]:
     return {"type": "FeatureCollection", "features": features}
-

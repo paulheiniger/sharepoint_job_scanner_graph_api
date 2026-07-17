@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from io import BytesIO
 import base64
+import math
 import sys
 from types import SimpleNamespace
 
@@ -23,7 +24,7 @@ from roof_measure.ai_points import _call_openai_roof_point_suggester
 from roof_measure.calibration import _call_openai_scale_reader
 from roof_measure.confidence import measurement_warnings
 from roof_measure.exports import measurement_to_geojson
-from roof_measure.geometry import polygon_area_pixels, repair_polygon, simplify_ring
+from roof_measure.geometry import polygon_area_pixels, repair_polygon, simplify_ring, straighten_architectural_ring
 from roof_measure.image_io import image_hash, load_image_bytes
 from roof_measure.models import ImageMetadata
 from roof_measure.polygonize import section_from_polygon, sections_from_mask
@@ -168,6 +169,38 @@ def test_repair_and_simplify_ring_close_polygon() -> None:
     assert repaired[0] == repaired[-1]
     assert simplified[0] == simplified[-1]
     assert len(simplified) < len(repaired)
+
+
+def test_straighten_architectural_ring_fits_rotated_orthogonal_edges_and_preserves_area() -> None:
+    jagged = [
+        (10, 11),
+        (50, 20),
+        (89, 29),
+        (84, 49),
+        (79, 69),
+        (40, 60),
+        (1, 51),
+        (5, 31),
+    ]
+
+    straightened = straighten_architectural_ring(jagged)
+
+    original_area = polygon_area_pixels(jagged)
+    straightened_area = polygon_area_pixels(straightened)
+    assert straightened[0] == straightened[-1]
+    assert abs(straightened_area - original_area) / original_area <= 0.03
+    edge_angles = [
+        math.atan2(
+            straightened[index + 1][1] - straightened[index][1],
+            straightened[index + 1][0] - straightened[index][0],
+        )
+        for index in range(len(straightened) - 1)
+    ]
+    assert all(
+        min(abs((angle - edge_angles[0] + math.pi / 2) % math.pi - math.pi / 2),
+            abs((angle - edge_angles[0]) % (math.pi / 2))) < math.radians(2)
+        for angle in edge_angles
+    )
 
 
 def test_sections_from_mask_detects_multiple_sections() -> None:

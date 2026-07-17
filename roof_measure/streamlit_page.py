@@ -45,6 +45,7 @@ from .ai_points import suggest_roof_prompt_points
 from .exports import geojson_to_string, measurement_to_geojson, report_to_json
 from .image_io import load_image_bytes, uploaded_file_bytes
 from .map_reference import MapboxReferenceProvider
+from .geometry import straighten_architectural_ring
 from .models import RoofMeasureRequest, RoofSection
 from .polygonize import section_from_polygon
 from .service import RoofMeasureResult, measure_roof_from_outline_polygons, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections
@@ -903,8 +904,32 @@ def _render_corner_handle_editor(
         st.caption(
             "Clean the current measurement, then move, delete, or add corner dots directly on the same image."
         )
-        cleanup_col, reset_col = st.columns([1, 1])
+        straighten_col, cleanup_col, reset_col = st.columns([1, 1, 1])
         openai_available = bool(os.getenv("OPENAI_API_KEY"))
+        with straighten_col:
+            if st.button(
+                "Straighten Architectural Edges",
+                width="stretch",
+                help="Fits near-orthogonal edges to the roof's dominant building angle while keeping each section within 3% of its measured area.",
+                key=f"roof_measure_architectural_cleanup_{result.report.id}",
+            ):
+                corrected_sections = []
+                for section in measurement.sections:
+                    corrected = section.model_copy(deep=True)
+                    corrected.polygon = straighten_architectural_ring(section.polygon)
+                    corrected.holes = [straighten_architectural_ring(hole) for hole in section.holes]
+                    corrected_sections.append(corrected)
+                corrected_report = recalculate_report_from_corrected_sections(
+                    result.report,
+                    corrected_sections,
+                    correction_note="Applied deterministic architectural edge straightening with a 3% per-section area guard.",
+                )
+                st.session_state["roof_measure_result"] = RoofMeasureResult(
+                    report=corrected_report,
+                    selected_mask=result.selected_mask,
+                    candidate_count=result.candidate_count,
+                )
+                st.rerun()
         with cleanup_col:
             if st.button(
                 "Clean Current Outline with AI",
