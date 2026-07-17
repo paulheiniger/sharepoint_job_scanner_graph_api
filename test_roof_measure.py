@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from io import BytesIO
 import base64
+import sys
+from types import SimpleNamespace
 
 import numpy as np
 from PIL import Image
@@ -16,6 +18,9 @@ from roof_measure.calibration import (
 )
 from roof_measure.ai_polygons import polygon_suggestion_from_payload, suggest_refined_roof_polygons
 from roof_measure.ai_points import suggestion_from_payload
+from roof_measure.ai_polygons import _call_openai_roof_polygon_refiner, _call_openai_roof_polygon_suggester
+from roof_measure.ai_points import _call_openai_roof_point_suggester
+from roof_measure.calibration import _call_openai_scale_reader
 from roof_measure.confidence import measurement_warnings
 from roof_measure.exports import measurement_to_geojson
 from roof_measure.geometry import polygon_area_pixels, repair_polygon, simplify_ring
@@ -760,3 +765,49 @@ def test_prompt_point_canvas_reads_top_left_origin_circle() -> None:
     }
 
     assert _canvas_json_to_points(canvas_json, scale_x=0.5, scale_y=0.5) == [(100.0, 120.0)]
+
+
+def test_ai_point_payload_accepts_nested_and_normalized_coordinates() -> None:
+    suggestion = suggestion_from_payload(
+        {
+            "positive_points": [
+                {"point": {"x": 0.5, "y": 0.25}},
+                {"coordinates": {"pixel_x": 80, "pixel_y": 70}},
+            ],
+            "negative_points": [
+                {"location": [0.25, 0.5]},
+            ],
+        },
+        width=101,
+        height=81,
+    )
+
+    assert suggestion.positive_points == [(50.0, 20.0), (80.0, 70.0)]
+    assert suggestion.negative_points == [(25.0, 40.0)]
+
+
+def test_roof_measure_openai_calls_use_model_default_temperature(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="{}"))]
+            )
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeOpenAI))
+    image = Image.new("RGB", (100, 80), "white")
+
+    _call_openai_roof_point_suggester(image)
+    _call_openai_roof_polygon_suggester(image)
+    _call_openai_roof_polygon_refiner(image, current_payload=[])
+    _call_openai_scale_reader(image)
+
+    assert len(calls) == 4
+    assert all("temperature" not in call for call in calls)

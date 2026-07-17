@@ -533,17 +533,22 @@ def _render_prompt_point_picker(image: Image.Image, *, image_key: str) -> None:
         current_positive = _current_prompt_positive_points(image)
         current_negative = _parse_points_text(str(st.session_state.get("roof_measure_negative_points") or ""))
         prompt_revision = _prompt_points_revision()
-        if current_positive or current_negative:
-            st.caption(f"Showing {len(current_positive)} roof point(s) and {len(current_negative)} exclude point(s).")
-            point_preview = prompt_points_overlay(
+        prompt_background = (
+            prompt_points_overlay(
                 image,
                 positive_points=current_positive,
                 negative_points=current_negative,
             )
-            st.image(
-                point_preview,
-                caption="AI/clicked point preview: green roof points, red exclude points.",
-                width=canvas_width,
+            if current_positive or current_negative
+            else image
+        )
+        if current_positive or current_negative:
+            st.caption(f"Showing {len(current_positive)} roof point(s) and {len(current_negative)} exclude point(s).")
+            st.caption(
+                "Roof points: "
+                + (_format_points_text(current_positive).replace("\n", "; ") or "none")
+                + " | Exclude points: "
+                + (_format_points_text(current_negative).replace("\n", "; ") or "none")
             )
         mode_col, kind_col = st.columns([1, 1])
         with mode_col:
@@ -567,7 +572,7 @@ def _render_prompt_point_picker(image: Image.Image, *, image_key: str) -> None:
             fill_color=point_fill,
             stroke_width=2,
             stroke_color=point_color,
-            background_image=_canvas_background_image(image, canvas_width, canvas_height),
+            background_image=_canvas_background_image(prompt_background, canvas_width, canvas_height),
             update_streamlit=True,
             height=canvas_height,
             width=canvas_width,

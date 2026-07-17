@@ -239,7 +239,6 @@ def _call_openai_scale_reader(crop: Image.Image) -> dict[str, Any]:
     client = OpenAI(timeout=timeout_seconds)
     response = client.chat.completions.create(
         model=model,
-        temperature=0,
         response_format={"type": "json_object"},
         messages=[
             {

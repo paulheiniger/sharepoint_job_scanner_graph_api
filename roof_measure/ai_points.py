@@ -107,7 +107,6 @@ def _call_openai_roof_point_suggester(
     ]
     response = client.chat.completions.create(
         model=model,
-        temperature=0,
         response_format={"type": "json_object"},
         messages=[
             {
@@ -169,8 +168,13 @@ def _points_from_payload(value: Any, *, width: int, height: int) -> list[Point]:
 
 def _point_from_payload(value: Any, *, width: int, height: int) -> Point | None:
     if isinstance(value, dict):
-        x_value = value.get("x")
-        y_value = value.get("y")
+        nested = value.get("point") or value.get("coordinates") or value.get("coordinate") or value.get("location")
+        if nested is not None:
+            nested_point = _point_from_payload(nested, width=width, height=height)
+            if nested_point is not None:
+                return nested_point
+        x_value = value.get("x", value.get("pixel_x", value.get("px")))
+        y_value = value.get("y", value.get("pixel_y", value.get("py")))
     elif isinstance(value, (list, tuple)) and len(value) >= 2:
         x_value, y_value = value[0], value[1]
     else:
@@ -180,6 +184,9 @@ def _point_from_payload(value: Any, *, width: int, height: int) -> Point | None:
         y = float(y_value)
     except (TypeError, ValueError):
         return None
+    if 0 <= x <= 1 and 0 <= y <= 1:
+        x *= max(width - 1, 1)
+        y *= max(height - 1, 1)
     if not (0 <= x < width and 0 <= y < height):
         return None
     return x, y

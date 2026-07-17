@@ -135,7 +135,6 @@ def _call_openai_roof_polygon_suggester(
     ]
     response = client.chat.completions.create(
         model=model,
-        temperature=0,
         response_format={"type": "json_object"},
         messages=[
             {
@@ -210,7 +209,6 @@ def _call_openai_roof_polygon_refiner(
     ]
     response = client.chat.completions.create(
         model=model,
-        temperature=0,
         response_format={"type": "json_object"},
         messages=[
             {
