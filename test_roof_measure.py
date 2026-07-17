@@ -24,7 +24,14 @@ from roof_measure.polygonize import section_from_polygon, sections_from_mask
 from roof_measure.segmentation import MockRoofSegmenter, Sam2RoofSegmenter, SegmentationPrompts
 from roof_measure.service import measure_roof_from_overhead_image, recalculate_report_from_corrected_sections
 from roof_measure.models import RoofMeasureRequest
-from roof_measure.streamlit_page import _canvas_json_to_sections, _format_points_text, _parse_points_text, _sections_to_canvas_initial_drawing
+from roof_measure.streamlit_page import (
+    _canvas_json_to_points,
+    _canvas_json_to_sections,
+    _format_points_text,
+    _parse_points_text,
+    _points_to_canvas_initial_drawing,
+    _sections_to_canvas_initial_drawing,
+)
 from roof_measure.visualization import prompt_points_overlay
 
 
@@ -474,3 +481,30 @@ def test_prompt_points_overlay_preserves_image_size() -> None:
 
     assert overlay.size == image.size
     assert overlay.mode == "RGB"
+
+
+def test_prompt_point_canvas_round_trips_points() -> None:
+    points = [(100.0, 120.0), (250.0, 300.0)]
+
+    canvas_json = _points_to_canvas_initial_drawing(points, scale_x=0.5, scale_y=0.5, color="#009760")
+    parsed = _canvas_json_to_points(canvas_json, scale_x=0.5, scale_y=0.5)
+
+    assert parsed == points
+
+
+def test_prompt_point_canvas_reads_top_left_origin_circle() -> None:
+    canvas_json = {
+        "objects": [
+            {
+                "type": "circle",
+                "left": 45,
+                "top": 55,
+                "width": 10,
+                "height": 10,
+                "scaleX": 1,
+                "scaleY": 1,
+            }
+        ]
+    }
+
+    assert _canvas_json_to_points(canvas_json, scale_x=0.5, scale_y=0.5) == [(100.0, 120.0)]

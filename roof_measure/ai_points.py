@@ -68,7 +68,7 @@ def _call_openai_roof_point_suggester(image: Image.Image, *, address: str = "") 
     width, height = image.size
     data_url = _image_data_url(image)
     timeout_seconds = float(os.getenv("OPENAI_ROOF_MEASURE_POINTS_TIMEOUT_SECONDS", "30"))
-    model = os.getenv("OPENAI_ROOF_MEASURE_POINTS_MODEL") or os.getenv("OPENAI_MODEL") or "gpt-4o-mini"
+    model = os.getenv("OPENAI_ROOF_MEASURE_POINTS_MODEL") or "gpt-4o"
     client = OpenAI(timeout=timeout_seconds)
     response = client.chat.completions.create(
         model=model,

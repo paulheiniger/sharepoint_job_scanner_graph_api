@@ -205,6 +205,7 @@ def render_ai_roof_measure_page() -> None:
             f"confidence {float(ai_point_notes.get('confidence') or 0):.2f}. "
             + str(ai_point_notes.get("notes") or "")
         )
+    _render_prompt_point_picker(loaded.inference_image, image_key=loaded.metadata.image_id)
     st.caption(
         "If this is a Google Earth-style screenshot with a visible scale bar, leave manual calibration blank. "
         "The app will try to read the scale label and detect the scale bar automatically."
@@ -435,6 +436,154 @@ def _parse_points_text(value: str) -> list[tuple[float, float]]:
 
 def _format_points_text(points: list[tuple[float, float]]) -> str:
     return "\n".join(f"{int(round(x))},{int(round(y))}" for x, y in points)
+
+
+def _render_prompt_point_picker(image: Image.Image, *, image_key: str) -> None:
+    if st_canvas is None:
+        st.info("Install streamlit-drawable-canvas to click roof and exclude points. Coordinate fields remain available below.")
+        return
+    with st.expander("Click Roof / Exclude Points", expanded=True):
+        st.caption(
+            "Click inside roof surfaces on the green canvas. Click parking, grass, roads, courtyards, or wrong areas on the red canvas. "
+            "Then apply the clicked points before measuring."
+        )
+        canvas_width, canvas_height, scale_x, scale_y = _canvas_dimensions(image, max_width=780)
+        current_positive = _current_prompt_positive_points(image)
+        current_negative = _parse_points_text(str(st.session_state.get("roof_measure_negative_points") or ""))
+        st.markdown("**Roof Points**")
+        roof_canvas = st_canvas(
+            fill_color="rgba(0, 151, 96, 0.85)",
+            stroke_width=2,
+            stroke_color="#009760",
+            background_image=image,
+            update_streamlit=True,
+            height=canvas_height,
+            width=canvas_width,
+            drawing_mode="point",
+            initial_drawing=_points_to_canvas_initial_drawing(current_positive, scale_x=scale_x, scale_y=scale_y, color="#009760"),
+            display_toolbar=True,
+            point_display_radius=8,
+            key=f"roof_measure_positive_point_canvas_{image_key}",
+        )
+        st.markdown("**Exclude Points**")
+        exclude_canvas = st_canvas(
+            fill_color="rgba(229, 40, 40, 0.85)",
+            stroke_width=2,
+            stroke_color="#e52828",
+            background_image=image,
+            update_streamlit=True,
+            height=canvas_height,
+            width=canvas_width,
+            drawing_mode="point",
+            initial_drawing=_points_to_canvas_initial_drawing(current_negative, scale_x=scale_x, scale_y=scale_y, color="#e52828"),
+            display_toolbar=True,
+            point_display_radius=8,
+            key=f"roof_measure_negative_point_canvas_{image_key}",
+        )
+        action_col1, action_col2 = st.columns(2)
+        with action_col1:
+            if st.button("Apply Clicked Points", type="primary", width="stretch", key=f"roof_measure_apply_clicked_points_{image_key}"):
+                positive_points = _canvas_json_to_points(getattr(roof_canvas, "json_data", None), scale_x=scale_x, scale_y=scale_y)
+                negative_points = _canvas_json_to_points(getattr(exclude_canvas, "json_data", None), scale_x=scale_x, scale_y=scale_y)
+                if not positive_points:
+                    st.warning("Click at least one roof point before applying.")
+                    return
+                first = positive_points[0]
+                st.session_state["roof_measure_prompt_x"] = int(round(first[0]))
+                st.session_state["roof_measure_prompt_y"] = int(round(first[1]))
+                st.session_state["roof_measure_extra_positive_points"] = _format_points_text(positive_points[1:])
+                st.session_state["roof_measure_negative_points"] = _format_points_text(negative_points)
+                st.session_state["roof_measure_ai_point_notes"] = {
+                    "confidence": 1.0,
+                    "notes": "Estimator clicked prompt points.",
+                    "positive_count": len(positive_points),
+                    "negative_count": len(negative_points),
+                }
+                st.rerun()
+        with action_col2:
+            if st.button("Clear Clicked Points", width="stretch", key=f"roof_measure_clear_clicked_points_{image_key}"):
+                st.session_state["roof_measure_extra_positive_points"] = ""
+                st.session_state["roof_measure_negative_points"] = ""
+                st.session_state.pop("roof_measure_ai_point_notes", None)
+                st.rerun()
+
+
+def _current_prompt_positive_points(image: Image.Image) -> list[tuple[float, float]]:
+    width, height = image.size
+    explicit_extra_points = _parse_points_text(str(st.session_state.get("roof_measure_extra_positive_points") or ""))
+    has_suggestion_or_clicks = isinstance(st.session_state.get("roof_measure_ai_point_notes"), dict)
+    try:
+        x = float(st.session_state.get("roof_measure_prompt_x", width / 2))
+        y = float(st.session_state.get("roof_measure_prompt_y", height / 2))
+    except (TypeError, ValueError):
+        x, y = width / 2, height / 2
+    is_default_center = abs(x - width / 2) < 1 and abs(y - height / 2) < 1
+    if not has_suggestion_or_clicks and not explicit_extra_points and is_default_center:
+        return []
+    primary = (min(max(x, 0.0), width - 1.0), min(max(y, 0.0), height - 1.0))
+    return [primary, *explicit_extra_points]
+
+
+def _points_to_canvas_initial_drawing(
+    points: list[tuple[float, float]],
+    *,
+    scale_x: float,
+    scale_y: float,
+    color: str,
+) -> dict:
+    objects = []
+    for x, y in points:
+        canvas_x = float(x) * scale_x
+        canvas_y = float(y) * scale_y
+        objects.append(
+            {
+                "type": "circle",
+                "version": "4.4.0",
+                "originX": "center",
+                "originY": "center",
+                "left": canvas_x,
+                "top": canvas_y,
+                "width": 16,
+                "height": 16,
+                "radius": 8,
+                "fill": color,
+                "stroke": color,
+                "strokeWidth": 2,
+                "scaleX": 1,
+                "scaleY": 1,
+            }
+        )
+    return {"version": "4.4.0", "objects": objects}
+
+
+def _canvas_json_to_points(canvas_json: dict | None, *, scale_x: float, scale_y: float) -> list[tuple[float, float]]:
+    if not isinstance(canvas_json, dict):
+        return []
+    points: list[tuple[float, float]] = []
+    for obj in canvas_json.get("objects") or []:
+        if not isinstance(obj, dict):
+            continue
+        point = _canvas_object_center(obj)
+        if point is None:
+            continue
+        x, y = point
+        points.append((float(x) / scale_x if scale_x else float(x), float(y) / scale_y if scale_y else float(y)))
+    return points
+
+
+def _canvas_object_center(obj: dict) -> tuple[float, float] | None:
+    try:
+        left = float(obj.get("left") or 0)
+        top = float(obj.get("top") or 0)
+        origin_x = str(obj.get("originX") or "").lower()
+        origin_y = str(obj.get("originY") or "").lower()
+        width = float(obj.get("width") or 0) * float(obj.get("scaleX") or 1)
+        height = float(obj.get("height") or 0) * float(obj.get("scaleY") or 1)
+    except (TypeError, ValueError):
+        return None
+    x = left if origin_x == "center" else left + width / 2
+    y = top if origin_y == "center" else top + height / 2
+    return x, y
 
 
 def _render_polygon_editor(result: RoofMeasureResult) -> None:
