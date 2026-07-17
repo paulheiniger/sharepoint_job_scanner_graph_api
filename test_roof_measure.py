@@ -14,7 +14,7 @@ from roof_measure.calibration import (
     parse_scale_label_feet,
     sqft_from_pixels,
 )
-from roof_measure.ai_polygons import polygon_suggestion_from_payload
+from roof_measure.ai_polygons import polygon_suggestion_from_payload, suggest_refined_roof_polygons
 from roof_measure.ai_points import suggestion_from_payload
 from roof_measure.confidence import measurement_warnings
 from roof_measure.exports import measurement_to_geojson
@@ -26,6 +26,7 @@ from roof_measure.segmentation import MockRoofSegmenter, Sam2RoofSegmenter, Segm
 from roof_measure.service import measure_roof_from_outline_polygons, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections
 from roof_measure.models import RoofMeasureRequest
 from roof_measure.streamlit_page import (
+    _canvas_background_image,
     _canvas_json_to_corner_edit_points,
     _canvas_json_to_points,
     _canvas_json_to_prompt_points,
@@ -38,6 +39,7 @@ from roof_measure.streamlit_page import (
     _points_to_canvas_initial_drawing,
     _replace_section_polygon,
     _section_to_corner_canvas_initial_drawing,
+    _sections_from_ai_polygons,
     _sections_to_canvas_initial_drawing,
 )
 from roof_measure.visualization import prompt_points_overlay
@@ -500,6 +502,29 @@ def test_corner_canvas_splits_existing_handles_from_new_clicked_points() -> None
     assert new_points == [(30.0, 10.0)]
 
 
+def test_corner_canvas_points_include_unapplied_added_corners() -> None:
+    section = section_from_polygon("main", [(10, 10), (50, 10), (50, 30), (10, 30)])
+    canvas_json = _section_to_corner_canvas_initial_drawing(section, scale_x=0.5, scale_y=0.5)
+    canvas_json["objects"].append(
+        {
+            "type": "circle",
+            "originX": "center",
+            "originY": "center",
+            "left": 15,
+            "top": 5,
+            "width": 18,
+            "height": 18,
+            "radius": 9,
+            "scaleX": 1,
+            "scaleY": 1,
+        }
+    )
+
+    points = _canvas_json_to_corner_points(canvas_json, scale_x=0.5, scale_y=0.5)
+
+    assert points == [(10.0, 10.0), (30.0, 10.0), (50.0, 10.0), (50.0, 30.0), (10.0, 30.0)]
+
+
 def test_insert_new_corner_points_uses_nearest_polygon_edge() -> None:
     updated = _insert_new_corner_points(
         [(10, 10), (50, 10), (50, 30), (10, 30)],
@@ -612,6 +637,31 @@ def test_ai_polygon_suggestion_payload_filters_and_repairs_polygons() -> None:
     assert suggestion.confidence == 0.8
 
 
+def test_refined_ai_polygon_suggestion_receives_current_sections() -> None:
+    image = Image.new("RGB", (100, 80), "white")
+    section = section_from_polygon("main", [(10, 20), (60, 20), (60, 50), (10, 50)])
+
+    suggestion = suggest_refined_roof_polygons(
+        image,
+        [section],
+        provider=lambda image, address, width, height, current: {
+            "roof_polygons": [
+                {
+                    "label": current[0]["label"],
+                    "points": current[0]["points"],
+                }
+            ],
+            "confidence": 0.75,
+            "notes": "Refined from SAM.",
+        },
+    )
+
+    assert len(suggestion.polygons) == 1
+    assert suggestion.polygons[0] == section.polygon
+    assert suggestion.confidence == 0.75
+    assert "Refined from SAM" in suggestion.notes
+
+
 def test_measurement_service_uses_ai_outline_polygons_without_segmenter(tmp_path) -> None:
     request = RoofMeasureRequest(
         overhead_image_name="roof.png",
@@ -637,6 +687,25 @@ def test_measurement_service_uses_ai_outline_polygons_without_segmenter(tmp_path
     assert measurement.total_perimeter_ft == 60
     assert result.report.model_name == "openai_roof_outline"
     assert any(warning.code == "ai_outline_review" for warning in measurement.warnings)
+
+
+def test_sections_from_ai_polygons_preserves_existing_section_order() -> None:
+    main = section_from_polygon("main", [(10, 20), (60, 20), (60, 50), (10, 50)])
+    cleaned = _sections_from_ai_polygons(
+        [main],
+        [[(12, 22), (58, 22), (58, 48), (12, 48)]],
+    )
+
+    assert cleaned[0].section_id == "main"
+    assert cleaned[0].polygon == [(12, 22), (58, 22), (58, 48), (12, 48)]
+
+
+def test_canvas_background_image_resizes_to_canvas_dimensions() -> None:
+    image = Image.new("RGB", (200, 100), "white")
+
+    background = _canvas_background_image(image, 100, 50)
+
+    assert background.size == (100, 50)
 
 
 def test_prompt_points_overlay_preserves_image_size() -> None:

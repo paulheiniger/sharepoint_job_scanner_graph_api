@@ -11,7 +11,7 @@ from typing import Any, Callable
 from PIL import Image
 
 from .geometry import repair_polygon
-from .models import Point, Ring
+from .models import Point, Ring, RoofSection
 
 
 @dataclass
@@ -25,6 +25,7 @@ class RoofPolygonSuggestion:
 
 
 AiPolygonProvider = Callable[[Image.Image, str, int, int], dict[str, Any]]
+AiPolygonRefinementProvider = Callable[[Image.Image, str, int, int, list[dict[str, Any]]], dict[str, Any]]
 
 
 def suggest_roof_polygons(
@@ -38,6 +39,26 @@ def suggest_roof_polygons(
         payload = provider(image, address, width, height) if provider is not None else _call_openai_roof_polygon_suggester(image, address=address)
     except Exception as exc:
         return RoofPolygonSuggestion(warnings=[f"AI roof outline suggestion failed: {type(exc).__name__}: {exc}"])
+    return polygon_suggestion_from_payload(payload, width=width, height=height)
+
+
+def suggest_refined_roof_polygons(
+    image: Image.Image,
+    current_sections: list[RoofSection],
+    *,
+    address: str = "",
+    provider: AiPolygonRefinementProvider | None = None,
+) -> RoofPolygonSuggestion:
+    width, height = image.size
+    current_payload = _sections_payload(current_sections)
+    try:
+        payload = (
+            provider(image, address, width, height, current_payload)
+            if provider is not None
+            else _call_openai_roof_polygon_refiner(image, current_payload=current_payload, address=address)
+        )
+    except Exception as exc:
+        return RoofPolygonSuggestion(warnings=[f"AI roof outline cleanup failed: {type(exc).__name__}: {exc}"])
     return polygon_suggestion_from_payload(payload, width=width, height=height)
 
 
@@ -125,6 +146,76 @@ def _call_openai_roof_polygon_suggester(image: Image.Image, *, address: str = ""
     return {}
 
 
+def _call_openai_roof_polygon_refiner(
+    image: Image.Image,
+    *,
+    current_payload: list[dict[str, Any]],
+    address: str = "",
+) -> dict[str, Any]:
+    if not os.getenv("OPENAI_API_KEY"):
+        raise RuntimeError("OPENAI_API_KEY is not set")
+    try:
+        from openai import OpenAI  # type: ignore
+    except Exception as exc:  # pragma: no cover - optional dependency
+        raise RuntimeError("openai package is not installed") from exc
+    width, height = image.size
+    data_url = _image_data_url(image)
+    timeout_seconds = float(os.getenv("OPENAI_ROOF_MEASURE_POLYGONS_TIMEOUT_SECONDS", "45"))
+    model = os.getenv("OPENAI_ROOF_MEASURE_POLYGONS_MODEL") or os.getenv("OPENAI_ROOF_MEASURE_POINTS_MODEL") or "gpt-4o"
+    client = OpenAI(timeout=timeout_seconds)
+    response = client.chat.completions.create(
+        model=model,
+        temperature=0,
+        response_format={"type": "json_object"},
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You refine roof measurement polygons from overhead satellite imagery. "
+                    "Return only strict JSON with pixel coordinates in the provided image."
+                ),
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            f"Image size is {width} by {height} pixels. "
+                            f"Address/site hint: {address or 'not provided'}. "
+                            "A segmentation model produced the current roof polygons below. Start from these polygons; do not ignore them. "
+                            "Move, remove, or add vertices only where needed to make the outline follow visible roof edges. "
+                            "Prefer straight, simple building boundary edges over jagged texture-following edges. "
+                            "Remove obvious false-positive polygons on parking lots, grass, vehicles, roads, trees, or shadows. "
+                            "Preserve separate roof masses when they are real. Use the same order as the current polygons when possible. "
+                            "Do not invent roof sections that are not visible. Keep polygons conservative when uncertain. "
+                            "Return JSON with this schema: "
+                            "{\"roof_polygons\":[{\"label\":\"section-1\",\"points\":[{\"x\":0,\"y\":0},{\"x\":10,\"y\":0},{\"x\":10,\"y\":10},{\"x\":0,\"y\":10}],\"reason\":\"...\"}],"
+                            "\"confidence\":0.0,\"notes\":\"...\",\"warnings\":[\"...\"]}. "
+                            "Current polygons: "
+                            + json.dumps(current_payload, separators=(",", ":"))
+                        ),
+                    },
+                    {"type": "image_url", "image_url": {"url": data_url, "detail": "high"}},
+                ],
+            },
+        ],
+    )
+    text = response.choices[0].message.content or "{}"
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", text, re.S)
+        if not match:
+            return {}
+        payload = json.loads(match.group(0))
+    if isinstance(payload, dict):
+        payload.setdefault("model_name", "openai_roof_outline_refine")
+        payload.setdefault("model_version", model)
+        return payload
+    return {}
+
+
 def _polygon_from_payload(value: Any, *, width: int, height: int) -> Ring:
     if not isinstance(value, list):
         return []
@@ -155,6 +246,23 @@ def _point_from_payload(value: Any, *, width: int, height: int) -> Point | None:
     if not (0 <= x < width and 0 <= y < height):
         return None
     return x, y
+
+
+def _sections_payload(sections: list[RoofSection]) -> list[dict[str, Any]]:
+    payload: list[dict[str, Any]] = []
+    for section in sections:
+        points = section.polygon[:-1] if section.polygon and section.polygon[0] == section.polygon[-1] else section.polygon
+        payload.append(
+            {
+                "label": section.section_id,
+                "area_pixels": section.area_pixels,
+                "points": [
+                    {"x": round(float(x), 2), "y": round(float(y), 2)}
+                    for x, y in points
+                ],
+            }
+        )
+    return payload
 
 
 def _safe_confidence(value: Any) -> float:

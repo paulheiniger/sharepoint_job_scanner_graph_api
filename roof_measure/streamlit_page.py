@@ -40,14 +40,15 @@ try:
 except ImportError:  # pragma: no cover - exercised in environments without the optional component.
     st_canvas = None
 
-from .ai_polygons import suggest_roof_polygons
+from .ai_polygons import suggest_refined_roof_polygons, suggest_roof_polygons
 from .ai_points import suggest_roof_prompt_points
 from .exports import geojson_to_string, measurement_to_geojson, report_to_json
 from .image_io import load_image_bytes, uploaded_file_bytes
 from .map_reference import MapboxReferenceProvider
 from .models import RoofMeasureRequest, RoofSection
+from .polygonize import section_from_polygon
 from .service import RoofMeasureResult, measure_roof_from_outline_polygons, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections
-from .visualization import annotated_overlay, image_png_bytes, prompt_points_overlay
+from .visualization import annotated_overlay, image_png_bytes
 
 
 def render_ai_roof_measure_page() -> None:
@@ -162,7 +163,7 @@ def render_ai_roof_measure_page() -> None:
     if loaded.metadata.quality_flags:
         st.warning("Image quality flags: " + ", ".join(loaded.metadata.quality_flags))
 
-    st.subheader("Prompt and Calibration")
+    st.subheader("Measurement Setup")
     ai_points_col1, ai_points_col2 = st.columns([1, 2])
     openai_available = bool(os.getenv("OPENAI_API_KEY"))
     with ai_points_col1:
@@ -170,12 +171,12 @@ def render_ai_roof_measure_page() -> None:
             "Suggest Roof Points with AI",
             width="stretch",
             disabled=not openai_available,
-            help="Sends the displayed overhead image to the configured OpenAI model to suggest SAM positive and exclude points.",
+            help="Optional: sends the displayed overhead image to OpenAI to suggest positive/exclude points for the segmenter path.",
             key="roof_measure_suggest_ai_points",
         )
     with ai_points_col2:
         if openai_available:
-            st.caption("AI suggestions fill the point fields below. Review them before measuring.")
+            st.caption("Prompt points are only needed when using Measure with Segmenter. The AI outline path does not use them.")
         else:
             st.caption("Set OPENAI_API_KEY to enable AI point suggestions.")
     if suggest_points:
@@ -250,23 +251,6 @@ def render_ai_roof_measure_page() -> None:
             height=90,
             key="roof_measure_negative_points",
         )
-    preview_positive_points = [
-        (float(prompt_x), float(prompt_y)),
-        *_parse_points_text(extra_positive_points_text),
-    ]
-    preview_negative_points = _parse_points_text(negative_points_text)
-    if preview_positive_points or preview_negative_points:
-        with st.expander("Review Prompt Points", expanded=True):
-            st.caption("Green points should be inside roof surfaces. Red points should be inside areas to exclude, such as parking, grass, roads, or courtyards.")
-            st.image(
-                prompt_points_overlay(
-                    loaded.inference_image,
-                    positive_points=preview_positive_points,
-                    negative_points=preview_negative_points,
-                ),
-                caption="SAM prompt points",
-            )
-
     cal_col1, cal_col2, cal_col3 = st.columns(3)
     with cal_col1:
         known_length = st.number_input("Known length (ft)", min_value=0.0, value=0.0, step=1.0, key="roof_measure_known_length")
@@ -440,6 +424,7 @@ def _render_measurement_result(result: RoofMeasureResult, *, image_bytes: bytes,
         ]
         st.dataframe(section_rows, width="stretch", hide_index=True)
 
+    _render_ai_outline_cleanup(result, image=loaded.inference_image)
     _render_corner_handle_editor(result, image=loaded.inference_image)
     _render_visual_polygon_editor(result, image=loaded.inference_image)
     _render_polygon_editor(result)
@@ -481,12 +466,12 @@ def _render_prompt_point_picker(image: Image.Image, *, image_key: str) -> None:
     if st_canvas is None:
         st.info("Install streamlit-drawable-canvas to click roof and exclude points. Coordinate fields remain available below.")
         return
-    with st.expander("Click Roof / Exclude Points", expanded=True):
+    with st.expander("Segmenter Prompt Points", expanded=False):
         st.caption(
-            "Add roof/exclude points, or switch to move mode to drag AI-suggested points before measuring. "
+            "Optional for Measure with Segmenter. Add roof/exclude points, or switch to move mode to drag AI-suggested points. "
             "Roof points belong inside roof surfaces; exclude points belong inside parking, grass, roads, courtyards, or wrong areas."
         )
-        canvas_width, canvas_height, scale_x, scale_y = _canvas_dimensions(image, max_width=780)
+        canvas_width, canvas_height, scale_x, scale_y = _canvas_dimensions(image, max_width=1000)
         current_positive = _current_prompt_positive_points(image)
         current_negative = _parse_points_text(str(st.session_state.get("roof_measure_negative_points") or ""))
         mode_col, kind_col = st.columns([1, 1])
@@ -511,7 +496,7 @@ def _render_prompt_point_picker(image: Image.Image, *, image_key: str) -> None:
             fill_color=point_fill,
             stroke_width=2,
             stroke_color=point_color,
-            background_image=image,
+            background_image=_canvas_background_image(image, canvas_width, canvas_height),
             update_streamlit=True,
             height=canvas_height,
             width=canvas_width,
@@ -781,7 +766,7 @@ def _render_visual_polygon_editor(result: RoofMeasureResult, *, image: Image.Ima
             fill_color="rgba(229, 40, 40, 0.20)",
             stroke_width=3,
             stroke_color="#009760",
-            background_image=image,
+            background_image=_canvas_background_image(image, canvas_width, canvas_height),
             update_streamlit=True,
             height=canvas_height,
             width=canvas_width,
@@ -854,7 +839,7 @@ def _render_corner_handle_editor(result: RoofMeasureResult, *, image: Image.Imag
             fill_color="rgba(229, 40, 40, 0.85)",
             stroke_width=2,
             stroke_color="#e52828",
-            background_image=image,
+            background_image=_canvas_background_image(image, canvas_width, canvas_height),
             update_streamlit=True,
             height=canvas_height,
             width=canvas_width,
@@ -862,7 +847,7 @@ def _render_corner_handle_editor(result: RoofMeasureResult, *, image: Image.Imag
             initial_drawing=_section_to_corner_canvas_initial_drawing(selected_section, scale_x=scale_x, scale_y=scale_y),
             display_toolbar=True,
             point_display_radius=8,
-            key=f"roof_measure_corner_canvas_{result.report.id}_{selected_section_id}_{drawing_mode}",
+            key=f"roof_measure_corner_canvas_{result.report.id}_{selected_section_id}",
         )
         action_col1, action_col2 = st.columns(2)
         with action_col1:
@@ -910,6 +895,56 @@ def _render_corner_handle_editor(result: RoofMeasureResult, *, image: Image.Imag
                     st.rerun()
 
 
+def _render_ai_outline_cleanup(result: RoofMeasureResult, *, image: Image.Image) -> None:
+    measurement = result.report.measurement
+    if not measurement.sections:
+        return
+    openai_available = bool(os.getenv("OPENAI_API_KEY"))
+    with st.expander("AI Outline Cleanup", expanded=False):
+        st.caption(
+            "Uses the current outline as a starting point and asks AI to simplify or move vertices to visible roof edges. "
+            "This is useful when SAM is close but jagged."
+        )
+        if st.button(
+            "Clean Current Outline with AI",
+            width="stretch",
+            disabled=not openai_available,
+            key=f"roof_measure_ai_cleanup_{result.report.id}",
+        ):
+            suggestion = suggest_refined_roof_polygons(
+                image,
+                measurement.sections,
+                address=result.report.address,
+            )
+            if suggestion.warnings:
+                for warning in suggestion.warnings:
+                    st.warning(warning)
+            if not suggestion.polygons:
+                st.warning("AI did not return usable cleaned roof outlines.")
+                return
+            try:
+                corrected_sections = _sections_from_ai_polygons(measurement.sections, suggestion.polygons)
+                corrected_report = recalculate_report_from_corrected_sections(
+                    result.report,
+                    corrected_sections,
+                    correction_note=(
+                        "AI refined the current roof outline from existing section polygons. "
+                        + (suggestion.notes or "")
+                    ).strip(),
+                )
+            except Exception as exc:
+                st.error(f"Could not apply AI outline cleanup: {type(exc).__name__}: {exc}")
+                return
+            st.session_state["roof_measure_result"] = RoofMeasureResult(
+                report=corrected_report,
+                selected_mask=None,
+                candidate_count=result.candidate_count,
+            )
+            st.rerun()
+        if not openai_available:
+            st.caption("Set OPENAI_API_KEY to enable outline cleanup.")
+
+
 def _section_vertex_rows(sections: list[RoofSection]) -> list[dict[str, float | int | str]]:
     rows: list[dict[str, float | int | str]] = []
     for section in sections:
@@ -936,6 +971,13 @@ def _canvas_dimensions(image: Image.Image, *, max_width: int = 1000) -> tuple[in
     return int(canvas_width), int(canvas_height), scale, scale
 
 
+def _canvas_background_image(image: Image.Image, canvas_width: int, canvas_height: int) -> Image.Image:
+    if image.size == (canvas_width, canvas_height):
+        return image
+    resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS", Image.BICUBIC)
+    return image.resize((canvas_width, canvas_height), resampling)
+
+
 def _section_to_corner_canvas_initial_drawing(section: RoofSection, *, scale_x: float, scale_y: float) -> dict:
     points = section.polygon[:-1] if section.polygon and section.polygon[0] == section.polygon[-1] else section.polygon
     canvas_points = [
@@ -943,21 +985,27 @@ def _section_to_corner_canvas_initial_drawing(section: RoofSection, *, scale_x: 
         for x, y in points
     ]
     objects: list[dict] = []
-    if len(canvas_points) >= 3:
+    for index, start in enumerate(canvas_points):
+        end = canvas_points[(index + 1) % len(canvas_points)] if canvas_points else None
+        if end is None:
+            continue
         objects.append(
             {
-                "type": "polygon",
+                "type": "line",
                 "version": "4.4.0",
                 "originX": "left",
                 "originY": "top",
                 "left": 0,
                 "top": 0,
-                "fill": "rgba(229, 40, 40, 0.12)",
+                "x1": start["x"],
+                "y1": start["y"],
+                "x2": end["x"],
+                "y2": end["y"],
+                "fill": "#009760",
                 "stroke": "#009760",
                 "strokeWidth": 3,
                 "strokeLineCap": "round",
                 "strokeLineJoin": "round",
-                "points": canvas_points,
                 "objectCaching": False,
                 "selectable": False,
                 "evented": False,
@@ -987,6 +1035,35 @@ def _section_to_corner_canvas_initial_drawing(section: RoofSection, *, scale_x: 
             }
         )
     return {"version": "4.4.0", "objects": objects}
+
+
+def _sections_from_ai_polygons(
+    original_sections: list[RoofSection],
+    polygons: list[list[tuple[float, float]]],
+) -> list[RoofSection]:
+    corrected_sections: list[RoofSection] = []
+    for index, polygon in enumerate(polygons, start=1):
+        if len(polygon) < 3:
+            continue
+        if index <= len(original_sections):
+            template = original_sections[index - 1]
+            corrected_sections.append(
+                template.model_copy(
+                    deep=True,
+                    update={
+                        "polygon": polygon,
+                        "holes": [],
+                        "confidence": max(float(template.confidence or 0), 0.65),
+                    },
+                )
+            )
+        else:
+            section = section_from_polygon(f"section-{index}", polygon)
+            section.confidence = 0.65
+            corrected_sections.append(section)
+    if not corrected_sections:
+        raise ValueError("AI cleanup did not produce any usable roof polygons.")
+    return corrected_sections
 
 
 def _sections_to_canvas_initial_drawing(sections: list[RoofSection], *, scale_x: float, scale_y: float) -> dict:
@@ -1069,24 +1146,14 @@ def _canvas_json_to_sections(
 
 
 def _canvas_json_to_corner_points(canvas_json: dict | None, *, scale_x: float, scale_y: float) -> list[tuple[float, float]]:
-    if not isinstance(canvas_json, dict):
-        return []
-    indexed_points: list[tuple[int, int, tuple[float, float]]] = []
-    for fallback_index, obj in enumerate(canvas_json.get("objects") or []):
-        if not isinstance(obj, dict) or str(obj.get("type") or "").lower() != "circle":
-            continue
-        point = _canvas_object_center(obj)
-        if point is None:
-            continue
-        try:
-            vertex_index = int(obj.get("vertexIndex"))
-        except (TypeError, ValueError):
-            vertex_index = fallback_index
-        x, y = point
-        scaled_point = (float(x) / scale_x if scale_x else float(x), float(y) / scale_y if scale_y else float(y))
-        indexed_points.append((vertex_index, fallback_index, scaled_point))
-    indexed_points.sort(key=lambda item: (item[0], item[1]))
-    return [point for _, _, point in indexed_points]
+    existing_points, new_points = _canvas_json_to_corner_edit_points(
+        canvas_json,
+        scale_x=scale_x,
+        scale_y=scale_y,
+    )
+    if new_points:
+        return _insert_new_corner_points(existing_points, new_points)
+    return existing_points
 
 
 def _canvas_json_to_corner_edit_points(
