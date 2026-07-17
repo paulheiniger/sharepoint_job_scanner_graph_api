@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 
 import pandas as pd
@@ -39,12 +40,13 @@ try:
 except ImportError:  # pragma: no cover - exercised in environments without the optional component.
     st_canvas = None
 
+from .ai_polygons import suggest_roof_polygons
 from .ai_points import suggest_roof_prompt_points
 from .exports import geojson_to_string, measurement_to_geojson, report_to_json
 from .image_io import load_image_bytes, uploaded_file_bytes
 from .map_reference import MapboxReferenceProvider
 from .models import RoofMeasureRequest, RoofSection
-from .service import RoofMeasureResult, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections
+from .service import RoofMeasureResult, measure_roof_from_outline_polygons, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections
 from .visualization import annotated_overlay, image_png_bytes, prompt_points_overlay
 
 
@@ -342,20 +344,56 @@ def render_ai_roof_measure_page() -> None:
         edge_snap_strength=edge_snap_strength,
         segmenter_name=segmenter_name,
     )
-    if st.button("Measure Roof", type="primary", width="stretch"):
-        try:
-            result = measure_roof_from_overhead_image(
-                image_bytes=image_bytes,
-                request=request,
-                selected_candidate_index=int(candidate_index) - 1,
-            )
-        except Exception as exc:
-            st.error(f"Roof measurement failed: {type(exc).__name__}: {exc}")
-            return
-        st.session_state["roof_measure_result"] = result
-        st.session_state["roof_measure_original_result"] = result
-        st.session_state["roof_measure_image_bytes"] = image_bytes
-        st.session_state["roof_measure_file_name"] = image_name
+    measure_col1, measure_col2 = st.columns(2)
+    with measure_col1:
+        if st.button(
+            "Suggest Editable Outline with AI",
+            type="primary",
+            width="stretch",
+            disabled=not openai_available,
+            help="Sends the displayed image to OpenAI for straight-line roof polygons, then opens them in the visual editor.",
+            key="roof_measure_suggest_ai_outline",
+        ):
+            suggestion = suggest_roof_polygons(loaded.inference_image, address=address)
+            if suggestion.warnings:
+                for warning in suggestion.warnings:
+                    st.warning(warning)
+            if not suggestion.polygons:
+                st.warning("AI did not return usable roof outlines for this image.")
+            else:
+                try:
+                    result = measure_roof_from_outline_polygons(
+                        image_bytes=image_bytes,
+                        request=request,
+                        polygons=suggestion.polygons,
+                        model_name=suggestion.model_name,
+                        model_version=suggestion.model_version,
+                        outline_confidence=suggestion.confidence,
+                        outline_notes=suggestion.notes,
+                    )
+                except Exception as exc:
+                    st.error(f"AI outline measurement failed: {type(exc).__name__}: {exc}")
+                    return
+                st.session_state["roof_measure_result"] = result
+                st.session_state["roof_measure_original_result"] = result
+                st.session_state["roof_measure_image_bytes"] = image_bytes
+                st.session_state["roof_measure_file_name"] = image_name
+                st.rerun()
+    with measure_col2:
+        if st.button("Measure with Segmenter", width="stretch"):
+            try:
+                result = measure_roof_from_overhead_image(
+                    image_bytes=image_bytes,
+                    request=request,
+                    selected_candidate_index=int(candidate_index) - 1,
+                )
+            except Exception as exc:
+                st.error(f"Roof measurement failed: {type(exc).__name__}: {exc}")
+                return
+            st.session_state["roof_measure_result"] = result
+            st.session_state["roof_measure_original_result"] = result
+            st.session_state["roof_measure_image_bytes"] = image_bytes
+            st.session_state["roof_measure_file_name"] = image_name
 
     stored_result = st.session_state.get("roof_measure_result")
     stored_image_bytes = st.session_state.get("roof_measure_image_bytes")
@@ -402,6 +440,7 @@ def _render_measurement_result(result: RoofMeasureResult, *, image_bytes: bytes,
         ]
         st.dataframe(section_rows, width="stretch", hide_index=True)
 
+    _render_corner_handle_editor(result, image=loaded.inference_image)
     _render_visual_polygon_editor(result, image=loaded.inference_image)
     _render_polygon_editor(result)
 
@@ -444,47 +483,58 @@ def _render_prompt_point_picker(image: Image.Image, *, image_key: str) -> None:
         return
     with st.expander("Click Roof / Exclude Points", expanded=True):
         st.caption(
-            "Click inside roof surfaces on the green canvas. Click parking, grass, roads, courtyards, or wrong areas on the red canvas. "
-            "Then apply the clicked points before measuring."
+            "Add roof/exclude points, or switch to move mode to drag AI-suggested points before measuring. "
+            "Roof points belong inside roof surfaces; exclude points belong inside parking, grass, roads, courtyards, or wrong areas."
         )
         canvas_width, canvas_height, scale_x, scale_y = _canvas_dimensions(image, max_width=780)
         current_positive = _current_prompt_positive_points(image)
         current_negative = _parse_points_text(str(st.session_state.get("roof_measure_negative_points") or ""))
-        st.markdown("**Roof Points**")
-        roof_canvas = st_canvas(
-            fill_color="rgba(0, 151, 96, 0.85)",
+        mode_col, kind_col = st.columns([1, 1])
+        with mode_col:
+            point_action = st.radio(
+                "Point action",
+                ["Add points", "Move/delete points"],
+                horizontal=True,
+                key=f"roof_measure_point_action_{image_key}",
+            )
+        with kind_col:
+            point_kind = st.radio(
+                "Point type",
+                ["Roof point", "Exclude point"],
+                horizontal=True,
+                key=f"roof_measure_point_kind_{image_key}",
+            )
+        point_color = "#009760" if point_kind == "Roof point" else "#e52828"
+        point_fill = "rgba(0, 151, 96, 0.85)" if point_kind == "Roof point" else "rgba(229, 40, 40, 0.85)"
+        drawing_mode = "transform" if point_action == "Move/delete points" else "point"
+        prompt_canvas = st_canvas(
+            fill_color=point_fill,
             stroke_width=2,
-            stroke_color="#009760",
+            stroke_color=point_color,
             background_image=image,
             update_streamlit=True,
             height=canvas_height,
             width=canvas_width,
-            drawing_mode="point",
-            initial_drawing=_points_to_canvas_initial_drawing(current_positive, scale_x=scale_x, scale_y=scale_y, color="#009760"),
+            drawing_mode=drawing_mode,
+            initial_drawing=_prompt_points_to_canvas_initial_drawing(
+                positive_points=current_positive,
+                negative_points=current_negative,
+                scale_x=scale_x,
+                scale_y=scale_y,
+            ),
             display_toolbar=True,
             point_display_radius=8,
-            key=f"roof_measure_positive_point_canvas_{image_key}",
-        )
-        st.markdown("**Exclude Points**")
-        exclude_canvas = st_canvas(
-            fill_color="rgba(229, 40, 40, 0.85)",
-            stroke_width=2,
-            stroke_color="#e52828",
-            background_image=image,
-            update_streamlit=True,
-            height=canvas_height,
-            width=canvas_width,
-            drawing_mode="point",
-            initial_drawing=_points_to_canvas_initial_drawing(current_negative, scale_x=scale_x, scale_y=scale_y, color="#e52828"),
-            display_toolbar=True,
-            point_display_radius=8,
-            key=f"roof_measure_negative_point_canvas_{image_key}",
+            key=f"roof_measure_prompt_point_canvas_{image_key}_{drawing_mode}",
         )
         action_col1, action_col2 = st.columns(2)
         with action_col1:
             if st.button("Apply Clicked Points", type="primary", width="stretch", key=f"roof_measure_apply_clicked_points_{image_key}"):
-                positive_points = _canvas_json_to_points(getattr(roof_canvas, "json_data", None), scale_x=scale_x, scale_y=scale_y)
-                negative_points = _canvas_json_to_points(getattr(exclude_canvas, "json_data", None), scale_x=scale_x, scale_y=scale_y)
+                positive_points, negative_points = _canvas_json_to_prompt_points(
+                    getattr(prompt_canvas, "json_data", None),
+                    scale_x=scale_x,
+                    scale_y=scale_y,
+                    default_kind="positive" if point_kind == "Roof point" else "negative",
+                )
                 if not positive_points:
                     st.warning("Click at least one roof point before applying.")
                     return
@@ -556,6 +606,32 @@ def _points_to_canvas_initial_drawing(
     return {"version": "4.4.0", "objects": objects}
 
 
+def _prompt_points_to_canvas_initial_drawing(
+    *,
+    positive_points: list[tuple[float, float]],
+    negative_points: list[tuple[float, float]],
+    scale_x: float,
+    scale_y: float,
+) -> dict:
+    return {
+        "version": "4.4.0",
+        "objects": [
+            *_points_to_canvas_initial_drawing(
+                positive_points,
+                scale_x=scale_x,
+                scale_y=scale_y,
+                color="#009760",
+            ).get("objects", []),
+            *_points_to_canvas_initial_drawing(
+                negative_points,
+                scale_x=scale_x,
+                scale_y=scale_y,
+                color="#e52828",
+            ).get("objects", []),
+        ],
+    }
+
+
 def _canvas_json_to_points(canvas_json: dict | None, *, scale_x: float, scale_y: float) -> list[tuple[float, float]]:
     if not isinstance(canvas_json, dict):
         return []
@@ -569,6 +645,45 @@ def _canvas_json_to_points(canvas_json: dict | None, *, scale_x: float, scale_y:
         x, y = point
         points.append((float(x) / scale_x if scale_x else float(x), float(y) / scale_y if scale_y else float(y)))
     return points
+
+
+def _canvas_json_to_prompt_points(
+    canvas_json: dict | None,
+    *,
+    scale_x: float,
+    scale_y: float,
+    default_kind: str = "positive",
+) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+    positive_points: list[tuple[float, float]] = []
+    negative_points: list[tuple[float, float]] = []
+    if not isinstance(canvas_json, dict):
+        return positive_points, negative_points
+    for obj in canvas_json.get("objects") or []:
+        if not isinstance(obj, dict):
+            continue
+        point = _canvas_object_center(obj)
+        if point is None:
+            continue
+        x, y = point
+        scaled_point = (float(x) / scale_x if scale_x else float(x), float(y) / scale_y if scale_y else float(y))
+        kind = _canvas_object_point_kind(obj, default_kind=default_kind)
+        if kind == "negative":
+            negative_points.append(scaled_point)
+        else:
+            positive_points.append(scaled_point)
+    return positive_points, negative_points
+
+
+def _canvas_object_point_kind(obj: dict, *, default_kind: str = "positive") -> str:
+    color_text = " ".join(
+        str(obj.get(key) or "").lower()
+        for key in ("fill", "stroke")
+    )
+    if "#e52828" in color_text or "229, 40, 40" in color_text or "rgb(229" in color_text:
+        return "negative"
+    if "#009760" in color_text or "0, 151, 96" in color_text or "rgb(0" in color_text:
+        return "positive"
+    return "negative" if default_kind == "negative" else "positive"
 
 
 def _canvas_object_center(obj: dict) -> tuple[float, float] | None:
@@ -590,10 +705,9 @@ def _render_polygon_editor(result: RoofMeasureResult) -> None:
     measurement = result.report.measurement
     if not measurement.sections:
         return
-    with st.expander("Coordinate table fallback", expanded=False):
+    with st.expander("Advanced coordinate fallback", expanded=False):
         st.caption(
-            "Edit inference-image pixel coordinates for each roof section. "
-            "Use this when the proposed mask clips an edge, includes extra pavement, or misses a small roof area."
+            "Debug/support fallback for direct pixel-coordinate edits. Normal edits should use the visual corner tools above."
         )
         rows = _section_vertex_rows(measurement.sections)
         edited_df = st.data_editor(
@@ -642,7 +756,7 @@ def _render_visual_polygon_editor(result: RoofMeasureResult, *, image: Image.Ima
     measurement = result.report.measurement
     if not measurement.sections:
         return
-    with st.expander("Visual polygon editor", expanded=True):
+    with st.expander("Advanced outline editor", expanded=False):
         if st_canvas is None:
             st.info("Install streamlit-drawable-canvas to edit polygons visually. The coordinate table remains available below.")
             return
@@ -709,6 +823,93 @@ def _render_visual_polygon_editor(result: RoofMeasureResult, *, image: Image.Ima
                     st.rerun()
 
 
+def _render_corner_handle_editor(result: RoofMeasureResult, *, image: Image.Image) -> None:
+    measurement = result.report.measurement
+    if not measurement.sections:
+        return
+    with st.expander("Adjust Roof Corners", expanded=True):
+        if st_canvas is None:
+            st.info("Install streamlit-drawable-canvas to drag roof corners. The coordinate table remains available below.")
+            return
+        st.caption(
+            "Select a roof section, then move, delete, or add corner dots directly on the image."
+        )
+        section_options = [section.section_id for section in measurement.sections]
+        selected_section_id = st.selectbox(
+            "Roof section",
+            section_options,
+            index=0,
+            key=f"roof_measure_corner_section_{result.report.id}",
+        )
+        selected_section = next((section for section in measurement.sections if section.section_id == selected_section_id), measurement.sections[0])
+        canvas_width, canvas_height, scale_x, scale_y = _canvas_dimensions(image)
+        corner_action = st.radio(
+            "Corner action",
+            ["Move/delete corners", "Add corner"],
+            horizontal=True,
+            key=f"roof_measure_corner_action_{result.report.id}_{selected_section_id}",
+        )
+        drawing_mode = "point" if corner_action == "Add corner" else "transform"
+        corner_canvas = st_canvas(
+            fill_color="rgba(229, 40, 40, 0.85)",
+            stroke_width=2,
+            stroke_color="#e52828",
+            background_image=image,
+            update_streamlit=True,
+            height=canvas_height,
+            width=canvas_width,
+            drawing_mode=drawing_mode,
+            initial_drawing=_section_to_corner_canvas_initial_drawing(selected_section, scale_x=scale_x, scale_y=scale_y),
+            display_toolbar=True,
+            point_display_radius=8,
+            key=f"roof_measure_corner_canvas_{result.report.id}_{selected_section_id}_{drawing_mode}",
+        )
+        action_col1, action_col2 = st.columns(2)
+        with action_col1:
+            if st.button("Apply Corner Edits", type="primary", width="stretch", key=f"roof_measure_apply_corners_{result.report.id}_{selected_section_id}"):
+                try:
+                    if corner_action == "Add corner":
+                        existing_points, new_points = _canvas_json_to_corner_edit_points(
+                            getattr(corner_canvas, "json_data", None),
+                            scale_x=scale_x,
+                            scale_y=scale_y,
+                        )
+                        if not new_points:
+                            raise ValueError("Click the roof edge where the new corner belongs before applying.")
+                        corner_points = _insert_new_corner_points(existing_points, new_points)
+                    else:
+                        corner_points = _canvas_json_to_corner_points(
+                            getattr(corner_canvas, "json_data", None),
+                            scale_x=scale_x,
+                            scale_y=scale_y,
+                        )
+                    corrected_sections = _replace_section_polygon(
+                        measurement.sections,
+                        selected_section_id,
+                        corner_points,
+                    )
+                    corrected_report = recalculate_report_from_corrected_sections(
+                        result.report,
+                        corrected_sections,
+                        correction_note=f"Estimator adjusted corner handles for {selected_section_id}.",
+                    )
+                except Exception as exc:
+                    st.error(f"Could not apply corner edits: {type(exc).__name__}: {exc}")
+                    return
+                st.session_state["roof_measure_result"] = RoofMeasureResult(
+                    report=corrected_report,
+                    selected_mask=None,
+                    candidate_count=result.candidate_count,
+                )
+                st.rerun()
+        with action_col2:
+            if st.button("Reset Corner Edits", width="stretch", key=f"roof_measure_corner_reset_{result.report.id}_{selected_section_id}"):
+                original = st.session_state.get("roof_measure_original_result")
+                if original is not None:
+                    st.session_state["roof_measure_result"] = original
+                    st.rerun()
+
+
 def _section_vertex_rows(sections: list[RoofSection]) -> list[dict[str, float | int | str]]:
     rows: list[dict[str, float | int | str]] = []
     for section in sections:
@@ -735,20 +936,72 @@ def _canvas_dimensions(image: Image.Image, *, max_width: int = 1000) -> tuple[in
     return int(canvas_width), int(canvas_height), scale, scale
 
 
+def _section_to_corner_canvas_initial_drawing(section: RoofSection, *, scale_x: float, scale_y: float) -> dict:
+    points = section.polygon[:-1] if section.polygon and section.polygon[0] == section.polygon[-1] else section.polygon
+    canvas_points = [
+        {"x": float(x) * scale_x, "y": float(y) * scale_y}
+        for x, y in points
+    ]
+    objects: list[dict] = []
+    if len(canvas_points) >= 3:
+        objects.append(
+            {
+                "type": "polygon",
+                "version": "4.4.0",
+                "originX": "left",
+                "originY": "top",
+                "left": 0,
+                "top": 0,
+                "fill": "rgba(229, 40, 40, 0.12)",
+                "stroke": "#009760",
+                "strokeWidth": 3,
+                "strokeLineCap": "round",
+                "strokeLineJoin": "round",
+                "points": canvas_points,
+                "objectCaching": False,
+                "selectable": False,
+                "evented": False,
+            }
+        )
+    for index, (x, y) in enumerate(points):
+        canvas_x = float(x) * scale_x
+        canvas_y = float(y) * scale_y
+        objects.append(
+            {
+                "type": "circle",
+                "version": "4.4.0",
+                "originX": "center",
+                "originY": "center",
+                "left": canvas_x,
+                "top": canvas_y,
+                "width": 18,
+                "height": 18,
+                "radius": 9,
+                "fill": "#f4f1ea",
+                "stroke": "#e52828",
+                "strokeWidth": 3,
+                "scaleX": 1,
+                "scaleY": 1,
+                "sectionId": section.section_id,
+                "vertexIndex": index,
+            }
+        )
+    return {"version": "4.4.0", "objects": objects}
+
+
 def _sections_to_canvas_initial_drawing(sections: list[RoofSection], *, scale_x: float, scale_y: float) -> dict:
     objects = []
     for section in sections:
         points = section.polygon[:-1] if section.polygon and section.polygon[0] == section.polygon[-1] else section.polygon
         if len(points) < 3:
             continue
-        path = []
-        for index, (x, y) in enumerate(points):
-            command = "M" if index == 0 else "L"
-            path.append([command, float(x) * scale_x, float(y) * scale_y])
-        path.append(["Z"])
+        canvas_points = [
+            {"x": float(x) * scale_x, "y": float(y) * scale_y}
+            for x, y in points
+        ]
         objects.append(
             {
-                "type": "path",
+                "type": "polygon",
                 "version": "4.4.0",
                 "originX": "left",
                 "originY": "top",
@@ -759,7 +1012,7 @@ def _sections_to_canvas_initial_drawing(sections: list[RoofSection], *, scale_x:
                 "strokeWidth": 3,
                 "strokeLineCap": "round",
                 "strokeLineJoin": "round",
-                "path": path,
+                "points": canvas_points,
                 "objectCaching": False,
                 "selectable": True,
             }
@@ -815,6 +1068,129 @@ def _canvas_json_to_sections(
     return corrected_sections
 
 
+def _canvas_json_to_corner_points(canvas_json: dict | None, *, scale_x: float, scale_y: float) -> list[tuple[float, float]]:
+    if not isinstance(canvas_json, dict):
+        return []
+    indexed_points: list[tuple[int, int, tuple[float, float]]] = []
+    for fallback_index, obj in enumerate(canvas_json.get("objects") or []):
+        if not isinstance(obj, dict) or str(obj.get("type") or "").lower() != "circle":
+            continue
+        point = _canvas_object_center(obj)
+        if point is None:
+            continue
+        try:
+            vertex_index = int(obj.get("vertexIndex"))
+        except (TypeError, ValueError):
+            vertex_index = fallback_index
+        x, y = point
+        scaled_point = (float(x) / scale_x if scale_x else float(x), float(y) / scale_y if scale_y else float(y))
+        indexed_points.append((vertex_index, fallback_index, scaled_point))
+    indexed_points.sort(key=lambda item: (item[0], item[1]))
+    return [point for _, _, point in indexed_points]
+
+
+def _canvas_json_to_corner_edit_points(
+    canvas_json: dict | None,
+    *,
+    scale_x: float,
+    scale_y: float,
+) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+    if not isinstance(canvas_json, dict):
+        return [], []
+    indexed_existing: list[tuple[int, int, tuple[float, float]]] = []
+    new_points: list[tuple[float, float]] = []
+    for fallback_index, obj in enumerate(canvas_json.get("objects") or []):
+        if not isinstance(obj, dict) or str(obj.get("type") or "").lower() != "circle":
+            continue
+        point = _canvas_object_center(obj)
+        if point is None:
+            continue
+        x, y = point
+        scaled_point = (float(x) / scale_x if scale_x else float(x), float(y) / scale_y if scale_y else float(y))
+        if "vertexIndex" in obj:
+            try:
+                vertex_index = int(obj.get("vertexIndex"))
+            except (TypeError, ValueError):
+                vertex_index = fallback_index
+            indexed_existing.append((vertex_index, fallback_index, scaled_point))
+        else:
+            new_points.append(scaled_point)
+    indexed_existing.sort(key=lambda item: (item[0], item[1]))
+    return [point for _, _, point in indexed_existing], new_points
+
+
+def _insert_new_corner_points(
+    existing_points: list[tuple[float, float]],
+    new_points: list[tuple[float, float]],
+) -> list[tuple[float, float]]:
+    if len(existing_points) < 3:
+        raise ValueError("At least three existing corner points are required.")
+    updated = list(existing_points)
+    for point in new_points:
+        insert_at = _nearest_edge_insert_index(updated, point)
+        updated.insert(insert_at, point)
+    return updated
+
+
+def _nearest_edge_insert_index(points: list[tuple[float, float]], point: tuple[float, float]) -> int:
+    best_index = 1
+    best_distance = float("inf")
+    for index, start in enumerate(points):
+        end = points[(index + 1) % len(points)]
+        distance = _distance_to_segment(point, start, end)
+        if distance < best_distance:
+            best_distance = distance
+            best_index = index + 1
+    return best_index
+
+
+def _distance_to_segment(
+    point: tuple[float, float],
+    start: tuple[float, float],
+    end: tuple[float, float],
+) -> float:
+    px, py = point
+    x1, y1 = start
+    x2, y2 = end
+    dx = x2 - x1
+    dy = y2 - y1
+    if dx == 0 and dy == 0:
+        return math.hypot(px - x1, py - y1)
+    t = ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)
+    t = max(0.0, min(1.0, t))
+    projected_x = x1 + t * dx
+    projected_y = y1 + t * dy
+    return math.hypot(px - projected_x, py - projected_y)
+
+
+def _replace_section_polygon(
+    sections: list[RoofSection],
+    section_id: str,
+    points: list[tuple[float, float]],
+) -> list[RoofSection]:
+    if len(points) < 3:
+        raise ValueError("At least three corner points are required.")
+    corrected_sections: list[RoofSection] = []
+    matched = False
+    for section in sections:
+        if section.section_id != section_id:
+            corrected_sections.append(section)
+            continue
+        matched = True
+        corrected_sections.append(
+            section.model_copy(
+                deep=True,
+                update={
+                    "polygon": points,
+                    "holes": [],
+                },
+            )
+        )
+    if not matched:
+        raise ValueError(f"Roof section was not found: {section_id}")
+    return corrected_sections
+
+
 def _object_points_from_canvas(obj: dict) -> list[tuple[float, float]]:
     object_type = str(obj.get("type") or "").lower()
     if object_type == "rect":
@@ -863,6 +1239,8 @@ def _polygon_points_from_canvas(obj: dict) -> list[tuple[float, float]]:
 
 def _path_points_from_canvas(obj: dict) -> list[tuple[float, float]]:
     path = obj.get("path") or []
+    left = float(obj.get("left") or 0)
+    top = float(obj.get("top") or 0)
     scale_x = float(obj.get("scaleX") or 1)
     scale_y = float(obj.get("scaleY") or 1)
     points: list[tuple[float, float]] = []
@@ -872,12 +1250,12 @@ def _path_points_from_canvas(obj: dict) -> list[tuple[float, float]]:
         op = str(command[0]).upper()
         if op in {"M", "L"} and len(command) >= 3:
             try:
-                points.append((float(command[1]) * scale_x, float(command[2]) * scale_y))
+                points.append((left + float(command[1]) * scale_x, top + float(command[2]) * scale_y))
             except (TypeError, ValueError):
                 continue
         elif op in {"Q", "C"} and len(command) >= 3:
             try:
-                points.append((float(command[-2]) * scale_x, float(command[-1]) * scale_y))
+                points.append((left + float(command[-2]) * scale_x, top + float(command[-1]) * scale_y))
             except (TypeError, ValueError):
                 continue
     return points

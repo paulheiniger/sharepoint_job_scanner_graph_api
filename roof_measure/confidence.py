@@ -47,6 +47,7 @@ def measurement_warnings(
     calibration: CalibrationResult,
     sections: list[RoofSection],
     image_metadata: ImageMetadata,
+    segmentation_score: float | None = None,
     segmenter_warnings: list[str] | None = None,
 ) -> list[MeasurementWarning]:
     warnings: list[MeasurementWarning] = []
@@ -76,6 +77,34 @@ def measurement_warnings(
                 code="no_roof_sections",
                 message="No roof section polygons were produced from the selected mask.",
                 severity="error",
+            )
+        )
+    if segmentation_score is not None and segmentation_score < 0.2:
+        warnings.append(
+            MeasurementWarning(
+                code="low_segmentation_confidence",
+                message=(
+                    "The selected roof mask has very low model confidence. Move the roof/exclude points "
+                    "or draw a replacement outline before using this measurement."
+                ),
+                severity="error",
+            )
+        )
+    elif segmentation_score is not None and segmentation_score < 0.5:
+        warnings.append(
+            MeasurementWarning(
+                code="segmentation_review",
+                message="The selected roof mask has low model confidence; verify the outline before using this measurement.",
+            )
+        )
+    if len(sections) >= 8:
+        warnings.append(
+            MeasurementWarning(
+                code="fragmented_segmentation",
+                message=(
+                    "The roof mask produced many separate sections. This often means pavement, shadows, or edges were included; "
+                    "verify the outline or add exclude points."
+                ),
             )
         )
     if image_metadata.quality_flags:

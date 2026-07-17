@@ -10,7 +10,7 @@ from .confidence import area_uncertainty_factor, confidence_components, measurem
 from .geometry import polygon_area_pixels, polygon_perimeter_pixels, repair_polygon
 from .image_io import LoadedImage, image_to_array, load_image_bytes
 from .models import CalibrationResult, MeasurementReport, MeasurementWarning, RoofMeasurement, RoofMeasureRequest, RoofSection
-from .polygonize import sections_from_mask
+from .polygonize import section_from_polygon, sections_from_mask
 from .segmentation import RoofSegmenter, SegmentationPrompts, choose_segmenter
 
 
@@ -85,6 +85,7 @@ def measure_roof_from_overhead_image(
         calibration=calibration,
         sections=sections,
         image_metadata=loaded.metadata,
+        segmentation_score=segmentation_score,
         segmenter_warnings=segmentation.warnings,
     )
     measurement = RoofMeasurement(
@@ -114,6 +115,112 @@ def measure_roof_from_overhead_image(
         model_version=segmentation.model_version,
     )
     return RoofMeasureResult(report=report, selected_mask=selected_mask, candidate_count=len(candidates))
+
+
+def measure_roof_from_outline_polygons(
+    *,
+    image_bytes: bytes,
+    request: RoofMeasureRequest,
+    polygons: list[list[tuple[float, float]]],
+    model_name: str = "openai_roof_outline",
+    model_version: str = "",
+    outline_confidence: float = 0.65,
+    outline_notes: str = "",
+    storage_root: str = "output/roof_measure_uploads",
+) -> RoofMeasureResult:
+    loaded = load_image_bytes(image_bytes, file_name=request.overhead_image_name, storage_root=storage_root)
+    sections: list[RoofSection] = []
+    for index, polygon in enumerate(polygons, start=1):
+        try:
+            section = section_from_polygon(f"section-{index}", polygon)
+        except Exception:
+            continue
+        if section.area_pixels <= 0:
+            continue
+        section.confidence = max(0.0, min(float(outline_confidence or 0), 1.0))
+        sections.append(section)
+
+    calibration = _metadata_calibration(request.metadata_pixels_per_foot)
+    if not calibration.pixels_per_foot:
+        calibration = clicked_known_length_calibration(
+            point_a=request.calibration_point_a,
+            point_b=request.calibration_point_b,
+            length_feet=request.calibration_length_feet,
+        )
+    if not calibration.pixels_per_foot:
+        calibration = detect_google_earth_scale_bar(
+            loaded.inference_image,
+            label_hint=request.scale_bar_label_hint,
+            use_ai_fallback=request.use_ai_scale_reader,
+        )
+    for section in sections:
+        section.area_sqft = sqft_from_pixels(section.area_pixels, calibration.pixels_per_foot)
+        section.perimeter_ft = feet_from_pixels(section.perimeter_pixels, calibration.pixels_per_foot)
+    total_area = _sum_optional([section.area_sqft for section in sections])
+    total_perimeter = _sum_optional([section.perimeter_ft for section in sections])
+    confidence = confidence_components(
+        calibration=calibration,
+        sections=sections,
+        image_metadata=loaded.metadata,
+        segmentation_score=max(0.0, min(float(outline_confidence or 0), 1.0)),
+    )
+    uncertainty_factor = area_uncertainty_factor(confidence)
+    warnings = measurement_warnings(
+        calibration=calibration,
+        sections=sections,
+        image_metadata=loaded.metadata,
+        segmentation_score=max(0.0, min(float(outline_confidence or 0), 1.0)),
+        segmenter_warnings=[],
+    )
+    warnings.append(
+        MeasurementWarning(
+            code="ai_outline_review",
+            message="AI-suggested roof outline must be reviewed and adjusted before final estimating use.",
+            severity="info",
+        )
+    )
+    if outline_notes:
+        warnings.append(
+            MeasurementWarning(
+                code="ai_outline_notes",
+                message=outline_notes,
+                severity="info",
+            )
+        )
+    measurement = RoofMeasurement(
+        total_area_sqft=None if total_area is None else round(total_area, 2),
+        total_perimeter_ft=None if total_perimeter is None else round(total_perimeter, 2),
+        low_area_sqft=None if total_area is None else round(total_area * (1 - uncertainty_factor), 2),
+        high_area_sqft=None if total_area is None else round(total_area * (1 + uncertainty_factor), 2),
+        sections=sections,
+        calibration=calibration,
+        confidence=confidence,
+        warnings=warnings,
+        assumptions=[
+            "Area is calculated in plan view from the uploaded overhead image.",
+            "Roof polygons were suggested by AI and require estimator review.",
+            "This is an estimating-assistance measurement, not a survey-grade measurement.",
+        ],
+    )
+    report = MeasurementReport(
+        id=f"roof-measure-{uuid.uuid4().hex[:16]}",
+        address=request.address,
+        job_id=request.job_id,
+        source_images=[loaded.metadata],
+        calibration_method=calibration.calibration_type,
+        pixels_per_foot=calibration.pixels_per_foot,
+        measurement=measurement,
+        model_name=model_name,
+        model_version=model_version or "roof-measure-ai-outline-v1",
+        user_corrections=[
+            {
+                "type": "ai_outline_seed",
+                "note": outline_notes,
+                "section_count": len(sections),
+            }
+        ],
+    )
+    return RoofMeasureResult(report=report, selected_mask=None, candidate_count=0)
 
 
 def _sum_optional(values: list[float | None]) -> float | None:

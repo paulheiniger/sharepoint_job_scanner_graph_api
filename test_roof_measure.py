@@ -14,6 +14,7 @@ from roof_measure.calibration import (
     parse_scale_label_feet,
     sqft_from_pixels,
 )
+from roof_measure.ai_polygons import polygon_suggestion_from_payload
 from roof_measure.ai_points import suggestion_from_payload
 from roof_measure.confidence import measurement_warnings
 from roof_measure.exports import measurement_to_geojson
@@ -22,14 +23,21 @@ from roof_measure.image_io import image_hash, load_image_bytes
 from roof_measure.models import ImageMetadata
 from roof_measure.polygonize import section_from_polygon, sections_from_mask
 from roof_measure.segmentation import MockRoofSegmenter, Sam2RoofSegmenter, SegmentationPrompts
-from roof_measure.service import measure_roof_from_overhead_image, recalculate_report_from_corrected_sections
+from roof_measure.service import measure_roof_from_outline_polygons, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections
 from roof_measure.models import RoofMeasureRequest
 from roof_measure.streamlit_page import (
+    _canvas_json_to_corner_edit_points,
     _canvas_json_to_points,
+    _canvas_json_to_prompt_points,
     _canvas_json_to_sections,
+    _canvas_json_to_corner_points,
     _format_points_text,
+    _insert_new_corner_points,
     _parse_points_text,
+    _prompt_points_to_canvas_initial_drawing,
     _points_to_canvas_initial_drawing,
+    _replace_section_polygon,
+    _section_to_corner_canvas_initial_drawing,
     _sections_to_canvas_initial_drawing,
 )
 from roof_measure.visualization import prompt_points_overlay
@@ -434,6 +442,107 @@ def test_canvas_initial_drawing_path_round_trips_section_points() -> None:
     assert corrected[0].polygon == [(10.0, 10.0), (50.0, 10.0), (50.0, 30.0), (10.0, 30.0)]
 
 
+def test_canvas_path_json_applies_transformed_offset() -> None:
+    section = section_from_polygon("main", [(0, 0), (10, 0), (10, 10), (0, 10)])
+    canvas_json = {
+        "objects": [
+            {
+                "type": "path",
+                "left": 5,
+                "top": 10,
+                "scaleX": 1,
+                "scaleY": 1,
+                "path": [["M", 0, 0], ["L", 20, 0], ["L", 20, 20], ["L", 0, 20], ["Z"]],
+            }
+        ]
+    }
+
+    corrected = _canvas_json_to_sections(
+        canvas_json,
+        original_sections=[section],
+        scale_x=0.5,
+        scale_y=0.5,
+    )
+
+    assert corrected[0].polygon == [(10.0, 20.0), (50.0, 20.0), (50.0, 60.0), (10.0, 60.0)]
+
+
+def test_corner_canvas_round_trips_draggable_vertex_handles() -> None:
+    section = section_from_polygon("main", [(10, 10), (50, 10), (50, 30), (10, 30)])
+    initial = _section_to_corner_canvas_initial_drawing(section, scale_x=0.5, scale_y=0.5)
+
+    points = _canvas_json_to_corner_points(initial, scale_x=0.5, scale_y=0.5)
+
+    assert points == [(10.0, 10.0), (50.0, 10.0), (50.0, 30.0), (10.0, 30.0)]
+
+
+def test_corner_canvas_splits_existing_handles_from_new_clicked_points() -> None:
+    section = section_from_polygon("main", [(10, 10), (50, 10), (50, 30), (10, 30)])
+    canvas_json = _section_to_corner_canvas_initial_drawing(section, scale_x=0.5, scale_y=0.5)
+    canvas_json["objects"].append(
+        {
+            "type": "circle",
+            "originX": "center",
+            "originY": "center",
+            "left": 15,
+            "top": 5,
+            "width": 18,
+            "height": 18,
+            "radius": 9,
+            "scaleX": 1,
+            "scaleY": 1,
+        }
+    )
+
+    existing, new_points = _canvas_json_to_corner_edit_points(canvas_json, scale_x=0.5, scale_y=0.5)
+
+    assert existing == [(10.0, 10.0), (50.0, 10.0), (50.0, 30.0), (10.0, 30.0)]
+    assert new_points == [(30.0, 10.0)]
+
+
+def test_insert_new_corner_points_uses_nearest_polygon_edge() -> None:
+    updated = _insert_new_corner_points(
+        [(10, 10), (50, 10), (50, 30), (10, 30)],
+        [(30, 8)],
+    )
+
+    assert updated == [(10, 10), (30, 8), (50, 10), (50, 30), (10, 30)]
+
+
+def test_replace_section_polygon_only_updates_selected_section() -> None:
+    main = section_from_polygon("main", [(10, 10), (50, 10), (50, 30), (10, 30)])
+    annex = section_from_polygon("annex", [(60, 60), (80, 60), (80, 80), (60, 80)])
+
+    corrected = _replace_section_polygon(
+        [main, annex],
+        "annex",
+        [(65, 65), (85, 65), (85, 90), (65, 90)],
+    )
+
+    assert corrected[0].polygon == main.polygon
+    assert corrected[1].polygon == [(65, 65), (85, 65), (85, 90), (65, 90)]
+
+
+def test_low_segmentation_confidence_warns() -> None:
+    section = section_from_polygon("main", [(0, 0), (10, 0), (10, 10), (0, 10)])
+    warnings = measurement_warnings(
+        calibration=clicked_known_length_calibration(point_a=(0, 0), point_b=(10, 0), length_feet=5),
+        sections=[section],
+        image_metadata=ImageMetadata(
+            image_id="img",
+            file_name="roof.png",
+            width=100,
+            height=100,
+            inference_width=100,
+            inference_height=100,
+            content_hash="hash",
+        ),
+        segmentation_score=0.04,
+    )
+
+    assert any(warning.code == "low_segmentation_confidence" and warning.severity == "error" for warning in warnings)
+
+
 def test_parse_points_text_accepts_line_or_semicolon_separated_points() -> None:
     assert _parse_points_text("10,20\n30, 40;bad\n50,60") == [
         (10.0, 20.0),
@@ -470,6 +579,66 @@ def test_ai_point_suggestion_payload_filters_out_of_bounds_points() -> None:
     assert "multiple roof sections" in suggestion.notes
 
 
+def test_ai_polygon_suggestion_payload_filters_and_repairs_polygons() -> None:
+    suggestion = polygon_suggestion_from_payload(
+        {
+            "roof_polygons": [
+                {
+                    "label": "main",
+                    "points": [
+                        {"x": 10, "y": 20},
+                        {"x": 60, "y": 20},
+                        {"x": 60, "y": 50},
+                        {"x": 10, "y": 50},
+                    ],
+                },
+                {
+                    "label": "bad",
+                    "points": [
+                        {"x": 9999, "y": 20},
+                        {"x": 60, "y": 20},
+                    ],
+                },
+            ],
+            "confidence": 0.8,
+            "notes": "Simple roof outline.",
+        },
+        width=100,
+        height=80,
+    )
+
+    assert len(suggestion.polygons) == 1
+    assert suggestion.polygons[0] == [(10.0, 20.0), (60.0, 20.0), (60.0, 50.0), (10.0, 50.0), (10.0, 20.0)]
+    assert suggestion.confidence == 0.8
+
+
+def test_measurement_service_uses_ai_outline_polygons_without_segmenter(tmp_path) -> None:
+    request = RoofMeasureRequest(
+        overhead_image_name="roof.png",
+        calibration_length_feet=5,
+        calibration_point_a=(0, 0),
+        calibration_point_b=(10, 0),
+    )
+
+    result = measure_roof_from_outline_polygons(
+        image_bytes=_image_bytes(),
+        request=request,
+        polygons=[[(20, 10), (60, 10), (60, 30), (20, 30)]],
+        outline_confidence=0.82,
+        outline_notes="AI outlined a simple rectangle.",
+        storage_root=str(tmp_path),
+    )
+
+    measurement = result.report.measurement
+    assert result.selected_mask is None
+    assert result.candidate_count == 0
+    assert measurement.sections[0].area_pixels == 800
+    assert measurement.total_area_sqft == 200
+    assert measurement.total_perimeter_ft == 60
+    assert result.report.model_name == "openai_roof_outline"
+    assert any(warning.code == "ai_outline_review" for warning in measurement.warnings)
+
+
 def test_prompt_points_overlay_preserves_image_size() -> None:
     image = Image.new("RGB", (120, 80), "white")
 
@@ -490,6 +659,20 @@ def test_prompt_point_canvas_round_trips_points() -> None:
     parsed = _canvas_json_to_points(canvas_json, scale_x=0.5, scale_y=0.5)
 
     assert parsed == points
+
+
+def test_prompt_point_canvas_round_trips_roof_and_exclude_points() -> None:
+    canvas_json = _prompt_points_to_canvas_initial_drawing(
+        positive_points=[(100.0, 120.0)],
+        negative_points=[(250.0, 300.0)],
+        scale_x=0.5,
+        scale_y=0.5,
+    )
+
+    positive, negative = _canvas_json_to_prompt_points(canvas_json, scale_x=0.5, scale_y=0.5)
+
+    assert positive == [(100.0, 120.0)]
+    assert negative == [(250.0, 300.0)]
 
 
 def test_prompt_point_canvas_reads_top_left_origin_circle() -> None:
