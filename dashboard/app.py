@@ -3658,7 +3658,7 @@ def row_paired_positive_values(
 ) -> tuple[float | None, float | None, str | None]:
     first_actual: tuple[float, str] | None = None
     first_estimated: tuple[float, str] | None = None
-    for actual_column, estimated_column in zip(actual_columns, estimated_columns, strict=False):
+    for actual_column, estimated_column in zip(actual_columns, estimated_columns):
         actual_value = row_first_positive_value(row, [actual_column])
         estimated_value = row_first_positive_value(row, [estimated_column])
         if actual_value and estimated_value:
@@ -3884,7 +3884,7 @@ def build_job_tracking_budget_health(summary: pd.DataFrame) -> tuple[pd.DataFram
         default="On Track",
     )
     job_df = add_unique_job_display_labels(job_df)
-    display_lookup = dict(zip(job_df["job_id"].astype(str), job_df["job_display"], strict=False))
+    display_lookup = dict(zip(job_df["job_id"].astype(str), job_df["job_display"]))
     bucket_df["job_display"] = bucket_df["job_id"].astype(str).map(display_lookup).fillna(bucket_df["project"])
     job_df["budget_used_pct_display"] = job_df["budget_used_pct"].map(lambda value: "" if pd.isna(value) else f"{value:.0%}")
     bucket_df["budget_used_pct_display"] = bucket_df["budget_used_pct"].map(lambda value: "" if pd.isna(value) else f"{value:.0%}")

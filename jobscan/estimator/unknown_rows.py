@@ -458,7 +458,7 @@ def build_unknown_clusters(
     grouped = rows.groupby(group_cols, dropna=False, sort=False)
     for key_values, group in grouped:
         key_values = key_values if isinstance(key_values, tuple) else (key_values,)
-        key = dict(zip(group_cols, key_values, strict=False))
+        key = dict(zip(group_cols, key_values))
         cluster_id = stable_cluster_id([key.get(column) for column in group_cols])
         role_hint = _role_hint_for_cluster(key, row_role_hints) or _heuristic_template_row_role(key)
         if role_hint.get("template_row_role") == NON_INFORMATIONAL_TEMPLATE_ROLE:
