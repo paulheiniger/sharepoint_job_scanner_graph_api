@@ -171,6 +171,15 @@ def test_repair_and_simplify_ring_close_polygon() -> None:
     assert len(simplified) < len(repaired)
 
 
+def test_simplify_ring_removes_stair_step_vertices_from_a_closed_boundary() -> None:
+    stair_step = [(0, 0), (20, 1), (40, 0), (41, 20), (40, 40), (20, 39), (0, 40), (-1, 20)]
+
+    simplified = simplify_ring(stair_step, tolerance=3)
+
+    assert len(simplified) == 5
+    assert polygon_area_pixels(simplified) == 1600
+
+
 def test_straighten_architectural_ring_fits_rotated_orthogonal_edges_and_preserves_area() -> None:
     jagged = [
         (10, 11),
@@ -227,6 +236,21 @@ def test_sections_from_mask_traces_component_boundary_not_bounding_box() -> None
     assert polygon_area_pixels(section.polygon, section.holes) == 1400
     assert polygon_area_pixels([(20, 10), (70, 10), (70, 50), (20, 50)]) == 2000
     assert len(section.polygon) > 5
+
+
+def test_sections_from_mask_simplifies_noisy_rectangular_roof_boundary() -> None:
+    mask = np.zeros((100, 120), dtype=bool)
+    mask[20:80, 30:90] = True
+    mask[18:20, 48:52] = True
+    mask[80:82, 68:72] = True
+    mask[44:48, 28:30] = True
+    mask[54:58, 90:92] = True
+
+    sections = sections_from_mask(mask, minimum_section_area_pixels=100, simplification_tolerance=8)
+
+    assert len(sections) == 1
+    assert len(sections[0].polygon) == 5
+    assert abs(polygon_area_pixels(sections[0].polygon) - float(mask.sum())) / float(mask.sum()) < 0.02
 
 
 def test_duplicate_image_detection_updates_seen_hashes(tmp_path) -> None:
@@ -514,6 +538,19 @@ def test_corner_canvas_round_trips_draggable_vertex_handles() -> None:
     points = _canvas_json_to_corner_points(initial, scale_x=0.5, scale_y=0.5)
 
     assert points == [(10.0, 10.0), (50.0, 10.0), (50.0, 30.0), (10.0, 30.0)]
+
+
+def test_corner_canvas_lines_use_relative_endpoints() -> None:
+    section = section_from_polygon("main", [(10, 10), (50, 10), (50, 30), (10, 30)])
+    initial = _section_to_corner_canvas_initial_drawing(section, scale_x=0.5, scale_y=0.5)
+    first_line = initial["objects"][0]
+
+    assert first_line["left"] == 5
+    assert first_line["top"] == 5
+    assert first_line["x1"] == 0
+    assert first_line["y1"] == 0
+    assert first_line["x2"] == 20
+    assert first_line["y2"] == 0
 
 
 def test_corner_canvas_splits_existing_handles_from_new_clicked_points() -> None:

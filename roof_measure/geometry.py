@@ -60,8 +60,17 @@ def simplify_ring(points: Ring, tolerance: float) -> Ring:
     ring = repair_polygon(points)
     if len(ring) <= 5 or tolerance <= 0:
         return ring
-    simplified = _rdp(ring[:-1], tolerance)
-    return repair_polygon(simplified)
+    vertices = ring[:-1]
+    while len(vertices) > 3:
+        distances = [
+            _perpendicular_distance(vertex, vertices[index - 1], vertices[(index + 1) % len(vertices)])
+            for index, vertex in enumerate(vertices)
+        ]
+        smallest_distance = min(distances)
+        if smallest_distance > tolerance:
+            break
+        vertices.pop(distances.index(smallest_distance))
+    return repair_polygon(vertices)
 
 
 def _rdp(points: Ring, tolerance: float) -> Ring:
@@ -116,11 +125,12 @@ def snap_axis_aligned_edges(points: Ring, strength: float = 0.0) -> Ring:
 def straighten_architectural_ring(
     points: Ring,
     *,
+    simplification_tolerance: float = 12.0,
     angle_tolerance_degrees: float = 20.0,
     max_area_drift: float = 0.03,
 ) -> Ring:
     """Fit near-orthogonal roof edges to the ring's dominant building axes."""
-    ring = repair_polygon(points)
+    ring = simplify_ring(points, simplification_tolerance)
     vertices = ring[:-1]
     if len(vertices) < 4:
         return ring
