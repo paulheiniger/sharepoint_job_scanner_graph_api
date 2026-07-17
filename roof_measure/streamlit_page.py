@@ -48,7 +48,7 @@ from .map_reference import MapboxReferenceProvider
 from .models import RoofMeasureRequest, RoofSection
 from .polygonize import section_from_polygon
 from .service import RoofMeasureResult, measure_roof_from_outline_polygons, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections
-from .visualization import annotated_overlay, image_png_bytes
+from .visualization import annotated_overlay, image_png_bytes, prompt_points_overlay
 
 
 def render_ai_roof_measure_page() -> None:
@@ -535,6 +535,16 @@ def _render_prompt_point_picker(image: Image.Image, *, image_key: str) -> None:
         prompt_revision = _prompt_points_revision()
         if current_positive or current_negative:
             st.caption(f"Showing {len(current_positive)} roof point(s) and {len(current_negative)} exclude point(s).")
+            point_preview = prompt_points_overlay(
+                image,
+                positive_points=current_positive,
+                negative_points=current_negative,
+            )
+            st.image(
+                point_preview,
+                caption="AI/clicked point preview: green roof points, red exclude points.",
+                width=canvas_width,
+            )
         mode_col, kind_col = st.columns([1, 1])
         with mode_col:
             point_action = st.radio(
