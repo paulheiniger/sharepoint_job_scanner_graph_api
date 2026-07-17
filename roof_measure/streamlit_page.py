@@ -65,7 +65,7 @@ def render_ai_roof_measure_page() -> None:
 - Can fetch calibrated Mapbox satellite imagery from an address or use uploaded screenshots with a visible scale bar.
 - SAM 2 is behind a provider interface but is not required in this runtime.
 - The current fallback mask is a prompt-centered candidate, not a roof-aware model.
-- Oblique images are stored as references only in this phase.
+- Oblique images are reference-only context for AI; measurements still come from the calibrated overhead image.
             """.strip()
         )
 
@@ -130,8 +130,15 @@ def render_ai_roof_measure_page() -> None:
         accept_multiple_files=True,
         key="roof_measure_oblique",
     )
-    if oblique_files:
-        st.caption(f"{len(oblique_files):,} oblique/reference image(s) attached. Milestone 1 does not use these for primary area.")
+    reference_images, reference_image_warnings = _load_reference_images(oblique_files)
+    if reference_image_warnings:
+        for warning in reference_image_warnings:
+            st.warning(warning)
+    if reference_images:
+        st.caption(
+            f"{len(reference_images):,} oblique/reference image(s) attached. "
+            "AI can use them as context; measurement and coordinates still come from the overhead image."
+        )
 
     mapbox_image_bytes = st.session_state.get("roof_measure_mapbox_image_bytes")
     mapbox_file_name = str(st.session_state.get("roof_measure_mapbox_file_name") or "mapbox-satellite.png")
@@ -157,7 +164,8 @@ def render_ai_roof_measure_page() -> None:
         st.error(f"Could not read overhead image: {exc}")
         return
 
-    st.image(loaded.inference_image, caption=f"{image_name} ({loaded.metadata.inference_width} x {loaded.metadata.inference_height} inference pixels)")
+    stored_result = st.session_state.get("roof_measure_result")
+    st.caption(f"Image: {image_name} ({loaded.metadata.inference_width} x {loaded.metadata.inference_height} inference pixels)")
     if image_source == "mapbox" and metadata_pixels_per_foot:
         st.caption(f"Mapbox metadata calibration: {metadata_pixels_per_foot:.4f} pixels per foot.")
     if loaded.metadata.quality_flags:
@@ -180,7 +188,11 @@ def render_ai_roof_measure_page() -> None:
         else:
             st.caption("Set OPENAI_API_KEY to enable AI point suggestions.")
     if suggest_points:
-        suggestion = suggest_roof_prompt_points(loaded.inference_image, address=address)
+        suggestion = suggest_roof_prompt_points(
+            loaded.inference_image,
+            address=address,
+            reference_images=reference_images,
+        )
         if suggestion.warnings:
             for warning in suggestion.warnings:
                 st.warning(warning)
@@ -208,7 +220,10 @@ def render_ai_roof_measure_page() -> None:
             f"confidence {float(ai_point_notes.get('confidence') or 0):.2f}. "
             + str(ai_point_notes.get("notes") or "")
         )
-    _render_prompt_point_picker(loaded.inference_image, image_key=loaded.metadata.image_id)
+    if stored_result is None:
+        _render_prompt_point_picker(loaded.inference_image, image_key=loaded.metadata.image_id)
+    else:
+        st.caption("A measurement is active below. Edit the current roof outline in the result workspace, or reset the result to choose new segmenter prompt points.")
     st.caption(
         "If this is a Google Earth-style screenshot with a visible scale bar, leave manual calibration blank. "
         "The app will try to read the scale label and detect the scale bar automatically."
@@ -338,7 +353,11 @@ def render_ai_roof_measure_page() -> None:
             help="Sends the displayed image to OpenAI for straight-line roof polygons, then opens them in the visual editor.",
             key="roof_measure_suggest_ai_outline",
         ):
-            suggestion = suggest_roof_polygons(loaded.inference_image, address=address)
+            suggestion = suggest_roof_polygons(
+                loaded.inference_image,
+                address=address,
+                reference_images=reference_images,
+            )
             if suggestion.warnings:
                 for warning in suggestion.warnings:
                     st.warning(warning)
@@ -379,7 +398,6 @@ def render_ai_roof_measure_page() -> None:
             st.session_state["roof_measure_image_bytes"] = image_bytes
             st.session_state["roof_measure_file_name"] = image_name
 
-    stored_result = st.session_state.get("roof_measure_result")
     stored_image_bytes = st.session_state.get("roof_measure_image_bytes")
     stored_file_name = st.session_state.get("roof_measure_file_name")
     if stored_result is not None and stored_image_bytes and stored_file_name:
@@ -387,10 +405,17 @@ def render_ai_roof_measure_page() -> None:
             stored_result,
             image_bytes=stored_image_bytes,
             file_name=stored_file_name,
+            reference_images=reference_images,
         )
 
 
-def _render_measurement_result(result: RoofMeasureResult, *, image_bytes: bytes, file_name: str) -> None:
+def _render_measurement_result(
+    result: RoofMeasureResult,
+    *,
+    image_bytes: bytes,
+    file_name: str,
+    reference_images: list[Image.Image] | None = None,
+) -> None:
     report = result.report
     measurement = report.measurement
     st.subheader("Measurement Result")
@@ -402,7 +427,6 @@ def _render_measurement_result(result: RoofMeasureResult, *, image_bytes: bytes,
 
     loaded = load_image_bytes(image_bytes, file_name=file_name)
     overlay = annotated_overlay(loaded.inference_image, mask=result.selected_mask, sections=measurement.sections)
-    st.image(overlay, caption="Annotated inference-image overlay")
 
     if measurement.warnings:
         for warning in measurement.warnings:
@@ -424,8 +448,9 @@ def _render_measurement_result(result: RoofMeasureResult, *, image_bytes: bytes,
         ]
         st.dataframe(section_rows, width="stretch", hide_index=True)
 
-    _render_ai_outline_cleanup(result, image=loaded.inference_image)
-    _render_corner_handle_editor(result, image=loaded.inference_image)
+    _render_corner_handle_editor(result, image=loaded.inference_image, reference_images=reference_images)
+    with st.expander("Annotated overlay preview", expanded=False):
+        st.image(overlay, caption="Current measurement overlay")
     _render_visual_polygon_editor(result, image=loaded.inference_image)
     _render_polygon_editor(result)
 
@@ -462,13 +487,31 @@ def _format_points_text(points: list[tuple[float, float]]) -> str:
     return "\n".join(f"{int(round(x))},{int(round(y))}" for x, y in points)
 
 
+def _load_reference_images(files: list | None) -> tuple[list[Image.Image], list[str]]:
+    reference_images: list[Image.Image] = []
+    warnings: list[str] = []
+    for index, uploaded in enumerate((files or [])[:4], start=1):
+        try:
+            image_bytes = uploaded_file_bytes(uploaded)
+            loaded = load_image_bytes(image_bytes, file_name=getattr(uploaded, "name", f"reference-{index}.jpg"))
+            reference_images.append(loaded.inference_image)
+        except Exception as exc:
+            name = getattr(uploaded, "name", f"reference image {index}")
+            warnings.append(f"Could not read reference image {name}: {type(exc).__name__}: {exc}")
+    if files and len(files) > 4:
+        warnings.append("Only the first 4 oblique/reference images are sent to AI to control cost and noise.")
+    return reference_images, warnings
+
+
 def _render_prompt_point_picker(image: Image.Image, *, image_key: str) -> None:
     if st_canvas is None:
         st.info("Install streamlit-drawable-canvas to click roof and exclude points. Coordinate fields remain available below.")
         return
-    with st.expander("Segmenter Prompt Points", expanded=False):
+    with st.container(border=True):
+        st.markdown("#### Roof Image Workspace")
         st.caption(
-            "Optional for Measure with Segmenter. Add roof/exclude points, or switch to move mode to drag AI-suggested points. "
+            "Before measuring with the segmenter, add roof/exclude points on this image. "
+            "Switch to move mode to drag AI-suggested points. "
             "Roof points belong inside roof surfaces; exclude points belong inside parking, grass, roads, courtyards, or wrong areas."
         )
         canvas_width, canvas_height, scale_x, scale_y = _canvas_dimensions(image, max_width=1000)
@@ -808,17 +851,72 @@ def _render_visual_polygon_editor(result: RoofMeasureResult, *, image: Image.Ima
                     st.rerun()
 
 
-def _render_corner_handle_editor(result: RoofMeasureResult, *, image: Image.Image) -> None:
+def _render_corner_handle_editor(
+    result: RoofMeasureResult,
+    *,
+    image: Image.Image,
+    reference_images: list[Image.Image] | None = None,
+) -> None:
     measurement = result.report.measurement
     if not measurement.sections:
         return
-    with st.expander("Adjust Roof Corners", expanded=True):
+    with st.container(border=True):
+        st.markdown("#### Roof Image Workspace")
         if st_canvas is None:
             st.info("Install streamlit-drawable-canvas to drag roof corners. The coordinate table remains available below.")
             return
         st.caption(
-            "Select a roof section, then move, delete, or add corner dots directly on the image."
+            "Clean the current measurement, then move, delete, or add corner dots directly on the same image."
         )
+        cleanup_col, reset_col = st.columns([1, 1])
+        openai_available = bool(os.getenv("OPENAI_API_KEY"))
+        with cleanup_col:
+            if st.button(
+                "Clean Current Outline with AI",
+                width="stretch",
+                disabled=not openai_available,
+                help="Starts from the current measured outline and asks AI to simplify or move vertices to visible roof edges.",
+                key=f"roof_measure_ai_cleanup_workspace_{result.report.id}",
+            ):
+                suggestion = suggest_refined_roof_polygons(
+                    image,
+                    measurement.sections,
+                    address=result.report.address,
+                    reference_images=reference_images,
+                )
+                if suggestion.warnings:
+                    for warning in suggestion.warnings:
+                        st.warning(warning)
+                if not suggestion.polygons:
+                    st.warning("AI did not return usable cleaned roof outlines.")
+                    return
+                try:
+                    corrected_sections = _sections_from_ai_polygons(measurement.sections, suggestion.polygons)
+                    corrected_report = recalculate_report_from_corrected_sections(
+                        result.report,
+                        corrected_sections,
+                        correction_note=(
+                            "AI refined the current roof outline from existing section polygons. "
+                            + (suggestion.notes or "")
+                        ).strip(),
+                    )
+                except Exception as exc:
+                    st.error(f"Could not apply AI outline cleanup: {type(exc).__name__}: {exc}")
+                    return
+                st.session_state["roof_measure_result"] = RoofMeasureResult(
+                    report=corrected_report,
+                    selected_mask=None,
+                    candidate_count=result.candidate_count,
+                )
+                st.rerun()
+            if not openai_available:
+                st.caption("Set OPENAI_API_KEY to enable AI cleanup.")
+        with reset_col:
+            if st.button("Reset to Original Measurement", width="stretch", key=f"roof_measure_workspace_reset_{result.report.id}"):
+                original = st.session_state.get("roof_measure_original_result")
+                if original is not None:
+                    st.session_state["roof_measure_result"] = original
+                    st.rerun()
         section_options = [section.section_id for section in measurement.sections]
         selected_section_id = st.selectbox(
             "Roof section",
@@ -849,53 +947,50 @@ def _render_corner_handle_editor(result: RoofMeasureResult, *, image: Image.Imag
             point_display_radius=8,
             key=f"roof_measure_corner_canvas_{result.report.id}_{selected_section_id}",
         )
-        action_col1, action_col2 = st.columns(2)
-        with action_col1:
-            if st.button("Apply Corner Edits", type="primary", width="stretch", key=f"roof_measure_apply_corners_{result.report.id}_{selected_section_id}"):
-                try:
-                    if corner_action == "Add corner":
-                        existing_points, new_points = _canvas_json_to_corner_edit_points(
-                            getattr(corner_canvas, "json_data", None),
-                            scale_x=scale_x,
-                            scale_y=scale_y,
-                        )
-                        if not new_points:
-                            raise ValueError("Click the roof edge where the new corner belongs before applying.")
-                        corner_points = _insert_new_corner_points(existing_points, new_points)
-                    else:
-                        corner_points = _canvas_json_to_corner_points(
-                            getattr(corner_canvas, "json_data", None),
-                            scale_x=scale_x,
-                            scale_y=scale_y,
-                        )
-                    corrected_sections = _replace_section_polygon(
-                        measurement.sections,
-                        selected_section_id,
-                        corner_points,
+        if st.button("Apply Corner Edits", type="primary", width="stretch", key=f"roof_measure_apply_corners_{result.report.id}_{selected_section_id}"):
+            try:
+                if corner_action == "Add corner":
+                    existing_points, new_points = _canvas_json_to_corner_edit_points(
+                        getattr(corner_canvas, "json_data", None),
+                        scale_x=scale_x,
+                        scale_y=scale_y,
                     )
-                    corrected_report = recalculate_report_from_corrected_sections(
-                        result.report,
-                        corrected_sections,
-                        correction_note=f"Estimator adjusted corner handles for {selected_section_id}.",
+                    if not new_points:
+                        raise ValueError("Click the roof edge where the new corner belongs before applying.")
+                    corner_points = _insert_new_corner_points(existing_points, new_points)
+                else:
+                    corner_points = _canvas_json_to_corner_points(
+                        getattr(corner_canvas, "json_data", None),
+                        scale_x=scale_x,
+                        scale_y=scale_y,
                     )
-                except Exception as exc:
-                    st.error(f"Could not apply corner edits: {type(exc).__name__}: {exc}")
-                    return
-                st.session_state["roof_measure_result"] = RoofMeasureResult(
-                    report=corrected_report,
-                    selected_mask=None,
-                    candidate_count=result.candidate_count,
+                corrected_sections = _replace_section_polygon(
+                    measurement.sections,
+                    selected_section_id,
+                    corner_points,
                 )
-                st.rerun()
-        with action_col2:
-            if st.button("Reset Corner Edits", width="stretch", key=f"roof_measure_corner_reset_{result.report.id}_{selected_section_id}"):
-                original = st.session_state.get("roof_measure_original_result")
-                if original is not None:
-                    st.session_state["roof_measure_result"] = original
-                    st.rerun()
+                corrected_report = recalculate_report_from_corrected_sections(
+                    result.report,
+                    corrected_sections,
+                    correction_note=f"Estimator adjusted corner handles for {selected_section_id}.",
+                )
+            except Exception as exc:
+                st.error(f"Could not apply corner edits: {type(exc).__name__}: {exc}")
+                return
+            st.session_state["roof_measure_result"] = RoofMeasureResult(
+                report=corrected_report,
+                selected_mask=None,
+                candidate_count=result.candidate_count,
+            )
+            st.rerun()
 
 
-def _render_ai_outline_cleanup(result: RoofMeasureResult, *, image: Image.Image) -> None:
+def _render_ai_outline_cleanup(
+    result: RoofMeasureResult,
+    *,
+    image: Image.Image,
+    reference_images: list[Image.Image] | None = None,
+) -> None:
     measurement = result.report.measurement
     if not measurement.sections:
         return
@@ -915,6 +1010,7 @@ def _render_ai_outline_cleanup(result: RoofMeasureResult, *, image: Image.Image)
                 image,
                 measurement.sections,
                 address=result.report.address,
+                reference_images=reference_images,
             )
             if suggestion.warnings:
                 for warning in suggestion.warnings:

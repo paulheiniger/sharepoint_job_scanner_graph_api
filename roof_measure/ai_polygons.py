@@ -32,11 +32,16 @@ def suggest_roof_polygons(
     image: Image.Image,
     *,
     address: str = "",
+    reference_images: list[Image.Image] | None = None,
     provider: AiPolygonProvider | None = None,
 ) -> RoofPolygonSuggestion:
     width, height = image.size
     try:
-        payload = provider(image, address, width, height) if provider is not None else _call_openai_roof_polygon_suggester(image, address=address)
+        payload = (
+            provider(image, address, width, height)
+            if provider is not None
+            else _call_openai_roof_polygon_suggester(image, address=address, reference_images=reference_images)
+        )
     except Exception as exc:
         return RoofPolygonSuggestion(warnings=[f"AI roof outline suggestion failed: {type(exc).__name__}: {exc}"])
     return polygon_suggestion_from_payload(payload, width=width, height=height)
@@ -47,6 +52,7 @@ def suggest_refined_roof_polygons(
     current_sections: list[RoofSection],
     *,
     address: str = "",
+    reference_images: list[Image.Image] | None = None,
     provider: AiPolygonRefinementProvider | None = None,
 ) -> RoofPolygonSuggestion:
     width, height = image.size
@@ -55,7 +61,12 @@ def suggest_refined_roof_polygons(
         payload = (
             provider(image, address, width, height, current_payload)
             if provider is not None
-            else _call_openai_roof_polygon_refiner(image, current_payload=current_payload, address=address)
+            else _call_openai_roof_polygon_refiner(
+                image,
+                current_payload=current_payload,
+                address=address,
+                reference_images=reference_images,
+            )
         )
     except Exception as exc:
         return RoofPolygonSuggestion(warnings=[f"AI roof outline cleanup failed: {type(exc).__name__}: {exc}"])
@@ -82,7 +93,12 @@ def polygon_suggestion_from_payload(payload: dict[str, Any], *, width: int, heig
     )
 
 
-def _call_openai_roof_polygon_suggester(image: Image.Image, *, address: str = "") -> dict[str, Any]:
+def _call_openai_roof_polygon_suggester(
+    image: Image.Image,
+    *,
+    address: str = "",
+    reference_images: list[Image.Image] | None = None,
+) -> dict[str, Any]:
     if not os.getenv("OPENAI_API_KEY"):
         raise RuntimeError("OPENAI_API_KEY is not set")
     try:
@@ -94,6 +110,29 @@ def _call_openai_roof_polygon_suggester(image: Image.Image, *, address: str = ""
     timeout_seconds = float(os.getenv("OPENAI_ROOF_MEASURE_POLYGONS_TIMEOUT_SECONDS", "45"))
     model = os.getenv("OPENAI_ROOF_MEASURE_POLYGONS_MODEL") or os.getenv("OPENAI_ROOF_MEASURE_POINTS_MODEL") or "gpt-4o"
     client = OpenAI(timeout=timeout_seconds)
+    user_content: list[dict[str, Any]] = [
+        {
+            "type": "text",
+            "text": (
+                f"Primary overhead image size is {width} by {height} pixels. "
+                f"Address/site hint: {address or 'not provided'}. "
+                "Draw approximate straight-line polygons around visible roof surfaces for commercial roofing measurement. "
+                "Use boundary/corner points, not interior points. "
+                "Prefer simple rectilinear polygons with straight edges. Do not trace every texture, shadow, gravel pattern, tree edge, vehicle, or parking stripe. "
+                "Only include roof surfaces for the target site/building. Exclude parking lots, roads, sidewalks, fields, courtyards, grass, trees, vehicles, and unrelated nearby buildings. "
+                "If a roof has several distinct connected masses, return separate polygons. "
+                "Use enough corners to represent the building outline, usually 4 to 12 points per roof mass. "
+                "Do not invent notches that are not visible. When uncertain, make the polygon slightly conservative and add a warning. "
+                "Any reference/oblique images included after the primary overhead image are context only; do not return coordinates from those images. "
+                "All returned pixel coordinates must be in the primary overhead image coordinate system. "
+                "Return JSON with this schema: "
+                "{\"roof_polygons\":[{\"label\":\"main roof\",\"points\":[{\"x\":0,\"y\":0},{\"x\":10,\"y\":0},{\"x\":10,\"y\":10},{\"x\":0,\"y\":10}],\"reason\":\"...\"}],"
+                "\"confidence\":0.0,\"notes\":\"...\",\"warnings\":[\"...\"]}."
+            ),
+        },
+        {"type": "image_url", "image_url": {"url": data_url, "detail": "high"}},
+        *_reference_image_content(reference_images),
+    ]
     response = client.chat.completions.create(
         model=model,
         temperature=0,
@@ -108,26 +147,7 @@ def _call_openai_roof_polygon_suggester(image: Image.Image, *, address: str = ""
             },
             {
                 "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": (
-                            f"Image size is {width} by {height} pixels. "
-                            f"Address/site hint: {address or 'not provided'}. "
-                            "Draw approximate straight-line polygons around visible roof surfaces for commercial roofing measurement. "
-                            "Use boundary/corner points, not interior points. "
-                            "Prefer simple rectilinear polygons with straight edges. Do not trace every texture, shadow, gravel pattern, tree edge, vehicle, or parking stripe. "
-                            "Only include roof surfaces for the target site/building. Exclude parking lots, roads, sidewalks, fields, courtyards, grass, trees, vehicles, and unrelated nearby buildings. "
-                            "If a roof has several distinct connected masses, return separate polygons. "
-                            "Use enough corners to represent the building outline, usually 4 to 12 points per roof mass. "
-                            "Do not invent notches that are not visible. When uncertain, make the polygon slightly conservative and add a warning. "
-                            "Return JSON with this schema: "
-                            "{\"roof_polygons\":[{\"label\":\"main roof\",\"points\":[{\"x\":0,\"y\":0},{\"x\":10,\"y\":0},{\"x\":10,\"y\":10},{\"x\":0,\"y\":10}],\"reason\":\"...\"}],"
-                            "\"confidence\":0.0,\"notes\":\"...\",\"warnings\":[\"...\"]}."
-                        ),
-                    },
-                    {"type": "image_url", "image_url": {"url": data_url, "detail": "high"}},
-                ],
+                "content": user_content,
             },
         ],
     )
@@ -151,6 +171,7 @@ def _call_openai_roof_polygon_refiner(
     *,
     current_payload: list[dict[str, Any]],
     address: str = "",
+    reference_images: list[Image.Image] | None = None,
 ) -> dict[str, Any]:
     if not os.getenv("OPENAI_API_KEY"):
         raise RuntimeError("OPENAI_API_KEY is not set")
@@ -163,6 +184,30 @@ def _call_openai_roof_polygon_refiner(
     timeout_seconds = float(os.getenv("OPENAI_ROOF_MEASURE_POLYGONS_TIMEOUT_SECONDS", "45"))
     model = os.getenv("OPENAI_ROOF_MEASURE_POLYGONS_MODEL") or os.getenv("OPENAI_ROOF_MEASURE_POINTS_MODEL") or "gpt-4o"
     client = OpenAI(timeout=timeout_seconds)
+    user_content: list[dict[str, Any]] = [
+        {
+            "type": "text",
+            "text": (
+                f"Primary overhead image size is {width} by {height} pixels. "
+                f"Address/site hint: {address or 'not provided'}. "
+                "A segmentation model produced the current roof polygons below. Start from these polygons; do not ignore them. "
+                "Move, remove, or add vertices only where needed to make the outline follow visible roof edges. "
+                "Prefer straight, simple building boundary edges over jagged texture-following edges. "
+                "Remove obvious false-positive polygons on parking lots, grass, vehicles, roads, trees, or shadows. "
+                "Preserve separate roof masses when they are real. Use the same order as the current polygons when possible. "
+                "Do not invent roof sections that are not visible. Keep polygons conservative when uncertain. "
+                "Any reference/oblique images included after the primary overhead image are context only; do not return coordinates from those images. "
+                "All returned pixel coordinates must be in the primary overhead image coordinate system. "
+                "Return JSON with this schema: "
+                "{\"roof_polygons\":[{\"label\":\"section-1\",\"points\":[{\"x\":0,\"y\":0},{\"x\":10,\"y\":0},{\"x\":10,\"y\":10},{\"x\":0,\"y\":10}],\"reason\":\"...\"}],"
+                "\"confidence\":0.0,\"notes\":\"...\",\"warnings\":[\"...\"]}. "
+                "Current polygons: "
+                + json.dumps(current_payload, separators=(",", ":"))
+            ),
+        },
+        {"type": "image_url", "image_url": {"url": data_url, "detail": "high"}},
+        *_reference_image_content(reference_images),
+    ]
     response = client.chat.completions.create(
         model=model,
         temperature=0,
@@ -177,27 +222,7 @@ def _call_openai_roof_polygon_refiner(
             },
             {
                 "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": (
-                            f"Image size is {width} by {height} pixels. "
-                            f"Address/site hint: {address or 'not provided'}. "
-                            "A segmentation model produced the current roof polygons below. Start from these polygons; do not ignore them. "
-                            "Move, remove, or add vertices only where needed to make the outline follow visible roof edges. "
-                            "Prefer straight, simple building boundary edges over jagged texture-following edges. "
-                            "Remove obvious false-positive polygons on parking lots, grass, vehicles, roads, trees, or shadows. "
-                            "Preserve separate roof masses when they are real. Use the same order as the current polygons when possible. "
-                            "Do not invent roof sections that are not visible. Keep polygons conservative when uncertain. "
-                            "Return JSON with this schema: "
-                            "{\"roof_polygons\":[{\"label\":\"section-1\",\"points\":[{\"x\":0,\"y\":0},{\"x\":10,\"y\":0},{\"x\":10,\"y\":10},{\"x\":0,\"y\":10}],\"reason\":\"...\"}],"
-                            "\"confidence\":0.0,\"notes\":\"...\",\"warnings\":[\"...\"]}. "
-                            "Current polygons: "
-                            + json.dumps(current_payload, separators=(",", ":"))
-                        ),
-                    },
-                    {"type": "image_url", "image_url": {"url": data_url, "detail": "high"}},
-                ],
+                "content": user_content,
             },
         ],
     )
@@ -276,3 +301,19 @@ def _image_data_url(image: Image.Image) -> str:
     buffer = BytesIO()
     image.convert("RGB").save(buffer, format="JPEG", quality=85, optimize=True)
     return "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def _reference_image_content(reference_images: list[Image.Image] | None) -> list[dict[str, Any]]:
+    content: list[dict[str, Any]] = []
+    for index, reference_image in enumerate((reference_images or [])[:4], start=1):
+        content.append(
+            {
+                "type": "text",
+                "text": (
+                    f"Reference image {index}: use this only to understand the target building, roof edges, parapets, elevations, "
+                    "and possible false positives. Do not measure from this image."
+                ),
+            }
+        )
+        content.append({"type": "image_url", "image_url": {"url": _image_data_url(reference_image), "detail": "low"}})
+    return content

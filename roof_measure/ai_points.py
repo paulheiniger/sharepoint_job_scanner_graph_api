@@ -29,11 +29,16 @@ def suggest_roof_prompt_points(
     image: Image.Image,
     *,
     address: str = "",
+    reference_images: list[Image.Image] | None = None,
     provider: AiPointProvider | None = None,
 ) -> RoofPointSuggestion:
     width, height = image.size
     try:
-        payload = provider(image, address, width, height) if provider is not None else _call_openai_roof_point_suggester(image, address=address)
+        payload = (
+            provider(image, address, width, height)
+            if provider is not None
+            else _call_openai_roof_point_suggester(image, address=address, reference_images=reference_images)
+        )
     except Exception as exc:
         return RoofPointSuggestion(warnings=[f"AI roof point suggestion failed: {type(exc).__name__}: {exc}"])
     return suggestion_from_payload(payload, width=width, height=height)
@@ -58,7 +63,12 @@ def suggestion_from_payload(payload: dict[str, Any], *, width: int, height: int)
     )
 
 
-def _call_openai_roof_point_suggester(image: Image.Image, *, address: str = "") -> dict[str, Any]:
+def _call_openai_roof_point_suggester(
+    image: Image.Image,
+    *,
+    address: str = "",
+    reference_images: list[Image.Image] | None = None,
+) -> dict[str, Any]:
     if not os.getenv("OPENAI_API_KEY"):
         raise RuntimeError("OPENAI_API_KEY is not set")
     try:
@@ -70,6 +80,31 @@ def _call_openai_roof_point_suggester(image: Image.Image, *, address: str = "") 
     timeout_seconds = float(os.getenv("OPENAI_ROOF_MEASURE_POINTS_TIMEOUT_SECONDS", "30"))
     model = os.getenv("OPENAI_ROOF_MEASURE_POINTS_MODEL") or "gpt-4o"
     client = OpenAI(timeout=timeout_seconds)
+    user_content: list[dict[str, Any]] = [
+        {
+            "type": "text",
+            "text": (
+                f"Primary overhead image size is {width} by {height} pixels. "
+                f"Address/site hint: {address or 'not provided'}. "
+                "Identify likely roof surfaces for commercial roofing measurement. "
+                "Return JSON with positive_points, negative_points, confidence, notes, warnings. "
+                "positive_points should be interior points, not boundary points. "
+                "Only place positive_points on visible roof membrane/deck surfaces. "
+                "Do not place positive_points on pavement, parking lots, sidewalks, roads, grass, courtyards, trees, vehicles, fields, or shadows. "
+                "Use one positive point near the center of each major target roof section or connected roof mass. "
+                "negative_points should be inside obvious non-roof areas near the target site, such as parking lots, grass, roads, courtyards, shadows, athletic fields, or nearby unrelated buildings. "
+                "Add negative_points in large parking lots and open paved areas that touch or surround the target building. "
+                "Do not include points on labels, watermarks, attribution, cars, or roads unless they are negative points. "
+                "If you are unsure whether a surface is roof or pavement, do not make it a positive point; make it negative or omit it. "
+                "Prefer 3 to 8 positive points for a school/campus image, fewer for a single building. "
+                "Any reference/oblique images included after the primary overhead image are context only. "
+                "All returned pixel coordinates must be in the primary overhead image coordinate system. "
+                "Use this schema: {\"positive_points\":[{\"x\":0,\"y\":0,\"reason\":\"...\"}],\"negative_points\":[{\"x\":0,\"y\":0,\"reason\":\"...\"}],\"confidence\":0.0,\"notes\":\"...\",\"warnings\":[\"...\"]}."
+            ),
+        },
+        {"type": "image_url", "image_url": {"url": data_url, "detail": "high"}},
+        *_reference_image_content(reference_images),
+    ]
     response = client.chat.completions.create(
         model=model,
         temperature=0,
@@ -84,28 +119,7 @@ def _call_openai_roof_point_suggester(image: Image.Image, *, address: str = "") 
             },
             {
                 "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": (
-                            f"Image size is {width} by {height} pixels. "
-                            f"Address/site hint: {address or 'not provided'}. "
-                            "Identify likely roof surfaces for commercial roofing measurement. "
-                            "Return JSON with positive_points, negative_points, confidence, notes, warnings. "
-                            "positive_points should be interior points, not boundary points. "
-                            "Only place positive_points on visible roof membrane/deck surfaces. "
-                            "Do not place positive_points on pavement, parking lots, sidewalks, roads, grass, courtyards, trees, vehicles, fields, or shadows. "
-                            "Use one positive point near the center of each major target roof section or connected roof mass. "
-                            "negative_points should be inside obvious non-roof areas near the target site, such as parking lots, grass, roads, courtyards, shadows, athletic fields, or nearby unrelated buildings. "
-                            "Add negative_points in large parking lots and open paved areas that touch or surround the target building. "
-                            "Do not include points on labels, watermarks, attribution, cars, or roads unless they are negative points. "
-                            "If you are unsure whether a surface is roof or pavement, do not make it a positive point; make it negative or omit it. "
-                            "Prefer 3 to 8 positive points for a school/campus image, fewer for a single building. "
-                            "Use this schema: {\"positive_points\":[{\"x\":0,\"y\":0,\"reason\":\"...\"}],\"negative_points\":[{\"x\":0,\"y\":0,\"reason\":\"...\"}],\"confidence\":0.0,\"notes\":\"...\",\"warnings\":[\"...\"]}."
-                        ),
-                    },
-                    {"type": "image_url", "image_url": {"url": data_url, "detail": "high"}},
-                ],
+                "content": user_content,
             },
         ],
     )
@@ -124,6 +138,22 @@ def _image_data_url(image: Image.Image) -> str:
     buffer = BytesIO()
     image.convert("RGB").save(buffer, format="JPEG", quality=85, optimize=True)
     return "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def _reference_image_content(reference_images: list[Image.Image] | None) -> list[dict[str, Any]]:
+    content: list[dict[str, Any]] = []
+    for index, reference_image in enumerate((reference_images or [])[:4], start=1):
+        content.append(
+            {
+                "type": "text",
+                "text": (
+                    f"Reference image {index}: use this only to understand the target building, roof surfaces, parapets, elevations, "
+                    "and false-positive non-roof areas. Do not return coordinates from this image."
+                ),
+            }
+        )
+        content.append({"type": "image_url", "image_url": {"url": _image_data_url(reference_image), "detail": "low"}})
+    return content
 
 
 def _points_from_payload(value: Any, *, width: int, height: int) -> list[Point]:
