@@ -119,24 +119,58 @@ def _loops_from_edges(
     loops: list[list[tuple[int, int]]] = []
     while starts:
         start = next(iter(starts))
-        current = start
-        loop = [start]
+        first_candidates = starts[start]
+        first_end = first_candidates.pop()
+        if not first_candidates:
+            starts.pop(start)
+        current = first_end
+        previous_direction = _edge_direction(start, first_end)
+        loop = [start, first_end]
         guard = 0
         while guard <= len(edges) + 1:
             guard += 1
             next_points = starts.get(current)
             if not next_points:
                 break
-            next_point = next_points.pop()
+            next_point = _choose_boundary_edge(current, next_points, previous_direction)
+            next_points.remove(next_point)
             if not next_points:
                 starts.pop(current, None)
             loop.append(next_point)
+            previous_direction = _edge_direction(current, next_point)
             current = next_point
             if current == start:
                 break
         if len(loop) >= 4 and loop[0] == loop[-1]:
             loops.append(loop)
     return loops
+
+
+def _edge_direction(start: tuple[int, int], end: tuple[int, int]) -> int:
+    dx = end[0] - start[0]
+    dy = end[1] - start[1]
+    if (dx, dy) == (1, 0):
+        return 0  # East
+    if (dx, dy) == (0, 1):
+        return 1  # South
+    if (dx, dy) == (-1, 0):
+        return 2  # West
+    if (dx, dy) == (0, -1):
+        return 3  # North
+    raise ValueError(f"Expected a unit grid edge, received {start!r} -> {end!r}.")
+
+
+def _choose_boundary_edge(
+    start: tuple[int, int],
+    candidates: list[tuple[int, int]],
+    previous_direction: int,
+) -> tuple[int, int]:
+    """Keep filled pixels on the right while walking clockwise mask contours."""
+    priorities = {1: 0, 0: 1, 3: 2, 2: 3}
+    return min(
+        candidates,
+        key=lambda end: priorities[(_edge_direction(start, end) - previous_direction) % 4],
+    )
 
 
 def section_from_polygon(section_id: str, polygon: list[tuple[float, float]], holes: list[list[tuple[float, float]]] | None = None) -> RoofSection:

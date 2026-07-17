@@ -58,6 +58,28 @@ def _image_bytes(size: tuple[int, int] = (100, 80), *, fmt: str = "PNG") -> byte
     return buffer.getvalue()
 
 
+def _ring_has_no_crossing_edges(points: list[tuple[float, float]]) -> bool:
+    vertices = points[:-1] if points and points[0] == points[-1] else points
+    count = len(vertices)
+    for index, start in enumerate(vertices):
+        end = vertices[(index + 1) % count]
+        for other_index in range(index + 1, count):
+            if other_index in {index, (index + 1) % count} or index == (other_index + 1) % count:
+                continue
+            other_start = vertices[other_index]
+            other_end = vertices[(other_index + 1) % count]
+            if _segments_cross(start, end, other_start, other_end):
+                return False
+    return True
+
+
+def _segments_cross(a, b, c, d) -> bool:  # noqa: ANN001
+    def orientation(first, second, third):  # noqa: ANN001
+        return (second[0] - first[0]) * (third[1] - first[1]) - (second[1] - first[1]) * (third[0] - first[0])
+
+    return orientation(a, b, c) * orientation(a, b, d) < 0 and orientation(c, d, a) * orientation(c, d, b) < 0
+
+
 def _google_earth_scale_image_bytes(size: tuple[int, int] = (600, 400), *, bar_pixels: int = 200) -> bytes:
     image = Image.new("RGB", size, "white")
     pixels = image.load()
@@ -251,6 +273,20 @@ def test_sections_from_mask_simplifies_noisy_rectangular_roof_boundary() -> None
     assert len(sections) == 1
     assert len(sections[0].polygon) == 5
     assert abs(polygon_area_pixels(sections[0].polygon) - float(mask.sum())) / float(mask.sum()) < 0.02
+
+
+def test_sections_from_mask_orders_complex_boundary_without_crossing_edges() -> None:
+    mask = np.zeros((100, 100), dtype=bool)
+    mask[15:70, 20:45] = True
+    mask[45:70, 45:80] = True
+    mask[25:40, 45:65] = True
+
+    sections = sections_from_mask(mask, minimum_section_area_pixels=100, simplification_tolerance=1)
+
+    assert len(sections) == 1
+    polygon = sections[0].polygon
+    assert polygon_area_pixels(polygon) == float(mask.sum())
+    assert _ring_has_no_crossing_edges(polygon)
 
 
 def test_duplicate_image_detection_updates_seen_hashes(tmp_path) -> None:
