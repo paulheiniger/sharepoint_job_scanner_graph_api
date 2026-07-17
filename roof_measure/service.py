@@ -4,6 +4,7 @@ import uuid
 from dataclasses import dataclass
 
 import numpy as np
+from PIL import Image, ImageDraw
 
 from .calibration import clicked_known_length_calibration, detect_google_earth_scale_bar, feet_from_pixels, sqft_from_pixels
 from .confidence import area_uncertainty_factor, confidence_components, measurement_warnings
@@ -49,6 +50,16 @@ def measure_roof_from_overhead_image(
         selected_index = min(max(selected_candidate_index, 0), len(candidates) - 1)
         candidate = candidates[selected_index]
         selected_mask = candidate.mask
+        if request.footprint_polygons:
+            constrained_mask = _constrain_mask_to_footprints(selected_mask, request.footprint_polygons)
+            if constrained_mask.any():
+                retained_fraction = float(constrained_mask.sum()) / max(float(selected_mask.sum()), 1.0)
+                selected_mask = constrained_mask
+                segmentation.warnings.append(
+                    f"Segmentation constrained to selected building footprint(s); retained {retained_fraction:.0%} of mask pixels."
+                )
+            else:
+                segmentation.warnings.append("Selected building footprint(s) did not overlap the segmentation mask; original mask retained.")
         segmentation_score = float(candidate.score)
         sections = sections_from_mask(
             selected_mask,
@@ -115,6 +126,30 @@ def measure_roof_from_overhead_image(
         model_version=segmentation.model_version,
     )
     return RoofMeasureResult(report=report, selected_mask=selected_mask, candidate_count=len(candidates))
+
+
+def _constrain_mask_to_footprints(mask: np.ndarray, polygons: list[list[tuple[float, float]]], *, buffer_pixels: int = 8) -> np.ndarray:
+    height, width = mask.shape[:2]
+    footprint_image = Image.new("L", (width, height), 0)
+    draw = ImageDraw.Draw(footprint_image)
+    for polygon in polygons:
+        if len(polygon) >= 3:
+            draw.polygon([(float(x), float(y)) for x, y in polygon], fill=255)
+    footprint_mask = np.asarray(footprint_image, dtype=bool)
+    if buffer_pixels > 0:
+        footprint_mask = _dilate_mask(footprint_mask, radius=buffer_pixels)
+    return np.asarray(mask, dtype=bool) & footprint_mask
+
+
+def _dilate_mask(mask: np.ndarray, *, radius: int) -> np.ndarray:
+    expanded = np.asarray(mask, dtype=bool).copy()
+    for _ in range(max(0, int(radius))):
+        padded = np.pad(expanded, 1, mode="constant", constant_values=False)
+        expanded = np.zeros_like(expanded)
+        for y_offset in range(3):
+            for x_offset in range(3):
+                expanded |= padded[y_offset : y_offset + mask.shape[0], x_offset : x_offset + mask.shape[1]]
+    return expanded
 
 
 def measure_roof_from_outline_polygons(

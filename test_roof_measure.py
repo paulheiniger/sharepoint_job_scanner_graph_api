@@ -26,10 +26,11 @@ from roof_measure.confidence import measurement_warnings
 from roof_measure.exports import measurement_to_geojson
 from roof_measure.geometry import polygon_area_pixels, repair_polygon, simplify_ring, straighten_architectural_ring
 from roof_measure.image_io import image_hash, load_image_bytes
+from roof_measure.map_reference import footprint_rings_to_image_pixels, geojson_building_footprints
 from roof_measure.models import ImageMetadata
 from roof_measure.polygonize import section_from_polygon, sections_from_mask
 from roof_measure.segmentation import MockRoofSegmenter, Sam2RoofSegmenter, SegmentationPrompts
-from roof_measure.service import measure_roof_from_outline_polygons, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections
+from roof_measure.service import _constrain_mask_to_footprints, measure_roof_from_outline_polygons, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections
 from roof_measure.models import RoofMeasureRequest
 from roof_measure.streamlit_page import (
     _canvas_background_image,
@@ -287,6 +288,46 @@ def test_sections_from_mask_orders_complex_boundary_without_crossing_edges() -> 
     polygon = sections[0].polygon
     assert polygon_area_pixels(polygon) == float(mask.sum())
     assert _ring_has_no_crossing_edges(polygon)
+
+
+def test_mapbox_footprint_projection_centers_coordinates_on_static_image() -> None:
+    projected = footprint_rings_to_image_pixels(
+        [[(-84.0, 38.0), (-83.9999, 38.0), (-83.9999, 38.0001)]],
+        center_latitude=38.0,
+        center_longitude=-84.0,
+        zoom=18,
+        width=1200,
+        height=1200,
+    )
+
+    assert projected[0][0] == (600.0, 600.0)
+    assert projected[0][1][0] > 600
+    assert projected[0][2][1] < 600
+
+
+def test_uploaded_geojson_building_footprint_supports_polygon_and_multipolygon() -> None:
+    lookup = geojson_building_footprints(
+        '{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"name":"Main"},"geometry":{"type":"Polygon","coordinates":[[[-84,38],[-83.9,38],[-83.9,38.1],[-84,38]]]}},{"type":"Feature","geometry":{"type":"MultiPolygon","coordinates":[[[[-84.2,38],[-84.1,38],[-84.1,38.1],[-84.2,38]]]]}}]}'
+    )
+
+    assert lookup.ok
+    assert len(lookup.footprints) == 2
+    assert lookup.footprints[0].label == "Main"
+    assert len(lookup.footprints[1].rings) == 1
+
+
+def test_selected_footprint_constrains_segmentation_mask() -> None:
+    mask = np.ones((30, 30), dtype=bool)
+
+    constrained = _constrain_mask_to_footprints(
+        mask,
+        [[(8, 8), (20, 8), (20, 20), (8, 20)]],
+        buffer_pixels=0,
+    )
+
+    assert constrained.sum() == 169
+    assert constrained[14, 14]
+    assert not constrained[4, 4]
 
 
 def test_duplicate_image_detection_updates_seen_hashes(tmp_path) -> None:

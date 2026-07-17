@@ -82,6 +82,7 @@ class RoofMeasureRequest(BaseModel):
     minimum_section_area_pixels: float = 400.0
     edge_snap_strength: float = 0.0
     segmenter_name: str = "manual_fallback"
+    footprint_polygons: list[Ring] = Field(default_factory=list)
 
 
 class MeasurementReport(BaseModel):

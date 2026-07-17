@@ -49,6 +49,27 @@ def prompt_points_overlay(
     return Image.alpha_composite(base, overlay).convert("RGB")
 
 
+def footprint_overlay(
+    image: Image.Image,
+    *,
+    polygons: list[list[tuple[float, float]]],
+) -> Image.Image:
+    base = image.convert("RGBA")
+    overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    for polygon in polygons:
+        if len(polygon) < 3:
+            continue
+        draw.polygon([(float(x), float(y)) for x, y in polygon], fill=(38, 126, 198, 50))
+        draw.line(
+            [(float(x), float(y)) for x, y in [*polygon, polygon[0]]],
+            fill=(38, 126, 198, 255),
+            width=4,
+            joint="curve",
+        )
+    return Image.alpha_composite(base, overlay).convert("RGB")
+
+
 def _draw_point(
     draw: ImageDraw.ImageDraw,
     point: tuple[float, float],

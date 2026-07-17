@@ -44,12 +44,12 @@ from .ai_polygons import suggest_refined_roof_polygons, suggest_roof_polygons
 from .ai_points import suggest_roof_prompt_points
 from .exports import geojson_to_string, measurement_to_geojson, report_to_json
 from .image_io import load_image_bytes, uploaded_file_bytes
-from .map_reference import MapboxReferenceProvider
+from .map_reference import BuildingFootprint, MapboxReferenceProvider, footprint_rings_to_image_pixels, geojson_building_footprints, openstreetmap_building_footprints
 from .geometry import straighten_architectural_ring
 from .models import RoofMeasureRequest, RoofSection
 from .polygonize import section_from_polygon
 from .service import RoofMeasureResult, measure_roof_from_outline_polygons, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections
-from .visualization import annotated_overlay, image_png_bytes, prompt_points_overlay
+from .visualization import annotated_overlay, footprint_overlay, image_png_bytes, prompt_points_overlay
 
 
 def render_ai_roof_measure_page() -> None:
@@ -123,6 +123,23 @@ def render_ai_roof_measure_page() -> None:
             st.session_state["roof_measure_mapbox_file_name"] = fetched.file_name
             st.session_state["roof_measure_mapbox_pixels_per_foot"] = fetched.pixels_per_foot
             st.session_state["roof_measure_mapbox_warning"] = fetched.warning
+            st.session_state["roof_measure_mapbox_context"] = {
+                "latitude": fetched.latitude,
+                "longitude": fetched.longitude,
+                "zoom": fetched.zoom,
+            }
+            footprint_lookup = provider.building_footprints(
+                latitude=float(fetched.latitude),
+                longitude=float(fetched.longitude),
+            )
+            if not footprint_lookup.ok:
+                footprint_lookup = openstreetmap_building_footprints(
+                    latitude=float(fetched.latitude),
+                    longitude=float(fetched.longitude),
+                )
+            st.session_state["roof_measure_mapbox_footprints"] = footprint_lookup.footprints
+            st.session_state["roof_measure_mapbox_footprint_warning"] = footprint_lookup.warning
+            st.session_state.pop("roof_measure_selected_footprint_ids", None)
             st.success("Fetched calibrated satellite imagery from Mapbox.")
     overhead = st.file_uploader("Top-down or near-top-down aerial image", type=["jpg", "jpeg", "png"], key="roof_measure_overhead")
     oblique_files = st.file_uploader(
@@ -171,6 +188,62 @@ def render_ai_roof_measure_page() -> None:
         st.caption(f"Mapbox metadata calibration: {metadata_pixels_per_foot:.4f} pixels per foot.")
     if loaded.metadata.quality_flags:
         st.warning("Image quality flags: " + ", ".join(loaded.metadata.quality_flags))
+
+    footprint_polygons: list[list[tuple[float, float]]] = []
+    if image_source == "mapbox":
+        footprint_candidates = st.session_state.get("roof_measure_mapbox_footprints") or []
+        footprint_warning = str(st.session_state.get("roof_measure_mapbox_footprint_warning") or "")
+        context = st.session_state.get("roof_measure_mapbox_context") or {}
+        uploaded_footprints = st.file_uploader(
+            "Building footprint GeoJSON (optional)",
+            type=["geojson", "json"],
+            key="roof_measure_footprint_geojson",
+            help="Use a county, state, survey, or other trusted building-footprint export when map providers do not cover the site.",
+        )
+        if uploaded_footprints is not None:
+            uploaded_lookup = geojson_building_footprints(uploaded_file_bytes(uploaded_footprints))
+            if uploaded_lookup.ok:
+                footprint_candidates = uploaded_lookup.footprints
+                footprint_warning = uploaded_lookup.warning
+            else:
+                footprint_warning = uploaded_lookup.warning
+        if footprint_warning:
+            st.warning(footprint_warning)
+        if footprint_candidates and context.get("latitude") is not None and context.get("longitude") is not None and context.get("zoom") is not None:
+            st.subheader("Building Footprint Prior")
+            candidate_by_id = {
+                candidate.footprint_id: candidate
+                for candidate in footprint_candidates
+                if isinstance(candidate, BuildingFootprint)
+            }
+            if "roof_measure_selected_footprint_ids" not in st.session_state:
+                st.session_state["roof_measure_selected_footprint_ids"] = list(candidate_by_id)[:1]
+            selected_ids = st.multiselect(
+                "Target building footprint(s)",
+                options=list(candidate_by_id),
+                format_func=lambda footprint_id: candidate_by_id[footprint_id].label,
+                key="roof_measure_selected_footprint_ids",
+                help="Select only the roof masses intended for this estimate. The selection constrains the segmentation mask.",
+            )
+            for footprint_id in selected_ids:
+                candidate = candidate_by_id[footprint_id]
+                footprint_polygons.extend(
+                    footprint_rings_to_image_pixels(
+                        candidate.rings,
+                        center_latitude=float(context["latitude"]),
+                        center_longitude=float(context["longitude"]),
+                        zoom=float(context["zoom"]),
+                        width=loaded.metadata.inference_width,
+                        height=loaded.metadata.inference_height,
+                    )
+                )
+            if footprint_polygons:
+                st.image(
+                    footprint_overlay(loaded.inference_image, polygons=footprint_polygons),
+                    caption="Selected building footprint prior. Blue boundary constrains the segmentation mask.",
+                    width=min(loaded.metadata.inference_width, 1000),
+                )
+                st.caption("Footprints are a constraint and review aid, not an authoritative roof takeoff.")
 
     st.subheader("Measurement Setup")
     ai_points_col1, ai_points_col2 = st.columns([1, 2])
@@ -347,6 +420,7 @@ def render_ai_roof_measure_page() -> None:
         minimum_section_area_pixels=minimum_section_area,
         edge_snap_strength=edge_snap_strength,
         segmenter_name=segmenter_name,
+        footprint_polygons=footprint_polygons,
     )
     measure_col1, measure_col2 = st.columns(2)
     with measure_col1:
