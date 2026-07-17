@@ -4643,9 +4643,15 @@ PLAIN_SPEC_LABELS = [
     "Roof Type",
     "Building Type",
 ]
+
+
+def plain_spec_label_pattern(label: str) -> str:
+    return re.escape(label).replace(r"\ ", r"\s+")
+
+
 PLAIN_SPEC_LABEL_RE = re.compile(
     "|".join(
-        rf"{re.escape(label).replace(r'\\ ', r'\\s+')}"
+        plain_spec_label_pattern(label)
         for label in sorted(PLAIN_SPEC_LABELS, key=len, reverse=True)
     ),
     re.IGNORECASE,
