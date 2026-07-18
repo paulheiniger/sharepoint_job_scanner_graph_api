@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from io import BytesIO
 import base64
+import gzip
 import math
 import sys
 from types import SimpleNamespace
@@ -26,7 +27,13 @@ from roof_measure.confidence import measurement_warnings
 from roof_measure.exports import measurement_to_geojson
 from roof_measure.geometry import polygon_area_pixels, repair_polygon, simplify_ring, straighten_architectural_ring
 from roof_measure.image_io import image_hash, load_image_bytes
-from roof_measure.map_reference import BuildingFootprint, footprint_rings_to_image_pixels, geojson_building_footprints
+from roof_measure.map_reference import (
+    BuildingFootprint,
+    _microsoft_global_tile_features,
+    _quadkey,
+    footprint_rings_to_image_pixels,
+    geojson_building_footprints,
+)
 from roof_measure.models import ImageMetadata
 from roof_measure.polygonize import section_from_polygon, sections_from_mask
 from roof_measure.segmentation import MockRoofSegmenter, Sam2RoofSegmenter, SegmentationPrompts
@@ -40,6 +47,7 @@ from roof_measure.streamlit_page import (
     _canvas_json_to_sections,
     _canvas_json_to_corner_points,
     _format_points_text,
+    _footprints_for_prompt_points,
     _footprint_visible_area_pixels,
     _insert_new_corner_points,
     _parse_points_text,
@@ -317,6 +325,27 @@ def test_uploaded_geojson_building_footprint_supports_polygon_and_multipolygon()
     assert len(lookup.footprints[1].rings) == 1
 
 
+def test_microsoft_global_tile_parser_filters_nearby_footprints() -> None:
+    payload = "\n".join(
+        [
+            '{"type":"Feature","properties":{"confidence":0.9},"geometry":{"type":"Polygon","coordinates":[[[-84.001,38],[-83.999,38],[-83.999,38.001],[-84.001,38]]]}}',
+            '{"type":"Feature","properties":{},"geometry":{"type":"Polygon","coordinates":[[[-85,39],[-84.9,39],[-84.9,39.1],[-85,39]]]}}',
+        ]
+    ).encode("utf-8")
+
+    footprints = _microsoft_global_tile_features(
+        gzip.compress(payload),
+        latitude=38.0,
+        longitude=-84.0,
+        radius_meters=500,
+        limit=10,
+    )
+
+    assert _quadkey(37.97867, -84.192173, zoom=9) == "032001202"
+    assert len(footprints) == 1
+    assert footprints[0].provider == "microsoft_global_ml"
+
+
 def test_visible_footprint_area_prefers_large_candidate_inside_map() -> None:
     small = BuildingFootprint(
         footprint_id="small",
@@ -336,6 +365,15 @@ def test_visible_footprint_area_prefers_large_candidate_inside_map() -> None:
         "height": 1280,
     }
     assert _footprint_visible_area_pixels(large, **kwargs) > _footprint_visible_area_pixels(small, **kwargs)
+
+
+def test_footprints_for_prompt_points_ignores_larger_unrelated_building() -> None:
+    school = [(100, 100), (300, 100), (300, 300), (100, 300)]
+    warehouse = [(600, 100), (1100, 100), (1100, 600), (600, 600)]
+
+    selected = _footprints_for_prompt_points([school, warehouse], [(180, 180), (240, 240)])
+
+    assert selected == [school]
 
 
 def test_selected_footprint_constrains_segmentation_mask() -> None:

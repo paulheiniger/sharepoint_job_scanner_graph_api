@@ -49,6 +49,7 @@ from .map_reference import (
     MapboxReferenceProvider,
     footprint_rings_to_image_pixels,
     geojson_building_footprints,
+    microsoft_global_building_footprints,
     openstreetmap_building_footprints,
     postgres_building_footprints,
 )
@@ -149,6 +150,10 @@ def render_ai_roof_measure_page() -> None:
                 radius_meters=500,
                 limit=100,
             )
+            microsoft_footprint_lookup = microsoft_global_building_footprints(
+                latitude=float(fetched.latitude),
+                longitude=float(fetched.longitude),
+            )
             mapbox_footprint_lookup = provider.building_footprints(
                 latitude=float(fetched.latitude),
                 longitude=float(fetched.longitude),
@@ -159,9 +164,12 @@ def render_ai_roof_measure_page() -> None:
             st.session_state["roof_measure_mapbox_footprints"] = (
                 mapbox_footprint_lookup.footprints if mapbox_footprint_lookup.ok else []
             )
+            st.session_state["roof_measure_microsoft_footprints"] = (
+                microsoft_footprint_lookup.footprints if microsoft_footprint_lookup.ok else []
+            )
             warnings = [
                 lookup.warning
-                for lookup in (local_footprint_lookup, mapbox_footprint_lookup)
+                for lookup in (local_footprint_lookup, microsoft_footprint_lookup, mapbox_footprint_lookup)
                 if lookup.warning
             ]
             st.session_state["roof_measure_mapbox_footprint_warning"] = " ".join(warnings)
@@ -231,8 +239,10 @@ def render_ai_roof_measure_page() -> None:
         st.warning("Image quality flags: " + ", ".join(loaded.metadata.quality_flags))
 
     footprint_polygons: list[list[tuple[float, float]]] = []
+    footprint_candidate_polygons: list[list[tuple[float, float]]] = []
     if image_source == "mapbox":
         footprint_candidates = [
+            *(st.session_state.get("roof_measure_microsoft_footprints") or []),
             *(st.session_state.get("roof_measure_local_footprints") or []),
             *(st.session_state.get("roof_measure_mapbox_footprints") or []),
         ]
@@ -290,8 +300,25 @@ def render_ai_roof_measure_page() -> None:
                 ),
                 reverse=True,
             )
+            candidate_image_polygons = {
+                footprint_id: footprint_rings_to_image_pixels(
+                    candidate_by_id[footprint_id].rings,
+                    center_latitude=float(context["latitude"]),
+                    center_longitude=float(context["longitude"]),
+                    zoom=float(context["zoom"]),
+                    width=loaded.metadata.inference_width,
+                    height=loaded.metadata.inference_height,
+                )
+                for footprint_id in ordered_candidate_ids
+            }
+            footprint_candidate_polygons = [
+                polygon
+                for polygons in candidate_image_polygons.values()
+                for polygon in polygons
+            ]
             if "roof_measure_selected_footprint_ids" not in st.session_state:
-                st.session_state["roof_measure_selected_footprint_ids"] = ordered_candidate_ids[:1]
+                st.session_state["roof_measure_selected_footprint_ids"] = []
+            st.caption("Automatic measurement chooses footprint(s) from AI roof points. Select buildings here only to override it manually.")
             selected_ids = st.multiselect(
                 "Target building footprint(s)",
                 options=ordered_candidate_ids,
@@ -300,17 +327,7 @@ def render_ai_roof_measure_page() -> None:
                 help="Select only the roof masses intended for this estimate. The selection constrains the segmentation mask.",
             )
             for footprint_id in selected_ids:
-                candidate = candidate_by_id[footprint_id]
-                footprint_polygons.extend(
-                    footprint_rings_to_image_pixels(
-                        candidate.rings,
-                        center_latitude=float(context["latitude"]),
-                        center_longitude=float(context["longitude"]),
-                        zoom=float(context["zoom"]),
-                        width=loaded.metadata.inference_width,
-                        height=loaded.metadata.inference_height,
-                    )
-                )
+                footprint_polygons.extend(candidate_image_polygons[footprint_id])
             if footprint_polygons:
                 st.image(
                     footprint_overlay(loaded.inference_image, polygons=footprint_polygons),
@@ -523,6 +540,7 @@ def render_ai_roof_measure_page() -> None:
                     address=address,
                     reference_images=reference_images,
                     use_ai_outline_cleanup=use_ai_outline_cleanup,
+                    candidate_footprints=footprint_candidate_polygons,
                 )
         except Exception as exc:
             st.error(f"Automatic roof measurement failed: {type(exc).__name__}: {exc}")
@@ -596,11 +614,13 @@ def _measure_roof_automatically(
     address: str,
     reference_images: list[Image.Image],
     use_ai_outline_cleanup: bool,
+    candidate_footprints: list[list[tuple[float, float]]],
 ) -> tuple[RoofMeasureResult, list[str]]:
     """Run the default measure pipeline while retaining a valid deterministic result."""
     notes: list[str] = []
     positive_points: list[tuple[float, float]] = []
     negative_points: list[tuple[float, float]] = []
+    ai_positive_points: list[tuple[float, float]] = []
     if os.getenv("OPENAI_API_KEY"):
         point_suggestion = suggest_roof_prompt_points(
             image,
@@ -608,6 +628,7 @@ def _measure_roof_automatically(
             reference_images=reference_images,
         )
         positive_points = point_suggestion.positive_points
+        ai_positive_points = point_suggestion.positive_points
         negative_points = point_suggestion.negative_points
         if positive_points:
             notes.append(f"AI selected {len(positive_points)} roof prompt point(s).")
@@ -619,8 +640,19 @@ def _measure_roof_automatically(
     if not positive_points:
         positive_points = [(image.width / 2, image.height / 2)]
 
+    automatic_footprints = request.footprint_polygons
+    if not automatic_footprints and ai_positive_points and candidate_footprints:
+        automatic_footprints = _footprints_for_prompt_points(candidate_footprints, ai_positive_points)
+        if automatic_footprints:
+            notes.append(f"Selected {len(automatic_footprints)} footprint polygon(s) containing AI roof points.")
+        else:
+            notes.append("No footprint polygon matched AI roof points; segmentation was left unconstrained.")
     automatic_request = request.model_copy(
-        update={"positive_points": positive_points, "negative_points": negative_points}
+        update={
+            "positive_points": positive_points,
+            "negative_points": negative_points,
+            "footprint_polygons": automatic_footprints,
+        }
     )
     result = measure_roof_from_overhead_image(
         image_bytes=image_bytes,
@@ -721,6 +753,44 @@ def _footprint_visible_area_pixels(
         ) / 2
         total_area += polygon_area * min(1.0, visible_bbox_area / full_bbox_area)
     return total_area
+
+
+def _footprints_for_prompt_points(
+    candidate_footprints: list[list[tuple[float, float]]],
+    prompt_points: list[tuple[float, float]],
+    *,
+    tolerance_pixels: float = 20.0,
+) -> list[list[tuple[float, float]]]:
+    """Select footprint polygons supported by an AI roof prompt, never by site size."""
+    selected: list[list[tuple[float, float]]] = []
+    for footprint in candidate_footprints:
+        if len(footprint) < 3:
+            continue
+        if any(_point_matches_footprint(point, footprint, tolerance_pixels=tolerance_pixels) for point in prompt_points):
+            selected.append(footprint)
+    return selected
+
+
+def _point_matches_footprint(
+    point: tuple[float, float],
+    footprint: list[tuple[float, float]],
+    *,
+    tolerance_pixels: float,
+) -> bool:
+    x, y = point
+    inside = False
+    for index, (x1, y1) in enumerate(footprint):
+        x2, y2 = footprint[(index + 1) % len(footprint)]
+        if (y1 > y) != (y2 > y):
+            crossing_x = (x2 - x1) * (y - y1) / (y2 - y1) + x1
+            if x < crossing_x:
+                inside = not inside
+    if inside:
+        return True
+    return any(
+        _distance_to_segment(point, start, end) <= tolerance_pixels
+        for start, end in zip(footprint, [*footprint[1:], footprint[0]])
+    )
 
 
 def _render_measurement_result(

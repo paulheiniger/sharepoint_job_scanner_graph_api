@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import csv
+import gzip
+from functools import lru_cache
+from io import BytesIO
 import json
 import math
 import os
@@ -8,6 +12,9 @@ from urllib.parse import quote
 
 import requests
 from typing import Protocol
+
+
+MICROSOFT_GLOBAL_BUILDINGS_INDEX_URL = "https://minedbuildings.z5.web.core.windows.net/global-buildings/dataset-links.csv"
 
 
 @dataclass
@@ -204,6 +211,129 @@ def footprint_rings_to_image_pixels(
         if len(image_ring) >= 3:
             image_rings.append(image_ring)
     return image_rings
+
+
+def microsoft_global_building_footprints(
+    *,
+    latitude: float,
+    longitude: float,
+    radius_meters: int = 500,
+    limit: int = 100,
+) -> BuildingFootprintLookup:
+    """Fetch one current Microsoft Global ML tile and return nearby footprints."""
+    try:
+        tile_url = _microsoft_global_tile_url(_quadkey(latitude, longitude, zoom=9))
+        response = requests.get(tile_url, timeout=45)
+        response.raise_for_status()
+        features = _microsoft_global_tile_features(
+            response.content,
+            latitude=float(latitude),
+            longitude=float(longitude),
+            radius_meters=radius_meters,
+            limit=limit,
+        )
+    except Exception as exc:
+        return BuildingFootprintLookup(
+            ok=False,
+            footprints=[],
+            provider="microsoft_global_ml",
+            attribution="Microsoft Global ML Building Footprints.",
+            warning=f"Microsoft Global ML building footprint lookup failed: {type(exc).__name__}: {exc}",
+        )
+    if not features:
+        return BuildingFootprintLookup(
+            ok=False,
+            footprints=[],
+            provider="microsoft_global_ml",
+            attribution="Microsoft Global ML Building Footprints.",
+            warning="Microsoft Global ML returned no building footprints near this address.",
+        )
+    return BuildingFootprintLookup(
+        ok=True,
+        footprints=features,
+        provider="microsoft_global_ml",
+        attribution="Microsoft Global ML Building Footprints. Verify against imagery before quoting.",
+    )
+
+
+@lru_cache(maxsize=1)
+def _microsoft_global_tile_index() -> dict[str, str]:
+    response = requests.get(MICROSOFT_GLOBAL_BUILDINGS_INDEX_URL, timeout=45)
+    response.raise_for_status()
+    rows = csv.DictReader(response.text.splitlines())
+    return {
+        str(row.get("QuadKey") or ""): str(row.get("Url") or "")
+        for row in rows
+        if str(row.get("Location") or "") == "UnitedStates" and row.get("QuadKey") and row.get("Url")
+    }
+
+
+def _microsoft_global_tile_url(quadkey: str) -> str:
+    url = _microsoft_global_tile_index().get(quadkey)
+    if not url:
+        raise RuntimeError(f"Microsoft Global ML does not list a United States tile for quadkey {quadkey}.")
+    return url
+
+
+def _quadkey(latitude: float, longitude: float, *, zoom: int) -> str:
+    latitude = max(-85.05112878, min(85.05112878, float(latitude)))
+    longitude = max(-180.0, min(180.0, float(longitude)))
+    map_size = 1 << int(zoom)
+    tile_x = int((longitude + 180.0) / 360.0 * map_size)
+    latitude_radians = math.radians(latitude)
+    tile_y = int((1.0 - math.asinh(math.tan(latitude_radians)) / math.pi) / 2.0 * map_size)
+    return "".join(
+        str(((tile_x >> bit) & 1) + 2 * ((tile_y >> bit) & 1))
+        for bit in range(int(zoom) - 1, -1, -1)
+    )
+
+
+def _microsoft_global_tile_features(
+    compressed: bytes,
+    *,
+    latitude: float,
+    longitude: float,
+    radius_meters: int,
+    limit: int,
+) -> list[BuildingFootprint]:
+    radius = max(1, min(int(radius_meters), 5000))
+    latitude_delta = radius / 111_320.0
+    longitude_delta = radius / max(1.0, 111_320.0 * math.cos(math.radians(latitude)))
+    footprints: list[tuple[float, BuildingFootprint]] = []
+    with gzip.GzipFile(fileobj=BytesIO(compressed)) as source:
+        for raw_line in source:
+            try:
+                feature = json.loads(raw_line)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            if not isinstance(feature, dict):
+                continue
+            rings = _feature_polygon_rings(feature)
+            coordinates = [point for ring in rings for point in ring]
+            if not coordinates:
+                continue
+            longitudes = [point[0] for point in coordinates]
+            latitudes = [point[1] for point in coordinates]
+            if max(longitudes) < longitude - longitude_delta or min(longitudes) > longitude + longitude_delta:
+                continue
+            if max(latitudes) < latitude - latitude_delta or min(latitudes) > latitude + latitude_delta:
+                continue
+            properties = feature.get("properties") if isinstance(feature.get("properties"), dict) else {}
+            feature_id = str(feature.get("id") or properties.get("id") or len(footprints) + 1)
+            distance = (sum(longitudes) / len(longitudes) - longitude) ** 2 + (sum(latitudes) / len(latitudes) - latitude) ** 2
+            footprints.append(
+                (
+                    distance,
+                    BuildingFootprint(
+                        footprint_id=f"microsoft-global-{feature_id}",
+                        rings=rings,
+                        label=f"Microsoft building {feature_id}",
+                        provider="microsoft_global_ml",
+                        attribution="Microsoft Global ML Building Footprints. Verify against imagery before quoting.",
+                    ),
+                )
+            )
+    return [footprint for _, footprint in sorted(footprints, key=lambda item: item[0])[: max(1, min(int(limit), 200))]]
 
 
 def openstreetmap_building_footprints(
