@@ -26,7 +26,7 @@ from roof_measure.confidence import measurement_warnings
 from roof_measure.exports import measurement_to_geojson
 from roof_measure.geometry import polygon_area_pixels, repair_polygon, simplify_ring, straighten_architectural_ring
 from roof_measure.image_io import image_hash, load_image_bytes
-from roof_measure.map_reference import footprint_rings_to_image_pixels, geojson_building_footprints
+from roof_measure.map_reference import BuildingFootprint, footprint_rings_to_image_pixels, geojson_building_footprints
 from roof_measure.models import ImageMetadata
 from roof_measure.polygonize import section_from_polygon, sections_from_mask
 from roof_measure.segmentation import MockRoofSegmenter, Sam2RoofSegmenter, SegmentationPrompts
@@ -40,6 +40,7 @@ from roof_measure.streamlit_page import (
     _canvas_json_to_sections,
     _canvas_json_to_corner_points,
     _format_points_text,
+    _footprint_visible_area_pixels,
     _insert_new_corner_points,
     _parse_points_text,
     _prompt_points_to_canvas_initial_drawing,
@@ -314,6 +315,27 @@ def test_uploaded_geojson_building_footprint_supports_polygon_and_multipolygon()
     assert len(lookup.footprints) == 2
     assert lookup.footprints[0].label == "Main"
     assert len(lookup.footprints[1].rings) == 1
+
+
+def test_visible_footprint_area_prefers_large_candidate_inside_map() -> None:
+    small = BuildingFootprint(
+        footprint_id="small",
+        label="small",
+        rings=[[(-84.0000, 38.0000), (-83.9999, 38.0000), (-83.9999, 38.0001), (-84.0000, 38.0001)]],
+    )
+    large = BuildingFootprint(
+        footprint_id="large",
+        label="large",
+        rings=[[(-84.0005, 37.9995), (-83.9995, 37.9995), (-83.9995, 38.0005), (-84.0005, 38.0005)]],
+    )
+    kwargs = {
+        "center_latitude": 38.0,
+        "center_longitude": -84.0,
+        "zoom": 19.0,
+        "width": 1280,
+        "height": 1280,
+    }
+    assert _footprint_visible_area_pixels(large, **kwargs) > _footprint_visible_area_pixels(small, **kwargs)
 
 
 def test_selected_footprint_constrains_segmentation_mask() -> None:

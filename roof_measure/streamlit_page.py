@@ -146,6 +146,8 @@ def render_ai_roof_measure_page() -> None:
             local_footprint_lookup = postgres_building_footprints(
                 latitude=float(fetched.latitude),
                 longitude=float(fetched.longitude),
+                radius_meters=500,
+                limit=100,
             )
             mapbox_footprint_lookup = provider.building_footprints(
                 latitude=float(fetched.latitude),
@@ -276,11 +278,23 @@ def render_ai_roof_measure_page() -> None:
                 for candidate in footprint_candidates
                 if isinstance(candidate, BuildingFootprint)
             }
+            ordered_candidate_ids = sorted(
+                candidate_by_id,
+                key=lambda footprint_id: _footprint_visible_area_pixels(
+                    candidate_by_id[footprint_id],
+                    center_latitude=float(context["latitude"]),
+                    center_longitude=float(context["longitude"]),
+                    zoom=float(context["zoom"]),
+                    width=loaded.metadata.inference_width,
+                    height=loaded.metadata.inference_height,
+                ),
+                reverse=True,
+            )
             if "roof_measure_selected_footprint_ids" not in st.session_state:
-                st.session_state["roof_measure_selected_footprint_ids"] = list(candidate_by_id)[:1]
+                st.session_state["roof_measure_selected_footprint_ids"] = ordered_candidate_ids[:1]
             selected_ids = st.multiselect(
                 "Target building footprint(s)",
-                options=list(candidate_by_id),
+                options=ordered_candidate_ids,
                 format_func=lambda footprint_id: candidate_by_id[footprint_id].label,
                 key="roof_measure_selected_footprint_ids",
                 help="Select only the roof masses intended for this estimate. The selection constrains the segmentation mask.",
@@ -666,6 +680,47 @@ def _measure_roof_automatically(
     except Exception as exc:
         notes.append(f"AI outline cleanup failed ({type(exc).__name__}); kept the deterministic outline.")
         return result, notes
+
+
+def _footprint_visible_area_pixels(
+    footprint: BuildingFootprint,
+    *,
+    center_latitude: float,
+    center_longitude: float,
+    zoom: float,
+    width: int,
+    height: int,
+) -> float:
+    """Rank footprint candidates by their visible area in the fetched image."""
+    total_area = 0.0
+    for ring in footprint_rings_to_image_pixels(
+        footprint.rings,
+        center_latitude=center_latitude,
+        center_longitude=center_longitude,
+        zoom=zoom,
+        width=width,
+        height=height,
+    ):
+        if len(ring) < 3:
+            continue
+        xs = [point[0] for point in ring]
+        ys = [point[1] for point in ring]
+        full_bbox_area = max(max(xs) - min(xs), 0.0) * max(max(ys) - min(ys), 0.0)
+        visible_bbox_area = max(min(max(xs), width) - max(min(xs), 0.0), 0.0) * max(
+            min(max(ys), height) - max(min(ys), 0.0),
+            0.0,
+        )
+        if full_bbox_area <= 0 or visible_bbox_area <= 0:
+            continue
+        polygon_area = abs(
+            sum(
+                ring[index][0] * ring[(index + 1) % len(ring)][1]
+                - ring[(index + 1) % len(ring)][0] * ring[index][1]
+                for index in range(len(ring))
+            )
+        ) / 2
+        total_area += polygon_area * min(1.0, visible_bbox_area / full_bbox_area)
+    return total_area
 
 
 def _render_measurement_result(
