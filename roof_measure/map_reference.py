@@ -15,6 +15,7 @@ from typing import Protocol
 
 
 MICROSOFT_GLOBAL_BUILDINGS_INDEX_URL = "https://minedbuildings.z5.web.core.windows.net/global-buildings/dataset-links.csv"
+KYFROMABOVE_STAC_SEARCH_URL = "https://spved5ihrl.execute-api.us-west-2.amazonaws.com/search"
 
 
 @dataclass
@@ -56,6 +57,18 @@ class BuildingFootprintLookup:
     footprints: list[BuildingFootprint]
     provider: str = "mapbox"
     attribution: str = "Building footprint data from Mapbox Streets. Verify against imagery before quoting."
+    warning: str = ""
+
+
+@dataclass
+class LidarCoverage:
+    ok: bool
+    collection: str = ""
+    captured_at: str = ""
+    point_count: int = 0
+    asset_url: str = ""
+    provider: str = "kyfromabove"
+    attribution: str = "Kentucky From Above public LiDAR."
     warning: str = ""
 
 
@@ -253,6 +266,47 @@ def microsoft_global_building_footprints(
         footprints=features,
         provider="microsoft_global_ml",
         attribution="Microsoft Global ML Building Footprints. Verify against imagery before quoting.",
+    )
+
+
+def kyfromabove_lidar_coverage(*, latitude: float, longitude: float) -> LidarCoverage:
+    """Discover the best available Kentucky public LiDAR tile without downloading it."""
+    try:
+        response = requests.post(
+            KYFROMABOVE_STAC_SEARCH_URL,
+            json={
+                "collections": ["laz-phase3", "laz-phase2", "laz-phase1"],
+                "intersects": {"type": "Point", "coordinates": [float(longitude), float(latitude)]},
+                "limit": 10,
+            },
+            timeout=20,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        return LidarCoverage(ok=False, warning=f"KyFromAbove LiDAR coverage lookup failed: {type(exc).__name__}: {exc}")
+    return _kyfromabove_lidar_coverage_from_payload(payload)
+
+
+def _kyfromabove_lidar_coverage_from_payload(payload: dict) -> LidarCoverage:
+    features = payload.get("features") if isinstance(payload, dict) else []
+    phase_order = {"laz-phase3": 3, "laz-phase2": 2, "laz-phase1": 1}
+    candidates = [feature for feature in features or [] if isinstance(feature, dict) and feature.get("collection") in phase_order]
+    if not candidates:
+        return LidarCoverage(ok=False, warning="KyFromAbove has no LiDAR tile covering this address.")
+    feature = max(candidates, key=lambda item: phase_order.get(str(item.get("collection")), 0))
+    properties = feature.get("properties") if isinstance(feature.get("properties"), dict) else {}
+    assets = feature.get("assets") if isinstance(feature.get("assets"), dict) else {}
+    pointcloud = assets.get("pointcloud") if isinstance(assets.get("pointcloud"), dict) else {}
+    asset_url = str(pointcloud.get("href") or "")
+    if not asset_url:
+        return LidarCoverage(ok=False, warning="KyFromAbove returned a LiDAR tile without a point-cloud asset.")
+    return LidarCoverage(
+        ok=True,
+        collection=str(feature.get("collection") or ""),
+        captured_at=str(properties.get("datetime") or ""),
+        point_count=int(properties.get("pc:count") or 0),
+        asset_url=asset_url,
     )
 
 

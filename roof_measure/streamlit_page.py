@@ -49,6 +49,7 @@ from .map_reference import (
     MapboxReferenceProvider,
     footprint_rings_to_image_pixels,
     geojson_building_footprints,
+    kyfromabove_lidar_coverage,
     microsoft_global_building_footprints,
     openstreetmap_building_footprints,
     postgres_building_footprints,
@@ -154,6 +155,10 @@ def render_ai_roof_measure_page() -> None:
                 latitude=float(fetched.latitude),
                 longitude=float(fetched.longitude),
             )
+            lidar_coverage = kyfromabove_lidar_coverage(
+                latitude=float(fetched.latitude),
+                longitude=float(fetched.longitude),
+            )
             mapbox_footprint_lookup = provider.building_footprints(
                 latitude=float(fetched.latitude),
                 longitude=float(fetched.longitude),
@@ -167,6 +172,7 @@ def render_ai_roof_measure_page() -> None:
             st.session_state["roof_measure_microsoft_footprints"] = (
                 microsoft_footprint_lookup.footprints if microsoft_footprint_lookup.ok else []
             )
+            st.session_state["roof_measure_lidar_coverage"] = lidar_coverage
             warnings = [
                 lookup.warning
                 for lookup in (local_footprint_lookup, microsoft_footprint_lookup, mapbox_footprint_lookup)
@@ -237,6 +243,14 @@ def render_ai_roof_measure_page() -> None:
         st.caption(f"Mapbox metadata calibration: {metadata_pixels_per_foot:.4f} pixels per foot.")
     if loaded.metadata.quality_flags:
         st.warning("Image quality flags: " + ", ".join(loaded.metadata.quality_flags))
+    lidar_coverage = st.session_state.get("roof_measure_lidar_coverage")
+    if getattr(lidar_coverage, "ok", False):
+        captured_at = str(getattr(lidar_coverage, "captured_at", ""))[:10]
+        st.caption(
+            "KyFromAbove LiDAR available for this site: "
+            f"{getattr(lidar_coverage, 'collection', '')}, captured {captured_at or 'unknown date'}, "
+            f"{int(getattr(lidar_coverage, 'point_count', 0)):,} points."
+        )
 
     footprint_polygons: list[list[tuple[float, float]]] = []
     footprint_candidate_polygons: list[list[tuple[float, float]]] = []
@@ -678,6 +692,7 @@ def _measure_roof_automatically(
         report=straightened_report,
         selected_mask=result.selected_mask,
         candidate_count=result.candidate_count,
+        applied_footprint_polygons=result.applied_footprint_polygons,
     )
     notes.append("Segmented boundary was simplified and straightened to architectural edges.")
 
@@ -708,6 +723,7 @@ def _measure_roof_automatically(
             report=cleaned_report,
             selected_mask=None,
             candidate_count=result.candidate_count,
+            applied_footprint_polygons=result.applied_footprint_polygons,
         ), notes
     except Exception as exc:
         notes.append(f"AI outline cleanup failed ({type(exc).__name__}); kept the deterministic outline.")
@@ -815,6 +831,23 @@ def _render_measurement_result(
 
     loaded = load_image_bytes(image_bytes, file_name=file_name)
     overlay = annotated_overlay(loaded.inference_image, mask=result.selected_mask, sections=measurement.sections)
+    show_footprint = False
+    if result.applied_footprint_polygons:
+        show_footprint = st.checkbox(
+            "Show footprint used to constrain segmentation",
+            value=False,
+            key=f"roof_measure_show_applied_footprint_{report.id}",
+        )
+    displayed_overlay = (
+        footprint_overlay(overlay, polygons=result.applied_footprint_polygons)
+        if show_footprint
+        else overlay
+    )
+    st.image(
+        displayed_overlay,
+        caption="Measured roof boundary. Toggle the footprint prior to compare its alignment with the imagery and measured outline.",
+        width=min(loaded.metadata.inference_width, 1000),
+    )
 
     if measurement.warnings:
         for warning in measurement.warnings:
@@ -838,7 +871,7 @@ def _render_measurement_result(
 
     _render_corner_handle_editor(result, image=loaded.inference_image, reference_images=reference_images)
     with st.expander("Annotated overlay preview", expanded=False):
-        st.image(overlay, caption="Current measurement overlay")
+        st.image(displayed_overlay, caption="Current measurement overlay")
     _render_visual_polygon_editor(result, image=loaded.inference_image)
     _render_polygon_editor(result)
 
@@ -1285,7 +1318,7 @@ def _render_corner_handle_editor(
             st.info("Install streamlit-drawable-canvas to drag roof corners. The coordinate table remains available below.")
             return
         st.caption(
-            "Clean the current measurement, then move, delete, or add corner dots directly on the same image."
+            "The green boundary is the current saved outline. Move, delete, or add the red corner dots, then apply to redraw the boundary."
         )
         straighten_col, cleanup_col, reset_col = st.columns([1, 1, 1])
         openai_available = bool(os.getenv("OPENAI_API_KEY"))
@@ -1380,7 +1413,11 @@ def _render_corner_handle_editor(
             fill_color="rgba(229, 40, 40, 0.85)",
             stroke_width=2,
             stroke_color="#e52828",
-            background_image=_canvas_background_image(image, canvas_width, canvas_height),
+            background_image=_canvas_background_image(
+                annotated_overlay(image, sections=[selected_section]),
+                canvas_width,
+                canvas_height,
+            ),
             update_streamlit=True,
             height=canvas_height,
             width=canvas_width,
@@ -1519,37 +1556,7 @@ def _canvas_background_image(image: Image.Image, canvas_width: int, canvas_heigh
 
 def _section_to_corner_canvas_initial_drawing(section: RoofSection, *, scale_x: float, scale_y: float) -> dict:
     points = section.polygon[:-1] if section.polygon and section.polygon[0] == section.polygon[-1] else section.polygon
-    canvas_points = [
-        {"x": float(x) * scale_x, "y": float(y) * scale_y}
-        for x, y in points
-    ]
     objects: list[dict] = []
-    for index, start in enumerate(canvas_points):
-        end = canvas_points[(index + 1) % len(canvas_points)] if canvas_points else None
-        if end is None:
-            continue
-        objects.append(
-            {
-                "type": "line",
-                "version": "4.4.0",
-                "originX": "left",
-                "originY": "top",
-                "left": start["x"],
-                "top": start["y"],
-                "x1": 0,
-                "y1": 0,
-                "x2": end["x"] - start["x"],
-                "y2": end["y"] - start["y"],
-                "fill": "#009760",
-                "stroke": "#009760",
-                "strokeWidth": 3,
-                "strokeLineCap": "round",
-                "strokeLineJoin": "round",
-                "objectCaching": False,
-                "selectable": False,
-                "evented": False,
-            }
-        )
     for index, (x, y) in enumerate(points):
         canvas_x = float(x) * scale_x
         canvas_y = float(y) * scale_y

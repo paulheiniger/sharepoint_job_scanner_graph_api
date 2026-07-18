@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 from PIL import Image, ImageDraw
@@ -20,6 +20,7 @@ class RoofMeasureResult:
     report: MeasurementReport
     selected_mask: np.ndarray | None
     candidate_count: int
+    applied_footprint_polygons: list[list[tuple[float, float]]] = field(default_factory=list)
 
 
 def measure_roof_from_overhead_image(
@@ -44,6 +45,7 @@ def measure_roof_from_overhead_image(
         segmentation.warnings.append(f"Requested segmenter failed: {type(exc).__name__}: {exc}")
     candidates = segmentation.candidates
     selected_mask = None
+    applied_footprint_polygons: list[list[tuple[float, float]]] = []
     sections = []
     segmentation_score = 0.0
     if candidates:
@@ -55,6 +57,7 @@ def measure_roof_from_overhead_image(
             if constrained_mask.any():
                 retained_fraction = float(constrained_mask.sum()) / max(float(selected_mask.sum()), 1.0)
                 selected_mask = constrained_mask
+                applied_footprint_polygons = request.footprint_polygons
                 segmentation.warnings.append(
                     f"Segmentation constrained to selected building footprint(s); retained {retained_fraction:.0%} of mask pixels."
                 )
@@ -125,7 +128,12 @@ def measure_roof_from_overhead_image(
         model_name=segmentation.model_name,
         model_version=segmentation.model_version,
     )
-    return RoofMeasureResult(report=report, selected_mask=selected_mask, candidate_count=len(candidates))
+    return RoofMeasureResult(
+        report=report,
+        selected_mask=selected_mask,
+        candidate_count=len(candidates),
+        applied_footprint_polygons=applied_footprint_polygons,
+    )
 
 
 def _constrain_mask_to_footprints(mask: np.ndarray, polygons: list[list[tuple[float, float]]], *, buffer_pixels: int = 8) -> np.ndarray:

@@ -29,6 +29,7 @@ from roof_measure.geometry import polygon_area_pixels, repair_polygon, simplify_
 from roof_measure.image_io import image_hash, load_image_bytes
 from roof_measure.map_reference import (
     BuildingFootprint,
+    _kyfromabove_lidar_coverage_from_payload,
     _microsoft_global_tile_features,
     _quadkey,
     footprint_rings_to_image_pixels,
@@ -344,6 +345,29 @@ def test_microsoft_global_tile_parser_filters_nearby_footprints() -> None:
     assert _quadkey(37.97867, -84.192173, zoom=9) == "032001202"
     assert len(footprints) == 1
     assert footprints[0].provider == "microsoft_global_ml"
+
+
+def test_kyfromabove_lidar_coverage_prefers_newest_phase_with_pointcloud_asset() -> None:
+    coverage = _kyfromabove_lidar_coverage_from_payload(
+        {
+            "features": [
+                {
+                    "collection": "laz-phase2",
+                    "properties": {"datetime": "2024-01-22T00:00:00Z", "pc:count": 12_345},
+                    "assets": {"pointcloud": {"href": "https://example.test/phase2.copc.laz"}},
+                },
+                {
+                    "collection": "laz-phase1",
+                    "properties": {"datetime": "2020-01-01T00:00:00Z", "pc:count": 1},
+                    "assets": {"pointcloud": {"href": "https://example.test/phase1.laz"}},
+                },
+            ]
+        }
+    )
+
+    assert coverage.ok
+    assert coverage.collection == "laz-phase2"
+    assert coverage.point_count == 12_345
 
 
 def test_visible_footprint_area_prefers_large_candidate_inside_map() -> None:
@@ -677,17 +701,12 @@ def test_corner_canvas_round_trips_draggable_vertex_handles() -> None:
     assert points == [(10.0, 10.0), (50.0, 10.0), (50.0, 30.0), (10.0, 30.0)]
 
 
-def test_corner_canvas_lines_use_relative_endpoints() -> None:
+def test_corner_canvas_contains_only_draggable_vertex_handles() -> None:
     section = section_from_polygon("main", [(10, 10), (50, 10), (50, 30), (10, 30)])
     initial = _section_to_corner_canvas_initial_drawing(section, scale_x=0.5, scale_y=0.5)
-    first_line = initial["objects"][0]
 
-    assert first_line["left"] == 5
-    assert first_line["top"] == 5
-    assert first_line["x1"] == 0
-    assert first_line["y1"] == 0
-    assert first_line["x2"] == 20
-    assert first_line["y2"] == 0
+    assert len(initial["objects"]) == 4
+    assert {obj["type"] for obj in initial["objects"]} == {"circle"}
 
 
 def test_corner_canvas_splits_existing_handles_from_new_clicked_points() -> None:
