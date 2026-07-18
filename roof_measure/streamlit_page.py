@@ -44,7 +44,14 @@ from .ai_polygons import suggest_refined_roof_polygons, suggest_roof_polygons
 from .ai_points import suggest_roof_prompt_points
 from .exports import geojson_to_string, measurement_to_geojson, report_to_json
 from .image_io import load_image_bytes, uploaded_file_bytes
-from .map_reference import BuildingFootprint, MapboxReferenceProvider, footprint_rings_to_image_pixels, geojson_building_footprints, openstreetmap_building_footprints
+from .map_reference import (
+    BuildingFootprint,
+    MapboxReferenceProvider,
+    footprint_rings_to_image_pixels,
+    geojson_building_footprints,
+    openstreetmap_building_footprints,
+    postgres_building_footprints,
+)
 from .geometry import straighten_architectural_ring
 from .models import RoofMeasureRequest, RoofSection
 from .polygonize import section_from_polygon
@@ -100,8 +107,16 @@ def render_ai_roof_measure_page() -> None:
         if not override_zoom:
             st.metric("Zoom", f"{map_zoom:g}")
     with map_col4:
+        measure_address = st.button(
+            "Measure Roof",
+            type="primary",
+            width="stretch",
+            disabled=not bool(address.strip() and mapbox_token),
+            help="Fetches imagery, finds roof prompts, segments, smooths the outline, and opens the editable result.",
+            key="roof_measure_address_auto_measure",
+        )
         fetch_map = st.button(
-            "Fetch Satellite Image",
+            "Fetch Satellite Image Only",
             width="stretch",
             disabled=not bool(address.strip() and mapbox_token),
             help="Uses Mapbox and the address to fetch calibrated north-up satellite imagery.",
@@ -113,7 +128,7 @@ def render_ai_roof_measure_page() -> None:
             st.caption("Enter an address to fetch calibrated satellite imagery.")
         else:
             st.caption("Use whole-site extent first. Refetch at building detail only after the full roof area is visible.")
-    if fetch_map:
+    if fetch_map or measure_address:
         provider = MapboxReferenceProvider(mapbox_token)
         fetched = provider.static_satellite_image(address, zoom=float(map_zoom))
         if not fetched.ok or not fetched.image_bytes:
@@ -128,19 +143,33 @@ def render_ai_roof_measure_page() -> None:
                 "longitude": fetched.longitude,
                 "zoom": fetched.zoom,
             }
-            footprint_lookup = provider.building_footprints(
+            local_footprint_lookup = postgres_building_footprints(
                 latitude=float(fetched.latitude),
                 longitude=float(fetched.longitude),
             )
-            if not footprint_lookup.ok:
-                footprint_lookup = openstreetmap_building_footprints(
-                    latitude=float(fetched.latitude),
-                    longitude=float(fetched.longitude),
-                )
-            st.session_state["roof_measure_mapbox_footprints"] = footprint_lookup.footprints
-            st.session_state["roof_measure_mapbox_footprint_warning"] = footprint_lookup.warning
+            mapbox_footprint_lookup = provider.building_footprints(
+                latitude=float(fetched.latitude),
+                longitude=float(fetched.longitude),
+            )
+            st.session_state["roof_measure_local_footprints"] = (
+                local_footprint_lookup.footprints if local_footprint_lookup.ok else []
+            )
+            st.session_state["roof_measure_mapbox_footprints"] = (
+                mapbox_footprint_lookup.footprints if mapbox_footprint_lookup.ok else []
+            )
+            warnings = [
+                lookup.warning
+                for lookup in (local_footprint_lookup, mapbox_footprint_lookup)
+                if lookup.warning
+            ]
+            st.session_state["roof_measure_mapbox_footprint_warning"] = " ".join(warnings)
+            st.session_state.pop("roof_measure_osm_footprints", None)
+            st.session_state.pop("roof_measure_osm_footprint_attempted", None)
             st.session_state.pop("roof_measure_selected_footprint_ids", None)
-            st.success("Fetched calibrated satellite imagery from Mapbox.")
+            if measure_address:
+                st.session_state["roof_measure_auto_measure_pending"] = True
+            else:
+                st.success("Fetched calibrated satellite imagery from Mapbox.")
     overhead = st.file_uploader("Top-down or near-top-down aerial image", type=["jpg", "jpeg", "png"], key="roof_measure_overhead")
     oblique_files = st.file_uploader(
         "Optional oblique drone/reference images",
@@ -183,6 +212,16 @@ def render_ai_roof_measure_page() -> None:
         return
 
     stored_result = st.session_state.get("roof_measure_result")
+    stored_image_bytes = st.session_state.get("roof_measure_image_bytes")
+    stored_file_name = st.session_state.get("roof_measure_file_name")
+    if stored_result is not None and stored_image_bytes and stored_file_name:
+        _render_measurement_result(
+            stored_result,
+            image_bytes=stored_image_bytes,
+            file_name=stored_file_name,
+            reference_images=reference_images,
+        )
+        return
     st.caption(f"Image: {image_name} ({loaded.metadata.inference_width} x {loaded.metadata.inference_height} inference pixels)")
     if image_source == "mapbox" and metadata_pixels_per_foot:
         st.caption(f"Mapbox metadata calibration: {metadata_pixels_per_foot:.4f} pixels per foot.")
@@ -191,7 +230,10 @@ def render_ai_roof_measure_page() -> None:
 
     footprint_polygons: list[list[tuple[float, float]]] = []
     if image_source == "mapbox":
-        footprint_candidates = st.session_state.get("roof_measure_mapbox_footprints") or []
+        footprint_candidates = [
+            *(st.session_state.get("roof_measure_local_footprints") or []),
+            *(st.session_state.get("roof_measure_mapbox_footprints") or []),
+        ]
         footprint_warning = str(st.session_state.get("roof_measure_mapbox_footprint_warning") or "")
         context = st.session_state.get("roof_measure_mapbox_context") or {}
         uploaded_footprints = st.file_uploader(
@@ -207,8 +249,26 @@ def render_ai_roof_measure_page() -> None:
                 footprint_warning = uploaded_lookup.warning
             else:
                 footprint_warning = uploaded_lookup.warning
-        if footprint_warning:
-            st.warning(footprint_warning)
+        if not footprint_candidates and context.get("latitude") is not None and context.get("longitude") is not None:
+            if st.button(
+                "Try OpenStreetMap Building Footprints",
+                key="roof_measure_try_osm_footprints",
+                help="Optional public-data lookup. Upload GeoJSON if this site is not mapped or the public service is unavailable.",
+            ):
+                with st.spinner("Looking up public building footprints..."):
+                    osm_lookup = openstreetmap_building_footprints(
+                        latitude=float(context["latitude"]),
+                        longitude=float(context["longitude"]),
+                    )
+                st.session_state["roof_measure_osm_footprint_attempted"] = True
+                st.session_state["roof_measure_osm_footprints"] = osm_lookup.footprints if osm_lookup.ok else []
+            footprint_candidates = st.session_state.get("roof_measure_osm_footprints") or []
+            if not footprint_candidates:
+                st.info(
+                    "No automatic building footprint is available for this site. Upload trusted GeoJSON from county/state GIS, a survey source, or another approved source."
+                )
+        if footprint_warning and footprint_candidates:
+            st.caption(footprint_warning)
         if footprint_candidates and context.get("latitude") is not None and context.get("longitude") is not None and context.get("zoom") is not None:
             st.subheader("Building Footprint Prior")
             candidate_by_id = {
@@ -245,7 +305,17 @@ def render_ai_roof_measure_page() -> None:
                 )
                 st.caption("Footprints are a constraint and review aid, not an authoritative roof takeoff.")
 
-    st.subheader("Measurement Setup")
+    automatic_measure_clicked = st.button(
+        "Measure Roof",
+        type="primary",
+        width="stretch",
+        help="Runs AI roof prompting, segmentation, deterministic architectural smoothing, and optional AI cleanup before opening the editable outline.",
+        key="roof_measure_auto_measure",
+    )
+    if automatic_measure_clicked:
+        st.session_state["roof_measure_auto_measure_pending"] = True
+
+    st.subheader("Advanced Measurement Controls")
     ai_points_col1, ai_points_col2 = st.columns([1, 2])
     openai_available = bool(os.getenv("OPENAI_API_KEY"))
     with ai_points_col1:
@@ -364,6 +434,13 @@ def render_ai_roof_measure_page() -> None:
         help="Sends only the bottom scale-bar crop to the configured OpenAI model when local OCR/bar detection fails.",
         key="roof_measure_use_ai_scale_reader",
     )
+    use_ai_outline_cleanup = st.checkbox(
+        "Attempt AI outline cleanup after automatic segmentation",
+        value=False,
+        disabled=not openai_available,
+        help="Optional final pass. The deterministic smoothed outline is retained if AI cleanup times out or is invalid.",
+        key="roof_measure_auto_ai_cleanup",
+    )
 
     controls_col1, controls_col2, controls_col3 = st.columns(3)
     with controls_col1:
@@ -422,6 +499,26 @@ def render_ai_roof_measure_page() -> None:
         segmenter_name=segmenter_name,
         footprint_polygons=footprint_polygons,
     )
+    if st.session_state.pop("roof_measure_auto_measure_pending", False):
+        try:
+            with st.spinner("Finding roof surfaces and measuring the editable outline..."):
+                result, workflow_notes = _measure_roof_automatically(
+                    image_bytes=image_bytes,
+                    image=loaded.inference_image,
+                    request=request,
+                    address=address,
+                    reference_images=reference_images,
+                    use_ai_outline_cleanup=use_ai_outline_cleanup,
+                )
+        except Exception as exc:
+            st.error(f"Automatic roof measurement failed: {type(exc).__name__}: {exc}")
+            return
+        st.session_state["roof_measure_result"] = result
+        st.session_state["roof_measure_original_result"] = result
+        st.session_state["roof_measure_image_bytes"] = image_bytes
+        st.session_state["roof_measure_file_name"] = image_name
+        st.session_state["roof_measure_auto_workflow_notes"] = workflow_notes
+        st.rerun()
     measure_col1, measure_col2 = st.columns(2)
     with measure_col1:
         if st.button(
@@ -477,15 +574,98 @@ def render_ai_roof_measure_page() -> None:
             st.session_state["roof_measure_image_bytes"] = image_bytes
             st.session_state["roof_measure_file_name"] = image_name
 
-    stored_image_bytes = st.session_state.get("roof_measure_image_bytes")
-    stored_file_name = st.session_state.get("roof_measure_file_name")
-    if stored_result is not None and stored_image_bytes and stored_file_name:
-        _render_measurement_result(
-            stored_result,
-            image_bytes=stored_image_bytes,
-            file_name=stored_file_name,
+def _measure_roof_automatically(
+    *,
+    image_bytes: bytes,
+    image: Image.Image,
+    request: RoofMeasureRequest,
+    address: str,
+    reference_images: list[Image.Image],
+    use_ai_outline_cleanup: bool,
+) -> tuple[RoofMeasureResult, list[str]]:
+    """Run the default measure pipeline while retaining a valid deterministic result."""
+    notes: list[str] = []
+    positive_points: list[tuple[float, float]] = []
+    negative_points: list[tuple[float, float]] = []
+    if os.getenv("OPENAI_API_KEY"):
+        point_suggestion = suggest_roof_prompt_points(
+            image,
+            address=address,
             reference_images=reference_images,
         )
+        positive_points = point_suggestion.positive_points
+        negative_points = point_suggestion.negative_points
+        if positive_points:
+            notes.append(f"AI selected {len(positive_points)} roof prompt point(s).")
+        else:
+            notes.append("AI roof prompting was unavailable; used a centered fallback prompt.")
+        notes.extend(point_suggestion.warnings)
+    else:
+        notes.append("AI roof prompting is not configured; used a centered fallback prompt.")
+    if not positive_points:
+        positive_points = [(image.width / 2, image.height / 2)]
+
+    automatic_request = request.model_copy(
+        update={"positive_points": positive_points, "negative_points": negative_points}
+    )
+    result = measure_roof_from_overhead_image(
+        image_bytes=image_bytes,
+        request=automatic_request,
+        selected_candidate_index=0,
+    )
+    if not result.report.measurement.sections:
+        notes.append("Segmentation did not produce an editable roof boundary. Use the advanced outline tools to continue.")
+        return result, notes
+
+    straightened_sections = []
+    for section in result.report.measurement.sections:
+        corrected = section.model_copy(deep=True)
+        corrected.polygon = straighten_architectural_ring(section.polygon)
+        corrected.holes = [straighten_architectural_ring(hole) for hole in section.holes]
+        straightened_sections.append(corrected)
+    straightened_report = recalculate_report_from_corrected_sections(
+        result.report,
+        straightened_sections,
+        correction_note="Automatic deterministic architectural edge straightening applied.",
+    )
+    result = RoofMeasureResult(
+        report=straightened_report,
+        selected_mask=result.selected_mask,
+        candidate_count=result.candidate_count,
+    )
+    notes.append("Segmented boundary was simplified and straightened to architectural edges.")
+
+    if not use_ai_outline_cleanup:
+        return result, notes
+    if not os.getenv("OPENAI_API_KEY"):
+        notes.append("AI outline cleanup was skipped because OpenAI is not configured.")
+        return result, notes
+    try:
+        cleanup = suggest_refined_roof_polygons(
+            image,
+            result.report.measurement.sections,
+            address=address,
+            reference_images=reference_images,
+        )
+        if not cleanup.polygons:
+            notes.append("AI outline cleanup returned no usable boundary; kept the deterministic outline.")
+            notes.extend(cleanup.warnings)
+            return result, notes
+        cleaned_sections = _sections_from_ai_polygons(result.report.measurement.sections, cleanup.polygons)
+        cleaned_report = recalculate_report_from_corrected_sections(
+            result.report,
+            cleaned_sections,
+            correction_note="Automatic AI outline cleanup applied after deterministic architectural smoothing.",
+        )
+        notes.append("AI outline cleanup completed.")
+        return RoofMeasureResult(
+            report=cleaned_report,
+            selected_mask=None,
+            candidate_count=result.candidate_count,
+        ), notes
+    except Exception as exc:
+        notes.append(f"AI outline cleanup failed ({type(exc).__name__}); kept the deterministic outline.")
+        return result, notes
 
 
 def _render_measurement_result(
@@ -503,6 +683,10 @@ def _render_measurement_result(
     metric_col2.metric("Low / High", "-" if measurement.low_area_sqft is None else f"{measurement.low_area_sqft:,.0f} - {measurement.high_area_sqft:,.0f} sf")
     metric_col3.metric("Perimeter", "-" if measurement.total_perimeter_ft is None else f"{measurement.total_perimeter_ft:,.0f} ft")
     metric_col4.metric("Confidence", f"{measurement.confidence.get('overall_estimating', 0):.2f}")
+
+    workflow_notes = st.session_state.get("roof_measure_auto_workflow_notes")
+    if isinstance(workflow_notes, list) and workflow_notes:
+        st.caption(" ".join(str(note) for note in workflow_notes if str(note).strip()))
 
     loaded = load_image_bytes(image_bytes, file_name=file_name)
     overlay = annotated_overlay(loaded.inference_image, mask=result.selected_mask, sections=measurement.sections)

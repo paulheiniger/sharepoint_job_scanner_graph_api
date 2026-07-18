@@ -124,7 +124,7 @@ class MapboxReferenceProvider:
                     f"{lon},{lat},{zoom},0,0/{width}x{height}"
                 ),
                 params={"access_token": self.access_token},
-                timeout=30,
+                timeout=12,
             )
             response.raise_for_status()
         except Exception as exc:
@@ -291,6 +291,112 @@ def openstreetmap_building_footprints(
         footprints=footprints,
         provider="openstreetmap",
         attribution="© OpenStreetMap contributors.",
+    )
+
+
+def postgres_building_footprints(
+    *,
+    latitude: float,
+    longitude: float,
+    radius_meters: int = 250,
+    limit: int = 50,
+    database_url: str = "",
+) -> BuildingFootprintLookup:
+    """Read locally imported footprint candidates using their indexed bounding boxes."""
+    try:
+        import psycopg2
+        from jobscan.env import load_project_env
+
+        load_project_env()
+        configured_url = (
+            database_url
+            or os.getenv("DATABASE_URL")
+            or os.getenv("NEON_DATABASE_URL")
+            or os.getenv("NEON_PSQL_URL")
+            or ""
+        ).strip().replace("postgresql+psycopg2://", "postgresql://", 1)
+        if not configured_url:
+            return BuildingFootprintLookup(
+                ok=False,
+                footprints=[],
+                provider="postgres",
+                attribution="Locally imported building footprints.",
+                warning="Local building footprint database is not configured.",
+            )
+        radius = max(1, min(int(radius_meters), 5000))
+        latitude_delta = radius / 111_320.0
+        longitude_delta = radius / max(1.0, 111_320.0 * math.cos(math.radians(float(latitude))))
+        with psycopg2.connect(configured_url, connect_timeout=5) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT source, source_feature_id, geometry_geojson, source_properties
+                    FROM building_footprints
+                    WHERE min_longitude <= %s
+                      AND max_longitude >= %s
+                      AND min_latitude <= %s
+                      AND max_latitude >= %s
+                    ORDER BY
+                        POWER((min_longitude + max_longitude) / 2 - %s, 2)
+                        + POWER((min_latitude + max_latitude) / 2 - %s, 2)
+                    LIMIT %s
+                    """,
+                    (
+                        float(longitude) + longitude_delta,
+                        float(longitude) - longitude_delta,
+                        float(latitude) + latitude_delta,
+                        float(latitude) - latitude_delta,
+                        float(longitude),
+                        float(latitude),
+                        max(1, min(int(limit), 100)),
+                    ),
+                )
+                rows = cursor.fetchall()
+    except Exception as exc:
+        return BuildingFootprintLookup(
+            ok=False,
+            footprints=[],
+            provider="postgres",
+            attribution="Locally imported building footprints.",
+            warning=f"Local building footprint lookup failed: {type(exc).__name__}: {exc}",
+        )
+
+    footprints: list[BuildingFootprint] = []
+    for source, feature_id, geometry, properties in rows:
+        if isinstance(geometry, str):
+            try:
+                geometry = json.loads(geometry)
+            except json.JSONDecodeError:
+                continue
+        if not isinstance(geometry, dict):
+            continue
+        rings = _feature_polygon_rings({"geometry": geometry})
+        if not rings:
+            continue
+        properties = properties if isinstance(properties, dict) else {}
+        label = str(properties.get("name") or f"{source} building {feature_id}")
+        footprints.append(
+            BuildingFootprint(
+                footprint_id=f"postgres-{source}-{feature_id}",
+                rings=rings,
+                label=label,
+                provider="postgres",
+                attribution="Locally imported building footprints. Verify against imagery before quoting.",
+            )
+        )
+    if not footprints:
+        return BuildingFootprintLookup(
+            ok=False,
+            footprints=[],
+            provider="postgres",
+            attribution="Locally imported building footprints.",
+            warning="No locally imported building footprints cover this location.",
+        )
+    return BuildingFootprintLookup(
+        ok=True,
+        footprints=footprints,
+        provider="postgres",
+        attribution="Locally imported building footprints. Verify against imagery before quoting.",
     )
 
 
