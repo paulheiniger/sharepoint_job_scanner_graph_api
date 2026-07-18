@@ -41,6 +41,7 @@ except ImportError:  # pragma: no cover - exercised in environments without the 
     st_canvas = None
 
 from .ai_polygons import suggest_refined_roof_polygons, suggest_roof_polygons
+from .ai_qa import qa_corrections_to_prompts, suggest_roof_qa
 from .ai_points import suggest_roof_prompt_points
 from .exports import geojson_to_string, measurement_to_geojson, report_to_json
 from .image_io import load_image_bytes, uploaded_file_bytes
@@ -57,7 +58,7 @@ from .map_reference import (
 from .geometry import straighten_architectural_ring
 from .models import RoofMeasureRequest, RoofSection
 from .polygonize import section_from_polygon
-from .service import RoofMeasureResult, measure_roof_from_outline_polygons, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections
+from .service import RoofMeasureResult, measure_roof_from_outline_polygons, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections, score_roof_result
 from .visualization import annotated_overlay, footprint_overlay, image_png_bytes, prompt_points_overlay
 
 
@@ -480,10 +481,10 @@ def render_ai_roof_measure_page() -> None:
         key="roof_measure_use_ai_scale_reader",
     )
     use_ai_outline_cleanup = st.checkbox(
-        "Attempt AI outline cleanup after automatic segmentation",
+        "Run AI semantic QA after automatic segmentation",
         value=False,
         disabled=not openai_available,
-        help="Optional final pass. The deterministic smoothed outline is retained if AI cleanup times out or is invalid.",
+        help="AI reports missing or extra roof regions as SAM prompts. It never directly replaces the measurement polygon.",
         key="roof_measure_auto_ai_cleanup",
     )
 
@@ -502,6 +503,15 @@ def render_ai_roof_measure_page() -> None:
         minimum_section_area = st.number_input("Minimum section size (pixels)", min_value=1.0, value=400.0, step=100.0)
     with controls_col3:
         edge_snap_strength = st.slider("Edge snap strength", min_value=0.0, max_value=20.0, value=0.0, step=0.5)
+    footprint_buffer_feet = st.slider(
+        "Footprint buffer (ft)",
+        min_value=0.0,
+        max_value=20.0,
+        value=10.0,
+        step=1.0,
+        help="Expands a trusted building footprint slightly before it constrains the segmentation mask.",
+        key="roof_measure_footprint_buffer_feet",
+    )
     configured_segmenter = (os.getenv("ROOF_MEASURE_SEGMENTER") or "manual_fallback").strip().lower()
     segmenter_options = ["manual_fallback", "sam2_remote"]
     segmenter_index = 1 if configured_segmenter in {"sam2", "sam_2", "sam 2", "sam2_remote", "remote_sam2"} else 0
@@ -543,6 +553,7 @@ def render_ai_roof_measure_page() -> None:
         edge_snap_strength=edge_snap_strength,
         segmenter_name=segmenter_name,
         footprint_polygons=footprint_polygons,
+        footprint_buffer_feet=footprint_buffer_feet,
     )
     if st.session_state.pop("roof_measure_auto_measure_pending", False):
         try:
@@ -693,41 +704,106 @@ def _measure_roof_automatically(
         selected_mask=result.selected_mask,
         candidate_count=result.candidate_count,
         applied_footprint_polygons=result.applied_footprint_polygons,
+        deterministic_score=score_roof_result(
+            result.selected_mask,
+            straightened_sections,
+            automatic_request.footprint_polygons,
+        ),
+    )
+    result.report = result.report.model_copy(
+        update={
+            "processing_iterations": [
+                {
+                    "stage": "initial_segmentation",
+                    "positive_points": _points_record(positive_points),
+                    "negative_points": _points_record(negative_points),
+                    "footprint_count": len(automatic_footprints),
+                    "footprint_buffer_feet": automatic_request.footprint_buffer_feet,
+                    "deterministic_score": result.deterministic_score,
+                    "accepted": True,
+                }
+            ]
+        }
     )
     notes.append("Segmented boundary was simplified and straightened to architectural edges.")
 
     if not use_ai_outline_cleanup:
         return result, notes
     if not os.getenv("OPENAI_API_KEY"):
-        notes.append("AI outline cleanup was skipped because OpenAI is not configured.")
+        notes.append("AI semantic QA was skipped because OpenAI is not configured.")
         return result, notes
-    try:
-        cleanup = suggest_refined_roof_polygons(
-            image,
-            result.report.measurement.sections,
-            address=address,
-            reference_images=reference_images,
-        )
-        if not cleanup.polygons:
-            notes.append("AI outline cleanup returned no usable boundary; kept the deterministic outline.")
-            notes.extend(cleanup.warnings)
-            return result, notes
-        cleaned_sections = _sections_from_ai_polygons(result.report.measurement.sections, cleanup.polygons)
-        cleaned_report = recalculate_report_from_corrected_sections(
-            result.report,
-            cleaned_sections,
-            correction_note="Automatic AI outline cleanup applied after deterministic architectural smoothing.",
-        )
-        notes.append("AI outline cleanup completed.")
-        return RoofMeasureResult(
-            report=cleaned_report,
-            selected_mask=None,
-            candidate_count=result.candidate_count,
-            applied_footprint_polygons=result.applied_footprint_polygons,
-        ), notes
-    except Exception as exc:
-        notes.append(f"AI outline cleanup failed ({type(exc).__name__}); kept the deterministic outline.")
+    qa = suggest_roof_qa(
+        image,
+        result.report.measurement.sections,
+        address=address,
+        reference_images=reference_images,
+    )
+    qa_record = {"stage": "semantic_qa", **qa.as_record(), "accepted": True}
+    result.report = result.report.model_copy(
+        update={"processing_iterations": [*result.report.processing_iterations, qa_record]}
+    )
+    if qa.warnings:
+        notes.extend(qa.warnings)
+        notes.append("AI semantic QA was unavailable; kept the deterministic outline.")
         return result, notes
+    retry_positive, retry_negative = qa_corrections_to_prompts(qa)
+    if not retry_positive and not retry_negative:
+        notes.append("AI semantic QA found no SAM prompt correction; kept the deterministic outline.")
+        return result, notes
+    retry_request = automatic_request.model_copy(
+        update={
+            "positive_points": _unique_points([*positive_points, *retry_positive]),
+            "negative_points": _unique_points([*negative_points, *retry_negative]),
+        }
+    )
+    retry = measure_roof_from_overhead_image(image_bytes=image_bytes, request=retry_request, selected_candidate_index=0)
+    retry_sections = _straightened_sections(retry.report.measurement.sections)
+    retry_score = score_roof_result(retry.selected_mask, retry_sections, retry_request.footprint_polygons)
+    accepted = bool(retry_sections and retry_score > result.deterministic_score + 0.01)
+    retry_record = {
+        "stage": "targeted_sam_retry",
+        "positive_points": _points_record(retry_positive),
+        "negative_points": _points_record(retry_negative),
+        "deterministic_score": retry_score,
+        "accepted": accepted,
+    }
+    if not accepted:
+        result.report = result.report.model_copy(
+            update={"processing_iterations": [*result.report.processing_iterations, retry_record]}
+        )
+        notes.append("AI QA proposed targeted SAM prompts, but the retry did not improve deterministic scoring; kept the original outline.")
+        return result, notes
+    retry_report = recalculate_report_from_corrected_sections(
+        retry.report,
+        retry_sections,
+        correction_note="Accepted targeted SAM retry from semantic QA; deterministic architectural edge straightening reapplied.",
+    ).model_copy(update={"processing_iterations": [*result.report.processing_iterations, retry_record]})
+    notes.append("AI semantic QA prompted a targeted SAM retry that improved deterministic scoring.")
+    return RoofMeasureResult(
+        report=retry_report,
+        selected_mask=retry.selected_mask,
+        candidate_count=retry.candidate_count,
+        applied_footprint_polygons=retry.applied_footprint_polygons,
+        deterministic_score=retry_score,
+    ), notes
+
+
+def _straightened_sections(sections: list[RoofSection]) -> list[RoofSection]:
+    straightened: list[RoofSection] = []
+    for section in sections:
+        corrected = section.model_copy(deep=True)
+        corrected.polygon = straighten_architectural_ring(section.polygon)
+        corrected.holes = [straighten_architectural_ring(hole) for hole in section.holes]
+        straightened.append(corrected)
+    return straightened
+
+
+def _unique_points(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    return list(dict.fromkeys((float(x), float(y)) for x, y in points))
+
+
+def _points_record(points: list[tuple[float, float]]) -> list[dict[str, float]]:
+    return [{"x": round(float(x), 2), "y": round(float(y), 2)} for x, y in points]
 
 
 def _footprint_visible_area_pixels(

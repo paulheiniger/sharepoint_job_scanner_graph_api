@@ -19,6 +19,7 @@ from roof_measure.calibration import (
     sqft_from_pixels,
 )
 from roof_measure.ai_polygons import polygon_suggestion_from_payload, suggest_refined_roof_polygons
+from roof_measure.ai_qa import qa_corrections_to_prompts, qa_finding_from_payload
 from roof_measure.ai_points import suggestion_from_payload
 from roof_measure.ai_polygons import _call_openai_roof_polygon_refiner, _call_openai_roof_polygon_suggester
 from roof_measure.ai_points import _call_openai_roof_point_suggester
@@ -38,7 +39,7 @@ from roof_measure.map_reference import (
 from roof_measure.models import ImageMetadata
 from roof_measure.polygonize import section_from_polygon, sections_from_mask
 from roof_measure.segmentation import MockRoofSegmenter, Sam2RoofSegmenter, SegmentationPrompts
-from roof_measure.service import _constrain_mask_to_footprints, measure_roof_from_outline_polygons, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections
+from roof_measure.service import _constrain_mask_to_footprints, _footprint_buffer_pixels, measure_roof_from_outline_polygons, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections, score_roof_result
 from roof_measure.models import RoofMeasureRequest
 from roof_measure.streamlit_page import (
     _canvas_background_image,
@@ -412,6 +413,48 @@ def test_selected_footprint_constrains_segmentation_mask() -> None:
     assert constrained.sum() == 169
     assert constrained[14, 14]
     assert not constrained[4, 4]
+
+
+def test_footprint_buffer_uses_metadata_calibration() -> None:
+    request = RoofMeasureRequest(
+        overhead_image_name="roof.png",
+        metadata_pixels_per_foot=1.5,
+        footprint_buffer_feet=10,
+    )
+
+    assert _footprint_buffer_pixels(request) == 15
+
+
+def test_semantic_qa_defects_become_targeted_sam_prompts() -> None:
+    finding = qa_finding_from_payload(
+        {
+            "missing_regions": [{"x": 20, "y": 30}],
+            "extra_regions": [{"x": 60, "y": 30}],
+            "courtyard_errors": [{"x": 40, "y": 40}],
+            "boundary_errors": [{"x": 10, "y": 10}],
+            "confidence": 0.91,
+        },
+        width=100,
+        height=80,
+    )
+
+    positive, negative = qa_corrections_to_prompts(finding)
+
+    assert positive == [(20.0, 30.0)]
+    assert negative == [(60.0, 30.0), (40.0, 40.0)]
+    assert finding.boundary_errors == [(10.0, 10.0)]
+    assert finding.confidence == 0.91
+
+
+def test_deterministic_score_penalizes_fragmented_sections() -> None:
+    mask = np.ones((20, 20), dtype=bool)
+    whole = [section_from_polygon("main", [(1, 1), (18, 1), (18, 18), (1, 18)])]
+    fragmented = [
+        section_from_polygon("one", [(1, 1), (7, 1), (7, 7), (1, 7)]),
+        section_from_polygon("two", [(11, 11), (18, 11), (18, 18), (11, 18)]),
+    ]
+
+    assert score_roof_result(mask, whole, []) > score_roof_result(mask, fragmented, [])
 
 
 def test_duplicate_image_detection_updates_seen_hashes(tmp_path) -> None:

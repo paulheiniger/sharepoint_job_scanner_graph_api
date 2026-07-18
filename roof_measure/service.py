@@ -21,6 +21,7 @@ class RoofMeasureResult:
     selected_mask: np.ndarray | None
     candidate_count: int
     applied_footprint_polygons: list[list[tuple[float, float]]] = field(default_factory=list)
+    deterministic_score: float = 0.0
 
 
 def measure_roof_from_overhead_image(
@@ -53,13 +54,19 @@ def measure_roof_from_overhead_image(
         candidate = candidates[selected_index]
         selected_mask = candidate.mask
         if request.footprint_polygons:
-            constrained_mask = _constrain_mask_to_footprints(selected_mask, request.footprint_polygons)
+            buffer_pixels = _footprint_buffer_pixels(request)
+            constrained_mask = _constrain_mask_to_footprints(
+                selected_mask,
+                request.footprint_polygons,
+                buffer_pixels=buffer_pixels,
+            )
             if constrained_mask.any():
                 retained_fraction = float(constrained_mask.sum()) / max(float(selected_mask.sum()), 1.0)
                 selected_mask = constrained_mask
                 applied_footprint_polygons = request.footprint_polygons
                 segmentation.warnings.append(
-                    f"Segmentation constrained to selected building footprint(s); retained {retained_fraction:.0%} of mask pixels."
+                    "Segmentation constrained to selected building footprint(s) "
+                    f"with a {float(request.footprint_buffer_feet):g} ft buffer; retained {retained_fraction:.0%} of mask pixels."
                 )
             else:
                 segmentation.warnings.append("Selected building footprint(s) did not overlap the segmentation mask; original mask retained.")
@@ -133,6 +140,7 @@ def measure_roof_from_overhead_image(
         selected_mask=selected_mask,
         candidate_count=len(candidates),
         applied_footprint_polygons=applied_footprint_polygons,
+        deterministic_score=score_roof_result(selected_mask, sections, request.footprint_polygons),
     )
 
 
@@ -149,6 +157,14 @@ def _constrain_mask_to_footprints(mask: np.ndarray, polygons: list[list[tuple[fl
     return np.asarray(mask, dtype=bool) & footprint_mask
 
 
+def _footprint_buffer_pixels(request: RoofMeasureRequest) -> int:
+    feet = max(0.0, min(float(request.footprint_buffer_feet), 30.0))
+    pixels_per_foot = float(request.metadata_pixels_per_foot or 0)
+    if pixels_per_foot > 0:
+        return max(0, int(round(feet * pixels_per_foot)))
+    return 8
+
+
 def _dilate_mask(mask: np.ndarray, *, radius: int) -> np.ndarray:
     expanded = np.asarray(mask, dtype=bool).copy()
     for _ in range(max(0, int(radius))):
@@ -158,6 +174,37 @@ def _dilate_mask(mask: np.ndarray, *, radius: int) -> np.ndarray:
             for x_offset in range(3):
                 expanded |= padded[y_offset : y_offset + mask.shape[0], x_offset : x_offset + mask.shape[1]]
     return expanded
+
+
+def score_roof_result(
+    mask: np.ndarray | None,
+    sections: list[RoofSection],
+    footprint_polygons: list[list[tuple[float, float]]],
+) -> float:
+    """Score only deterministic properties used to reject a weaker correction pass."""
+    if mask is None or not np.asarray(mask, dtype=bool).any() or not sections:
+        return 0.0
+    components = len(sections)
+    fragmentation = 1.0 / max(components, 1)
+    validity = sum(1 for section in sections if len(repair_polygon(section.polygon)) >= 4) / len(sections)
+    regularity = sum(_ring_axis_regularity(section.polygon) for section in sections) / len(sections)
+    footprint_overlap = 1.0
+    if footprint_polygons:
+        footprint = _constrain_mask_to_footprints(np.ones_like(mask, dtype=bool), footprint_polygons, buffer_pixels=0)
+        footprint_overlap = float((np.asarray(mask, dtype=bool) & footprint).sum()) / max(float(np.asarray(mask, dtype=bool).sum()), 1.0)
+    return round(0.35 * footprint_overlap + 0.30 * validity + 0.20 * regularity + 0.15 * fragmentation, 4)
+
+
+def _ring_axis_regularity(ring: list[tuple[float, float]]) -> float:
+    repaired = repair_polygon(ring)
+    edges = list(zip(repaired, repaired[1:]))
+    if not edges:
+        return 0.0
+    aligned = 0
+    for (x1, y1), (x2, y2) in edges:
+        if min(abs(x2 - x1), abs(y2 - y1)) <= max(abs(x2 - x1), abs(y2 - y1)) * 0.25:
+            aligned += 1
+    return aligned / len(edges)
 
 
 def measure_roof_from_outline_polygons(

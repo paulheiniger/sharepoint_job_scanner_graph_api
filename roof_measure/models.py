@@ -83,6 +83,7 @@ class RoofMeasureRequest(BaseModel):
     edge_snap_strength: float = 0.0
     segmenter_name: str = "manual_fallback"
     footprint_polygons: list[Ring] = Field(default_factory=list)
+    footprint_buffer_feet: float = 10.0
 
 
 class MeasurementReport(BaseModel):
@@ -95,5 +96,6 @@ class MeasurementReport(BaseModel):
     pixels_per_foot: float | None = None
     measurement: RoofMeasurement
     user_corrections: list[dict[str, Any]] = Field(default_factory=list)
+    processing_iterations: list[dict[str, Any]] = Field(default_factory=list)
     model_name: str = "manual_fallback_segmenter"
     model_version: str = "roof-measure-mvp1"
