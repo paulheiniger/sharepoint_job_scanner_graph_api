@@ -21,7 +21,7 @@ from roof_measure.calibration import (
     parse_scale_label_feet,
     sqft_from_pixels,
 )
-from roof_measure.ai_polygons import polygon_suggestion_from_payload, suggest_refined_roof_polygons
+from roof_measure.ai_polygons import _focus_crop_box, polygon_suggestion_from_payload, suggest_refined_roof_polygons, suggest_roof_polygons
 from roof_measure.ai_qa import RoofQaFinding, qa_corrections_to_prompts, qa_finding_from_payload
 from roof_measure.ai_points import suggestion_from_payload
 from roof_measure.ai_polygons import _call_openai_roof_polygon_refiner, _call_openai_roof_polygon_suggester
@@ -58,6 +58,8 @@ from roof_measure.streamlit_page import (
     _footprint_rings_to_inference_pixels,
     _insert_new_corner_points,
     _lidar_core_cut,
+    _map_view_for_image_crop,
+    _primary_prompt_cluster,
     _polygons_interior_prompt_points,
     _polygons_prompt_box,
     _parse_points_text,
@@ -1114,6 +1116,50 @@ def test_ai_polygon_suggestion_payload_filters_and_repairs_polygons() -> None:
     assert len(suggestion.polygons) == 1
     assert suggestion.polygons[0] == [(10.0, 20.0), (60.0, 20.0), (60.0, 50.0), (10.0, 50.0), (10.0, 20.0)]
     assert suggestion.confidence == 0.8
+
+
+def test_ai_polygon_suggestion_uses_prompt_focused_image_and_maps_back() -> None:
+    image = Image.new("RGB", (1200, 900), "white")
+    seen_sizes: list[tuple[int, int]] = []
+
+    suggestion = suggest_roof_polygons(
+        image,
+        focus_points=[(260, 220), (640, 620)],
+        provider=lambda focused, address, width, height: (
+            seen_sizes.append((width, height))
+            or {
+                "roof_polygons": [
+                    {"points": [{"x": 10, "y": 20}, {"x": 80, "y": 20}, {"x": 80, "y": 70}, {"x": 10, "y": 70}]}
+                ]
+            }
+        ),
+    )
+
+    assert seen_sizes == [(640, 640)]
+    assert suggestion.focus_crop == (130, 100, 770, 740)
+    assert suggestion.polygons[0] == [(140.0, 120.0), (210.0, 120.0), (210.0, 170.0), (140.0, 170.0), (140.0, 120.0)]
+
+
+def test_ai_polygon_focus_crop_uses_full_image_for_single_prompt() -> None:
+    assert _focus_crop_box((1200, 900), [(600, 450)]) is None
+
+
+def test_primary_prompt_cluster_excludes_detached_campus_prompts() -> None:
+    points = [(463, 548), (366, 385), (526, 270), (628, 289), (294, 596), (828, 958), (870, 783)]
+
+    assert _primary_prompt_cluster(points, (1280, 1280)) == points[:5]
+
+
+def test_map_view_crop_reprojects_center_for_lidar_alignment() -> None:
+    cropped = _map_view_for_image_crop(
+        {"latitude": 37.97867, "longitude": -84.192173, "zoom": 19.0},
+        (1280, 1280),
+        (160, 120, 800, 760),
+    )
+
+    assert cropped["zoom"] == 19.0
+    assert cropped["longitude"] < -84.192173
+    assert cropped["latitude"] > 37.97867
 
 
 def test_refined_ai_polygon_suggestion_receives_current_sections() -> None:

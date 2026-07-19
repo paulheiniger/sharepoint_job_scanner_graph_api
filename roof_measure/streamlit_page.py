@@ -41,7 +41,7 @@ try:
 except ImportError:  # pragma: no cover - exercised in environments without the optional component.
     st_canvas = None
 
-from .ai_polygons import RoofPolygonSuggestion, suggest_refined_roof_polygons, suggest_roof_polygons
+from .ai_polygons import _focus_crop_box, RoofPolygonSuggestion, suggest_refined_roof_polygons, suggest_roof_polygons
 from .ai_qa import qa_corrections_to_prompts, suggest_roof_qa
 from .ai_points import suggest_roof_prompt_points
 from .exports import geojson_to_string, measurement_to_geojson, report_to_json
@@ -64,7 +64,7 @@ from .service import RoofMeasureResult, finalize_roof_sections, footprint_constr
 from .visualization import annotated_overlay, footprint_constraint_overlay, footprint_overlay, image_png_bytes, outline_prior_overlay, prompt_points_overlay
 
 
-_AI_OUTLINE_PRIOR_VERSION = 3
+_AI_OUTLINE_PRIOR_VERSION = 4
 
 
 def render_ai_roof_measure_page() -> None:
@@ -599,7 +599,7 @@ def render_ai_roof_measure_page() -> None:
     if st.session_state.pop("roof_measure_auto_measure_pending", False):
         try:
             with st.spinner("Finding roof surfaces and measuring the editable outline..."):
-                result, workflow_notes = _measure_roof_automatically(
+                result, workflow_notes, measured_image_bytes = _measure_roof_automatically(
                     image_bytes=image_bytes,
                     image=loaded.inference_image,
                     request=request,
@@ -616,7 +616,7 @@ def render_ai_roof_measure_page() -> None:
             return
         st.session_state["roof_measure_result"] = result
         st.session_state["roof_measure_original_result"] = result
-        st.session_state["roof_measure_image_bytes"] = image_bytes
+        st.session_state["roof_measure_image_bytes"] = measured_image_bytes
         st.session_state["roof_measure_file_name"] = image_name
         st.session_state["roof_measure_auto_workflow_notes"] = workflow_notes
         st.rerun()
@@ -634,6 +634,7 @@ def render_ai_roof_measure_page() -> None:
                 loaded.inference_image,
                 address=address,
                 reference_images=reference_images,
+                focus_points=request.positive_points,
             )
             if suggestion.warnings:
                 for warning in suggestion.warnings:
@@ -699,7 +700,7 @@ def _measure_roof_automatically(
     cached_outline_prior: RoofPolygonSuggestion | None,
     lidar_asset_url: str,
     candidate_footprints: list[list[tuple[float, float]]],
-) -> tuple[RoofMeasureResult, list[str]]:
+) -> tuple[RoofMeasureResult, list[str], bytes]:
     """Run the default measure pipeline while retaining a valid deterministic result."""
     notes: list[str] = []
     positive_points: list[tuple[float, float]] = []
@@ -708,6 +709,7 @@ def _measure_roof_automatically(
     outline_points: list[tuple[float, float]] = []
     segmentation_box: tuple[float, float, float, float] | None = None
     outline_prior_record: dict[str, object] | None = None
+    working_crop: tuple[int, int, int, int] | None = None
     if os.getenv("OPENAI_API_KEY"):
         point_suggestion = suggest_roof_prompt_points(
             image,
@@ -724,6 +726,33 @@ def _measure_roof_automatically(
         notes.extend(point_suggestion.warnings)
     else:
         notes.append("AI roof prompting is not configured; used a centered fallback prompt.")
+
+    # A full campus tile makes visual coordinate estimation materially weaker. Use the
+    # densest prompt cluster to create one calibrated roof-focused working image for
+    # outline, SAM2, QA, LiDAR projection, and the final editable result.
+    focus_points = _primary_prompt_cluster(ai_positive_points, image.size)
+    working_crop = _focus_crop_box(image.size, focus_points)
+    if working_crop:
+        source_size = image.size
+        x0, y0, _, _ = working_crop
+        image = image.crop(working_crop)
+        image_bytes = image_png_bytes(image)
+        positive_points = _translate_points_to_crop(focus_points, working_crop, image.size)
+        ai_positive_points = positive_points
+        negative_points = _translate_points_to_crop(negative_points, working_crop, image.size)
+        candidate_footprints = _translate_polygons_to_crop(candidate_footprints, working_crop)
+        request = request.model_copy(
+            update={
+                "positive_points": _translate_points_to_crop(request.positive_points, working_crop, image.size),
+                "negative_points": _translate_points_to_crop(request.negative_points, working_crop, image.size),
+                "footprint_polygons": _translate_polygons_to_crop(request.footprint_polygons, working_crop),
+                "map_view": _map_view_for_image_crop(request.map_view, source_size, working_crop),
+            }
+        )
+        cached_outline_prior = None
+        notes.append(
+            f"Used a calibrated roof-focused working image ({image.width} x {image.height} pixels) from the primary AI roof prompt cluster."
+        )
     if not positive_points:
         positive_points = [(image.width / 2, image.height / 2)]
 
@@ -732,6 +761,7 @@ def _measure_roof_automatically(
             image,
             address=address,
             reference_images=reference_images,
+            focus_points=ai_positive_points,
         )
         if outline_suggestion.polygons:
             segmentation_box = _polygons_prompt_box(outline_suggestion.polygons, image.size)
@@ -749,6 +779,7 @@ def _measure_roof_automatically(
                 ],
                 "model_name": outline_suggestion.model_name,
                 "model_version": outline_suggestion.model_version,
+                "focus_crop": _box_record(outline_suggestion.focus_crop),
                 "notes": outline_suggestion.notes,
                 "warnings": outline_suggestion.warnings,
             }
@@ -786,7 +817,7 @@ def _measure_roof_automatically(
     )
     if not result.report.measurement.sections:
         notes.append("Segmentation did not produce an editable roof boundary. Use the advanced outline tools to continue.")
-        return result, notes
+        return result, notes, image_bytes
 
     straightened_sections, finalizer_record = finalize_roof_sections(
         result.selected_mask,
@@ -839,6 +870,7 @@ def _measure_roof_automatically(
                     "outline_prior_polygon_count": len(automatic_request.outline_prior_polygons),
                     "outline_prior_buffer_pixels": result.outline_prior_buffer_pixels,
                     "map_view": automatic_request.map_view,
+                    "working_image_crop": _box_record(working_crop),
                     "deterministic_score": result.deterministic_score,
                     "polygon_finalizer": finalizer_record,
                     "accepted": True,
@@ -850,7 +882,7 @@ def _measure_roof_automatically(
     notes.append("Segmented boundary was simplified and straightened to architectural edges.")
 
     if not use_ai_outline_cleanup:
-        return result, notes
+        return result, notes, image_bytes
     if result.report.model_name == "manual_fallback_segmenter":
         result.report = result.report.model_copy(
             update={
@@ -866,10 +898,10 @@ def _measure_roof_automatically(
             }
         )
         notes.append("AI semantic QA was skipped because SAM2 is unavailable; start the SAM2 service before requesting prompt corrections.")
-        return result, notes
+        return result, notes, image_bytes
     if not os.getenv("OPENAI_API_KEY"):
         notes.append("AI semantic QA was skipped because OpenAI is not configured.")
-        return result, notes
+        return result, notes, image_bytes
     qa = suggest_roof_qa(
         image,
         result.report.measurement.sections,
@@ -888,13 +920,13 @@ def _measure_roof_automatically(
     if not qa.completed:
         notes.extend(qa.warnings)
         notes.append("AI semantic QA was unavailable; kept the deterministic outline.")
-        return result, notes
+        return result, notes, image_bytes
     if qa.warnings:
         notes.extend(qa.warnings)
     retry_positive, retry_negative = qa_corrections_to_prompts(qa)
     if not retry_positive and not retry_negative:
         notes.append("AI semantic QA found no SAM prompt correction; kept the deterministic outline.")
-        return result, notes
+        return result, notes, image_bytes
     retry_request = automatic_request.model_copy(
         update={
             "positive_points": _unique_points([*positive_points, *retry_positive]),
@@ -941,13 +973,13 @@ def _measure_roof_automatically(
                 "Semantic QA identified major missing roof areas and non-roof inclusion. The initial automatic outline is retained only for editing and must not be used as a measurement.",
             )
             notes.append("Semantic QA rejected the initial outline as materially wrong; select the target footprint or add roof prompt points before measuring again.")
-            return result, notes
+            return result, notes, image_bytes
         notes.append(
             "AI QA proposed targeted SAM prompts, but the retry cut through LiDAR-supported roof interior; kept the original outline."
             if lidar_core_cut
             else "AI QA proposed targeted SAM prompts, but the retry did not improve deterministic scoring; kept the original outline."
         )
-        return result, notes
+        return result, notes, image_bytes
     retry_report = recalculate_report_from_corrected_sections(
         retry.report,
         retry_sections,
@@ -964,7 +996,82 @@ def _measure_roof_automatically(
         applied_outline_prior_polygons=retry.applied_outline_prior_polygons,
         outline_prior_buffer_pixels=retry.outline_prior_buffer_pixels,
         deterministic_score=retry_score,
-    ), notes
+    ), notes, image_bytes
+
+
+def _primary_prompt_cluster(points: list[tuple[float, float]], image_size: tuple[int, int]) -> list[tuple[float, float]]:
+    """Keep the largest spatially connected group of positive roof prompts."""
+    width, height = image_size
+    usable = [(float(x), float(y)) for x, y in points if 0 <= float(x) < width and 0 <= float(y) < height]
+    if len(usable) < 2:
+        return usable
+    link_distance = max(180.0, min(width, height) * 0.18)
+    components: list[list[tuple[float, float]]] = []
+    remaining = set(range(len(usable)))
+    while remaining:
+        component = {remaining.pop()}
+        changed = True
+        while changed:
+            changed = False
+            for index in list(remaining):
+                if any(math.dist(usable[index], usable[member]) <= link_distance for member in component):
+                    remaining.remove(index)
+                    component.add(index)
+                    changed = True
+        components.append([usable[index] for index in sorted(component)])
+    return max(components, key=lambda component: (len(component), -_point_cluster_area(component)))
+
+
+def _point_cluster_area(points: list[tuple[float, float]]) -> float:
+    xs, ys = zip(*points)
+    return (max(xs) - min(xs)) * (max(ys) - min(ys))
+
+
+def _translate_points_to_crop(
+    points: list[tuple[float, float]],
+    crop: tuple[int, int, int, int],
+    crop_size: tuple[int, int],
+) -> list[tuple[float, float]]:
+    x0, y0, _, _ = crop
+    width, height = crop_size
+    return [
+        (float(x) - x0, float(y) - y0)
+        for x, y in points
+        if 0 <= float(x) - x0 < width and 0 <= float(y) - y0 < height
+    ]
+
+
+def _translate_polygons_to_crop(
+    polygons: list[list[tuple[float, float]]],
+    crop: tuple[int, int, int, int],
+) -> list[list[tuple[float, float]]]:
+    x0, y0, _, _ = crop
+    return [[(float(x) - x0, float(y) - y0) for x, y in polygon] for polygon in polygons]
+
+
+def _map_view_for_image_crop(
+    map_view: dict[str, float],
+    source_size: tuple[int, int],
+    crop: tuple[int, int, int, int],
+) -> dict[str, float]:
+    if any(key not in map_view for key in ("latitude", "longitude", "zoom")):
+        return map_view
+    latitude = float(map_view["latitude"])
+    longitude = float(map_view["longitude"])
+    zoom = float(map_view["zoom"])
+    world_size = 512 * (2**zoom)
+    center_x = (longitude + 180.0) / 360.0 * world_size
+    latitude_radians = math.radians(max(-85.05112878, min(85.05112878, latitude)))
+    center_y = (1.0 - math.asinh(math.tan(latitude_radians)) / math.pi) / 2.0 * world_size
+    x0, y0, x1, y1 = crop
+    source_width, source_height = source_size
+    cropped_center_x = center_x + ((x0 + x1) / 2.0 - source_width / 2.0)
+    cropped_center_y = center_y + ((y0 + y1) / 2.0 - source_height / 2.0)
+    return {
+        "longitude": cropped_center_x / world_size * 360.0 - 180.0,
+        "latitude": math.degrees(math.atan(math.sinh(math.pi * (1.0 - 2.0 * cropped_center_y / world_size)))),
+        "zoom": zoom,
+    }
 
 
 def _lidar_geometry_assessment(

@@ -22,6 +22,7 @@ class RoofPolygonSuggestion:
     warnings: list[str] = field(default_factory=list)
     model_name: str = "openai_roof_outline"
     model_version: str = ""
+    focus_crop: tuple[int, int, int, int] | None = None
 
 
 AiPolygonProvider = Callable[[Image.Image, str, int, int], dict[str, Any]]
@@ -33,18 +34,58 @@ def suggest_roof_polygons(
     *,
     address: str = "",
     reference_images: list[Image.Image] | None = None,
+    focus_points: list[Point] | None = None,
     provider: AiPolygonProvider | None = None,
 ) -> RoofPolygonSuggestion:
     width, height = image.size
+    focus_crop = _focus_crop_box(image.size, focus_points or [])
+    inference_image = image.crop(focus_crop) if focus_crop else image
     try:
         payload = (
-            provider(image, address, width, height)
+            provider(inference_image, address, inference_image.width, inference_image.height)
             if provider is not None
-            else _call_openai_roof_polygon_suggester(image, address=address, reference_images=reference_images)
+            else _call_openai_roof_polygon_suggester(
+                inference_image,
+                address=address,
+                reference_images=reference_images,
+            )
         )
     except Exception as exc:
         return RoofPolygonSuggestion(warnings=[f"AI roof outline suggestion failed: {type(exc).__name__}: {exc}"])
-    return polygon_suggestion_from_payload(payload, width=width, height=height)
+    suggestion = polygon_suggestion_from_payload(
+        payload,
+        width=inference_image.width,
+        height=inference_image.height,
+    )
+    if focus_crop:
+        x0, y0, _, _ = focus_crop
+        suggestion.polygons = [
+            [(float(x) + x0, float(y) + y0) for x, y in polygon]
+            for polygon in suggestion.polygons
+        ]
+        suggestion.focus_crop = focus_crop
+    return suggestion
+
+
+def _focus_crop_box(image_size: tuple[int, int], points: list[Point]) -> tuple[int, int, int, int] | None:
+    """Return a roof-scale crop around distributed AI prompts, or None for full image."""
+    width, height = image_size
+    usable = [(float(x), float(y)) for x, y in points if 0 <= float(x) < width and 0 <= float(y) < height]
+    if len(usable) < 2:
+        return None
+    xs, ys = zip(*usable)
+    span_x = max(xs) - min(xs)
+    span_y = max(ys) - min(ys)
+    # Preserve enough context for exterior walls while forcing meaningful pixel scale.
+    crop_width = min(width, max(640, int(round(span_x * 1.45))))
+    crop_height = min(height, max(640, int(round(span_y * 1.45))))
+    center_x = (min(xs) + max(xs)) / 2
+    center_y = (min(ys) + max(ys)) / 2
+    x0 = max(0, min(width - crop_width, int(round(center_x - crop_width / 2))))
+    y0 = max(0, min(height - crop_height, int(round(center_y - crop_height / 2))))
+    crop = (x0, y0, x0 + crop_width, y0 + crop_height)
+    # Do not create a virtually identical copy of the source image.
+    return crop if crop_width * crop_height < width * height * 0.9 else None
 
 
 def suggest_refined_roof_polygons(
