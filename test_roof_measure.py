@@ -28,7 +28,7 @@ from roof_measure.confidence import measurement_warnings
 from roof_measure.exports import measurement_to_geojson
 from roof_measure.geometry import polygon_area_pixels, repair_polygon, simplify_ring, straighten_architectural_ring
 from roof_measure.image_io import image_hash, load_image_bytes
-from roof_measure.lidar import assess_mask_against_height_grid
+from roof_measure.lidar import _height_grid_from_points, assess_mask_against_height_grid
 from roof_measure.map_reference import (
     BuildingFootprint,
     _kyfromabove_lidar_coverage_from_payload,
@@ -544,6 +544,20 @@ def test_lidar_height_prior_distinguishes_elevated_roof_from_ground() -> None:
 
     assert roof.ok and roof.roof_support_fraction == 1.0 and roof.ground_fraction == 0.0
     assert ground.ok and ground.roof_support_fraction == 0.0 and ground.ground_fraction == 1.0
+
+
+def test_lidar_height_grid_uses_classified_ground_as_local_elevation_baseline() -> None:
+    grid = _height_grid_from_points(
+        np.array([3.0, 3.0, 11.0]),
+        np.array([3.0, 11.0, 11.0]),
+        np.array([112.0, 100.0, 100.0]),
+        np.array([1, 2, 2]),
+        (16, 16),
+        cell_pixels=8,
+    )
+
+    assert np.isfinite(grid[0, 0])
+    assert grid[0, 0] == 12.0
 
 
 def test_duplicate_image_detection_updates_seen_hashes(tmp_path) -> None:

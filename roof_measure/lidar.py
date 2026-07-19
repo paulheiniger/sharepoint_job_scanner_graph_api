@@ -144,11 +144,12 @@ def _height_grid_from_points(
     classes = classifications[valid]
     dsm = np.full(grid_width * grid_height, -np.inf)
     np.maximum.at(dsm, flat, z)
-    ground = np.full(grid_width * grid_height, np.nan)
+    ground = np.full(grid_width * grid_height, -np.inf)
     ground_mask = classes == 2
     if not ground_mask.any():
         return np.full((grid_height, grid_width), np.nan)
     np.maximum.at(ground, flat[ground_mask], z[ground_mask])
+    ground[~np.isfinite(ground)] = np.nan
     dtm = _fill_nearest_ground(ground.reshape(grid_height, grid_width))
     dsm = dsm.reshape(grid_height, grid_width)
     return np.where(np.isfinite(dsm) & np.isfinite(dtm), dsm - dtm, np.nan)

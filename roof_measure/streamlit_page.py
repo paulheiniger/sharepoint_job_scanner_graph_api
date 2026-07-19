@@ -41,7 +41,7 @@ try:
 except ImportError:  # pragma: no cover - exercised in environments without the optional component.
     st_canvas = None
 
-from .ai_polygons import suggest_refined_roof_polygons, suggest_roof_polygons
+from .ai_polygons import RoofPolygonSuggestion, suggest_refined_roof_polygons, suggest_roof_polygons
 from .ai_qa import qa_corrections_to_prompts, suggest_roof_qa
 from .ai_points import suggest_roof_prompt_points
 from .exports import geojson_to_string, measurement_to_geojson, report_to_json
@@ -70,6 +70,13 @@ def render_ai_roof_measure_page() -> None:
         "Experimental estimating-assistance measurement from uploaded imagery. "
         "Results are approximate and require estimator review."
     )
+
+    # Existing browser sessions retain checkbox state, so migrate old sessions
+    # once to the current automatic-pipeline defaults.
+    if int(st.session_state.get("roof_measure_auto_defaults_version", 0)) < 2:
+        st.session_state["roof_measure_auto_ai_cleanup"] = True
+        st.session_state["roof_measure_auto_ai_outline_prior"] = True
+        st.session_state["roof_measure_auto_defaults_version"] = 2
 
     with st.expander("Milestone 1 Scope", expanded=False):
         st.markdown(
@@ -585,6 +592,7 @@ def render_ai_roof_measure_page() -> None:
             if context.get(key) is not None
         },
     )
+    cached_outline_prior = _cached_ai_outline_prior(str(loaded.metadata.image_id))
     if st.session_state.pop("roof_measure_auto_measure_pending", False):
         try:
             with st.spinner("Finding roof surfaces and measuring the editable outline..."):
@@ -596,6 +604,7 @@ def render_ai_roof_measure_page() -> None:
                     reference_images=reference_images,
                     use_ai_outline_cleanup=use_ai_outline_cleanup,
                     use_ai_outline_prior=use_ai_outline_prior,
+                    cached_outline_prior=cached_outline_prior,
                     candidate_footprints=footprint_candidate_polygons,
                 )
         except Exception as exc:
@@ -628,6 +637,7 @@ def render_ai_roof_measure_page() -> None:
             if not suggestion.polygons:
                 st.warning("AI did not return usable roof outlines for this image.")
             else:
+                _store_ai_outline_prior(str(loaded.metadata.image_id), suggestion)
                 try:
                     result = measure_roof_from_outline_polygons(
                         image_bytes=image_bytes,
@@ -648,10 +658,20 @@ def render_ai_roof_measure_page() -> None:
                 st.rerun()
     with measure_col2:
         if st.button("Measure with Segmenter", width="stretch"):
+            segmenter_request = request
+            if cached_outline_prior is not None:
+                outline_box = _polygons_prompt_box(cached_outline_prior.polygons, loaded.inference_image.size)
+                outline_points = _polygons_interior_prompt_points(cached_outline_prior.polygons, loaded.inference_image.size)
+                segmenter_request = request.model_copy(
+                    update={
+                        "positive_points": _unique_points([*request.positive_points, *outline_points]),
+                        "segmentation_box": outline_box,
+                    }
+                )
             try:
                 result = measure_roof_from_overhead_image(
                     image_bytes=image_bytes,
-                    request=request,
+                    request=segmenter_request,
                     selected_candidate_index=int(candidate_index) - 1,
                 )
             except Exception as exc:
@@ -671,6 +691,7 @@ def _measure_roof_automatically(
     reference_images: list[Image.Image],
     use_ai_outline_cleanup: bool,
     use_ai_outline_prior: bool,
+    cached_outline_prior: RoofPolygonSuggestion | None,
     candidate_footprints: list[list[tuple[float, float]]],
 ) -> tuple[RoofMeasureResult, list[str]]:
     """Run the default measure pipeline while retaining a valid deterministic result."""
@@ -700,7 +721,7 @@ def _measure_roof_automatically(
         positive_points = [(image.width / 2, image.height / 2)]
 
     if use_ai_outline_prior and os.getenv("OPENAI_API_KEY"):
-        outline_suggestion = suggest_roof_polygons(
+        outline_suggestion = cached_outline_prior or suggest_roof_polygons(
             image,
             address=address,
             reference_images=reference_images,
@@ -725,7 +746,8 @@ def _measure_roof_automatically(
                 "warnings": outline_suggestion.warnings,
             }
             notes.append(
-                "AI roof outline supplied a coarse SAM2 region prior; SAM2 will refine the roof boundary inside that envelope."
+                ("Previously drawn AI roof outline was reused as a coarse SAM2 region prior. " if cached_outline_prior else "AI roof outline supplied a coarse SAM2 region prior; ")
+                + "SAM2 will refine the roof boundary inside that envelope."
             )
             notes.extend(outline_suggestion.warnings)
         else:
@@ -915,6 +937,20 @@ def _unique_points(points: list[tuple[float, float]]) -> list[tuple[float, float
 
 def _points_record(points: list[tuple[float, float]]) -> list[dict[str, float]]:
     return [{"x": round(float(x), 2), "y": round(float(y), 2)} for x, y in points]
+
+
+def _store_ai_outline_prior(image_id: str, suggestion: RoofPolygonSuggestion) -> None:
+    st.session_state["roof_measure_ai_outline_prior"] = (image_id, suggestion)
+
+
+def _cached_ai_outline_prior(image_id: str) -> RoofPolygonSuggestion | None:
+    cached = st.session_state.get("roof_measure_ai_outline_prior")
+    if not isinstance(cached, tuple) or len(cached) != 2:
+        return None
+    cached_image_id, suggestion = cached
+    if cached_image_id != image_id or not isinstance(suggestion, RoofPolygonSuggestion):
+        return None
+    return suggestion if suggestion.polygons else None
 
 
 def _box_record(box: tuple[float, float, float, float] | None) -> dict[str, float] | None:
