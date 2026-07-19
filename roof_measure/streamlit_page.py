@@ -64,7 +64,7 @@ from .service import RoofMeasureResult, finalize_roof_sections, footprint_constr
 from .visualization import annotated_overlay, footprint_constraint_overlay, footprint_overlay, image_png_bytes, outline_prior_overlay, prompt_points_overlay
 
 
-_AI_OUTLINE_PRIOR_VERSION = 2
+_AI_OUTLINE_PRIOR_VERSION = 3
 
 
 def render_ai_roof_measure_page() -> None:

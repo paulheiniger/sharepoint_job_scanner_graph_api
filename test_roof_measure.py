@@ -1284,5 +1284,5 @@ def test_roof_measure_openai_calls_use_model_default_temperature(monkeypatch) ->
     assert len(calls) == 4
     assert all("temperature" not in call for call in calls)
     polygon_prompt = calls[1]["messages"][1]["content"][0]["text"]
-    assert "ONE polygon tracing their combined outside perimeter" in polygon_prompt
-    assert "Do NOT return a separate rectangle around each wing" in polygon_prompt
+    assert "ONE continuous line around the outside perimeter" in polygon_prompt
+    assert "do not cut across the middle of the building" in polygon_prompt
