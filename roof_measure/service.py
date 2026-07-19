@@ -23,6 +23,8 @@ class RoofMeasureResult:
     applied_footprint_polygons: list[list[tuple[float, float]]] = field(default_factory=list)
     footprint_buffer_pixels: int = 0
     footprint_audit: list[dict[str, object]] = field(default_factory=list)
+    applied_outline_prior_polygons: list[list[tuple[float, float]]] = field(default_factory=list)
+    outline_prior_buffer_pixels: int = 0
     deterministic_score: float = 0.0
 
 
@@ -51,6 +53,8 @@ def measure_roof_from_overhead_image(
     selected_mask = None
     applied_footprint_polygons: list[list[tuple[float, float]]] = []
     footprint_buffer_pixels = 0
+    applied_outline_prior_polygons: list[list[tuple[float, float]]] = []
+    outline_prior_buffer_pixels = 0
     sections = []
     segmentation_score = 0.0
     if candidates:
@@ -75,6 +79,23 @@ def measure_roof_from_overhead_image(
                 )
             else:
                 segmentation.warnings.append("Selected building footprint(s) did not overlap the segmentation mask; original mask retained.")
+        if request.outline_prior_polygons:
+            outline_prior_buffer_pixels = max(0, min(int(request.outline_prior_buffer_pixels), 48))
+            constrained_mask = _constrain_mask_to_footprints(
+                selected_mask,
+                request.outline_prior_polygons,
+                buffer_pixels=outline_prior_buffer_pixels,
+            )
+            if constrained_mask.any():
+                retained_fraction = float(constrained_mask.sum()) / max(float(selected_mask.sum()), 1.0)
+                selected_mask = constrained_mask
+                applied_outline_prior_polygons = request.outline_prior_polygons
+                segmentation.warnings.append(
+                    "Segmentation constrained to the buffered AI roof outline prior; "
+                    f"retained {retained_fraction:.0%} of mask pixels."
+                )
+            else:
+                segmentation.warnings.append("AI roof outline prior did not overlap the segmentation mask; original mask retained.")
         segmentation_score = float(candidate.score)
         sections = sections_from_mask(
             selected_mask,
@@ -147,6 +168,8 @@ def measure_roof_from_overhead_image(
         applied_footprint_polygons=applied_footprint_polygons,
         footprint_buffer_pixels=footprint_buffer_pixels,
         footprint_audit=_applied_footprint_audit(request, applied_footprint_polygons, footprint_buffer_pixels),
+        applied_outline_prior_polygons=applied_outline_prior_polygons,
+        outline_prior_buffer_pixels=outline_prior_buffer_pixels,
         deterministic_score=score_roof_result(selected_mask, sections, request.footprint_polygons),
     )
 

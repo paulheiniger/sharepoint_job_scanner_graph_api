@@ -444,6 +444,29 @@ def test_selected_footprint_constrains_segmentation_mask() -> None:
     assert not constrained[4, 4]
 
 
+def test_ai_outline_prior_constrains_segmented_mask(tmp_path) -> None:
+    mask = np.ones((100, 100), dtype=bool)
+    request = RoofMeasureRequest(
+        overhead_image_name="roof.png",
+        metadata_pixels_per_foot=1.0,
+        minimum_section_area_pixels=1,
+        outline_prior_polygons=[[(20, 20), (80, 20), (80, 80), (20, 80)]],
+        outline_prior_buffer_pixels=0,
+    )
+
+    result = measure_roof_from_overhead_image(
+        image_bytes=_image_bytes((100, 100)),
+        request=request,
+        segmenter=MockRoofSegmenter([mask]),
+        storage_root=str(tmp_path),
+    )
+
+    assert result.selected_mask is not None
+    assert result.selected_mask.sum() == 3721
+    assert result.applied_outline_prior_polygons == request.outline_prior_polygons
+    assert result.outline_prior_buffer_pixels == 0
+
+
 def test_footprint_buffer_uses_metadata_calibration() -> None:
     request = RoofMeasureRequest(
         overhead_image_name="roof.png",

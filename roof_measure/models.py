@@ -73,6 +73,8 @@ class RoofMeasureRequest(BaseModel):
     positive_points: list[Point] = Field(default_factory=list)
     negative_points: list[Point] = Field(default_factory=list)
     segmentation_box: tuple[float, float, float, float] | None = None
+    outline_prior_polygons: list[Ring] = Field(default_factory=list)
+    outline_prior_buffer_pixels: int = 16
     calibration_length_feet: float | None = None
     calibration_point_a: Point | None = None
     calibration_point_b: Point | None = None

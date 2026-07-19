@@ -666,6 +666,7 @@ def render_ai_roof_measure_page() -> None:
                     update={
                         "positive_points": _unique_points([*request.positive_points, *outline_points]),
                         "segmentation_box": outline_box,
+                        "outline_prior_polygons": cached_outline_prior.polygons,
                     }
                 )
             try:
@@ -767,6 +768,7 @@ def _measure_roof_automatically(
             "negative_points": negative_points,
             "footprint_polygons": automatic_footprints,
             "segmentation_box": segmentation_box,
+            "outline_prior_polygons": outline_suggestion.polygons if outline_prior_record else [],
         }
     )
     result = measure_roof_from_overhead_image(
@@ -796,6 +798,8 @@ def _measure_roof_automatically(
         applied_footprint_polygons=result.applied_footprint_polygons,
         footprint_buffer_pixels=result.footprint_buffer_pixels,
         footprint_audit=result.footprint_audit,
+        applied_outline_prior_polygons=result.applied_outline_prior_polygons,
+        outline_prior_buffer_pixels=result.outline_prior_buffer_pixels,
         deterministic_score=score_roof_result(
             result.selected_mask,
             straightened_sections,
@@ -816,6 +820,8 @@ def _measure_roof_automatically(
                     "footprint_prior": result.footprint_audit,
                     "segmenter_model": result.report.model_name,
                     "segmentation_box": _box_record(segmentation_box),
+                    "outline_prior_polygon_count": len(automatic_request.outline_prior_polygons),
+                    "outline_prior_buffer_pixels": result.outline_prior_buffer_pixels,
                     "map_view": automatic_request.map_view,
                     "deterministic_score": result.deterministic_score,
                     "accepted": True,
@@ -917,6 +923,8 @@ def _measure_roof_automatically(
         applied_footprint_polygons=retry.applied_footprint_polygons,
         footprint_buffer_pixels=retry.footprint_buffer_pixels,
         footprint_audit=retry.footprint_audit,
+        applied_outline_prior_polygons=retry.applied_outline_prior_polygons,
+        outline_prior_buffer_pixels=retry.outline_prior_buffer_pixels,
         deterministic_score=retry_score,
     ), notes
 
