@@ -3,7 +3,9 @@ from __future__ import annotations
 from io import BytesIO
 import base64
 import gzip
+import json
 import math
+from pathlib import Path
 import sys
 from types import SimpleNamespace
 
@@ -28,7 +30,7 @@ from roof_measure.confidence import measurement_warnings
 from roof_measure.exports import measurement_to_geojson
 from roof_measure.geometry import polygon_area_pixels, repair_polygon, simplify_ring, straighten_architectural_ring
 from roof_measure.image_io import image_hash, load_image_bytes
-from roof_measure.lidar import _height_grid_from_points, assess_mask_against_height_grid
+from roof_measure.lidar import LidarMaskAssessment, _height_grid_from_points, assess_mask_against_height_grid
 from roof_measure.map_reference import (
     BuildingFootprint,
     _kyfromabove_lidar_coverage_from_payload,
@@ -40,7 +42,7 @@ from roof_measure.map_reference import (
 from roof_measure.models import ImageMetadata
 from roof_measure.polygonize import section_from_polygon, sections_from_mask
 from roof_measure.segmentation import MockRoofSegmenter, Sam2RoofSegmenter, SegmentationPrompts
-from roof_measure.service import _constrain_mask_to_footprints, _footprint_buffer_pixels, footprint_constraint_mask, measure_roof_from_outline_polygons, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections, score_roof_result
+from roof_measure.service import _constrain_mask_to_footprints, _footprint_buffer_pixels, finalize_roof_sections, footprint_constraint_mask, measure_roof_from_outline_polygons, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections, score_roof_result, sections_mask
 from roof_measure.models import RoofMeasureRequest
 from roof_measure.streamlit_page import (
     _canvas_background_image,
@@ -54,6 +56,7 @@ from roof_measure.streamlit_page import (
     _footprint_visible_area_pixels,
     _footprint_rings_to_inference_pixels,
     _insert_new_corner_points,
+    _lidar_core_cut,
     _polygons_interior_prompt_points,
     _polygons_prompt_box,
     _parse_points_text,
@@ -555,6 +558,39 @@ def test_deterministic_score_penalizes_fragmented_sections() -> None:
     assert score_roof_result(mask, whole, []) > score_roof_result(mask, fragmented, [])
 
 
+def test_deterministic_score_heavily_penalizes_polygon_cutting_roof_core() -> None:
+    mask = np.zeros((80, 80), dtype=bool)
+    mask[10:70, 10:70] = True
+    whole = [section_from_polygon("whole", [(10, 10), (70, 10), (70, 70), (10, 70)])]
+    cut_through_middle = [section_from_polygon("left", [(10, 10), (37, 10), (37, 70), (10, 70)])]
+
+    assert score_roof_result(mask, whole, []) > score_roof_result(mask, cut_through_middle, []) + 0.1
+
+
+def test_scored_finalizer_preserves_constrained_sam_mask_core() -> None:
+    mask = np.zeros((100, 100), dtype=bool)
+    mask[15:85, 15:85] = True
+    raw_sections = [section_from_polygon("main", [(15, 15), (85, 15), (85, 85), (15, 85)])]
+    outline = [[(12, 12), (88, 12), (88, 88), (12, 88)]]
+
+    final_sections, record = finalize_roof_sections(mask, raw_sections, outline_prior_polygons=outline)
+
+    final_mask = sections_mask(mask.shape, final_sections)
+    assert record["candidate"] in {"raw_mask", "topology_clean", "architectural_fit"}
+    assert float((final_mask & mask).sum()) / float(mask.sum()) >= 0.96
+
+
+def test_report17_regression_fixture_records_missing_footprint_and_active_outline_prior() -> None:
+    fixture_path = Path(__file__).parent / "tests" / "fixtures" / "roof_measure_report17.json"
+    payload = json.loads(fixture_path.read_text())
+    stages = {item["stage"]: item for item in payload["processing_iterations"]}
+
+    assert stages["ai_outline_prior"]["accepted"]
+    assert stages["initial_segmentation"]["footprint_count"] == 0
+    assert stages["initial_segmentation"]["outline_prior_polygon_count"] == 6
+    assert stages["lidar_height_prior"]["roof_support_fraction"] > 0.85
+
+
 def test_lidar_height_prior_distinguishes_elevated_roof_from_ground() -> None:
     height_grid = np.array([[12.0, 1.0], [12.0, 1.0]])
     roof_mask = np.zeros((16, 16), dtype=bool)
@@ -567,6 +603,32 @@ def test_lidar_height_prior_distinguishes_elevated_roof_from_ground() -> None:
 
     assert roof.ok and roof.roof_support_fraction == 1.0 and roof.ground_fraction == 0.0
     assert ground.ok and ground.roof_support_fraction == 0.0 and ground.ground_fraction == 1.0
+
+
+def test_lidar_elevated_core_retention_penalizes_polygon_cutting_roof() -> None:
+    source_mask = np.ones((32, 32), dtype=bool)
+    candidate_mask = np.zeros((32, 32), dtype=bool)
+    candidate_mask[:, :16] = True
+    height_grid = np.full((4, 4), 12.0)
+
+    assessment = assess_mask_against_height_grid(
+        source_mask,
+        height_grid,
+        cell_pixels=8,
+        candidate_mask=candidate_mask,
+    )
+
+    assert assessment.ok
+    assert assessment.elevated_core_retention is not None
+    assert assessment.elevated_core_retention < 0.75
+
+
+def test_lidar_core_cut_requires_material_loss_of_elevated_roof_interior() -> None:
+    initial = LidarMaskAssessment(ok=True, elevated_core_retention=0.99)
+    retry = LidarMaskAssessment(ok=True, elevated_core_retention=0.85)
+
+    assert _lidar_core_cut(initial, retry)
+    assert not _lidar_core_cut(initial, LidarMaskAssessment(ok=True, elevated_core_retention=0.96))
 
 
 def test_lidar_height_grid_uses_classified_ground_as_local_elevation_baseline() -> None:

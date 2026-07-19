@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 import math
 
 import numpy as np
@@ -14,6 +15,7 @@ class LidarMaskAssessment:
     sampled_cells: int = 0
     lidar_points: int = 0
     image_points: int = 0
+    elevated_core_retention: float | None = None
     warning: str = ""
 
     def as_record(self) -> dict[str, object]:
@@ -23,6 +25,7 @@ class LidarMaskAssessment:
             "sampled_cells": self.sampled_cells,
             "lidar_points": self.lidar_points,
             "image_points": self.image_points,
+            "elevated_core_retention": None if self.elevated_core_retention is None else round(self.elevated_core_retention, 3),
             "warning": self.warning,
         }
 
@@ -37,6 +40,7 @@ def assess_mask_against_kyfromabove_lidar(
     source_width: int | None = None,
     source_height: int | None = None,
     cell_pixels: int = 8,
+    candidate_mask: np.ndarray | None = None,
 ) -> LidarMaskAssessment:
     """Compare a selected image mask with public LiDAR roof-versus-ground evidence.
 
@@ -53,51 +57,96 @@ def assess_mask_against_kyfromabove_lidar(
         return LidarMaskAssessment(ok=False, warning="LiDAR validation requires a non-empty segmentation mask.")
     source_width = int(source_width or mask_bool.shape[1])
     source_height = int(source_height or mask_bool.shape[0])
-    scale_x = mask_bool.shape[1] / source_width
-    scale_y = mask_bool.shape[0] / source_height
     try:
-        reader = CopcReader.open(asset_url, http_num_threads=4)
-        lidar_crs = reader.header.parse_crs()
-        if lidar_crs is None:
-            return LidarMaskAssessment(ok=False, warning="LiDAR tile does not declare a coordinate reference system.")
-        to_lidar = Transformer.from_crs(4326, lidar_crs, always_xy=True)
-        to_wgs84 = Transformer.from_crs(lidar_crs, 4326, always_xy=True)
-        corners = [
-            _image_pixel_to_lon_lat(x, y, center_latitude, center_longitude, zoom, source_width, source_height)
-            for x, y in ((0, 0), (source_width, 0), (0, source_height), (source_width, source_height))
-        ]
-        xs, ys = to_lidar.transform([point[0] for point in corners], [point[1] for point in corners])
-        points = reader.query(Bounds((min(xs), min(ys)), (max(xs), max(ys))), resolution=5)
-        if len(points) == 0:
-            return LidarMaskAssessment(ok=False, warning="LiDAR tile returned no points for the visible image extent.")
-        longitudes, latitudes = to_wgs84.transform(np.asarray(points.x), np.asarray(points.y))
-        source_x, source_y = _lon_lat_to_image_pixels(
-            np.asarray(longitudes),
-            np.asarray(latitudes),
-            center_latitude,
-            center_longitude,
-            zoom,
-            source_width,
-            source_height,
+        height_grid, lidar_points, image_points = _cached_kyfromabove_height_grid(
+            asset_url,
+            float(center_latitude),
+            float(center_longitude),
+            float(zoom),
+            int(source_width),
+            int(source_height),
+            int(mask_bool.shape[1]),
+            int(mask_bool.shape[0]),
+            max(2, int(cell_pixels)),
         )
-        image_valid = (source_x * scale_x >= 0) & (source_x * scale_x < mask_bool.shape[1]) & (source_y * scale_y >= 0) & (source_y * scale_y < mask_bool.shape[0])
-        height_grid = _height_grid_from_points(
-            source_x * scale_x,
-            source_y * scale_y,
-            np.asarray(points.z),
-            np.asarray(points.classification),
-            mask_bool.shape,
+        assessment = assess_mask_against_height_grid(
+            mask_bool,
+            height_grid,
             cell_pixels=max(2, int(cell_pixels)),
+            candidate_mask=candidate_mask,
         )
-        assessment = assess_mask_against_height_grid(mask_bool, height_grid, cell_pixels=max(2, int(cell_pixels)))
-        assessment.lidar_points = len(points)
-        assessment.image_points = int(image_valid.sum())
+        assessment.lidar_points = lidar_points
+        assessment.image_points = image_points
         return assessment
     except Exception as exc:
         return LidarMaskAssessment(ok=False, warning=f"LiDAR height-prior evaluation failed: {type(exc).__name__}: {exc}")
 
 
-def assess_mask_against_height_grid(mask: np.ndarray, height_grid: np.ndarray, *, cell_pixels: int) -> LidarMaskAssessment:
+@lru_cache(maxsize=8)
+def _cached_kyfromabove_height_grid(
+    asset_url: str,
+    center_latitude: float,
+    center_longitude: float,
+    zoom: float,
+    source_width: int,
+    source_height: int,
+    image_width: int,
+    image_height: int,
+    cell_pixels: int,
+) -> tuple[np.ndarray, int, int]:
+    from laspy.copc import Bounds, CopcReader
+    from pyproj import Transformer
+
+    reader = CopcReader.open(asset_url, http_num_threads=4)
+    lidar_crs = reader.header.parse_crs()
+    if lidar_crs is None:
+        raise ValueError("LiDAR tile does not declare a coordinate reference system.")
+    to_lidar = Transformer.from_crs(4326, lidar_crs, always_xy=True)
+    to_wgs84 = Transformer.from_crs(lidar_crs, 4326, always_xy=True)
+    corners = [
+        _image_pixel_to_lon_lat(x, y, center_latitude, center_longitude, zoom, source_width, source_height)
+        for x, y in ((0, 0), (source_width, 0), (0, source_height), (source_width, source_height))
+    ]
+    xs, ys = to_lidar.transform([point[0] for point in corners], [point[1] for point in corners])
+    points = reader.query(Bounds((min(xs), min(ys)), (max(xs), max(ys))), resolution=5)
+    if len(points) == 0:
+        raise ValueError("LiDAR tile returned no points for the visible image extent.")
+    longitudes, latitudes = to_wgs84.transform(np.asarray(points.x), np.asarray(points.y))
+    source_x, source_y = _lon_lat_to_image_pixels(
+        np.asarray(longitudes),
+        np.asarray(latitudes),
+        center_latitude,
+        center_longitude,
+        zoom,
+        source_width,
+        source_height,
+    )
+    scale_x = image_width / source_width
+    scale_y = image_height / source_height
+    image_valid = (
+        (source_x * scale_x >= 0)
+        & (source_x * scale_x < image_width)
+        & (source_y * scale_y >= 0)
+        & (source_y * scale_y < image_height)
+    )
+    height_grid = _height_grid_from_points(
+        source_x * scale_x,
+        source_y * scale_y,
+        np.asarray(points.z),
+        np.asarray(points.classification),
+        (image_height, image_width),
+        cell_pixels=cell_pixels,
+    )
+    return height_grid, len(points), int(image_valid.sum())
+
+
+def assess_mask_against_height_grid(
+    mask: np.ndarray,
+    height_grid: np.ndarray,
+    *,
+    cell_pixels: int,
+    candidate_mask: np.ndarray | None = None,
+) -> LidarMaskAssessment:
     """Evaluate whether mask cells are elevated above local classified-ground points."""
     mask_bool = np.asarray(mask, dtype=bool)
     height = np.asarray(height_grid, dtype=float)
@@ -111,17 +160,44 @@ def assess_mask_against_height_grid(mask: np.ndarray, height_grid: np.ndarray, *
     # Kentucky roof decks should be materially above adjacent classified ground.
     roof_support = float(np.mean(values >= 8.0))
     ground_fraction = float(np.mean(values < 4.0))
+    core_retention = None
+    if candidate_mask is not None:
+        candidate = np.asarray(candidate_mask, dtype=bool)
+        if candidate.shape != mask_bool.shape:
+            raise ValueError("LiDAR candidate mask must match the source segmentation mask shape.")
+        elevated_source = grid_mask & np.isfinite(height) & (height >= 8.0)
+        if elevated_source.any():
+            candidate_grid = _mask_to_grid(candidate, height.shape, cell_pixels)
+            weights = _grid_core_weights(elevated_source)
+            core_retention = float(weights[candidate_grid].sum()) / max(float(weights.sum()), 1.0)
     return LidarMaskAssessment(
         ok=True,
         roof_support_fraction=roof_support,
         ground_fraction=ground_fraction,
         sampled_cells=int(sampled.sum()),
+        elevated_core_retention=core_retention,
         warning=(
             "LiDAR indicates substantial ground/pavement overlap; verify the target footprint and prompts."
             if ground_fraction > 0.35
             else ""
         ),
     )
+
+
+def _grid_core_weights(mask: np.ndarray, *, max_depth: int = 8) -> np.ndarray:
+    remaining = np.asarray(mask, dtype=bool).copy()
+    weights = np.zeros(remaining.shape, dtype=float)
+    for _ in range(max_depth):
+        if not remaining.any():
+            break
+        weights[remaining] += 1.0
+        padded = np.pad(remaining, 1, mode="constant", constant_values=False)
+        eroded = np.ones_like(remaining)
+        for y_offset in range(3):
+            for x_offset in range(3):
+                eroded &= padded[y_offset : y_offset + remaining.shape[0], x_offset : x_offset + remaining.shape[1]]
+        remaining = eroded
+    return weights
 
 
 def _height_grid_from_points(

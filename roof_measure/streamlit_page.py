@@ -60,8 +60,8 @@ from .map_reference import (
 from .geometry import straighten_architectural_ring
 from .models import MeasurementWarning, RoofMeasureRequest, RoofSection
 from .polygonize import section_from_polygon
-from .service import RoofMeasureResult, footprint_constraint_mask, measure_roof_from_outline_polygons, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections, score_roof_result
-from .visualization import annotated_overlay, footprint_constraint_overlay, footprint_overlay, image_png_bytes, prompt_points_overlay
+from .service import RoofMeasureResult, finalize_roof_sections, footprint_constraint_mask, measure_roof_from_outline_polygons, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections, score_roof_result, sections_mask
+from .visualization import annotated_overlay, footprint_constraint_overlay, footprint_overlay, image_png_bytes, outline_prior_overlay, prompt_points_overlay
 
 
 def render_ai_roof_measure_page() -> None:
@@ -605,6 +605,7 @@ def render_ai_roof_measure_page() -> None:
                     use_ai_outline_cleanup=use_ai_outline_cleanup,
                     use_ai_outline_prior=use_ai_outline_prior,
                     cached_outline_prior=cached_outline_prior,
+                    lidar_asset_url=str(getattr(lidar_coverage, "asset_url", "")) if getattr(lidar_coverage, "ok", False) else "",
                     candidate_footprints=footprint_candidate_polygons,
                 )
         except Exception as exc:
@@ -693,6 +694,7 @@ def _measure_roof_automatically(
     use_ai_outline_cleanup: bool,
     use_ai_outline_prior: bool,
     cached_outline_prior: RoofPolygonSuggestion | None,
+    lidar_asset_url: str,
     candidate_footprints: list[list[tuple[float, float]]],
 ) -> tuple[RoofMeasureResult, list[str]]:
     """Run the default measure pipeline while retaining a valid deterministic result."""
@@ -700,6 +702,7 @@ def _measure_roof_automatically(
     positive_points: list[tuple[float, float]] = []
     negative_points: list[tuple[float, float]] = []
     ai_positive_points: list[tuple[float, float]] = []
+    outline_points: list[tuple[float, float]] = []
     segmentation_box: tuple[float, float, float, float] | None = None
     outline_prior_record: dict[str, object] | None = None
     if os.getenv("OPENAI_API_KEY"):
@@ -756,10 +759,11 @@ def _measure_roof_automatically(
             notes.extend(outline_suggestion.warnings)
 
     automatic_footprints = request.footprint_polygons
-    if not automatic_footprints and ai_positive_points and candidate_footprints:
-        automatic_footprints = _footprints_for_prompt_points(candidate_footprints, ai_positive_points)
+    footprint_selection_points = _unique_points([*ai_positive_points, *outline_points])
+    if not automatic_footprints and footprint_selection_points and candidate_footprints:
+        automatic_footprints = _footprints_for_prompt_points(candidate_footprints, footprint_selection_points)
         if automatic_footprints:
-            notes.append(f"Selected {len(automatic_footprints)} footprint polygon(s) containing AI roof points.")
+            notes.append(f"Selected {len(automatic_footprints)} footprint polygon(s) containing AI roof-outline prompts.")
         else:
             notes.append("No footprint polygon matched AI roof points; segmentation was left unconstrained.")
     automatic_request = request.model_copy(
@@ -780,16 +784,20 @@ def _measure_roof_automatically(
         notes.append("Segmentation did not produce an editable roof boundary. Use the advanced outline tools to continue.")
         return result, notes
 
-    straightened_sections = []
-    for section in result.report.measurement.sections:
-        corrected = section.model_copy(deep=True)
-        corrected.polygon = straighten_architectural_ring(section.polygon)
-        corrected.holes = [straighten_architectural_ring(hole) for hole in section.holes]
-        straightened_sections.append(corrected)
+    straightened_sections, finalizer_record = finalize_roof_sections(
+        result.selected_mask,
+        result.report.measurement.sections,
+        footprint_polygons=automatic_request.footprint_polygons,
+        outline_prior_polygons=automatic_request.outline_prior_polygons,
+    )
     straightened_report = recalculate_report_from_corrected_sections(
         result.report,
         straightened_sections,
-        correction_note="Automatic deterministic architectural edge straightening applied.",
+        correction_note=(
+            "Automatic scored polygon finalizer retained the constrained SAM contour."
+            if finalizer_record.get("candidate") == "raw_mask"
+            else "Automatic scored polygon finalizer applied validated architectural line fitting."
+        ),
     )
     result = RoofMeasureResult(
         report=straightened_report,
@@ -804,8 +812,10 @@ def _measure_roof_automatically(
             result.selected_mask,
             straightened_sections,
             automatic_request.footprint_polygons,
+            automatic_request.outline_prior_polygons,
         ),
     )
+    initial_lidar = _lidar_geometry_assessment(result, straightened_sections, automatic_request, lidar_asset_url)
     result.report = result.report.model_copy(
         update={
             "processing_iterations": [
@@ -815,6 +825,8 @@ def _measure_roof_automatically(
                     "positive_points": _points_record(positive_points),
                     "negative_points": _points_record(negative_points),
                     "footprint_count": len(automatic_footprints),
+                    "footprint_candidate_count": len(candidate_footprints),
+                    "footprint_selection_point_count": len(footprint_selection_points),
                     "footprint_buffer_feet": automatic_request.footprint_buffer_feet,
                     "footprint_buffer_pixels": result.footprint_buffer_pixels,
                     "footprint_prior": result.footprint_audit,
@@ -824,8 +836,10 @@ def _measure_roof_automatically(
                     "outline_prior_buffer_pixels": result.outline_prior_buffer_pixels,
                     "map_view": automatic_request.map_view,
                     "deterministic_score": result.deterministic_score,
+                    "polygon_finalizer": finalizer_record,
                     "accepted": True,
-                }
+                },
+                *([{"stage": "lidar_geometry_prior", "ok": initial_lidar.ok, **initial_lidar.as_record()}] if initial_lidar else []),
             ]
         }
     )
@@ -884,16 +898,32 @@ def _measure_roof_automatically(
         }
     )
     retry = measure_roof_from_overhead_image(image_bytes=image_bytes, request=retry_request, selected_candidate_index=0)
-    retry_sections = _straightened_sections(retry.report.measurement.sections)
-    retry_score = score_roof_result(retry.selected_mask, retry_sections, retry_request.footprint_polygons)
+    retry_sections, retry_finalizer = finalize_roof_sections(
+        retry.selected_mask,
+        retry.report.measurement.sections,
+        footprint_polygons=retry_request.footprint_polygons,
+        outline_prior_polygons=retry_request.outline_prior_polygons,
+    )
+    retry_score = score_roof_result(
+        retry.selected_mask,
+        retry_sections,
+        retry_request.footprint_polygons,
+        retry_request.outline_prior_polygons,
+    )
     score_delta = retry_score - result.deterministic_score
-    accepted = bool(retry_sections and score_delta > 0)
+    retry_lidar = _lidar_geometry_assessment(retry, retry_sections, retry_request, lidar_asset_url)
+    lidar_core_cut = _lidar_core_cut(initial_lidar, retry_lidar)
+    accepted = bool(retry_sections and score_delta > 0 and not lidar_core_cut)
     retry_record = {
         "stage": "targeted_sam_retry",
         "positive_points": _points_record(retry_positive),
         "negative_points": _points_record(retry_negative),
         "deterministic_score": retry_score,
         "score_delta": score_delta,
+        "polygon_finalizer": retry_finalizer,
+        "lidar_initial_core_retention": _lidar_core_retention(initial_lidar),
+        "lidar_retry_core_retention": _lidar_core_retention(retry_lidar),
+        "rejected_for_lidar_core_cut": lidar_core_cut,
         "accepted": accepted,
     }
     if not accepted:
@@ -908,7 +938,11 @@ def _measure_roof_automatically(
             )
             notes.append("Semantic QA rejected the initial outline as materially wrong; select the target footprint or add roof prompt points before measuring again.")
             return result, notes
-        notes.append("AI QA proposed targeted SAM prompts, but the retry did not improve deterministic scoring; kept the original outline.")
+        notes.append(
+            "AI QA proposed targeted SAM prompts, but the retry cut through LiDAR-supported roof interior; kept the original outline."
+            if lidar_core_cut
+            else "AI QA proposed targeted SAM prompts, but the retry did not improve deterministic scoring; kept the original outline."
+        )
         return result, notes
     retry_report = recalculate_report_from_corrected_sections(
         retry.report,
@@ -927,6 +961,49 @@ def _measure_roof_automatically(
         outline_prior_buffer_pixels=retry.outline_prior_buffer_pixels,
         deterministic_score=retry_score,
     ), notes
+
+
+def _lidar_geometry_assessment(
+    result: RoofMeasureResult,
+    sections: list[RoofSection],
+    request: RoofMeasureRequest,
+    asset_url: str,
+):
+    if not asset_url or result.selected_mask is None or not sections:
+        return None
+    map_view = request.map_view
+    if any(key not in map_view for key in ("latitude", "longitude", "zoom")):
+        return None
+    source = result.report.source_images[0] if result.report.source_images else None
+    if source is None:
+        return None
+    return assess_mask_against_kyfromabove_lidar(
+        asset_url=asset_url,
+        mask=result.selected_mask,
+        candidate_mask=sections_mask(result.selected_mask.shape, sections),
+        center_latitude=float(map_view["latitude"]),
+        center_longitude=float(map_view["longitude"]),
+        zoom=float(map_view["zoom"]),
+        source_width=source.width,
+        source_height=source.height,
+    )
+
+
+def _lidar_core_retention(assessment) -> float | None:
+    if assessment is None or not assessment.ok:
+        return None
+    return assessment.elevated_core_retention
+
+
+def _lidar_core_cut(initial, retry, *, maximum_drop: float = 0.05, minimum_retention: float = 0.93) -> bool:
+    initial_retention = _lidar_core_retention(initial)
+    retry_retention = _lidar_core_retention(retry)
+    return bool(
+        initial_retention is not None
+        and retry_retention is not None
+        and retry_retention < minimum_retention
+        and retry_retention < initial_retention - maximum_drop
+    )
 
 
 def _straightened_sections(sections: list[RoofSection]) -> list[RoofSection]:
@@ -1165,6 +1242,8 @@ def _render_measurement_result(
     overlay = annotated_overlay(loaded.inference_image, mask=result.selected_mask, sections=measurement.sections)
     show_footprint = False
     show_footprint_buffer = False
+    show_outline_prior = False
+    show_outline_prior_buffer = False
     if result.applied_footprint_polygons:
         show_footprint = st.checkbox(
             "Show raw footprint used to constrain segmentation",
@@ -1178,9 +1257,40 @@ def _render_measurement_result(
                 key=f"roof_measure_show_buffered_footprint_{report.id}",
                 help="Orange is the actual allowed SAM search region. Blue is the unbuffered source footprint.",
             )
+    else:
+        st.caption("No building footprint was applied to this measurement.")
+    if result.applied_outline_prior_polygons:
+        show_outline_prior = st.checkbox(
+            "Show AI outline prior used to constrain segmentation",
+            value=False,
+            key=f"roof_measure_show_ai_outline_prior_{report.id}",
+        )
+        if result.outline_prior_buffer_pixels:
+            show_outline_prior_buffer = st.checkbox(
+                "Show buffered AI outline constraint",
+                value=False,
+                key=f"roof_measure_show_ai_outline_buffer_{report.id}",
+                help="Yellow is the AI roof outline. Its translucent buffer is the region retained after SAM2 segmentation.",
+            )
+    displayed_overlay = overlay
+    if show_outline_prior:
+        outline_mask = (
+            footprint_constraint_mask(
+                (loaded.metadata.inference_height, loaded.metadata.inference_width),
+                result.applied_outline_prior_polygons,
+                buffer_pixels=result.outline_prior_buffer_pixels,
+            )
+            if show_outline_prior_buffer
+            else None
+        )
+        displayed_overlay = outline_prior_overlay(
+            displayed_overlay,
+            polygons=result.applied_outline_prior_polygons,
+            constraint_mask=outline_mask,
+        )
     displayed_overlay = (
         footprint_constraint_overlay(
-            overlay,
+            displayed_overlay,
             polygons=result.applied_footprint_polygons,
             constraint_mask=footprint_constraint_mask(
                 (loaded.metadata.inference_height, loaded.metadata.inference_width),
@@ -1189,15 +1299,15 @@ def _render_measurement_result(
             ),
         )
         if show_footprint_buffer
-        else footprint_overlay(overlay, polygons=result.applied_footprint_polygons)
+        else footprint_overlay(displayed_overlay, polygons=result.applied_footprint_polygons)
         if show_footprint
-        else overlay
+        else displayed_overlay
     )
     st.image(
         displayed_overlay,
         caption=(
-            "Green is the measured boundary. Blue is the source footprint. Orange is the buffered constraint used by SAM. "
-            "A consistent blue/orange shift indicates alignment; a partial footprint indicates incomplete source geometry."
+            "Green is the measured boundary. Yellow is the AI outline prior. Blue is the source footprint. "
+            "Orange is the buffered footprint constraint. A partial or absent blue footprint means no usable footprint was applied."
         ),
         width=min(loaded.metadata.inference_width, 1000),
     )
@@ -1245,6 +1355,7 @@ def _render_pipeline_trace(report, result: RoofMeasureResult) -> None:
         initial = next((item for item in iterations if item.get("stage") == "initial_segmentation"), None)
         semantic_qa = next((item for item in iterations if item.get("stage") == "semantic_qa"), None)
         retry = next((item for item in iterations if item.get("stage") == "targeted_sam_retry"), None)
+        lidar_geometry = next((item for item in iterations if item.get("stage") == "lidar_geometry_prior"), None)
         lidar = next((item for item in iterations if item.get("stage") == "lidar_height_prior"), None)
         if initial:
             st.caption(
@@ -1253,6 +1364,23 @@ def _render_pipeline_trace(report, result: RoofMeasureResult) -> None:
                 f"Buffer: {float(initial.get('footprint_buffer_feet') or 0):g} ft / {int(initial.get('footprint_buffer_pixels') or 0)} px."
             )
             st.caption(f"Segmenter: {initial.get('segmenter_model') or report.model_name}.")
+            finalizer = initial.get("polygon_finalizer") or {}
+            if finalizer:
+                st.caption(
+                    "Polygon finalizer: "
+                    f"{finalizer.get('candidate') or 'raw_mask'} "
+                    f"(IoU {float(finalizer.get('mask_iou') or 1):.2f}, "
+                    f"core {float(finalizer.get('core_retention') or 1):.2f}, "
+                    f"prior {float(finalizer.get('prior_agreement') or 1):.2f})."
+                )
+        if lidar_geometry and lidar_geometry.get("ok"):
+            retention = lidar_geometry.get("elevated_core_retention")
+            retention_text = "-" if retention is None else f"{float(retention):.0%}"
+            st.caption(
+                f"LiDAR final-polygon elevated-core retention: {retention_text}. "
+                f"Roof support: {float(lidar_geometry.get('roof_support_fraction') or 0):.0%}; "
+                f"ground overlap: {float(lidar_geometry.get('ground_fraction') or 0):.0%}."
+            )
         if semantic_qa is None:
             st.info("Semantic QA was not requested for this measurement. Enable 'Run AI semantic QA after automatic segmentation' before measuring.")
         elif semantic_qa.get("status") == "skipped":
@@ -1272,6 +1400,8 @@ def _render_pipeline_trace(report, result: RoofMeasureResult) -> None:
                 f"at deterministic score {float(retry.get('deterministic_score') or 0):.3f} "
                 f"(delta {float(retry.get('score_delta') or 0):+.3f})."
             )
+            if retry.get("rejected_for_lidar_core_cut"):
+                message += " Retry removed too much LiDAR-elevated roof interior."
             (st.success if retry.get("accepted") else st.warning)(message)
         if lidar:
             if lidar.get("ok"):

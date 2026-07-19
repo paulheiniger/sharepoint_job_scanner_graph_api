@@ -8,7 +8,7 @@ from PIL import Image, ImageDraw
 
 from .calibration import clicked_known_length_calibration, detect_google_earth_scale_bar, feet_from_pixels, sqft_from_pixels
 from .confidence import area_uncertainty_factor, confidence_components, measurement_warnings
-from .geometry import polygon_area_pixels, polygon_perimeter_pixels, repair_polygon
+from .geometry import polygon_area_pixels, polygon_perimeter_pixels, repair_polygon, straighten_architectural_ring
 from .image_io import LoadedImage, image_to_array, load_image_bytes
 from .models import CalibrationResult, MeasurementReport, MeasurementWarning, RoofMeasurement, RoofMeasureRequest, RoofSection
 from .polygonize import section_from_polygon, sections_from_mask
@@ -193,6 +193,10 @@ def footprint_constraint_mask(
     *,
     buffer_pixels: int = 0,
 ) -> np.ndarray:
+    if buffer_pixels > 0:
+        shapely_mask = _shapely_constraint_mask(shape, polygons, buffer_pixels=buffer_pixels)
+        if shapely_mask is not None:
+            return shapely_mask
     height, width = shape
     footprint_image = Image.new("L", (width, height), 0)
     draw = ImageDraw.Draw(footprint_image)
@@ -201,6 +205,48 @@ def footprint_constraint_mask(
             draw.polygon([(float(x), float(y)) for x, y in polygon], fill=255)
     footprint_mask = np.asarray(footprint_image, dtype=bool)
     return _dilate_mask(footprint_mask, radius=buffer_pixels) if buffer_pixels > 0 else footprint_mask
+
+
+def _shapely_constraint_mask(
+    shape: tuple[int, int],
+    polygons: list[list[tuple[float, float]]],
+    *,
+    buffer_pixels: int,
+) -> np.ndarray | None:
+    """Union and mitre-buffer polygon priors when Shapely is available."""
+    try:
+        from shapely.geometry import GeometryCollection, MultiPolygon, Polygon
+        from shapely.ops import unary_union
+    except ImportError:
+        return None
+    geometries = []
+    for polygon in polygons:
+        if len(polygon) < 3:
+            continue
+        geometry = Polygon([(float(x), float(y)) for x, y in polygon])
+        if not geometry.is_valid:
+            geometry = geometry.buffer(0)
+        if not geometry.is_empty:
+            geometries.append(geometry)
+    if not geometries:
+        return None
+    merged = unary_union(geometries).buffer(float(buffer_pixels), join_style=2)
+    if merged.is_empty:
+        return None
+    if isinstance(merged, Polygon):
+        drawable = [merged]
+    elif isinstance(merged, (MultiPolygon, GeometryCollection)):
+        drawable = [geometry for geometry in merged.geoms if isinstance(geometry, Polygon)]
+    else:
+        return None
+    height, width = shape
+    image = Image.new("L", (width, height), 0)
+    draw = ImageDraw.Draw(image)
+    for geometry in drawable:
+        draw.polygon(list(geometry.exterior.coords), fill=255)
+        for interior in geometry.interiors:
+            draw.polygon(list(interior.coords), fill=0)
+    return np.asarray(image, dtype=bool)
 
 
 def _applied_footprint_audit(
@@ -253,6 +299,7 @@ def score_roof_result(
     mask: np.ndarray | None,
     sections: list[RoofSection],
     footprint_polygons: list[list[tuple[float, float]]],
+    outline_prior_polygons: list[list[tuple[float, float]]] | None = None,
 ) -> float:
     """Score only deterministic properties used to reject a weaker correction pass."""
     if mask is None or not np.asarray(mask, dtype=bool).any() or not sections:
@@ -261,11 +308,187 @@ def score_roof_result(
     fragmentation = 1.0 / max(components, 1)
     validity = sum(1 for section in sections if len(repair_polygon(section.polygon)) >= 4) / len(sections)
     regularity = sum(_ring_axis_regularity(section.polygon) for section in sections) / len(sections)
+    core_retention = _mask_core_retention(np.asarray(mask, dtype=bool), sections)
+    mask_iou = _section_mask_iou(np.asarray(mask, dtype=bool), sections)
     footprint_overlap = 1.0
     if footprint_polygons:
         footprint = _constrain_mask_to_footprints(np.ones_like(mask, dtype=bool), footprint_polygons, buffer_pixels=0)
         footprint_overlap = float((np.asarray(mask, dtype=bool) & footprint).sum()) / max(float(np.asarray(mask, dtype=bool).sum()), 1.0)
-    return round(0.35 * footprint_overlap + 0.30 * validity + 0.20 * regularity + 0.15 * fragmentation, 4)
+    prior_agreement = 1.0
+    if outline_prior_polygons:
+        prior = footprint_constraint_mask(mask.shape, outline_prior_polygons, buffer_pixels=16)
+        section_mask = sections_mask(mask.shape, sections)
+        prior_agreement = float((section_mask & prior).sum()) / max(float(section_mask.sum()), 1.0)
+    return round(
+        0.18 * footprint_overlap
+        + 0.18 * validity
+        + 0.13 * regularity
+        + 0.08 * fragmentation
+        + 0.25 * core_retention
+        + 0.12 * mask_iou
+        + 0.06 * prior_agreement,
+        4,
+    )
+
+
+def finalize_roof_sections(
+    mask: np.ndarray | None,
+    sections: list[RoofSection],
+    *,
+    footprint_polygons: list[list[tuple[float, float]]] | None = None,
+    outline_prior_polygons: list[list[tuple[float, float]]] | None = None,
+) -> tuple[list[RoofSection], dict[str, object]]:
+    """Choose the cleanest geometry that does not lose the observed roof core."""
+    baseline = [section.model_copy(deep=True) for section in sections]
+    if mask is None or not baseline:
+        return baseline, {"candidate": "raw_mask", "accepted": False, "reason": "no mask or sections"}
+    footprint_polygons = footprint_polygons or []
+    outline_prior_polygons = outline_prior_polygons or []
+    baseline_score = score_roof_result(mask, baseline, footprint_polygons, outline_prior_polygons)
+    baseline_area = sum(section.area_pixels for section in baseline)
+    candidates = [
+        ("topology_clean", _topology_cleaned_sections(baseline)),
+        ("architectural_fit", _architectural_sections(baseline)),
+    ]
+    best_sections = baseline
+    best_score = baseline_score
+    best_record: dict[str, object] = {
+        "candidate": "raw_mask",
+        "score": baseline_score,
+        "accepted": True,
+        "reason": "raw constrained SAM contour retained",
+    }
+    for name, candidate in candidates:
+        if not candidate:
+            continue
+        candidate_score = score_roof_result(mask, candidate, footprint_polygons, outline_prior_polygons)
+        candidate_area = sum(polygon_area_pixels(section.polygon, section.holes) for section in candidate)
+        area_drift = abs(candidate_area - baseline_area) / max(baseline_area, 1.0)
+        candidate_iou = _section_mask_iou(np.asarray(mask, dtype=bool), candidate)
+        candidate_core = _mask_core_retention(np.asarray(mask, dtype=bool), candidate)
+        candidate_prior = _section_prior_agreement(np.asarray(mask, dtype=bool), candidate, outline_prior_polygons)
+        accepted = (
+            area_drift <= 0.04
+            and candidate_iou >= 0.88
+            and candidate_core >= 0.96
+            and candidate_prior >= 0.92
+            and candidate_score > best_score
+        )
+        if accepted:
+            best_sections = candidate
+            best_score = candidate_score
+            best_record = {
+                "candidate": name,
+                "score": candidate_score,
+                "mask_iou": round(candidate_iou, 3),
+                "core_retention": round(candidate_core, 3),
+                "prior_agreement": round(candidate_prior, 3),
+                "area_drift": round(area_drift, 3),
+                "accepted": True,
+                "reason": "cleaner candidate preserved constrained mask and priors",
+            }
+    return best_sections, best_record
+
+
+def _topology_cleaned_sections(sections: list[RoofSection]) -> list[RoofSection]:
+    cleaned: list[RoofSection] = []
+    for section in sections:
+        candidate = section.model_copy(deep=True)
+        candidate.polygon = _shapely_clean_ring(candidate.polygon, tolerance=1.5)
+        candidate.holes = [_shapely_clean_ring(hole, tolerance=1.5) for hole in candidate.holes]
+        candidate.holes = [hole for hole in candidate.holes if hole]
+        if len(candidate.polygon) >= 4:
+            cleaned.append(candidate)
+    return cleaned
+
+
+def _architectural_sections(sections: list[RoofSection]) -> list[RoofSection]:
+    straightened: list[RoofSection] = []
+    for section in _topology_cleaned_sections(sections):
+        candidate = section.model_copy(deep=True)
+        candidate.polygon = straighten_architectural_ring(candidate.polygon)
+        candidate.holes = [straighten_architectural_ring(hole) for hole in candidate.holes]
+        if len(candidate.polygon) >= 4:
+            straightened.append(candidate)
+    return straightened
+
+
+def _shapely_clean_ring(ring: list[tuple[float, float]], *, tolerance: float) -> list[tuple[float, float]]:
+    repaired = repair_polygon(ring)
+    if len(repaired) < 4:
+        return []
+    try:
+        from shapely.geometry import Polygon
+    except ImportError:
+        return repaired
+    geometry = Polygon(repaired)
+    if not geometry.is_valid:
+        geometry = geometry.buffer(0)
+    if geometry.is_empty or geometry.geom_type != "Polygon":
+        return repaired
+    simplified = geometry.simplify(tolerance, preserve_topology=True)
+    if simplified.is_empty or simplified.geom_type != "Polygon":
+        return repaired
+    return repair_polygon([(float(x), float(y)) for x, y in simplified.exterior.coords])
+
+
+def _section_mask_iou(mask: np.ndarray, sections: list[RoofSection]) -> float:
+    candidate = sections_mask(mask.shape, sections)
+    union = mask | candidate
+    return float((mask & candidate).sum()) / max(float(union.sum()), 1.0)
+
+
+def _section_prior_agreement(
+    mask: np.ndarray,
+    sections: list[RoofSection],
+    outline_prior_polygons: list[list[tuple[float, float]]],
+) -> float:
+    if not outline_prior_polygons:
+        return 1.0
+    candidate = sections_mask(mask.shape, sections)
+    prior = footprint_constraint_mask(mask.shape, outline_prior_polygons, buffer_pixels=16)
+    return float((candidate & prior).sum()) / max(float(candidate.sum()), 1.0)
+
+
+def _mask_core_retention(mask: np.ndarray, sections: list[RoofSection], *, max_depth: int = 16) -> float:
+    """Penalize final polygons that cut through the interior of the SAM roof mask."""
+    if not mask.any():
+        return 0.0
+    section_mask = sections_mask(mask.shape, sections)
+    weights = _mask_core_weights(mask, max_depth=max_depth)
+    total_weight = float(weights.sum())
+    if total_weight <= 0:
+        return 0.0
+    return float(weights[section_mask].sum()) / total_weight
+
+
+def sections_mask(shape: tuple[int, int], sections: list[RoofSection]) -> np.ndarray:
+    height, width = shape
+    image = Image.new("L", (width, height), 0)
+    draw = ImageDraw.Draw(image)
+    for section in sections:
+        if len(section.polygon) >= 3:
+            draw.polygon([(float(x), float(y)) for x, y in section.polygon], fill=255)
+        for hole in section.holes:
+            if len(hole) >= 3:
+                draw.polygon([(float(x), float(y)) for x, y in hole], fill=0)
+    return np.asarray(image, dtype=bool)
+
+
+def _mask_core_weights(mask: np.ndarray, *, max_depth: int) -> np.ndarray:
+    remaining = np.asarray(mask, dtype=bool).copy()
+    weights = np.zeros(remaining.shape, dtype=float)
+    for _ in range(max(1, int(max_depth))):
+        if not remaining.any():
+            break
+        weights[remaining] += 1.0
+        padded = np.pad(remaining, 1, mode="constant", constant_values=False)
+        eroded = np.ones_like(remaining)
+        for y_offset in range(3):
+            for x_offset in range(3):
+                eroded &= padded[y_offset : y_offset + remaining.shape[0], x_offset : x_offset + remaining.shape[1]]
+        remaining = eroded
+    return weights
 
 
 def _ring_axis_regularity(ring: list[tuple[float, float]]) -> float:

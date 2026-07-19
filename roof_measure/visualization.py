@@ -53,6 +53,8 @@ def footprint_overlay(
     image: Image.Image,
     *,
     polygons: list[list[tuple[float, float]]],
+    fill: tuple[int, int, int, int] = (38, 126, 198, 50),
+    outline: tuple[int, int, int, int] = (38, 126, 198, 255),
 ) -> Image.Image:
     base = image.convert("RGBA")
     overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
@@ -60,10 +62,10 @@ def footprint_overlay(
     for polygon in polygons:
         if len(polygon) < 3:
             continue
-        draw.polygon([(float(x), float(y)) for x, y in polygon], fill=(38, 126, 198, 50))
+        draw.polygon([(float(x), float(y)) for x, y in polygon], fill=fill)
         draw.line(
             [(float(x), float(y)) for x, y in [*polygon, polygon[0]]],
-            fill=(38, 126, 198, 255),
+            fill=outline,
             width=4,
             joint="curve",
         )
@@ -85,6 +87,29 @@ def footprint_constraint_overlay(
     buffered.putalpha(Image.fromarray(mask.astype("uint8") * 70, mode="L"))
     composite = Image.alpha_composite(base, buffered).convert("RGB")
     return footprint_overlay(composite, polygons=polygons)
+
+
+def outline_prior_overlay(
+    image: Image.Image,
+    *,
+    polygons: list[list[tuple[float, float]]],
+    constraint_mask: np.ndarray | None = None,
+) -> Image.Image:
+    """Render the AI roof outline prior in yellow and its buffered region softly."""
+    base = image.convert("RGBA")
+    if constraint_mask is not None:
+        mask = np.asarray(constraint_mask, dtype=bool)
+        if mask.shape != (base.height, base.width):
+            mask = np.asarray(Image.fromarray(mask.astype("uint8") * 255).resize(base.size), dtype=bool)
+        buffered = Image.new("RGBA", base.size, (255, 193, 7, 0))
+        buffered.putalpha(Image.fromarray(mask.astype("uint8") * 45, mode="L"))
+        base = Image.alpha_composite(base, buffered)
+    return footprint_overlay(
+        base.convert("RGB"),
+        polygons=polygons,
+        fill=(255, 193, 7, 32),
+        outline=(255, 193, 7, 255),
+    )
 
 
 def _draw_point(

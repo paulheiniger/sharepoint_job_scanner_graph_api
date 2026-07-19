@@ -1,0 +1,27 @@
+{
+  "address": "620 Boone Avenue, Winchester KY 40391",
+  "model_name": "sam2_remote",
+  "processing_iterations": [
+    {
+      "stage": "ai_outline_prior",
+      "accepted": true,
+      "confidence": 0.78,
+      "segmentation_box": {"x0": 191.0, "y0": 133.0, "x1": 683.0, "y1": 654.0},
+      "polygons": [[{"x": 455.0, "y": 145.0}, {"x": 522.0, "y": 171.0}, {"x": 487.0, "y": 346.0}, {"x": 407.0, "y": 321.0}]]
+    },
+    {
+      "stage": "initial_segmentation",
+      "footprint_count": 0,
+      "outline_prior_polygon_count": 6,
+      "outline_prior_buffer_pixels": 16,
+      "deterministic_score": 0.8095
+    },
+    {
+      "stage": "lidar_height_prior",
+      "ok": true,
+      "roof_support_fraction": 0.891,
+      "ground_fraction": 0.106,
+      "sampled_cells": 1419
+    }
+  ]
+}
