@@ -64,6 +64,9 @@ from .service import RoofMeasureResult, finalize_roof_sections, footprint_constr
 from .visualization import annotated_overlay, footprint_constraint_overlay, footprint_overlay, image_png_bytes, outline_prior_overlay, prompt_points_overlay
 
 
+_AI_OUTLINE_PRIOR_VERSION = 2
+
+
 def render_ai_roof_measure_page() -> None:
     st.title("AI Roof Measure")
     st.caption(
@@ -1025,15 +1028,19 @@ def _points_record(points: list[tuple[float, float]]) -> list[dict[str, float]]:
 
 
 def _store_ai_outline_prior(image_id: str, suggestion: RoofPolygonSuggestion) -> None:
-    st.session_state["roof_measure_ai_outline_prior"] = (image_id, suggestion)
+    st.session_state["roof_measure_ai_outline_prior"] = (_AI_OUTLINE_PRIOR_VERSION, image_id, suggestion)
 
 
 def _cached_ai_outline_prior(image_id: str) -> RoofPolygonSuggestion | None:
     cached = st.session_state.get("roof_measure_ai_outline_prior")
-    if not isinstance(cached, tuple) or len(cached) != 2:
+    if not isinstance(cached, tuple) or len(cached) != 3:
         return None
-    cached_image_id, suggestion = cached
-    if cached_image_id != image_id or not isinstance(suggestion, RoofPolygonSuggestion):
+    cached_version, cached_image_id, suggestion = cached
+    if (
+        cached_version != _AI_OUTLINE_PRIOR_VERSION
+        or cached_image_id != image_id
+        or not isinstance(suggestion, RoofPolygonSuggestion)
+    ):
         return None
     return suggestion if suggestion.polygons else None
 
