@@ -23,6 +23,7 @@ class RoofQaFinding:
     confidence: float = 0.0
     notes: str = ""
     warnings: list[str] = field(default_factory=list)
+    completed: bool = True
     model_name: str = "openai_roof_qa"
     model_version: str = ""
 
@@ -35,6 +36,7 @@ class RoofQaFinding:
             "confidence": self.confidence,
             "notes": self.notes,
             "warnings": self.warnings,
+            "completed": self.completed,
             "model_name": self.model_name,
             "model_version": self.model_version,
         }
@@ -65,7 +67,10 @@ def suggest_roof_qa(
             )
         )
     except Exception as exc:
-        return RoofQaFinding(warnings=[f"AI roof QA failed: {type(exc).__name__}: {exc}"])
+        return RoofQaFinding(
+            completed=False,
+            warnings=[f"AI roof QA failed: {type(exc).__name__}: {exc}"],
+        )
     return qa_finding_from_payload(payload, width=width, height=height)
 
 

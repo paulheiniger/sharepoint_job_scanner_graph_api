@@ -45,6 +45,7 @@ from .ai_qa import qa_corrections_to_prompts, suggest_roof_qa
 from .ai_points import suggest_roof_prompt_points
 from .exports import geojson_to_string, measurement_to_geojson, report_to_json
 from .image_io import load_image_bytes, uploaded_file_bytes
+from .lidar import assess_mask_against_kyfromabove_lidar
 from .map_reference import (
     BuildingFootprint,
     MapboxReferenceProvider,
@@ -56,7 +57,7 @@ from .map_reference import (
     postgres_building_footprints,
 )
 from .geometry import straighten_architectural_ring
-from .models import RoofMeasureRequest, RoofSection
+from .models import MeasurementWarning, RoofMeasureRequest, RoofSection
 from .polygonize import section_from_polygon
 from .service import RoofMeasureResult, footprint_constraint_mask, measure_roof_from_outline_polygons, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections, score_roof_result
 from .visualization import annotated_overlay, footprint_constraint_overlay, footprint_overlay, image_png_bytes, prompt_points_overlay
@@ -317,13 +318,15 @@ def render_ai_roof_measure_page() -> None:
                 reverse=True,
             )
             candidate_image_polygons = {
-                footprint_id: footprint_rings_to_image_pixels(
+                footprint_id: _footprint_rings_to_inference_pixels(
                     candidate_by_id[footprint_id].rings,
                     center_latitude=float(context["latitude"]),
                     center_longitude=float(context["longitude"]),
                     zoom=float(context["zoom"]),
-                    width=loaded.metadata.inference_width,
-                    height=loaded.metadata.inference_height,
+                    source_width=loaded.metadata.width,
+                    source_height=loaded.metadata.height,
+                    scale_x=loaded.metadata.scale_x,
+                    scale_y=loaded.metadata.scale_y,
                 )
                 for footprint_id in ordered_candidate_ids
             }
@@ -736,6 +739,7 @@ def _measure_roof_automatically(
                     "footprint_buffer_feet": automatic_request.footprint_buffer_feet,
                     "footprint_buffer_pixels": result.footprint_buffer_pixels,
                     "footprint_prior": result.footprint_audit,
+                    "segmenter_model": result.report.model_name,
                     "deterministic_score": result.deterministic_score,
                     "accepted": True,
                 }
@@ -746,6 +750,22 @@ def _measure_roof_automatically(
 
     if not use_ai_outline_cleanup:
         return result, notes
+    if result.report.model_name == "manual_fallback_segmenter":
+        result.report = result.report.model_copy(
+            update={
+                "processing_iterations": [
+                    *result.report.processing_iterations,
+                    {
+                        "stage": "semantic_qa",
+                        "status": "skipped",
+                        "reason": "SAM2 was unavailable and the manual fallback mask cannot use targeted prompt corrections.",
+                        "accepted": False,
+                    },
+                ]
+            }
+        )
+        notes.append("AI semantic QA was skipped because SAM2 is unavailable; start the SAM2 service before requesting prompt corrections.")
+        return result, notes
     if not os.getenv("OPENAI_API_KEY"):
         notes.append("AI semantic QA was skipped because OpenAI is not configured.")
         return result, notes
@@ -755,14 +775,21 @@ def _measure_roof_automatically(
         address=address,
         reference_images=reference_images,
     )
-    qa_record = {"stage": "semantic_qa", **qa.as_record(), "accepted": True}
+    qa_record = {
+        "stage": "semantic_qa",
+        "status": "completed" if qa.completed else "failed",
+        **qa.as_record(),
+        "accepted": qa.completed,
+    }
     result.report = result.report.model_copy(
         update={"processing_iterations": [*result.report.processing_iterations, qa_record]}
     )
-    if qa.warnings:
+    if not qa.completed:
         notes.extend(qa.warnings)
         notes.append("AI semantic QA was unavailable; kept the deterministic outline.")
         return result, notes
+    if qa.warnings:
+        notes.extend(qa.warnings)
     retry_positive, retry_negative = qa_corrections_to_prompts(qa)
     if not retry_positive and not retry_negative:
         notes.append("AI semantic QA found no SAM prompt correction; kept the deterministic outline.")
@@ -785,9 +812,17 @@ def _measure_roof_automatically(
         "accepted": accepted,
     }
     if not accepted:
+        reject_initial = _qa_requires_manual_review(qa)
         result.report = result.report.model_copy(
             update={"processing_iterations": [*result.report.processing_iterations, retry_record]}
         )
+        if reject_initial:
+            result.report = _flag_automatic_result_for_review(
+                result.report,
+                "Semantic QA identified major missing roof areas and non-roof inclusion. The initial automatic outline is retained only for editing and must not be used as a measurement.",
+            )
+            notes.append("Semantic QA rejected the initial outline as materially wrong; select the target footprint or add roof prompt points before measuring again.")
+            return result, notes
         notes.append("AI QA proposed targeted SAM prompts, but the retry did not improve deterministic scoring; kept the original outline.")
         return result, notes
     retry_report = recalculate_report_from_corrected_sections(
@@ -823,6 +858,36 @@ def _unique_points(points: list[tuple[float, float]]) -> list[tuple[float, float
 
 def _points_record(points: list[tuple[float, float]]) -> list[dict[str, float]]:
     return [{"x": round(float(x), 2), "y": round(float(y), 2)} for x, y in points]
+
+
+def _qa_requires_manual_review(qa) -> bool:
+    return (
+        qa.completed
+        and qa.confidence >= 0.85
+        and len(qa.missing_regions) >= 2
+        and len(qa.extra_regions) >= 2
+    )
+
+
+def _flag_automatic_result_for_review(report, message: str):
+    warnings = [*report.measurement.warnings]
+    warnings.append(
+        MeasurementWarning(
+            code="semantic_qa_rejected_outline",
+            message=message,
+            severity="error",
+        )
+    )
+    measurement = report.measurement.model_copy(update={"warnings": warnings})
+    return report.model_copy(
+        update={
+            "measurement": measurement,
+            "processing_iterations": [
+                *report.processing_iterations,
+                {"stage": "automatic_result", "status": "rejected", "reason": message, "accepted": False},
+            ],
+        }
+    )
 
 
 def _footprint_visible_area_pixels(
@@ -864,6 +929,29 @@ def _footprint_visible_area_pixels(
         ) / 2
         total_area += polygon_area * min(1.0, visible_bbox_area / full_bbox_area)
     return total_area
+
+
+def _footprint_rings_to_inference_pixels(
+    rings: list[list[tuple[float, float]]],
+    *,
+    center_latitude: float,
+    center_longitude: float,
+    zoom: float,
+    source_width: int,
+    source_height: int,
+    scale_x: float,
+    scale_y: float,
+) -> list[list[tuple[float, float]]]:
+    """Project in the native Mapbox image frame, then apply the inference resize."""
+    native = footprint_rings_to_image_pixels(
+        rings,
+        center_latitude=center_latitude,
+        center_longitude=center_longitude,
+        zoom=zoom,
+        width=source_width,
+        height=source_height,
+    )
+    return [[(x * scale_x, y * scale_y) for x, y in ring] for ring in native]
 
 
 def _footprints_for_prompt_points(
@@ -964,6 +1052,7 @@ def _render_measurement_result(
         ),
         width=min(loaded.metadata.inference_width, 1000),
     )
+    _render_lidar_validation_action(result)
     _render_pipeline_trace(report, result)
 
     if measurement.warnings:
@@ -1007,27 +1096,44 @@ def _render_pipeline_trace(report, result: RoofMeasureResult) -> None:
         initial = next((item for item in iterations if item.get("stage") == "initial_segmentation"), None)
         semantic_qa = next((item for item in iterations if item.get("stage") == "semantic_qa"), None)
         retry = next((item for item in iterations if item.get("stage") == "targeted_sam_retry"), None)
+        lidar = next((item for item in iterations if item.get("stage") == "lidar_height_prior"), None)
         if initial:
             st.caption(
                 f"Initial SAM score: {float(initial.get('deterministic_score') or 0):.3f}. "
                 f"Footprints: {int(initial.get('footprint_count') or 0)}. "
                 f"Buffer: {float(initial.get('footprint_buffer_feet') or 0):g} ft / {int(initial.get('footprint_buffer_pixels') or 0)} px."
             )
+            st.caption(f"Segmenter: {initial.get('segmenter_model') or report.model_name}.")
         if semantic_qa is None:
             st.info("Semantic QA was not requested for this measurement. Enable 'Run AI semantic QA after automatic segmentation' before measuring.")
-        elif semantic_qa.get("warnings"):
+        elif semantic_qa.get("status") == "skipped":
+            st.warning(str(semantic_qa.get("reason") or "Semantic QA was skipped."))
+        elif semantic_qa.get("status") == "failed":
             st.error("Semantic QA was attempted but did not complete: " + "; ".join(str(item) for item in semantic_qa["warnings"]))
         else:
             defect_count = sum(len(semantic_qa.get(field) or []) for field in ("missing_regions", "extra_regions", "courtyard_errors", "boundary_errors"))
             st.success(
                 f"Semantic QA completed at {float(semantic_qa.get('confidence') or 0):.2f} confidence and reported {defect_count} defect hint(s)."
             )
+            if semantic_qa.get("warnings"):
+                st.warning("QA qualification: " + "; ".join(str(item) for item in semantic_qa["warnings"]))
         if retry:
             message = (
                 f"Targeted SAM retry {'accepted' if retry.get('accepted') else 'rejected'} "
                 f"at deterministic score {float(retry.get('deterministic_score') or 0):.3f}."
             )
             (st.success if retry.get("accepted") else st.warning)(message)
+        if lidar:
+            if lidar.get("ok"):
+                st.caption(
+                    f"LiDAR roof support: {float(lidar.get('roof_support_fraction') or 0):.0%}; "
+                    f"ground overlap: {float(lidar.get('ground_fraction') or 0):.0%}; "
+                    f"sampled cells: {int(lidar.get('sampled_cells') or 0)}."
+                )
+                if lidar.get("warning"):
+                    st.warning(str(lidar["warning"]))
+            else:
+                st.warning(str(lidar.get("warning") or "LiDAR validation was unavailable."))
         if result.footprint_audit:
             st.caption("Applied footprint sources and geometry are included in the downloaded report JSON.")
             st.dataframe(
@@ -1045,6 +1151,42 @@ def _render_pipeline_trace(report, result: RoofMeasureResult) -> None:
                 hide_index=True,
             )
         st.json(iterations)
+
+
+def _render_lidar_validation_action(result: RoofMeasureResult) -> None:
+    coverage = st.session_state.get("roof_measure_lidar_coverage")
+    context = st.session_state.get("roof_measure_mapbox_context") or {}
+    if not getattr(coverage, "ok", False) or result.selected_mask is None:
+        return
+    if any(item.get("stage") == "lidar_height_prior" for item in result.report.processing_iterations):
+        return
+    if any(context.get(key) is None for key in ("latitude", "longitude", "zoom")):
+        return
+    if st.button(
+        "Evaluate LiDAR Roof/Ground Evidence",
+        key=f"roof_measure_lidar_validation_{result.report.id}",
+        help="Queries only the visible area of the public COPC LiDAR tile. It scores the existing mask; it does not redraw the roof.",
+    ):
+        with st.spinner("Comparing the selected mask with Kentucky public LiDAR elevation evidence..."):
+            assessment = assess_mask_against_kyfromabove_lidar(
+                asset_url=str(getattr(coverage, "asset_url", "")),
+                mask=result.selected_mask,
+                center_latitude=float(context["latitude"]),
+                center_longitude=float(context["longitude"]),
+                zoom=float(context["zoom"]),
+                source_width=result.report.source_images[0].width,
+                source_height=result.report.source_images[0].height,
+            )
+        result.report = result.report.model_copy(
+            update={
+                "processing_iterations": [
+                    *result.report.processing_iterations,
+                    {"stage": "lidar_height_prior", "ok": assessment.ok, **assessment.as_record()},
+                ]
+            }
+        )
+        st.session_state["roof_measure_result"] = result
+        st.rerun()
 
 
 def _parse_point(value: str) -> tuple[float, float] | None:

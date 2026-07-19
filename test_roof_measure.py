@@ -19,7 +19,7 @@ from roof_measure.calibration import (
     sqft_from_pixels,
 )
 from roof_measure.ai_polygons import polygon_suggestion_from_payload, suggest_refined_roof_polygons
-from roof_measure.ai_qa import qa_corrections_to_prompts, qa_finding_from_payload
+from roof_measure.ai_qa import RoofQaFinding, qa_corrections_to_prompts, qa_finding_from_payload
 from roof_measure.ai_points import suggestion_from_payload
 from roof_measure.ai_polygons import _call_openai_roof_polygon_refiner, _call_openai_roof_polygon_suggester
 from roof_measure.ai_points import _call_openai_roof_point_suggester
@@ -28,6 +28,7 @@ from roof_measure.confidence import measurement_warnings
 from roof_measure.exports import measurement_to_geojson
 from roof_measure.geometry import polygon_area_pixels, repair_polygon, simplify_ring, straighten_architectural_ring
 from roof_measure.image_io import image_hash, load_image_bytes
+from roof_measure.lidar import assess_mask_against_height_grid
 from roof_measure.map_reference import (
     BuildingFootprint,
     _kyfromabove_lidar_coverage_from_payload,
@@ -51,11 +52,13 @@ from roof_measure.streamlit_page import (
     _format_points_text,
     _footprints_for_prompt_points,
     _footprint_visible_area_pixels,
+    _footprint_rings_to_inference_pixels,
     _insert_new_corner_points,
     _parse_points_text,
     _prompt_points_to_canvas_initial_drawing,
     _points_to_canvas_initial_drawing,
     _replace_section_polygon,
+    _qa_requires_manual_review,
     _section_to_corner_canvas_initial_drawing,
     _sections_from_ai_polygons,
     _sections_to_canvas_initial_drawing,
@@ -392,6 +395,30 @@ def test_visible_footprint_area_prefers_large_candidate_inside_map() -> None:
     assert _footprint_visible_area_pixels(large, **kwargs) > _footprint_visible_area_pixels(small, **kwargs)
 
 
+def test_footprint_projection_applies_native_mapbox_resize_scale() -> None:
+    rings = [[(-84.001, 38.0), (-83.999, 38.0), (-83.999, 38.001)]]
+    native = footprint_rings_to_image_pixels(
+        rings,
+        center_latitude=38.0,
+        center_longitude=-84.0,
+        zoom=19.0,
+        width=1280,
+        height=1280,
+    )
+    inferred = _footprint_rings_to_inference_pixels(
+        rings,
+        center_latitude=38.0,
+        center_longitude=-84.0,
+        zoom=19.0,
+        source_width=1280,
+        source_height=1280,
+        scale_x=0.9375,
+        scale_y=0.9375,
+    )
+
+    assert inferred[0][0] == (native[0][0][0] * 0.9375, native[0][0][1] * 0.9375)
+
+
 def test_footprints_for_prompt_points_ignores_larger_unrelated_building() -> None:
     school = [(100, 100), (300, 100), (300, 300), (100, 300)]
     warehouse = [(600, 100), (1100, 100), (1100, 600), (600, 600)]
@@ -480,6 +507,18 @@ def test_semantic_qa_defects_become_targeted_sam_prompts() -> None:
     assert finding.confidence == 0.91
 
 
+def test_semantic_qa_requires_manual_review_only_for_high_confidence_major_conflict() -> None:
+    severe = RoofQaFinding(
+        missing_regions=[(10, 10), (20, 20)],
+        extra_regions=[(70, 10), (80, 20)],
+        confidence=0.9,
+    )
+    ambiguous = RoofQaFinding(confidence=0.9, warnings=["Interior transitions are ambiguous."])
+
+    assert _qa_requires_manual_review(severe)
+    assert not _qa_requires_manual_review(ambiguous)
+
+
 def test_deterministic_score_penalizes_fragmented_sections() -> None:
     mask = np.ones((20, 20), dtype=bool)
     whole = [section_from_polygon("main", [(1, 1), (18, 1), (18, 18), (1, 18)])]
@@ -489,6 +528,20 @@ def test_deterministic_score_penalizes_fragmented_sections() -> None:
     ]
 
     assert score_roof_result(mask, whole, []) > score_roof_result(mask, fragmented, [])
+
+
+def test_lidar_height_prior_distinguishes_elevated_roof_from_ground() -> None:
+    height_grid = np.array([[12.0, 1.0], [12.0, 1.0]])
+    roof_mask = np.zeros((16, 16), dtype=bool)
+    roof_mask[:, :8] = True
+    ground_mask = np.zeros((16, 16), dtype=bool)
+    ground_mask[:, 8:] = True
+
+    roof = assess_mask_against_height_grid(roof_mask, height_grid, cell_pixels=8)
+    ground = assess_mask_against_height_grid(ground_mask, height_grid, cell_pixels=8)
+
+    assert roof.ok and roof.roof_support_fraction == 1.0 and roof.ground_fraction == 0.0
+    assert ground.ok and ground.roof_support_fraction == 0.0 and ground.ground_fraction == 1.0
 
 
 def test_duplicate_image_detection_updates_seen_hashes(tmp_path) -> None:
