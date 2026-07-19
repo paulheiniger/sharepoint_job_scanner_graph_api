@@ -58,8 +58,8 @@ from .map_reference import (
 from .geometry import straighten_architectural_ring
 from .models import RoofMeasureRequest, RoofSection
 from .polygonize import section_from_polygon
-from .service import RoofMeasureResult, measure_roof_from_outline_polygons, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections, score_roof_result
-from .visualization import annotated_overlay, footprint_overlay, image_png_bytes, prompt_points_overlay
+from .service import RoofMeasureResult, footprint_constraint_mask, measure_roof_from_outline_polygons, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections, score_roof_result
+from .visualization import annotated_overlay, footprint_constraint_overlay, footprint_overlay, image_png_bytes, prompt_points_overlay
 
 
 def render_ai_roof_measure_page() -> None:
@@ -255,6 +255,7 @@ def render_ai_roof_measure_page() -> None:
 
     footprint_polygons: list[list[tuple[float, float]]] = []
     footprint_candidate_polygons: list[list[tuple[float, float]]] = []
+    footprint_source_records: list[dict[str, object]] = []
     if image_source == "mapbox":
         footprint_candidates = [
             *(st.session_state.get("roof_measure_microsoft_footprints") or []),
@@ -326,6 +327,17 @@ def render_ai_roof_measure_page() -> None:
                 )
                 for footprint_id in ordered_candidate_ids
             }
+            footprint_source_records = [
+                {
+                    "footprint_id": footprint_id,
+                    "label": candidate_by_id[footprint_id].label,
+                    "provider": candidate_by_id[footprint_id].provider,
+                    "attribution": candidate_by_id[footprint_id].attribution,
+                    "geographic_rings": candidate_by_id[footprint_id].rings,
+                    "image_polygons": candidate_image_polygons[footprint_id],
+                }
+                for footprint_id in ordered_candidate_ids
+            ]
             footprint_candidate_polygons = [
                 polygon
                 for polygons in candidate_image_polygons.values()
@@ -554,6 +566,7 @@ def render_ai_roof_measure_page() -> None:
         segmenter_name=segmenter_name,
         footprint_polygons=footprint_polygons,
         footprint_buffer_feet=footprint_buffer_feet,
+        footprint_source_records=footprint_source_records,
     )
     if st.session_state.pop("roof_measure_auto_measure_pending", False):
         try:
@@ -704,6 +717,8 @@ def _measure_roof_automatically(
         selected_mask=result.selected_mask,
         candidate_count=result.candidate_count,
         applied_footprint_polygons=result.applied_footprint_polygons,
+        footprint_buffer_pixels=result.footprint_buffer_pixels,
+        footprint_audit=result.footprint_audit,
         deterministic_score=score_roof_result(
             result.selected_mask,
             straightened_sections,
@@ -719,6 +734,8 @@ def _measure_roof_automatically(
                     "negative_points": _points_record(negative_points),
                     "footprint_count": len(automatic_footprints),
                     "footprint_buffer_feet": automatic_request.footprint_buffer_feet,
+                    "footprint_buffer_pixels": result.footprint_buffer_pixels,
+                    "footprint_prior": result.footprint_audit,
                     "deterministic_score": result.deterministic_score,
                     "accepted": True,
                 }
@@ -784,6 +801,8 @@ def _measure_roof_automatically(
         selected_mask=retry.selected_mask,
         candidate_count=retry.candidate_count,
         applied_footprint_polygons=retry.applied_footprint_polygons,
+        footprint_buffer_pixels=retry.footprint_buffer_pixels,
+        footprint_audit=retry.footprint_audit,
         deterministic_score=retry_score,
     ), notes
 
@@ -908,22 +927,44 @@ def _render_measurement_result(
     loaded = load_image_bytes(image_bytes, file_name=file_name)
     overlay = annotated_overlay(loaded.inference_image, mask=result.selected_mask, sections=measurement.sections)
     show_footprint = False
+    show_footprint_buffer = False
     if result.applied_footprint_polygons:
         show_footprint = st.checkbox(
-            "Show footprint used to constrain segmentation",
+            "Show raw footprint used to constrain segmentation",
             value=False,
             key=f"roof_measure_show_applied_footprint_{report.id}",
         )
+        if result.footprint_buffer_pixels:
+            show_footprint_buffer = st.checkbox(
+                "Show buffered footprint constraint",
+                value=False,
+                key=f"roof_measure_show_buffered_footprint_{report.id}",
+                help="Orange is the actual allowed SAM search region. Blue is the unbuffered source footprint.",
+            )
     displayed_overlay = (
-        footprint_overlay(overlay, polygons=result.applied_footprint_polygons)
+        footprint_constraint_overlay(
+            overlay,
+            polygons=result.applied_footprint_polygons,
+            constraint_mask=footprint_constraint_mask(
+                (loaded.metadata.inference_height, loaded.metadata.inference_width),
+                result.applied_footprint_polygons,
+                buffer_pixels=result.footprint_buffer_pixels,
+            ),
+        )
+        if show_footprint_buffer
+        else footprint_overlay(overlay, polygons=result.applied_footprint_polygons)
         if show_footprint
         else overlay
     )
     st.image(
         displayed_overlay,
-        caption="Measured roof boundary. Toggle the footprint prior to compare its alignment with the imagery and measured outline.",
+        caption=(
+            "Green is the measured boundary. Blue is the source footprint. Orange is the buffered constraint used by SAM. "
+            "A consistent blue/orange shift indicates alignment; a partial footprint indicates incomplete source geometry."
+        ),
         width=min(loaded.metadata.inference_width, 1000),
     )
+    _render_pipeline_trace(report, result)
 
     if measurement.warnings:
         for warning in measurement.warnings:
@@ -956,6 +997,54 @@ def _render_measurement_result(
     st.download_button("Download measurement report JSON", report_json, "roof_measurement_report.json", "application/json")
     st.download_button("Download polygon GeoJSON", geojson_to_string(geojson), "roof_measurement.geojson", "application/geo+json")
     st.download_button("Download annotated PNG", image_png_bytes(overlay), "roof_measurement_overlay.png", "image/png")
+
+
+def _render_pipeline_trace(report, result: RoofMeasureResult) -> None:
+    iterations = report.processing_iterations
+    if not iterations and not result.footprint_audit:
+        return
+    with st.expander("Measurement Pipeline Trace", expanded=False):
+        initial = next((item for item in iterations if item.get("stage") == "initial_segmentation"), None)
+        semantic_qa = next((item for item in iterations if item.get("stage") == "semantic_qa"), None)
+        retry = next((item for item in iterations if item.get("stage") == "targeted_sam_retry"), None)
+        if initial:
+            st.caption(
+                f"Initial SAM score: {float(initial.get('deterministic_score') or 0):.3f}. "
+                f"Footprints: {int(initial.get('footprint_count') or 0)}. "
+                f"Buffer: {float(initial.get('footprint_buffer_feet') or 0):g} ft / {int(initial.get('footprint_buffer_pixels') or 0)} px."
+            )
+        if semantic_qa is None:
+            st.info("Semantic QA was not requested for this measurement. Enable 'Run AI semantic QA after automatic segmentation' before measuring.")
+        elif semantic_qa.get("warnings"):
+            st.error("Semantic QA was attempted but did not complete: " + "; ".join(str(item) for item in semantic_qa["warnings"]))
+        else:
+            defect_count = sum(len(semantic_qa.get(field) or []) for field in ("missing_regions", "extra_regions", "courtyard_errors", "boundary_errors"))
+            st.success(
+                f"Semantic QA completed at {float(semantic_qa.get('confidence') or 0):.2f} confidence and reported {defect_count} defect hint(s)."
+            )
+        if retry:
+            message = (
+                f"Targeted SAM retry {'accepted' if retry.get('accepted') else 'rejected'} "
+                f"at deterministic score {float(retry.get('deterministic_score') or 0):.3f}."
+            )
+            (st.success if retry.get("accepted") else st.warning)(message)
+        if result.footprint_audit:
+            st.caption("Applied footprint sources and geometry are included in the downloaded report JSON.")
+            st.dataframe(
+                [
+                    {
+                        "provider": item.get("provider"),
+                        "id": item.get("footprint_id"),
+                        "label": item.get("label"),
+                        "rings": len(item.get("image_polygons") or []),
+                        "buffer_feet": item.get("buffer_feet"),
+                    }
+                    for item in result.footprint_audit
+                ],
+                width="stretch",
+                hide_index=True,
+            )
+        st.json(iterations)
 
 
 def _parse_point(value: str) -> tuple[float, float] | None:

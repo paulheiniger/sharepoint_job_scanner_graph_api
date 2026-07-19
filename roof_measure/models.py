@@ -84,6 +84,7 @@ class RoofMeasureRequest(BaseModel):
     segmenter_name: str = "manual_fallback"
     footprint_polygons: list[Ring] = Field(default_factory=list)
     footprint_buffer_feet: float = 10.0
+    footprint_source_records: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class MeasurementReport(BaseModel):

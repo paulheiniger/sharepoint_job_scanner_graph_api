@@ -70,6 +70,23 @@ def footprint_overlay(
     return Image.alpha_composite(base, overlay).convert("RGB")
 
 
+def footprint_constraint_overlay(
+    image: Image.Image,
+    *,
+    polygons: list[list[tuple[float, float]]],
+    constraint_mask: np.ndarray,
+) -> Image.Image:
+    """Show the raw footprint in blue and the actual buffered search region in orange."""
+    base = image.convert("RGBA")
+    mask = np.asarray(constraint_mask, dtype=bool)
+    if mask.shape != (base.height, base.width):
+        mask = np.asarray(Image.fromarray(mask.astype("uint8") * 255).resize(base.size), dtype=bool)
+    buffered = Image.new("RGBA", base.size, (244, 130, 32, 0))
+    buffered.putalpha(Image.fromarray(mask.astype("uint8") * 70, mode="L"))
+    composite = Image.alpha_composite(base, buffered).convert("RGB")
+    return footprint_overlay(composite, polygons=polygons)
+
+
 def _draw_point(
     draw: ImageDraw.ImageDraw,
     point: tuple[float, float],

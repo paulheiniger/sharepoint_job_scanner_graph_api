@@ -21,6 +21,8 @@ class RoofMeasureResult:
     selected_mask: np.ndarray | None
     candidate_count: int
     applied_footprint_polygons: list[list[tuple[float, float]]] = field(default_factory=list)
+    footprint_buffer_pixels: int = 0
+    footprint_audit: list[dict[str, object]] = field(default_factory=list)
     deterministic_score: float = 0.0
 
 
@@ -47,6 +49,7 @@ def measure_roof_from_overhead_image(
     candidates = segmentation.candidates
     selected_mask = None
     applied_footprint_polygons: list[list[tuple[float, float]]] = []
+    footprint_buffer_pixels = 0
     sections = []
     segmentation_score = 0.0
     if candidates:
@@ -55,6 +58,7 @@ def measure_roof_from_overhead_image(
         selected_mask = candidate.mask
         if request.footprint_polygons:
             buffer_pixels = _footprint_buffer_pixels(request)
+            footprint_buffer_pixels = buffer_pixels
             constrained_mask = _constrain_mask_to_footprints(
                 selected_mask,
                 request.footprint_polygons,
@@ -140,20 +144,14 @@ def measure_roof_from_overhead_image(
         selected_mask=selected_mask,
         candidate_count=len(candidates),
         applied_footprint_polygons=applied_footprint_polygons,
+        footprint_buffer_pixels=footprint_buffer_pixels,
+        footprint_audit=_applied_footprint_audit(request, applied_footprint_polygons, footprint_buffer_pixels),
         deterministic_score=score_roof_result(selected_mask, sections, request.footprint_polygons),
     )
 
 
 def _constrain_mask_to_footprints(mask: np.ndarray, polygons: list[list[tuple[float, float]]], *, buffer_pixels: int = 8) -> np.ndarray:
-    height, width = mask.shape[:2]
-    footprint_image = Image.new("L", (width, height), 0)
-    draw = ImageDraw.Draw(footprint_image)
-    for polygon in polygons:
-        if len(polygon) >= 3:
-            draw.polygon([(float(x), float(y)) for x, y in polygon], fill=255)
-    footprint_mask = np.asarray(footprint_image, dtype=bool)
-    if buffer_pixels > 0:
-        footprint_mask = _dilate_mask(footprint_mask, radius=buffer_pixels)
+    footprint_mask = footprint_constraint_mask(mask.shape[:2], polygons, buffer_pixels=buffer_pixels)
     return np.asarray(mask, dtype=bool) & footprint_mask
 
 
@@ -163,6 +161,57 @@ def _footprint_buffer_pixels(request: RoofMeasureRequest) -> int:
     if pixels_per_foot > 0:
         return max(0, int(round(feet * pixels_per_foot)))
     return 8
+
+
+def footprint_constraint_mask(
+    shape: tuple[int, int],
+    polygons: list[list[tuple[float, float]]],
+    *,
+    buffer_pixels: int = 0,
+) -> np.ndarray:
+    height, width = shape
+    footprint_image = Image.new("L", (width, height), 0)
+    draw = ImageDraw.Draw(footprint_image)
+    for polygon in polygons:
+        if len(polygon) >= 3:
+            draw.polygon([(float(x), float(y)) for x, y in polygon], fill=255)
+    footprint_mask = np.asarray(footprint_image, dtype=bool)
+    return _dilate_mask(footprint_mask, radius=buffer_pixels) if buffer_pixels > 0 else footprint_mask
+
+
+def _applied_footprint_audit(
+    request: RoofMeasureRequest,
+    applied_polygons: list[list[tuple[float, float]]],
+    buffer_pixels: int,
+) -> list[dict[str, object]]:
+    if not applied_polygons:
+        return []
+    audit: list[dict[str, object]] = []
+    for source in request.footprint_source_records:
+        image_polygons = source.get("image_polygons") if isinstance(source, dict) else None
+        if not isinstance(image_polygons, list):
+            continue
+        if any(_same_ring(candidate, applied) for candidate in image_polygons for applied in applied_polygons):
+            audit.append({
+                "footprint_id": str(source.get("footprint_id") or ""),
+                "label": str(source.get("label") or ""),
+                "provider": str(source.get("provider") or ""),
+                "attribution": str(source.get("attribution") or ""),
+                "geographic_rings": source.get("geographic_rings") or [],
+                "image_polygons": image_polygons,
+                "buffer_pixels": buffer_pixels,
+                "buffer_feet": request.footprint_buffer_feet,
+            })
+    return audit
+
+
+def _same_ring(first: object, second: list[tuple[float, float]]) -> bool:
+    if not isinstance(first, list) or len(first) != len(second):
+        return False
+    try:
+        return all(abs(float(a[0]) - float(b[0])) < 0.01 and abs(float(a[1]) - float(b[1])) < 0.01 for a, b in zip(first, second))
+    except (TypeError, ValueError, IndexError):
+        return False
 
 
 def _dilate_mask(mask: np.ndarray, *, radius: int) -> np.ndarray:

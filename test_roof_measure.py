@@ -39,7 +39,7 @@ from roof_measure.map_reference import (
 from roof_measure.models import ImageMetadata
 from roof_measure.polygonize import section_from_polygon, sections_from_mask
 from roof_measure.segmentation import MockRoofSegmenter, Sam2RoofSegmenter, SegmentationPrompts
-from roof_measure.service import _constrain_mask_to_footprints, _footprint_buffer_pixels, measure_roof_from_outline_polygons, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections, score_roof_result
+from roof_measure.service import _constrain_mask_to_footprints, _footprint_buffer_pixels, footprint_constraint_mask, measure_roof_from_outline_polygons, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections, score_roof_result
 from roof_measure.models import RoofMeasureRequest
 from roof_measure.streamlit_page import (
     _canvas_background_image,
@@ -423,6 +423,40 @@ def test_footprint_buffer_uses_metadata_calibration() -> None:
     )
 
     assert _footprint_buffer_pixels(request) == 15
+
+
+def test_measurement_result_retains_applied_footprint_provenance(tmp_path) -> None:
+    polygon = [(20, 20), (80, 20), (80, 60), (20, 60)]
+    request = RoofMeasureRequest(
+        overhead_image_name="roof.png",
+        metadata_pixels_per_foot=1.0,
+        footprint_buffer_feet=5,
+        footprint_polygons=[polygon],
+        footprint_source_records=[
+            {
+                "footprint_id": "microsoft-123",
+                "label": "Clark County Schools",
+                "provider": "microsoft_global_buildings",
+                "attribution": "Microsoft",
+                "geographic_rings": [[(-84.1, 38.1), (-84.0, 38.1), (-84.0, 38.0)]],
+                "image_polygons": [polygon],
+            }
+        ],
+    )
+    mask = np.ones((80, 100), dtype=bool)
+
+    result = measure_roof_from_overhead_image(
+        image_bytes=_image_bytes(),
+        request=request,
+        segmenter=MockRoofSegmenter([mask]),
+        storage_root=str(tmp_path),
+    )
+
+    assert result.footprint_buffer_pixels == 5
+    assert result.footprint_audit[0]["footprint_id"] == "microsoft-123"
+    assert result.footprint_audit[0]["provider"] == "microsoft_global_buildings"
+    assert result.footprint_audit[0]["buffer_feet"] == 5
+    assert footprint_constraint_mask(mask.shape, [polygon], buffer_pixels=5).sum() > 0
 
 
 def test_semantic_qa_defects_become_targeted_sam_prompts() -> None:
