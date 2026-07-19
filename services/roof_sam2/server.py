@@ -23,6 +23,7 @@ class SegmentRequest(BaseModel):
     image_png_base64: str
     positive_points: list[tuple[float, float]] = Field(default_factory=list)
     negative_points: list[tuple[float, float]] = Field(default_factory=list)
+    box: tuple[float, float, float, float] | None = None
     max_candidates: int = 3
     multimask_output: bool = True
 
@@ -57,14 +58,18 @@ def segment(request: SegmentRequest) -> SegmentResponse:
         image = _decode_image(request.image_png_base64)
         predictor, torch, device = _predictor()
         point_coords, point_labels = _prompt_arrays(request, image.shape)
+        box = _box_array(request.box, image.shape)
         with _PREDICT_LOCK:
             with torch.inference_mode():
                 predictor.set_image(image)
-                masks, scores, _ = predictor.predict(
-                    point_coords=point_coords,
-                    point_labels=point_labels,
-                    multimask_output=request.multimask_output,
-                )
+                prediction_kwargs = {
+                    "point_coords": point_coords,
+                    "point_labels": point_labels,
+                    "multimask_output": request.multimask_output,
+                }
+                if box is not None:
+                    prediction_kwargs["box"] = box
+                masks, scores, _ = predictor.predict(**prediction_kwargs)
     except Exception as exc:  # pragma: no cover - real SAM2 failures are environment specific.
         raise HTTPException(status_code=500, detail=f"SAM2 segmentation failed: {type(exc).__name__}: {exc}") from exc
 
@@ -173,6 +178,18 @@ def _prompt_arrays(request: SegmentRequest, image_shape: tuple[int, ...]) -> tup
         points = [(width / 2, height / 2)]
         labels = [1]
     return np.asarray(points, dtype=np.float32), np.asarray(labels, dtype=np.int32)
+
+
+def _box_array(box: tuple[float, float, float, float] | None, image_shape: tuple[int, ...]) -> np.ndarray | None:
+    if box is None:
+        return None
+    height, width = image_shape[:2]
+    x0, y0, x1, y1 = (float(value) for value in box)
+    x0, x1 = sorted((max(0.0, min(x0, width - 1)), max(0.0, min(x1, width - 1))))
+    y0, y1 = sorted((max(0.0, min(y0, height - 1)), max(0.0, min(y1, height - 1))))
+    if x1 - x0 < 2 or y1 - y0 < 2:
+        raise ValueError("SAM2 box prompt must cover at least 2 image pixels in each direction.")
+    return np.asarray([x0, y0, x1, y1], dtype=np.float32)
 
 
 def _encode_mask(mask: np.ndarray) -> str:

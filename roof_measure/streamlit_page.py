@@ -3,9 +3,10 @@ from __future__ import annotations
 import math
 import os
 
+import numpy as np
 import pandas as pd
 import streamlit as st
-from PIL import Image
+from PIL import Image, ImageDraw
 
 
 def _install_streamlit_image_to_url_compat() -> None:
@@ -257,6 +258,7 @@ def render_ai_roof_measure_page() -> None:
     footprint_polygons: list[list[tuple[float, float]]] = []
     footprint_candidate_polygons: list[list[tuple[float, float]]] = []
     footprint_source_records: list[dict[str, object]] = []
+    context: dict[str, object] = {}
     if image_source == "mapbox":
         footprint_candidates = [
             *(st.session_state.get("roof_measure_microsoft_footprints") or []),
@@ -497,10 +499,17 @@ def render_ai_roof_measure_page() -> None:
     )
     use_ai_outline_cleanup = st.checkbox(
         "Run AI semantic QA after automatic segmentation",
-        value=False,
+        value=True,
         disabled=not openai_available,
         help="AI reports missing or extra roof regions as SAM prompts. It never directly replaces the measurement polygon.",
         key="roof_measure_auto_ai_cleanup",
+    )
+    use_ai_outline_prior = st.checkbox(
+        "Use AI roof outline as a SAM2 region prior",
+        value=True,
+        disabled=not openai_available,
+        help="AI supplies a coarse roof envelope and interior prompts. SAM2 still determines the mask and the final boundary remains editable.",
+        key="roof_measure_auto_ai_outline_prior",
     )
 
     controls_col1, controls_col2, controls_col3 = st.columns(3)
@@ -570,6 +579,11 @@ def render_ai_roof_measure_page() -> None:
         footprint_polygons=footprint_polygons,
         footprint_buffer_feet=footprint_buffer_feet,
         footprint_source_records=footprint_source_records,
+        map_view={
+            key: float(context[key])
+            for key in ("latitude", "longitude", "zoom")
+            if context.get(key) is not None
+        },
     )
     if st.session_state.pop("roof_measure_auto_measure_pending", False):
         try:
@@ -581,6 +595,7 @@ def render_ai_roof_measure_page() -> None:
                     address=address,
                     reference_images=reference_images,
                     use_ai_outline_cleanup=use_ai_outline_cleanup,
+                    use_ai_outline_prior=use_ai_outline_prior,
                     candidate_footprints=footprint_candidate_polygons,
                 )
         except Exception as exc:
@@ -655,6 +670,7 @@ def _measure_roof_automatically(
     address: str,
     reference_images: list[Image.Image],
     use_ai_outline_cleanup: bool,
+    use_ai_outline_prior: bool,
     candidate_footprints: list[list[tuple[float, float]]],
 ) -> tuple[RoofMeasureResult, list[str]]:
     """Run the default measure pipeline while retaining a valid deterministic result."""
@@ -662,6 +678,8 @@ def _measure_roof_automatically(
     positive_points: list[tuple[float, float]] = []
     negative_points: list[tuple[float, float]] = []
     ai_positive_points: list[tuple[float, float]] = []
+    segmentation_box: tuple[float, float, float, float] | None = None
+    outline_prior_record: dict[str, object] | None = None
     if os.getenv("OPENAI_API_KEY"):
         point_suggestion = suggest_roof_prompt_points(
             image,
@@ -681,6 +699,39 @@ def _measure_roof_automatically(
     if not positive_points:
         positive_points = [(image.width / 2, image.height / 2)]
 
+    if use_ai_outline_prior and os.getenv("OPENAI_API_KEY"):
+        outline_suggestion = suggest_roof_polygons(
+            image,
+            address=address,
+            reference_images=reference_images,
+        )
+        if outline_suggestion.polygons:
+            segmentation_box = _polygons_prompt_box(outline_suggestion.polygons, image.size)
+            outline_points = _polygons_interior_prompt_points(outline_suggestion.polygons, image.size)
+            positive_points = _unique_points([*positive_points, *outline_points])
+            outline_prior_record = {
+                "stage": "ai_outline_prior",
+                "accepted": True,
+                "confidence": outline_suggestion.confidence,
+                "segmentation_box": _box_record(segmentation_box),
+                "positive_points": _points_record(outline_points),
+                "polygons": [
+                    _points_record([(float(x), float(y)) for x, y in polygon])
+                    for polygon in outline_suggestion.polygons
+                ],
+                "model_name": outline_suggestion.model_name,
+                "model_version": outline_suggestion.model_version,
+                "notes": outline_suggestion.notes,
+                "warnings": outline_suggestion.warnings,
+            }
+            notes.append(
+                "AI roof outline supplied a coarse SAM2 region prior; SAM2 will refine the roof boundary inside that envelope."
+            )
+            notes.extend(outline_suggestion.warnings)
+        else:
+            notes.append("AI roof outline prior was unavailable; continued with AI points and footprint constraints.")
+            notes.extend(outline_suggestion.warnings)
+
     automatic_footprints = request.footprint_polygons
     if not automatic_footprints and ai_positive_points and candidate_footprints:
         automatic_footprints = _footprints_for_prompt_points(candidate_footprints, ai_positive_points)
@@ -693,6 +744,7 @@ def _measure_roof_automatically(
             "positive_points": positive_points,
             "negative_points": negative_points,
             "footprint_polygons": automatic_footprints,
+            "segmentation_box": segmentation_box,
         }
     )
     result = measure_roof_from_overhead_image(
@@ -731,6 +783,7 @@ def _measure_roof_automatically(
     result.report = result.report.model_copy(
         update={
             "processing_iterations": [
+                *([outline_prior_record] if outline_prior_record else []),
                 {
                     "stage": "initial_segmentation",
                     "positive_points": _points_record(positive_points),
@@ -740,6 +793,8 @@ def _measure_roof_automatically(
                     "footprint_buffer_pixels": result.footprint_buffer_pixels,
                     "footprint_prior": result.footprint_audit,
                     "segmenter_model": result.report.model_name,
+                    "segmentation_box": _box_record(segmentation_box),
+                    "map_view": automatic_request.map_view,
                     "deterministic_score": result.deterministic_score,
                     "accepted": True,
                 }
@@ -803,12 +858,14 @@ def _measure_roof_automatically(
     retry = measure_roof_from_overhead_image(image_bytes=image_bytes, request=retry_request, selected_candidate_index=0)
     retry_sections = _straightened_sections(retry.report.measurement.sections)
     retry_score = score_roof_result(retry.selected_mask, retry_sections, retry_request.footprint_polygons)
-    accepted = bool(retry_sections and retry_score > result.deterministic_score + 0.01)
+    score_delta = retry_score - result.deterministic_score
+    accepted = bool(retry_sections and score_delta > 0)
     retry_record = {
         "stage": "targeted_sam_retry",
         "positive_points": _points_record(retry_positive),
         "negative_points": _points_record(retry_negative),
         "deterministic_score": retry_score,
+        "score_delta": score_delta,
         "accepted": accepted,
     }
     if not accepted:
@@ -858,6 +915,54 @@ def _unique_points(points: list[tuple[float, float]]) -> list[tuple[float, float
 
 def _points_record(points: list[tuple[float, float]]) -> list[dict[str, float]]:
     return [{"x": round(float(x), 2), "y": round(float(y), 2)} for x, y in points]
+
+
+def _box_record(box: tuple[float, float, float, float] | None) -> dict[str, float] | None:
+    if box is None:
+        return None
+    x0, y0, x1, y1 = box
+    return {"x0": round(x0, 2), "y0": round(y0, 2), "x1": round(x1, 2), "y1": round(y1, 2)}
+
+
+def _polygons_prompt_box(
+    polygons: list[list[tuple[float, float]]],
+    image_size: tuple[int, int],
+    padding_pixels: float = 12.0,
+) -> tuple[float, float, float, float] | None:
+    points = [point for polygon in polygons for point in polygon]
+    if not points:
+        return None
+    width, height = image_size
+    xs = [float(point[0]) for point in points]
+    ys = [float(point[1]) for point in points]
+    x0 = max(0.0, min(xs) - padding_pixels)
+    y0 = max(0.0, min(ys) - padding_pixels)
+    x1 = min(float(width - 1), max(xs) + padding_pixels)
+    y1 = min(float(height - 1), max(ys) + padding_pixels)
+    return (x0, y0, x1, y1) if x1 - x0 >= 2 and y1 - y0 >= 2 else None
+
+
+def _polygons_interior_prompt_points(
+    polygons: list[list[tuple[float, float]]],
+    image_size: tuple[int, int],
+    limit: int = 12,
+) -> list[tuple[float, float]]:
+    """Choose one valid interior SAM point for each AI-supplied roof mass."""
+    width, height = image_size
+    points: list[tuple[float, float]] = []
+    for polygon in polygons[:limit]:
+        if len(polygon) < 3:
+            continue
+        mask = Image.new("1", image_size, 0)
+        ImageDraw.Draw(mask).polygon([(float(x), float(y)) for x, y in polygon], fill=1)
+        coordinates = np.argwhere(np.asarray(mask, dtype=bool))
+        if coordinates.size == 0:
+            continue
+        center = coordinates.mean(axis=0)
+        closest = coordinates[np.argmin(np.sum((coordinates - center) ** 2, axis=1))]
+        y, x = closest
+        points.append((min(float(x), width - 1), min(float(y), height - 1)))
+    return _unique_points(points)
 
 
 def _qa_requires_manual_review(qa) -> bool:
@@ -1120,7 +1225,8 @@ def _render_pipeline_trace(report, result: RoofMeasureResult) -> None:
         if retry:
             message = (
                 f"Targeted SAM retry {'accepted' if retry.get('accepted') else 'rejected'} "
-                f"at deterministic score {float(retry.get('deterministic_score') or 0):.3f}."
+                f"at deterministic score {float(retry.get('deterministic_score') or 0):.3f} "
+                f"(delta {float(retry.get('score_delta') or 0):+.3f})."
             )
             (st.success if retry.get("accepted") else st.warning)(message)
         if lidar:
@@ -1134,6 +1240,10 @@ def _render_pipeline_trace(report, result: RoofMeasureResult) -> None:
                     st.warning(str(lidar["warning"]))
             else:
                 st.warning(str(lidar.get("warning") or "LiDAR validation was unavailable."))
+                st.caption(
+                    f"LiDAR points queried: {int(lidar.get('lidar_points') or 0):,}; "
+                    f"mapped into image: {int(lidar.get('image_points') or 0):,}."
+                )
         if result.footprint_audit:
             st.caption("Applied footprint sources and geometry are included in the downloaded report JSON.")
             st.dataframe(
@@ -1156,6 +1266,12 @@ def _render_pipeline_trace(report, result: RoofMeasureResult) -> None:
 def _render_lidar_validation_action(result: RoofMeasureResult) -> None:
     coverage = st.session_state.get("roof_measure_lidar_coverage")
     context = st.session_state.get("roof_measure_mapbox_context") or {}
+    if not context:
+        initial = next(
+            (item for item in result.report.processing_iterations if item.get("stage") == "initial_segmentation"),
+            {},
+        )
+        context = initial.get("map_view") or {}
     if not getattr(coverage, "ok", False) or result.selected_mask is None:
         return
     if any(item.get("stage") == "lidar_height_prior" for item in result.report.processing_iterations):

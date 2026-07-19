@@ -39,6 +39,7 @@ def measure_roof_from_overhead_image(
     prompts = SegmentationPrompts(
         positive_points=request.positive_points,
         negative_points=request.negative_points,
+        box=request.segmentation_box,
     )
     try:
         segmentation = segmenter.segment(image_to_array(loaded.inference_image), prompts)

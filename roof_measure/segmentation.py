@@ -17,6 +17,7 @@ from .models import Point
 class SegmentationPrompts:
     positive_points: list[Point] = field(default_factory=list)
     negative_points: list[Point] = field(default_factory=list)
+    box: tuple[float, float, float, float] | None = None
 
 
 @dataclass
@@ -60,6 +61,7 @@ class Sam2RoofSegmenter:
             "image_png_base64": _array_to_png_base64(image),
             "positive_points": prompts.positive_points,
             "negative_points": prompts.negative_points,
+            "box": prompts.box,
             "max_candidates": 3,
             "multimask_output": True,
         }

@@ -12,6 +12,8 @@ class LidarMaskAssessment:
     roof_support_fraction: float = 0.0
     ground_fraction: float = 0.0
     sampled_cells: int = 0
+    lidar_points: int = 0
+    image_points: int = 0
     warning: str = ""
 
     def as_record(self) -> dict[str, object]:
@@ -19,6 +21,8 @@ class LidarMaskAssessment:
             "roof_support_fraction": round(self.roof_support_fraction, 3),
             "ground_fraction": round(self.ground_fraction, 3),
             "sampled_cells": self.sampled_cells,
+            "lidar_points": self.lidar_points,
+            "image_points": self.image_points,
             "warning": self.warning,
         }
 
@@ -76,6 +80,7 @@ def assess_mask_against_kyfromabove_lidar(
             source_width,
             source_height,
         )
+        image_valid = (source_x * scale_x >= 0) & (source_x * scale_x < mask_bool.shape[1]) & (source_y * scale_y >= 0) & (source_y * scale_y < mask_bool.shape[0])
         height_grid = _height_grid_from_points(
             source_x * scale_x,
             source_y * scale_y,
@@ -84,7 +89,10 @@ def assess_mask_against_kyfromabove_lidar(
             mask_bool.shape,
             cell_pixels=max(2, int(cell_pixels)),
         )
-        return assess_mask_against_height_grid(mask_bool, height_grid, cell_pixels=max(2, int(cell_pixels)))
+        assessment = assess_mask_against_height_grid(mask_bool, height_grid, cell_pixels=max(2, int(cell_pixels)))
+        assessment.lidar_points = len(points)
+        assessment.image_points = int(image_valid.sum())
+        return assessment
     except Exception as exc:
         return LidarMaskAssessment(ok=False, warning=f"LiDAR height-prior evaluation failed: {type(exc).__name__}: {exc}")
 

@@ -72,6 +72,7 @@ class RoofMeasureRequest(BaseModel):
     overhead_image_name: str
     positive_points: list[Point] = Field(default_factory=list)
     negative_points: list[Point] = Field(default_factory=list)
+    segmentation_box: tuple[float, float, float, float] | None = None
     calibration_length_feet: float | None = None
     calibration_point_a: Point | None = None
     calibration_point_b: Point | None = None
@@ -85,6 +86,7 @@ class RoofMeasureRequest(BaseModel):
     footprint_polygons: list[Ring] = Field(default_factory=list)
     footprint_buffer_feet: float = 10.0
     footprint_source_records: list[dict[str, Any]] = Field(default_factory=list)
+    map_view: dict[str, float] = Field(default_factory=dict)
 
 
 class MeasurementReport(BaseModel):

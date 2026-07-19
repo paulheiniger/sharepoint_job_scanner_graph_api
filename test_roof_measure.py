@@ -54,6 +54,8 @@ from roof_measure.streamlit_page import (
     _footprint_visible_area_pixels,
     _footprint_rings_to_inference_pixels,
     _insert_new_corner_points,
+    _polygons_interior_prompt_points,
+    _polygons_prompt_box,
     _parse_points_text,
     _prompt_points_to_canvas_initial_drawing,
     _points_to_canvas_initial_drawing,
@@ -660,6 +662,7 @@ def test_remote_sam2_segmenter_posts_prompts_and_decodes_masks(monkeypatch) -> N
         assert timeout == 90
         assert json["positive_points"] == [(20.0, 15.0)]
         assert json["negative_points"] == [(3.0, 4.0)]
+        assert json["box"] == (10.0, 8.0, 35.0, 28.0)
         assert json["max_candidates"] == 3
         assert json["image_png_base64"]
         return FakeResponse()
@@ -669,7 +672,11 @@ def test_remote_sam2_segmenter_posts_prompts_and_decodes_masks(monkeypatch) -> N
 
     result = Sam2RoofSegmenter().segment(
         image,
-        SegmentationPrompts(positive_points=[(20.0, 15.0)], negative_points=[(3.0, 4.0)]),
+        SegmentationPrompts(
+            positive_points=[(20.0, 15.0)],
+            negative_points=[(3.0, 4.0)],
+            box=(10.0, 8.0, 35.0, 28.0),
+        ),
     )
 
     assert result.model_name == "sam2_remote"
@@ -678,6 +685,16 @@ def test_remote_sam2_segmenter_posts_prompts_and_decodes_masks(monkeypatch) -> N
     assert len(result.candidates) == 1
     assert result.candidates[0].score == 0.88
     assert np.array_equal(result.candidates[0].mask, mask)
+
+
+def test_ai_outline_prior_creates_padded_box_and_interior_prompt_points() -> None:
+    polygons = [
+        [(20.0, 20.0), (60.0, 20.0), (60.0, 45.0), (20.0, 45.0)],
+        [(70.0, 50.0), (95.0, 50.0), (95.0, 85.0), (70.0, 85.0)],
+    ]
+
+    assert _polygons_prompt_box(polygons, (100, 100), padding_pixels=5) == (15.0, 15.0, 99.0, 90.0)
+    assert _polygons_interior_prompt_points(polygons, (100, 100)) == [(40.0, 32.0), (82.0, 67.0)]
 
 
 def test_measurement_service_uses_scale_bar_when_manual_calibration_missing(tmp_path) -> None:
