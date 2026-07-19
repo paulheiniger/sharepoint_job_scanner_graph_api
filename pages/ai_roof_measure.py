@@ -9,7 +9,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from jobscan.env import load_project_env
 
-load_project_env()
+load_project_env(override=True)
 
 import streamlit as st
 

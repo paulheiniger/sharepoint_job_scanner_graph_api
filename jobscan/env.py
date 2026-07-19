@@ -14,7 +14,7 @@ def project_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def load_project_env(dotenv_path: Path | str | None = None) -> bool:
+def load_project_env(dotenv_path: Path | str | None = None, *, override: bool = False) -> bool:
     """Load the repository .env file without replacing real host values.
 
     python-dotenv intentionally will not override an existing environment
@@ -22,11 +22,11 @@ def load_project_env(dotenv_path: Path | str | None = None) -> bool:
     should still be treated as missing so local .env values can fill them.
     """
     path = Path(dotenv_path) if dotenv_path is not None else project_root() / ".env"
-    loaded = load_dotenv(dotenv_path=path)
+    loaded = load_dotenv(dotenv_path=path, override=override)
     if path.exists():
         values = dotenv_values(path)
         for key, value in values.items():
-            if value is not None and not os.environ.get(key):
+            if value is not None and (override or not os.environ.get(key)):
                 os.environ[key] = value
     return loaded
 

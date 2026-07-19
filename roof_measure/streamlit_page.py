@@ -766,7 +766,8 @@ def _measure_roof_automatically(
     if not automatic_footprints and footprint_selection_points and candidate_footprints:
         automatic_footprints = _footprints_for_prompt_points(candidate_footprints, footprint_selection_points)
         if automatic_footprints:
-            notes.append(f"Selected {len(automatic_footprints)} footprint polygon(s) containing AI roof-outline prompts.")
+            prompt_source = "AI roof-outline prompts" if outline_points else "AI roof prompts"
+            notes.append(f"Selected {len(automatic_footprints)} footprint polygon(s) containing {prompt_source}.")
         else:
             notes.append("No footprint polygon matched AI roof points; segmentation was left unconstrained.")
     automatic_request = request.model_copy(

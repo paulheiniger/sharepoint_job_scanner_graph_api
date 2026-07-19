@@ -5,6 +5,7 @@ import base64
 import gzip
 import json
 import math
+import os
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -69,6 +70,7 @@ from roof_measure.streamlit_page import (
     _sections_to_canvas_initial_drawing,
 )
 from roof_measure.visualization import prompt_points_overlay
+from jobscan.env import load_project_env
 
 
 def _image_bytes(size: tuple[int, int] = (100, 80), *, fmt: str = "PNG") -> bytes:
@@ -1286,3 +1288,15 @@ def test_roof_measure_openai_calls_use_model_default_temperature(monkeypatch) ->
     polygon_prompt = calls[1]["messages"][1]["content"][0]["text"]
     assert "ONE continuous line around the outside perimeter" in polygon_prompt
     assert "do not cut across the middle of the building" in polygon_prompt
+
+
+def test_roof_page_can_override_stale_inherited_project_env(tmp_path, monkeypatch) -> None:
+    dotenv_path = tmp_path / ".env"
+    dotenv_path.write_text("OPENAI_API_KEY=project-key\n")
+    monkeypatch.setenv("OPENAI_API_KEY", "stale-key")
+
+    load_project_env(dotenv_path)
+    assert os.environ["OPENAI_API_KEY"] == "stale-key"
+
+    load_project_env(dotenv_path, override=True)
+    assert os.environ["OPENAI_API_KEY"] == "project-key"
