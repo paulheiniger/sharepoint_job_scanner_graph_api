@@ -527,10 +527,10 @@ def render_ai_roof_measure_page() -> None:
         key="roof_measure_use_ai_scale_reader",
     )
     use_ai_outline_cleanup = st.checkbox(
-        "Run AI semantic QA after automatic segmentation",
+        "Run iterative AI corrections on the SAM mask",
         value=True,
         disabled=not openai_available,
-        help="AI reports missing or extra roof regions as SAM prompts. It never directly replaces the measurement polygon.",
+        help="AI reviews each SAM mask and supplies only high-confidence positive or negative correction points for up to three bounded retries.",
         key="roof_measure_auto_ai_cleanup",
     )
     use_ai_vertex_editor = st.checkbox(
@@ -631,7 +631,7 @@ def render_ai_roof_measure_page() -> None:
     cached_outline_prior = _cached_ai_outline_prior(str(loaded.metadata.image_id))
     if st.session_state.pop("roof_measure_auto_measure_pending", False):
         try:
-            with st.spinner("Finding the roof, refining selected footprint vertices, and validating the editable outline..."):
+            with st.spinner("Finding the roof and iteratively correcting the SAM mask..."):
                 result, workflow_notes, measured_image_bytes = _measure_roof_automatically(
                     image_bytes=image_bytes,
                     image=loaded.inference_image,
@@ -1102,239 +1102,244 @@ def _measure_roof_automatically(
     )
     notes.append("Segmented boundary was simplified and straightened to architectural edges.")
 
-    if use_ai_vertex_editor and automatic_footprints and os.getenv("OPENAI_API_KEY"):
-        source_sections = [
-            section_from_polygon(f"footprint-{index + 1}", polygon)
-            for index, polygon in enumerate(automatic_footprints)
-            if len(polygon) >= 3
-        ]
-        if source_sections:
-            source_report = recalculate_report_from_corrected_sections(
-                result.report,
-                source_sections,
-                correction_note="Automatic measurement started from selected source footprint topology before AI vertex refinement.",
-            )
-            source_result = RoofMeasureResult(
-                report=source_report,
-                selected_mask=result.selected_mask,
-                candidate_count=result.candidate_count,
-                applied_footprint_polygons=result.applied_footprint_polygons,
-                footprint_buffer_pixels=result.footprint_buffer_pixels,
-                footprint_audit=result.footprint_audit,
-                applied_outline_prior_polygons=result.applied_outline_prior_polygons,
-                outline_prior_buffer_pixels=result.outline_prior_buffer_pixels,
-                deterministic_score=result.deterministic_score,
-            )
-            result, editor_notes = _run_ai_polygon_editor(
-                source_result,
-                image=image,
-                lidar_asset_url=lidar_asset_url,
-                run_semantic_analysis=False,
-            )
-            notes.extend(editor_notes)
-        else:
-            notes.append("Selected source footprints were not valid editor polygons; kept the SAM outline.")
+    if use_ai_outline_cleanup:
+        result, automatic_request, correction_notes = _run_iterative_sam_corrections(
+            result,
+            image_bytes=image_bytes,
+            image=image,
+            request=automatic_request,
+            address=address,
+            reference_images=reference_images,
+            lidar_asset_url=lidar_asset_url,
+        )
+        notes.extend(correction_notes)
 
-    if not use_ai_outline_cleanup:
-        return result, notes, image_bytes
+    if use_ai_vertex_editor and os.getenv("OPENAI_API_KEY"):
+        result, editor_notes = _run_ai_polygon_editor(
+            result,
+            image=image,
+            lidar_asset_url=lidar_asset_url,
+            run_semantic_analysis=False,
+        )
+        notes.extend(editor_notes)
+
+    return result, notes, image_bytes
+
+
+def _run_iterative_sam_corrections(
+    result: RoofMeasureResult,
+    *,
+    image_bytes: bytes,
+    image: Image.Image,
+    request: RoofMeasureRequest,
+    address: str,
+    reference_images: list[Image.Image],
+    lidar_asset_url: str,
+    max_rounds: int | None = None,
+) -> tuple[RoofMeasureResult, RoofMeasureRequest, list[str]]:
+    """Review and retry SAM in bounded, auditable point-correction rounds."""
+    notes: list[str] = []
     if result.report.model_name == "manual_fallback_segmenter":
-        result.report = result.report.model_copy(
-            update={
-                "processing_iterations": [
-                    *result.report.processing_iterations,
-                    {
-                        "stage": "semantic_qa",
-                        "status": "skipped",
-                        "reason": "SAM2 was unavailable and the manual fallback mask cannot use targeted prompt corrections.",
-                        "accepted": False,
-                    },
-                ]
-            }
-        )
-        notes.append("AI semantic QA was skipped because SAM2 is unavailable; start the SAM2 service before requesting prompt corrections.")
-        return result, notes, image_bytes
-    if not os.getenv("OPENAI_API_KEY"):
-        notes.append("AI semantic QA was skipped because OpenAI is not configured.")
-        return result, notes, image_bytes
-    qa = suggest_roof_qa(
-        image,
-        result.report.measurement.sections,
-        address=address,
-        reference_images=reference_images,
-        candidate_mask=result.selected_mask,
-    )
-    qa_record = {
-        "stage": "semantic_qa",
-        "status": "completed" if qa.completed else "failed",
-        **qa.as_record(),
-        "accepted": qa.completed,
-    }
-    result.report = result.report.model_copy(
-        update={"processing_iterations": [*result.report.processing_iterations, qa_record]}
-    )
-    if not qa.completed:
-        notes.extend(qa.warnings)
-        notes.append("AI semantic QA was unavailable; kept the deterministic outline.")
-        return result, notes, image_bytes
-    if qa.warnings:
-        notes.extend(qa.warnings)
-    if use_ai_vertex_editor:
-        notes.append("Semantic QA completed as analysis after vertex refinement; it did not rerun SAM2 or replace the editable polygon.")
-        return result, notes, image_bytes
-    retry_positive, retry_negative = qa_corrections_to_prompts(qa)
-    if not retry_positive and not retry_negative:
-        notes.append("AI semantic QA found no SAM prompt correction; kept the deterministic outline.")
-        return result, notes, image_bytes
-    retry_request = automatic_request.model_copy(
-        update={
-            "positive_points": _unique_points([*positive_points, *retry_positive]),
-            "negative_points": _unique_points([*negative_points, *retry_negative]),
+        record = {
+            "stage": "sam_correction_review",
+            "status": "skipped",
+            "reason": "SAM2 was unavailable; the manual fallback mask cannot use targeted prompt corrections.",
+            "accepted": False,
         }
-    )
-    retry = measure_roof_from_overhead_image(image_bytes=image_bytes, request=retry_request, selected_candidate_index=0)
-    retry_sections, retry_finalizer = finalize_roof_sections(
-        retry.selected_mask,
-        retry.report.measurement.sections,
-        footprint_polygons=retry_request.footprint_polygons,
-        outline_prior_polygons=retry_request.outline_prior_polygons,
-    )
-    retry_footprint_deformation: dict[str, object] | None = None
-    if legacy_deformation and retry_request.footprint_polygons and retry.selected_mask is not None:
-        try:
-            retry_candidate = deform_footprints_to_roof_support(
-                retry_request.footprint_polygons,
-                image=np.asarray(image.convert("RGB")),
-                sam_mask=retry.selected_mask,
-                lidar_height_grid=lidar_edge_grid.height_grid if lidar_edge_grid and lidar_edge_grid.ok else None,
-                lidar_cell_pixels=lidar_edge_grid.cell_pixels if lidar_edge_grid else 8,
-            )
-            retry_footprint_deformation = {
-                "accepted": retry_candidate.accepted,
-                "reason": retry_candidate.reason,
-                "translation": {"x": retry_candidate.translation[0], "y": retry_candidate.translation[1]},
-                "rotation_degrees": retry_candidate.rotation_degrees,
-                "scale": retry_candidate.scale,
-                "sam_support": retry_candidate.sam_support,
-                "sam_coverage": retry_candidate.sam_coverage,
-                "score": retry_candidate.score,
-                "polygons": [_points_record(polygon) for polygon in retry_candidate.polygons],
-                "edge_diagnostics": retry_candidate.edge_diagnostics,
-                "lidar_edge_evidence": {
-                    "available": bool(lidar_edge_grid and lidar_edge_grid.ok),
-                    "cell_pixels": lidar_edge_grid.cell_pixels if lidar_edge_grid else 8,
-                    "lidar_points": lidar_edge_grid.lidar_points if lidar_edge_grid else 0,
-                    "image_points": lidar_edge_grid.image_points if lidar_edge_grid else 0,
-                    "warning": lidar_edge_grid.warning if lidar_edge_grid else "",
-                },
-                "coordinate_frame": {
-                    "image_width": image.width,
-                    "image_height": image.height,
-                    "sam_mask_width": int(retry.selected_mask.shape[1]),
-                    "sam_mask_height": int(retry.selected_mask.shape[0]),
-                    "working_crop": _box_record(working_crop),
-                },
-            }
-            if retry_candidate.accepted:
-                retry_sections = [
-                    section_from_polygon(f"footprint-{index + 1}", polygon)
-                    for index, polygon in enumerate(retry_candidate.polygons)
-                ]
-        except Exception as exc:
-            retry_footprint_deformation = {
-                "accepted": False,
-                "reason": f"retry footprint deformation failed: {type(exc).__name__}",
-            }
-    retry_score = score_roof_result(
-        retry.selected_mask,
-        retry_sections,
-        retry_request.footprint_polygons,
-        retry_request.outline_prior_polygons,
-    )
-    score_delta = retry_score - result.deterministic_score
-    initial_qa_score = _qa_prompt_satisfaction(result.selected_mask, retry_positive, retry_negative)
-    retry_qa_score = _qa_prompt_satisfaction(retry.selected_mask, retry_positive, retry_negative)
-    qa_score_delta = retry_qa_score - initial_qa_score
-    retry_lidar = _lidar_geometry_assessment(
-        retry,
-        retry_sections,
-        retry_request,
-        lidar_asset_url,
-        mask_override=sections_mask(retry.selected_mask.shape, retry_sections) if retry.selected_mask is not None else None,
-    )
-    lidar_core_cut = _lidar_core_cut(initial_lidar, retry_lidar)
-    lidar_ground_regression = _lidar_ground_regression(initial_lidar, retry_lidar)
-    footprint_support_regression = _footprint_support_regression(
-        footprint_deformation_record,
-        retry_footprint_deformation,
-    )
-    accepted = _targeted_qa_retry_is_accepted(
-        has_sections=bool(retry_sections),
-        deterministic_score_delta=score_delta,
-        qa_score_delta=qa_score_delta,
-        qa_confidence=qa.confidence,
-        lidar_core_cut=lidar_core_cut,
-        lidar_ground_regression=lidar_ground_regression,
-        footprint_support_regression=footprint_support_regression,
-    )
-    retry_record = {
-        "stage": "targeted_sam_retry",
-        "positive_points": _points_record(retry_positive),
-        "negative_points": _points_record(retry_negative),
-        "deterministic_score": retry_score,
-        "score_delta": score_delta,
-        "qa_correction_score_initial": initial_qa_score,
-        "qa_correction_score_retry": retry_qa_score,
-        "qa_correction_score_delta": qa_score_delta,
-        "polygon_finalizer": retry_finalizer,
-        **({"footprint_deformation": retry_footprint_deformation} if retry_footprint_deformation else {}),
-        "lidar_initial_core_retention": _lidar_core_retention(initial_lidar),
-        "lidar_retry_core_retention": _lidar_core_retention(retry_lidar),
-        "lidar_initial_ground_fraction": _lidar_ground_fraction(initial_lidar),
-        "lidar_retry_ground_fraction": _lidar_ground_fraction(retry_lidar),
-        "rejected_for_lidar_core_cut": lidar_core_cut,
-        "rejected_for_lidar_ground_regression": lidar_ground_regression,
-        "rejected_for_footprint_support_regression": footprint_support_regression,
-        "accepted": accepted,
-    }
-    if not accepted:
-        reject_initial = _qa_requires_manual_review(qa)
         result.report = result.report.model_copy(
-            update={"processing_iterations": [*result.report.processing_iterations, retry_record]}
+            update={"processing_iterations": [*result.report.processing_iterations, record]}
         )
-        if reject_initial:
-            result.report = _flag_automatic_result_for_review(
-                result.report,
-                "Semantic QA identified major missing roof areas and non-roof inclusion. The initial automatic outline is retained only for editing and must not be used as a measurement.",
+        notes.append("AI SAM correction was skipped because SAM2 is unavailable.")
+        return result, request, notes
+    if not os.getenv("OPENAI_API_KEY"):
+        record = {
+            "stage": "sam_correction_review",
+            "status": "skipped",
+            "reason": "OpenAI is not configured.",
+            "accepted": False,
+        }
+        result.report = result.report.model_copy(
+            update={"processing_iterations": [*result.report.processing_iterations, record]}
+        )
+        notes.append("AI SAM correction was skipped because OpenAI is not configured.")
+        return result, request, notes
+
+    configured_rounds = max_rounds
+    if configured_rounds is None:
+        try:
+            configured_rounds = int(os.getenv("OPENAI_ROOF_MEASURE_SAM_CORRECTION_ROUNDS", "3"))
+        except ValueError:
+            configured_rounds = 3
+    round_limit = max(1, min(configured_rounds, 5))
+    current = result
+    current_request = request
+    current_lidar = _lidar_geometry_assessment(
+        current,
+        current.report.measurement.sections,
+        current_request,
+        lidar_asset_url,
+        mask_override=(
+            sections_mask(current.selected_mask.shape, current.report.measurement.sections)
+            if current.selected_mask is not None
+            else None
+        ),
+    )
+    accepted_rounds = 0
+    for round_number in range(1, round_limit + 1):
+        qa = suggest_roof_qa(
+            image,
+            current.report.measurement.sections,
+            address=address,
+            reference_images=reference_images,
+            candidate_mask=current.selected_mask,
+        )
+        proposed_positive, proposed_negative = qa_corrections_to_prompts(
+            qa,
+            minimum_confidence=0.75,
+        )
+        retry_positive = _novel_correction_points(
+            proposed_positive,
+            existing=current_request.positive_points,
+            opposite=current_request.negative_points,
+        )
+        retry_negative = _novel_correction_points(
+            proposed_negative,
+            existing=current_request.negative_points,
+            opposite=current_request.positive_points,
+        )
+        review_record = {
+            "stage": "sam_correction_review",
+            "round": round_number,
+            "status": "completed" if qa.completed else "failed",
+            **qa.as_record(),
+            "accepted_positive_points": _points_record(retry_positive),
+            "accepted_negative_points": _points_record(retry_negative),
+            "accepted": qa.completed,
+        }
+        current.report = current.report.model_copy(
+            update={"processing_iterations": [*current.report.processing_iterations, review_record]}
+        )
+        if not qa.completed:
+            notes.extend(qa.warnings)
+            notes.append(f"SAM correction review stopped after round {round_number}: AI review was unavailable.")
+            break
+        notes.extend(qa.warnings)
+        if not retry_positive and not retry_negative:
+            notes.append(
+                f"SAM correction converged after {accepted_rounds} accepted round(s); no new high-confidence points were proposed."
             )
-            notes.append("Semantic QA rejected the initial outline as materially wrong; select the target footprint or add roof prompt points before measuring again.")
-            return result, notes, image_bytes
-        notes.append(
-            "AI QA proposed targeted SAM prompts, but the retry cut through LiDAR-supported roof interior; kept the original outline."
-            if lidar_core_cut
-            else "AI QA proposed targeted SAM prompts, but the retry added LiDAR-classified ground; kept the original outline."
-            if lidar_ground_regression
-            else "AI QA proposed targeted SAM prompts, but the retry lost too much support for the accepted footprint topology; kept the original outline."
-            if footprint_support_regression
-            else "AI QA proposed targeted SAM prompts, but the retry did not materially satisfy those corrections within the geometry guardrails; kept the original outline."
+            break
+
+        retry_request = current_request.model_copy(
+            update={
+                "positive_points": _unique_points([*current_request.positive_points, *retry_positive]),
+                "negative_points": _unique_points([*current_request.negative_points, *retry_negative]),
+            }
         )
-        return result, notes, image_bytes
-    retry_report = recalculate_report_from_corrected_sections(
-        retry.report,
-        retry_sections,
-        correction_note="Accepted targeted SAM retry from semantic QA; deterministic architectural edge straightening reapplied.",
-    ).model_copy(update={"processing_iterations": [*result.report.processing_iterations, retry_record]})
-    notes.append("AI semantic QA prompted a targeted SAM retry that improved semantic correction evidence without violating geometry guardrails.")
-    return RoofMeasureResult(
-        report=retry_report,
-        selected_mask=retry.selected_mask,
-        candidate_count=retry.candidate_count,
-        applied_footprint_polygons=retry.applied_footprint_polygons,
-        footprint_buffer_pixels=retry.footprint_buffer_pixels,
-        footprint_audit=retry.footprint_audit,
-        applied_outline_prior_polygons=retry.applied_outline_prior_polygons,
-        outline_prior_buffer_pixels=retry.outline_prior_buffer_pixels,
-        deterministic_score=retry_score,
-    ), notes, image_bytes
+        retry = measure_roof_from_overhead_image(
+            image_bytes=image_bytes,
+            request=retry_request,
+            selected_candidate_index=0,
+            mask_input_override=current.selected_mask,
+        )
+        retry_sections, retry_finalizer = finalize_roof_sections(
+            retry.selected_mask,
+            retry.report.measurement.sections,
+            footprint_polygons=retry_request.footprint_polygons,
+            outline_prior_polygons=retry_request.outline_prior_polygons,
+        )
+        retry_score = score_roof_result(
+            retry.selected_mask,
+            retry_sections,
+            retry_request.footprint_polygons,
+            retry_request.outline_prior_polygons,
+        )
+        score_delta = retry_score - current.deterministic_score
+        current_correction_score = _qa_prompt_satisfaction(
+            current.selected_mask,
+            retry_positive,
+            retry_negative,
+        )
+        retry_correction_score = _qa_prompt_satisfaction(
+            retry.selected_mask,
+            retry_positive,
+            retry_negative,
+        )
+        correction_delta = retry_correction_score - current_correction_score
+        retry_lidar = _lidar_geometry_assessment(
+            retry,
+            retry_sections,
+            retry_request,
+            lidar_asset_url,
+            mask_override=(
+                sections_mask(retry.selected_mask.shape, retry_sections)
+                if retry.selected_mask is not None
+                else None
+            ),
+        )
+        lidar_core_cut = _lidar_core_cut(current_lidar, retry_lidar)
+        lidar_ground_regression = _lidar_ground_regression(current_lidar, retry_lidar)
+        accepted = _targeted_qa_retry_is_accepted(
+            has_sections=bool(retry_sections),
+            deterministic_score_delta=score_delta,
+            qa_score_delta=correction_delta,
+            qa_confidence=qa.confidence,
+            lidar_core_cut=lidar_core_cut,
+            lidar_ground_regression=lidar_ground_regression,
+        )
+        retry_record = {
+            "stage": "sam_correction_retry",
+            "round": round_number,
+            "positive_points": _points_record(retry_positive),
+            "negative_points": _points_record(retry_negative),
+            "deterministic_score": retry_score,
+            "score_delta": round(score_delta, 4),
+            "correction_score_before": current_correction_score,
+            "correction_score_after": retry_correction_score,
+            "correction_score_delta": round(correction_delta, 4),
+            "used_previous_mask_prompt": current.selected_mask is not None,
+            "polygon_finalizer": retry_finalizer,
+            "lidar_core_retention_before": _lidar_core_retention(current_lidar),
+            "lidar_core_retention_after": _lidar_core_retention(retry_lidar),
+            "lidar_ground_fraction_before": _lidar_ground_fraction(current_lidar),
+            "lidar_ground_fraction_after": _lidar_ground_fraction(retry_lidar),
+            "rejected_for_lidar_core_cut": lidar_core_cut,
+            "rejected_for_lidar_ground_regression": lidar_ground_regression,
+            "accepted": accepted,
+        }
+        combined_trace = [*current.report.processing_iterations, retry_record]
+        if not accepted:
+            current.report = current.report.model_copy(
+                update={"processing_iterations": combined_trace}
+            )
+            notes.append(
+                f"SAM correction round {round_number} was rejected because it did not improve the requested regions within geometry and LiDAR guardrails."
+            )
+            break
+
+        retry_report = recalculate_report_from_corrected_sections(
+            retry.report,
+            retry_sections,
+            correction_note=f"Accepted AI-guided SAM correction round {round_number}.",
+        ).model_copy(update={"processing_iterations": combined_trace})
+        current = RoofMeasureResult(
+            report=retry_report,
+            selected_mask=retry.selected_mask,
+            candidate_count=retry.candidate_count,
+            applied_footprint_polygons=retry.applied_footprint_polygons,
+            footprint_buffer_pixels=retry.footprint_buffer_pixels,
+            footprint_audit=retry.footprint_audit,
+            applied_outline_prior_polygons=retry.applied_outline_prior_polygons,
+            outline_prior_buffer_pixels=retry.outline_prior_buffer_pixels,
+            deterministic_score=retry_score,
+        )
+        current_request = retry_request
+        current_lidar = retry_lidar
+        accepted_rounds += 1
+        notes.append(
+            f"Accepted SAM correction round {round_number}: {len(retry_positive)} positive and {len(retry_negative)} negative point(s)."
+        )
+    return current, current_request, notes
 
 
 def _primary_prompt_cluster(points: list[tuple[float, float]], image_size: tuple[int, int]) -> list[tuple[float, float]]:
@@ -1638,6 +1643,25 @@ def _straightened_sections(sections: list[RoofSection]) -> list[RoofSection]:
 
 def _unique_points(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
     return list(dict.fromkeys((float(x), float(y)) for x, y in points))
+
+
+def _novel_correction_points(
+    proposed: list[tuple[float, float]],
+    *,
+    existing: list[tuple[float, float]],
+    opposite: list[tuple[float, float]],
+    minimum_distance: float = 12.0,
+) -> list[tuple[float, float]]:
+    """Drop redundant and contradictory AI prompts before another SAM call."""
+    accepted: list[tuple[float, float]] = []
+    for point in proposed:
+        normalized = (float(point[0]), float(point[1]))
+        if any(math.dist(normalized, other) < minimum_distance for other in [*existing, *accepted]):
+            continue
+        if any(math.dist(normalized, other) < minimum_distance for other in opposite):
+            continue
+        accepted.append(normalized)
+    return accepted
 
 
 def _points_record(points: list[tuple[float, float]]) -> list[dict[str, float]]:
@@ -2184,6 +2208,8 @@ def _render_pipeline_trace(report, result: RoofMeasureResult) -> None:
         initial = next((item for item in iterations if item.get("stage") == "initial_segmentation"), None)
         semantic_qa = next((item for item in iterations if item.get("stage") == "semantic_qa"), None)
         retry = next((item for item in iterations if item.get("stage") == "targeted_sam_retry"), None)
+        correction_reviews = [item for item in iterations if item.get("stage") == "sam_correction_review"]
+        correction_retries = [item for item in iterations if item.get("stage") == "sam_correction_retry"]
         lidar_geometry = next((item for item in iterations if item.get("stage") == "lidar_geometry_prior"), None)
         lidar = next((item for item in iterations if item.get("stage") == "lidar_height_prior"), None)
         if initial:
@@ -2210,8 +2236,29 @@ def _render_pipeline_trace(report, result: RoofMeasureResult) -> None:
                 f"Roof support: {float(lidar_geometry.get('roof_support_fraction') or 0):.0%}; "
                 f"ground overlap: {float(lidar_geometry.get('ground_fraction') or 0):.0%}."
             )
-        if semantic_qa is None:
-            st.info("Semantic QA was not requested for this measurement. Enable 'Run AI semantic QA after automatic segmentation' before measuring.")
+        if correction_reviews:
+            completed_reviews = [item for item in correction_reviews if item.get("status") == "completed"]
+            accepted_retries = [item for item in correction_retries if item.get("accepted")]
+            last_review = correction_reviews[-1]
+            if last_review.get("status") == "failed":
+                st.warning("AI SAM correction stopped because the latest mask review failed.")
+            elif last_review.get("status") == "skipped":
+                st.warning(str(last_review.get("reason") or "AI SAM correction was skipped."))
+            else:
+                st.success(
+                    f"AI reviewed {len(completed_reviews)} SAM mask version(s) and accepted "
+                    f"{len(accepted_retries)} correction round(s)."
+                )
+            for item in correction_retries:
+                point_count = len(item.get("positive_points") or []) + len(item.get("negative_points") or [])
+                st.caption(
+                    f"Round {int(item.get('round') or 0)}: {point_count} correction point(s), "
+                    f"correction score {float(item.get('correction_score_before') or 0):.2f} -> "
+                    f"{float(item.get('correction_score_after') or 0):.2f}; "
+                    f"{'accepted' if item.get('accepted') else 'rejected'}."
+                )
+        elif semantic_qa is None:
+            st.info("AI SAM correction was not requested for this measurement. Enable iterative AI corrections before initializing polygons.")
         elif semantic_qa.get("status") == "skipped":
             st.warning(str(semantic_qa.get("reason") or "Semantic QA was skipped."))
         elif semantic_qa.get("status") == "failed":
@@ -2758,14 +2805,17 @@ def _render_corner_handle_editor(
         st.caption(
             "Choose the polygon source, then use AI or manual vertex edits. Multiple footprint parts remain one building polygon with preserved gaps."
         )
-        source_options = ["Edge Detection"]
+        source_options = ["Corrected SAM Boundary"]
         if result.applied_footprint_polygons:
-            source_options.insert(0, "Building Footprint")
+            source_options.append("Building Footprint")
+        source_key = f"roof_measure_polygon_source_{result.report.id}"
+        if st.session_state.get(source_key) not in {None, *source_options}:
+            st.session_state[source_key] = source_options[0]
         polygon_source = st.selectbox(
             "Polygon Source",
             source_options,
             index=0,
-            key=f"roof_measure_polygon_source_{result.report.id}",
+            key=source_key,
         )
         source_sections = (
             [
@@ -2812,7 +2862,7 @@ def _render_corner_handle_editor(
         with st.expander("Yellow boundary and vertex prompt playground", expanded=False):
             use_boundary_target = st.checkbox(
                 "Align vertices to generated yellow roof boundary",
-                value=True,
+                value=False,
                 key=f"roof_measure_use_vertex_target_{result.report.id}",
             )
             yellow_generation_prompt = st.text_area(

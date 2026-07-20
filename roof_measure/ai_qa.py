@@ -13,6 +13,26 @@ from .models import Point, RoofSection
 from .visualization import annotated_overlay
 
 
+@dataclass(frozen=True)
+class RoofCorrectionPoint:
+    x: float
+    y: float
+    confidence: float = 0.0
+    reason: str = ""
+
+    @property
+    def point(self) -> Point:
+        return (self.x, self.y)
+
+    def as_record(self) -> dict[str, Any]:
+        return {
+            "x": round(self.x, 2),
+            "y": round(self.y, 2),
+            "confidence": round(self.confidence, 3),
+            "reason": self.reason,
+        }
+
+
 @dataclass
 class RoofQaFinding:
     """Semantic QA only. Geometry remains owned by the segmenter and cleanup code."""
@@ -22,6 +42,8 @@ class RoofQaFinding:
     courtyard_errors: list[Point] = field(default_factory=list)
     ground_gaps: list[Point] = field(default_factory=list)
     boundary_errors: list[Point] = field(default_factory=list)
+    positive_corrections: list[RoofCorrectionPoint] = field(default_factory=list)
+    negative_corrections: list[RoofCorrectionPoint] = field(default_factory=list)
     confidence: float = 0.0
     notes: str = ""
     warnings: list[str] = field(default_factory=list)
@@ -36,6 +58,8 @@ class RoofQaFinding:
             "courtyard_errors": _points_payload(self.courtyard_errors),
             "ground_gaps": _points_payload(self.ground_gaps),
             "boundary_errors": _points_payload(self.boundary_errors),
+            "positive_points": [point.as_record() for point in self.positive_corrections],
+            "negative_points": [point.as_record() for point in self.negative_corrections],
             "confidence": self.confidence,
             "notes": self.notes,
             "warnings": self.warnings,
@@ -80,13 +104,35 @@ def suggest_roof_qa(
 
 
 def qa_finding_from_payload(payload: dict[str, Any], *, width: int, height: int) -> RoofQaFinding:
+    confidence = _safe_confidence(payload.get("confidence"))
+    positive_corrections = _correction_points_from_payload(
+        payload.get("positive_points"), width=width, height=height
+    )
+    negative_corrections = _correction_points_from_payload(
+        payload.get("negative_points"), width=width, height=height
+    )
+    if confidence == 0.0 and (positive_corrections or negative_corrections):
+        correction_confidences = [
+            point.confidence for point in [*positive_corrections, *negative_corrections]
+        ]
+        confidence = sum(correction_confidences) / len(correction_confidences)
     return RoofQaFinding(
-        missing_regions=_points_from_payload(payload.get("missing_regions"), width=width, height=height),
-        extra_regions=_points_from_payload(payload.get("extra_regions"), width=width, height=height),
+        missing_regions=(
+            [point.point for point in positive_corrections]
+            if positive_corrections
+            else _points_from_payload(payload.get("missing_regions"), width=width, height=height)
+        ),
+        extra_regions=(
+            [point.point for point in negative_corrections]
+            if negative_corrections
+            else _points_from_payload(payload.get("extra_regions"), width=width, height=height)
+        ),
         courtyard_errors=_points_from_payload(payload.get("courtyard_errors"), width=width, height=height),
         ground_gaps=_points_from_payload(payload.get("ground_gaps"), width=width, height=height),
         boundary_errors=_points_from_payload(payload.get("boundary_errors"), width=width, height=height),
-        confidence=_safe_confidence(payload.get("confidence")),
+        positive_corrections=positive_corrections,
+        negative_corrections=negative_corrections,
+        confidence=confidence,
         notes=str(payload.get("notes") or "").strip(),
         warnings=[str(item) for item in payload.get("warnings") or [] if str(item).strip()],
         model_name=str(payload.get("model_name") or "openai_roof_qa"),
@@ -94,10 +140,24 @@ def qa_finding_from_payload(payload: dict[str, Any], *, width: int, height: int)
     )
 
 
-def qa_corrections_to_prompts(finding: RoofQaFinding) -> tuple[list[Point], list[Point]]:
+def qa_corrections_to_prompts(
+    finding: RoofQaFinding,
+    *,
+    minimum_confidence: float = 0.0,
+) -> tuple[list[Point], list[Point]]:
     """Translate semantic defects to SAM prompts; boundary defects stay deterministic."""
-    positive = _unique_points(finding.missing_regions)
-    negative = _unique_points([*finding.extra_regions, *finding.courtyard_errors, *finding.ground_gaps])
+    positive = _unique_points(
+        [point.point for point in finding.positive_corrections if point.confidence >= minimum_confidence]
+        if finding.positive_corrections
+        else finding.missing_regions if finding.confidence >= minimum_confidence else []
+    )
+    negative = _unique_points(
+        [point.point for point in finding.negative_corrections if point.confidence >= minimum_confidence]
+        if finding.negative_corrections
+        else [*finding.extra_regions, *finding.courtyard_errors, *finding.ground_gaps]
+        if finding.confidence >= minimum_confidence
+        else []
+    )
     return positive, negative
 
 
@@ -119,15 +179,11 @@ def _call_openai_roof_qa(
     model = os.getenv("OPENAI_ROOF_MEASURE_QA_MODEL") or os.getenv("OPENAI_ROOF_MEASURE_POINTS_MODEL") or "gpt-4o"
     client = OpenAI(timeout=float(os.getenv("OPENAI_ROOF_MEASURE_QA_TIMEOUT_SECONDS", "90")))
     overlay = annotated_overlay(image, mask=candidate_mask, sections=_sections_from_payload_for_overlay(current_payload))
-    instructions = (
-        f"Primary overhead image is {width} by {height} pixels. Site hint: {address or 'not provided'}. "
-        "The first image is annotated: translucent red is the current SAM mask and green is the measurement boundary. "
-        "The second image is the unannotated satellite source. Review the proposed boundary against visible roof surfaces. "
-        "Return only semantic coordinate hints, never polygons. Use missing_regions for unselected roof. Use extra_regions for included pavement, trees, unrelated roofs, or ground. "
-        "Use courtyard_errors for enclosed voids. Use ground_gaps for visible grass, pavement, or daylight gaps between separate roof masses; place one or two points deep inside each gap, never on shadows or parapets. "
-        "Boundary_errors are for deterministic cleanup only. Be conservative and limit each list to 8 points. "
-        "Return JSON: {\"missing_regions\":[{\"x\":0,\"y\":0,\"reason\":\"...\"}],\"extra_regions\":[],\"courtyard_errors\":[],\"ground_gaps\":[],\"boundary_errors\":[],\"confidence\":0.0,\"notes\":\"\",\"warnings\":[]}. "
-        "Current roof sections: " + json.dumps(current_payload, separators=(",", ":"))
+    instructions = _sam_correction_prompt(
+        width=width,
+        height=height,
+        address=address,
+        current_payload=current_payload,
     )
     try:
         response = client.responses.create(
@@ -155,6 +211,7 @@ def _call_openai_roof_qa(
         client,
         model=model,
         image=image,
+        overlay=overlay,
         current_payload=current_payload,
         address=address,
         reference_images=reference_images,
@@ -166,6 +223,7 @@ def _call_openai_roof_qa_chat_completion(
     *,
     model: str,
     image: Image.Image,
+    overlay: Image.Image,
     current_payload: list[dict[str, Any]],
     address: str,
     reference_images: list[Image.Image] | None,
@@ -181,13 +239,14 @@ def _call_openai_roof_qa_chat_completion(
                 "content": [
                     {
                         "type": "text",
-                        "text": (
-                            f"Primary overhead image is {width} by {height} pixels. Site hint: {address or 'not provided'}. "
-                            "Return semantic defect coordinate hints only. Use missing_regions for roof and extra_regions, courtyard_errors, or ground_gaps for visible ground that must be excluded. "
-                            "Do not return polygons. Limit lists to 8 points. Return JSON: {\"missing_regions\":[],\"extra_regions\":[],\"courtyard_errors\":[],\"ground_gaps\":[],\"boundary_errors\":[],\"confidence\":0.0,\"notes\":\"\",\"warnings\":[]}. "
-                            "Current roof sections: " + json.dumps(current_payload, separators=(",", ":"))
+                        "text": _sam_correction_prompt(
+                            width=width,
+                            height=height,
+                            address=address,
+                            current_payload=current_payload,
                         ),
                     },
+                    {"type": "image_url", "image_url": {"url": _image_data_url(overlay), "detail": "high"}},
                     {"type": "image_url", "image_url": {"url": _image_data_url(image), "detail": "high"}},
                     *_reference_image_content(reference_images),
                 ],
@@ -199,6 +258,35 @@ def _call_openai_roof_qa_chat_completion(
         payload.setdefault("model_name", "openai_roof_qa_chat_completion")
         payload.setdefault("model_version", model)
     return payload
+
+
+def _sam_correction_prompt(
+    *,
+    width: int,
+    height: int,
+    address: str,
+    current_payload: list[dict[str, Any]],
+) -> str:
+    return (
+        "You are reviewing a roof segmentation produced by another model. "
+        f"The working image is exactly {width} by {height} pixels. Site hint: {address or 'not provided'}. "
+        "The first image overlays the current SAM mask in translucent red and its derived boundary in green. "
+        "The second image is the exact unannotated source in the same pixel coordinate frame. "
+        "Do not create a new segmentation or polygon. Identify only the minimum high-confidence correction points needed. "
+        "A positive point must be centered inside roof that SAM incorrectly excluded. A negative point must be centered "
+        "inside non-roof that SAM incorrectly included. Roof means the continuous waterproof membrane measured in gross "
+        "plan area by a commercial roofing contractor. Include roof hidden by cast shadow, dark staining, fading, or "
+        "lighting variation. Exclude pavement, vehicles, grass, trees, detached buildings, open courtyards, ground-level "
+        "covered walks, and shadow-only spill outside the physical roof edge. Do not use negative points on rooftop HVAC, "
+        "vents, skylights, parapets, seams, stains, drains, or other penetrations within an otherwise continuous roof; those "
+        "remain inside gross roof plan area. Do not mistake a cast shadow on a roof for a roof edge. Use few points, avoid "
+        "edges and redundant points, and return empty arrays when the mask is already correct. Limit each array to 8 points. "
+        "Return only valid JSON in this exact shape: "
+        '{"positive_points":[{"x":0,"y":0,"confidence":0.99,"reason":"missing roof"}],'
+        '"negative_points":[{"x":0,"y":0,"confidence":0.99,"reason":"included non-roof"}],'
+        '"confidence":0.0,"notes":"","warnings":[]}. '
+        "Current derived roof sections: " + json.dumps(current_payload, separators=(",", ":"))
+    )
 
 
 def _json_payload(text: str) -> dict[str, Any]:
@@ -237,6 +325,34 @@ def _points_from_payload(value: Any, *, width: int, height: int) -> list[Point]:
         if 0 <= point[0] < width and 0 <= point[1] < height:
             points.append(point)
     return _unique_points(points)[:8]
+
+
+def _correction_points_from_payload(
+    value: Any,
+    *,
+    width: int,
+    height: int,
+) -> list[RoofCorrectionPoint]:
+    corrections: list[RoofCorrectionPoint] = []
+    for item in value if isinstance(value, list) else []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            x = float(item.get("x"))
+            y = float(item.get("y"))
+        except (TypeError, ValueError):
+            continue
+        if not (0 <= x < width and 0 <= y < height):
+            continue
+        candidate = RoofCorrectionPoint(
+            x=x,
+            y=y,
+            confidence=_safe_confidence(item.get("confidence")),
+            reason=str(item.get("reason") or "").strip(),
+        )
+        if all(existing.point != candidate.point for existing in corrections):
+            corrections.append(candidate)
+    return corrections[:8]
 
 
 def _unique_points(points: list[Point]) -> list[Point]:

@@ -35,6 +35,7 @@ def measure_roof_from_overhead_image(
     segmenter: RoofSegmenter | None = None,
     selected_candidate_index: int = 0,
     storage_root: str = "output/roof_measure_uploads",
+    mask_input_override: np.ndarray | None = None,
 ) -> RoofMeasureResult:
     loaded = load_image_bytes(image_bytes, file_name=request.overhead_image_name, storage_root=storage_root)
     segmenter = segmenter or choose_segmenter(request.segmenter_name)
@@ -43,12 +44,16 @@ def measure_roof_from_overhead_image(
         negative_points=request.negative_points,
         box=request.segmentation_box,
         mask_input=(
-            _outline_prior_mask_prompt(
-                image_to_array(loaded.inference_image).shape[:2],
-                request.outline_prior_polygons,
+            np.asarray(mask_input_override, dtype=bool)
+            if mask_input_override is not None
+            else (
+                _outline_prior_mask_prompt(
+                    image_to_array(loaded.inference_image).shape[:2],
+                    request.outline_prior_polygons,
+                )
+                if request.outline_prior_as_mask_prompt and request.outline_prior_polygons
+                else None
             )
-            if request.outline_prior_as_mask_prompt and request.outline_prior_polygons
-            else None
         ),
     )
     try:

@@ -23,7 +23,7 @@ from roof_measure.calibration import (
     sqft_from_pixels,
 )
 from roof_measure.ai_polygons import _focus_crop_box, polygon_suggestion_from_payload, suggest_refined_roof_polygons, suggest_roof_polygons
-from roof_measure.ai_qa import RoofQaFinding, qa_corrections_to_prompts, qa_finding_from_payload
+from roof_measure.ai_qa import RoofCorrectionPoint, RoofQaFinding, qa_corrections_to_prompts, qa_finding_from_payload
 from roof_measure.ai_points import suggestion_from_payload
 from roof_measure.ai_polygons import RoofPolygonSuggestion, _call_openai_roof_polygon_refiner, _call_openai_roof_polygon_suggester
 from roof_measure.ai_raster_outline import (
@@ -77,6 +77,7 @@ from roof_measure.streamlit_page import (
     _manual_anchor_points,
     _evaluate_ai_outline_candidate,
     _map_view_for_image_crop,
+    _novel_correction_points,
     _primary_prompt_cluster,
     _polygons_interior_prompt_points,
     _polygons_prompt_box,
@@ -88,6 +89,7 @@ from roof_measure.streamlit_page import (
     _qa_requires_manual_review,
     _qa_prompt_satisfaction,
     _run_ai_polygon_editor,
+    _run_iterative_sam_corrections,
     _section_to_corner_canvas_initial_drawing,
     _sections_from_ai_polygons,
     _sections_to_canvas_initial_drawing,
@@ -865,6 +867,35 @@ def test_ai_outline_prior_constrains_segmented_mask(tmp_path) -> None:
     assert result.outline_prior_buffer_pixels == 0
 
 
+def test_measurement_passes_current_mask_as_sam_refinement_prompt(tmp_path) -> None:
+    current_mask = np.zeros((80, 100), dtype=bool)
+    current_mask[20:60, 20:70] = True
+    segmenter = MockRoofSegmenter([current_mask])
+    captured: dict[str, object] = {}
+    original_segment = segmenter.segment
+
+    def capture_prompts(image, prompts=None):
+        captured["prompts"] = prompts
+        return original_segment(image, prompts)
+
+    segmenter.segment = capture_prompts  # type: ignore[method-assign]
+    measure_roof_from_overhead_image(
+        image_bytes=_image_bytes(),
+        request=RoofMeasureRequest(
+            overhead_image_name="roof.png",
+            metadata_pixels_per_foot=1.0,
+            minimum_section_area_pixels=1,
+        ),
+        segmenter=segmenter,
+        storage_root=str(tmp_path),
+        mask_input_override=current_mask,
+    )
+
+    prompts = captured["prompts"]
+    assert isinstance(prompts, SegmentationPrompts)
+    assert np.array_equal(prompts.mask_input, current_mask)
+
+
 def test_footprint_buffer_uses_metadata_calibration() -> None:
     request = RoofMeasureRequest(
         overhead_image_name="roof.png",
@@ -930,6 +961,107 @@ def test_semantic_qa_defects_become_targeted_sam_prompts() -> None:
     assert finding.ground_gaps == [(45.0, 55.0)]
     assert finding.boundary_errors == [(10.0, 10.0)]
     assert finding.confidence == 0.91
+
+
+def test_sam_correction_payload_preserves_point_confidence_and_reason() -> None:
+    finding = qa_finding_from_payload(
+        {
+            "positive_points": [
+                {"x": 20, "y": 30, "confidence": 0.94, "reason": "Roof hidden by shadow."},
+                {"x": 50, "y": 30, "confidence": 0.62, "reason": "Uncertain transition."},
+            ],
+            "negative_points": [
+                {"x": 70, "y": 40, "confidence": 0.97, "reason": "Included pavement."}
+            ],
+            "confidence": 0.9,
+        },
+        width=100,
+        height=80,
+    )
+
+    positive, negative = qa_corrections_to_prompts(finding, minimum_confidence=0.75)
+
+    assert positive == [(20.0, 30.0)]
+    assert negative == [(70.0, 40.0)]
+    assert finding.positive_corrections[0].reason == "Roof hidden by shadow."
+    assert finding.as_record()["negative_points"][0]["confidence"] == 0.97
+
+
+def test_novel_sam_corrections_drop_repeated_and_contradictory_points() -> None:
+    accepted = _novel_correction_points(
+        [(11, 11), (50, 50), (54, 52), (80, 80)],
+        existing=[(10, 10)],
+        opposite=[(81, 81)],
+        minimum_distance=10,
+    )
+
+    assert accepted == [(50.0, 50.0)]
+
+
+def test_iterative_sam_correction_reviews_the_accepted_mask_until_convergence(tmp_path) -> None:
+    initial_mask = np.zeros((100, 100), dtype=bool)
+    initial_mask[20:80, 20:60] = True
+    retry_mask = initial_mask.copy()
+    retry_mask[20:80, 60:80] = True
+    request = RoofMeasureRequest(
+        overhead_image_name="roof.png",
+        metadata_pixels_per_foot=1.0,
+        minimum_section_area_pixels=1,
+        segmenter_name="sam2",
+        positive_points=[(35, 35)],
+    )
+    initial = measure_roof_from_overhead_image(
+        image_bytes=_image_bytes((100, 100)),
+        request=request,
+        segmenter=MockRoofSegmenter([initial_mask]),
+        storage_root=str(tmp_path / "initial"),
+    )
+    initial.report = initial.report.model_copy(update={"model_name": "sam2_remote"})
+    retry = measure_roof_from_overhead_image(
+        image_bytes=_image_bytes((100, 100)),
+        request=request,
+        segmenter=MockRoofSegmenter([retry_mask]),
+        storage_root=str(tmp_path / "retry"),
+    )
+    retry.report = retry.report.model_copy(update={"model_name": "sam2_remote"})
+    reviews = [
+        RoofQaFinding(
+            missing_regions=[(70, 50)],
+            positive_corrections=[
+                RoofCorrectionPoint(70, 50, confidence=0.98, reason="Visible roof is missing.")
+            ],
+            confidence=0.98,
+        ),
+        RoofQaFinding(confidence=0.96),
+    ]
+
+    with (
+        patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}),
+        patch("roof_measure.streamlit_page.suggest_roof_qa", side_effect=reviews) as review,
+        patch("roof_measure.streamlit_page.measure_roof_from_overhead_image", return_value=retry) as measure,
+        patch("roof_measure.streamlit_page._lidar_geometry_assessment", return_value=None),
+    ):
+        corrected, corrected_request, notes = _run_iterative_sam_corrections(
+            initial,
+            image_bytes=_image_bytes((100, 100)),
+            image=Image.new("RGB", (100, 100), "white"),
+            request=request,
+            address="test",
+            reference_images=[],
+            lidar_asset_url="",
+            max_rounds=3,
+        )
+
+    assert measure.call_count == 1
+    assert review.call_count == 2
+    assert np.array_equal(review.call_args_list[1].kwargs["candidate_mask"], retry_mask)
+    assert corrected_request.positive_points[-1] == (70.0, 50.0)
+    assert np.array_equal(corrected.selected_mask, retry_mask)
+    assert any("converged after 1 accepted round" in note for note in notes)
+    retries = [
+        item for item in corrected.report.processing_iterations if item.get("stage") == "sam_correction_retry"
+    ]
+    assert retries[0]["accepted"] is True
 
 
 def test_semantic_qa_requires_manual_review_only_for_high_confidence_major_conflict() -> None:
