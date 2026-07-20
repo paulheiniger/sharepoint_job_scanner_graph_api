@@ -71,15 +71,26 @@ def _call_openai_polygon_editor(image: Image.Image, document: list[dict[str, Any
         "Allowed operations are move_vertex, insert_vertex, delete_vertex, split_edge, merge_redundant_vertices, create_hole, modify_hole_vertex, delete_hole, accept. "
         "Current vertex JSON: " + json.dumps(document, separators=(",", ":"))
     )
-    response = client.responses.create(
-        model=model,
-        reasoning={"effort": os.getenv("OPENAI_ROOF_MEASURE_POLYGON_EDITOR_REASONING_EFFORT", "medium")},
-        input=[{"role": "user", "content": [
+    request = {
+        "model": model,
+        "input": [{"role": "user", "content": [
             {"type": "input_text", "text": instructions},
             {"type": "input_image", "image_url": _image_data_url(overlay), "detail": "high"},
             {"type": "input_image", "image_url": _image_data_url(image), "detail": "high"},
         ]}],
-    )
+    }
+    reasoning_effort = os.getenv("OPENAI_ROOF_MEASURE_POLYGON_EDITOR_REASONING_EFFORT", "medium").strip()
+    if reasoning_effort:
+        request["reasoning"] = {"effort": reasoning_effort}
+    try:
+        response = client.responses.create(**request)
+    except Exception as exc:
+        # Some otherwise suitable vision models support Responses images but not
+        # the optional reasoning control. Retry without changing the task.
+        if "reasoning.effort" not in str(exc):
+            raise
+        request.pop("reasoning", None)
+        response = client.responses.create(**request)
     payload = _json_payload(response.output_text or "{}")
     payload.setdefault("model_name", "openai_polygon_editor_responses")
     payload.setdefault("model_version", model)

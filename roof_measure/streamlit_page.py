@@ -80,11 +80,12 @@ def render_ai_roof_measure_page() -> None:
 
     # Existing browser sessions retain checkbox state, so migrate old sessions
     # once to the current automatic-pipeline defaults.
-    if int(st.session_state.get("roof_measure_auto_defaults_version", 0)) < 5:
+    if int(st.session_state.get("roof_measure_auto_defaults_version", 0)) < 6:
         st.session_state["roof_measure_auto_ai_cleanup"] = True
+        st.session_state["roof_measure_auto_ai_vertex_editor"] = True
         st.session_state["roof_measure_auto_ai_outline_prior"] = False
         st.session_state["roof_measure_auto_raster_outline_prior"] = False
-        st.session_state["roof_measure_auto_defaults_version"] = 5
+        st.session_state["roof_measure_auto_defaults_version"] = 6
 
     with st.expander("Milestone 1 Scope", expanded=False):
         st.markdown(
@@ -384,10 +385,10 @@ def render_ai_roof_measure_page() -> None:
                 st.caption("Footprints are a constraint and review aid, not an authoritative roof takeoff.")
 
     automatic_measure_clicked = st.button(
-        "Measure Roof",
+        "Run Advanced Measure",
         type="primary",
         width="stretch",
-        help="Runs AI roof prompting, segmentation, deterministic architectural smoothing, and optional AI cleanup before opening the editable outline.",
+        help="Use this only after changing advanced settings or manually selecting footprint parts. The address-level Measure Roof action is the normal workflow.",
         key="roof_measure_auto_measure",
     )
     if automatic_measure_clicked:
@@ -519,6 +520,13 @@ def render_ai_roof_measure_page() -> None:
         help="AI reports missing or extra roof regions as SAM prompts. It never directly replaces the measurement polygon.",
         key="roof_measure_auto_ai_cleanup",
     )
+    use_ai_vertex_editor = st.checkbox(
+        "Refine selected footprint vertices automatically",
+        value=True,
+        disabled=not openai_available,
+        help="Starts from the selected footprint parts, runs bounded AI vertex edits, then uses semantic QA for analysis only.",
+        key="roof_measure_auto_ai_vertex_editor",
+    )
     use_ai_outline_prior = st.checkbox(
         "Use AI roof outline as a SAM2 region prior",
         value=False,
@@ -610,7 +618,7 @@ def render_ai_roof_measure_page() -> None:
     cached_outline_prior = _cached_ai_outline_prior(str(loaded.metadata.image_id))
     if st.session_state.pop("roof_measure_auto_measure_pending", False):
         try:
-            with st.spinner("Finding roof surfaces and measuring the editable outline..."):
+            with st.spinner("Finding the roof, refining selected footprint vertices, and validating the editable outline..."):
                 result, workflow_notes, measured_image_bytes = _measure_roof_automatically(
                     image_bytes=image_bytes,
                     image=loaded.inference_image,
@@ -618,6 +626,7 @@ def render_ai_roof_measure_page() -> None:
                     address=address,
                     reference_images=reference_images,
                     use_ai_outline_cleanup=use_ai_outline_cleanup,
+                    use_ai_vertex_editor=use_ai_vertex_editor,
                     use_ai_outline_prior=use_ai_outline_prior,
                     use_raster_outline_prior=use_raster_outline_prior,
                     cached_outline_prior=cached_outline_prior,
@@ -709,6 +718,7 @@ def _measure_roof_automatically(
     address: str,
     reference_images: list[Image.Image],
     use_ai_outline_cleanup: bool,
+    use_ai_vertex_editor: bool,
     use_ai_outline_prior: bool,
     use_raster_outline_prior: bool,
     cached_outline_prior: RoofPolygonSuggestion | None,
@@ -1074,6 +1084,34 @@ def _measure_roof_automatically(
     )
     notes.append("Segmented boundary was simplified and straightened to architectural edges.")
 
+    if use_ai_vertex_editor and automatic_footprints and os.getenv("OPENAI_API_KEY"):
+        source_sections = [
+            section_from_polygon(f"footprint-{index + 1}", polygon)
+            for index, polygon in enumerate(automatic_footprints)
+            if len(polygon) >= 3
+        ]
+        if source_sections:
+            source_report = recalculate_report_from_corrected_sections(
+                result.report,
+                source_sections,
+                correction_note="Automatic measurement started from selected source footprint topology before AI vertex refinement.",
+            )
+            source_result = RoofMeasureResult(
+                report=source_report,
+                selected_mask=result.selected_mask,
+                candidate_count=result.candidate_count,
+                applied_footprint_polygons=result.applied_footprint_polygons,
+                footprint_buffer_pixels=result.footprint_buffer_pixels,
+                footprint_audit=result.footprint_audit,
+                applied_outline_prior_polygons=result.applied_outline_prior_polygons,
+                outline_prior_buffer_pixels=result.outline_prior_buffer_pixels,
+                deterministic_score=result.deterministic_score,
+            )
+            result, editor_notes = _run_ai_polygon_editor(source_result, image=image, lidar_asset_url=lidar_asset_url)
+            notes.extend(editor_notes)
+        else:
+            notes.append("Selected source footprints were not valid editor polygons; kept the SAM outline.")
+
     if not use_ai_outline_cleanup:
         return result, notes, image_bytes
     if result.report.model_name == "manual_fallback_segmenter":
@@ -1117,6 +1155,9 @@ def _measure_roof_automatically(
         return result, notes, image_bytes
     if qa.warnings:
         notes.extend(qa.warnings)
+    if use_ai_vertex_editor:
+        notes.append("Semantic QA completed as analysis after vertex refinement; it did not rerun SAM2 or replace the editable polygon.")
+        return result, notes, image_bytes
     retry_positive, retry_negative = qa_corrections_to_prompts(qa)
     if not retry_positive and not retry_negative:
         notes.append("AI semantic QA found no SAM prompt correction; kept the deterministic outline.")
@@ -1824,6 +1865,11 @@ def _render_measurement_result(
     workflow_notes = st.session_state.get("roof_measure_auto_workflow_notes")
     if isinstance(workflow_notes, list) and workflow_notes:
         st.caption(" ".join(str(note) for note in workflow_notes if str(note).strip()))
+    editor_messages = st.session_state.pop("roof_measure_editor_messages", None)
+    if isinstance(editor_messages, list):
+        for message in editor_messages:
+            if str(message).strip():
+                st.info(str(message))
 
     loaded = load_image_bytes(image_bytes, file_name=file_name)
     overlay = annotated_overlay(loaded.inference_image, mask=result.selected_mask, sections=measurement.sections)
@@ -2604,8 +2650,7 @@ def _render_corner_handle_editor(
                 except Exception as exc:
                     st.error(f"Could not apply AI vertex edits: {type(exc).__name__}: {exc}")
                     return
-                for message in messages:
-                    st.info(message)
+                st.session_state["roof_measure_editor_messages"] = messages
                 st.session_state["roof_measure_result"] = edited_result
                 st.rerun()
             if not openai_available:
@@ -2721,7 +2766,12 @@ def _render_corner_handle_editor(
             st.rerun()
 
 
-def _run_ai_polygon_editor(result: RoofMeasureResult, *, image: Image.Image) -> tuple[RoofMeasureResult, list[str]]:
+def _run_ai_polygon_editor(
+    result: RoofMeasureResult,
+    *,
+    image: Image.Image,
+    lidar_asset_url: str | None = None,
+) -> tuple[RoofMeasureResult, list[str]]:
     """Bounded exterior then hole editing; each atomic operation gets topology checks."""
     current_sections = [section.model_copy(deep=True) for section in result.report.measurement.sections]
     if not current_sections:
@@ -2752,8 +2802,6 @@ def _run_ai_polygon_editor(result: RoofMeasureResult, *, image: Image.Image) -> 
                     "reason": edit.reason,
                 }
             )
-            if stage == "exterior":
-                continue
             break
         current_sections = edit.sections
         summaries.append(
@@ -2785,7 +2833,7 @@ def _run_ai_polygon_editor(result: RoofMeasureResult, *, image: Image.Image) -> 
         result,
         current_sections,
         RoofMeasureRequest(overhead_image_name="edited", map_view=_recorded_map_view(result.report)),
-        str(getattr(st.session_state.get("roof_measure_lidar_coverage"), "asset_url", "")),
+        lidar_asset_url if lidar_asset_url is not None else str(getattr(st.session_state.get("roof_measure_lidar_coverage"), "asset_url", "")),
         mask_override=sections_mask(result.selected_mask.shape, current_sections) if result.selected_mask is not None else None,
     )
     editor_record = {
@@ -2818,7 +2866,11 @@ def _run_ai_polygon_editor(result: RoofMeasureResult, *, image: Image.Image) -> 
         footprint_audit=result.footprint_audit,
         applied_outline_prior_polygons=result.applied_outline_prior_polygons,
         outline_prior_buffer_pixels=result.outline_prior_buffer_pixels,
-        deterministic_score=result.deterministic_score,
+        deterministic_score=(
+            score_roof_result(result.selected_mask, current_sections)
+            if result.selected_mask is not None
+            else result.deterministic_score
+        ),
     ), [*messages, f"AI polygon editor applied {applied_count} validated vertex edits."]
 
 
