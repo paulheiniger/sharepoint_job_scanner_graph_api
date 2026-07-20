@@ -94,6 +94,26 @@ def vertex_editor_overlay(
     return Image.alpha_composite(base, overlay).convert("RGB")
 
 
+def lidar_height_overlay(image: Image.Image, *, height_grid: np.ndarray | None, cell_pixels: int) -> Image.Image:
+    """Show elevated LiDAR support in cyan and low ground support in amber."""
+    if height_grid is None:
+        return image.convert("RGB")
+    height = np.asarray(height_grid, dtype=float)
+    if height.ndim != 2 or not np.isfinite(height).any():
+        return image.convert("RGB")
+    roof = np.isfinite(height) & (height >= 8.0)
+    ground = np.isfinite(height) & (height < 4.0)
+    size = (image.width, image.height)
+    roof_mask = Image.fromarray((roof.astype("uint8") * 70), mode="L").resize(size, Image.Resampling.NEAREST)
+    ground_mask = Image.fromarray((ground.astype("uint8") * 45), mode="L").resize(size, Image.Resampling.NEAREST)
+    composite = image.convert("RGBA")
+    roof_layer = Image.new("RGBA", size, (0, 188, 212, 0))
+    roof_layer.putalpha(roof_mask)
+    ground_layer = Image.new("RGBA", size, (255, 152, 0, 0))
+    ground_layer.putalpha(ground_mask)
+    return Image.alpha_composite(Image.alpha_composite(composite, ground_layer), roof_layer).convert("RGB")
+
+
 def footprint_overlay(
     image: Image.Image,
     *,

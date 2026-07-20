@@ -57,6 +57,7 @@ from roof_measure.streamlit_page import (
     _canvas_json_to_prompt_points,
     _canvas_json_to_sections,
     _canvas_json_to_corner_points,
+    _canvas_to_polygon_operations,
     _format_points_text,
     _footprints_for_prompt_points,
     _footprint_visible_area_pixels,
@@ -542,6 +543,39 @@ def test_polygon_editor_document_preserves_hole_identity() -> None:
     assert changed.sections[0].holes[0][0] == (42.0, 42.0)
 
 
+def test_combined_manual_canvas_maps_each_part_to_atomic_operations() -> None:
+    first = section_from_polygon("footprint-1", [(10, 10), (40, 10), (40, 40), (10, 40)])
+    second = section_from_polygon("footprint-2", [(60, 10), (90, 10), (90, 40), (60, 40)])
+    objects = []
+    for section in (first, second):
+        for index, (x, y) in enumerate(section.polygon[:-1]):
+            objects.append({"type": "circle", "originX": "center", "originY": "center", "left": x, "top": y, "sectionId": section.section_id, "vertexIndex": index})
+    objects[0]["left"] = 12
+    operations = _canvas_to_polygon_operations(
+        {"objects": objects},
+        [first, second],
+        scale_x=1.0,
+        scale_y=1.0,
+        allow_deletions=True,
+    )
+
+    assert operations == [{"op": "move_vertex", "polygon_id": "footprint-1", "vertex_index": 0, "x": 12.0, "y": 10.0}]
+
+
+def test_add_corner_canvas_preserves_existing_vertices_when_canvas_returns_only_new_dot() -> None:
+    section = section_from_polygon("footprint-1", [(10, 10), (40, 10), (40, 40), (10, 40)])
+
+    operations = _canvas_to_polygon_operations(
+        {"objects": [{"type": "circle", "originX": "center", "originY": "center", "left": 25, "top": 10}]},
+        [section],
+        scale_x=1.0,
+        scale_y=1.0,
+        allow_deletions=False,
+    )
+
+    assert operations == [{"op": "split_edge", "polygon_id": "footprint-1", "edge_index": 0, "x": 25.0, "y": 10.0}]
+
+
 def test_ai_polygon_editor_scores_accepted_atomic_edit_without_missing_score_arguments() -> None:
     image = Image.new("RGB", (100, 100), (128, 128, 128))
     buffer = BytesIO()
@@ -560,7 +594,7 @@ def test_ai_polygon_editor_scores_accepted_atomic_edit_without_missing_score_arg
         edited, notes = _run_ai_polygon_editor(result, image=image, lidar_asset_url="", run_semantic_analysis=False)
 
     assert any("applied 1 validated vertex edits" in note for note in notes)
-    assert mocked_suggester.call_count == 2
+    assert mocked_suggester.call_count == 1
     assert edited.deterministic_score > 0
     assert any(item.get("stage") == "ai_polygon_editor" for item in edited.report.processing_iterations)
 

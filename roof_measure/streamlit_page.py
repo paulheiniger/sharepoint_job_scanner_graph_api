@@ -65,7 +65,7 @@ from .geometry import straighten_architectural_ring
 from .models import MeasurementWarning, RoofMeasureRequest, RoofSection
 from .polygonize import section_from_polygon
 from .service import RoofMeasureResult, finalize_roof_sections, footprint_constraint_mask, measure_roof_from_outline_polygons, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections, score_roof_result, sections_mask
-from .visualization import annotated_overlay, footprint_constraint_overlay, footprint_overlay, image_png_bytes, outline_prior_overlay, prompt_points_overlay, vertex_editor_overlay
+from .visualization import annotated_overlay, footprint_constraint_overlay, footprint_overlay, image_png_bytes, lidar_height_overlay, outline_prior_overlay, prompt_points_overlay, vertex_editor_overlay
 
 
 _AI_OUTLINE_PRIOR_VERSION = 4
@@ -201,6 +201,7 @@ def render_ai_roof_measure_page() -> None:
                 "roof_measure_file_name",
                 "roof_measure_auto_workflow_notes",
                 "roof_measure_editor_messages",
+                "roof_measure_polygon_editor_state",
             ):
                 st.session_state.pop(key, None)
             st.success("Fetched calibrated satellite imagery and available footprint candidates.")
@@ -1889,6 +1890,14 @@ def _render_measurement_result(
         show_boundary = st.checkbox("Show edge-detection boundary", value=True, key=f"roof_measure_show_boundary_{report.id}")
     with overlay_col3:
         show_vertices = st.checkbox("Show polygon vertices", value=True, key=f"roof_measure_show_vertices_{report.id}")
+    lidar_asset = str(getattr(st.session_state.get("roof_measure_lidar_coverage"), "asset_url", ""))
+    show_lidar = st.checkbox(
+        "Show LiDAR height support",
+        value=False,
+        disabled=not bool(lidar_asset),
+        key=f"roof_measure_show_lidar_{report.id}",
+        help="Cyan is elevated roof support; amber is low ground support. This is evidence, not a replacement boundary.",
+    )
     overlay = annotated_overlay(
         loaded.inference_image,
         mask=result.selected_mask if show_mask else None,
@@ -1993,6 +2002,17 @@ def _render_measurement_result(
             polygons=retry_deformed_polygons,
             fill=(216, 27, 96, 35),
             outline=(216, 27, 96, 255),
+        )
+    if show_lidar:
+        lidar_grid = _lidar_edge_height_grid(
+            result,
+            RoofMeasureRequest(overhead_image_name="workspace", map_view=_recorded_map_view(report)),
+            lidar_asset,
+        )
+        displayed_overlay = lidar_height_overlay(
+            displayed_overlay,
+            height_grid=lidar_grid.height_grid if lidar_grid and lidar_grid.ok else None,
+            cell_pixels=lidar_grid.cell_pixels if lidar_grid else 8,
         )
     if show_vertices:
         latest_editor = next(
@@ -2743,9 +2763,28 @@ def _render_corner_handle_editor(
                 if len(polygon) >= 3
             ]
             if polygon_source == "Building Footprint"
-            else measurement.sections
+            else _original_edge_detection_sections(result)
         )
-        editor_sections = source_sections or measurement.sections
+        state_key = "roof_measure_polygon_editor_state"
+        editor_state = st.session_state.get(state_key)
+        if not isinstance(editor_state, dict) or editor_state.get("report_id") != result.report.id:
+            editor_state = {
+                "report_id": result.report.id,
+                "source": polygon_source,
+                "sections": [section.model_copy(deep=True) for section in (source_sections or measurement.sections)],
+                "manual_locked_vertices": set(),
+            }
+        elif editor_state.get("source") != polygon_source:
+            # Changing sources deliberately starts a new working copy. The
+            # original source remains available through the selector.
+            editor_state = {
+                "report_id": result.report.id,
+                "source": polygon_source,
+                "sections": [section.model_copy(deep=True) for section in (source_sections or measurement.sections)],
+                "manual_locked_vertices": set(),
+            }
+        st.session_state[state_key] = editor_state
+        editor_sections = [section.model_copy(deep=True) for section in editor_state["sections"]]
         with st.expander("AI vertex analysis preview", expanded=False):
             st.image(
                 vertex_editor_overlay(image, sections=editor_sections, stage="exterior"),
@@ -2778,11 +2817,13 @@ def _render_corner_handle_editor(
                     corrected_sections,
                     correction_note="Applied deterministic architectural edge straightening with a 3% per-section area guard.",
                 )
-                st.session_state["roof_measure_result"] = RoofMeasureResult(
-                    report=corrected_report,
-                    selected_mask=result.selected_mask,
-                    candidate_count=result.candidate_count,
+                st.session_state["roof_measure_result"] = _result_with_sections(
+                    result,
+                    corrected_report.measurement.sections,
+                    note="Applied deterministic architectural edge straightening with a 3% per-section area guard.",
                 )
+                editor_state["sections"] = [section.model_copy(deep=True) for section in corrected_report.measurement.sections]
+                st.session_state[state_key] = editor_state
                 st.rerun()
         with cleanup_col:
             if st.button(
@@ -2794,7 +2835,7 @@ def _render_corner_handle_editor(
             ):
                 try:
                     editor_result = _result_with_sections(result, editor_sections, note=f"Editor source: {polygon_source}.")
-                    with st.status("AI is reviewing exterior roof edges...", expanded=True) as status:
+                    with st.status("AI is reviewing the complete exterior outline...", expanded=True) as status:
                         preview = st.empty()
 
                         def show_editor_progress(
@@ -2802,8 +2843,13 @@ def _render_corner_handle_editor(
                             iteration: int,
                             sections: list[RoofSection],
                             edited_vertices: set[str],
+                            applied_count: int,
+                            operation_total: int,
                         ) -> None:
-                            status.write(f"{stage.title()} pass {iteration}: reviewing numbered vertices.")
+                            status.write(
+                                f"{stage.title()} pass {iteration}: applying validated edit "
+                                f"{applied_count} of {operation_total}."
+                            )
                             preview.image(
                                 vertex_editor_overlay(
                                     image,
@@ -2812,13 +2858,17 @@ def _render_corner_handle_editor(
                                     labels=False,
                                     edited_vertices=edited_vertices,
                                 ),
-                                caption=f"AI {stage} pass {iteration}. Orange vertices were edited in this run.",
+                                caption=(
+                                    f"AI {stage} pass {iteration}: {applied_count} of {operation_total} "
+                                    "validated edits applied. Orange vertices were edited in this run."
+                                ),
                                 width=min(image.width, 1000),
                             )
 
                         edited_result, messages = _run_ai_polygon_editor(
                             editor_result,
                             image=image,
+                            initial_locked_vertices={str(value) for value in editor_state.get("manual_locked_vertices") or set()},
                             progress_callback=show_editor_progress,
                         )
                         status.update(label="AI vertex adjustment complete", state="complete")
@@ -2827,6 +2877,8 @@ def _render_corner_handle_editor(
                     return
                 st.session_state["roof_measure_editor_messages"] = messages
                 st.session_state["roof_measure_result"] = edited_result
+                editor_state["sections"] = [section.model_copy(deep=True) for section in edited_result.report.measurement.sections]
+                st.session_state[state_key] = editor_state
                 st.rerun()
             if not openai_available:
                 st.caption("Set OPENAI_API_KEY to enable AI cleanup.")
@@ -2835,21 +2887,14 @@ def _render_corner_handle_editor(
                 original = st.session_state.get("roof_measure_original_result")
                 if original is not None:
                     st.session_state["roof_measure_result"] = original
+                    st.session_state.pop(state_key, None)
                     st.rerun()
-        section_options = [section.section_id for section in editor_sections]
-        selected_section_id = st.selectbox(
-            "Roof section",
-            section_options,
-            index=0,
-            key=f"roof_measure_corner_section_{result.report.id}",
-        )
-        selected_section = next((section for section in editor_sections if section.section_id == selected_section_id), editor_sections[0])
         canvas_width, canvas_height, scale_x, scale_y = _canvas_dimensions(image)
         corner_action = st.radio(
-            "Corner action",
+            "Manual vertex action",
             ["Move/delete corners", "Add corner"],
             horizontal=True,
-            key=f"roof_measure_corner_action_{result.report.id}_{selected_section_id}",
+            key=f"roof_measure_corner_action_{result.report.id}",
         )
         drawing_mode = "point" if corner_action == "Add corner" else "transform"
         corner_canvas = st_canvas(
@@ -2857,7 +2902,7 @@ def _render_corner_handle_editor(
             stroke_width=2,
             stroke_color="#e52828",
             background_image=_canvas_background_image(
-                annotated_overlay(image, sections=[selected_section]),
+                vertex_editor_overlay(image, sections=editor_sections, stage="exterior", labels=False),
                 canvas_width,
                 canvas_height,
             ),
@@ -2865,46 +2910,42 @@ def _render_corner_handle_editor(
             height=canvas_height,
             width=canvas_width,
             drawing_mode=drawing_mode,
-            initial_drawing=_section_to_corner_canvas_initial_drawing(selected_section, scale_x=scale_x, scale_y=scale_y),
+            initial_drawing=_sections_to_corner_canvas_initial_drawing(editor_sections, scale_x=scale_x, scale_y=scale_y),
             display_toolbar=True,
             point_display_radius=8,
-            key=f"roof_measure_corner_canvas_{result.report.id}_{selected_section_id}",
+            key=f"roof_measure_corner_canvas_{result.report.id}_{polygon_source}_{drawing_mode}",
         )
-        if st.button("Apply Corner Edits", type="primary", width="stretch", key=f"roof_measure_apply_corners_{result.report.id}_{selected_section_id}"):
+        if st.button("Apply Manual Vertex Edits", type="primary", width="stretch", key=f"roof_measure_apply_corners_{result.report.id}_{polygon_source}"):
             try:
-                if corner_action == "Add corner":
-                    existing_points, new_points = _canvas_json_to_corner_edit_points(
-                        getattr(corner_canvas, "json_data", None),
-                        scale_x=scale_x,
-                        scale_y=scale_y,
-                    )
-                    if not new_points:
-                        raise ValueError("Click the roof edge where the new corner belongs before applying.")
-                    corner_points = _insert_new_corner_points(existing_points, new_points)
-                else:
-                    corner_points = _canvas_json_to_corner_points(
-                        getattr(corner_canvas, "json_data", None),
-                        scale_x=scale_x,
-                        scale_y=scale_y,
-                    )
-                corrected_sections = _replace_section_polygon(
+                operations = _canvas_to_polygon_operations(
+                    getattr(corner_canvas, "json_data", None),
                     editor_sections,
-                    selected_section_id,
-                    corner_points,
+                    scale_x=scale_x,
+                    scale_y=scale_y,
+                    allow_deletions=corner_action == "Move/delete corners",
                 )
+                edit = apply_polygon_operations(editor_sections, operations, image_size=image.size)
+                if not edit.applied_operations:
+                    raise ValueError(edit.reason or "No valid vertex changes were detected.")
                 corrected_report = recalculate_report_from_corrected_sections(
                     result.report,
-                    corrected_sections,
-                    correction_note=f"Estimator adjusted corner handles for {selected_section_id}.",
+                    edit.sections,
+                    correction_note=f"Estimator applied {len(edit.applied_operations)} manual vertex edit(s) from {polygon_source}.",
                 )
             except Exception as exc:
-                st.error(f"Could not apply corner edits: {type(exc).__name__}: {exc}")
+                st.error(f"Could not apply manual vertex edits: {type(exc).__name__}: {exc}")
                 return
-            st.session_state["roof_measure_result"] = RoofMeasureResult(
-                report=corrected_report,
-                selected_mask=None,
-                candidate_count=result.candidate_count,
+            st.session_state["roof_measure_result"] = _result_with_sections(
+                result,
+                corrected_report.measurement.sections,
+                note="Estimator applied manual vertex edits.",
             )
+            editor_state["sections"] = [section.model_copy(deep=True) for section in corrected_report.measurement.sections]
+            editor_state["manual_locked_vertices"] = {
+                *{str(value) for value in editor_state.get("manual_locked_vertices") or set()},
+                *{key for operation in edit.applied_operations for key in _operation_vertex_keys(operation)},
+            }
+            st.session_state[state_key] = editor_state
             st.rerun()
 
 
@@ -2923,12 +2964,21 @@ def _result_with_sections(result: RoofMeasureResult, sections: list[RoofSection]
     )
 
 
+def _original_edge_detection_sections(result: RoofMeasureResult) -> list[RoofSection]:
+    """Return the unedited SAM-derived fallback without discarding editor work."""
+    original = st.session_state.get("roof_measure_original_result")
+    if isinstance(original, RoofMeasureResult) and original.report.id == result.report.id:
+        return [section.model_copy(deep=True) for section in original.report.measurement.sections]
+    return [section.model_copy(deep=True) for section in result.report.measurement.sections]
+
+
 def _run_ai_polygon_editor(
     result: RoofMeasureResult,
     *,
     image: Image.Image,
     lidar_asset_url: str | None = None,
     run_semantic_analysis: bool = True,
+    initial_locked_vertices: set[str] | None = None,
     progress_callback=None,
 ) -> tuple[RoofMeasureResult, list[str]]:
     """Bounded exterior then hole editing; each atomic operation gets topology checks."""
@@ -2936,19 +2986,27 @@ def _run_ai_polygon_editor(
     if not current_sections:
         return result, ["No editable roof polygons are available."]
     original_area = sum(section.area_pixels for section in current_sections)
+    active_lidar_asset = lidar_asset_url if lidar_asset_url is not None else str(getattr(st.session_state.get("roof_measure_lidar_coverage"), "asset_url", ""))
+    edge_lidar = _lidar_edge_height_grid(
+        result,
+        RoofMeasureRequest(overhead_image_name="editor", map_view=_recorded_map_view(result.report)),
+        active_lidar_asset,
+    )
     summaries: list[dict[str, object]] = []
     messages: list[str] = []
     edited_vertices: set[str] = set()
+    locked_vertices = {str(value) for value in initial_locked_vertices or set()}
     applied_operations: list[dict[str, object]] = []
-    for iteration, stage in enumerate(("exterior", "exterior", "exterior", "holes", "holes"), start=1):
-        if progress_callback is not None:
-            progress_callback(stage, iteration, current_sections, edited_vertices)
+    stages = ("exterior", "holes") if any(section.holes for section in current_sections) else ("exterior",)
+    for iteration, stage in enumerate(stages, start=1):
         suggestion = suggest_polygon_operations(
             image,
             current_sections,
             stage=stage,
             address=result.report.address,
-            locked_vertices=edited_vertices,
+            locked_vertices=locked_vertices | edited_vertices,
+            lidar_height_grid=edge_lidar.height_grid if edge_lidar and edge_lidar.ok else None,
+            lidar_cell_pixels=edge_lidar.cell_pixels if edge_lidar else 8,
         )
         if suggestion.warnings:
             messages.extend(suggestion.warnings)
@@ -2957,34 +3015,45 @@ def _run_ai_polygon_editor(
         allowed_operations = [
             operation
             for operation in suggestion.operations
-            if not (_operation_vertex_keys(operation) & edited_vertices)
+            if not (_operation_vertex_keys(operation) & (locked_vertices | edited_vertices))
         ]
-        edit = apply_polygon_operations(current_sections, allowed_operations, image_size=image.size)
-        if not edit.applied_operations:
+        stage_applied: list[dict[str, object]] = []
+        stage_rejected: list[dict[str, object]] = []
+        stage_total = len(allowed_operations)
+        for operation in allowed_operations:
+            # The model has already returned its complete plan. Applying it
+            # one operation at a time lets the UI animate validated changes
+            # without making additional AI calls.
+            step = apply_polygon_operations(current_sections, [operation], image_size=image.size)
+            stage_rejected.extend(step.rejected_operations)
+            if not step.applied_operations:
+                continue
+            current_sections = step.sections
+            stage_applied.extend(step.applied_operations)
+            applied_operations.extend(step.applied_operations)
+            for applied_operation in step.applied_operations:
+                edited_vertices.update(_operation_vertex_keys(applied_operation))
+            if progress_callback is not None:
+                progress_callback(stage, iteration, current_sections, edited_vertices, len(stage_applied), stage_total)
+        if not stage_applied:
             summaries.append(
                 {
                     "stage": stage,
                     "iteration": iteration,
                     "accepted": False,
                     "operation_count": 0,
-                    "rejected_operation_count": len(edit.rejected_operations),
-                    "reason": edit.reason,
+                    "rejected_operation_count": len(stage_rejected),
+                    "reason": "no valid polygon operations were applied",
                 }
             )
             break
-        current_sections = edit.sections
-        applied_operations.extend(edit.applied_operations)
-        for operation in edit.applied_operations:
-            edited_vertices.update(_operation_vertex_keys(operation))
-        if progress_callback is not None:
-            progress_callback(stage, iteration, current_sections, edited_vertices)
         summaries.append(
             {
                 "stage": stage,
                 "iteration": iteration,
                 "accepted": True,
-                "operation_count": len(edit.applied_operations),
-                "rejected_operation_count": len(edit.rejected_operations),
+                "operation_count": len(stage_applied),
+                "rejected_operation_count": len(stage_rejected),
                 "confidence": round(suggestion.confidence, 3),
                 "model": suggestion.model_name,
             }
@@ -3007,7 +3076,7 @@ def _run_ai_polygon_editor(
         result,
         current_sections,
         RoofMeasureRequest(overhead_image_name="edited", map_view=_recorded_map_view(result.report)),
-        lidar_asset_url if lidar_asset_url is not None else str(getattr(st.session_state.get("roof_measure_lidar_coverage"), "asset_url", "")),
+        active_lidar_asset,
         mask_override=sections_mask(result.selected_mask.shape, current_sections) if result.selected_mask is not None else None,
     )
     editor_record = {
@@ -3238,6 +3307,104 @@ def _section_to_corner_canvas_initial_drawing(section: RoofSection, *, scale_x: 
             }
         )
     return {"version": "4.4.0", "objects": objects}
+
+
+def _sections_to_corner_canvas_initial_drawing(sections: list[RoofSection], *, scale_x: float, scale_y: float) -> dict:
+    objects: list[dict] = []
+    for section in sections:
+        drawing = _section_to_corner_canvas_initial_drawing(section, scale_x=scale_x, scale_y=scale_y)
+        objects.extend(drawing.get("objects") or [])
+    return {"version": "4.4.0", "objects": objects}
+
+
+def _canvas_to_polygon_operations(
+    canvas_json: dict | None,
+    sections: list[RoofSection],
+    *,
+    scale_x: float,
+    scale_y: float,
+    allow_deletions: bool,
+) -> list[dict[str, object]]:
+    """Map one multi-part dot canvas back to stable atomic polygon operations."""
+    if not isinstance(canvas_json, dict):
+        raise ValueError("The vertex canvas did not return any editable objects.")
+    expected: dict[str, tuple[str, int, tuple[float, float]]] = {}
+    for section in sections:
+        ring = section.polygon[:-1] if len(section.polygon) > 1 and section.polygon[0] == section.polygon[-1] else section.polygon
+        for index, point in enumerate(ring):
+            expected[f"{section.section_id}:{index}"] = (section.section_id, index, point)
+    remaining = dict(expected)
+    matched: dict[str, tuple[float, float]] = {}
+    new_points: list[tuple[float, float]] = []
+    for object_index, obj in enumerate(canvas_json.get("objects") or []):
+        if not isinstance(obj, dict) or str(obj.get("type") or "").lower() != "circle":
+            continue
+        center = _canvas_object_center(obj)
+        if center is None:
+            continue
+        point = (
+            float(center[0]) / scale_x if scale_x else float(center[0]),
+            float(center[1]) / scale_y if scale_y else float(center[1]),
+        )
+        section_id = str(obj.get("sectionId") or "")
+        try:
+            vertex_index = int(obj.get("vertexIndex"))
+        except (TypeError, ValueError):
+            vertex_index = -1
+        vertex_id = f"{section_id}:{vertex_index}"
+        if vertex_id not in remaining:
+            if allow_deletions:
+                # Fabric may omit custom metadata after a transform. Match the
+                # closest unused original dot before treating it as a new point.
+                vertex_id = min(
+                    remaining,
+                    key=lambda key: math.dist(point, remaining[key][2]),
+                    default="",
+                )
+                if vertex_id and math.dist(point, remaining[vertex_id][2]) > 80:
+                    vertex_id = ""
+            else:
+                # Add-corner mode intentionally treats untagged dots as new
+                # corners, even when they are near an old one.
+                vertex_id = ""
+        if vertex_id:
+            matched[vertex_id] = point
+            remaining.pop(vertex_id, None)
+        else:
+            new_points.append(point)
+    operations: list[dict[str, object]] = []
+    # Delete in reverse index order so one deletion cannot shift a later ID.
+    if allow_deletions:
+        deletions = sorted(remaining.values(), key=lambda item: (item[0], -item[1]))
+        for section_id, vertex_index, _ in deletions:
+            operations.append({"op": "delete_vertex", "polygon_id": section_id, "vertex_index": vertex_index})
+    for vertex_id, point in matched.items():
+        section_id, vertex_index, original = expected[vertex_id]
+        if math.dist(point, original) >= 0.75:
+            operations.append(
+                {"op": "move_vertex", "polygon_id": section_id, "vertex_index": vertex_index, "x": point[0], "y": point[1]}
+            )
+    for point in new_points:
+        section_id, edge_index = _nearest_section_edge(sections, point)
+        operations.append(
+            {"op": "split_edge", "polygon_id": section_id, "edge_index": edge_index, "x": point[0], "y": point[1]}
+        )
+    return operations
+
+
+def _nearest_section_edge(sections: list[RoofSection], point: tuple[float, float]) -> tuple[str, int]:
+    best: tuple[str, int] | None = None
+    best_distance = float("inf")
+    for section in sections:
+        ring = section.polygon[:-1] if len(section.polygon) > 1 and section.polygon[0] == section.polygon[-1] else section.polygon
+        for index, start in enumerate(ring):
+            distance = _distance_to_segment(point, start, ring[(index + 1) % len(ring)])
+            if distance < best_distance:
+                best_distance = distance
+                best = (section.section_id, index)
+    if best is None:
+        raise ValueError("No polygon edge is available for the added vertex.")
+    return best
 
 
 def _sections_from_ai_polygons(
