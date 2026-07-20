@@ -43,7 +43,12 @@ except ImportError:  # pragma: no cover - exercised in environments without the 
 
 from .ai_polygons import _focus_crop_box, RoofPolygonSuggestion, suggest_refined_roof_polygons, suggest_roof_polygons
 from .ai_polygon_editor import suggest_polygon_operations
-from .ai_raster_outline import suggest_raster_roof_outline, yellow_boundary_overlay
+from .ai_raster_outline import (
+    DEFAULT_YELLOW_BOUNDARY_PROMPT,
+    refine_raster_roof_outline,
+    suggest_raster_roof_outline,
+    yellow_boundary_overlay,
+)
 from .ai_qa import qa_corrections_to_prompts, suggest_roof_qa
 from .ai_points import suggest_roof_prompt_points
 from .footprint_deformation import deform_footprints_to_roof_support, score_polygon_candidate
@@ -2804,16 +2809,23 @@ def _render_corner_handle_editor(
             boundary_target = None
             editor_state["boundary_target_image"] = None
             st.session_state[state_key] = editor_state
-        with st.expander("AI vertex prompt playground", expanded=False):
+        with st.expander("Yellow boundary and vertex prompt playground", expanded=False):
             use_boundary_target = st.checkbox(
                 "Align vertices to generated yellow roof boundary",
                 value=True,
                 key=f"roof_measure_use_vertex_target_{result.report.id}",
             )
+            yellow_generation_prompt = st.text_area(
+                "Yellow boundary generation prompt",
+                value=DEFAULT_YELLOW_BOUNDARY_PROMPT,
+                height=180,
+                key=f"roof_measure_yellow_boundary_prompt_{result.report.id}",
+            )
+            st.caption("This is the complete prompt sent to the image-edit model when a new yellow target is generated.")
             additional_instructions = st.text_area(
                 "Additional alignment instructions",
                 value=(
-                    "Trace the center of the yellow line around the complete school perimeter. "
+                    "Trace the center of the yellow line around the complete target-building perimeter. "
                     "Keep blue estimator-set vertices fixed and use them to infer the intended nearby wall edge."
                 ),
                 height=100,
@@ -2831,11 +2843,13 @@ def _render_corner_handle_editor(
                     target, target_warnings = _generate_raster_vertex_target(
                         image,
                         footprint_polygons=result.applied_footprint_polygons,
+                        prompt_override=yellow_generation_prompt,
                     )
                 for warning in target_warnings:
                     st.warning(warning)
                 if target is not None:
                     editor_state["boundary_target_image"] = target
+                    editor_state["boundary_feedback_history"] = []
                     st.session_state["roof_measure_raster_vertex_target"] = target
                     st.session_state[state_key] = editor_state
                     st.rerun()
@@ -2851,6 +2865,42 @@ def _render_corner_handle_editor(
                     caption="Exact AI analysis target. Yellow is the generated perimeter; blue vertices are locked manual anchors.",
                     width=min(image.width, 1000),
                 )
+                boundary_feedback = st.text_area(
+                    "Tell AI how to correct the yellow boundary",
+                    placeholder=(
+                        "Example: On the east side, follow the light parapet edge instead of the dark shadow. "
+                        "Include the narrow roof section beside the central grass gap."
+                    ),
+                    height=90,
+                    key=f"roof_measure_boundary_feedback_{result.report.id}",
+                )
+                if st.button(
+                    "Apply Boundary Feedback",
+                    disabled=not bool(boundary_feedback.strip()) or not bool(os.getenv("OPENAI_API_KEY")),
+                    key=f"roof_measure_apply_boundary_feedback_{result.report.id}",
+                ):
+                    with st.spinner("Revising the registered yellow roof boundary..."):
+                        target, target_warnings = _refine_raster_vertex_target(
+                            image,
+                            boundary_target,
+                            boundary_feedback,
+                            footprint_polygons=result.applied_footprint_polygons,
+                        )
+                    for warning in target_warnings:
+                        st.warning(warning)
+                    if target is not None:
+                        history = list(editor_state.get("boundary_feedback_history") or [])
+                        history.append(boundary_feedback.strip())
+                        editor_state["boundary_feedback_history"] = history[-8:]
+                        editor_state["boundary_target_image"] = target
+                        st.session_state["roof_measure_raster_vertex_target"] = target
+                        st.session_state[state_key] = editor_state
+                        st.rerun()
+                feedback_history = list(editor_state.get("boundary_feedback_history") or [])
+                if feedback_history:
+                    st.caption("Accepted yellow-boundary revisions")
+                    for revision, instruction in enumerate(feedback_history, start=1):
+                        st.caption(f"{revision}. {instruction}")
             else:
                 st.caption("No registered yellow boundary target is cached yet. It will be generated when AI adjustment runs.")
         with st.expander("AI vertex analysis preview", expanded=False):
@@ -2917,6 +2967,7 @@ def _render_corner_handle_editor(
                             active_target, target_warnings = _generate_raster_vertex_target(
                                 image,
                                 footprint_polygons=result.applied_footprint_polygons,
+                                prompt_override=yellow_generation_prompt,
                             )
                             messages_before_edit = list(target_warnings)
                             if active_target is not None:
@@ -3056,14 +3107,48 @@ def _generate_raster_vertex_target(
     image: Image.Image,
     *,
     footprint_polygons: list[list[tuple[float, float]]],
+    prompt_override: str = "",
 ) -> tuple[Image.Image | None, list[str]]:
-    suggestion = suggest_raster_roof_outline(image, footprint_polygons=footprint_polygons)
+    suggestion = suggest_raster_roof_outline(
+        image,
+        footprint_polygons=footprint_polygons,
+        prompt_override=prompt_override,
+    )
     warnings = list(suggestion.warnings)
     if suggestion.edited_image is None:
         return None, warnings or ["The image model did not return a boundary image."]
+    if not suggestion.polygons:
+        return None, warnings or ["The yellow boundary target was rejected because it was not a valid closed perimeter."]
     registration = suggestion.registration_mean_difference
     if registration is None or registration > 14.0:
         return None, [*warnings, "The yellow boundary target was rejected because the generated image was not registered closely enough."]
+    try:
+        return yellow_boundary_overlay(image, suggestion.edited_image), warnings
+    except ValueError as exc:
+        return None, [*warnings, str(exc)]
+
+
+def _refine_raster_vertex_target(
+    image: Image.Image,
+    current_target: Image.Image,
+    feedback: str,
+    *,
+    footprint_polygons: list[list[tuple[float, float]]],
+) -> tuple[Image.Image | None, list[str]]:
+    suggestion = refine_raster_roof_outline(
+        image,
+        current_target,
+        feedback,
+        footprint_polygons=footprint_polygons,
+    )
+    warnings = list(suggestion.warnings)
+    if suggestion.edited_image is None:
+        return None, warnings or ["The image model did not return a revised boundary image."]
+    if not suggestion.polygons:
+        return None, warnings or ["The revised yellow boundary was rejected because it was not a valid closed perimeter."]
+    registration = suggestion.registration_mean_difference
+    if registration is None or registration > 14.0:
+        return None, [*warnings, "The revised yellow boundary was rejected because the generated image was not registered closely enough."]
     try:
         return yellow_boundary_overlay(image, suggestion.edited_image), warnings
     except ValueError as exc:

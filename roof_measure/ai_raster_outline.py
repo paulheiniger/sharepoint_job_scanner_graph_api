@@ -13,6 +13,29 @@ from .models import Ring
 from .polygonize import sections_from_mask
 
 
+DEFAULT_YELLOW_BOUNDARY_PROMPT = (
+    "Preserve the original image exactly. Draw one continuous 6-pixel bright-yellow (#FFD400) line around the exterior perimeter of the primary target building or connected building complex centered in the image. "
+    "Treat physically joined roof structures as one building. Do not split at roof seams, shadows, parapet shadows, or narrow roof-to-roof transitions. "
+    "Trace the physical outside wall or parapet edge, not the edge of a dark cast shadow. Exclude obvious grass, parking, roads, open courtyards, and detached buildings. "
+    "Return to the starting point with no gaps. Do not add text, shading, points, labels, interior lines, or any other changes."
+)
+
+
+def yellow_boundary_refinement_prompt(feedback: str) -> str:
+    correction = feedback.strip()
+    if not correction:
+        raise ValueError("Boundary feedback is required.")
+    return (
+        "The input is the original satellite image with the current bright-yellow roof boundary overlaid. "
+        "Revise only that yellow boundary to apply the user's correction below. Preserve correct yellow segments where possible, "
+        "remove incorrect yellow segments, and restore the underlying satellite pixels without changing the crop, scale, or registration. "
+        "The result must contain one continuous 6-pixel bright-yellow (#FFD400) closed exterior perimeter around the target building complex. "
+        "Trace the physical outside wall or parapet edge, not cast shadows. Exclude grass, pavement, roads, open courtyards, and detached buildings. "
+        "Do not add text, shading, points, labels, interior lines, or other marks.\n\n"
+        f"User correction: {correction}"
+    )
+
+
 @dataclass
 class RasterOutlineSuggestion:
     polygons: list[Ring] = field(default_factory=list)
@@ -26,12 +49,45 @@ def suggest_raster_roof_outline(
     image: Image.Image,
     *,
     footprint_polygons: list[Ring] | None = None,
+    prompt_override: str = "",
 ) -> RasterOutlineSuggestion:
     """Ask an image-edit model for a yellow boundary, then repair only credible short gaps."""
     try:
-        edited = _edit_image_with_yellow_boundary(image)
+        edited = _edit_image_with_yellow_boundary(
+            image,
+            prompt=prompt_override.strip() or DEFAULT_YELLOW_BOUNDARY_PROMPT,
+        )
     except Exception as exc:
         return RasterOutlineSuggestion(warnings=[f"Raster AI boundary suggestion failed: {type(exc).__name__}: {exc}"])
+    return _validated_outline_suggestion(image, edited, footprint_polygons=footprint_polygons)
+
+
+def refine_raster_roof_outline(
+    image: Image.Image,
+    current_target: Image.Image,
+    feedback: str,
+    *,
+    footprint_polygons: list[Ring] | None = None,
+) -> RasterOutlineSuggestion:
+    """Revise a registered yellow target while retaining deterministic acceptance checks."""
+    if current_target.size != image.size:
+        return RasterOutlineSuggestion(warnings=["The current yellow boundary target does not match the source image size."])
+    try:
+        edited = _edit_image_with_yellow_boundary(
+            current_target,
+            prompt=yellow_boundary_refinement_prompt(feedback),
+        )
+    except Exception as exc:
+        return RasterOutlineSuggestion(warnings=[f"Raster AI boundary refinement failed: {type(exc).__name__}: {exc}"])
+    return _validated_outline_suggestion(image, edited, footprint_polygons=footprint_polygons)
+
+
+def _validated_outline_suggestion(
+    image: Image.Image,
+    edited: Image.Image,
+    *,
+    footprint_polygons: list[Ring] | None,
+) -> RasterOutlineSuggestion:
     polygons, registration, warning = _yellow_boundary_to_polygons(
         image,
         edited,
@@ -72,7 +128,7 @@ def yellow_boundary_overlay(source: Image.Image, edited: Image.Image) -> Image.I
     return Image.alpha_composite(base, band).convert("RGB")
 
 
-def _edit_image_with_yellow_boundary(image: Image.Image) -> Image.Image:
+def _edit_image_with_yellow_boundary(image: Image.Image, *, prompt: str = DEFAULT_YELLOW_BOUNDARY_PROMPT) -> Image.Image:
     if not os.getenv("OPENAI_API_KEY"):
         raise RuntimeError("OPENAI_API_KEY is not set")
 
@@ -85,12 +141,7 @@ def _edit_image_with_yellow_boundary(image: Image.Image) -> Image.Image:
     payload.name = "roof-source.png"
     response = _image_edit(
         payload,
-        prompt=(
-            "Preserve the original image exactly. Draw one continuous 6-pixel bright-yellow (#FFD400) line around the exterior perimeter of the target school building complex. "
-            "Treat physically joined roof structures as one building. Do not split at roof seams, shadows, parapet shadows, or narrow roof-to-roof transitions. "
-            "Trace the physical outside wall or parapet edge, not the edge of a dark cast shadow. Exclude obvious grass, parking, roads, open courtyards, and detached buildings. "
-            "Return to the starting point with no gaps. Do not add text, shading, points, labels, interior lines, or any other changes."
-        ),
+        prompt=prompt,
         size=target_size,
     )
     image_bytes = base64.b64decode(response.data[0].b64_json)
@@ -106,7 +157,7 @@ def _repair_yellow_boundary(edited: Image.Image) -> Image.Image:
         payload,
         prompt=(
             "Preserve every satellite pixel and every existing correct yellow band segment exactly. Repair only the yellow annotation: "
-            "join endpoints into one continuous 6-pixel bright-yellow (#FFD400) closed exterior perimeter around the target school building complex. "
+            "join endpoints into one continuous 6-pixel bright-yellow (#FFD400) closed exterior perimeter around the primary target building or connected building complex. "
             "Keep physically joined roof structures together; do not split at roof seams or shadows. Keep roof membrane beside cast shadows inside the line and trace the physical outside wall or parapet edge. "
             "Remove yellow interior lines. Do not alter or redraw the satellite image, buildings, colors, crop, labels, or add any marks other than that one closed yellow perimeter."
         ),

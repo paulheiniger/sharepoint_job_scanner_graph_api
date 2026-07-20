@@ -26,7 +26,13 @@ from roof_measure.ai_polygons import _focus_crop_box, polygon_suggestion_from_pa
 from roof_measure.ai_qa import RoofQaFinding, qa_corrections_to_prompts, qa_finding_from_payload
 from roof_measure.ai_points import suggestion_from_payload
 from roof_measure.ai_polygons import RoofPolygonSuggestion, _call_openai_roof_polygon_refiner, _call_openai_roof_polygon_suggester
-from roof_measure.ai_raster_outline import _repair_short_boundary_gaps, _yellow_boundary_to_polygons, yellow_boundary_overlay
+from roof_measure.ai_raster_outline import (
+    _repair_short_boundary_gaps,
+    _yellow_boundary_to_polygons,
+    refine_raster_roof_outline,
+    suggest_raster_roof_outline,
+    yellow_boundary_overlay,
+)
 from roof_measure.ai_points import _call_openai_roof_point_suggester
 from roof_measure.calibration import _call_openai_scale_reader
 from roof_measure.confidence import measurement_warnings
@@ -1565,6 +1571,75 @@ def test_yellow_boundary_overlay_preserves_registered_source_pixels() -> None:
     assert target.getpixel((50, 50)) == source.getpixel((50, 50))
     target_pixels = np.asarray(target)
     assert bool(((target_pixels[..., 0] > 240) & (target_pixels[..., 1] > 190)).any())
+
+
+def test_raster_outline_uses_user_generation_prompt(monkeypatch) -> None:
+    from PIL import ImageDraw
+
+    source = Image.new("RGB", (1024, 1024), (90, 90, 90))
+    edited = source.copy()
+    ImageDraw.Draw(edited).line(
+        [(160, 160), (860, 160), (860, 860), (160, 860), (160, 160)],
+        fill="#FFD400",
+        width=8,
+    )
+    payload = BytesIO()
+    edited.save(payload, format="PNG")
+    encoded = base64.b64encode(payload.getvalue()).decode("ascii")
+    captured: dict[str, str] = {}
+
+    def fake_image_edit(image_file, *, prompt, size):
+        captured["prompt"] = prompt
+        return SimpleNamespace(data=[SimpleNamespace(b64_json=encoded)])
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("roof_measure.ai_raster_outline._image_edit", fake_image_edit)
+
+    suggestion = suggest_raster_roof_outline(source, prompt_override="Follow the light parapet edge exactly.")
+
+    assert captured["prompt"] == "Follow the light parapet edge exactly."
+    assert suggestion.polygons
+
+
+def test_raster_outline_refinement_includes_user_feedback(monkeypatch) -> None:
+    from PIL import ImageDraw
+
+    source = Image.new("RGB", (1024, 1024), (90, 90, 90))
+    current_target = source.copy()
+    ImageDraw.Draw(current_target).line(
+        [(170, 170), (850, 170), (850, 850), (170, 850), (170, 170)],
+        fill="#FFD400",
+        width=8,
+    )
+    revised = source.copy()
+    ImageDraw.Draw(revised).line(
+        [(160, 160), (860, 160), (860, 860), (160, 860), (160, 160)],
+        fill="#FFD400",
+        width=8,
+    )
+    payload = BytesIO()
+    revised.save(payload, format="PNG")
+    encoded = base64.b64encode(payload.getvalue()).decode("ascii")
+    captured: dict[str, str] = {}
+
+    def fake_image_edit(image_file, *, prompt, size):
+        captured["prompt"] = prompt
+        return SimpleNamespace(data=[SimpleNamespace(b64_json=encoded)])
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("roof_measure.ai_raster_outline._image_edit", fake_image_edit)
+
+    suggestion = refine_raster_roof_outline(
+        source,
+        current_target,
+        "Avoid the east-side shadow and include the narrow roof strip.",
+    )
+
+    assert "Avoid the east-side shadow and include the narrow roof strip." in captured["prompt"]
+    assert "Revise only that yellow boundary" in captured["prompt"]
+    assert suggestion.polygons
+    assert suggestion.registration_mean_difference is not None
+    assert suggestion.registration_mean_difference < 1
 
 
 def test_raster_yellow_outline_rejects_open_line() -> None:
