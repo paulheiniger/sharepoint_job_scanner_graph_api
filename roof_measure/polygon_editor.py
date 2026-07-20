@@ -193,4 +193,14 @@ def _integer(value: Any, *, default: int) -> int:
 
 
 def _operation_record(operation: dict[str, Any], result: str) -> dict[str, Any]:
-    return {"op": str(operation.get("op") or operation.get("operation") or ""), "polygon_id": operation.get("polygon_id"), "result": result}
+    record = {
+        "op": str(operation.get("op") or operation.get("operation") or ""),
+        "polygon_id": operation.get("polygon_id"),
+        "hole_id": operation.get("hole_id"),
+        "vertex_index": operation.get("vertex_index"),
+        "edge_index": operation.get("edge_index"),
+        "first_vertex_index": operation.get("first_vertex_index"),
+        "second_vertex_index": operation.get("second_vertex_index"),
+        "result": result,
+    }
+    return {key: value for key, value in record.items() if value is not None}

@@ -556,10 +556,11 @@ def test_ai_polygon_editor_scores_accepted_atomic_edit_without_missing_score_arg
         operations=[{"op": "move_vertex", "polygon_id": "section-1", "vertex_index": 0, "x": 12, "y": 12}],
         confidence=0.9,
     )
-    with patch("roof_measure.streamlit_page.suggest_polygon_operations", return_value=suggestion):
+    with patch("roof_measure.streamlit_page.suggest_polygon_operations", return_value=suggestion) as mocked_suggester:
         edited, notes = _run_ai_polygon_editor(result, image=image, lidar_asset_url="", run_semantic_analysis=False)
 
-    assert any("applied 3 validated vertex edits" in note for note in notes)
+    assert any("applied 1 validated vertex edits" in note for note in notes)
+    assert mocked_suggester.call_count == 2
     assert edited.deterministic_score > 0
     assert any(item.get("stage") == "ai_polygon_editor" for item in edited.report.processing_iterations)
 

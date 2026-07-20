@@ -49,17 +49,32 @@ def prompt_points_overlay(
     return Image.alpha_composite(base, overlay).convert("RGB")
 
 
-def vertex_editor_overlay(image: Image.Image, *, sections: list[RoofSection], stage: str) -> Image.Image:
+def vertex_editor_overlay(
+    image: Image.Image,
+    *,
+    sections: list[RoofSection],
+    stage: str,
+    labels: bool = True,
+    edited_vertices: set[str] | None = None,
+) -> Image.Image:
     """A sparse numbered vertex view for the AI polygon editor."""
     base = image.convert("RGBA")
     overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
+    edited_vertices = edited_vertices or set()
     for section in sections:
         exterior = _open_ring(section.polygon)
         if len(exterior) >= 3:
             draw.line([*exterior, exterior[0]], fill=(0, 229, 153, 255), width=4, joint="curve")
             for index, point in enumerate(exterior):
-                _draw_vertex(draw, point, f"{section.section_id}:{index}", fill=(0, 229, 153, 255))
+                vertex_id = f"{section.section_id}:{index}"
+                _draw_vertex(
+                    draw,
+                    point,
+                    vertex_id,
+                    fill=(255, 152, 0, 255) if vertex_id in edited_vertices else (0, 229, 153, 255),
+                    show_label=labels,
+                )
         if stage != "holes":
             continue
         for hole_index, hole in enumerate(section.holes):
@@ -68,7 +83,14 @@ def vertex_editor_overlay(image: Image.Image, *, sections: list[RoofSection], st
                 continue
             draw.line([*vertices, vertices[0]], fill=(255, 193, 7, 255), width=3, joint="curve")
             for vertex_index, point in enumerate(vertices):
-                _draw_vertex(draw, point, f"{section.section_id}:hole:{hole_index}:{vertex_index}", fill=(255, 193, 7, 255))
+                vertex_id = f"{section.section_id}:hole:{hole_index}:{vertex_index}"
+                _draw_vertex(
+                    draw,
+                    point,
+                    vertex_id,
+                    fill=(255, 152, 0, 255) if vertex_id in edited_vertices else (255, 193, 7, 255),
+                    show_label=labels,
+                )
     return Image.alpha_composite(base, overlay).convert("RGB")
 
 
@@ -149,11 +171,19 @@ def _draw_point(
     draw.text((x + radius + 4, y - radius), label, fill=outline)
 
 
-def _draw_vertex(draw: ImageDraw.ImageDraw, point: tuple[float, float], label: str, *, fill: tuple[int, int, int, int]) -> None:
+def _draw_vertex(
+    draw: ImageDraw.ImageDraw,
+    point: tuple[float, float],
+    label: str,
+    *,
+    fill: tuple[int, int, int, int],
+    show_label: bool,
+) -> None:
     x, y = float(point[0]), float(point[1])
     radius = 6
     draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=fill, outline=(0, 0, 0, 255), width=2)
-    draw.text((x + radius + 3, y - radius - 4), label, fill=(255, 255, 255, 255), stroke_width=2, stroke_fill=(0, 0, 0, 255))
+    if show_label:
+        draw.text((x + radius + 3, y - radius - 4), label, fill=(255, 255, 255, 255), stroke_width=2, stroke_fill=(0, 0, 0, 255))
 
 
 def _open_ring(ring: list[tuple[float, float]]) -> list[tuple[float, float]]:

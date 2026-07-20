@@ -32,11 +32,22 @@ def suggest_polygon_operations(
     *,
     stage: str,
     address: str = "",
+    locked_vertices: set[str] | None = None,
     provider: AiPolygonEditProvider | None = None,
 ) -> PolygonEditSuggestion:
     document = sections_to_vertex_document(sections)
     try:
-        payload = provider(image, document, stage) if provider else _call_openai_polygon_editor(image, document, stage=stage, address=address)
+        payload = (
+            provider(image, document, stage)
+            if provider
+            else _call_openai_polygon_editor(
+                image,
+                document,
+                stage=stage,
+                address=address,
+                locked_vertices=locked_vertices or set(),
+            )
+        )
     except Exception as exc:
         return PolygonEditSuggestion(warnings=[f"AI polygon editor failed: {type(exc).__name__}: {exc}"])
     operations = [item for item in payload.get("operations") or [] if isinstance(item, dict)]
@@ -49,7 +60,14 @@ def suggest_polygon_operations(
     )
 
 
-def _call_openai_polygon_editor(image: Image.Image, document: list[dict[str, Any]], *, stage: str, address: str) -> dict[str, Any]:
+def _call_openai_polygon_editor(
+    image: Image.Image,
+    document: list[dict[str, Any]],
+    *,
+    stage: str,
+    address: str,
+    locked_vertices: set[str],
+) -> dict[str, Any]:
     if not os.getenv("OPENAI_API_KEY"):
         raise RuntimeError("OPENAI_API_KEY is not set")
     from openai import OpenAI  # type: ignore
@@ -66,9 +84,11 @@ def _call_openai_polygon_editor(image: Image.Image, document: list[dict[str, Any
         f"The analysis image is {image.width} by {image.height} pixels. Site hint: {address or 'not provided'}. "
         f"{stage_instruction} The colored outline is the current geometry. Every vertex label is polygon_id:vertex_index; hole labels include polygon_id:hole:index:vertex_index. "
         "Edit the current polygon only. Prefer the visible roof/parapet edge over a cast shadow. Preserve separate building parts and visible ground gaps. "
-        "Use as few edits as possible. Do not return full polygons, prose, coordinates without an operation, or markdown. "
+        "Return a batch of 1 to 6 independent edits, then wait for the next image. Return accept only when no further safe edit is needed. "
+        "Do not edit a locked vertex unless a topology-validity repair is impossible without it. Use as few edits as possible. Do not return full polygons, prose, coordinates without an operation, or markdown. "
         "Return JSON only: {\"operations\":[{\"op\":\"move_vertex\",\"polygon_id\":\"section-1\",\"vertex_index\":0,\"x\":0,\"y\":0}],\"confidence\":0.0,\"warnings\":[]}. "
         "Allowed operations are move_vertex, insert_vertex, delete_vertex, split_edge, merge_redundant_vertices, create_hole, modify_hole_vertex, delete_hole, accept. "
+        "Locked vertices: " + json.dumps(sorted(locked_vertices), separators=(",", ":")) + ". "
         "Current vertex JSON: " + json.dumps(document, separators=(",", ":"))
     )
     request = {
@@ -76,7 +96,6 @@ def _call_openai_polygon_editor(image: Image.Image, document: list[dict[str, Any
         "input": [{"role": "user", "content": [
             {"type": "input_text", "text": instructions},
             {"type": "input_image", "image_url": _image_data_url(overlay), "detail": "high"},
-            {"type": "input_image", "image_url": _image_data_url(image), "detail": "high"},
         ]}],
     }
     reasoning_effort = os.getenv("OPENAI_ROOF_MEASURE_POLYGON_EDITOR_REASONING_EFFORT", "medium").strip()
