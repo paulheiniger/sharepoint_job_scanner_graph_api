@@ -2892,11 +2892,13 @@ def _render_corner_handle_editor(
         canvas_width, canvas_height, scale_x, scale_y = _canvas_dimensions(image)
         corner_action = st.radio(
             "Manual vertex action",
-            ["Move/delete corners", "Add corner"],
+            ["Move corners", "Add corner", "Delete corners"],
             horizontal=True,
             key=f"roof_measure_corner_action_{result.report.id}",
         )
         drawing_mode = "point" if corner_action == "Add corner" else "transform"
+        if corner_action == "Move corners":
+            st.caption("Move mode preserves every existing polygon connection and only changes vertex positions.")
         corner_canvas = st_canvas(
             fill_color="rgba(229, 40, 40, 0.85)",
             stroke_width=2,
@@ -2922,7 +2924,8 @@ def _render_corner_handle_editor(
                     editor_sections,
                     scale_x=scale_x,
                     scale_y=scale_y,
-                    allow_deletions=corner_action == "Move/delete corners",
+                    allow_deletions=corner_action == "Delete corners",
+                    allow_new_points=corner_action == "Add corner",
                 )
                 edit = apply_polygon_operations(editor_sections, operations, image_size=image.size)
                 if not edit.applied_operations:
@@ -3324,6 +3327,7 @@ def _canvas_to_polygon_operations(
     scale_x: float,
     scale_y: float,
     allow_deletions: bool,
+    allow_new_points: bool,
 ) -> list[dict[str, object]]:
     """Map one multi-part dot canvas back to stable atomic polygon operations."""
     if not isinstance(canvas_json, dict):
@@ -3353,7 +3357,7 @@ def _canvas_to_polygon_operations(
             vertex_index = -1
         vertex_id = f"{section_id}:{vertex_index}"
         if vertex_id not in remaining:
-            if allow_deletions:
+            if not allow_new_points:
                 # Fabric may omit custom metadata after a transform. Match the
                 # closest unused original dot before treating it as a new point.
                 vertex_id = min(
@@ -3364,13 +3368,13 @@ def _canvas_to_polygon_operations(
                 if vertex_id and math.dist(point, remaining[vertex_id][2]) > 80:
                     vertex_id = ""
             else:
-                # Add-corner mode intentionally treats untagged dots as new
-                # corners, even when they are near an old one.
+                # Add-corner mode intentionally treats an untagged dot as a
+                # new corner, even when it is near an old one.
                 vertex_id = ""
         if vertex_id:
             matched[vertex_id] = point
             remaining.pop(vertex_id, None)
-        else:
+        elif allow_new_points:
             new_points.append(point)
     operations: list[dict[str, object]] = []
     # Delete in reverse index order so one deletion cannot shift a later ID.

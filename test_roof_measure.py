@@ -557,6 +557,7 @@ def test_combined_manual_canvas_maps_each_part_to_atomic_operations() -> None:
         scale_x=1.0,
         scale_y=1.0,
         allow_deletions=True,
+        allow_new_points=False,
     )
 
     assert operations == [{"op": "move_vertex", "polygon_id": "footprint-1", "vertex_index": 0, "x": 12.0, "y": 10.0}]
@@ -571,9 +572,30 @@ def test_add_corner_canvas_preserves_existing_vertices_when_canvas_returns_only_
         scale_x=1.0,
         scale_y=1.0,
         allow_deletions=False,
+        allow_new_points=True,
     )
 
     assert operations == [{"op": "split_edge", "polygon_id": "footprint-1", "edge_index": 0, "x": 25.0, "y": 10.0}]
+
+
+def test_move_corner_mode_never_inserts_or_deletes_when_fabric_omits_metadata() -> None:
+    section = section_from_polygon("footprint-1", [(10, 10), (40, 10), (40, 40), (10, 40)])
+    objects = [
+        {"type": "circle", "originX": "center", "originY": "center", "left": x, "top": y}
+        for x, y in section.polygon[:-1]
+    ]
+    objects[0]["left"] = 14
+
+    operations = _canvas_to_polygon_operations(
+        {"objects": objects},
+        [section],
+        scale_x=1.0,
+        scale_y=1.0,
+        allow_deletions=False,
+        allow_new_points=False,
+    )
+
+    assert operations == [{"op": "move_vertex", "polygon_id": "footprint-1", "vertex_index": 0, "x": 14.0, "y": 10.0}]
 
 
 def test_ai_polygon_editor_scores_accepted_atomic_edit_without_missing_score_arguments() -> None:
