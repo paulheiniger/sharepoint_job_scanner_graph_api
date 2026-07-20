@@ -30,6 +30,62 @@ class LidarMaskAssessment:
         }
 
 
+@dataclass
+class LidarHeightGrid:
+    """Cached image-aligned height-above-ground grid for local edge scoring."""
+
+    height_grid: np.ndarray | None = None
+    cell_pixels: int = 8
+    lidar_points: int = 0
+    image_points: int = 0
+    warning: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self.height_grid is not None and bool(np.isfinite(self.height_grid).any())
+
+
+def kyfromabove_height_grid_for_image(
+    *,
+    asset_url: str,
+    center_latitude: float,
+    center_longitude: float,
+    zoom: float,
+    source_width: int,
+    source_height: int,
+    image_width: int,
+    image_height: int,
+    cell_pixels: int = 8,
+) -> LidarHeightGrid:
+    """Load one image-aligned LiDAR grid for several local geometry decisions.
+
+    The cached COPC query is shared with final mask validation.  Callers should
+    use this as soft evidence rather than rejecting geometry when it is absent.
+    """
+    if not asset_url:
+        return LidarHeightGrid(warning="No LiDAR asset is available for this image.")
+    try:
+        height_grid, lidar_points, image_points = _cached_kyfromabove_height_grid(
+            asset_url,
+            float(center_latitude),
+            float(center_longitude),
+            float(zoom),
+            int(source_width),
+            int(source_height),
+            int(image_width),
+            int(image_height),
+            max(2, int(cell_pixels)),
+        )
+        return LidarHeightGrid(
+            height_grid=height_grid,
+            cell_pixels=max(2, int(cell_pixels)),
+            lidar_points=lidar_points,
+            image_points=image_points,
+        )
+    except Exception as exc:
+        return LidarHeightGrid(warning=f"LiDAR edge evidence was unavailable: {type(exc).__name__}: {exc}")
+
+
 def assess_mask_against_kyfromabove_lidar(
     *,
     asset_url: str,
@@ -58,25 +114,27 @@ def assess_mask_against_kyfromabove_lidar(
     source_width = int(source_width or mask_bool.shape[1])
     source_height = int(source_height or mask_bool.shape[0])
     try:
-        height_grid, lidar_points, image_points = _cached_kyfromabove_height_grid(
-            asset_url,
-            float(center_latitude),
-            float(center_longitude),
-            float(zoom),
-            int(source_width),
-            int(source_height),
-            int(mask_bool.shape[1]),
-            int(mask_bool.shape[0]),
-            max(2, int(cell_pixels)),
+        grid = kyfromabove_height_grid_for_image(
+            asset_url=asset_url,
+            center_latitude=float(center_latitude),
+            center_longitude=float(center_longitude),
+            zoom=float(zoom),
+            source_width=int(source_width),
+            source_height=int(source_height),
+            image_width=int(mask_bool.shape[1]),
+            image_height=int(mask_bool.shape[0]),
+            cell_pixels=max(2, int(cell_pixels)),
         )
+        if not grid.ok or grid.height_grid is None:
+            return LidarMaskAssessment(ok=False, warning=grid.warning or "LiDAR height grid is unavailable.")
         assessment = assess_mask_against_height_grid(
             mask_bool,
-            height_grid,
-            cell_pixels=max(2, int(cell_pixels)),
+            grid.height_grid,
+            cell_pixels=grid.cell_pixels,
             candidate_mask=candidate_mask,
         )
-        assessment.lidar_points = lidar_points
-        assessment.image_points = image_points
+        assessment.lidar_points = grid.lidar_points
+        assessment.image_points = grid.image_points
         return assessment
     except Exception as exc:
         return LidarMaskAssessment(ok=False, warning=f"LiDAR height-prior evaluation failed: {type(exc).__name__}: {exc}")

@@ -45,10 +45,10 @@ from .ai_polygons import _focus_crop_box, RoofPolygonSuggestion, suggest_refined
 from .ai_raster_outline import suggest_raster_roof_outline
 from .ai_qa import qa_corrections_to_prompts, suggest_roof_qa
 from .ai_points import suggest_roof_prompt_points
-from .footprint_deformation import deform_footprints_to_roof_support
+from .footprint_deformation import deform_footprints_to_roof_support, score_polygon_candidate
 from .exports import geojson_to_string, measurement_to_geojson, report_to_json
 from .image_io import load_image_bytes, uploaded_file_bytes
-from .lidar import assess_mask_against_kyfromabove_lidar
+from .lidar import assess_mask_against_kyfromabove_lidar, kyfromabove_height_grid_for_image
 from .map_reference import (
     BuildingFootprint,
     MapboxReferenceProvider,
@@ -863,6 +863,7 @@ def _measure_roof_automatically(
         notes.append("Segmentation did not produce an editable roof boundary. Use the advanced outline tools to continue.")
         return result, notes, image_bytes
 
+    lidar_edge_grid = _lidar_edge_height_grid(result, automatic_request, lidar_asset_url)
     straightened_sections, finalizer_record = finalize_roof_sections(
         result.selected_mask,
         result.report.measurement.sections,
@@ -877,12 +878,16 @@ def _measure_roof_automatically(
                 automatic_request.footprint_polygons,
                 image=np.asarray(image.convert("RGB")),
                 sam_mask=result.selected_mask,
+                lidar_height_grid=lidar_edge_grid.height_grid if lidar_edge_grid and lidar_edge_grid.ok else None,
+                lidar_cell_pixels=lidar_edge_grid.cell_pixels if lidar_edge_grid else 8,
             )
             footprint_deformation_record = {
                 "stage": "footprint_deformation",
                 "accepted": footprint_candidate.accepted,
                 "reason": footprint_candidate.reason,
                 "translation": {"x": footprint_candidate.translation[0], "y": footprint_candidate.translation[1]},
+                "rotation_degrees": footprint_candidate.rotation_degrees,
+                "scale": footprint_candidate.scale,
                 "sam_support": footprint_candidate.sam_support,
                 "sam_coverage": footprint_candidate.sam_coverage,
                 "topology_score": footprint_candidate.topology_score,
@@ -893,13 +898,43 @@ def _measure_roof_automatically(
                     automatic_request.footprint_polygons,
                     automatic_request.outline_prior_polygons,
                 ),
+                "candidate_comparison": {
+                    "raw_sam": score_polygon_candidate(
+                        [section.polygon for section in straightened_sections],
+                        result.selected_mask,
+                    ),
+                    "aligned_footprint": score_polygon_candidate(
+                        footprint_candidate.aligned_polygons,
+                        result.selected_mask,
+                    ),
+                    "hybrid_deformed_footprint": score_polygon_candidate(
+                        footprint_candidate.polygons,
+                        result.selected_mask,
+                    ),
+                    "selected": "hybrid_deformed_footprint" if footprint_candidate.accepted else "raw_sam",
+                },
                 "polygons": [_points_record(polygon) for polygon in footprint_candidate.polygons],
                 "edge_offset_count": sum(len(offsets) for offsets in footprint_candidate.edge_offsets),
+                "edge_diagnostics": footprint_candidate.edge_diagnostics,
+                "coordinate_frame": {
+                    "image_width": image.width,
+                    "image_height": image.height,
+                    "sam_mask_width": int(result.selected_mask.shape[1]),
+                    "sam_mask_height": int(result.selected_mask.shape[0]),
+                    "working_crop": _box_record(working_crop),
+                },
                 "mean_abs_edge_offset": (
                     round(float(np.mean([abs(offset) for offsets in footprint_candidate.edge_offsets for offset in offsets])), 2)
                     if footprint_candidate.edge_offsets
                     else 0.0
                 ),
+                "lidar_edge_evidence": {
+                    "available": bool(lidar_edge_grid and lidar_edge_grid.ok),
+                    "cell_pixels": lidar_edge_grid.cell_pixels if lidar_edge_grid else 8,
+                    "lidar_points": lidar_edge_grid.lidar_points if lidar_edge_grid else 0,
+                    "image_points": lidar_edge_grid.image_points if lidar_edge_grid else 0,
+                    "warning": lidar_edge_grid.warning if lidar_edge_grid else "",
+                },
             }
             if footprint_candidate.accepted:
                 footprint_sections = [
@@ -1101,15 +1136,34 @@ def _measure_roof_automatically(
                 retry_request.footprint_polygons,
                 image=np.asarray(image.convert("RGB")),
                 sam_mask=retry.selected_mask,
+                lidar_height_grid=lidar_edge_grid.height_grid if lidar_edge_grid and lidar_edge_grid.ok else None,
+                lidar_cell_pixels=lidar_edge_grid.cell_pixels if lidar_edge_grid else 8,
             )
             retry_footprint_deformation = {
                 "accepted": retry_candidate.accepted,
                 "reason": retry_candidate.reason,
                 "translation": {"x": retry_candidate.translation[0], "y": retry_candidate.translation[1]},
+                "rotation_degrees": retry_candidate.rotation_degrees,
+                "scale": retry_candidate.scale,
                 "sam_support": retry_candidate.sam_support,
                 "sam_coverage": retry_candidate.sam_coverage,
                 "score": retry_candidate.score,
                 "polygons": [_points_record(polygon) for polygon in retry_candidate.polygons],
+                "edge_diagnostics": retry_candidate.edge_diagnostics,
+                "lidar_edge_evidence": {
+                    "available": bool(lidar_edge_grid and lidar_edge_grid.ok),
+                    "cell_pixels": lidar_edge_grid.cell_pixels if lidar_edge_grid else 8,
+                    "lidar_points": lidar_edge_grid.lidar_points if lidar_edge_grid else 0,
+                    "image_points": lidar_edge_grid.image_points if lidar_edge_grid else 0,
+                    "warning": lidar_edge_grid.warning if lidar_edge_grid else "",
+                },
+                "coordinate_frame": {
+                    "image_width": image.width,
+                    "image_height": image.height,
+                    "sam_mask_width": int(retry.selected_mask.shape[1]),
+                    "sam_mask_height": int(retry.selected_mask.shape[0]),
+                    "working_crop": _box_record(working_crop),
+                },
             }
             if retry_candidate.accepted:
                 retry_sections = [
@@ -1140,6 +1194,10 @@ def _measure_roof_automatically(
     )
     lidar_core_cut = _lidar_core_cut(initial_lidar, retry_lidar)
     lidar_ground_regression = _lidar_ground_regression(initial_lidar, retry_lidar)
+    footprint_support_regression = _footprint_support_regression(
+        footprint_deformation_record,
+        retry_footprint_deformation,
+    )
     accepted = _targeted_qa_retry_is_accepted(
         has_sections=bool(retry_sections),
         deterministic_score_delta=score_delta,
@@ -1147,6 +1205,7 @@ def _measure_roof_automatically(
         qa_confidence=qa.confidence,
         lidar_core_cut=lidar_core_cut,
         lidar_ground_regression=lidar_ground_regression,
+        footprint_support_regression=footprint_support_regression,
     )
     retry_record = {
         "stage": "targeted_sam_retry",
@@ -1165,6 +1224,7 @@ def _measure_roof_automatically(
         "lidar_retry_ground_fraction": _lidar_ground_fraction(retry_lidar),
         "rejected_for_lidar_core_cut": lidar_core_cut,
         "rejected_for_lidar_ground_regression": lidar_ground_regression,
+        "rejected_for_footprint_support_regression": footprint_support_regression,
         "accepted": accepted,
     }
     if not accepted:
@@ -1184,6 +1244,8 @@ def _measure_roof_automatically(
             if lidar_core_cut
             else "AI QA proposed targeted SAM prompts, but the retry added LiDAR-classified ground; kept the original outline."
             if lidar_ground_regression
+            else "AI QA proposed targeted SAM prompts, but the retry lost too much support for the accepted footprint topology; kept the original outline."
+            if footprint_support_regression
             else "AI QA proposed targeted SAM prompts, but the retry did not materially satisfy those corrections within the geometry guardrails; kept the original outline."
         )
         return result, notes, image_bytes
@@ -1359,6 +1421,32 @@ def _lidar_geometry_assessment(
     )
 
 
+def _lidar_edge_height_grid(
+    result: RoofMeasureResult,
+    request: RoofMeasureRequest,
+    asset_url: str,
+):
+    """Return the cached image-aligned height grid used for per-edge scoring."""
+    if not asset_url or result.selected_mask is None:
+        return None
+    map_view = request.map_view
+    if any(key not in map_view for key in ("latitude", "longitude", "zoom")):
+        return None
+    source = result.report.source_images[0] if result.report.source_images else None
+    if source is None:
+        return None
+    return kyfromabove_height_grid_for_image(
+        asset_url=asset_url,
+        center_latitude=float(map_view["latitude"]),
+        center_longitude=float(map_view["longitude"]),
+        zoom=float(map_view["zoom"]),
+        source_width=int(source.width),
+        source_height=int(source.height),
+        image_width=int(result.selected_mask.shape[1]),
+        image_height=int(result.selected_mask.shape[0]),
+    )
+
+
 def _lidar_core_retention(assessment) -> float | None:
     if assessment is None or not assessment.ok:
         return None
@@ -1434,14 +1522,39 @@ def _targeted_qa_retry_is_accepted(
     qa_confidence: float,
     lidar_core_cut: bool,
     lidar_ground_regression: bool,
+    footprint_support_regression: bool = False,
 ) -> bool:
-    if not has_sections or lidar_core_cut or lidar_ground_regression:
+    if not has_sections or lidar_core_cut or lidar_ground_regression or footprint_support_regression:
         return False
     if deterministic_score_delta > 0:
         return qa_score_delta >= 0.05
     # QA may need to move a boundary away from the first SAM mask. Permit that
     # only for a material, confident correction and only within a small geometry loss.
     return bool(qa_confidence >= 0.65 and qa_score_delta >= 0.20 and deterministic_score_delta >= -0.03)
+
+
+def _footprint_support_regression(
+    initial: dict[str, object] | None,
+    retry: dict[str, object] | None,
+    *,
+    maximum_drop: float = 0.15,
+) -> bool:
+    """Do not let local SAM prompt fixes discard a strongly supported footprint topology."""
+    if not initial or not bool(initial.get("accepted")):
+        return False
+    try:
+        initial_support = float(initial.get("sam_support") or 0.0)
+    except (TypeError, ValueError):
+        return False
+    if initial_support <= 0:
+        return False
+    if not retry or not bool(retry.get("accepted")):
+        return True
+    try:
+        retry_support = float(retry.get("sam_support") or 0.0)
+    except (TypeError, ValueError):
+        return True
+    return retry_support < initial_support - maximum_drop
 
 
 def _straightened_sections(sections: list[RoofSection]) -> list[RoofSection]:
@@ -1725,6 +1838,17 @@ def _render_measurement_result(
             value=False,
             key=f"roof_measure_show_deformed_footprint_{report.id}",
         )
+    retry_record = next((item for item in report.processing_iterations if item.get("stage") == "targeted_sam_retry"), None)
+    retry_deformation = retry_record.get("footprint_deformation") if isinstance(retry_record, dict) else None
+    retry_deformed_polygons = _recorded_polygons(retry_deformation.get("polygons")) if isinstance(retry_deformation, dict) else []
+    show_retry_deformation = False
+    if retry_deformed_polygons and isinstance(retry_record, dict) and bool(retry_record.get("accepted")):
+        show_retry_deformation = st.checkbox(
+            "Show retry footprint against exact retry SAM mask",
+            value=False,
+            key=f"roof_measure_show_retry_deformation_{report.id}",
+            help="Magenta is the retry deformation candidate. Red is the exact retry SAM mask used to score it.",
+        )
     if result.applied_footprint_polygons:
         show_footprint = st.checkbox(
             "Show raw footprint used to constrain segmentation",
@@ -1791,10 +1915,17 @@ def _render_measurement_result(
             fill=(0, 188, 212, 35),
             outline=(0, 188, 212, 255),
         )
+    if show_retry_deformation:
+        displayed_overlay = footprint_overlay(
+            displayed_overlay,
+            polygons=retry_deformed_polygons,
+            fill=(216, 27, 96, 35),
+            outline=(216, 27, 96, 255),
+        )
     st.image(
         displayed_overlay,
         caption=(
-            "Green is the measured boundary. Cyan is the deformed footprint candidate. Yellow is the AI outline prior. Blue is the source footprint. "
+            "Green is the measured boundary. Cyan is the deformed footprint candidate. Magenta is the retry deformation candidate over the retry SAM mask. Yellow is the AI outline prior. Blue is the source footprint. "
             "Orange is the buffered footprint constraint. A partial or absent blue footprint means no usable footprint was applied."
         ),
         width=min(loaded.metadata.inference_width, 1000),

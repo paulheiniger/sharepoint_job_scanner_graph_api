@@ -58,6 +58,7 @@ from roof_measure.streamlit_page import (
     _footprints_for_prompt_points,
     _footprint_visible_area_pixels,
     _footprint_rings_to_inference_pixels,
+    _footprint_support_regression,
     _insert_new_corner_points,
     _lidar_core_cut,
     _lidar_ground_regression,
@@ -471,7 +472,31 @@ def test_footprint_deformation_preserves_gap_between_supported_buildings() -> No
     assert candidate.accepted
     assert len(candidate.polygons) == 2
     assert candidate.sam_support > 0.9
+    assert len(candidate.edge_diagnostics) == 2
+    assert candidate.edge_diagnostics[0][0]["components"]["roof_support_inside"] >= 0
     assert max(x for x, _ in candidate.polygons[0]) < min(x for x, _ in candidate.polygons[1])
+
+
+def test_footprint_deformation_records_local_lidar_edge_evidence() -> None:
+    image = np.full((120, 160, 3), 120, dtype=np.uint8)
+    mask = np.zeros((120, 160), dtype=bool)
+    footprint = [(20.0, 20.0), (65.0, 20.0), (65.0, 90.0), (20.0, 90.0)]
+    mask[20:91, 20:66] = True
+    height_grid = np.zeros((15, 20), dtype=float)
+    height_grid[3:11, 3:8] = 12.0
+
+    candidate = deform_footprints_to_roof_support(
+        [footprint],
+        image=image,
+        sam_mask=mask,
+        lidar_height_grid=height_grid,
+        lidar_cell_pixels=8,
+    )
+
+    components = candidate.edge_diagnostics[0][0]["components"]
+    assert components["lidar_available"] == 1.0
+    assert components["lidar_roof_inside"] > 0.0
+    assert components["lidar_ground_outside"] > 0.0
 
 
 def test_ai_outline_prior_constrains_segmented_mask(tmp_path) -> None:
@@ -623,6 +648,22 @@ def test_targeted_qa_retry_requires_actual_prompt_correction() -> None:
         qa_confidence=0.9,
         lidar_core_cut=False,
         lidar_ground_regression=False,
+    )
+
+
+def test_qa_retry_rejects_collapse_of_accepted_footprint_support() -> None:
+    initial = {"accepted": True, "sam_support": 0.96}
+    retry = {"accepted": False, "sam_support": 0.40}
+
+    assert _footprint_support_regression(initial, retry)
+    assert not _targeted_qa_retry_is_accepted(
+        has_sections=True,
+        deterministic_score_delta=0.02,
+        qa_score_delta=0.25,
+        qa_confidence=0.8,
+        lidar_core_cut=False,
+        lidar_ground_regression=False,
+        footprint_support_regression=True,
     )
 
 
