@@ -80,12 +80,12 @@ def render_ai_roof_measure_page() -> None:
 
     # Existing browser sessions retain checkbox state, so migrate old sessions
     # once to the current automatic-pipeline defaults.
-    if int(st.session_state.get("roof_measure_auto_defaults_version", 0)) < 6:
+    if int(st.session_state.get("roof_measure_auto_defaults_version", 0)) < 7:
         st.session_state["roof_measure_auto_ai_cleanup"] = True
-        st.session_state["roof_measure_auto_ai_vertex_editor"] = True
+        st.session_state["roof_measure_auto_ai_vertex_editor"] = False
         st.session_state["roof_measure_auto_ai_outline_prior"] = False
         st.session_state["roof_measure_auto_raster_outline_prior"] = False
-        st.session_state["roof_measure_auto_defaults_version"] = 6
+        st.session_state["roof_measure_auto_defaults_version"] = 7
 
     with st.expander("Milestone 1 Scope", expanded=False):
         st.markdown(
@@ -384,16 +384,6 @@ def render_ai_roof_measure_page() -> None:
                 )
                 st.caption("Footprints are a constraint and review aid, not an authoritative roof takeoff.")
 
-    automatic_measure_clicked = st.button(
-        "Run Advanced Measure",
-        type="primary",
-        width="stretch",
-        help="Use this only after changing advanced settings or manually selecting footprint parts. The address-level Measure Roof action is the normal workflow.",
-        key="roof_measure_auto_measure",
-    )
-    if automatic_measure_clicked:
-        st.session_state["roof_measure_auto_measure_pending"] = True
-
     st.subheader("Advanced Measurement Controls")
     ai_points_col1, ai_points_col2 = st.columns([1, 2])
     openai_available = bool(os.getenv("OPENAI_API_KEY"))
@@ -521,10 +511,10 @@ def render_ai_roof_measure_page() -> None:
         key="roof_measure_auto_ai_cleanup",
     )
     use_ai_vertex_editor = st.checkbox(
-        "Refine selected footprint vertices automatically",
-        value=True,
+        "Run AI vertex refinement during Measure Roof",
+        value=False,
         disabled=not openai_available,
-        help="Starts from the selected footprint parts, runs bounded AI vertex edits, then uses semantic QA for analysis only.",
+        help="Optional batch mode. Normally Measure Roof opens the source-footprint/SAM editor first, then you run AI Adjust Vertices visibly.",
         key="roof_measure_auto_ai_vertex_editor",
     )
     use_ai_outline_prior = st.checkbox(
@@ -1107,7 +1097,12 @@ def _measure_roof_automatically(
                 outline_prior_buffer_pixels=result.outline_prior_buffer_pixels,
                 deterministic_score=result.deterministic_score,
             )
-            result, editor_notes = _run_ai_polygon_editor(source_result, image=image, lidar_asset_url=lidar_asset_url)
+            result, editor_notes = _run_ai_polygon_editor(
+                source_result,
+                image=image,
+                lidar_asset_url=lidar_asset_url,
+                run_semantic_analysis=False,
+            )
             notes.extend(editor_notes)
         else:
             notes.append("Selected source footprints were not valid editor polygons; kept the SAM outline.")
@@ -2771,6 +2766,7 @@ def _run_ai_polygon_editor(
     *,
     image: Image.Image,
     lidar_asset_url: str | None = None,
+    run_semantic_analysis: bool = True,
 ) -> tuple[RoofMeasureResult, list[str]]:
     """Bounded exterior then hole editing; each atomic operation gets topology checks."""
     current_sections = [section.model_copy(deep=True) for section in result.report.measurement.sections]
@@ -2848,9 +2844,40 @@ def _run_ai_polygon_editor(
         "lidar_ground_fraction": geometry_lidar.ground_fraction if geometry_lidar and geometry_lidar.ok else None,
         "vertex_document": sections_to_vertex_document(current_sections),
     }
+    qa_record: dict[str, object] | None = None
+    if run_semantic_analysis and os.getenv("OPENAI_API_KEY"):
+        qa = suggest_roof_qa(
+            image,
+            current_sections,
+            address=result.report.address,
+            candidate_mask=(
+                sections_mask(result.selected_mask.shape, current_sections)
+                if result.selected_mask is not None
+                else None
+            ),
+        )
+        qa_record = {
+            "stage": "semantic_qa",
+            "status": "completed" if qa.completed else "failed",
+            **qa.as_record(),
+            "accepted": qa.completed,
+            "mode": "analysis_only_after_vertex_editor",
+        }
+        if qa.completed:
+            defect_count = sum(
+                len(getattr(qa, field))
+                for field in ("missing_regions", "extra_regions", "courtyard_errors", "ground_gaps", "boundary_errors")
+            )
+            messages.append(f"Semantic QA completed after vertex edits with {defect_count} review hint(s); it did not rerun SAM2.")
+        else:
+            messages.extend(qa.warnings)
     corrected_report = corrected_report.model_copy(
         update={
-            "processing_iterations": [*corrected_report.processing_iterations, editor_record],
+            "processing_iterations": [
+                *corrected_report.processing_iterations,
+                editor_record,
+                *([qa_record] if qa_record else []),
+            ],
             "user_corrections": [
                 *corrected_report.user_corrections,
                 {"type": "ai_polygon_editor", "operation_count": applied_count, "passes": summaries},
@@ -2867,7 +2894,12 @@ def _run_ai_polygon_editor(
         applied_outline_prior_polygons=result.applied_outline_prior_polygons,
         outline_prior_buffer_pixels=result.outline_prior_buffer_pixels,
         deterministic_score=(
-            score_roof_result(result.selected_mask, current_sections)
+            score_roof_result(
+                result.selected_mask,
+                current_sections,
+                result.applied_footprint_polygons,
+                result.applied_outline_prior_polygons,
+            )
             if result.selected_mask is not None
             else result.deterministic_score
         ),

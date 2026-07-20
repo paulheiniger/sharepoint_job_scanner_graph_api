@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import sys
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 from PIL import Image
@@ -43,6 +44,7 @@ from roof_measure.map_reference import (
     geojson_building_footprints,
 )
 from roof_measure.models import ImageMetadata
+from roof_measure.ai_polygon_editor import PolygonEditSuggestion
 from roof_measure.polygon_editor import apply_polygon_operations, sections_to_vertex_document
 from roof_measure.polygonize import section_from_polygon, sections_from_mask
 from roof_measure.segmentation import MockRoofSegmenter, Sam2RoofSegmenter, SegmentationPrompts
@@ -75,6 +77,7 @@ from roof_measure.streamlit_page import (
     _raster_outline_is_prior_only,
     _qa_requires_manual_review,
     _qa_prompt_satisfaction,
+    _run_ai_polygon_editor,
     _section_to_corner_canvas_initial_drawing,
     _sections_from_ai_polygons,
     _sections_to_canvas_initial_drawing,
@@ -537,6 +540,28 @@ def test_polygon_editor_document_preserves_hole_identity() -> None:
     )
     assert len(changed.applied_operations) == 1
     assert changed.sections[0].holes[0][0] == (42.0, 42.0)
+
+
+def test_ai_polygon_editor_scores_accepted_atomic_edit_without_missing_score_arguments() -> None:
+    image = Image.new("RGB", (100, 100), (128, 128, 128))
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    result = measure_roof_from_outline_polygons(
+        image_bytes=buffer.getvalue(),
+        request=RoofMeasureRequest(overhead_image_name="editor.png", metadata_pixels_per_foot=1.0),
+        polygons=[[(10, 10), (90, 10), (90, 90), (10, 90)]],
+    )
+    result.selected_mask = np.ones((100, 100), dtype=bool)
+    suggestion = PolygonEditSuggestion(
+        operations=[{"op": "move_vertex", "polygon_id": "section-1", "vertex_index": 0, "x": 12, "y": 12}],
+        confidence=0.9,
+    )
+    with patch("roof_measure.streamlit_page.suggest_polygon_operations", return_value=suggestion):
+        edited, notes = _run_ai_polygon_editor(result, image=image, lidar_asset_url="", run_semantic_analysis=False)
+
+    assert any("applied 3 validated vertex edits" in note for note in notes)
+    assert edited.deterministic_score > 0
+    assert any(item.get("stage") == "ai_polygon_editor" for item in edited.report.processing_iterations)
 
 
 def test_ai_outline_prior_constrains_segmented_mask(tmp_path) -> None:
