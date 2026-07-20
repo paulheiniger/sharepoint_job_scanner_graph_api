@@ -993,7 +993,13 @@ def _measure_roof_automatically(
             automatic_request.outline_prior_polygons,
         ),
     )
-    initial_lidar = _lidar_geometry_assessment(result, selected_sections, automatic_request, lidar_asset_url)
+    initial_lidar = _lidar_geometry_assessment(
+        result,
+        selected_sections,
+        automatic_request,
+        lidar_asset_url,
+        mask_override=sections_mask(result.selected_mask.shape, selected_sections) if result.selected_mask is not None else None,
+    )
     result.report = result.report.model_copy(
         update={
             "processing_iterations": [
@@ -1088,6 +1094,33 @@ def _measure_roof_automatically(
         footprint_polygons=retry_request.footprint_polygons,
         outline_prior_polygons=retry_request.outline_prior_polygons,
     )
+    retry_footprint_deformation: dict[str, object] | None = None
+    if retry_request.footprint_polygons and retry.selected_mask is not None:
+        try:
+            retry_candidate = deform_footprints_to_roof_support(
+                retry_request.footprint_polygons,
+                image=np.asarray(image.convert("RGB")),
+                sam_mask=retry.selected_mask,
+            )
+            retry_footprint_deformation = {
+                "accepted": retry_candidate.accepted,
+                "reason": retry_candidate.reason,
+                "translation": {"x": retry_candidate.translation[0], "y": retry_candidate.translation[1]},
+                "sam_support": retry_candidate.sam_support,
+                "sam_coverage": retry_candidate.sam_coverage,
+                "score": retry_candidate.score,
+                "polygons": [_points_record(polygon) for polygon in retry_candidate.polygons],
+            }
+            if retry_candidate.accepted:
+                retry_sections = [
+                    section_from_polygon(f"footprint-{index + 1}", polygon)
+                    for index, polygon in enumerate(retry_candidate.polygons)
+                ]
+        except Exception as exc:
+            retry_footprint_deformation = {
+                "accepted": False,
+                "reason": f"retry footprint deformation failed: {type(exc).__name__}",
+            }
     retry_score = score_roof_result(
         retry.selected_mask,
         retry_sections,
@@ -1098,7 +1131,13 @@ def _measure_roof_automatically(
     initial_qa_score = _qa_prompt_satisfaction(result.selected_mask, retry_positive, retry_negative)
     retry_qa_score = _qa_prompt_satisfaction(retry.selected_mask, retry_positive, retry_negative)
     qa_score_delta = retry_qa_score - initial_qa_score
-    retry_lidar = _lidar_geometry_assessment(retry, retry_sections, retry_request, lidar_asset_url)
+    retry_lidar = _lidar_geometry_assessment(
+        retry,
+        retry_sections,
+        retry_request,
+        lidar_asset_url,
+        mask_override=sections_mask(retry.selected_mask.shape, retry_sections) if retry.selected_mask is not None else None,
+    )
     lidar_core_cut = _lidar_core_cut(initial_lidar, retry_lidar)
     lidar_ground_regression = _lidar_ground_regression(initial_lidar, retry_lidar)
     accepted = _targeted_qa_retry_is_accepted(
@@ -1119,6 +1158,7 @@ def _measure_roof_automatically(
         "qa_correction_score_retry": retry_qa_score,
         "qa_correction_score_delta": qa_score_delta,
         "polygon_finalizer": retry_finalizer,
+        **({"footprint_deformation": retry_footprint_deformation} if retry_footprint_deformation else {}),
         "lidar_initial_core_retention": _lidar_core_retention(initial_lidar),
         "lidar_retry_core_retention": _lidar_core_retention(retry_lidar),
         "lidar_initial_ground_fraction": _lidar_ground_fraction(initial_lidar),
@@ -1398,7 +1438,7 @@ def _targeted_qa_retry_is_accepted(
     if not has_sections or lidar_core_cut or lidar_ground_regression:
         return False
     if deterministic_score_delta > 0:
-        return True
+        return qa_score_delta >= 0.05
     # QA may need to move a boundary away from the first SAM mask. Permit that
     # only for a material, confident correction and only within a small geometry loss.
     return bool(qa_confidence >= 0.65 and qa_score_delta >= 0.20 and deterministic_score_delta >= -0.03)
@@ -1620,6 +1660,22 @@ def _point_matches_footprint(
     )
 
 
+def _recorded_polygons(value: object) -> list[list[tuple[float, float]]]:
+    polygons: list[list[tuple[float, float]]] = []
+    for polygon in value if isinstance(value, list) else []:
+        points: list[tuple[float, float]] = []
+        for point in polygon if isinstance(polygon, list) else []:
+            if not isinstance(point, dict):
+                continue
+            try:
+                points.append((float(point["x"]), float(point["y"])))
+            except (KeyError, TypeError, ValueError):
+                continue
+        if len(points) >= 3:
+            polygons.append(points)
+    return polygons
+
+
 def _render_measurement_result(
     result: RoofMeasureResult,
     *,
@@ -1657,6 +1713,18 @@ def _render_measurement_result(
     show_footprint_buffer = False
     show_outline_prior = False
     show_outline_prior_buffer = False
+    deformation_record = next(
+        (item for item in report.processing_iterations if item.get("stage") == "footprint_deformation" and item.get("accepted")),
+        None,
+    )
+    deformed_footprint_polygons = _recorded_polygons(deformation_record.get("polygons")) if deformation_record else []
+    show_deformed_footprint = False
+    if deformed_footprint_polygons:
+        show_deformed_footprint = st.checkbox(
+            "Show topology-preserving deformed footprint",
+            value=False,
+            key=f"roof_measure_show_deformed_footprint_{report.id}",
+        )
     if result.applied_footprint_polygons:
         show_footprint = st.checkbox(
             "Show raw footprint used to constrain segmentation",
@@ -1716,10 +1784,17 @@ def _render_measurement_result(
         if show_footprint
         else displayed_overlay
     )
+    if show_deformed_footprint:
+        displayed_overlay = footprint_overlay(
+            displayed_overlay,
+            polygons=deformed_footprint_polygons,
+            fill=(0, 188, 212, 35),
+            outline=(0, 188, 212, 255),
+        )
     st.image(
         displayed_overlay,
         caption=(
-            "Green is the measured boundary. Yellow is the AI outline prior. Blue is the source footprint. "
+            "Green is the measured boundary. Cyan is the deformed footprint candidate. Yellow is the AI outline prior. Blue is the source footprint. "
             "Orange is the buffered footprint constraint. A partial or absent blue footprint means no usable footprint was applied."
         ),
         width=min(loaded.metadata.inference_width, 1000),

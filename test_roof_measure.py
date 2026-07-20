@@ -615,6 +615,17 @@ def test_targeted_qa_retry_rejects_ground_regression() -> None:
     )
 
 
+def test_targeted_qa_retry_requires_actual_prompt_correction() -> None:
+    assert not _targeted_qa_retry_is_accepted(
+        has_sections=True,
+        deterministic_score_delta=0.06,
+        qa_score_delta=0.0,
+        qa_confidence=0.9,
+        lidar_core_cut=False,
+        lidar_ground_regression=False,
+    )
+
+
 def test_deterministic_score_penalizes_fragmented_sections() -> None:
     mask = np.ones((20, 20), dtype=bool)
     whole = [section_from_polygon("main", [(1, 1), (18, 1), (18, 18), (1, 18)])]
