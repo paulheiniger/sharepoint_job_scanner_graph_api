@@ -148,7 +148,7 @@ def _call_openai_roof_polygon_suggester(
         raise RuntimeError("openai package is not installed") from exc
     width, height = image.size
     data_url = _image_data_url(image)
-    timeout_seconds = float(os.getenv("OPENAI_ROOF_MEASURE_POLYGONS_TIMEOUT_SECONDS", "45"))
+    timeout_seconds = float(os.getenv("OPENAI_ROOF_MEASURE_POLYGONS_TIMEOUT_SECONDS", "120"))
     model = os.getenv("OPENAI_ROOF_MEASURE_POLYGONS_MODEL") or os.getenv("OPENAI_ROOF_MEASURE_POINTS_MODEL") or "gpt-4o"
     client = OpenAI(timeout=timeout_seconds)
     user_content: list[dict[str, Any]] = [
@@ -220,7 +220,7 @@ def _call_openai_roof_polygon_refiner(
         raise RuntimeError("openai package is not installed") from exc
     width, height = image.size
     data_url = _image_data_url(image)
-    timeout_seconds = float(os.getenv("OPENAI_ROOF_MEASURE_POLYGONS_TIMEOUT_SECONDS", "45"))
+    timeout_seconds = float(os.getenv("OPENAI_ROOF_MEASURE_POLYGONS_TIMEOUT_SECONDS", "120"))
     model = os.getenv("OPENAI_ROOF_MEASURE_POLYGONS_MODEL") or os.getenv("OPENAI_ROOF_MEASURE_POINTS_MODEL") or "gpt-4o"
     client = OpenAI(timeout=timeout_seconds)
     user_content: list[dict[str, Any]] = [

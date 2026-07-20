@@ -24,6 +24,7 @@ class SegmentRequest(BaseModel):
     positive_points: list[tuple[float, float]] = Field(default_factory=list)
     negative_points: list[tuple[float, float]] = Field(default_factory=list)
     box: tuple[float, float, float, float] | None = None
+    mask_input_png_base64: str | None = None
     max_candidates: int = 3
     multimask_output: bool = True
 
@@ -59,6 +60,7 @@ def segment(request: SegmentRequest) -> SegmentResponse:
         predictor, torch, device = _predictor()
         point_coords, point_labels = _prompt_arrays(request, image.shape)
         box = _box_array(request.box, image.shape)
+        mask_input = _mask_prompt_array(request.mask_input_png_base64)
         with _PREDICT_LOCK:
             with torch.inference_mode():
                 predictor.set_image(image)
@@ -69,6 +71,8 @@ def segment(request: SegmentRequest) -> SegmentResponse:
                 }
                 if box is not None:
                     prediction_kwargs["box"] = box
+                if mask_input is not None:
+                    prediction_kwargs["mask_input"] = mask_input
                 masks, scores, _ = predictor.predict(**prediction_kwargs)
     except Exception as exc:  # pragma: no cover - real SAM2 failures are environment specific.
         raise HTTPException(status_code=500, detail=f"SAM2 segmentation failed: {type(exc).__name__}: {exc}") from exc
@@ -178,6 +182,15 @@ def _prompt_arrays(request: SegmentRequest, image_shape: tuple[int, ...]) -> tup
         points = [(width / 2, height / 2)]
         labels = [1]
     return np.asarray(points, dtype=np.float32), np.asarray(labels, dtype=np.int32)
+
+
+def _mask_prompt_array(mask_png_base64: str | None) -> np.ndarray | None:
+    if not mask_png_base64:
+        return None
+    raw = base64.b64decode(mask_png_base64)
+    mask = Image.open(BytesIO(raw)).convert("L").resize((256, 256), Image.Resampling.BILINEAR)
+    # SAM2 expects low-resolution logits, not an arbitrary full-resolution binary image.
+    return np.where(np.asarray(mask) > 127, 8.0, -8.0).astype(np.float32)[None, :, :]
 
 
 def _box_array(box: tuple[float, float, float, float] | None, image_shape: tuple[int, ...]) -> np.ndarray | None:

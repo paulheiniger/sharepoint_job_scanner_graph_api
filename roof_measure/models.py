@@ -75,6 +75,7 @@ class RoofMeasureRequest(BaseModel):
     segmentation_box: tuple[float, float, float, float] | None = None
     outline_prior_polygons: list[Ring] = Field(default_factory=list)
     outline_prior_buffer_pixels: int = 16
+    outline_prior_as_mask_prompt: bool = False
     calibration_length_feet: float | None = None
     calibration_point_a: Point | None = None
     calibration_point_b: Point | None = None

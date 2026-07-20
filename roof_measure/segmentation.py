@@ -18,6 +18,7 @@ class SegmentationPrompts:
     positive_points: list[Point] = field(default_factory=list)
     negative_points: list[Point] = field(default_factory=list)
     box: tuple[float, float, float, float] | None = None
+    mask_input: np.ndarray | None = None
 
 
 @dataclass
@@ -62,6 +63,11 @@ class Sam2RoofSegmenter:
             "positive_points": prompts.positive_points,
             "negative_points": prompts.negative_points,
             "box": prompts.box,
+            "mask_input_png_base64": (
+                _array_to_png_base64(np.asarray(prompts.mask_input, dtype=bool).astype(np.uint8) * 255)
+                if prompts.mask_input is not None
+                else None
+            ),
             "max_candidates": 3,
             "multimask_output": True,
         }

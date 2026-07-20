@@ -24,11 +24,13 @@ from roof_measure.calibration import (
 from roof_measure.ai_polygons import _focus_crop_box, polygon_suggestion_from_payload, suggest_refined_roof_polygons, suggest_roof_polygons
 from roof_measure.ai_qa import RoofQaFinding, qa_corrections_to_prompts, qa_finding_from_payload
 from roof_measure.ai_points import suggestion_from_payload
-from roof_measure.ai_polygons import _call_openai_roof_polygon_refiner, _call_openai_roof_polygon_suggester
+from roof_measure.ai_polygons import RoofPolygonSuggestion, _call_openai_roof_polygon_refiner, _call_openai_roof_polygon_suggester
+from roof_measure.ai_raster_outline import _repair_short_boundary_gaps, _yellow_boundary_to_polygons
 from roof_measure.ai_points import _call_openai_roof_point_suggester
 from roof_measure.calibration import _call_openai_scale_reader
 from roof_measure.confidence import measurement_warnings
 from roof_measure.exports import measurement_to_geojson
+from roof_measure.footprint_deformation import deform_footprints_to_roof_support
 from roof_measure.geometry import polygon_area_pixels, repair_polygon, simplify_ring, straighten_architectural_ring
 from roof_measure.image_io import image_hash, load_image_bytes
 from roof_measure.lidar import LidarMaskAssessment, _height_grid_from_points, assess_mask_against_height_grid
@@ -58,6 +60,8 @@ from roof_measure.streamlit_page import (
     _footprint_rings_to_inference_pixels,
     _insert_new_corner_points,
     _lidar_core_cut,
+    _lidar_ground_regression,
+    _evaluate_ai_outline_candidate,
     _map_view_for_image_crop,
     _primary_prompt_cluster,
     _polygons_interior_prompt_points,
@@ -66,10 +70,13 @@ from roof_measure.streamlit_page import (
     _prompt_points_to_canvas_initial_drawing,
     _points_to_canvas_initial_drawing,
     _replace_section_polygon,
+    _raster_outline_is_prior_only,
     _qa_requires_manual_review,
+    _qa_prompt_satisfaction,
     _section_to_corner_canvas_initial_drawing,
     _sections_from_ai_polygons,
     _sections_to_canvas_initial_drawing,
+    _targeted_qa_retry_is_accepted,
 )
 from roof_measure.visualization import prompt_points_overlay
 from jobscan.env import load_project_env
@@ -451,6 +458,22 @@ def test_selected_footprint_constrains_segmentation_mask() -> None:
     assert not constrained[4, 4]
 
 
+def test_footprint_deformation_preserves_gap_between_supported_buildings() -> None:
+    image = np.full((120, 160, 3), 120, dtype=np.uint8)
+    mask = np.zeros((120, 160), dtype=bool)
+    first = [(20.0, 20.0), (65.0, 20.0), (65.0, 90.0), (20.0, 90.0)]
+    second = [(90.0, 20.0), (140.0, 20.0), (140.0, 90.0), (90.0, 90.0)]
+    mask[20:91, 20:66] = True
+    mask[20:91, 90:141] = True
+
+    candidate = deform_footprints_to_roof_support([first, second], image=image, sam_mask=mask)
+
+    assert candidate.accepted
+    assert len(candidate.polygons) == 2
+    assert candidate.sam_support > 0.9
+    assert max(x for x, _ in candidate.polygons[0]) < min(x for x, _ in candidate.polygons[1])
+
+
 def test_ai_outline_prior_constrains_segmented_mask(tmp_path) -> None:
     mask = np.ones((100, 100), dtype=bool)
     request = RoofMeasureRequest(
@@ -524,6 +547,7 @@ def test_semantic_qa_defects_become_targeted_sam_prompts() -> None:
             "missing_regions": [{"x": 20, "y": 30}],
             "extra_regions": [{"x": 60, "y": 30}],
             "courtyard_errors": [{"x": 40, "y": 40}],
+            "ground_gaps": [{"x": 45, "y": 55}],
             "boundary_errors": [{"x": 10, "y": 10}],
             "confidence": 0.91,
         },
@@ -534,7 +558,8 @@ def test_semantic_qa_defects_become_targeted_sam_prompts() -> None:
     positive, negative = qa_corrections_to_prompts(finding)
 
     assert positive == [(20.0, 30.0)]
-    assert negative == [(60.0, 30.0), (40.0, 40.0)]
+    assert negative == [(60.0, 30.0), (40.0, 40.0), (45.0, 55.0)]
+    assert finding.ground_gaps == [(45.0, 55.0)]
     assert finding.boundary_errors == [(10.0, 10.0)]
     assert finding.confidence == 0.91
 
@@ -549,6 +574,45 @@ def test_semantic_qa_requires_manual_review_only_for_high_confidence_major_confl
 
     assert _qa_requires_manual_review(severe)
     assert not _qa_requires_manual_review(ambiguous)
+
+
+def test_targeted_qa_retry_can_improve_semantic_corrections_without_matching_initial_mask() -> None:
+    initial = np.zeros((80, 80), dtype=bool)
+    initial[20:60, 20:60] = True
+    retry = initial.copy()
+    retry[25:35, 25:35] = True
+    retry[45:55, 45:55] = False
+    positive = [(30.0, 30.0)]
+    negative = [(50.0, 50.0)]
+
+    initial_score = _qa_prompt_satisfaction(initial, positive, negative, radius_pixels=3)
+    retry_score = _qa_prompt_satisfaction(retry, positive, negative, radius_pixels=3)
+
+    assert initial_score == 0.5
+    assert retry_score == 1.0
+    assert _targeted_qa_retry_is_accepted(
+        has_sections=True,
+        deterministic_score_delta=-0.02,
+        qa_score_delta=retry_score - initial_score,
+        qa_confidence=0.76,
+        lidar_core_cut=False,
+        lidar_ground_regression=False,
+    )
+
+
+def test_targeted_qa_retry_rejects_ground_regression() -> None:
+    initial = LidarMaskAssessment(ok=True, ground_fraction=0.08)
+    retry = LidarMaskAssessment(ok=True, ground_fraction=0.16)
+
+    assert _lidar_ground_regression(initial, retry)
+    assert not _targeted_qa_retry_is_accepted(
+        has_sections=True,
+        deterministic_score_delta=0.02,
+        qa_score_delta=0.5,
+        qa_confidence=0.9,
+        lidar_core_cut=False,
+        lidar_ground_regression=True,
+    )
 
 
 def test_deterministic_score_penalizes_fragmented_sections() -> None:
@@ -766,6 +830,7 @@ def test_remote_sam2_segmenter_posts_prompts_and_decodes_masks(monkeypatch) -> N
         assert json["positive_points"] == [(20.0, 15.0)]
         assert json["negative_points"] == [(3.0, 4.0)]
         assert json["box"] == (10.0, 8.0, 35.0, 28.0)
+        assert json["mask_input_png_base64"]
         assert json["max_candidates"] == 3
         assert json["image_png_base64"]
         return FakeResponse()
@@ -779,6 +844,7 @@ def test_remote_sam2_segmenter_posts_prompts_and_decodes_masks(monkeypatch) -> N
             positive_points=[(20.0, 15.0)],
             negative_points=[(3.0, 4.0)],
             box=(10.0, 8.0, 35.0, 28.0),
+            mask_input=mask,
         ),
     )
 
@@ -1144,6 +1210,21 @@ def test_ai_polygon_focus_crop_uses_full_image_for_single_prompt() -> None:
     assert _focus_crop_box((1200, 900), [(600, 450)]) is None
 
 
+def test_ai_point_payload_maps_qualitative_confidence_and_preserves_scene_analysis() -> None:
+    suggestion = suggestion_from_payload(
+        {
+            "positive_points": [{"x": 20, "y": 30}],
+            "confidence": "high",
+            "scene_analysis": {"target_description": "One connected school roof."},
+        },
+        width=100,
+        height=80,
+    )
+
+    assert suggestion.confidence == 0.82
+    assert suggestion.scene_analysis["target_description"] == "One connected school roof."
+
+
 def test_primary_prompt_cluster_excludes_detached_campus_prompts() -> None:
     points = [(463, 548), (366, 385), (526, 270), (628, 289), (294, 596), (828, 958), (870, 783)]
 
@@ -1160,6 +1241,104 @@ def test_map_view_crop_reprojects_center_for_lidar_alignment() -> None:
     assert cropped["zoom"] == 19.0
     assert cropped["longitude"] < -84.192173
     assert cropped["latitude"] > 37.97867
+
+
+def test_ai_outline_candidate_can_replace_weaker_sam_geometry() -> None:
+    mask = np.zeros((100, 100), dtype=bool)
+    mask[20:80, 20:80] = True
+    sam = section_from_polygon("sam", [(20, 20), (80, 20), (80, 80), (20, 80)])
+    outline = section_from_polygon("outline", [(22, 20), (80, 22), (78, 80), (20, 78)])
+
+    candidate = _evaluate_ai_outline_candidate(
+        mask,
+        sam_sections=[sam],
+        outline_sections=[outline],
+        footprint_polygons=[],
+        outline_prior_polygons=[outline.polygon],
+        confidence=0.7,
+    )
+
+    assert candidate["accepted"] is True
+
+
+def test_ai_outline_candidate_rejects_low_agreement_blob() -> None:
+    mask = np.zeros((100, 100), dtype=bool)
+    mask[20:80, 20:80] = True
+    sam = section_from_polygon("sam", [(20, 20), (80, 20), (80, 80), (20, 80)])
+    blob = section_from_polygon("outline", [(0, 0), (99, 0), (99, 99), (0, 99)])
+
+    candidate = _evaluate_ai_outline_candidate(
+        mask,
+        sam_sections=[sam],
+        outline_sections=[blob],
+        footprint_polygons=[],
+        outline_prior_polygons=[blob.polygon],
+        confidence=0.9,
+    )
+
+    assert candidate["accepted"] is False
+
+
+def test_raster_outline_cannot_replace_final_measurement_geometry() -> None:
+    raster = RoofPolygonSuggestion(model_name="gpt_image_raster_outline")
+    direct = RoofPolygonSuggestion(model_name="gpt-5.5")
+
+    assert _raster_outline_is_prior_only(raster)
+    assert not _raster_outline_is_prior_only(direct)
+
+
+def test_raster_yellow_outline_extracts_closed_polygon() -> None:
+    from PIL import ImageDraw
+
+    source = Image.new("RGB", (1024, 1024), (90, 90, 90))
+    edited = source.copy()
+    ImageDraw.Draw(edited).line([(160, 160), (860, 160), (860, 860), (160, 860), (160, 160)], fill="#FFD400", width=5)
+
+    polygons, registration, warning = _yellow_boundary_to_polygons(source, edited)
+
+    assert warning is None
+    assert registration is not None and registration < 1
+    assert len(polygons) == 1
+    assert len(polygons[0]) >= 4
+
+
+def test_raster_yellow_outline_rejects_open_line() -> None:
+    from PIL import ImageDraw
+
+    source = Image.new("RGB", (1024, 1024), (90, 90, 90))
+    edited = source.copy()
+    ImageDraw.Draw(edited).line([(160, 160), (860, 160), (860, 860)], fill="#FFD400", width=5)
+
+    polygons, _, warning = _yellow_boundary_to_polygons(source, edited)
+
+    assert not polygons
+    assert warning and "not a closed perimeter" in warning
+
+
+def test_raster_yellow_outline_repairs_a_short_directional_gap() -> None:
+    from PIL import ImageDraw
+
+    source = Image.new("RGB", (1024, 1024), (90, 90, 90))
+    edited = source.copy()
+    draw = ImageDraw.Draw(edited)
+    draw.line([(160, 160), (500, 160)], fill="#FFD400", width=8)
+    draw.line([(524, 160), (860, 160), (860, 860), (160, 860), (160, 160)], fill="#FFD400", width=8)
+
+    polygons, _, warning = _yellow_boundary_to_polygons(source, edited)
+
+    assert warning is None
+    assert len(polygons) == 1
+
+
+def test_raster_gap_repair_does_not_bridge_distant_fragments() -> None:
+    boundary = np.zeros((256, 256), dtype=bool)
+    boundary[50:151, 50] = True
+    boundary[50:151, 205] = True
+
+    repaired, repairs = _repair_short_boundary_gaps(boundary, footprint_mask=None)
+
+    assert repairs == 0
+    assert np.array_equal(repaired, boundary)
 
 
 def test_refined_ai_polygon_suggestion_receives_current_sections() -> None:

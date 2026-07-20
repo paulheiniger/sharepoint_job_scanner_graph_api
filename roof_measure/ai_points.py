@@ -20,6 +20,7 @@ class RoofPointSuggestion:
     confidence: float = 0.0
     notes: str = ""
     warnings: list[str] = field(default_factory=list)
+    scene_analysis: dict[str, Any] = field(default_factory=dict)
 
 
 AiPointProvider = Callable[[Image.Image, str, int, int], dict[str, Any]]
@@ -60,10 +61,137 @@ def suggestion_from_payload(payload: dict[str, Any], *, width: int, height: int)
         confidence=confidence,
         notes=notes,
         warnings=warnings,
+        scene_analysis=payload.get("scene_analysis") if isinstance(payload.get("scene_analysis"), dict) else {},
     )
 
 
 def _call_openai_roof_point_suggester(
+    image: Image.Image,
+    *,
+    address: str = "",
+    reference_images: list[Image.Image] | None = None,
+) -> dict[str, Any]:
+    """Use a semantic pass before asking for the few coordinates SAM2 needs."""
+    try:
+        scene = _call_openai_roof_scene_analysis(
+            image,
+            address=address,
+            reference_images=reference_images,
+        )
+        payload = _call_openai_roof_point_suggester_responses(
+            image,
+            scene_analysis=scene,
+            address=address,
+            reference_images=reference_images,
+        )
+        if payload:
+            payload.setdefault("scene_analysis", scene)
+            return payload
+    except Exception as exc:
+        payload = _call_openai_roof_point_suggester_chat_completion(
+            image,
+            address=address,
+            reference_images=reference_images,
+        )
+        payload.setdefault("warnings", []).append(
+            f"Responses semantic roof analysis was unavailable; used legacy prompt generation ({type(exc).__name__})."
+        )
+        return payload
+    return {}
+
+
+def _call_openai_roof_scene_analysis(
+    image: Image.Image,
+    *,
+    address: str = "",
+    reference_images: list[Image.Image] | None = None,
+) -> dict[str, Any]:
+    if not os.getenv("OPENAI_API_KEY"):
+        raise RuntimeError("OPENAI_API_KEY is not set")
+    try:
+        from openai import OpenAI  # type: ignore
+    except Exception as exc:  # pragma: no cover - optional dependency
+        raise RuntimeError("openai package is not installed") from exc
+    width, height = image.size
+    model = os.getenv("OPENAI_ROOF_MEASURE_ANALYSIS_MODEL") or os.getenv("OPENAI_ROOF_MEASURE_POINTS_MODEL") or "gpt-4o"
+    timeout_seconds = float(os.getenv("OPENAI_ROOF_MEASURE_ANALYSIS_TIMEOUT_SECONDS", "90"))
+    reasoning_effort = os.getenv("OPENAI_ROOF_MEASURE_ANALYSIS_REASONING_EFFORT", "medium")
+    response = OpenAI(timeout=timeout_seconds).responses.create(
+        model=model,
+        reasoning={"effort": reasoning_effort},
+        input=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": (
+                            f"Primary overhead image size is {width} by {height} pixels. "
+                            f"Address/site hint: {address or 'not provided'}. "
+                            "Analyze this image to prepare a conservative roof-segmentation task. Do not return coordinates, polygons, "
+                            "or measurements. Identify the single intended connected roof complex, visible roof masses that belong to it, "
+                            "courtyards/gaps that must remain excluded, and nearby pavement, parking, fields, trees, roads, or detached "
+                            "buildings that must not be selected. Return concise JSON with target_description, included_roof_regions, "
+                            "excluded_regions, uncertain_regions, and confidence."
+                        ),
+                    },
+                    {"type": "input_image", "image_url": _image_data_url(image), "detail": "high"},
+                    *_responses_reference_image_content(reference_images),
+                ],
+            }
+        ],
+    )
+    return _extract_json_object(getattr(response, "output_text", "") or "{}")
+
+
+def _call_openai_roof_point_suggester_responses(
+    image: Image.Image,
+    *,
+    scene_analysis: dict[str, Any],
+    address: str = "",
+    reference_images: list[Image.Image] | None = None,
+) -> dict[str, Any]:
+    if not os.getenv("OPENAI_API_KEY"):
+        raise RuntimeError("OPENAI_API_KEY is not set")
+    try:
+        from openai import OpenAI  # type: ignore
+    except Exception as exc:  # pragma: no cover - optional dependency
+        raise RuntimeError("openai package is not installed") from exc
+    width, height = image.size
+    model = os.getenv("OPENAI_ROOF_MEASURE_POINTS_MODEL") or "gpt-4o"
+    timeout_seconds = float(os.getenv("OPENAI_ROOF_MEASURE_POINTS_TIMEOUT_SECONDS", "90"))
+    reasoning_effort = os.getenv("OPENAI_ROOF_MEASURE_POINTS_REASONING_EFFORT", "medium")
+    response = OpenAI(timeout=timeout_seconds).responses.create(
+        model=model,
+        reasoning={"effort": reasoning_effort},
+        input=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": (
+                            f"Primary overhead image size is {width} by {height} pixels. "
+                            f"Address/site hint: {address or 'not provided'}. "
+                            "Use the prior semantic analysis below to provide conservative prompts for SAM2. "
+                            "Return 2 to 8 positive_points only on the interior of the intended connected roof complex and negative_points "
+                            "inside excluded pavement, parking, grass, courtyards, roads, fields, or detached buildings near it. "
+                            "Do not trace boundaries or return a polygon. If uncertain, omit the positive point. "
+                            "Return JSON with positive_points, negative_points, confidence, notes, and warnings. "
+                            "All points must use pixel coordinates in the primary image. Prior semantic analysis: "
+                            + json.dumps(scene_analysis, separators=(",", ":"))
+                        ),
+                    },
+                    {"type": "input_image", "image_url": _image_data_url(image), "detail": "high"},
+                    *_responses_reference_image_content(reference_images),
+                ],
+            }
+        ],
+    )
+    return _extract_json_object(getattr(response, "output_text", "") or "{}")
+
+
+def _call_openai_roof_point_suggester_chat_completion(
     image: Image.Image,
     *,
     address: str = "",
@@ -139,6 +267,30 @@ def _image_data_url(image: Image.Image) -> str:
     return "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
+def _extract_json_object(text: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", text, re.S)
+        if not match:
+            return {}
+        payload = json.loads(match.group(0))
+    return payload if isinstance(payload, dict) else {}
+
+
+def _responses_reference_image_content(reference_images: list[Image.Image] | None) -> list[dict[str, Any]]:
+    content: list[dict[str, Any]] = []
+    for index, reference_image in enumerate((reference_images or [])[:4], start=1):
+        content.append(
+            {
+                "type": "input_text",
+                "text": f"Reference image {index} is context only. Do not return coordinates from it.",
+            }
+        )
+        content.append({"type": "input_image", "image_url": _image_data_url(reference_image), "detail": "low"})
+    return content
+
+
 def _reference_image_content(reference_images: list[Image.Image] | None) -> list[dict[str, Any]]:
     content: list[dict[str, Any]] = []
     for index, reference_image in enumerate((reference_images or [])[:4], start=1):
@@ -193,6 +345,8 @@ def _point_from_payload(value: Any, *, width: int, height: int) -> Point | None:
 
 
 def _safe_confidence(value: Any) -> float:
+    if isinstance(value, str):
+        return {"low": 0.35, "medium": 0.6, "high": 0.82}.get(value.strip().lower(), 0.0)
     try:
         return max(0.0, min(float(value), 1.0))
     except (TypeError, ValueError):

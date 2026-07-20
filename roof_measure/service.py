@@ -42,6 +42,14 @@ def measure_roof_from_overhead_image(
         positive_points=request.positive_points,
         negative_points=request.negative_points,
         box=request.segmentation_box,
+        mask_input=(
+            _outline_prior_mask_prompt(
+                image_to_array(loaded.inference_image).shape[:2],
+                request.outline_prior_polygons,
+            )
+            if request.outline_prior_as_mask_prompt and request.outline_prior_polygons
+            else None
+        ),
     )
     try:
         segmentation = segmenter.segment(image_to_array(loaded.inference_image), prompts)
@@ -177,6 +185,11 @@ def measure_roof_from_overhead_image(
 def _constrain_mask_to_footprints(mask: np.ndarray, polygons: list[list[tuple[float, float]]], *, buffer_pixels: int = 8) -> np.ndarray:
     footprint_mask = footprint_constraint_mask(mask.shape[:2], polygons, buffer_pixels=buffer_pixels)
     return np.asarray(mask, dtype=bool) & footprint_mask
+
+
+def _outline_prior_mask_prompt(shape: tuple[int, int], polygons: list[list[tuple[float, float]]]) -> np.ndarray:
+    """Create a full-resolution binary prior; the SAM2 service converts it to 256px logits."""
+    return footprint_constraint_mask(shape, polygons, buffer_pixels=0)
 
 
 def _footprint_buffer_pixels(request: RoofMeasureRequest) -> int:
