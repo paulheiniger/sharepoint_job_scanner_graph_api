@@ -42,10 +42,12 @@ except ImportError:  # pragma: no cover - exercised in environments without the 
     st_canvas = None
 
 from .ai_polygons import _focus_crop_box, RoofPolygonSuggestion, suggest_refined_roof_polygons, suggest_roof_polygons
+from .ai_polygon_editor import suggest_polygon_operations
 from .ai_raster_outline import suggest_raster_roof_outline
 from .ai_qa import qa_corrections_to_prompts, suggest_roof_qa
 from .ai_points import suggest_roof_prompt_points
 from .footprint_deformation import deform_footprints_to_roof_support, score_polygon_candidate
+from .polygon_editor import apply_polygon_operations, sections_to_vertex_document
 from .exports import geojson_to_string, measurement_to_geojson, report_to_json
 from .image_io import load_image_bytes, uploaded_file_bytes
 from .lidar import assess_mask_against_kyfromabove_lidar, kyfromabove_height_grid_for_image
@@ -63,7 +65,7 @@ from .geometry import straighten_architectural_ring
 from .models import MeasurementWarning, RoofMeasureRequest, RoofSection
 from .polygonize import section_from_polygon
 from .service import RoofMeasureResult, finalize_roof_sections, footprint_constraint_mask, measure_roof_from_outline_polygons, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections, score_roof_result, sections_mask
-from .visualization import annotated_overlay, footprint_constraint_overlay, footprint_overlay, image_png_bytes, outline_prior_overlay, prompt_points_overlay
+from .visualization import annotated_overlay, footprint_constraint_overlay, footprint_overlay, image_png_bytes, outline_prior_overlay, prompt_points_overlay, vertex_editor_overlay
 
 
 _AI_OUTLINE_PRIOR_VERSION = 4
@@ -872,7 +874,10 @@ def _measure_roof_automatically(
     )
     selected_sections = straightened_sections
     footprint_deformation_record: dict[str, object] | None = None
-    if automatic_request.footprint_polygons and result.selected_mask is not None:
+    # Vertex editing is now the default footprint-refinement path. Keep the
+    # former per-edge optimizer available only for controlled regression work.
+    legacy_deformation = os.getenv("ROOF_MEASURE_ENABLE_LEGACY_FOOTPRINT_DEFORMATION", "").strip().lower() in {"1", "true", "yes"}
+    if legacy_deformation and automatic_request.footprint_polygons and result.selected_mask is not None:
         try:
             footprint_candidate = deform_footprints_to_roof_support(
                 automatic_request.footprint_polygons,
@@ -1130,7 +1135,7 @@ def _measure_roof_automatically(
         outline_prior_polygons=retry_request.outline_prior_polygons,
     )
     retry_footprint_deformation: dict[str, object] | None = None
-    if retry_request.footprint_polygons and retry.selected_mask is not None:
+    if legacy_deformation and retry_request.footprint_polygons and retry.selected_mask is not None:
         try:
             retry_candidate = deform_footprints_to_roof_support(
                 retry_request.footprint_polygons,
@@ -2037,6 +2042,19 @@ def _render_pipeline_trace(report, result: RoofMeasureResult) -> None:
                     f"LiDAR points queried: {int(lidar.get('lidar_points') or 0):,}; "
                     f"mapped into image: {int(lidar.get('image_points') or 0):,}."
                 )
+        editor = next((item for item in iterations if item.get("stage") == "ai_polygon_editor"), None)
+        if editor:
+            st.caption(
+                f"AI polygon editor applied {int(editor.get('operation_count') or 0)} validated vertex edit(s); "
+                f"area change {float(editor.get('area_change_ratio') or 0):+.1%}."
+            )
+            for editor_pass in editor.get("passes") or []:
+                if isinstance(editor_pass, dict):
+                    st.caption(
+                        f"{editor_pass.get('stage', 'edit').title()} pass {int(editor_pass.get('iteration') or 0)}: "
+                        f"{int(editor_pass.get('operation_count') or 0)} accepted, "
+                        f"{int(editor_pass.get('rejected_operation_count') or 0)} rejected."
+                    )
         if result.footprint_audit:
             st.caption("Applied footprint sources and geometry are included in the downloaded report JSON.")
             st.dataframe(
@@ -2053,7 +2071,6 @@ def _render_pipeline_trace(report, result: RoofMeasureResult) -> None:
                 width="stretch",
                 hide_index=True,
             )
-        st.json(iterations)
 
 
 def _render_lidar_validation_action(result: RoofMeasureResult) -> None:
@@ -2536,7 +2553,19 @@ def _render_corner_handle_editor(
         st.caption(
             "The green boundary is the current saved outline. Move, delete, or add the red corner dots, then apply to redraw the boundary."
         )
-        straighten_col, cleanup_col, reset_col = st.columns([1, 1, 1])
+        with st.expander("AI vertex analysis preview", expanded=False):
+            st.image(
+                vertex_editor_overlay(image, sections=measurement.sections, stage="exterior"),
+                caption="AI exterior pass: numbered labels are polygon_id:vertex_index. The holes pass is rendered separately when needed.",
+                width=min(image.width, 1000),
+            )
+            if any(section.holes for section in measurement.sections):
+                st.image(
+                    vertex_editor_overlay(image, sections=measurement.sections, stage="holes"),
+                    caption="AI gaps and holes pass.",
+                    width=min(image.width, 1000),
+                )
+        straighten_col, cleanup_col, footprint_col, reset_col = st.columns([1, 1, 1, 1])
         openai_available = bool(os.getenv("OPENAI_API_KEY"))
         with straighten_col:
             if st.button(
@@ -2564,45 +2593,56 @@ def _render_corner_handle_editor(
                 st.rerun()
         with cleanup_col:
             if st.button(
-                "Clean Current Outline with AI",
+                "AI Adjust Vertices",
                 width="stretch",
                 disabled=not openai_available,
-                help="Starts from the current measured outline and asks AI to simplify or move vertices to visible roof edges.",
+                help="Runs bounded atomic vertex edits against a numbered current outline. Each move is validated before the next pass.",
                 key=f"roof_measure_ai_cleanup_workspace_{result.report.id}",
             ):
-                suggestion = suggest_refined_roof_polygons(
-                    image,
-                    measurement.sections,
-                    address=result.report.address,
-                    reference_images=reference_images,
-                )
-                if suggestion.warnings:
-                    for warning in suggestion.warnings:
-                        st.warning(warning)
-                if not suggestion.polygons:
-                    st.warning("AI did not return usable cleaned roof outlines.")
-                    return
                 try:
-                    corrected_sections = _sections_from_ai_polygons(measurement.sections, suggestion.polygons)
-                    corrected_report = recalculate_report_from_corrected_sections(
-                        result.report,
-                        corrected_sections,
-                        correction_note=(
-                            "AI refined the current roof outline from existing section polygons. "
-                            + (suggestion.notes or "")
-                        ).strip(),
-                    )
+                    edited_result, messages = _run_ai_polygon_editor(result, image=image)
                 except Exception as exc:
-                    st.error(f"Could not apply AI outline cleanup: {type(exc).__name__}: {exc}")
+                    st.error(f"Could not apply AI vertex edits: {type(exc).__name__}: {exc}")
                     return
-                st.session_state["roof_measure_result"] = RoofMeasureResult(
-                    report=corrected_report,
-                    selected_mask=None,
-                    candidate_count=result.candidate_count,
-                )
+                for message in messages:
+                    st.info(message)
+                st.session_state["roof_measure_result"] = edited_result
                 st.rerun()
             if not openai_available:
                 st.caption("Set OPENAI_API_KEY to enable AI cleanup.")
+        with footprint_col:
+            if st.button(
+                "Start from Source Footprint",
+                width="stretch",
+                disabled=not bool(result.applied_footprint_polygons),
+                help="Replaces the editable outline with the selected source footprint parts, preserving their separate topology before AI or human vertex edits.",
+                key=f"roof_measure_start_source_footprint_{result.report.id}",
+            ):
+                footprint_sections = [
+                    section_from_polygon(f"footprint-{index + 1}", polygon)
+                    for index, polygon in enumerate(result.applied_footprint_polygons)
+                    if len(polygon) >= 3
+                ]
+                if not footprint_sections:
+                    st.warning("The selected source footprint has no editable polygon parts.")
+                else:
+                    corrected_report = recalculate_report_from_corrected_sections(
+                        result.report,
+                        footprint_sections,
+                        correction_note="Estimator started the vertex editor from the selected source footprint topology.",
+                    )
+                    st.session_state["roof_measure_result"] = RoofMeasureResult(
+                        report=corrected_report,
+                        selected_mask=result.selected_mask,
+                        candidate_count=result.candidate_count,
+                        applied_footprint_polygons=result.applied_footprint_polygons,
+                        footprint_buffer_pixels=result.footprint_buffer_pixels,
+                        footprint_audit=result.footprint_audit,
+                        applied_outline_prior_polygons=result.applied_outline_prior_polygons,
+                        outline_prior_buffer_pixels=result.outline_prior_buffer_pixels,
+                        deterministic_score=result.deterministic_score,
+                    )
+                    st.rerun()
         with reset_col:
             if st.button("Reset to Original Measurement", width="stretch", key=f"roof_measure_workspace_reset_{result.report.id}"):
                 original = st.session_state.get("roof_measure_original_result")
@@ -2679,6 +2719,116 @@ def _render_corner_handle_editor(
                 candidate_count=result.candidate_count,
             )
             st.rerun()
+
+
+def _run_ai_polygon_editor(result: RoofMeasureResult, *, image: Image.Image) -> tuple[RoofMeasureResult, list[str]]:
+    """Bounded exterior then hole editing; each atomic operation gets topology checks."""
+    current_sections = [section.model_copy(deep=True) for section in result.report.measurement.sections]
+    if not current_sections:
+        return result, ["No editable roof polygons are available."]
+    original_area = sum(section.area_pixels for section in current_sections)
+    summaries: list[dict[str, object]] = []
+    messages: list[str] = []
+    for iteration, stage in enumerate(("exterior", "exterior", "holes"), start=1):
+        suggestion = suggest_polygon_operations(
+            image,
+            current_sections,
+            stage=stage,
+            address=result.report.address,
+        )
+        if suggestion.warnings:
+            messages.extend(suggestion.warnings)
+            summaries.append({"stage": stage, "iteration": iteration, "accepted": False, "reason": "AI response unavailable"})
+            break
+        edit = apply_polygon_operations(current_sections, suggestion.operations, image_size=image.size)
+        if not edit.applied_operations:
+            summaries.append(
+                {
+                    "stage": stage,
+                    "iteration": iteration,
+                    "accepted": False,
+                    "operation_count": 0,
+                    "rejected_operation_count": len(edit.rejected_operations),
+                    "reason": edit.reason,
+                }
+            )
+            if stage == "exterior":
+                continue
+            break
+        current_sections = edit.sections
+        summaries.append(
+            {
+                "stage": stage,
+                "iteration": iteration,
+                "accepted": True,
+                "operation_count": len(edit.applied_operations),
+                "rejected_operation_count": len(edit.rejected_operations),
+                "confidence": round(suggestion.confidence, 3),
+                "model": suggestion.model_name,
+            }
+        )
+    applied_count = sum(int(item.get("operation_count") or 0) for item in summaries if item.get("accepted"))
+    if not applied_count:
+        return result, [*messages, "AI vertex editor retained the existing polygon; no valid atomic edits were accepted."]
+    corrected_report = recalculate_report_from_corrected_sections(
+        result.report,
+        current_sections,
+        correction_note=f"AI polygon editor applied {applied_count} validated atomic vertex edits.",
+    )
+    current_area = sum(section.area_pixels for section in current_sections)
+    sam = (
+        score_polygon_candidate(current_sections_to_polygons(current_sections), result.selected_mask)
+        if result.selected_mask is not None
+        else {}
+    )
+    geometry_lidar = _lidar_geometry_assessment(
+        result,
+        current_sections,
+        RoofMeasureRequest(overhead_image_name="edited", map_view=_recorded_map_view(result.report)),
+        str(getattr(st.session_state.get("roof_measure_lidar_coverage"), "asset_url", "")),
+        mask_override=sections_mask(result.selected_mask.shape, current_sections) if result.selected_mask is not None else None,
+    )
+    editor_record = {
+        "stage": "ai_polygon_editor",
+        "accepted": True,
+        "passes": summaries,
+        "operation_count": applied_count,
+        "area_change_ratio": round((current_area - original_area) / max(original_area, 1.0), 4),
+        "sam_support": sam.get("sam_support"),
+        "sam_coverage": sam.get("sam_coverage"),
+        "lidar_roof_support_fraction": geometry_lidar.roof_support_fraction if geometry_lidar and geometry_lidar.ok else None,
+        "lidar_ground_fraction": geometry_lidar.ground_fraction if geometry_lidar and geometry_lidar.ok else None,
+        "vertex_document": sections_to_vertex_document(current_sections),
+    }
+    corrected_report = corrected_report.model_copy(
+        update={
+            "processing_iterations": [*corrected_report.processing_iterations, editor_record],
+            "user_corrections": [
+                *corrected_report.user_corrections,
+                {"type": "ai_polygon_editor", "operation_count": applied_count, "passes": summaries},
+            ],
+        }
+    )
+    return RoofMeasureResult(
+        report=corrected_report,
+        selected_mask=result.selected_mask,
+        candidate_count=result.candidate_count,
+        applied_footprint_polygons=result.applied_footprint_polygons,
+        footprint_buffer_pixels=result.footprint_buffer_pixels,
+        footprint_audit=result.footprint_audit,
+        applied_outline_prior_polygons=result.applied_outline_prior_polygons,
+        outline_prior_buffer_pixels=result.outline_prior_buffer_pixels,
+        deterministic_score=result.deterministic_score,
+    ), [*messages, f"AI polygon editor applied {applied_count} validated vertex edits."]
+
+
+def current_sections_to_polygons(sections: list[RoofSection]) -> list[list[tuple[float, float]]]:
+    return [section.polygon for section in sections]
+
+
+def _recorded_map_view(report) -> dict[str, float]:
+    initial = next((item for item in report.processing_iterations if item.get("stage") == "initial_segmentation"), {})
+    return initial.get("map_view") or {}
 
 
 def _render_ai_outline_cleanup(

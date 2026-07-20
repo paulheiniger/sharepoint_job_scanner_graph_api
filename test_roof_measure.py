@@ -43,6 +43,7 @@ from roof_measure.map_reference import (
     geojson_building_footprints,
 )
 from roof_measure.models import ImageMetadata
+from roof_measure.polygon_editor import apply_polygon_operations, sections_to_vertex_document
 from roof_measure.polygonize import section_from_polygon, sections_from_mask
 from roof_measure.segmentation import MockRoofSegmenter, Sam2RoofSegmenter, SegmentationPrompts
 from roof_measure.service import _constrain_mask_to_footprints, _footprint_buffer_pixels, finalize_roof_sections, footprint_constraint_mask, measure_roof_from_outline_polygons, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections, score_roof_result, sections_mask
@@ -497,6 +498,45 @@ def test_footprint_deformation_records_local_lidar_edge_evidence() -> None:
     assert components["lidar_available"] == 1.0
     assert components["lidar_roof_inside"] > 0.0
     assert components["lidar_ground_outside"] > 0.0
+
+
+def test_atomic_polygon_editor_applies_valid_move_and_rejects_overlap() -> None:
+    first = section_from_polygon("first", [(10, 10), (40, 10), (40, 40), (10, 40)])
+    second = section_from_polygon("second", [(60, 10), (90, 10), (90, 40), (60, 40)])
+    moved = apply_polygon_operations(
+        [first, second],
+        [{"op": "move_vertex", "polygon_id": "first", "vertex_index": 0, "x": 12, "y": 12}],
+        image_size=(100, 100),
+    )
+    assert len(moved.applied_operations) == 1
+    assert moved.sections[0].polygon[0] == (12.0, 12.0)
+
+    overlapping = apply_polygon_operations(
+        [first, second],
+        [{"op": "move_vertex", "polygon_id": "first", "vertex_index": 1, "x": 80, "y": 10}],
+        image_size=(100, 100),
+    )
+    assert not overlapping.applied_operations
+    assert overlapping.rejected_operations
+
+
+def test_polygon_editor_document_preserves_hole_identity() -> None:
+    section = section_from_polygon(
+        "main",
+        [(10, 10), (90, 10), (90, 90), (10, 90)],
+        holes=[[(40, 40), (60, 40), (60, 60), (40, 60)]],
+    )
+    document = sections_to_vertex_document([section])
+
+    assert document[0]["polygon_id"] == "main"
+    assert document[0]["holes"][0]["hole_id"] == "main:hole:0"
+    changed = apply_polygon_operations(
+        [section],
+        [{"op": "modify_hole_vertex", "polygon_id": "main", "hole_id": "main:hole:0", "vertex_index": 0, "x": 42, "y": 42}],
+        image_size=(100, 100),
+    )
+    assert len(changed.applied_operations) == 1
+    assert changed.sections[0].holes[0][0] == (42.0, 42.0)
 
 
 def test_ai_outline_prior_constrains_segmented_mask(tmp_path) -> None:

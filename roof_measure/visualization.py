@@ -49,6 +49,29 @@ def prompt_points_overlay(
     return Image.alpha_composite(base, overlay).convert("RGB")
 
 
+def vertex_editor_overlay(image: Image.Image, *, sections: list[RoofSection], stage: str) -> Image.Image:
+    """A sparse numbered vertex view for the AI polygon editor."""
+    base = image.convert("RGBA")
+    overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    for section in sections:
+        exterior = _open_ring(section.polygon)
+        if len(exterior) >= 3:
+            draw.line([*exterior, exterior[0]], fill=(0, 229, 153, 255), width=4, joint="curve")
+            for index, point in enumerate(exterior):
+                _draw_vertex(draw, point, f"{section.section_id}:{index}", fill=(0, 229, 153, 255))
+        if stage != "holes":
+            continue
+        for hole_index, hole in enumerate(section.holes):
+            vertices = _open_ring(hole)
+            if len(vertices) < 3:
+                continue
+            draw.line([*vertices, vertices[0]], fill=(255, 193, 7, 255), width=3, joint="curve")
+            for vertex_index, point in enumerate(vertices):
+                _draw_vertex(draw, point, f"{section.section_id}:hole:{hole_index}:{vertex_index}", fill=(255, 193, 7, 255))
+    return Image.alpha_composite(base, overlay).convert("RGB")
+
+
 def footprint_overlay(
     image: Image.Image,
     *,
@@ -124,6 +147,17 @@ def _draw_point(
     radius = 9
     draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=fill, outline=outline, width=3)
     draw.text((x + radius + 4, y - radius), label, fill=outline)
+
+
+def _draw_vertex(draw: ImageDraw.ImageDraw, point: tuple[float, float], label: str, *, fill: tuple[int, int, int, int]) -> None:
+    x, y = float(point[0]), float(point[1])
+    radius = 6
+    draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=fill, outline=(0, 0, 0, 255), width=2)
+    draw.text((x + radius + 3, y - radius - 4), label, fill=(255, 255, 255, 255), stroke_width=2, stroke_fill=(0, 0, 0, 255))
+
+
+def _open_ring(ring: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    return ring[:-1] if len(ring) > 1 and ring[0] == ring[-1] else ring
 
 
 def image_png_bytes(image: Image.Image) -> bytes:
