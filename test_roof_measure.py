@@ -94,6 +94,7 @@ from roof_measure.streamlit_page import (
     _targeted_qa_retry_is_accepted,
 )
 from roof_measure.visualization import prompt_points_overlay
+from roof_measure.vertex_agent import initialize_vertices_toward_boundary, run_vertex_tool_loop
 from jobscan.env import load_project_env
 
 
@@ -642,6 +643,105 @@ def test_move_corner_mode_never_inserts_or_deletes_when_fabric_omits_metadata() 
     assert operations == [{"op": "move_vertex", "polygon_id": "footprint-1", "vertex_index": 0, "x": 14.0, "y": 10.0}]
 
 
+def test_atomic_move_of_first_vertex_replaces_closed_ring_endpoint() -> None:
+    section = section_from_polygon("footprint-1", [(10, 10), (40, 10), (40, 40), (10, 40)])
+
+    result = apply_polygon_operations(
+        [section],
+        [{"op": "move_vertex", "polygon_id": "footprint-1", "vertex_index": 0, "x": 14, "y": 12}],
+        image_size=(100, 100),
+    )
+
+    polygon = result.sections[0].polygon
+    assert polygon[0] == (14.0, 12.0)
+    assert polygon[-1] == polygon[0]
+    assert (10.0, 10.0) not in polygon
+    assert len(polygon) == 5
+
+
+def test_yellow_boundary_initialization_matches_polygon_corners_not_edge_pixels() -> None:
+    from PIL import ImageDraw
+
+    image = Image.new("RGB", (100, 100), (90, 90, 90))
+    target = image.copy()
+    ImageDraw.Draw(target).line(
+        [(20, 20), (80, 20), (80, 80), (20, 80), (20, 20)],
+        fill="#FFD400",
+        width=4,
+    )
+    section = section_from_polygon("footprint-1", [(24, 24), (76, 24), (76, 76), (24, 76)])
+
+    initialized, operations = initialize_vertices_toward_boundary(
+        image,
+        [section],
+        target,
+        max_distance_pixels=12,
+    )
+
+    open_polygon = initialized[0].polygon[:-1]
+    assert len(operations) == 4
+    assert all(min(abs(x - 20), abs(x - 80)) <= 3 for x, _ in open_polygon)
+    assert all(min(abs(y - 20), abs(y - 80)) <= 3 for _, y in open_polygon)
+
+
+def test_vertex_tool_loop_uses_stable_ids_across_insert_and_move() -> None:
+    responses = [
+        SimpleNamespace(
+            id="response-1",
+            output=[SimpleNamespace(
+                type="function_call",
+                name="insert_vertex_relative",
+                arguments=json.dumps({"edge_start_vertex_id": "v1", "dx": 0, "dy": -4}),
+                call_id="call-1",
+            )],
+        ),
+        SimpleNamespace(
+            id="response-2",
+            output=[SimpleNamespace(
+                type="function_call",
+                name="move_vertices_relative",
+                arguments=json.dumps({"edits": [{"vertex_id": "v2", "dx": 2, "dy": 1}]}),
+                call_id="call-2",
+            )],
+        ),
+        SimpleNamespace(
+            id="response-3",
+            output=[SimpleNamespace(
+                type="function_call",
+                name="accept_polygon",
+                arguments=json.dumps({"reason": "Local corner is aligned."}),
+                call_id="call-3",
+            )],
+        ),
+    ]
+
+    class FakeResponses:
+        def __init__(self):
+            self.requests = []
+
+        def create(self, **request):
+            self.requests.append(request)
+            return responses.pop(0)
+
+    fake_responses = FakeResponses()
+    fake_client = SimpleNamespace(responses=fake_responses)
+    section = section_from_polygon("footprint-1", [(10, 10), (50, 10), (50, 50), (10, 50)])
+
+    result = run_vertex_tool_loop(
+        Image.new("RGB", (100, 100), (90, 90, 90)),
+        [section],
+        stage="exterior",
+        client=fake_client,
+    )
+
+    open_polygon = result.sections[0].polygon[:-1]
+    assert len(open_polygon) == 5
+    assert open_polygon[1] == (30.0, 6.0)
+    assert open_polygon[2] == (52.0, 11.0)
+    assert [operation["op"] for operation in result.operations] == ["split_edge", "move_vertex"]
+    assert fake_responses.requests[1]["previous_response_id"] == "response-1"
+
+
 def test_inserted_manual_vertex_becomes_a_resolved_locked_anchor() -> None:
     section = section_from_polygon("footprint-1", [(10, 10), (25, 10), (40, 10), (40, 40), (10, 40)])
     anchors = _manual_anchor_points(
@@ -701,6 +801,45 @@ def test_ai_polygon_editor_never_moves_a_locked_manual_vertex() -> None:
 
     assert edited.report.measurement.sections[0].polygon[0] == (10.0, 10.0)
     assert edited.report.measurement.sections[0].polygon[1] == (85.0, 12.0)
+
+
+def test_ai_polygon_editor_accepts_prevalidated_vertex_tool_loop_sections() -> None:
+    image = Image.new("RGB", (100, 100), (128, 128, 128))
+    result = measure_roof_from_outline_polygons(
+        image_bytes=_image_bytes((100, 100)),
+        request=RoofMeasureRequest(overhead_image_name="editor.png", metadata_pixels_per_foot=1.0),
+        polygons=[[(10, 10), (90, 10), (90, 90), (10, 90)]],
+    )
+    result.selected_mask = np.ones((100, 100), dtype=bool)
+    adjusted = section_from_polygon("section-1", [(12, 12), (90, 10), (90, 90), (10, 90)])
+    suggestion = PolygonEditSuggestion(
+        operations=[
+            {
+                "op": "move_vertex",
+                "polygon_id": "section-1",
+                "vertex_index": 0,
+                "x": 12,
+                "y": 12,
+                "stable_vertex_id": "v1",
+            }
+        ],
+        confidence=0.9,
+        result_sections=[adjusted],
+        tool_steps=[{"step": 1, "tool": "move_vertices_relative", "accepted": True}],
+    )
+
+    with patch("roof_measure.streamlit_page.suggest_polygon_operations", return_value=suggestion):
+        edited, notes = _run_ai_polygon_editor(
+            result,
+            image=image,
+            lidar_asset_url="",
+            run_semantic_analysis=False,
+        )
+
+    assert edited.report.measurement.sections[0].polygon[0] == (12.0, 12.0)
+    assert any("applied 1 validated vertex edits" in note for note in notes)
+    record = next(item for item in edited.report.processing_iterations if item.get("stage") == "ai_polygon_editor")
+    assert record["passes"][0]["tool_steps"][0]["tool"] == "move_vertices_relative"
 
 
 def test_ai_outline_prior_constrains_segmented_mask(tmp_path) -> None:

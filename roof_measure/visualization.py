@@ -57,6 +57,7 @@ def vertex_editor_overlay(
     labels: bool = True,
     edited_vertices: set[str] | None = None,
     locked_vertices: set[str] | None = None,
+    vertex_labels: dict[str, str] | None = None,
 ) -> Image.Image:
     """A sparse numbered vertex view for the AI polygon editor."""
     base = image.convert("RGBA")
@@ -64,6 +65,7 @@ def vertex_editor_overlay(
     draw = ImageDraw.Draw(overlay)
     edited_vertices = edited_vertices or set()
     locked_vertices = locked_vertices or set()
+    vertex_labels = vertex_labels or {}
     for section in sections:
         exterior = _open_ring(section.polygon)
         if len(exterior) >= 3:
@@ -73,7 +75,7 @@ def vertex_editor_overlay(
                 _draw_vertex(
                     draw,
                     point,
-                    vertex_id,
+                    vertex_labels.get(vertex_id, vertex_id),
                     fill=(33, 150, 243, 255) if vertex_id in locked_vertices else (255, 152, 0, 255) if vertex_id in edited_vertices else (0, 229, 153, 255),
                     show_label=labels,
                 )
@@ -89,7 +91,7 @@ def vertex_editor_overlay(
                 _draw_vertex(
                     draw,
                     point,
-                    vertex_id,
+                    vertex_labels.get(vertex_id, vertex_id),
                     fill=(33, 150, 243, 255) if vertex_id in locked_vertices else (255, 152, 0, 255) if vertex_id in edited_vertices else (255, 193, 7, 255),
                     show_label=labels,
                 )

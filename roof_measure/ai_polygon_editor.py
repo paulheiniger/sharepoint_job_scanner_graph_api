@@ -11,6 +11,7 @@ from PIL import Image
 from .ai_polygons import _image_data_url
 from .models import RoofSection
 from .polygon_editor import sections_to_vertex_document
+from .vertex_agent import run_vertex_tool_loop
 from .visualization import lidar_height_overlay, vertex_editor_overlay
 
 
@@ -21,6 +22,8 @@ class PolygonEditSuggestion:
     warnings: list[str] = field(default_factory=list)
     model_name: str = "openai_polygon_editor"
     model_version: str = ""
+    result_sections: list[RoofSection] | None = None
+    tool_steps: list[dict[str, Any]] = field(default_factory=list)
 
 
 AiPolygonEditProvider = Callable[[Image.Image, list[dict[str, Any]], str], dict[str, Any]]
@@ -37,9 +40,40 @@ def suggest_polygon_operations(
     lidar_cell_pixels: int = 8,
     boundary_target_image: Image.Image | None = None,
     additional_instructions: str = "",
+    progress_callback=None,
     provider: AiPolygonEditProvider | None = None,
 ) -> PolygonEditSuggestion:
     document = sections_to_vertex_document(sections)
+    tool_loop_warning = ""
+    if provider is None and os.getenv("OPENAI_ROOF_MEASURE_VERTEX_TOOL_LOOP", "1").strip().lower() not in {"0", "false", "no"}:
+        try:
+            result = run_vertex_tool_loop(
+                image,
+                sections,
+                stage=stage,
+                address=address,
+                locked_vertices=locked_vertices or set(),
+                lidar_height_grid=lidar_height_grid,
+                lidar_cell_pixels=lidar_cell_pixels,
+                boundary_target_image=boundary_target_image,
+                additional_instructions=additional_instructions,
+                progress_callback=progress_callback,
+            )
+        except Exception as exc:
+            tool_loop_warning = f"AI vertex tool loop failed; used the one-pass fallback: {type(exc).__name__}: {exc}"
+        else:
+            if result.warnings and not result.operations:
+                tool_loop_warning = "AI vertex tool loop returned no usable edits; used the one-pass fallback: " + " ".join(result.warnings)
+            else:
+                return PolygonEditSuggestion(
+                    operations=result.operations,
+                    confidence=result.confidence,
+                    warnings=result.warnings,
+                    model_name=result.model_name,
+                    model_version=result.model_version,
+                    result_sections=result.sections,
+                    tool_steps=result.steps,
+                )
     try:
         payload = (
             provider(image, document, stage)
@@ -62,7 +96,10 @@ def suggest_polygon_operations(
     return PolygonEditSuggestion(
         operations=operations[:32],
         confidence=_confidence(payload.get("confidence")),
-        warnings=[str(item) for item in payload.get("warnings") or [] if str(item).strip()],
+        warnings=[
+            *([tool_loop_warning] if tool_loop_warning else []),
+            *[str(item) for item in payload.get("warnings") or [] if str(item).strip()],
+        ],
         model_name=str(payload.get("model_name") or "openai_polygon_editor"),
         model_version=str(payload.get("model_version") or ""),
     )

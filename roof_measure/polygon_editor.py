@@ -89,7 +89,7 @@ def _apply_operation(sections: list[RoofSection], raw: dict[str, Any], *, image_
         section.holes.append(points)
         return _rebuild(updated)
     hole_index = _hole_index(section, raw)
-    target = section.polygon if hole_index is None else section.holes[hole_index]
+    target = _open_ring(section.polygon if hole_index is None else section.holes[hole_index])
     vertex_index = _integer(raw.get("vertex_index"), default=-1)
     if operation in {"move_vertex", "modify_hole_vertex"}:
         point = _point(raw.get("point") or raw, image_size)
@@ -118,6 +118,10 @@ def _apply_operation(sections: list[RoofSection], raw: dict[str, Any], *, image_
         section.holes.pop(hole_index)
     else:
         return None
+    if hole_index is None:
+        section.polygon = target
+    else:
+        section.holes[hole_index] = target
     return _rebuild(updated)
 
 
@@ -156,6 +160,10 @@ def _validate_sections(candidate: list[RoofSection], previous: list[RoofSection]
 
 def _copy_sections(sections: list[RoofSection]) -> list[RoofSection]:
     return [section.model_copy(deep=True) for section in sections]
+
+
+def _open_ring(ring: Ring) -> Ring:
+    return list(ring[:-1] if len(ring) > 1 and ring[0] == ring[-1] else ring)
 
 
 def _vertices(ring: Ring) -> list[dict[str, float]]:

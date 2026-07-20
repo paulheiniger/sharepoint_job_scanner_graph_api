@@ -2954,12 +2954,12 @@ def _render_corner_handle_editor(
                 "AI Adjust Vertices",
                 width="stretch",
                 disabled=not openai_available,
-                help="Runs bounded atomic vertex edits against a numbered current outline. Each move is validated before the next pass.",
+                help="Runs a bounded local-region tool loop with relative vertex moves, insert/delete tools, rerendering, and topology validation.",
                 key=f"roof_measure_ai_cleanup_workspace_{result.report.id}",
             ):
                 try:
                     editor_result = _result_with_sections(result, editor_sections, note=f"Editor source: {polygon_source}.")
-                    with st.status("AI is reviewing the complete exterior outline...", expanded=True) as status:
+                    with st.status("AI is initializing the footprint and opening local roof regions...", expanded=True) as status:
                         preview = st.empty()
                         active_target = boundary_target if use_boundary_target and isinstance(boundary_target, Image.Image) else None
                         if use_boundary_target and active_target is None:
@@ -2995,10 +2995,13 @@ def _render_corner_handle_editor(
                             applied_count: int,
                             operation_total: int,
                         ) -> None:
-                            status.write(
-                                f"{stage.title()} pass {iteration}: applying validated edit "
-                                f"{applied_count} of {operation_total}."
-                            )
+                            if iteration == 0:
+                                status.write(f"Initialized {applied_count} footprint vertices toward the yellow target.")
+                            else:
+                                status.write(
+                                    f"{stage.title()} tool step {iteration}: "
+                                    f"{applied_count} validated edit(s) retained."
+                                )
                             preview.image(
                                 vertex_editor_overlay(
                                     active_target or image,
@@ -3009,8 +3012,8 @@ def _render_corner_handle_editor(
                                     locked_vertices=locked_vertex_ids,
                                 ),
                                 caption=(
-                                    f"AI {stage} pass {iteration}: {applied_count} of {operation_total} "
-                                    "validated edits applied. Orange vertices were edited in this run."
+                                    f"AI {stage}: {applied_count} validated edits retained. "
+                                    "Orange vertices were edited in this run; blue vertices remain locked."
                                 ),
                                 width=min(image.width, 1000),
                             )
@@ -3277,11 +3280,43 @@ def _run_ai_polygon_editor(
             lidar_cell_pixels=edge_lidar.cell_pixels if edge_lidar else 8,
             boundary_target_image=boundary_target_image,
             additional_instructions=additional_instructions,
+            progress_callback=progress_callback,
         )
         if suggestion.warnings:
             messages.extend(suggestion.warnings)
+        if suggestion.warnings and not suggestion.operations:
             summaries.append({"stage": stage, "iteration": iteration, "accepted": False, "reason": "AI response unavailable"})
             break
+        if suggestion.result_sections is not None:
+            current_sections = [section.model_copy(deep=True) for section in suggestion.result_sections]
+            stage_applied = list(suggestion.operations)
+            applied_operations.extend(stage_applied)
+            for applied_operation in stage_applied:
+                edited_vertices.update(_operation_vertex_keys(applied_operation))
+            if not stage_applied:
+                summaries.append(
+                    {
+                        "stage": stage,
+                        "iteration": iteration,
+                        "accepted": True,
+                        "operation_count": 0,
+                        "reason": "model accepted the existing polygon",
+                        "tool_steps": suggestion.tool_steps,
+                    }
+                )
+                continue
+            summaries.append(
+                {
+                    "stage": stage,
+                    "iteration": iteration,
+                    "accepted": True,
+                    "operation_count": len(stage_applied),
+                    "confidence": round(suggestion.confidence, 3),
+                    "model": suggestion.model_name,
+                    "tool_steps": suggestion.tool_steps,
+                }
+            )
+            continue
         allowed_operations = [
             operation
             for operation in suggestion.operations
