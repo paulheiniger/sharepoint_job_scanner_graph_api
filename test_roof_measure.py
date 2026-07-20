@@ -26,7 +26,7 @@ from roof_measure.ai_polygons import _focus_crop_box, polygon_suggestion_from_pa
 from roof_measure.ai_qa import RoofQaFinding, qa_corrections_to_prompts, qa_finding_from_payload
 from roof_measure.ai_points import suggestion_from_payload
 from roof_measure.ai_polygons import RoofPolygonSuggestion, _call_openai_roof_polygon_refiner, _call_openai_roof_polygon_suggester
-from roof_measure.ai_raster_outline import _repair_short_boundary_gaps, _yellow_boundary_to_polygons
+from roof_measure.ai_raster_outline import _repair_short_boundary_gaps, _yellow_boundary_to_polygons, yellow_boundary_overlay
 from roof_measure.ai_points import _call_openai_roof_point_suggester
 from roof_measure.calibration import _call_openai_scale_reader
 from roof_measure.confidence import measurement_warnings
@@ -66,6 +66,8 @@ from roof_measure.streamlit_page import (
     _insert_new_corner_points,
     _lidar_core_cut,
     _lidar_ground_regression,
+    _locked_vertex_ids_for_points,
+    _manual_anchor_points,
     _evaluate_ai_outline_candidate,
     _map_view_for_image_crop,
     _primary_prompt_cluster,
@@ -598,6 +600,15 @@ def test_move_corner_mode_never_inserts_or_deletes_when_fabric_omits_metadata() 
     assert operations == [{"op": "move_vertex", "polygon_id": "footprint-1", "vertex_index": 0, "x": 14.0, "y": 10.0}]
 
 
+def test_inserted_manual_vertex_becomes_a_resolved_locked_anchor() -> None:
+    section = section_from_polygon("footprint-1", [(10, 10), (25, 10), (40, 10), (40, 40), (10, 40)])
+    anchors = _manual_anchor_points(
+        [{"op": "split_edge", "polygon_id": "footprint-1", "edge_index": 0, "x": 25.0, "y": 10.0}]
+    )
+
+    assert _locked_vertex_ids_for_points([section], anchors) == {"footprint-1:1"}
+
+
 def test_ai_polygon_editor_scores_accepted_atomic_edit_without_missing_score_arguments() -> None:
     image = Image.new("RGB", (100, 100), (128, 128, 128))
     buffer = BytesIO()
@@ -619,6 +630,35 @@ def test_ai_polygon_editor_scores_accepted_atomic_edit_without_missing_score_arg
     assert mocked_suggester.call_count == 1
     assert edited.deterministic_score > 0
     assert any(item.get("stage") == "ai_polygon_editor" for item in edited.report.processing_iterations)
+
+
+def test_ai_polygon_editor_never_moves_a_locked_manual_vertex() -> None:
+    image = Image.new("RGB", (100, 100), (128, 128, 128))
+    result = measure_roof_from_outline_polygons(
+        image_bytes=_image_bytes((100, 100)),
+        request=RoofMeasureRequest(overhead_image_name="editor.png", metadata_pixels_per_foot=1.0),
+        polygons=[[(10, 10), (90, 10), (90, 90), (10, 90)]],
+    )
+    result.selected_mask = np.ones((100, 100), dtype=bool)
+    suggestion = PolygonEditSuggestion(
+        operations=[
+            {"op": "move_vertex", "polygon_id": "section-1", "vertex_index": 0, "x": 20, "y": 20},
+            {"op": "move_vertex", "polygon_id": "section-1", "vertex_index": 1, "x": 85, "y": 12},
+        ],
+        confidence=0.9,
+    )
+
+    with patch("roof_measure.streamlit_page.suggest_polygon_operations", return_value=suggestion):
+        edited, _ = _run_ai_polygon_editor(
+            result,
+            image=image,
+            lidar_asset_url="",
+            run_semantic_analysis=False,
+            initial_locked_vertices={"section-1:0"},
+        )
+
+    assert edited.report.measurement.sections[0].polygon[0] == (10.0, 10.0)
+    assert edited.report.measurement.sections[0].polygon[1] == (85.0, 12.0)
 
 
 def test_ai_outline_prior_constrains_segmented_mask(tmp_path) -> None:
@@ -1474,6 +1514,21 @@ def test_raster_yellow_outline_extracts_closed_polygon() -> None:
     assert registration is not None and registration < 1
     assert len(polygons) == 1
     assert len(polygons[0]) >= 4
+
+
+def test_yellow_boundary_overlay_preserves_registered_source_pixels() -> None:
+    from PIL import ImageDraw
+
+    source = Image.new("RGB", (100, 100), (12, 34, 56))
+    edited = Image.new("RGB", (1024, 1024), (90, 90, 90))
+    ImageDraw.Draw(edited).line([(100, 100), (900, 100)], fill="#FFD400", width=12)
+
+    target = yellow_boundary_overlay(source, edited)
+
+    assert target.size == source.size
+    assert target.getpixel((50, 50)) == source.getpixel((50, 50))
+    target_pixels = np.asarray(target)
+    assert bool(((target_pixels[..., 0] > 240) & (target_pixels[..., 1] > 190)).any())
 
 
 def test_raster_yellow_outline_rejects_open_line() -> None:

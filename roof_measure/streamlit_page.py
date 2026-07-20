@@ -43,7 +43,7 @@ except ImportError:  # pragma: no cover - exercised in environments without the 
 
 from .ai_polygons import _focus_crop_box, RoofPolygonSuggestion, suggest_refined_roof_polygons, suggest_roof_polygons
 from .ai_polygon_editor import suggest_polygon_operations
-from .ai_raster_outline import suggest_raster_roof_outline
+from .ai_raster_outline import suggest_raster_roof_outline, yellow_boundary_overlay
 from .ai_qa import qa_corrections_to_prompts, suggest_roof_qa
 from .ai_points import suggest_roof_prompt_points
 from .footprint_deformation import deform_footprints_to_roof_support, score_polygon_candidate
@@ -202,6 +202,7 @@ def render_ai_roof_measure_page() -> None:
                 "roof_measure_auto_workflow_notes",
                 "roof_measure_editor_messages",
                 "roof_measure_polygon_editor_state",
+                "roof_measure_raster_vertex_target",
             ):
                 st.session_state.pop(key, None)
             st.success("Fetched calibrated satellite imagery and available footprint candidates.")
@@ -803,6 +804,11 @@ def _measure_roof_automatically(
         raster_footprints = _footprints_for_prompt_points(candidate_footprints, ai_positive_points)
     if use_raster_outline_prior and os.getenv("OPENAI_API_KEY"):
         raster = suggest_raster_roof_outline(image, footprint_polygons=raster_footprints)
+        if raster.edited_image is not None and raster.registration_mean_difference is not None and raster.registration_mean_difference <= 14.0:
+            try:
+                st.session_state["roof_measure_raster_vertex_target"] = yellow_boundary_overlay(image, raster.edited_image)
+            except ValueError:
+                st.session_state.pop("roof_measure_raster_vertex_target", None)
         raster_record = {
             "stage": "raster_ai_outline_prior",
             "accepted": bool(raster.polygons),
@@ -2773,6 +2779,8 @@ def _render_corner_handle_editor(
                 "source": polygon_source,
                 "sections": [section.model_copy(deep=True) for section in (source_sections or measurement.sections)],
                 "manual_locked_vertices": set(),
+                "manual_locked_points": [],
+                "boundary_target_image": st.session_state.get("roof_measure_raster_vertex_target"),
             }
         elif editor_state.get("source") != polygon_source:
             # Changing sources deliberately starts a new working copy. The
@@ -2782,12 +2790,77 @@ def _render_corner_handle_editor(
                 "source": polygon_source,
                 "sections": [section.model_copy(deep=True) for section in (source_sections or measurement.sections)],
                 "manual_locked_vertices": set(),
+                "manual_locked_points": [],
+                "boundary_target_image": st.session_state.get("roof_measure_raster_vertex_target"),
             }
         st.session_state[state_key] = editor_state
         editor_sections = [section.model_copy(deep=True) for section in editor_state["sections"]]
+        locked_vertex_ids = {
+            *{str(value) for value in editor_state.get("manual_locked_vertices") or set()},
+            *_locked_vertex_ids_for_points(editor_sections, editor_state.get("manual_locked_points") or []),
+        }
+        boundary_target = editor_state.get("boundary_target_image")
+        if isinstance(boundary_target, Image.Image) and boundary_target.size != image.size:
+            boundary_target = None
+            editor_state["boundary_target_image"] = None
+            st.session_state[state_key] = editor_state
+        with st.expander("AI vertex prompt playground", expanded=False):
+            use_boundary_target = st.checkbox(
+                "Align vertices to generated yellow roof boundary",
+                value=True,
+                key=f"roof_measure_use_vertex_target_{result.report.id}",
+            )
+            additional_instructions = st.text_area(
+                "Additional alignment instructions",
+                value=(
+                    "Trace the center of the yellow line around the complete school perimeter. "
+                    "Keep blue estimator-set vertices fixed and use them to infer the intended nearby wall edge."
+                ),
+                height=100,
+                key=f"roof_measure_vertex_prompt_{result.report.id}",
+            )
+            st.caption(
+                "The base safety and JSON instructions remain fixed. This text is appended to the next vertex-alignment request."
+            )
+            if st.button(
+                "Regenerate Yellow Boundary Target",
+                disabled=not bool(os.getenv("OPENAI_API_KEY")),
+                key=f"roof_measure_regenerate_vertex_target_{result.report.id}",
+            ):
+                with st.spinner("Drawing a registered yellow roof boundary..."):
+                    target, target_warnings = _generate_raster_vertex_target(
+                        image,
+                        footprint_polygons=result.applied_footprint_polygons,
+                    )
+                for warning in target_warnings:
+                    st.warning(warning)
+                if target is not None:
+                    editor_state["boundary_target_image"] = target
+                    st.session_state["roof_measure_raster_vertex_target"] = target
+                    st.session_state[state_key] = editor_state
+                    st.rerun()
+            if isinstance(boundary_target, Image.Image):
+                st.image(
+                    vertex_editor_overlay(
+                        boundary_target,
+                        sections=editor_sections,
+                        stage="exterior",
+                        labels=False,
+                        locked_vertices=locked_vertex_ids,
+                    ),
+                    caption="Exact AI analysis target. Yellow is the generated perimeter; blue vertices are locked manual anchors.",
+                    width=min(image.width, 1000),
+                )
+            else:
+                st.caption("No registered yellow boundary target is cached yet. It will be generated when AI adjustment runs.")
         with st.expander("AI vertex analysis preview", expanded=False):
             st.image(
-                vertex_editor_overlay(image, sections=editor_sections, stage="exterior"),
+                vertex_editor_overlay(
+                    image,
+                    sections=editor_sections,
+                    stage="exterior",
+                    locked_vertices=locked_vertex_ids,
+                ),
                 caption="AI exterior pass: numbered labels are polygon_id:vertex_index. The holes pass is rendered separately when needed.",
                 width=min(image.width, 1000),
             )
@@ -2837,6 +2910,30 @@ def _render_corner_handle_editor(
                     editor_result = _result_with_sections(result, editor_sections, note=f"Editor source: {polygon_source}.")
                     with st.status("AI is reviewing the complete exterior outline...", expanded=True) as status:
                         preview = st.empty()
+                        active_target = boundary_target if use_boundary_target and isinstance(boundary_target, Image.Image) else None
+                        if use_boundary_target and active_target is None:
+                            status.write("Generating a registered yellow roof boundary target...")
+                            active_target, target_warnings = _generate_raster_vertex_target(
+                                image,
+                                footprint_polygons=result.applied_footprint_polygons,
+                            )
+                            messages_before_edit = list(target_warnings)
+                            if active_target is not None:
+                                editor_state["boundary_target_image"] = active_target
+                                st.session_state["roof_measure_raster_vertex_target"] = active_target
+                                preview.image(
+                                    vertex_editor_overlay(
+                                        active_target,
+                                        sections=editor_sections,
+                                        stage="exterior",
+                                        labels=False,
+                                        locked_vertices=locked_vertex_ids,
+                                    ),
+                                    caption="Yellow target generated. Blue manual anchors remain fixed.",
+                                    width=min(image.width, 1000),
+                                )
+                        else:
+                            messages_before_edit = []
 
                         def show_editor_progress(
                             stage: str,
@@ -2852,11 +2949,12 @@ def _render_corner_handle_editor(
                             )
                             preview.image(
                                 vertex_editor_overlay(
-                                    image,
+                                    active_target or image,
                                     sections=sections,
                                     stage=stage,
                                     labels=False,
                                     edited_vertices=edited_vertices,
+                                    locked_vertices=locked_vertex_ids,
                                 ),
                                 caption=(
                                     f"AI {stage} pass {iteration}: {applied_count} of {operation_total} "
@@ -2868,9 +2966,12 @@ def _render_corner_handle_editor(
                         edited_result, messages = _run_ai_polygon_editor(
                             editor_result,
                             image=image,
-                            initial_locked_vertices={str(value) for value in editor_state.get("manual_locked_vertices") or set()},
+                            initial_locked_vertices=locked_vertex_ids,
+                            boundary_target_image=active_target,
+                            additional_instructions=additional_instructions,
                             progress_callback=show_editor_progress,
                         )
+                        messages = [*messages_before_edit, *messages]
                         status.update(label="AI vertex adjustment complete", state="complete")
                 except Exception as exc:
                     st.error(f"Could not apply AI vertex edits: {type(exc).__name__}: {exc}")
@@ -2955,6 +3056,10 @@ def _render_corner_handle_editor(
                 *{str(value) for value in editor_state.get("manual_locked_vertices") or set()},
                 *{key for operation in edit.applied_operations for key in _operation_vertex_keys(operation)},
             }
+            editor_state["manual_locked_points"] = _merge_manual_anchor_points(
+                editor_state.get("manual_locked_points") or [],
+                _manual_anchor_points(edit.applied_operations),
+            )
             editor_state["canvas_revision"] = canvas_revision + 1
             st.session_state[state_key] = editor_state
             return True
@@ -2990,6 +3095,89 @@ def _original_edge_detection_sections(result: RoofMeasureResult) -> list[RoofSec
     return [section.model_copy(deep=True) for section in result.report.measurement.sections]
 
 
+def _generate_raster_vertex_target(
+    image: Image.Image,
+    *,
+    footprint_polygons: list[list[tuple[float, float]]],
+) -> tuple[Image.Image | None, list[str]]:
+    suggestion = suggest_raster_roof_outline(image, footprint_polygons=footprint_polygons)
+    warnings = list(suggestion.warnings)
+    if suggestion.edited_image is None:
+        return None, warnings or ["The image model did not return a boundary image."]
+    registration = suggestion.registration_mean_difference
+    if registration is None or registration > 14.0:
+        return None, [*warnings, "The yellow boundary target was rejected because the generated image was not registered closely enough."]
+    try:
+        return yellow_boundary_overlay(image, suggestion.edited_image), warnings
+    except ValueError as exc:
+        return None, [*warnings, str(exc)]
+
+
+def _manual_anchor_points(operations: list[dict[str, object]]) -> list[dict[str, object]]:
+    anchors: list[dict[str, object]] = []
+    for operation in operations:
+        name = str(operation.get("op") or "").strip().lower()
+        if name not in {"move_vertex", "insert_vertex", "split_edge"}:
+            continue
+        try:
+            anchors.append(
+                {
+                    "polygon_id": str(operation.get("polygon_id") or ""),
+                    "x": float(operation["x"]),
+                    "y": float(operation["y"]),
+                }
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    return anchors
+
+
+def _merge_manual_anchor_points(
+    existing: list[dict[str, object]],
+    additions: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    merged = [dict(item) for item in existing if isinstance(item, dict)]
+    for addition in additions:
+        polygon_id = str(addition.get("polygon_id") or "")
+        try:
+            point = (float(addition["x"]), float(addition["y"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        merged = [
+            item
+            for item in merged
+            if str(item.get("polygon_id") or "") != polygon_id
+            or math.dist((float(item.get("x") or 0), float(item.get("y") or 0)), point) > 3.0
+        ]
+        merged.append({"polygon_id": polygon_id, "x": point[0], "y": point[1]})
+    return merged[-200:]
+
+
+def _locked_vertex_ids_for_points(
+    sections: list[RoofSection],
+    anchors: list[dict[str, object]],
+    *,
+    maximum_distance: float = 3.0,
+) -> set[str]:
+    locked: set[str] = set()
+    by_id = {section.section_id: section for section in sections}
+    for anchor in anchors:
+        section = by_id.get(str(anchor.get("polygon_id") or ""))
+        if section is None:
+            continue
+        try:
+            point = (float(anchor["x"]), float(anchor["y"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        ring = section.polygon[:-1] if len(section.polygon) > 1 and section.polygon[0] == section.polygon[-1] else section.polygon
+        if not ring:
+            continue
+        index = min(range(len(ring)), key=lambda candidate: math.dist(point, ring[candidate]))
+        if math.dist(point, ring[index]) <= maximum_distance:
+            locked.add(f"{section.section_id}:{index}")
+    return locked
+
+
 def _run_ai_polygon_editor(
     result: RoofMeasureResult,
     *,
@@ -2997,6 +3185,8 @@ def _run_ai_polygon_editor(
     lidar_asset_url: str | None = None,
     run_semantic_analysis: bool = True,
     initial_locked_vertices: set[str] | None = None,
+    boundary_target_image: Image.Image | None = None,
+    additional_instructions: str = "",
     progress_callback=None,
 ) -> tuple[RoofMeasureResult, list[str]]:
     """Bounded exterior then hole editing; each atomic operation gets topology checks."""
@@ -3025,6 +3215,8 @@ def _run_ai_polygon_editor(
             locked_vertices=locked_vertices | edited_vertices,
             lidar_height_grid=edge_lidar.height_grid if edge_lidar and edge_lidar.ok else None,
             lidar_cell_pixels=edge_lidar.cell_pixels if edge_lidar else 8,
+            boundary_target_image=boundary_target_image,
+            additional_instructions=additional_instructions,
         )
         if suggestion.warnings:
             messages.extend(suggestion.warnings)
@@ -3033,7 +3225,9 @@ def _run_ai_polygon_editor(
         allowed_operations = [
             operation
             for operation in suggestion.operations
-            if not (_operation_vertex_keys(operation) & (locked_vertices | edited_vertices))
+            if str(operation.get("op") or operation.get("operation") or "").strip().lower()
+            in ({"move_vertex"} if stage == "exterior" else {"modify_hole_vertex"})
+            and not (_operation_vertex_keys(operation) & (locked_vertices | edited_vertices))
         ]
         stage_applied: list[dict[str, object]] = []
         stage_rejected: list[dict[str, object]] = []
@@ -3104,6 +3298,9 @@ def _run_ai_polygon_editor(
         "operation_count": applied_count,
         "edited_vertex_count": len(edited_vertices),
         "edited_vertices": sorted(edited_vertices),
+        "locked_manual_vertex_count": len(locked_vertices),
+        "yellow_boundary_target_used": boundary_target_image is not None,
+        "additional_instructions": additional_instructions.strip(),
         "area_change_ratio": round((current_area - original_area) / max(original_area, 1.0), 4),
         "sam_support": sam.get("sam_support"),
         "sam_coverage": sam.get("sam_coverage"),

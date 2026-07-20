@@ -201,6 +201,8 @@ def _operation_record(operation: dict[str, Any], result: str) -> dict[str, Any]:
         "edge_index": operation.get("edge_index"),
         "first_vertex_index": operation.get("first_vertex_index"),
         "second_vertex_index": operation.get("second_vertex_index"),
+        "x": operation.get("x"),
+        "y": operation.get("y"),
         "result": result,
     }
     return {key: value for key, value in record.items() if value is not None}

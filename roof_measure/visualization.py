@@ -56,12 +56,14 @@ def vertex_editor_overlay(
     stage: str,
     labels: bool = True,
     edited_vertices: set[str] | None = None,
+    locked_vertices: set[str] | None = None,
 ) -> Image.Image:
     """A sparse numbered vertex view for the AI polygon editor."""
     base = image.convert("RGBA")
     overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     edited_vertices = edited_vertices or set()
+    locked_vertices = locked_vertices or set()
     for section in sections:
         exterior = _open_ring(section.polygon)
         if len(exterior) >= 3:
@@ -72,7 +74,7 @@ def vertex_editor_overlay(
                     draw,
                     point,
                     vertex_id,
-                    fill=(255, 152, 0, 255) if vertex_id in edited_vertices else (0, 229, 153, 255),
+                    fill=(33, 150, 243, 255) if vertex_id in locked_vertices else (255, 152, 0, 255) if vertex_id in edited_vertices else (0, 229, 153, 255),
                     show_label=labels,
                 )
         if stage != "holes":
@@ -88,7 +90,7 @@ def vertex_editor_overlay(
                     draw,
                     point,
                     vertex_id,
-                    fill=(255, 152, 0, 255) if vertex_id in edited_vertices else (255, 193, 7, 255),
+                    fill=(33, 150, 243, 255) if vertex_id in locked_vertices else (255, 152, 0, 255) if vertex_id in edited_vertices else (255, 193, 7, 255),
                     show_label=labels,
                 )
     return Image.alpha_composite(base, overlay).convert("RGB")

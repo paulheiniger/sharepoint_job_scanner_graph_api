@@ -57,6 +57,21 @@ def suggest_raster_roof_outline(
     )
 
 
+def yellow_boundary_overlay(source: Image.Image, edited: Image.Image) -> Image.Image:
+    """Transfer only the generated yellow annotation onto registered source pixels."""
+    target_size = _edit_size(source.size)
+    if edited.size != target_size:
+        raise ValueError("Raster boundary image dimensions do not match the expected edit size.")
+    yellow = _yellow_mask(edited)
+    if not yellow.any():
+        raise ValueError("Raster boundary image does not contain a yellow annotation.")
+    mask = Image.fromarray(yellow.astype(np.uint8) * 255, mode="L").resize(source.size, Image.Resampling.NEAREST)
+    base = source.convert("RGBA")
+    band = Image.new("RGBA", source.size, (255, 212, 0, 0))
+    band.putalpha(mask)
+    return Image.alpha_composite(base, band).convert("RGB")
+
+
 def _edit_image_with_yellow_boundary(image: Image.Image) -> Image.Image:
     if not os.getenv("OPENAI_API_KEY"):
         raise RuntimeError("OPENAI_API_KEY is not set")

@@ -35,6 +35,8 @@ def suggest_polygon_operations(
     locked_vertices: set[str] | None = None,
     lidar_height_grid=None,
     lidar_cell_pixels: int = 8,
+    boundary_target_image: Image.Image | None = None,
+    additional_instructions: str = "",
     provider: AiPolygonEditProvider | None = None,
 ) -> PolygonEditSuggestion:
     document = sections_to_vertex_document(sections)
@@ -50,6 +52,8 @@ def suggest_polygon_operations(
                 locked_vertices=locked_vertices or set(),
                 lidar_height_grid=lidar_height_grid,
                 lidar_cell_pixels=lidar_cell_pixels,
+                boundary_target_image=boundary_target_image,
+                additional_instructions=additional_instructions,
             )
         )
     except Exception as exc:
@@ -73,6 +77,8 @@ def _call_openai_polygon_editor(
     locked_vertices: set[str],
     lidar_height_grid,
     lidar_cell_pixels: int,
+    boundary_target_image: Image.Image | None,
+    additional_instructions: str,
 ) -> dict[str, Any]:
     if not os.getenv("OPENAI_API_KEY"):
         raise RuntimeError("OPENAI_API_KEY is not set")
@@ -81,24 +87,43 @@ def _call_openai_polygon_editor(
     model = os.getenv("OPENAI_ROOF_MEASURE_POLYGON_EDITOR_MODEL") or os.getenv("OPENAI_ROOF_MEASURE_QA_MODEL") or "gpt-4o"
     client = OpenAI(timeout=float(os.getenv("OPENAI_ROOF_MEASURE_POLYGON_EDITOR_TIMEOUT_SECONDS", "120")))
     stage_instruction = (
-        "Adjust only exterior roof/parapet boundaries. Do not create, remove, or modify holes in this pass."
+        "Adjust only exterior roof/parapet boundaries using move_vertex operations. Do not insert, delete, merge, or modify holes in this pass."
         if stage == "exterior"
-        else "Review only visible gaps, courtyards, and internal holes. Do not change unrelated exterior edges in this pass."
+        else "Review only existing gaps, courtyards, and internal holes using modify_hole_vertex operations. Do not change unrelated exterior edges in this pass."
     )
-    analysis_image = lidar_height_overlay(image, height_grid=lidar_height_grid, cell_pixels=lidar_cell_pixels)
-    overlay = vertex_editor_overlay(analysis_image, sections=sections_from_document(sections=document), stage=stage)
-    instructions = (
-        f"The analysis image is {image.width} by {image.height} pixels. Site hint: {address or 'not provided'}. "
-        f"{stage_instruction} The colored outline is the current geometry. Every vertex label is polygon_id:vertex_index; hole labels include polygon_id:hole:index:vertex_index. "
-        "Edit the current polygon only. Prefer the visible roof/parapet edge over a cast shadow. Preserve separate building parts and visible ground gaps. "
-        "Move a vertex as far as the visible edge requires; do not make a token tiny adjustment. Prefer vertices at real wall inflection points, remove redundant short jogs, and add a corner only at a clear direction change. "
-        "Return one complete batch of up to 32 independent edits. Return accept only when no further safe edit is needed. "
-        "Do not edit a locked vertex unless a topology-validity repair is impossible without it. Use as few edits as possible. Do not return full polygons, prose, coordinates without an operation, or markdown. "
-        "Return JSON only: {\"operations\":[{\"op\":\"move_vertex\",\"polygon_id\":\"section-1\",\"vertex_index\":0,\"x\":0,\"y\":0}],\"confidence\":0.0,\"warnings\":[]}. "
-        "Allowed operations are move_vertex, insert_vertex, delete_vertex, split_edge, merge_redundant_vertices, create_hole, modify_hole_vertex, delete_hole, accept. "
-        "Locked vertices: " + json.dumps(sorted(locked_vertices), separators=(",", ":")) + ". "
-        "When visible, cyan means LiDAR-elevated roof support and amber means low ground support. It is supporting evidence only. "
-        "Current vertex JSON: " + json.dumps(document, separators=(",", ":"))
+    if boundary_target_image is not None:
+        analysis_image = boundary_target_image.convert("RGB").resize(image.size, Image.Resampling.LANCZOS)
+        target_instruction = (
+            "The bright-yellow band is the target roof perimeter generated in a separate visual pass. "
+            "Move unlocked perimeter vertices onto the center of that yellow band and make connected edges follow it. "
+        )
+    else:
+        analysis_image = lidar_height_overlay(image, height_grid=lidar_height_grid, cell_pixels=lidar_cell_pixels)
+        target_instruction = "No yellow target is available; use visible wall and parapet evidence directly. "
+    overlay = vertex_editor_overlay(
+        analysis_image,
+        sections=sections_from_document(sections=document),
+        stage=stage,
+        locked_vertices=locked_vertices,
+    )
+    user_guidance = additional_instructions.strip()
+    instructions = "".join(
+        (
+            f"The analysis image is {image.width} by {image.height} pixels. Site hint: {address or 'not provided'}. ",
+            f"{stage_instruction} The colored outline is the current geometry. Every vertex label is polygon_id:vertex_index; hole labels include polygon_id:hole:index:vertex_index. ",
+            target_instruction,
+            "Edit the current polygon only. Prefer the visible roof/parapet edge over a cast shadow. Preserve separate building parts and visible ground gaps. ",
+            "Blue vertices are authoritative estimator-set anchors. Never move, delete, merge, or replace them. Use them as examples of the correct local boundary and align neighboring unlocked geometry consistently with them. ",
+            "Move each existing unlocked vertex as far as the target boundary requires; do not make token tiny adjustments. Place existing corner vertices at real wall inflection points and keep vertices that already match the target unchanged. ",
+            "Return one complete batch of up to 32 independent edits. Return accept only when no further safe edit is needed. ",
+            "Locked vertices are a hard constraint. Use as many edits as needed to align the remaining perimeter, but do not edit a locked vertex. Do not return full polygons, prose, coordinates without an operation, or markdown. ",
+            "Return JSON only: {\"operations\":[{\"op\":\"move_vertex\",\"polygon_id\":\"section-1\",\"vertex_index\":0,\"x\":0,\"y\":0}],\"confidence\":0.0,\"warnings\":[]}. ",
+            "Allowed operations in this pass are move_vertex and accept. " if stage == "exterior" else "Allowed operations in this pass are modify_hole_vertex and accept. ",
+            "Locked vertices: " + json.dumps(sorted(locked_vertices), separators=(",", ":")) + ". ",
+            "When visible, cyan means LiDAR-elevated roof support and amber means low ground support. It is supporting evidence only. ",
+            "Additional estimator instructions: " + user_guidance + ". " if user_guidance else "",
+            "Current vertex JSON: " + json.dumps(document, separators=(",", ":")),
+        )
     )
     request = {
         "model": model,
