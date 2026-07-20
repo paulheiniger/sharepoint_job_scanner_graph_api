@@ -2898,7 +2898,12 @@ def _render_corner_handle_editor(
         )
         drawing_mode = "point" if corner_action == "Add corner" else "transform"
         if corner_action == "Move corners":
-            st.caption("Move mode preserves every existing polygon connection and only changes vertex positions.")
+            st.caption("Move mode saves after you release a vertex. Existing polygon connections are redrawn immediately from the moved point.")
+        elif corner_action == "Add corner":
+            st.caption("Add mode saves a new vertex on the nearest existing edge after you place it.")
+        else:
+            st.caption("Delete mode is explicit because removing a vertex changes the polygon topology.")
+        canvas_revision = int(editor_state.get("canvas_revision") or 0)
         corner_canvas = st_canvas(
             fill_color="rgba(229, 40, 40, 0.85)",
             stroke_width=2,
@@ -2915,9 +2920,10 @@ def _render_corner_handle_editor(
             initial_drawing=_sections_to_corner_canvas_initial_drawing(editor_sections, scale_x=scale_x, scale_y=scale_y),
             display_toolbar=True,
             point_display_radius=8,
-            key=f"roof_measure_corner_canvas_{result.report.id}_{polygon_source}_{drawing_mode}",
+            key=f"roof_measure_corner_canvas_{result.report.id}_{polygon_source}_{drawing_mode}_{canvas_revision}",
         )
-        if st.button("Apply Manual Vertex Edits", type="primary", width="stretch", key=f"roof_measure_apply_corners_{result.report.id}_{polygon_source}"):
+
+        def apply_canvas_vertex_operations(*, automatic: bool) -> bool:
             try:
                 operations = _canvas_to_polygon_operations(
                     getattr(corner_canvas, "json_data", None),
@@ -2929,15 +2935,16 @@ def _render_corner_handle_editor(
                 )
                 edit = apply_polygon_operations(editor_sections, operations, image_size=image.size)
                 if not edit.applied_operations:
-                    raise ValueError(edit.reason or "No valid vertex changes were detected.")
+                    return False
                 corrected_report = recalculate_report_from_corrected_sections(
                     result.report,
                     edit.sections,
                     correction_note=f"Estimator applied {len(edit.applied_operations)} manual vertex edit(s) from {polygon_source}.",
                 )
             except Exception as exc:
-                st.error(f"Could not apply manual vertex edits: {type(exc).__name__}: {exc}")
-                return
+                if not automatic:
+                    st.error(f"Could not apply manual vertex edits: {type(exc).__name__}: {exc}")
+                return False
             st.session_state["roof_measure_result"] = _result_with_sections(
                 result,
                 corrected_report.measurement.sections,
@@ -2948,8 +2955,16 @@ def _render_corner_handle_editor(
                 *{str(value) for value in editor_state.get("manual_locked_vertices") or set()},
                 *{key for operation in edit.applied_operations for key in _operation_vertex_keys(operation)},
             }
+            editor_state["canvas_revision"] = canvas_revision + 1
             st.session_state[state_key] = editor_state
-            st.rerun()
+            return True
+
+        if corner_action != "Delete corners":
+            if apply_canvas_vertex_operations(automatic=True):
+                st.rerun()
+        elif st.button("Apply Vertex Deletions", type="primary", width="stretch", key=f"roof_measure_apply_corners_{result.report.id}_{polygon_source}"):
+            if apply_canvas_vertex_operations(automatic=False):
+                st.rerun()
 
 
 def _result_with_sections(result: RoofMeasureResult, sections: list[RoofSection], *, note: str) -> RoofMeasureResult:
