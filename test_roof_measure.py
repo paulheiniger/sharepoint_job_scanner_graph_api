@@ -46,6 +46,7 @@ from roof_measure.map_reference import (
 from roof_measure.models import ImageMetadata
 from roof_measure.ai_polygon_editor import PolygonEditSuggestion
 from roof_measure.polygon_editor import apply_polygon_operations, sections_to_vertex_document
+from roof_measure.polygon_component import component_data_to_sections, sections_to_component_data
 from roof_measure.polygonize import section_from_polygon, sections_from_mask
 from roof_measure.segmentation import MockRoofSegmenter, Sam2RoofSegmenter, SegmentationPrompts
 from roof_measure.service import _constrain_mask_to_footprints, _footprint_buffer_pixels, finalize_roof_sections, footprint_constraint_mask, measure_roof_from_outline_polygons, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections, score_roof_result, sections_mask
@@ -543,6 +544,41 @@ def test_polygon_editor_document_preserves_hole_identity() -> None:
     )
     assert len(changed.applied_operations) == 1
     assert changed.sections[0].holes[0][0] == (42.0, 42.0)
+
+
+def test_connected_polygon_component_round_trip_preserves_parts_holes_and_locks() -> None:
+    first = section_from_polygon(
+        "first",
+        [(10, 10), (40, 10), (40, 40), (10, 40)],
+        holes=[[(20, 20), (30, 20), (30, 30), (20, 30)]],
+    )
+    second = section_from_polygon("second", [(60, 10), (90, 10), (90, 40), (60, 40)])
+
+    payload = sections_to_component_data([first, second], locked_vertices={"first:1"})
+    sections, locked_points = component_data_to_sections(payload, [first, second])
+
+    assert [section.section_id for section in sections] == ["first", "second"]
+    assert sections[0].polygon == first.polygon
+    assert sections[0].holes[0] == repair_polygon(first.holes[0])
+    assert locked_points == [{"polygon_id": "first", "x": 40.0, "y": 10.0}]
+
+
+def test_connected_polygon_component_mounts_in_streamlit() -> None:
+    from streamlit.testing.v1 import AppTest
+
+    app = AppTest.from_string(
+        """
+from PIL import Image
+from roof_measure.polygon_component import render_polygon_editor
+from roof_measure.polygonize import section_from_polygon
+
+image = Image.new("RGB", (120, 80), "white")
+section = section_from_polygon("roof", [(10, 10), (110, 10), (110, 70), (10, 70)])
+render_polygon_editor(image, [section], locked_vertices={"roof:0"}, revision=0, key="smoke-editor")
+"""
+    ).run(timeout=10)
+
+    assert not list(app.exception)
 
 
 def test_combined_manual_canvas_maps_each_part_to_atomic_operations() -> None:

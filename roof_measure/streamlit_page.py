@@ -47,7 +47,8 @@ from .ai_raster_outline import suggest_raster_roof_outline, yellow_boundary_over
 from .ai_qa import qa_corrections_to_prompts, suggest_roof_qa
 from .ai_points import suggest_roof_prompt_points
 from .footprint_deformation import deform_footprints_to_roof_support, score_polygon_candidate
-from .polygon_editor import apply_polygon_operations, sections_to_vertex_document
+from .polygon_editor import apply_polygon_operations, sections_to_vertex_document, validate_polygon_sections
+from .polygon_component import component_data_to_sections, polygon_editor_available, render_polygon_editor
 from .exports import geojson_to_string, measurement_to_geojson, report_to_json
 from .image_io import load_image_bytes, uploaded_file_bytes
 from .lidar import assess_mask_against_kyfromabove_lidar, kyfromabove_height_grid_for_image
@@ -2069,7 +2070,6 @@ def _render_measurement_result(
 
     with st.expander("Annotated overlay preview", expanded=False):
         st.image(displayed_overlay, caption="Current measurement overlay")
-    _render_visual_polygon_editor(result, image=loaded.inference_image)
     _render_polygon_editor(result)
 
     geojson = measurement_to_geojson(measurement)
@@ -2747,8 +2747,8 @@ def _render_corner_handle_editor(
         return
     with st.container(border=True):
         st.markdown("#### Edit Polygon")
-        if st_canvas is None:
-            st.info("Install streamlit-drawable-canvas to drag roof corners. The coordinate table remains available below.")
+        if not polygon_editor_available():
+            st.info("The connected polygon editor requires Streamlit 1.58 or newer.")
             return
         st.caption(
             "Choose the polygon source, then use AI or manual vertex edits. Multiple footprint parts remain one building polygon with preserved gaps."
@@ -2896,6 +2896,7 @@ def _render_corner_handle_editor(
                     note="Applied deterministic architectural edge straightening with a 3% per-section area guard.",
                 )
                 editor_state["sections"] = [section.model_copy(deep=True) for section in corrected_report.measurement.sections]
+                editor_state["component_revision"] = int(editor_state.get("component_revision") or 0) + 1
                 st.session_state[state_key] = editor_state
                 st.rerun()
         with cleanup_col:
@@ -2979,6 +2980,7 @@ def _render_corner_handle_editor(
                 st.session_state["roof_measure_editor_messages"] = messages
                 st.session_state["roof_measure_result"] = edited_result
                 editor_state["sections"] = [section.model_copy(deep=True) for section in edited_result.report.measurement.sections]
+                editor_state["component_revision"] = int(editor_state.get("component_revision") or 0) + 1
                 st.session_state[state_key] = editor_state
                 st.rerun()
             if not openai_available:
@@ -2990,85 +2992,40 @@ def _render_corner_handle_editor(
                     st.session_state["roof_measure_result"] = original
                     st.session_state.pop(state_key, None)
                     st.rerun()
-        canvas_width, canvas_height, scale_x, scale_y = _canvas_dimensions(image)
-        corner_action = st.radio(
-            "Manual vertex action",
-            ["Move corners", "Add corner", "Delete corners"],
-            horizontal=True,
-            key=f"roof_measure_corner_action_{result.report.id}",
+        st.markdown("##### Manual Polygon Editor")
+        st.caption("Drag a vertex and its connected edges move with it. Add and Delete change the same polygon ring; Undo restores the previous valid edit.")
+        component_revision = int(editor_state.get("component_revision") or 0)
+        component_result = render_polygon_editor(
+            image,
+            editor_sections,
+            locked_vertices=locked_vertex_ids,
+            revision=component_revision,
+            key=f"roof_measure_connected_polygon_editor_{result.report.id}_{polygon_source}",
         )
-        drawing_mode = "point" if corner_action == "Add corner" else "transform"
-        if corner_action == "Move corners":
-            st.caption("Move mode saves after you release a vertex. Existing polygon connections are redrawn immediately from the moved point.")
-        elif corner_action == "Add corner":
-            st.caption("Add mode saves a new vertex on the nearest existing edge after you place it.")
-        else:
-            st.caption("Delete mode is explicit because removing a vertex changes the polygon topology.")
-        canvas_revision = int(editor_state.get("canvas_revision") or 0)
-        corner_canvas = st_canvas(
-            fill_color="rgba(229, 40, 40, 0.85)",
-            stroke_width=2,
-            stroke_color="#e52828",
-            background_image=_canvas_background_image(
-                vertex_editor_overlay(image, sections=editor_sections, stage="exterior", labels=False),
-                canvas_width,
-                canvas_height,
-            ),
-            update_streamlit=True,
-            height=canvas_height,
-            width=canvas_width,
-            drawing_mode=drawing_mode,
-            initial_drawing=_sections_to_corner_canvas_initial_drawing(editor_sections, scale_x=scale_x, scale_y=scale_y),
-            display_toolbar=True,
-            point_display_radius=8,
-            key=f"roof_measure_corner_canvas_{result.report.id}_{polygon_source}_{drawing_mode}_{canvas_revision}",
-        )
-
-        def apply_canvas_vertex_operations(*, automatic: bool) -> bool:
-            try:
-                operations = _canvas_to_polygon_operations(
-                    getattr(corner_canvas, "json_data", None),
-                    editor_sections,
-                    scale_x=scale_x,
-                    scale_y=scale_y,
-                    allow_deletions=corner_action == "Delete corners",
-                    allow_new_points=corner_action == "Add corner",
-                )
-                edit = apply_polygon_operations(editor_sections, operations, image_size=image.size)
-                if not edit.applied_operations:
-                    return False
+        component_payload = getattr(component_result, "sections", None) if component_result is not None else None
+        candidate_sections, manual_locked_points = component_data_to_sections(component_payload, editor_sections)
+        if candidate_sections and not _same_section_geometry(candidate_sections, editor_sections):
+            valid, reason = validate_polygon_sections(candidate_sections, editor_sections)
+            if not valid:
+                st.error(f"Polygon edit was rejected: {reason}.")
+                editor_state["component_revision"] = component_revision + 1
+                st.session_state[state_key] = editor_state
+            else:
                 corrected_report = recalculate_report_from_corrected_sections(
                     result.report,
-                    edit.sections,
-                    correction_note=f"Estimator applied {len(edit.applied_operations)} manual vertex edit(s) from {polygon_source}.",
+                    candidate_sections,
+                    correction_note=f"Estimator updated the connected polygon editor from {polygon_source}.",
                 )
-            except Exception as exc:
-                if not automatic:
-                    st.error(f"Could not apply manual vertex edits: {type(exc).__name__}: {exc}")
-                return False
-            st.session_state["roof_measure_result"] = _result_with_sections(
-                result,
-                corrected_report.measurement.sections,
-                note="Estimator applied manual vertex edits.",
-            )
-            editor_state["sections"] = [section.model_copy(deep=True) for section in corrected_report.measurement.sections]
-            editor_state["manual_locked_vertices"] = {
-                *{str(value) for value in editor_state.get("manual_locked_vertices") or set()},
-                *{key for operation in edit.applied_operations for key in _operation_vertex_keys(operation)},
-            }
-            editor_state["manual_locked_points"] = _merge_manual_anchor_points(
-                editor_state.get("manual_locked_points") or [],
-                _manual_anchor_points(edit.applied_operations),
-            )
-            editor_state["canvas_revision"] = canvas_revision + 1
-            st.session_state[state_key] = editor_state
-            return True
-
-        if corner_action != "Delete corners":
-            if apply_canvas_vertex_operations(automatic=True):
-                st.rerun()
-        elif st.button("Apply Vertex Deletions", type="primary", width="stretch", key=f"roof_measure_apply_corners_{result.report.id}_{polygon_source}"):
-            if apply_canvas_vertex_operations(automatic=False):
+                corrected_sections = corrected_report.measurement.sections
+                st.session_state["roof_measure_result"] = _result_with_sections(
+                    result,
+                    corrected_sections,
+                    note="Estimator updated the connected polygon editor.",
+                )
+                editor_state["sections"] = [section.model_copy(deep=True) for section in corrected_sections]
+                editor_state["manual_locked_vertices"] = set()
+                editor_state["manual_locked_points"] = manual_locked_points
+                st.session_state[state_key] = editor_state
                 st.rerun()
 
 
@@ -3176,6 +3133,24 @@ def _locked_vertex_ids_for_points(
         if math.dist(point, ring[index]) <= maximum_distance:
             locked.add(f"{section.section_id}:{index}")
     return locked
+
+
+def _same_section_geometry(first: list[RoofSection], second: list[RoofSection], *, tolerance: float = 0.01) -> bool:
+    if len(first) != len(second):
+        return False
+    second_by_id = {section.section_id: section for section in second}
+    for section in first:
+        other = second_by_id.get(section.section_id)
+        if other is None or len(section.polygon) != len(other.polygon) or len(section.holes) != len(other.holes):
+            return False
+        if any(math.dist(left, right) > tolerance for left, right in zip(section.polygon, other.polygon, strict=False)):
+            return False
+        for hole, other_hole in zip(section.holes, other.holes, strict=False):
+            if len(hole) != len(other_hole) or any(
+                math.dist(left, right) > tolerance for left, right in zip(hole, other_hole, strict=False)
+            ):
+                return False
+    return True
 
 
 def _run_ai_polygon_editor(

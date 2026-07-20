@@ -67,6 +67,13 @@ def apply_polygon_operations(
     )
 
 
+def validate_polygon_sections(candidate: list[RoofSection], previous: list[RoofSection]) -> tuple[bool, str]:
+    """Validate a complete interactive-editor update before persisting it."""
+    if len(candidate) != len(previous):
+        return False, "polygon parts were added or removed"
+    return _validate_sections(candidate, previous, max_area_change_ratio=0.50)
+
+
 def _apply_operation(sections: list[RoofSection], raw: dict[str, Any], *, image_size: tuple[int, int]) -> list[RoofSection] | None:
     operation = str(raw.get("op") or raw.get("operation") or "").strip().lower()
     polygon_id = str(raw.get("polygon_id") or raw.get("section_id") or "")
