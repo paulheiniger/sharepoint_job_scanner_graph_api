@@ -72,6 +72,7 @@ from roof_measure.streamlit_page import (
     _footprint_support_regression,
     _insert_new_corner_points,
     _lidar_core_cut,
+    _lidar_edge_height_grid,
     _lidar_ground_regression,
     _locked_vertex_ids_for_points,
     _manual_anchor_points,
@@ -95,7 +96,7 @@ from roof_measure.streamlit_page import (
     _sections_to_canvas_initial_drawing,
     _targeted_qa_retry_is_accepted,
 )
-from roof_measure.visualization import prompt_points_overlay
+from roof_measure.visualization import lidar_height_overlay, prompt_points_overlay
 from roof_measure.vertex_agent import initialize_vertices_toward_boundary, run_vertex_tool_loop
 from jobscan.env import load_project_env
 
@@ -914,6 +915,42 @@ def test_measurement_passes_current_mask_as_sam_refinement_prompt(tmp_path) -> N
     assert np.array_equal(prompts.mask_input, current_mask)
 
 
+def test_lidar_overlay_grid_does_not_require_retained_sam_mask() -> None:
+    result = measure_roof_from_outline_polygons(
+        image_bytes=_image_bytes((100, 80)),
+        request=RoofMeasureRequest(overhead_image_name="roof.png", metadata_pixels_per_foot=1.0),
+        polygons=[[(10, 10), (90, 10), (90, 70), (10, 70)]],
+    )
+    result.selected_mask = None
+    expected = SimpleNamespace(ok=True, height_grid=np.ones((10, 13)), cell_pixels=8)
+
+    with patch("roof_measure.streamlit_page.kyfromabove_height_grid_for_image", return_value=expected) as load_grid:
+        actual = _lidar_edge_height_grid(
+            result,
+            RoofMeasureRequest(
+                overhead_image_name="roof.png",
+                map_view={"latitude": 38.0, "longitude": -84.0, "zoom": 19.0},
+            ),
+            "https://example.test/tile.copc.laz",
+            image_size=(100, 80),
+        )
+
+    assert actual is expected
+    assert load_grid.call_args.kwargs["image_width"] == 100
+    assert load_grid.call_args.kwargs["image_height"] == 80
+
+
+def test_lidar_height_overlay_visibly_changes_elevated_and_ground_cells() -> None:
+    image = Image.new("RGB", (16, 16), "white")
+    height_grid = np.asarray([[10.0, 1.0], [np.nan, np.nan]])
+
+    overlay = lidar_height_overlay(image, height_grid=height_grid, cell_pixels=8)
+
+    assert overlay.getpixel((2, 2)) != (255, 255, 255)
+    assert overlay.getpixel((12, 2)) != (255, 255, 255)
+    assert overlay.getpixel((2, 12)) == (255, 255, 255)
+
+
 def test_footprint_buffer_uses_metadata_calibration() -> None:
     request = RoofMeasureRequest(
         overhead_image_name="roof.png",
@@ -1214,6 +1251,42 @@ def test_scored_finalizer_preserves_constrained_sam_mask_core() -> None:
     final_mask = sections_mask(mask.shape, final_sections)
     assert record["candidate"] in {"raw_mask", "topology_clean", "architectural_fit"}
     assert float((final_mask & mask).sum()) / float(mask.sum()) >= 0.96
+
+
+def test_mask_trace_preserves_real_edge_notches_before_architectural_finalizing(tmp_path) -> None:
+    mask = np.zeros((120, 140), dtype=bool)
+    mask[15:105, 15:125] = True
+    mask[85:105, 45:70] = False
+    mask[92:105, 90:112] = False
+    request = RoofMeasureRequest(
+        overhead_image_name="notched-roof.png",
+        metadata_pixels_per_foot=1.0,
+        minimum_section_area_pixels=100,
+        simplification_tolerance=15.0,
+    )
+
+    result = measure_roof_from_overhead_image(
+        image_bytes=_image_bytes((140, 120)),
+        request=request,
+        segmenter=MockRoofSegmenter([mask]),
+        storage_root=str(tmp_path),
+    )
+    coarse = sections_from_mask(
+        mask,
+        minimum_section_area_pixels=100,
+        simplification_tolerance=15.0,
+    )
+    finalized, record = finalize_roof_sections(
+        mask,
+        result.report.measurement.sections,
+        architectural_simplification_tolerance=15.0,
+    )
+
+    assert len(result.report.measurement.sections[0].polygon) > len(coarse[0].polygon)
+    assert len(finalized[0].polygon) == len(result.report.measurement.sections[0].polygon)
+    assert record["candidate"] == "raw_mask"
+    assert record["boundary_alignment"] == 1.0
+    assert record["vertex_count"] == 12
 
 
 def test_report17_regression_fixture_records_missing_footprint_and_active_outline_prior() -> None:

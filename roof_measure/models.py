@@ -82,7 +82,7 @@ class RoofMeasureRequest(BaseModel):
     metadata_pixels_per_foot: float | None = None
     scale_bar_label_hint: str | None = None
     use_ai_scale_reader: bool = True
-    simplification_tolerance: float = 15.0
+    simplification_tolerance: float = 4.0
     minimum_section_area_pixels: float = 400.0
     edge_snap_strength: float = 0.0
     segmenter_name: str = "manual_fallback"

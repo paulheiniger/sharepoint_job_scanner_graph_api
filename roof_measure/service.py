@@ -112,7 +112,9 @@ def measure_roof_from_overhead_image(
         segmentation_score = float(candidate.score)
         sections = sections_from_mask(
             selected_mask,
-            simplification_tolerance=request.simplification_tolerance,
+            # Preserve a detailed source contour. Higher cleanup tolerances are
+            # evaluated later against this boundary and may be rejected.
+            simplification_tolerance=min(max(float(request.simplification_tolerance), 0.0), 3.0),
             minimum_section_area_pixels=request.minimum_section_area_pixels,
             edge_snap_strength=request.edge_snap_strength,
         )
@@ -355,6 +357,7 @@ def finalize_roof_sections(
     *,
     footprint_polygons: list[list[tuple[float, float]]] | None = None,
     outline_prior_polygons: list[list[tuple[float, float]]] | None = None,
+    architectural_simplification_tolerance: float = 12.0,
 ) -> tuple[list[RoofSection], dict[str, object]]:
     """Choose the cleanest geometry that does not lose the observed roof core."""
     baseline = [section.model_copy(deep=True) for section in sections]
@@ -364,9 +367,16 @@ def finalize_roof_sections(
     outline_prior_polygons = outline_prior_polygons or []
     baseline_score = score_roof_result(mask, baseline, footprint_polygons, outline_prior_polygons)
     baseline_area = sum(section.area_pixels for section in baseline)
+    baseline_boundary_alignment = _section_boundary_alignment(np.asarray(mask, dtype=bool), baseline)
     candidates = [
         ("topology_clean", _topology_cleaned_sections(baseline)),
-        ("architectural_fit", _architectural_sections(baseline)),
+        (
+            "architectural_fit",
+            _architectural_sections(
+                baseline,
+                simplification_tolerance=architectural_simplification_tolerance,
+            ),
+        ),
     ]
     best_sections = baseline
     best_score = baseline_score
@@ -375,6 +385,8 @@ def finalize_roof_sections(
         "score": baseline_score,
         "accepted": True,
         "reason": "raw constrained SAM contour retained",
+        "boundary_alignment": round(baseline_boundary_alignment, 3),
+        "vertex_count": sum(max(len(section.polygon) - 1, 0) for section in baseline),
     }
     for name, candidate in candidates:
         if not candidate:
@@ -385,11 +397,14 @@ def finalize_roof_sections(
         candidate_iou = _section_mask_iou(np.asarray(mask, dtype=bool), candidate)
         candidate_core = _mask_core_retention(np.asarray(mask, dtype=bool), candidate)
         candidate_prior = _section_prior_agreement(np.asarray(mask, dtype=bool), candidate, outline_prior_polygons)
+        candidate_boundary_alignment = _section_boundary_alignment(np.asarray(mask, dtype=bool), candidate)
         accepted = (
             area_drift <= 0.04
             and candidate_iou >= 0.88
             and candidate_core >= 0.96
             and candidate_prior >= 0.92
+            and candidate_boundary_alignment >= 0.82
+            and candidate_boundary_alignment >= baseline_boundary_alignment - 0.03
             and candidate_score > best_score
         )
         if accepted:
@@ -402,6 +417,9 @@ def finalize_roof_sections(
                 "core_retention": round(candidate_core, 3),
                 "prior_agreement": round(candidate_prior, 3),
                 "area_drift": round(area_drift, 3),
+                "boundary_alignment": round(candidate_boundary_alignment, 3),
+                "baseline_boundary_alignment": round(baseline_boundary_alignment, 3),
+                "vertex_count": sum(max(len(section.polygon) - 1, 0) for section in candidate),
                 "accepted": True,
                 "reason": "cleaner candidate preserved constrained mask and priors",
             }
@@ -420,12 +438,23 @@ def _topology_cleaned_sections(sections: list[RoofSection]) -> list[RoofSection]
     return cleaned
 
 
-def _architectural_sections(sections: list[RoofSection]) -> list[RoofSection]:
+def _architectural_sections(
+    sections: list[RoofSection],
+    *,
+    simplification_tolerance: float = 12.0,
+) -> list[RoofSection]:
     straightened: list[RoofSection] = []
+    tolerance = max(0.0, min(float(simplification_tolerance), 20.0))
     for section in _topology_cleaned_sections(sections):
         candidate = section.model_copy(deep=True)
-        candidate.polygon = straighten_architectural_ring(candidate.polygon)
-        candidate.holes = [straighten_architectural_ring(hole) for hole in candidate.holes]
+        candidate.polygon = straighten_architectural_ring(
+            candidate.polygon,
+            simplification_tolerance=tolerance,
+        )
+        candidate.holes = [
+            straighten_architectural_ring(hole, simplification_tolerance=tolerance)
+            for hole in candidate.holes
+        ]
         if len(candidate.polygon) >= 4:
             straightened.append(candidate)
     return straightened
@@ -454,6 +483,31 @@ def _section_mask_iou(mask: np.ndarray, sections: list[RoofSection]) -> float:
     candidate = sections_mask(mask.shape, sections)
     union = mask | candidate
     return float((mask & candidate).sum()) / max(float(union.sum()), 1.0)
+
+
+def _section_boundary_alignment(
+    mask: np.ndarray,
+    sections: list[RoofSection],
+    *,
+    tolerance_pixels: int = 3,
+) -> float:
+    """Measure whether proposed polygon edges remain close to the SAM edge."""
+    source_boundary = _mask_boundary(np.asarray(mask, dtype=bool))
+    candidate_boundary = _mask_boundary(sections_mask(mask.shape, sections))
+    if not candidate_boundary.any() or not source_boundary.any():
+        return 0.0
+    nearby_source = _dilate_mask(source_boundary, radius=max(0, int(tolerance_pixels)))
+    return float(nearby_source[candidate_boundary].mean())
+
+
+def _mask_boundary(mask: np.ndarray) -> np.ndarray:
+    mask_bool = np.asarray(mask, dtype=bool)
+    padded = np.pad(mask_bool, 1, mode="constant", constant_values=False)
+    eroded = np.ones_like(mask_bool)
+    for y_offset in range(3):
+        for x_offset in range(3):
+            eroded &= padded[y_offset : y_offset + mask_bool.shape[0], x_offset : x_offset + mask_bool.shape[1]]
+    return mask_bool & ~eroded
 
 
 def _section_prior_agreement(

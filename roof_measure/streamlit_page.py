@@ -561,10 +561,10 @@ def render_ai_roof_measure_page() -> None:
             "Boundary smoothing",
             min_value=0.0,
             max_value=40.0,
-            value=15.0,
+            value=4.0,
             step=1.0,
-            help="Higher values remove noisy mask stair-steps and favor straight roof/building edges.",
-            key="roof_measure_simplification_tolerance",
+            help="Controls the optional architectural cleanup candidate. The detailed SAM contour is always retained for boundary validation.",
+            key="roof_measure_simplification_tolerance_v2",
         )
     with controls_col2:
         minimum_section_area = st.number_input("Minimum section size (pixels)", min_value=1.0, value=400.0, step=100.0)
@@ -899,6 +899,7 @@ def _measure_roof_automatically(
         result.report.measurement.sections,
         footprint_polygons=automatic_request.footprint_polygons,
         outline_prior_polygons=automatic_request.outline_prior_polygons,
+        architectural_simplification_tolerance=automatic_request.simplification_tolerance,
     )
     selected_sections = straightened_sections
     footprint_deformation_record: dict[str, object] | None = None
@@ -1285,6 +1286,7 @@ def _run_iterative_sam_corrections(
             retry.report.measurement.sections,
             footprint_polygons=retry_request.footprint_polygons,
             outline_prior_polygons=retry_request.outline_prior_polygons,
+            architectural_simplification_tolerance=retry_request.simplification_tolerance,
         )
         retry_score = score_roof_result(
             retry.selected_mask,
@@ -1537,9 +1539,10 @@ def _lidar_edge_height_grid(
     result: RoofMeasureResult,
     request: RoofMeasureRequest,
     asset_url: str,
+    image_size: tuple[int, int] | None = None,
 ):
     """Return the cached image-aligned height grid used for per-edge scoring."""
-    if not asset_url or result.selected_mask is None:
+    if not asset_url:
         return None
     map_view = request.map_view
     if any(key not in map_view for key in ("latitude", "longitude", "zoom")):
@@ -1547,6 +1550,13 @@ def _lidar_edge_height_grid(
     source = result.report.source_images[0] if result.report.source_images else None
     if source is None:
         return None
+    if result.selected_mask is not None:
+        image_height, image_width = result.selected_mask.shape[:2]
+    elif image_size is not None:
+        image_width, image_height = image_size
+    else:
+        image_width = int(source.inference_width)
+        image_height = int(source.inference_height)
     return kyfromabove_height_grid_for_image(
         asset_url=asset_url,
         center_latitude=float(map_view["latitude"]),
@@ -1554,8 +1564,8 @@ def _lidar_edge_height_grid(
         zoom=float(map_view["zoom"]),
         source_width=int(source.width),
         source_height=int(source.height),
-        image_width=int(result.selected_mask.shape[1]),
-        image_height=int(result.selected_mask.shape[0]),
+        image_width=int(image_width),
+        image_height=int(image_height),
     )
 
 
@@ -2082,12 +2092,23 @@ def _render_measurement_result(
             result,
             RoofMeasureRequest(overhead_image_name="workspace", map_view=_recorded_map_view(report)),
             lidar_asset,
+            image_size=loaded.inference_image.size,
         )
-        displayed_overlay = lidar_height_overlay(
-            displayed_overlay,
-            height_grid=lidar_grid.height_grid if lidar_grid and lidar_grid.ok else None,
-            cell_pixels=lidar_grid.cell_pixels if lidar_grid else 8,
-        )
+        if lidar_grid is None:
+            st.warning("LiDAR could not be aligned because this measurement does not contain a recorded map view.")
+        elif not lidar_grid.ok:
+            st.warning(lidar_grid.warning or "LiDAR height support is unavailable for this image extent.")
+        else:
+            displayed_overlay = lidar_height_overlay(
+                displayed_overlay,
+                height_grid=lidar_grid.height_grid,
+                cell_pixels=lidar_grid.cell_pixels,
+            )
+            lidar_values = np.asarray(lidar_grid.height_grid, dtype=float)
+            st.caption(
+                f"LiDAR overlay applied: {int(np.sum(np.isfinite(lidar_values) & (lidar_values >= 8.0))):,} elevated cell(s), "
+                f"{int(np.sum(np.isfinite(lidar_values) & (lidar_values < 4.0))):,} low cell(s)."
+            )
     if show_vertices:
         latest_editor = next(
             (item for item in reversed(report.processing_iterations) if item.get("stage") == "ai_polygon_editor"),
