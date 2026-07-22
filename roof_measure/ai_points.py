@@ -56,8 +56,8 @@ def suggestion_from_payload(payload: dict[str, Any], *, width: int, height: int)
     confidence = _safe_confidence(payload.get("confidence"))
     notes = str(payload.get("notes") or "").strip()
     return RoofPointSuggestion(
-        positive_points=positive[:16],
-        negative_points=negative[:16],
+        positive_points=positive[:8],
+        negative_points=negative[:12],
         confidence=confidence,
         notes=notes,
         warnings=warnings,
@@ -174,7 +174,7 @@ def _call_openai_roof_point_suggester_responses(
                             f"Primary overhead image size is {width} by {height} pixels. "
                             f"Address/site hint: {address or 'not provided'}. "
                             "Use the prior semantic analysis below to provide conservative prompts for SAM2. "
-                            "For a large multi-wing complex, return 6 to 14 positive_points; use fewer for a simple roof. Place at least "
+                            "Return 3 to 8 positive_points for a large multi-wing complex; use fewer for a simple roof. Place at most "
                             "one positive point near the center of every distinct, visibly identifiable roof lobe and narrow roof connector. "
                             "A positive point may be placed on shadowed pixels only when roof membrane is still directly visible at that exact "
                             "point and the point is well inside the roof, away from the projected shadow edge. Never infer roof from a dark "
@@ -231,7 +231,7 @@ def _call_openai_roof_point_suggester_chat_completion(
                 "Add negative_points in large parking lots and open paved areas that touch or surround the target building. "
                 "Do not include points on labels, watermarks, attribution, cars, or roads unless they are negative points. "
                 "If you are unsure whether a surface is roof or pavement, do not make it a positive point; make it negative or omit it. "
-                "Prefer 6 to 14 well-distributed positive points for a large school/campus roof, fewer for a simple building. "
+                "Prefer 3 to 8 well-distributed positive points for a large school/campus roof, fewer for a simple building. "
                 "Add negative points inside every visible courtyard or ground gap between wings so SAM2 does not bridge separate roof edges. "
                 "Any reference/oblique images included after the primary overhead image are context only. "
                 "All returned pixel coordinates must be in the primary overhead image coordinate system. "

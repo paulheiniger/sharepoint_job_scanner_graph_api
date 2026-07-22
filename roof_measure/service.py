@@ -111,6 +111,13 @@ def measure_roof_from_overhead_image(
                 )
             else:
                 segmentation.warnings.append("AI roof outline prior did not overlap the segmentation mask; original mask retained.")
+        stabilized_mask, stabilization = _stabilize_segmentation_mask(selected_mask, radius=2)
+        if bool(stabilization["accepted"]):
+            selected_mask = stabilized_mask
+            segmentation.warnings.append(
+                "Closed narrow SAM mask cracks before polygonization; "
+                f"added {float(stabilization['added_fraction']):.2%} mask area."
+            )
         segmentation_score = float(candidate.score)
         sections = sections_from_mask(
             selected_mask,
@@ -194,6 +201,31 @@ def measure_roof_from_overhead_image(
 def _constrain_mask_to_footprints(mask: np.ndarray, polygons: list[list[tuple[float, float]]], *, buffer_pixels: int = 8) -> np.ndarray:
     footprint_mask = footprint_constraint_mask(mask.shape[:2], polygons, buffer_pixels=buffer_pixels)
     return np.asarray(mask, dtype=bool) & footprint_mask
+
+
+def _stabilize_segmentation_mask(
+    mask: np.ndarray,
+    *,
+    radius: int = 2,
+    maximum_added_fraction: float = 0.025,
+) -> tuple[np.ndarray, dict[str, object]]:
+    """Reconnect narrow segmentation cracks without materially expanding the roof."""
+    source = np.asarray(mask, dtype=bool)
+    if not source.any() or radius <= 0:
+        return source.copy(), {"accepted": False, "added_fraction": 0.0}
+    closed = _erode_mask(_dilate_mask(source, radius=radius), radius=radius)
+    added = closed & ~source
+    added_fraction = float(added.sum()) / max(float(source.sum()), 1.0)
+    accepted = bool(closed.any() and added.any() and added_fraction <= maximum_added_fraction)
+    return (
+        closed if accepted else source.copy(),
+        {
+            "accepted": accepted,
+            "added_pixels": int(added.sum()),
+            "added_fraction": round(added_fraction, 5),
+            "radius_pixels": int(radius),
+        },
+    )
 
 
 def _outline_prior_mask_prompt(shape: tuple[int, int], polygons: list[list[tuple[float, float]]]) -> np.ndarray:
@@ -317,6 +349,18 @@ def _dilate_mask(mask: np.ndarray, *, radius: int) -> np.ndarray:
     return expanded
 
 
+def _erode_mask(mask: np.ndarray, *, radius: int) -> np.ndarray:
+    eroded = np.asarray(mask, dtype=bool).copy()
+    for _ in range(max(0, int(radius))):
+        padded = np.pad(eroded, 1, mode="constant", constant_values=False)
+        next_eroded = np.ones_like(eroded)
+        for y_offset in range(3):
+            for x_offset in range(3):
+                next_eroded &= padded[y_offset : y_offset + eroded.shape[0], x_offset : x_offset + eroded.shape[1]]
+        eroded = next_eroded
+    return eroded
+
+
 def score_roof_result(
     mask: np.ndarray | None,
     sections: list[RoofSection],
@@ -397,6 +441,9 @@ def finalize_roof_sections(
     ]
     best_sections = baseline
     best_score = baseline_score
+    baseline_vertices = max(sum(max(len(section.polygon) - 1, 0) for section in baseline), 1)
+    editable_vertex_cap = max(int(target_exterior_vertices), 12 * len(baseline))
+    bounded_fallback: tuple[list[RoofSection], float, dict[str, object]] | None = None
     best_record: dict[str, object] = {
         "candidate": "raw_mask",
         "score": baseline_score,
@@ -417,7 +464,6 @@ def finalize_roof_sections(
         candidate_prior = _section_prior_agreement(np.asarray(mask, dtype=bool), candidate, outline_prior_polygons)
         candidate_boundary_metrics = section_boundary_metrics(np.asarray(mask, dtype=bool), candidate)
         candidate_boundary_alignment = float(candidate_boundary_metrics["f1"])
-        baseline_vertices = max(sum(max(len(section.polygon) - 1, 0) for section in baseline), 1)
         candidate_vertices = sum(max(len(section.polygon) - 1, 0) for section in candidate)
         complexity_reduction = max(0.0, 1.0 - candidate_vertices / baseline_vertices)
         candidate_utility = candidate_score + min(complexity_reduction, 0.5) * 0.04
@@ -437,25 +483,56 @@ def finalize_roof_sections(
             and candidate_score >= baseline_score - 0.015
             and candidate_utility > best_utility + 0.001
         )
+        fallback_ok = (
+            candidate_vertices <= editable_vertex_cap
+            and area_drift <= 0.08
+            and candidate_iou >= 0.78
+            and candidate_core >= 0.90
+            and candidate_prior >= 0.85
+            and candidate_boundary_alignment >= 0.70
+            and float(candidate_boundary_metrics["p95_distance_pixels"]) <= max(
+                12.0,
+                float(architectural_simplification_tolerance) * 2.0,
+            )
+        )
+        fallback_record = {
+            "candidate": name,
+            "score": candidate_score,
+            "mask_iou": round(candidate_iou, 3),
+            "core_retention": round(candidate_core, 3),
+            "prior_agreement": round(candidate_prior, 3),
+            "area_drift": round(area_drift, 3),
+            "boundary_alignment": round(candidate_boundary_alignment, 3),
+            "boundary_metrics": candidate_boundary_metrics,
+            "baseline_boundary_metrics": baseline_boundary_metrics,
+            "vertex_count": candidate_vertices,
+            "source_vertex_count": baseline_vertices,
+            "vertex_reduction": round(complexity_reduction, 3),
+        }
+        if fallback_ok and (
+            bounded_fallback is None
+            or candidate_utility > bounded_fallback[1]
+        ):
+            bounded_fallback = (candidate, candidate_utility, fallback_record)
         if accepted:
             best_sections = candidate
             best_score = candidate_score
             best_record = {
-                "candidate": name,
-                "score": candidate_score,
-                "mask_iou": round(candidate_iou, 3),
-                "core_retention": round(candidate_core, 3),
-                "prior_agreement": round(candidate_prior, 3),
-                "area_drift": round(area_drift, 3),
-                "boundary_alignment": round(candidate_boundary_alignment, 3),
-                "boundary_metrics": candidate_boundary_metrics,
-                "baseline_boundary_metrics": baseline_boundary_metrics,
-                "vertex_count": candidate_vertices,
-                "source_vertex_count": baseline_vertices,
-                "vertex_reduction": round(complexity_reduction, 3),
+                **fallback_record,
                 "accepted": True,
                 "reason": "editable architectural fit preserved the dense SAM evidence within boundary guardrails",
             }
+    if (
+        best_sections is baseline
+        and baseline_vertices > editable_vertex_cap
+        and bounded_fallback is not None
+    ):
+        best_sections, _, fallback_record = bounded_fallback
+        best_record = {
+            **fallback_record,
+            "accepted": True,
+            "reason": "bounded editable fallback replaced an over-dense raw contour; dense SAM mask retained separately",
+        }
     return best_sections, best_record
 
 

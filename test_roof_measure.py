@@ -55,7 +55,7 @@ from roof_measure.polygon_editor import apply_polygon_operations, sections_to_ve
 from roof_measure.polygon_component import component_data_to_sections, sections_to_component_data
 from roof_measure.polygonize import section_from_polygon, sections_from_mask
 from roof_measure.segmentation import MockRoofSegmenter, Sam2RoofSegmenter, SegmentationPrompts
-from roof_measure.service import _constrain_mask_to_footprints, _footprint_buffer_pixels, finalize_roof_sections, footprint_constraint_mask, measure_roof_from_outline_polygons, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections, score_roof_result, section_boundary_metrics, sections_mask
+from roof_measure.service import _constrain_mask_to_footprints, _footprint_buffer_pixels, _stabilize_segmentation_mask, finalize_roof_sections, footprint_constraint_mask, measure_roof_from_outline_polygons, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections, score_roof_result, section_boundary_metrics, sections_mask
 from roof_measure.models import RoofMeasureRequest
 from roof_measure.streamlit_page import (
     _canvas_background_image,
@@ -1372,6 +1372,19 @@ def test_finalizer_enforces_total_vertex_budget_on_repeated_large_jogs() -> None
     assert record["vertex_count"] <= 24
 
 
+def test_mask_stabilization_reconnects_narrow_internal_crack_without_large_expansion() -> None:
+    mask = np.zeros((120, 140), dtype=bool)
+    mask[10:110, 10:130] = True
+    mask[10:110, 69:71] = False
+
+    stabilized, record = _stabilize_segmentation_mask(mask, radius=2)
+    sections = sections_from_mask(stabilized, minimum_section_area_pixels=100, simplification_tolerance=1)
+
+    assert record["accepted"] is True
+    assert record["added_fraction"] < 0.025
+    assert len(sections) == 1
+
+
 def test_local_sam_mask_merge_cannot_change_pixels_outside_review_region() -> None:
     base = np.zeros((100, 120), dtype=bool)
     base[10:90, 10:110] = True
@@ -1911,7 +1924,7 @@ def test_ai_point_suggestion_payload_filters_out_of_bounds_points() -> None:
     assert "multiple roof sections" in suggestion.notes
 
 
-def test_ai_point_suggestion_keeps_broad_multi_lobe_coverage() -> None:
+def test_ai_point_suggestion_caps_initial_multi_lobe_prompts() -> None:
     payload = {
         "positive_points": [
             {"x": 10 + index * 5, "y": 20, "reason": f"roof lobe {index}"}
@@ -1923,7 +1936,7 @@ def test_ai_point_suggestion_keeps_broad_multi_lobe_coverage() -> None:
 
     result = suggestion_from_payload(payload, width=120, height=80)
 
-    assert len(result.positive_points) == 16
+    assert len(result.positive_points) == 8
 
 
 def test_ai_polygon_suggestion_payload_filters_and_repairs_polygons() -> None:
