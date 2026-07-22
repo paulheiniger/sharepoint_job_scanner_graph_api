@@ -2165,7 +2165,7 @@ def _render_measurement_result(
         show_vertices = st.checkbox("Show polygon vertices", value=True, key=f"roof_measure_show_vertices_{report.id}")
     with overlay_col4:
         show_boundary_residuals = st.checkbox(
-            "Show boundary residuals",
+            "Show exterior boundary residuals",
             value=False,
             key=f"roof_measure_show_boundary_residuals_{report.id}",
             disabled=result.selected_mask is None,
@@ -2247,7 +2247,7 @@ def _render_measurement_result(
         )
         residual_metrics = section_boundary_metrics(result.selected_mask, measurement.sections)
         st.caption(
-            "Boundary residuals: magenta is SAM edge missed by the fitted polygon; cyan is polygon edge without nearby SAM support. "
+            "Exterior boundary residuals: magenta is exterior SAM edge missed by the fitted polygon; cyan is polygon edge without nearby SAM support. "
             f"F1 {float(residual_metrics['f1']):.3f}; p95 distance {float(residual_metrics['p95_distance_pixels']):.1f} px."
         )
     if show_outline_prior:

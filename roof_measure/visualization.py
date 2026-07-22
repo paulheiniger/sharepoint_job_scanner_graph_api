@@ -41,10 +41,10 @@ def boundary_residual_overlay(
     tolerance_pixels: int = 3,
 ) -> Image.Image:
     """Highlight mask edges missed by the polygon and unsupported polygon edges."""
-    from .service import sections_mask
+    from .service import exterior_mask_boundary, sections_mask
 
-    source = _mask_boundary(np.asarray(mask, dtype=bool))
-    candidate = _mask_boundary(sections_mask(source.shape, sections))
+    source = exterior_mask_boundary(np.asarray(mask, dtype=bool))
+    candidate = exterior_mask_boundary(sections_mask(source.shape, sections))
     nearby_source = _dilate(source, max(0, int(tolerance_pixels)))
     nearby_candidate = _dilate(candidate, max(0, int(tolerance_pixels)))
     missed_source = source & ~nearby_candidate
@@ -59,15 +59,6 @@ def boundary_residual_overlay(
         layer.putalpha(alpha)
         base = Image.alpha_composite(base, layer)
     return base.convert("RGB")
-
-
-def _mask_boundary(mask: np.ndarray) -> np.ndarray:
-    padded = np.pad(mask, 1, mode="constant", constant_values=False)
-    eroded = np.ones_like(mask, dtype=bool)
-    for y_offset in range(3):
-        for x_offset in range(3):
-            eroded &= padded[y_offset : y_offset + mask.shape[0], x_offset : x_offset + mask.shape[1]]
-    return mask & ~eroded
 
 
 def _dilate(mask: np.ndarray, radius: int) -> np.ndarray:

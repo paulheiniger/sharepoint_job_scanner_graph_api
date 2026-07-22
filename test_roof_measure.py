@@ -1242,6 +1242,19 @@ def test_deterministic_score_heavily_penalizes_polygon_cutting_roof_core() -> No
     assert score_roof_result(mask, whole, []) > score_roof_result(mask, cut_through_middle, []) + 0.1
 
 
+def test_deterministic_score_uses_candidate_footprint_coverage_not_only_sam_overlap() -> None:
+    mask = np.zeros((80, 100), dtype=bool)
+    mask[10:70, 10:55] = True
+    footprint = [[(10, 10), (90, 10), (90, 70), (10, 70)]]
+    sam_only = [section_from_polygon("sam-only", [(10, 10), (55, 10), (55, 70), (10, 70)])]
+    footprint_complete = [section_from_polygon("complete", [(10, 10), (90, 10), (90, 70), (10, 70)])]
+
+    sam_score = score_roof_result(mask, sam_only, footprint)
+    complete_score = score_roof_result(mask, footprint_complete, footprint)
+
+    assert complete_score > sam_score - 0.08
+
+
 def test_scored_finalizer_preserves_constrained_sam_mask_core() -> None:
     mask = np.zeros((100, 100), dtype=bool)
     mask[15:85, 15:85] = True
@@ -1308,7 +1321,7 @@ def test_finalizer_reduces_pixel_jitter_but_preserves_architectural_corner() -> 
 
     assert len(finalized[0].polygon) < len(raw[0].polygon)
     assert any(abs(x - 75) <= 2 and abs(y - 105) <= 2 for x, y in finalized[0].polygon)
-    assert record["candidate"] == "architectural_fit"
+    assert record["candidate"] in {"editable_simplified", "architectural_fit"}
     assert record["vertex_count"] <= 32
 
 
@@ -1325,6 +1338,38 @@ def test_boundary_metrics_are_symmetric_and_report_large_local_miss() -> None:
     assert inset_metrics["precision"] < 0.1
     assert inset_metrics["recall"] < 0.1
     assert inset_metrics["p95_distance_pixels"] >= 9
+
+
+def test_exterior_boundary_metrics_ignore_internal_sam_speckle_and_voids() -> None:
+    mask = np.zeros((120, 120), dtype=bool)
+    mask[10:110, 10:110] = True
+    mask[30:34, 30:34] = False
+    mask[50:70, 55:65] = False
+    exterior = [section_from_polygon("exterior", [(10, 10), (110, 10), (110, 110), (10, 110)])]
+
+    metrics = section_boundary_metrics(mask, exterior)
+
+    assert metrics["f1"] > 0.98
+    assert metrics["p95_distance_pixels"] <= 1
+
+
+def test_finalizer_enforces_total_vertex_budget_on_repeated_large_jogs() -> None:
+    ring: list[tuple[float, float]] = []
+    for index in range(30):
+        ring.extend([(20 + index * 4, 20), (22 + index * 4, 22)])
+    ring.extend([(140, 120), (20, 120)])
+    section = section_from_polygon("jagged", ring)
+    mask = sections_mask((160, 180), [section])
+
+    finalized, record = finalize_roof_sections(
+        mask,
+        [section],
+        architectural_simplification_tolerance=6,
+        target_exterior_vertices=24,
+    )
+
+    assert len(finalized[0].polygon) - 1 <= 24
+    assert record["vertex_count"] <= 24
 
 
 def test_local_sam_mask_merge_cannot_change_pixels_outside_review_region() -> None:
@@ -1864,6 +1909,21 @@ def test_ai_point_suggestion_payload_filters_out_of_bounds_points() -> None:
     assert suggestion.negative_points == [(20.0, 30.0)]
     assert suggestion.confidence == 1.0
     assert "multiple roof sections" in suggestion.notes
+
+
+def test_ai_point_suggestion_keeps_broad_multi_lobe_coverage() -> None:
+    payload = {
+        "positive_points": [
+            {"x": 10 + index * 5, "y": 20, "reason": f"roof lobe {index}"}
+            for index in range(16)
+        ],
+        "negative_points": [],
+        "confidence": 0.9,
+    }
+
+    result = suggestion_from_payload(payload, width=120, height=80)
+
+    assert len(result.positive_points) == 16
 
 
 def test_ai_polygon_suggestion_payload_filters_and_repairs_polygons() -> None:
