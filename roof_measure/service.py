@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import math
 import uuid
-from collections import deque
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -111,19 +109,10 @@ def measure_roof_from_overhead_image(
                 )
             else:
                 segmentation.warnings.append("AI roof outline prior did not overlap the segmentation mask; original mask retained.")
-        stabilized_mask, stabilization = _stabilize_segmentation_mask(selected_mask, radius=2)
-        if bool(stabilization["accepted"]):
-            selected_mask = stabilized_mask
-            segmentation.warnings.append(
-                "Closed narrow SAM mask cracks before polygonization; "
-                f"added {float(stabilization['added_fraction']):.2%} mask area."
-            )
         segmentation_score = float(candidate.score)
         sections = sections_from_mask(
             selected_mask,
-            # Preserve a detailed source contour. Higher cleanup tolerances are
-            # evaluated later against this boundary and may be rejected.
-            simplification_tolerance=min(max(float(request.simplification_tolerance), 0.0), 3.0),
+            simplification_tolerance=request.simplification_tolerance,
             minimum_section_area_pixels=request.minimum_section_area_pixels,
             edge_snap_strength=request.edge_snap_strength,
         )
@@ -201,31 +190,6 @@ def measure_roof_from_overhead_image(
 def _constrain_mask_to_footprints(mask: np.ndarray, polygons: list[list[tuple[float, float]]], *, buffer_pixels: int = 8) -> np.ndarray:
     footprint_mask = footprint_constraint_mask(mask.shape[:2], polygons, buffer_pixels=buffer_pixels)
     return np.asarray(mask, dtype=bool) & footprint_mask
-
-
-def _stabilize_segmentation_mask(
-    mask: np.ndarray,
-    *,
-    radius: int = 2,
-    maximum_added_fraction: float = 0.025,
-) -> tuple[np.ndarray, dict[str, object]]:
-    """Reconnect narrow segmentation cracks without materially expanding the roof."""
-    source = np.asarray(mask, dtype=bool)
-    if not source.any() or radius <= 0:
-        return source.copy(), {"accepted": False, "added_fraction": 0.0}
-    closed = _erode_mask(_dilate_mask(source, radius=radius), radius=radius)
-    added = closed & ~source
-    added_fraction = float(added.sum()) / max(float(source.sum()), 1.0)
-    accepted = bool(closed.any() and added.any() and added_fraction <= maximum_added_fraction)
-    return (
-        closed if accepted else source.copy(),
-        {
-            "accepted": accepted,
-            "added_pixels": int(added.sum()),
-            "added_fraction": round(added_fraction, 5),
-            "radius_pixels": int(radius),
-        },
-    )
 
 
 def _outline_prior_mask_prompt(shape: tuple[int, int], polygons: list[list[tuple[float, float]]]) -> np.ndarray:
@@ -349,18 +313,6 @@ def _dilate_mask(mask: np.ndarray, *, radius: int) -> np.ndarray:
     return expanded
 
 
-def _erode_mask(mask: np.ndarray, *, radius: int) -> np.ndarray:
-    eroded = np.asarray(mask, dtype=bool).copy()
-    for _ in range(max(0, int(radius))):
-        padded = np.pad(eroded, 1, mode="constant", constant_values=False)
-        next_eroded = np.ones_like(eroded)
-        for y_offset in range(3):
-            for x_offset in range(3):
-                next_eroded &= padded[y_offset : y_offset + eroded.shape[0], x_offset : x_offset + eroded.shape[1]]
-        eroded = next_eroded
-    return eroded
-
-
 def score_roof_result(
     mask: np.ndarray | None,
     sections: list[RoofSection],
@@ -376,19 +328,14 @@ def score_roof_result(
     regularity = sum(_ring_axis_regularity(section.polygon) for section in sections) / len(sections)
     core_retention = _mask_core_retention(np.asarray(mask, dtype=bool), sections)
     mask_iou = _section_mask_iou(np.asarray(mask, dtype=bool), sections)
-    section_mask = sections_mask(mask.shape, sections)
     footprint_overlap = 1.0
     if footprint_polygons:
         footprint = _constrain_mask_to_footprints(np.ones_like(mask, dtype=bool), footprint_polygons, buffer_pixels=0)
-        intersection = float((section_mask & footprint).sum())
-        footprint_coverage = intersection / max(float(footprint.sum()), 1.0)
-        footprint_precision = intersection / max(float(section_mask.sum()), 1.0)
-        # The footprint supplies topology and missing-region evidence, but it
-        # remains a weak prior because source alignment and completeness vary.
-        footprint_overlap = 0.6 * footprint_coverage + 0.4 * footprint_precision
+        footprint_overlap = float((np.asarray(mask, dtype=bool) & footprint).sum()) / max(float(np.asarray(mask, dtype=bool).sum()), 1.0)
     prior_agreement = 1.0
     if outline_prior_polygons:
         prior = footprint_constraint_mask(mask.shape, outline_prior_polygons, buffer_pixels=16)
+        section_mask = sections_mask(mask.shape, sections)
         prior_agreement = float((section_mask & prior).sum()) / max(float(section_mask.sum()), 1.0)
     return round(
         0.18 * footprint_overlap
@@ -408,10 +355,8 @@ def finalize_roof_sections(
     *,
     footprint_polygons: list[list[tuple[float, float]]] | None = None,
     outline_prior_polygons: list[list[tuple[float, float]]] | None = None,
-    architectural_simplification_tolerance: float = 6.0,
-    target_exterior_vertices: int = 48,
 ) -> tuple[list[RoofSection], dict[str, object]]:
-    """Create an editable architectural polygon while retaining the SAM mask as evidence."""
+    """Choose the cleanest geometry that does not lose the observed roof core."""
     baseline = [section.model_copy(deep=True) for section in sections]
     if mask is None or not baseline:
         return baseline, {"candidate": "raw_mask", "accepted": False, "reason": "no mask or sections"}
@@ -419,39 +364,17 @@ def finalize_roof_sections(
     outline_prior_polygons = outline_prior_polygons or []
     baseline_score = score_roof_result(mask, baseline, footprint_polygons, outline_prior_polygons)
     baseline_area = sum(section.area_pixels for section in baseline)
-    baseline_boundary_metrics = section_boundary_metrics(np.asarray(mask, dtype=bool), baseline)
     candidates = [
         ("topology_clean", _topology_cleaned_sections(baseline)),
-        (
-            "editable_simplified",
-            _simplified_editable_sections(
-                baseline,
-                simplification_tolerance=min(float(architectural_simplification_tolerance), 8.0),
-                target_exterior_vertices=target_exterior_vertices,
-            ),
-        ),
-        (
-            "architectural_fit",
-            _architectural_sections(
-                baseline,
-                simplification_tolerance=architectural_simplification_tolerance,
-                target_exterior_vertices=target_exterior_vertices,
-            ),
-        ),
+        ("architectural_fit", _architectural_sections(baseline)),
     ]
     best_sections = baseline
     best_score = baseline_score
-    baseline_vertices = max(sum(max(len(section.polygon) - 1, 0) for section in baseline), 1)
-    editable_vertex_cap = max(int(target_exterior_vertices), 12 * len(baseline))
-    bounded_fallback: tuple[list[RoofSection], float, dict[str, object]] | None = None
     best_record: dict[str, object] = {
         "candidate": "raw_mask",
         "score": baseline_score,
         "accepted": True,
         "reason": "raw constrained SAM contour retained",
-        "boundary_alignment": round(float(baseline_boundary_metrics["f1"]), 3),
-        "boundary_metrics": baseline_boundary_metrics,
-        "vertex_count": sum(max(len(section.polygon) - 1, 0) for section in baseline),
     }
     for name, candidate in candidates:
         if not candidate:
@@ -462,77 +385,26 @@ def finalize_roof_sections(
         candidate_iou = _section_mask_iou(np.asarray(mask, dtype=bool), candidate)
         candidate_core = _mask_core_retention(np.asarray(mask, dtype=bool), candidate)
         candidate_prior = _section_prior_agreement(np.asarray(mask, dtype=bool), candidate, outline_prior_polygons)
-        candidate_boundary_metrics = section_boundary_metrics(np.asarray(mask, dtype=bool), candidate)
-        candidate_boundary_alignment = float(candidate_boundary_metrics["f1"])
-        candidate_vertices = sum(max(len(section.polygon) - 1, 0) for section in candidate)
-        complexity_reduction = max(0.0, 1.0 - candidate_vertices / baseline_vertices)
-        candidate_utility = candidate_score + min(complexity_reduction, 0.5) * 0.04
-        best_vertices = max(sum(max(len(section.polygon) - 1, 0) for section in best_sections), 1)
-        best_complexity_reduction = max(0.0, 1.0 - best_vertices / baseline_vertices)
-        best_utility = best_score + min(best_complexity_reduction, 0.5) * 0.04
         accepted = (
-            area_drift <= 0.06
-            and candidate_iou >= 0.86
-            and candidate_core >= 0.95
-            and candidate_prior >= 0.90
-            and candidate_boundary_alignment >= 0.80
-            and float(candidate_boundary_metrics["p95_distance_pixels"]) <= max(
-                8.0,
-                float(architectural_simplification_tolerance) * 1.5,
-            )
-            and candidate_score >= baseline_score - 0.015
-            and candidate_utility > best_utility + 0.001
+            area_drift <= 0.04
+            and candidate_iou >= 0.88
+            and candidate_core >= 0.96
+            and candidate_prior >= 0.92
+            and candidate_score > best_score
         )
-        fallback_ok = (
-            candidate_vertices <= editable_vertex_cap
-            and area_drift <= 0.08
-            and candidate_iou >= 0.78
-            and candidate_core >= 0.90
-            and candidate_prior >= 0.85
-            and candidate_boundary_alignment >= 0.70
-            and float(candidate_boundary_metrics["p95_distance_pixels"]) <= max(
-                12.0,
-                float(architectural_simplification_tolerance) * 2.0,
-            )
-        )
-        fallback_record = {
-            "candidate": name,
-            "score": candidate_score,
-            "mask_iou": round(candidate_iou, 3),
-            "core_retention": round(candidate_core, 3),
-            "prior_agreement": round(candidate_prior, 3),
-            "area_drift": round(area_drift, 3),
-            "boundary_alignment": round(candidate_boundary_alignment, 3),
-            "boundary_metrics": candidate_boundary_metrics,
-            "baseline_boundary_metrics": baseline_boundary_metrics,
-            "vertex_count": candidate_vertices,
-            "source_vertex_count": baseline_vertices,
-            "vertex_reduction": round(complexity_reduction, 3),
-        }
-        if fallback_ok and (
-            bounded_fallback is None
-            or candidate_utility > bounded_fallback[1]
-        ):
-            bounded_fallback = (candidate, candidate_utility, fallback_record)
         if accepted:
             best_sections = candidate
             best_score = candidate_score
             best_record = {
-                **fallback_record,
+                "candidate": name,
+                "score": candidate_score,
+                "mask_iou": round(candidate_iou, 3),
+                "core_retention": round(candidate_core, 3),
+                "prior_agreement": round(candidate_prior, 3),
+                "area_drift": round(area_drift, 3),
                 "accepted": True,
-                "reason": "editable architectural fit preserved the dense SAM evidence within boundary guardrails",
+                "reason": "cleaner candidate preserved constrained mask and priors",
             }
-    if (
-        best_sections is baseline
-        and baseline_vertices > editable_vertex_cap
-        and bounded_fallback is not None
-    ):
-        best_sections, _, fallback_record = bounded_fallback
-        best_record = {
-            **fallback_record,
-            "accepted": True,
-            "reason": "bounded editable fallback replaced an over-dense raw contour; dense SAM mask retained separately",
-        }
     return best_sections, best_record
 
 
@@ -548,183 +420,15 @@ def _topology_cleaned_sections(sections: list[RoofSection]) -> list[RoofSection]
     return cleaned
 
 
-def _architectural_sections(
-    sections: list[RoofSection],
-    *,
-    simplification_tolerance: float = 6.0,
-    target_exterior_vertices: int = 48,
-) -> list[RoofSection]:
+def _architectural_sections(sections: list[RoofSection]) -> list[RoofSection]:
     straightened: list[RoofSection] = []
-    tolerance = max(0.0, min(float(simplification_tolerance), 20.0))
-    cleaned_sections = _topology_cleaned_sections(sections)
-    perimeters = [polygon_perimeter_pixels(section.polygon) for section in cleaned_sections]
-    total_perimeter = max(sum(perimeters), 1.0)
-    for section, perimeter in zip(cleaned_sections, perimeters, strict=False):
-        section_vertex_target = max(
-            12,
-            int(round(max(12, int(target_exterior_vertices)) * perimeter / total_perimeter)),
-        )
+    for section in _topology_cleaned_sections(sections):
         candidate = section.model_copy(deep=True)
-        candidate.polygon = _fit_editable_ring(
-            candidate.polygon,
-            simplification_tolerance=tolerance,
-            target_vertices=section_vertex_target,
-        )
-        candidate.holes = [
-            _fit_editable_ring(
-                hole,
-                simplification_tolerance=tolerance,
-                target_vertices=max(8, section_vertex_target // 2),
-            )
-            for hole in candidate.holes
-        ]
+        candidate.polygon = straighten_architectural_ring(candidate.polygon)
+        candidate.holes = [straighten_architectural_ring(hole) for hole in candidate.holes]
         if len(candidate.polygon) >= 4:
             straightened.append(candidate)
     return straightened
-
-
-def _simplified_editable_sections(
-    sections: list[RoofSection],
-    *,
-    simplification_tolerance: float,
-    target_exterior_vertices: int,
-) -> list[RoofSection]:
-    """Build a topology-preserving Shapely candidate before architectural fitting."""
-    cleaned_sections = _topology_cleaned_sections(sections)
-    perimeters = [polygon_perimeter_pixels(section.polygon) for section in cleaned_sections]
-    total_perimeter = max(sum(perimeters), 1.0)
-    simplified: list[RoofSection] = []
-    for section, perimeter in zip(cleaned_sections, perimeters, strict=False):
-        target = max(12, int(round(max(12, int(target_exterior_vertices)) * perimeter / total_perimeter)))
-        candidate = section.model_copy(deep=True)
-        candidate.polygon = _shapely_clean_ring(
-            candidate.polygon,
-            tolerance=max(0.0, float(simplification_tolerance)),
-        )
-        if len(candidate.polygon) - 1 > target:
-            candidate.polygon = _reduce_ring_to_vertex_budget(candidate.polygon, target_vertices=target)
-        candidate.holes = [
-            _shapely_clean_ring(hole, tolerance=max(0.0, float(simplification_tolerance)))
-            for hole in candidate.holes
-        ]
-        candidate.holes = [hole for hole in candidate.holes if len(hole) >= 4]
-        if len(candidate.polygon) >= 4:
-            simplified.append(candidate)
-    return simplified
-
-
-def _fit_editable_ring(
-    ring: list[tuple[float, float]],
-    *,
-    simplification_tolerance: float,
-    target_vertices: int,
-) -> list[tuple[float, float]]:
-    """Fit a sparse editing ring without discarding high-curvature corners."""
-    tolerance = max(0.0, float(simplification_tolerance))
-    fitted = _corner_aware_simplify_ring(ring, tolerance=tolerance)
-    if len(fitted) - 1 > target_vertices:
-        # Increase gradually so a single aggressive pass cannot erase a real
-        # notch. The target is soft: high-curvature corners may exceed it.
-        for adaptive_tolerance in np.linspace(tolerance + 1.0, max(12.0, tolerance * 2.0), 7):
-            candidate = _corner_aware_simplify_ring(ring, tolerance=float(adaptive_tolerance))
-            if len(candidate) < 4:
-                break
-            fitted = candidate
-            if len(fitted) - 1 <= target_vertices:
-                break
-    if len(fitted) - 1 > target_vertices:
-        fitted = _reduce_ring_to_vertex_budget(fitted, target_vertices=target_vertices)
-    return straighten_architectural_ring(
-        fitted,
-        simplification_tolerance=0.0,
-        max_area_drift=0.04,
-    )
-
-
-def _reduce_ring_to_vertex_budget(
-    ring: list[tuple[float, float]],
-    *,
-    target_vertices: int,
-) -> list[tuple[float, float]]:
-    """Enforce the editing budget by removing the least significant corners first."""
-    vertices = repair_polygon(ring)[:-1]
-    target = max(3, int(target_vertices))
-    while len(vertices) > target:
-        significance: list[float] = []
-        for index, vertex in enumerate(vertices):
-            previous = vertices[index - 1]
-            following = vertices[(index + 1) % len(vertices)]
-            incoming = (vertex[0] - previous[0], vertex[1] - previous[1])
-            outgoing = (following[0] - vertex[0], following[1] - vertex[1])
-            minimum_run = min(math.hypot(*incoming), math.hypot(*outgoing))
-            turn_radians = math.radians(_vector_turn_degrees(incoming, outgoing))
-            corner_strength = minimum_run * math.sin(turn_radians / 2.0)
-            significance.append(
-                _point_line_distance(vertex, previous, following) + 0.5 * corner_strength
-            )
-        vertices.pop(significance.index(min(significance)))
-    return repair_polygon(vertices)
-
-
-def _corner_aware_simplify_ring(
-    ring: list[tuple[float, float]],
-    *,
-    tolerance: float,
-    minimum_architectural_run: float = 6.0,
-) -> list[tuple[float, float]]:
-    """Remove boundary noise while retaining credible wall inflection points."""
-    vertices = repair_polygon(ring)[:-1]
-    if len(vertices) <= 3 or tolerance <= 0:
-        return repair_polygon(vertices)
-    while len(vertices) > 3:
-        importance: list[float] = []
-        for index, vertex in enumerate(vertices):
-            previous = vertices[index - 1]
-            following = vertices[(index + 1) % len(vertices)]
-            incoming = (vertex[0] - previous[0], vertex[1] - previous[1])
-            outgoing = (following[0] - vertex[0], following[1] - vertex[1])
-            incoming_length = math.hypot(*incoming)
-            outgoing_length = math.hypot(*outgoing)
-            turn = _vector_turn_degrees(incoming, outgoing)
-            protected_corner = (
-                min(incoming_length, outgoing_length) >= minimum_architectural_run
-                and 45.0 <= turn <= 135.0
-            )
-            importance.append(
-                math.inf
-                if protected_corner
-                else _point_line_distance(vertex, previous, following)
-            )
-        smallest = min(importance)
-        if smallest > tolerance:
-            break
-        vertices.pop(importance.index(smallest))
-    return repair_polygon(vertices)
-
-
-def _vector_turn_degrees(first: tuple[float, float], second: tuple[float, float]) -> float:
-    first_length = math.hypot(*first)
-    second_length = math.hypot(*second)
-    if first_length <= 1e-9 or second_length <= 1e-9:
-        return 0.0
-    cosine = max(-1.0, min(1.0, (first[0] * second[0] + first[1] * second[1]) / (first_length * second_length)))
-    return math.degrees(math.acos(cosine))
-
-
-def _point_line_distance(
-    point: tuple[float, float],
-    start: tuple[float, float],
-    end: tuple[float, float],
-) -> float:
-    denominator = math.hypot(end[0] - start[0], end[1] - start[1])
-    if denominator <= 1e-9:
-        return math.dist(point, start)
-    return abs(
-        (end[1] - start[1]) * point[0]
-        - (end[0] - start[0]) * point[1]
-        + end[0] * start[1]
-        - end[1] * start[0]
-    ) / denominator
 
 
 def _shapely_clean_ring(ring: list[tuple[float, float]], *, tolerance: float) -> list[tuple[float, float]]:
@@ -750,106 +454,6 @@ def _section_mask_iou(mask: np.ndarray, sections: list[RoofSection]) -> float:
     candidate = sections_mask(mask.shape, sections)
     union = mask | candidate
     return float((mask & candidate).sum()) / max(float(union.sum()), 1.0)
-
-
-def _section_boundary_alignment(
-    mask: np.ndarray,
-    sections: list[RoofSection],
-    *,
-    tolerance_pixels: int = 3,
-) -> float:
-    """Backward-compatible symmetric boundary F1 score."""
-    return float(section_boundary_metrics(mask, sections, tolerance_pixels=tolerance_pixels)["f1"])
-
-
-def section_boundary_metrics(
-    mask: np.ndarray,
-    sections: list[RoofSection],
-    *,
-    tolerance_pixels: int = 3,
-    maximum_distance_pixels: int = 32,
-) -> dict[str, float]:
-    """Return symmetric boundary agreement and an approximate Hausdorff percentile."""
-    source_boundary = exterior_mask_boundary(np.asarray(mask, dtype=bool))
-    candidate_boundary = exterior_mask_boundary(sections_mask(mask.shape, sections))
-    if not candidate_boundary.any() or not source_boundary.any():
-        return {"precision": 0.0, "recall": 0.0, "f1": 0.0, "p95_distance_pixels": float(maximum_distance_pixels + 1)}
-    tolerance = max(0, int(tolerance_pixels))
-    precision = float(_dilate_mask(source_boundary, radius=tolerance)[candidate_boundary].mean())
-    recall = float(_dilate_mask(candidate_boundary, radius=tolerance)[source_boundary].mean())
-    f1 = 2.0 * precision * recall / max(precision + recall, 1e-9)
-    distances = np.concatenate(
-        [
-            _boundary_distances(source_boundary, candidate_boundary, maximum_distance_pixels),
-            _boundary_distances(candidate_boundary, source_boundary, maximum_distance_pixels),
-        ]
-    )
-    p95 = float(np.percentile(distances, 95)) if distances.size else float(maximum_distance_pixels + 1)
-    return {
-        "precision": round(precision, 4),
-        "recall": round(recall, 4),
-        "f1": round(f1, 4),
-        "p95_distance_pixels": round(p95, 2),
-    }
-
-
-def _boundary_distances(reference: np.ndarray, query: np.ndarray, maximum_distance: int) -> np.ndarray:
-    distances = np.full(int(query.sum()), float(maximum_distance + 1), dtype=float)
-    if not distances.size:
-        return distances
-    query_indices = np.flatnonzero(query)
-    expanded = np.asarray(reference, dtype=bool).copy()
-    unresolved = np.ones(distances.shape, dtype=bool)
-    for radius in range(max(0, int(maximum_distance)) + 1):
-        reached = expanded.ravel()[query_indices] & unresolved
-        distances[reached] = float(radius)
-        unresolved &= ~reached
-        if not unresolved.any():
-            break
-        expanded = _dilate_mask(expanded, radius=1)
-    return distances
-
-
-def _mask_boundary(mask: np.ndarray) -> np.ndarray:
-    mask_bool = np.asarray(mask, dtype=bool)
-    padded = np.pad(mask_bool, 1, mode="constant", constant_values=False)
-    eroded = np.ones_like(mask_bool)
-    for y_offset in range(3):
-        for x_offset in range(3):
-            eroded &= padded[y_offset : y_offset + mask_bool.shape[0], x_offset : x_offset + mask_bool.shape[1]]
-    return mask_bool & ~eroded
-
-
-def exterior_mask_boundary(mask: np.ndarray) -> np.ndarray:
-    """Return only component exteriors; enclosed SAM voids are not roof edges."""
-    return _mask_boundary(_fill_enclosed_mask_holes(np.asarray(mask, dtype=bool)))
-
-
-def _fill_enclosed_mask_holes(mask: np.ndarray) -> np.ndarray:
-    inverse = ~np.asarray(mask, dtype=bool)
-    height, width = inverse.shape
-    outside = np.zeros_like(inverse)
-    queue: deque[tuple[int, int]] = deque()
-    for x in range(width):
-        if inverse[0, x]:
-            queue.append((0, x))
-        if height > 1 and inverse[height - 1, x]:
-            queue.append((height - 1, x))
-    for y in range(1, max(height - 1, 1)):
-        if inverse[y, 0]:
-            queue.append((y, 0))
-        if width > 1 and inverse[y, width - 1]:
-            queue.append((y, width - 1))
-    while queue:
-        y, x = queue.popleft()
-        if outside[y, x] or not inverse[y, x]:
-            continue
-        outside[y, x] = True
-        for next_y, next_x in ((y - 1, x), (y + 1, x), (y, x - 1), (y, x + 1)):
-            if 0 <= next_y < height and 0 <= next_x < width and not outside[next_y, next_x]:
-                queue.append((next_y, next_x))
-    enclosed = inverse & ~outside
-    return np.asarray(mask, dtype=bool) | enclosed
 
 
 def _section_prior_agreement(

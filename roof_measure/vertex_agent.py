@@ -563,6 +563,20 @@ def _vertex_tools(stage: str) -> list[dict[str, Any]]:
             },
         ),
         _strict_tool(
+            "insert_vertex_relative",
+            "Insert one corner after edge_start_vertex_id. dx and dy offset the new corner from that edge's midpoint.",
+            {
+                "edge_start_vertex_id": {"type": "string"},
+                "dx": {"type": "number", "minimum": -64, "maximum": 64},
+                "dy": {"type": "number", "minimum": -64, "maximum": 64},
+            },
+        ),
+        _strict_tool(
+            "delete_vertex",
+            "Delete one redundant stable vertex while retaining a valid polygon ring.",
+            {"vertex_id": {"type": "string"}},
+        ),
+        _strict_tool(
             "accept_polygon",
             "Finish this stage when the visible boundary is aligned and no further safe local edit is needed.",
             {"reason": {"type": "string"}},
@@ -605,7 +619,7 @@ def _agent_instructions(
             f"You are operating a bounded roof polygon editor on a {image.width} by {image.height} source image for {address or 'an unspecified site'}.",
             f"Active stage: {stage}. {target}",
             "Use stable vertex labels shown in the image and current vertex document. Inspect a local region when an edge is uncertain.",
-            "Move existing vertices relatively in small batches onto visible physical wall or parapet inflection points, not cast-shadow edges. Vertex insertion and deletion are disabled; deterministic fitting owns polygon complexity.",
+            "Move independent vertices relatively in small batches onto visible physical wall or parapet inflection points, not cast-shadow edges. Insert a vertex only for a real missing corner and delete only a redundant point.",
             "Every mutation is applied and topology-validated by the application, then you receive a fresh rerender. Never regenerate a complete polygon.",
             "Do not move a vertex more than once in this run. Preserve separate footprint parts, gaps, courtyards, and holes. Accept when further changes are uncertain.",
             "Locked estimator anchors are authoritative and cannot be changed: " + json.dumps(sorted(locked_ids)) + ".",

@@ -55,7 +55,7 @@ from roof_measure.polygon_editor import apply_polygon_operations, sections_to_ve
 from roof_measure.polygon_component import component_data_to_sections, sections_to_component_data
 from roof_measure.polygonize import section_from_polygon, sections_from_mask
 from roof_measure.segmentation import MockRoofSegmenter, Sam2RoofSegmenter, SegmentationPrompts
-from roof_measure.service import _constrain_mask_to_footprints, _footprint_buffer_pixels, _stabilize_segmentation_mask, finalize_roof_sections, footprint_constraint_mask, measure_roof_from_outline_polygons, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections, score_roof_result, section_boundary_metrics, sections_mask
+from roof_measure.service import _constrain_mask_to_footprints, _footprint_buffer_pixels, finalize_roof_sections, footprint_constraint_mask, measure_roof_from_outline_polygons, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections, score_roof_result, sections_mask
 from roof_measure.models import RoofMeasureRequest
 from roof_measure.streamlit_page import (
     _canvas_background_image,
@@ -65,7 +65,6 @@ from roof_measure.streamlit_page import (
     _canvas_json_to_sections,
     _canvas_json_to_corner_points,
     _canvas_to_polygon_operations,
-    _correction_region_boxes,
     _format_points_text,
     _footprints_for_prompt_points,
     _footprint_visible_area_pixels,
@@ -73,13 +72,11 @@ from roof_measure.streamlit_page import (
     _footprint_support_regression,
     _insert_new_corner_points,
     _lidar_core_cut,
-    _lidar_edge_height_grid,
     _lidar_ground_regression,
     _locked_vertex_ids_for_points,
     _manual_anchor_points,
     _evaluate_ai_outline_candidate,
     _map_view_for_image_crop,
-    _merge_local_mask,
     _novel_correction_points,
     _primary_prompt_cluster,
     _polygons_interior_prompt_points,
@@ -98,8 +95,8 @@ from roof_measure.streamlit_page import (
     _sections_to_canvas_initial_drawing,
     _targeted_qa_retry_is_accepted,
 )
-from roof_measure.visualization import lidar_height_overlay, prompt_points_overlay
-from roof_measure.vertex_agent import _vertex_tools, initialize_vertices_toward_boundary, run_vertex_tool_loop
+from roof_measure.visualization import prompt_points_overlay
+from roof_measure.vertex_agent import initialize_vertices_toward_boundary, run_vertex_tool_loop
 from jobscan.env import load_project_env
 
 
@@ -917,42 +914,6 @@ def test_measurement_passes_current_mask_as_sam_refinement_prompt(tmp_path) -> N
     assert np.array_equal(prompts.mask_input, current_mask)
 
 
-def test_lidar_overlay_grid_does_not_require_retained_sam_mask() -> None:
-    result = measure_roof_from_outline_polygons(
-        image_bytes=_image_bytes((100, 80)),
-        request=RoofMeasureRequest(overhead_image_name="roof.png", metadata_pixels_per_foot=1.0),
-        polygons=[[(10, 10), (90, 10), (90, 70), (10, 70)]],
-    )
-    result.selected_mask = None
-    expected = SimpleNamespace(ok=True, height_grid=np.ones((10, 13)), cell_pixels=8)
-
-    with patch("roof_measure.streamlit_page.kyfromabove_height_grid_for_image", return_value=expected) as load_grid:
-        actual = _lidar_edge_height_grid(
-            result,
-            RoofMeasureRequest(
-                overhead_image_name="roof.png",
-                map_view={"latitude": 38.0, "longitude": -84.0, "zoom": 19.0},
-            ),
-            "https://example.test/tile.copc.laz",
-            image_size=(100, 80),
-        )
-
-    assert actual is expected
-    assert load_grid.call_args.kwargs["image_width"] == 100
-    assert load_grid.call_args.kwargs["image_height"] == 80
-
-
-def test_lidar_height_overlay_visibly_changes_elevated_and_ground_cells() -> None:
-    image = Image.new("RGB", (16, 16), "white")
-    height_grid = np.asarray([[10.0, 1.0], [np.nan, np.nan]])
-
-    overlay = lidar_height_overlay(image, height_grid=height_grid, cell_pixels=8)
-
-    assert overlay.getpixel((2, 2)) != (255, 255, 255)
-    assert overlay.getpixel((12, 2)) != (255, 255, 255)
-    assert overlay.getpixel((2, 12)) == (255, 255, 255)
-
-
 def test_footprint_buffer_uses_metadata_calibration() -> None:
     request = RoofMeasureRequest(
         overhead_image_name="roof.png",
@@ -1242,19 +1203,6 @@ def test_deterministic_score_heavily_penalizes_polygon_cutting_roof_core() -> No
     assert score_roof_result(mask, whole, []) > score_roof_result(mask, cut_through_middle, []) + 0.1
 
 
-def test_deterministic_score_uses_candidate_footprint_coverage_not_only_sam_overlap() -> None:
-    mask = np.zeros((80, 100), dtype=bool)
-    mask[10:70, 10:55] = True
-    footprint = [[(10, 10), (90, 10), (90, 70), (10, 70)]]
-    sam_only = [section_from_polygon("sam-only", [(10, 10), (55, 10), (55, 70), (10, 70)])]
-    footprint_complete = [section_from_polygon("complete", [(10, 10), (90, 10), (90, 70), (10, 70)])]
-
-    sam_score = score_roof_result(mask, sam_only, footprint)
-    complete_score = score_roof_result(mask, footprint_complete, footprint)
-
-    assert complete_score > sam_score - 0.08
-
-
 def test_scored_finalizer_preserves_constrained_sam_mask_core() -> None:
     mask = np.zeros((100, 100), dtype=bool)
     mask[15:85, 15:85] = True
@@ -1266,159 +1214,6 @@ def test_scored_finalizer_preserves_constrained_sam_mask_core() -> None:
     final_mask = sections_mask(mask.shape, final_sections)
     assert record["candidate"] in {"raw_mask", "topology_clean", "architectural_fit"}
     assert float((final_mask & mask).sum()) / float(mask.sum()) >= 0.96
-
-
-def test_mask_trace_preserves_real_edge_notches_before_architectural_finalizing(tmp_path) -> None:
-    mask = np.zeros((120, 140), dtype=bool)
-    mask[15:105, 15:125] = True
-    mask[85:105, 45:70] = False
-    mask[92:105, 90:112] = False
-    request = RoofMeasureRequest(
-        overhead_image_name="notched-roof.png",
-        metadata_pixels_per_foot=1.0,
-        minimum_section_area_pixels=100,
-        simplification_tolerance=15.0,
-    )
-
-    result = measure_roof_from_overhead_image(
-        image_bytes=_image_bytes((140, 120)),
-        request=request,
-        segmenter=MockRoofSegmenter([mask]),
-        storage_root=str(tmp_path),
-    )
-    coarse = sections_from_mask(
-        mask,
-        minimum_section_area_pixels=100,
-        simplification_tolerance=15.0,
-    )
-    finalized, record = finalize_roof_sections(
-        mask,
-        result.report.measurement.sections,
-        architectural_simplification_tolerance=15.0,
-    )
-
-    assert len(result.report.measurement.sections[0].polygon) > len(coarse[0].polygon)
-    assert len(finalized[0].polygon) == len(result.report.measurement.sections[0].polygon)
-    assert record["candidate"] == "raw_mask"
-    assert record["boundary_alignment"] == 1.0
-    assert record["vertex_count"] == 12
-
-
-def test_finalizer_reduces_pixel_jitter_but_preserves_architectural_corner() -> None:
-    mask = np.zeros((160, 180), dtype=bool)
-    mask[20:140, 20:160] = True
-    mask[105:140, 75:115] = False
-    for y in range(30, 130, 8):
-        mask[y : y + 2, 160:163] = True
-    raw = sections_from_mask(mask, minimum_section_area_pixels=100, simplification_tolerance=1)
-
-    finalized, record = finalize_roof_sections(
-        mask,
-        raw,
-        architectural_simplification_tolerance=6,
-        target_exterior_vertices=32,
-    )
-
-    assert len(finalized[0].polygon) < len(raw[0].polygon)
-    assert any(abs(x - 75) <= 2 and abs(y - 105) <= 2 for x, y in finalized[0].polygon)
-    assert record["candidate"] in {"editable_simplified", "architectural_fit"}
-    assert record["vertex_count"] <= 32
-
-
-def test_boundary_metrics_are_symmetric_and_report_large_local_miss() -> None:
-    mask = np.zeros((100, 100), dtype=bool)
-    mask[10:90, 10:90] = True
-    exact = [section_from_polygon("exact", [(10, 10), (90, 10), (90, 90), (10, 90)])]
-    inset = [section_from_polygon("inset", [(20, 20), (80, 20), (80, 80), (20, 80)])]
-
-    exact_metrics = section_boundary_metrics(mask, exact)
-    inset_metrics = section_boundary_metrics(mask, inset)
-
-    assert exact_metrics["f1"] > 0.98
-    assert inset_metrics["precision"] < 0.1
-    assert inset_metrics["recall"] < 0.1
-    assert inset_metrics["p95_distance_pixels"] >= 9
-
-
-def test_exterior_boundary_metrics_ignore_internal_sam_speckle_and_voids() -> None:
-    mask = np.zeros((120, 120), dtype=bool)
-    mask[10:110, 10:110] = True
-    mask[30:34, 30:34] = False
-    mask[50:70, 55:65] = False
-    exterior = [section_from_polygon("exterior", [(10, 10), (110, 10), (110, 110), (10, 110)])]
-
-    metrics = section_boundary_metrics(mask, exterior)
-
-    assert metrics["f1"] > 0.98
-    assert metrics["p95_distance_pixels"] <= 1
-
-
-def test_finalizer_enforces_total_vertex_budget_on_repeated_large_jogs() -> None:
-    ring: list[tuple[float, float]] = []
-    for index in range(30):
-        ring.extend([(20 + index * 4, 20), (22 + index * 4, 22)])
-    ring.extend([(140, 120), (20, 120)])
-    section = section_from_polygon("jagged", ring)
-    mask = sections_mask((160, 180), [section])
-
-    finalized, record = finalize_roof_sections(
-        mask,
-        [section],
-        architectural_simplification_tolerance=6,
-        target_exterior_vertices=24,
-    )
-
-    assert len(finalized[0].polygon) - 1 <= 24
-    assert record["vertex_count"] <= 24
-
-
-def test_mask_stabilization_reconnects_narrow_internal_crack_without_large_expansion() -> None:
-    mask = np.zeros((120, 140), dtype=bool)
-    mask[10:110, 10:130] = True
-    mask[10:110, 69:71] = False
-
-    stabilized, record = _stabilize_segmentation_mask(mask, radius=2)
-    sections = sections_from_mask(stabilized, minimum_section_area_pixels=100, simplification_tolerance=1)
-
-    assert record["accepted"] is True
-    assert record["added_fraction"] < 0.025
-    assert len(sections) == 1
-
-
-def test_local_sam_mask_merge_cannot_change_pixels_outside_review_region() -> None:
-    base = np.zeros((100, 120), dtype=bool)
-    base[10:90, 10:110] = True
-    box = (40, 30, 80, 70)
-    patch = np.zeros((40, 40), dtype=bool)
-
-    merged = _merge_local_mask(base, patch, box)
-
-    outside = np.ones_like(base, dtype=bool)
-    outside[30:70, 40:80] = False
-    assert np.array_equal(merged[outside], base[outside])
-    assert not merged[30:70, 40:80].any()
-
-
-def test_correction_points_are_clustered_into_bounded_local_regions() -> None:
-    boxes = _correction_region_boxes(
-        [(100, 100), (115, 105), (500, 500)],
-        [(108, 118)],
-        (640, 640),
-        padding_pixels=40,
-        link_distance_pixels=80,
-    )
-
-    assert len(boxes) == 2
-    assert any(x0 <= 100 <= x1 and y0 <= 100 <= y1 for x0, y0, x1, y1 in boxes)
-    assert any(x0 <= 500 <= x1 and y0 <= 500 <= y1 for x0, y0, x1, y1 in boxes)
-
-
-def test_vertex_agent_exposes_move_tools_without_vertex_insertion_or_deletion() -> None:
-    tool_names = {tool["name"] for tool in _vertex_tools("exterior")}
-
-    assert "move_vertices_relative" in tool_names
-    assert "insert_vertex_relative" not in tool_names
-    assert "delete_vertex" not in tool_names
 
 
 def test_report17_regression_fixture_records_missing_footprint_and_active_outline_prior() -> None:
@@ -1922,21 +1717,6 @@ def test_ai_point_suggestion_payload_filters_out_of_bounds_points() -> None:
     assert suggestion.negative_points == [(20.0, 30.0)]
     assert suggestion.confidence == 1.0
     assert "multiple roof sections" in suggestion.notes
-
-
-def test_ai_point_suggestion_caps_initial_multi_lobe_prompts() -> None:
-    payload = {
-        "positive_points": [
-            {"x": 10 + index * 5, "y": 20, "reason": f"roof lobe {index}"}
-            for index in range(16)
-        ],
-        "negative_points": [],
-        "confidence": 0.9,
-    }
-
-    result = suggestion_from_payload(payload, width=120, height=80)
-
-    assert len(result.positive_points) == 8
 
 
 def test_ai_polygon_suggestion_payload_filters_and_repairs_polygons() -> None:

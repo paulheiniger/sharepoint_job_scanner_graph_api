@@ -33,45 +33,6 @@ def annotated_overlay(
     return Image.alpha_composite(base, overlay).convert("RGB")
 
 
-def boundary_residual_overlay(
-    image: Image.Image,
-    *,
-    mask: np.ndarray,
-    sections: list[RoofSection],
-    tolerance_pixels: int = 3,
-) -> Image.Image:
-    """Highlight mask edges missed by the polygon and unsupported polygon edges."""
-    from .service import exterior_mask_boundary, sections_mask
-
-    source = exterior_mask_boundary(np.asarray(mask, dtype=bool))
-    candidate = exterior_mask_boundary(sections_mask(source.shape, sections))
-    nearby_source = _dilate(source, max(0, int(tolerance_pixels)))
-    nearby_candidate = _dilate(candidate, max(0, int(tolerance_pixels)))
-    missed_source = source & ~nearby_candidate
-    unsupported_candidate = candidate & ~nearby_source
-    base = image.convert("RGBA")
-    for residual, color in (
-        (missed_source, (216, 27, 96, 230)),
-        (unsupported_candidate, (0, 188, 212, 230)),
-    ):
-        alpha = Image.fromarray((residual.astype("uint8") * color[3]), mode="L").resize(base.size, Image.Resampling.NEAREST)
-        layer = Image.new("RGBA", base.size, (*color[:3], 0))
-        layer.putalpha(alpha)
-        base = Image.alpha_composite(base, layer)
-    return base.convert("RGB")
-
-
-def _dilate(mask: np.ndarray, radius: int) -> np.ndarray:
-    expanded = np.asarray(mask, dtype=bool).copy()
-    for _ in range(radius):
-        padded = np.pad(expanded, 1, mode="constant", constant_values=False)
-        expanded = np.zeros_like(expanded)
-        for y_offset in range(3):
-            for x_offset in range(3):
-                expanded |= padded[y_offset : y_offset + mask.shape[0], x_offset : x_offset + mask.shape[1]]
-    return expanded
-
-
 def prompt_points_overlay(
     image: Image.Image,
     *,
@@ -147,8 +108,8 @@ def lidar_height_overlay(image: Image.Image, *, height_grid: np.ndarray | None, 
     roof = np.isfinite(height) & (height >= 8.0)
     ground = np.isfinite(height) & (height < 4.0)
     size = (image.width, image.height)
-    roof_mask = Image.fromarray((roof.astype("uint8") * 110), mode="L").resize(size, Image.Resampling.NEAREST)
-    ground_mask = Image.fromarray((ground.astype("uint8") * 80), mode="L").resize(size, Image.Resampling.NEAREST)
+    roof_mask = Image.fromarray((roof.astype("uint8") * 70), mode="L").resize(size, Image.Resampling.NEAREST)
+    ground_mask = Image.fromarray((ground.astype("uint8") * 45), mode="L").resize(size, Image.Resampling.NEAREST)
     composite = image.convert("RGBA")
     roof_layer = Image.new("RGBA", size, (0, 188, 212, 0))
     roof_layer.putalpha(roof_mask)

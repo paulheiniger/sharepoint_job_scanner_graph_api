@@ -69,9 +69,9 @@ from .map_reference import (
 )
 from .geometry import straighten_architectural_ring
 from .models import MeasurementWarning, RoofMeasureRequest, RoofSection
-from .polygonize import section_from_polygon, sections_from_mask
-from .service import RoofMeasureResult, finalize_roof_sections, footprint_constraint_mask, measure_roof_from_outline_polygons, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections, score_roof_result, section_boundary_metrics, sections_mask
-from .visualization import annotated_overlay, boundary_residual_overlay, footprint_constraint_overlay, footprint_overlay, image_png_bytes, lidar_height_overlay, outline_prior_overlay, prompt_points_overlay, vertex_editor_overlay
+from .polygonize import section_from_polygon
+from .service import RoofMeasureResult, finalize_roof_sections, footprint_constraint_mask, measure_roof_from_outline_polygons, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections, score_roof_result, sections_mask
+from .visualization import annotated_overlay, footprint_constraint_overlay, footprint_overlay, image_png_bytes, lidar_height_overlay, outline_prior_overlay, prompt_points_overlay, vertex_editor_overlay
 
 
 _AI_OUTLINE_PRIOR_VERSION = 4
@@ -561,10 +561,10 @@ def render_ai_roof_measure_page() -> None:
             "Boundary smoothing",
             min_value=0.0,
             max_value=40.0,
-            value=6.0,
+            value=15.0,
             step=1.0,
-            help="Controls the optional architectural cleanup candidate. The detailed SAM contour is always retained for boundary validation.",
-            key="roof_measure_simplification_tolerance_v3",
+            help="Higher values remove noisy mask stair-steps and favor straight roof/building edges.",
+            key="roof_measure_simplification_tolerance",
         )
     with controls_col2:
         minimum_section_area = st.number_input("Minimum section size (pixels)", min_value=1.0, value=400.0, step=100.0)
@@ -899,7 +899,6 @@ def _measure_roof_automatically(
         result.report.measurement.sections,
         footprint_polygons=automatic_request.footprint_polygons,
         outline_prior_polygons=automatic_request.outline_prior_polygons,
-        architectural_simplification_tolerance=automatic_request.simplification_tolerance,
     )
     selected_sections = straightened_sections
     footprint_deformation_record: dict[str, object] | None = None
@@ -1275,37 +1274,17 @@ def _run_iterative_sam_corrections(
                 "negative_points": _unique_points([*current_request.negative_points, *retry_negative]),
             }
         )
-        retry_mask, local_retry_records = _run_local_sam_retry(
-            image=image,
+        retry = measure_roof_from_overhead_image(
             image_bytes=image_bytes,
             request=retry_request,
-            current_mask=current.selected_mask,
-            positive_points=retry_positive,
-            negative_points=retry_negative,
-        )
-        retry_dense_sections = sections_from_mask(
-            retry_mask,
-            simplification_tolerance=min(max(float(retry_request.simplification_tolerance), 0.0), 3.0),
-            minimum_section_area_pixels=retry_request.minimum_section_area_pixels,
-            edge_snap_strength=retry_request.edge_snap_strength,
-        )
-        retry = RoofMeasureResult(
-            report=current.report,
-            selected_mask=retry_mask,
-            candidate_count=current.candidate_count,
-            applied_footprint_polygons=current.applied_footprint_polygons,
-            footprint_buffer_pixels=current.footprint_buffer_pixels,
-            footprint_audit=current.footprint_audit,
-            applied_outline_prior_polygons=current.applied_outline_prior_polygons,
-            outline_prior_buffer_pixels=current.outline_prior_buffer_pixels,
-            deterministic_score=current.deterministic_score,
+            selected_candidate_index=0,
+            mask_input_override=current.selected_mask,
         )
         retry_sections, retry_finalizer = finalize_roof_sections(
             retry.selected_mask,
-            retry_dense_sections,
+            retry.report.measurement.sections,
             footprint_polygons=retry_request.footprint_polygons,
             outline_prior_polygons=retry_request.outline_prior_polygons,
-            architectural_simplification_tolerance=retry_request.simplification_tolerance,
         )
         retry_score = score_roof_result(
             retry.selected_mask,
@@ -1357,8 +1336,6 @@ def _run_iterative_sam_corrections(
             "correction_score_after": retry_correction_score,
             "correction_score_delta": round(correction_delta, 4),
             "used_previous_mask_prompt": current.selected_mask is not None,
-            "local_regions": local_retry_records,
-            "outside_regions_unchanged": True,
             "polygon_finalizer": retry_finalizer,
             "lidar_core_retention_before": _lidar_core_retention(current_lidar),
             "lidar_core_retention_after": _lidar_core_retention(retry_lidar),
@@ -1451,174 +1428,6 @@ def _translate_polygons_to_crop(
 ) -> list[list[tuple[float, float]]]:
     x0, y0, _, _ = crop
     return [[(float(x) - x0, float(y) - y0) for x, y in polygon] for polygon in polygons]
-
-
-def _correction_region_boxes(
-    positive_points: list[tuple[float, float]],
-    negative_points: list[tuple[float, float]],
-    image_size: tuple[int, int],
-    *,
-    padding_pixels: int = 72,
-    link_distance_pixels: float = 120.0,
-    maximum_regions: int = 5,
-) -> list[tuple[int, int, int, int]]:
-    """Cluster correction points into bounded SAM retry regions."""
-    width, height = image_size
-    points = [
-        (float(x), float(y))
-        for x, y in [*positive_points, *negative_points]
-        if 0 <= float(x) < width and 0 <= float(y) < height
-    ]
-    if not points:
-        return []
-    remaining = set(range(len(points)))
-    clusters: list[list[tuple[float, float]]] = []
-    while remaining:
-        members = {remaining.pop()}
-        changed = True
-        while changed:
-            changed = False
-            for index in list(remaining):
-                if any(math.dist(points[index], points[member]) <= link_distance_pixels for member in members):
-                    members.add(index)
-                    remaining.remove(index)
-                    changed = True
-        clusters.append([points[index] for index in sorted(members)])
-    clusters.sort(key=len, reverse=True)
-    boxes: list[tuple[int, int, int, int]] = []
-    padding = max(24, int(padding_pixels))
-    for cluster in clusters[: max(1, int(maximum_regions))]:
-        xs, ys = zip(*cluster)
-        x0 = max(0, int(math.floor(min(xs))) - padding)
-        y0 = max(0, int(math.floor(min(ys))) - padding)
-        x1 = min(width, int(math.ceil(max(xs))) + padding + 1)
-        y1 = min(height, int(math.ceil(max(ys))) + padding + 1)
-        boxes.append((x0, y0, x1, y1))
-    return boxes
-
-
-def _merge_local_mask(
-    base_mask: np.ndarray,
-    local_mask: np.ndarray,
-    box: tuple[int, int, int, int],
-) -> np.ndarray:
-    """Replace exactly one reviewed region and leave all other mask pixels unchanged."""
-    x0, y0, x1, y1 = box
-    expected_shape = (y1 - y0, x1 - x0)
-    patch = np.asarray(local_mask, dtype=bool)
-    if patch.shape != expected_shape:
-        raise ValueError(f"Local SAM mask shape {patch.shape} does not match region {expected_shape}.")
-    merged = np.asarray(base_mask, dtype=bool).copy()
-    merged[y0:y1, x0:x1] = patch
-    return merged
-
-
-def _run_local_sam_retry(
-    *,
-    image: Image.Image,
-    image_bytes: bytes,
-    request: RoofMeasureRequest,
-    current_mask: np.ndarray | None,
-    positive_points: list[tuple[float, float]],
-    negative_points: list[tuple[float, float]],
-) -> tuple[np.ndarray, list[dict[str, object]]]:
-    """Rerun SAM only around AI-identified defects and merge validated-size patches."""
-    if current_mask is None:
-        retry = measure_roof_from_overhead_image(
-            image_bytes=image_bytes,
-            request=request,
-            selected_candidate_index=0,
-        )
-        if retry.selected_mask is None:
-            raise ValueError("SAM retry did not return a mask.")
-        if retry.report.model_name == "manual_fallback_segmenter":
-            raise ValueError("SAM2 was unavailable; manual fallback was not accepted as a correction.")
-        return np.asarray(retry.selected_mask, dtype=bool), [{"mode": "full_image", "accepted": True}]
-
-    merged = np.asarray(current_mask, dtype=bool).copy()
-    records: list[dict[str, object]] = []
-    boxes = _correction_region_boxes(positive_points, negative_points, image.size)
-    for region_index, box in enumerate(boxes, start=1):
-        x0, y0, x1, y1 = box
-        crop = image.crop(box)
-        crop_size = crop.size
-        local_request = request.model_copy(
-            update={
-                "overhead_image_name": f"sam-correction-region-{region_index}.png",
-                "positive_points": _translate_points_to_crop(request.positive_points, box, crop_size),
-                "negative_points": _translate_points_to_crop(request.negative_points, box, crop_size),
-                "segmentation_box": None,
-                "footprint_polygons": _translate_polygons_to_crop(request.footprint_polygons, box),
-                "outline_prior_polygons": _translate_polygons_to_crop(request.outline_prior_polygons, box),
-                "map_view": _map_view_for_image_crop(request.map_view, image.size, box),
-            }
-        )
-        local = measure_roof_from_overhead_image(
-            image_bytes=image_png_bytes(crop),
-            request=local_request,
-            selected_candidate_index=0,
-            mask_input_override=merged[y0:y1, x0:x1],
-        )
-        if local.report.model_name == "manual_fallback_segmenter":
-            records.append(
-                {
-                    "region": region_index,
-                    "box": _box_record(box),
-                    "accepted": False,
-                    "reason": "SAM2 was unavailable for this local retry; manual fallback was not merged",
-                }
-            )
-            continue
-        if local.selected_mask is None:
-            records.append({"region": region_index, "box": _box_record(box), "accepted": False, "reason": "no SAM mask"})
-            continue
-        local_positive = _translate_points_to_crop(positive_points, box, crop_size)
-        local_negative = _translate_points_to_crop(negative_points, box, crop_size)
-        satisfaction_before = _qa_prompt_satisfaction(
-            merged[y0:y1, x0:x1],
-            local_positive,
-            local_negative,
-        )
-        satisfaction_after = _qa_prompt_satisfaction(
-            local.selected_mask,
-            local_positive,
-            local_negative,
-        )
-        satisfaction_delta = satisfaction_after - satisfaction_before
-        if satisfaction_delta < 0.05:
-            records.append(
-                {
-                    "region": region_index,
-                    "box": _box_record(box),
-                    "accepted": False,
-                    "reason": "local SAM mask did not improve the requested correction points",
-                    "correction_score_before": satisfaction_before,
-                    "correction_score_after": satisfaction_after,
-                    "correction_score_delta": round(satisfaction_delta, 4),
-                }
-            )
-            continue
-        try:
-            merged = _merge_local_mask(merged, local.selected_mask, box)
-        except ValueError as exc:
-            records.append({"region": region_index, "box": _box_record(box), "accepted": False, "reason": str(exc)})
-            continue
-        records.append(
-            {
-                "region": region_index,
-                "box": _box_record(box),
-                "accepted": True,
-                "model": local.report.model_name,
-                "positive_point_count": len(local_request.positive_points),
-                "negative_point_count": len(local_request.negative_points),
-                "correction_score_before": satisfaction_before,
-                "correction_score_after": satisfaction_after,
-                "correction_score_delta": round(satisfaction_delta, 4),
-            }
-        )
-    if not records or not any(bool(record.get("accepted")) for record in records):
-        raise ValueError("No local SAM correction region produced a usable mask.")
-    return merged, records
 
 
 def _map_view_for_image_crop(
@@ -1728,10 +1537,9 @@ def _lidar_edge_height_grid(
     result: RoofMeasureResult,
     request: RoofMeasureRequest,
     asset_url: str,
-    image_size: tuple[int, int] | None = None,
 ):
     """Return the cached image-aligned height grid used for per-edge scoring."""
-    if not asset_url:
+    if not asset_url or result.selected_mask is None:
         return None
     map_view = request.map_view
     if any(key not in map_view for key in ("latitude", "longitude", "zoom")):
@@ -1739,13 +1547,6 @@ def _lidar_edge_height_grid(
     source = result.report.source_images[0] if result.report.source_images else None
     if source is None:
         return None
-    if result.selected_mask is not None:
-        image_height, image_width = result.selected_mask.shape[:2]
-    elif image_size is not None:
-        image_width, image_height = image_size
-    else:
-        image_width = int(source.inference_width)
-        image_height = int(source.inference_height)
     return kyfromabove_height_grid_for_image(
         asset_url=asset_url,
         center_latitude=float(map_view["latitude"]),
@@ -1753,8 +1554,8 @@ def _lidar_edge_height_grid(
         zoom=float(map_view["zoom"]),
         source_width=int(source.width),
         source_height=int(source.height),
-        image_width=int(image_width),
-        image_height=int(image_height),
+        image_width=int(result.selected_mask.shape[1]),
+        image_height=int(result.selected_mask.shape[0]),
     )
 
 
@@ -2156,20 +1957,13 @@ def _render_measurement_result(
                 st.info(str(message))
 
     loaded = load_image_bytes(image_bytes, file_name=file_name)
-    overlay_col1, overlay_col2, overlay_col3, overlay_col4 = st.columns(4)
+    overlay_col1, overlay_col2, overlay_col3 = st.columns(3)
     with overlay_col1:
         show_mask = st.checkbox("Show edge-detection mask", value=True, key=f"roof_measure_show_mask_{report.id}")
     with overlay_col2:
         show_boundary = st.checkbox("Show edge-detection boundary", value=True, key=f"roof_measure_show_boundary_{report.id}")
     with overlay_col3:
         show_vertices = st.checkbox("Show polygon vertices", value=True, key=f"roof_measure_show_vertices_{report.id}")
-    with overlay_col4:
-        show_boundary_residuals = st.checkbox(
-            "Show exterior boundary residuals",
-            value=False,
-            key=f"roof_measure_show_boundary_residuals_{report.id}",
-            disabled=result.selected_mask is None,
-        )
     lidar_asset = str(getattr(st.session_state.get("roof_measure_lidar_coverage"), "asset_url", ""))
     show_lidar = st.checkbox(
         "Show LiDAR height support",
@@ -2239,17 +2033,6 @@ def _render_measurement_result(
                 help="Yellow is the AI roof outline. Its translucent buffer is the region retained after SAM2 segmentation.",
             )
     displayed_overlay = overlay
-    if show_boundary_residuals and result.selected_mask is not None:
-        displayed_overlay = boundary_residual_overlay(
-            displayed_overlay,
-            mask=result.selected_mask,
-            sections=measurement.sections,
-        )
-        residual_metrics = section_boundary_metrics(result.selected_mask, measurement.sections)
-        st.caption(
-            "Exterior boundary residuals: magenta is exterior SAM edge missed by the fitted polygon; cyan is polygon edge without nearby SAM support. "
-            f"F1 {float(residual_metrics['f1']):.3f}; p95 distance {float(residual_metrics['p95_distance_pixels']):.1f} px."
-        )
     if show_outline_prior:
         outline_mask = (
             footprint_constraint_mask(
@@ -2299,23 +2082,12 @@ def _render_measurement_result(
             result,
             RoofMeasureRequest(overhead_image_name="workspace", map_view=_recorded_map_view(report)),
             lidar_asset,
-            image_size=loaded.inference_image.size,
         )
-        if lidar_grid is None:
-            st.warning("LiDAR could not be aligned because this measurement does not contain a recorded map view.")
-        elif not lidar_grid.ok:
-            st.warning(lidar_grid.warning or "LiDAR height support is unavailable for this image extent.")
-        else:
-            displayed_overlay = lidar_height_overlay(
-                displayed_overlay,
-                height_grid=lidar_grid.height_grid,
-                cell_pixels=lidar_grid.cell_pixels,
-            )
-            lidar_values = np.asarray(lidar_grid.height_grid, dtype=float)
-            st.caption(
-                f"LiDAR overlay applied: {int(np.sum(np.isfinite(lidar_values) & (lidar_values >= 8.0))):,} elevated cell(s), "
-                f"{int(np.sum(np.isfinite(lidar_values) & (lidar_values < 4.0))):,} low cell(s)."
-            )
+        displayed_overlay = lidar_height_overlay(
+            displayed_overlay,
+            height_grid=lidar_grid.height_grid if lidar_grid and lidar_grid.ok else None,
+            cell_pixels=lidar_grid.cell_pixels if lidar_grid else 8,
+        )
     if show_vertices:
         latest_editor = next(
             (item for item in reversed(report.processing_iterations) if item.get("stage") == "ai_polygon_editor"),
