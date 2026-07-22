@@ -134,7 +134,7 @@ def qa_finding_from_payload(payload: dict[str, Any], *, width: int, height: int)
         negative_corrections=negative_corrections,
         confidence=confidence,
         notes=str(payload.get("notes") or "").strip(),
-        warnings=[str(item) for item in payload.get("warnings") or [] if str(item).strip()],
+        warnings=_string_list(payload.get("warnings")),
         model_name=str(payload.get("model_name") or "openai_roof_qa"),
         model_version=str(payload.get("model_version") or ""),
     )
@@ -280,7 +280,10 @@ def _sam_correction_prompt(
         "covered walks, and shadow-only spill outside the physical roof edge. Do not use negative points on rooftop HVAC, "
         "vents, skylights, parapets, seams, stains, drains, or other penetrations within an otherwise continuous roof; those "
         "remain inside gross roof plan area. Do not mistake a cast shadow on a roof for a roof edge. Use few points, avoid "
-        "edges and redundant points, and return empty arrays when the mask is already correct. Limit each array to 8 points. "
+        "edges and redundant points. Deliberately inspect every exterior roof lobe, narrow connector, courtyard, and shadow-side "
+        "edge; do not declare the mask correct merely because it broadly overlaps the building. Compare red coverage against "
+        "the unannotated source at each of those locations. Return empty arrays only when no clearly visible correction remains. "
+        "Limit each array to 8 points. "
         "Return only valid JSON in this exact shape: "
         '{"positive_points":[{"x":0,"y":0,"confidence":0.99,"reason":"missing roof"}],'
         '"negative_points":[{"x":0,"y":0,"confidence":0.99,"reason":"included non-roof"}],'
@@ -372,3 +375,11 @@ def _safe_confidence(value: Any) -> float:
         return max(0.0, min(float(value), 1.0))
     except (TypeError, ValueError):
         return 0.0
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]

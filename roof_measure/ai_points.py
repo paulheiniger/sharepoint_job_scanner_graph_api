@@ -52,7 +52,7 @@ def suggestion_from_payload(payload: dict[str, Any], *, width: int, height: int)
         if primary is not None:
             positive = [primary]
     negative = _points_from_payload(payload.get("negative_points"), width=width, height=height)
-    warnings = [str(item) for item in payload.get("warnings") or [] if str(item).strip()]
+    warnings = _string_list(payload.get("warnings"))
     confidence = _safe_confidence(payload.get("confidence"))
     notes = str(payload.get("notes") or "").strip()
     return RoofPointSuggestion(
@@ -276,6 +276,14 @@ def _extract_json_object(text: str) -> dict[str, Any]:
             return {}
         payload = json.loads(match.group(0))
     return payload if isinstance(payload, dict) else {}
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
 
 
 def _responses_reference_image_content(reference_images: list[Image.Image] | None) -> list[dict[str, Any]]:

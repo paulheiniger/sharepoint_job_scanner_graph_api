@@ -65,22 +65,45 @@ def sections_from_mask(
         polygon, holes = polygon_from_component(component)
         polygon = simplify_ring(polygon, effective_tolerance)
         polygon = snap_axis_aligned_edges(polygon, edge_snap_strength)
+        minimum_hole_area = max(100.0, float(minimum_section_area_pixels) * 0.5)
         holes = [
             snap_axis_aligned_edges(simplify_ring(hole, effective_tolerance), edge_snap_strength)
             for hole in holes
         ]
-        holes = [hole for hole in holes if hole]
+        holes = [
+            hole
+            for hole in holes
+            if _is_measurement_hole(hole, minimum_area_pixels=minimum_hole_area)
+        ]
+        measured_area_pixels = polygon_area_pixels(polygon, holes)
         sections.append(
             RoofSection(
                 section_id=f"section-{index}",
                 polygon=polygon,
                 holes=holes,
-                area_pixels=area_pixels,
+                area_pixels=measured_area_pixels,
                 perimeter_pixels=polygon_perimeter_pixels(polygon, holes),
                 confidence=0.45,
             )
         )
     return sections
+
+
+def _is_measurement_hole(
+    hole: list[tuple[float, float]],
+    *,
+    minimum_area_pixels: float,
+    minimum_span_pixels: float = 6.0,
+) -> bool:
+    """Keep credible open courtyards while filling mask speckle and roof seams."""
+    if not hole or polygon_area_pixels(hole) < minimum_area_pixels:
+        return False
+    vertices = hole[:-1] if len(hole) > 1 and hole[0] == hole[-1] else hole
+    if len(vertices) < 3:
+        return False
+    width = max(point[0] for point in vertices) - min(point[0] for point in vertices)
+    height = max(point[1] for point in vertices) - min(point[1] for point in vertices)
+    return min(width, height) >= minimum_span_pixels
 
 
 def polygon_from_component(component: list[tuple[int, int]]) -> tuple[list[tuple[float, float]], list[list[tuple[float, float]]]]:

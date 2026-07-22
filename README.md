@@ -1167,13 +1167,15 @@ Estimator limitations:
 
 ## Streamlit app
 
-Run the Streamlit app:
+Run the full Spray-Tec operations dashboard:
 
 ```bash
-streamlit run app.py
+cd /Users/paulheiniger/Downloads/sharepoint_job_scanner_graph_api
+source .venv/bin/activate
+streamlit run dashboard/app.py --server.address 0.0.0.0 --server.port 8501
 ```
 
-The root page is the local SharePoint scanner app. BidScope AI is available from the Streamlit sidebar pages menu. If the deployed app uses the richer `dashboard/app.py` entrypoint, BidScope AI is also listed explicitly in that dashboard sidebar navigation.
+The root `app.py` entrypoint is a small SharePoint scanner prototype and is not the normal operational application. The dashboard entrypoint includes the operations, estimating, FoamScope, BidScope, and AI Roof Measure workflows.
 
 ## BidScope AI prototype
 

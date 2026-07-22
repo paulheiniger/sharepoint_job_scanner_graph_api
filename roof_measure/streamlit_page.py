@@ -1171,6 +1171,13 @@ def _run_iterative_sam_corrections(
         except ValueError:
             configured_rounds = 3
     round_limit = max(1, min(configured_rounds, 5))
+    try:
+        correction_confidence = float(
+            os.getenv("OPENAI_ROOF_MEASURE_SAM_CORRECTION_MIN_CONFIDENCE", "0.70")
+        )
+    except ValueError:
+        correction_confidence = 0.70
+    correction_confidence = max(0.5, min(correction_confidence, 0.95))
     current = result
     current_request = request
     current_lidar = _lidar_geometry_assessment(
@@ -1193,9 +1200,10 @@ def _run_iterative_sam_corrections(
             reference_images=reference_images,
             candidate_mask=current.selected_mask,
         )
+        raw_positive, raw_negative = qa_corrections_to_prompts(qa)
         proposed_positive, proposed_negative = qa_corrections_to_prompts(
             qa,
-            minimum_confidence=0.75,
+            minimum_confidence=correction_confidence,
         )
         retry_positive = _novel_correction_points(
             proposed_positive,
@@ -1212,6 +1220,11 @@ def _run_iterative_sam_corrections(
             "round": round_number,
             "status": "completed" if qa.completed else "failed",
             **qa.as_record(),
+            "minimum_point_confidence": correction_confidence,
+            "returned_positive_point_count": len(raw_positive),
+            "returned_negative_point_count": len(raw_negative),
+            "eligible_positive_point_count": len(proposed_positive),
+            "eligible_negative_point_count": len(proposed_negative),
             "accepted_positive_points": _points_record(retry_positive),
             "accepted_negative_points": _points_record(retry_negative),
             "accepted": qa.completed,
@@ -1225,9 +1238,34 @@ def _run_iterative_sam_corrections(
             break
         notes.extend(qa.warnings)
         if not retry_positive and not retry_negative:
-            notes.append(
-                f"SAM correction converged after {accepted_rounds} accepted round(s); no new high-confidence points were proposed."
+            if not raw_positive and not raw_negative:
+                outcome = "model_returned_no_points"
+                message = (
+                    "AI reviewed the SAM mask but returned no correction points; "
+                    "the mask was not changed."
+                )
+            elif not proposed_positive and not proposed_negative:
+                outcome = "points_below_confidence_threshold"
+                message = (
+                    f"AI returned {len(raw_positive) + len(raw_negative)} correction point(s), but none met the "
+                    f"{correction_confidence:.2f} confidence threshold; the mask was not changed."
+                )
+            else:
+                outcome = "points_redundant_or_contradictory"
+                message = (
+                    f"AI returned {len(proposed_positive) + len(proposed_negative)} eligible correction point(s), "
+                    "but all duplicated or contradicted existing prompts; the mask was not changed."
+                )
+            review_record["outcome"] = outcome
+            current.report = current.report.model_copy(
+                update={
+                    "processing_iterations": [
+                        *current.report.processing_iterations[:-1],
+                        review_record,
+                    ]
+                }
             )
+            notes.append(message)
             break
 
         retry_request = current_request.model_copy(
@@ -2249,6 +2287,17 @@ def _render_pipeline_trace(report, result: RoofMeasureResult) -> None:
                     f"AI reviewed {len(completed_reviews)} SAM mask version(s) and accepted "
                     f"{len(accepted_retries)} correction round(s)."
                 )
+                if last_review.get("outcome") == "model_returned_no_points":
+                    st.warning("The latest AI review returned no correction points; SAM was not rerun.")
+                elif last_review.get("outcome") == "points_below_confidence_threshold":
+                    returned_count = int(last_review.get("returned_positive_point_count") or 0) + int(
+                        last_review.get("returned_negative_point_count") or 0
+                    )
+                    st.warning(
+                        f"The latest AI review returned {returned_count} point(s), but none met the configured confidence threshold."
+                    )
+                elif last_review.get("outcome") == "points_redundant_or_contradictory":
+                    st.warning("The latest AI correction points duplicated or contradicted existing prompts; SAM was not rerun.")
             for item in correction_retries:
                 point_count = len(item.get("positive_points") or []) + len(item.get("negative_points") or [])
                 st.caption(
@@ -3097,7 +3146,10 @@ def _render_corner_handle_editor(
                     st.session_state.pop(state_key, None)
                     st.rerun()
         st.markdown("##### Manual Polygon Editor")
-        st.caption("Drag a vertex and its connected edges move with it. Add and Delete change the same polygon ring; Undo restores the previous valid edit.")
+        st.caption(
+            "Drag a green vertex and its connected edges move with it. Amber rings are retained open courtyards or roof gaps, "
+            "not AI correction points. Add and Delete change the exterior polygon ring; Undo restores the previous valid edit."
+        )
         component_revision = int(editor_state.get("component_revision") or 0)
         component_result = render_polygon_editor(
             image,

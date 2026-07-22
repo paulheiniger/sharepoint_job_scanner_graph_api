@@ -294,6 +294,24 @@ def test_sections_from_mask_detects_multiple_sections() -> None:
     assert [section.area_pixels for section in sections] == [600, 600]
 
 
+def test_sections_from_mask_fills_small_roof_voids_but_preserves_large_courtyard() -> None:
+    mask = np.zeros((120, 120), dtype=bool)
+    mask[10:110, 10:110] = True
+    mask[25:28, 25:28] = False
+    mask[50:80, 50:80] = False
+
+    sections = sections_from_mask(
+        mask,
+        minimum_section_area_pixels=100,
+        simplification_tolerance=0,
+    )
+
+    assert len(sections) == 1
+    assert len(sections[0].holes) == 1
+    assert polygon_area_pixels(sections[0].holes[0]) == 900
+    assert sections[0].area_pixels == 9100
+
+
 def test_sections_from_mask_traces_component_boundary_not_bounding_box() -> None:
     mask = np.zeros((80, 100), dtype=bool)
     mask[10:50, 20:40] = True
@@ -963,6 +981,25 @@ def test_semantic_qa_defects_become_targeted_sam_prompts() -> None:
     assert finding.confidence == 0.91
 
 
+def test_ai_warning_string_is_not_split_into_characters() -> None:
+    point_suggestion = suggestion_from_payload(
+        {
+            "positive_points": [{"x": 20, "y": 30}],
+            "warnings": "Do not interpret roof seams as exclusions.",
+        },
+        width=100,
+        height=80,
+    )
+    qa_finding = qa_finding_from_payload(
+        {"warnings": "Mask review was uncertain."},
+        width=100,
+        height=80,
+    )
+
+    assert point_suggestion.warnings == ["Do not interpret roof seams as exclusions."]
+    assert qa_finding.warnings == ["Mask review was uncertain."]
+
+
 def test_sam_correction_payload_preserves_point_confidence_and_reason() -> None:
     finding = qa_finding_from_payload(
         {
@@ -1057,11 +1094,15 @@ def test_iterative_sam_correction_reviews_the_accepted_mask_until_convergence(tm
     assert np.array_equal(review.call_args_list[1].kwargs["candidate_mask"], retry_mask)
     assert corrected_request.positive_points[-1] == (70.0, 50.0)
     assert np.array_equal(corrected.selected_mask, retry_mask)
-    assert any("converged after 1 accepted round" in note for note in notes)
+    assert any("returned no correction points" in note for note in notes)
     retries = [
         item for item in corrected.report.processing_iterations if item.get("stage") == "sam_correction_retry"
     ]
     assert retries[0]["accepted"] is True
+    reviews = [
+        item for item in corrected.report.processing_iterations if item.get("stage") == "sam_correction_review"
+    ]
+    assert reviews[-1]["outcome"] == "model_returned_no_points"
 
 
 def test_semantic_qa_requires_manual_review_only_for_high_confidence_major_conflict() -> None:
