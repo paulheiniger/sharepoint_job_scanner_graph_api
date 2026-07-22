@@ -55,7 +55,7 @@ from roof_measure.polygon_editor import apply_polygon_operations, sections_to_ve
 from roof_measure.polygon_component import component_data_to_sections, sections_to_component_data
 from roof_measure.polygonize import section_from_polygon, sections_from_mask
 from roof_measure.segmentation import MockRoofSegmenter, Sam2RoofSegmenter, SegmentationPrompts
-from roof_measure.service import _constrain_mask_to_footprints, _footprint_buffer_pixels, finalize_roof_sections, footprint_constraint_mask, measure_roof_from_outline_polygons, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections, score_roof_result, sections_mask
+from roof_measure.service import _constrain_mask_to_footprints, _footprint_buffer_pixels, finalize_roof_sections, footprint_constraint_mask, measure_roof_from_outline_polygons, measure_roof_from_overhead_image, recalculate_report_from_corrected_sections, score_roof_result, section_boundary_metrics, sections_mask
 from roof_measure.models import RoofMeasureRequest
 from roof_measure.streamlit_page import (
     _canvas_background_image,
@@ -65,6 +65,7 @@ from roof_measure.streamlit_page import (
     _canvas_json_to_sections,
     _canvas_json_to_corner_points,
     _canvas_to_polygon_operations,
+    _correction_region_boxes,
     _format_points_text,
     _footprints_for_prompt_points,
     _footprint_visible_area_pixels,
@@ -78,6 +79,7 @@ from roof_measure.streamlit_page import (
     _manual_anchor_points,
     _evaluate_ai_outline_candidate,
     _map_view_for_image_crop,
+    _merge_local_mask,
     _novel_correction_points,
     _primary_prompt_cluster,
     _polygons_interior_prompt_points,
@@ -97,7 +99,7 @@ from roof_measure.streamlit_page import (
     _targeted_qa_retry_is_accepted,
 )
 from roof_measure.visualization import lidar_height_overlay, prompt_points_overlay
-from roof_measure.vertex_agent import initialize_vertices_toward_boundary, run_vertex_tool_loop
+from roof_measure.vertex_agent import _vertex_tools, initialize_vertices_toward_boundary, run_vertex_tool_loop
 from jobscan.env import load_project_env
 
 
@@ -1287,6 +1289,78 @@ def test_mask_trace_preserves_real_edge_notches_before_architectural_finalizing(
     assert record["candidate"] == "raw_mask"
     assert record["boundary_alignment"] == 1.0
     assert record["vertex_count"] == 12
+
+
+def test_finalizer_reduces_pixel_jitter_but_preserves_architectural_corner() -> None:
+    mask = np.zeros((160, 180), dtype=bool)
+    mask[20:140, 20:160] = True
+    mask[105:140, 75:115] = False
+    for y in range(30, 130, 8):
+        mask[y : y + 2, 160:163] = True
+    raw = sections_from_mask(mask, minimum_section_area_pixels=100, simplification_tolerance=1)
+
+    finalized, record = finalize_roof_sections(
+        mask,
+        raw,
+        architectural_simplification_tolerance=6,
+        target_exterior_vertices=32,
+    )
+
+    assert len(finalized[0].polygon) < len(raw[0].polygon)
+    assert any(abs(x - 75) <= 2 and abs(y - 105) <= 2 for x, y in finalized[0].polygon)
+    assert record["candidate"] == "architectural_fit"
+    assert record["vertex_count"] <= 32
+
+
+def test_boundary_metrics_are_symmetric_and_report_large_local_miss() -> None:
+    mask = np.zeros((100, 100), dtype=bool)
+    mask[10:90, 10:90] = True
+    exact = [section_from_polygon("exact", [(10, 10), (90, 10), (90, 90), (10, 90)])]
+    inset = [section_from_polygon("inset", [(20, 20), (80, 20), (80, 80), (20, 80)])]
+
+    exact_metrics = section_boundary_metrics(mask, exact)
+    inset_metrics = section_boundary_metrics(mask, inset)
+
+    assert exact_metrics["f1"] > 0.98
+    assert inset_metrics["precision"] < 0.1
+    assert inset_metrics["recall"] < 0.1
+    assert inset_metrics["p95_distance_pixels"] >= 9
+
+
+def test_local_sam_mask_merge_cannot_change_pixels_outside_review_region() -> None:
+    base = np.zeros((100, 120), dtype=bool)
+    base[10:90, 10:110] = True
+    box = (40, 30, 80, 70)
+    patch = np.zeros((40, 40), dtype=bool)
+
+    merged = _merge_local_mask(base, patch, box)
+
+    outside = np.ones_like(base, dtype=bool)
+    outside[30:70, 40:80] = False
+    assert np.array_equal(merged[outside], base[outside])
+    assert not merged[30:70, 40:80].any()
+
+
+def test_correction_points_are_clustered_into_bounded_local_regions() -> None:
+    boxes = _correction_region_boxes(
+        [(100, 100), (115, 105), (500, 500)],
+        [(108, 118)],
+        (640, 640),
+        padding_pixels=40,
+        link_distance_pixels=80,
+    )
+
+    assert len(boxes) == 2
+    assert any(x0 <= 100 <= x1 and y0 <= 100 <= y1 for x0, y0, x1, y1 in boxes)
+    assert any(x0 <= 500 <= x1 and y0 <= 500 <= y1 for x0, y0, x1, y1 in boxes)
+
+
+def test_vertex_agent_exposes_move_tools_without_vertex_insertion_or_deletion() -> None:
+    tool_names = {tool["name"] for tool in _vertex_tools("exterior")}
+
+    assert "move_vertices_relative" in tool_names
+    assert "insert_vertex_relative" not in tool_names
+    assert "delete_vertex" not in tool_names
 
 
 def test_report17_regression_fixture_records_missing_footprint_and_active_outline_prior() -> None:
