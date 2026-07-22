@@ -300,6 +300,8 @@ def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
         calls.append((messages, model))
         assert "Critical calculation rule" in messages[0]["content"]
         assert "if include is true, proposed_values must provide the row's required calculation inputs" in messages[0]["content"]
+        assert "Naming a comparable project or section does not authorize copying unrelated rows" in messages[0]["content"]
+        assert "Do not include an answer-key row without current-scope support" in messages[0]["content"]
         assert "estimator_context.decision_menu and estimator_context.formula_requirements" in messages[0]["content"]
         assert "common_template_buckets" in messages[1]["content"]
         assert "decision_recommendation_examples" in messages[1]["content"]
@@ -505,7 +507,8 @@ def test_estimator_context_builds_compact_historical_answer_key_decision_cues() 
     assert coating["sample_outputs"]["estimated_cost"] == 5299.2
     assert coating["formula_ready"] is True
     assert coating["missing_inputs"] == []
-    assert coating["suggested_preference"]["include"] is True
+    assert coating["suggested_preference"]["include"] is False
+    assert coating["recommendation"] == "review_only_historical_evidence"
     assert coating["suggested_preference"]["proposed_values"]["unit_price"] == 32
     assert "similar historical answer keys" in coating["why_suggested"]
     assert len(coating["examples"]) == 2
@@ -588,7 +591,75 @@ def test_historical_context_supplements_but_does_not_override_ai_decision_values
     assert foam["proposed_values"]["thickness_inches"] == 5.53
     assert foam["proposed_values"]["yield_or_coverage"] == 5000
     assert foam["proposed_values"]["unit_price"] == 1.7
+    assert foam["include"] is True
+    assert foam["source"] == "chat_estimator"
     assert foam["evidence"][0]["source"] == "historical_answer_key_decision_cue"
+
+
+def test_historical_context_does_not_auto_include_comparable_project_rows() -> None:
+    context = {
+        "template_type": "roofing",
+        "historical_answer_key_decision_cues": [
+            {
+                "section": "roofing_coating_template_decisions",
+                "decision_id": "roofing_coating_system_row_26",
+                "template_bucket": "coating",
+                "workbook_row": "26",
+                "formula_ready": True,
+                "support_count": 3,
+                "best_similarity_score": 218,
+                "confidence": 0.85,
+                "why_suggested": "Seen in Preston Animal Hospital.",
+                "suggested_preference": {
+                    "section": "roofing_coating_template_decisions",
+                    "decision_id": "roofing_coating_system_row_26",
+                    "template_bucket": "coating",
+                    "workbook_row": "26",
+                    "include": True,
+                    "proposed_values": {
+                        "basis_sqft": 12100,
+                        "gal_per_100_sqft": 1.335,
+                        "unit_price": 36,
+                    },
+                },
+            },
+            {
+                "section": "roofing_granules_template_decisions",
+                "decision_id": "roofing_granules_row_36",
+                "template_bucket": "granules",
+                "workbook_row": "36",
+                "formula_ready": True,
+                "support_count": 3,
+                "best_similarity_score": 192,
+                "confidence": 0.85,
+                "suggested_preference": {
+                    "section": "roofing_granules_template_decisions",
+                    "decision_id": "roofing_granules_row_36",
+                    "template_bucket": "granules",
+                    "workbook_row": "36",
+                    "include": True,
+                    "proposed_values": {"basis_sqft": 12100, "estimated_units": 60.5, "unit_price": 26},
+                },
+            },
+        ],
+    }
+
+    result = chat_assistant._supplement_result_with_historical_context_preferences(
+        chat_assistant.EstimatorChatResult(
+            assistant_message="CMU wall repair draft.",
+            estimator_notes=(
+                "Use Section 1 CMU wall repair for Preston Animal Hospital as comparable. "
+                "Pressure wash, scrape, seal masonry cracks, and include a boom lift."
+            ),
+            scope_overrides={"template_type": "roofing", "estimated_sqft": 1000},
+        ),
+        context,
+    )
+
+    assert len(result.workbook_decision_preferences) == 2
+    assert all(row["include"] is False for row in result.workbook_decision_preferences)
+    assert all(row["source"] == "historical_answer_key_context" for row in result.workbook_decision_preferences)
+    assert "none were auto-included" in result.warnings[0]
 
 
 def test_estimator_chat_detects_answer_key_modes() -> None:
@@ -1038,6 +1109,109 @@ def test_estimator_chat_context_boosts_answer_key_name_overlap() -> None:
     matches = context["historical_answer_key_examples"]["matched_answer_keys"]
     assert matches[0]["job_id"] == "MUDD-B"
     assert any("name overlap" in reason for reason in matches[0]["match_reasons"])
+
+
+def test_named_comparable_uses_best_matching_workbook_within_job() -> None:
+    wall_key = {
+        "schema_version": "reference_estimate_answer_key.v1",
+        "template_type": "roofing",
+        "source_workbook": {"file_name": "Estimate CMU Wall Repair - Preston Animal Hospital (Sec. 1 Rear Wall).xlsx"},
+        "decisions": [
+            {
+                "section": "roofing_labor_template_decisions",
+                "decision_id": "roofing_labor_prep_row_116",
+                "template_bucket": "labor_prep",
+                "workbook_row": "116",
+                "line_item": "PW/Prep",
+                "inputs": {"days": 0.25, "crew_size": 3, "total_hours": 7.5},
+            },
+            {
+                "section": "roofing_labor_template_decisions",
+                "decision_id": "roofing_labor_caulk_row_126",
+                "template_bucket": "labor_caulk",
+                "workbook_row": "126",
+                "line_item": "Patch/Caulk",
+                "inputs": {"days": 1, "crew_size": 3, "total_hours": 30},
+            },
+        ],
+        "summary": {"decision_count": 2, "unmapped_count": 0},
+    }
+    middle_roof_key = {
+        "schema_version": "reference_estimate_answer_key.v1",
+        "template_type": "roofing",
+        "source_workbook": {"file_name": "Estimate Roofing - Preston Animal Hospital (Middle Section).xlsx"},
+        "decisions": [
+            {
+                "section": "roofing_coating_template_decisions",
+                "decision_id": "roofing_coating_system_row_26",
+                "template_bucket": "coating",
+                "workbook_row": "26",
+                "line_item": "Gaco Silicone",
+                "inputs": {"basis_sqft": 12100, "gal_per_100_sqft": 1.335, "unit_price": 36},
+            },
+            {
+                "section": "roofing_granules_template_decisions",
+                "decision_id": "roofing_granules_row_36",
+                "template_bucket": "granules",
+                "workbook_row": "36",
+                "line_item": "3M Granules",
+                "inputs": {"basis_sqft": 12100, "estimated_units": 60.5, "unit_price": 26},
+            },
+        ],
+        "summary": {"decision_count": 2, "unmapped_count": 0},
+    }
+    data = EstimatorData(
+        template_examples=pd.DataFrame(
+            [
+                {
+                    "example_id": "preston-middle-roof",
+                    "job_id": "PRESTON-ANIMAL-HOSPITAL-2026",
+                    "customer": "Preston Animal Hospital",
+                    "job_name": "Preston Animal Hospital",
+                    "source_file": "Estimate Roofing - Preston Animal Hospital (Middle Section).xlsx",
+                    "template_type": "roofing",
+                    "project_class": "roof_spf",
+                    "substrate": "metal",
+                    "scope_summary": "Middle roof coating with granules.",
+                    "answer_key_json": json.dumps(middle_roof_key),
+                },
+                {
+                    "example_id": "preston-section-1-wall",
+                    "job_id": "PRESTON-ANIMAL-HOSPITAL-2026",
+                    "customer": "Preston Animal Hospital",
+                    "job_name": "Preston Animal Hospital",
+                    "source_file": "Estimate CMU Wall Repair - Preston Animal Hospital (Sec. 1 Rear Wall).xlsx",
+                    "template_type": "roofing",
+                    "project_class": "repair",
+                    "substrate": "masonry",
+                    "scope_summary": "Section 1 CMU rear wall pressure wash, prep, and masonry crack sealant repair.",
+                    "answer_key_json": json.dumps(wall_key),
+                },
+            ]
+        )
+    )
+
+    context = estimator_context_summary(
+        data,
+        scope={
+            "template_type": "roofing",
+            "estimated_sqft": 1000,
+            "substrate": "masonry",
+            "raw_input_notes": (
+                "Use Section 1 CMU wall repair for Preston Animal Hospital as comparable. "
+                "Pressure wash, scrape, and seal cracks in masonry block."
+            ),
+        },
+    )
+
+    matches = context["historical_answer_key_examples"]["matched_answer_keys"]
+    assert len(matches) == 1
+    assert "CMU Wall Repair" in matches[0]["source_file"]
+    decision_ids = {row["decision_id"] for row in matches[0]["reference_answer_key"]["decisions"]}
+    assert decision_ids == {"roofing_labor_prep_row_116", "roofing_labor_caulk_row_126"}
+    cue_ids = {row["decision_id"] for row in context["historical_answer_key_decision_cues"]}
+    assert "roofing_coating_system_row_26" not in cue_ids
+    assert "roofing_granules_row_36" not in cue_ids
 
 
 def test_estimator_chat_context_hydrates_answer_keys_for_compact_examples(monkeypatch) -> None:

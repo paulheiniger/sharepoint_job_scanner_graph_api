@@ -106,6 +106,38 @@ def test_estimator_chat_preferences_create_canonical_foam_proposal() -> None:
     assert foam["evidence"]["chat_estimator"][0]["assistant_message"].startswith("Use 5 inch")
 
 
+def test_historical_answer_key_context_stays_excluded_and_keeps_provenance() -> None:
+    proposals = build_decision_proposals(
+        {
+            "template_type": "roofing",
+            "division": "Roofing",
+            "estimated_sqft": 1000,
+            "raw_input_notes": "CMU wall repair: pressure wash, scrape, and seal cracks.",
+            "estimator_chat": {
+                "source": "ai_chat",
+                "workbook_decision_preferences": [
+                    {
+                        "decision_id": "roofing_coating_system_row_26",
+                        "template_bucket": "coating",
+                        "workbook_row": "26",
+                        "include": True,
+                        "source": "historical_answer_key_context",
+                        "proposed_values": {
+                            "basis_sqft": 12100,
+                            "gal_per_100_sqft": 1.335,
+                            "unit_price": 36,
+                        },
+                    }
+                ],
+            },
+        }
+    )
+
+    coating = next(row for row in proposals if row["decision_id"] == "roofing_coating_system_row_26")
+    assert coating["include"] is False
+    assert coating["source"] == "historical_answer_key_context"
+
+
 def test_estimator_chat_loading_travel_preferences_target_logistics_expense_rows() -> None:
     proposals = build_decision_proposals(
         {

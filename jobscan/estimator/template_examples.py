@@ -779,7 +779,7 @@ def _identity_match_enabled(scope: dict[str, Any]) -> bool:
     text = _scope_answer_key_text(scope)
     return bool(
         re.search(
-            r"\b(?:like|similar\s+to|same\s+as|based\s+on|use\s+the|reference\s+job|answer\s+key\s+for|find\s+(?:me\s+)?(?:the\s+)?job)\b",
+            r"\b(?:like|similar\s+to|same\s+as|based\s+on|use\s+the|use\s+(?:section|sec)\.?\s*\d+|comparable|reference\s+job|answer\s+key\s+for|find\s+(?:me\s+)?(?:the\s+)?job)\b",
             text,
         )
     )
@@ -915,6 +915,21 @@ def build_similar_answer_key_digest(
             continue
         scored.append((score, row, answer_key, reasons))
     scored.sort(key=lambda item: item[0], reverse=True)
+    if _identity_match_enabled(scope):
+        named_matches = [
+            item
+            for item in scored
+            if any(str(reason).startswith("name overlap:") for reason in item[3])
+        ]
+        if named_matches:
+            # A named comparable may have several unrelated workbooks under one job ID.
+            # Use the best scope/file match for that job instead of blending their rows.
+            best_by_job: dict[str, tuple[float, dict[str, Any], dict[str, Any], list[str]]] = {}
+            for item in named_matches:
+                job_id = _text(item[1].get("job_id")) or _example_identity(item[1])
+                if job_id not in best_by_job or item[0] > best_by_job[job_id][0]:
+                    best_by_job[job_id] = item
+            scored = sorted(best_by_job.values(), key=lambda item: item[0], reverse=True)
     matched: list[dict[str, Any]] = []
     candidate_window = scored[: max(max(0, int(limit or 5)) * 4, max(0, int(limit or 5)))]
     hydrated_answer_keys = _fetch_answer_keys_for_examples(data, [row for _, row, _, _ in candidate_window])

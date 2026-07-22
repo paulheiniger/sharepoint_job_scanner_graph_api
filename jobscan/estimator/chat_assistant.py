@@ -360,7 +360,8 @@ def _historical_context_preferences_from_context(context: dict[str, Any], *, tem
         if support_count < 2 and best_score < 120 and confidence < 0.58:
             continue
         copied = dict(preference)
-        copied["include"] = bool(copied.get("include", True))
+        # Historical matches are evidence, not authorization to add scope.
+        copied["include"] = False
         copied["review_required"] = True
         copied["source"] = "historical_answer_key_context"
         copied["confidence"] = confidence or copied.get("confidence") or 0.58
@@ -444,7 +445,8 @@ def _merge_historical_context_preferences(
         evidence = _merge_preference_evidence(current.get("evidence"), supplement.get("evidence"))
         if evidence:
             current["evidence"] = evidence
-        current.setdefault("source", supplement.get("source") or "historical_answer_key_context")
+        if not current.get("source"):
+            current["source"] = "chat_estimator"
         merged[matched_index] = current
     return _clean_decision_preferences(merged, template_type=template_type)
 
@@ -472,7 +474,10 @@ def _supplement_result_with_historical_context_preferences(
         "historical_context_preference_count": len(historical),
         "historical_context_preferences_applied": True,
     }
-    warning = f"Added {len(historical)} review-marked workbook decision suggestion(s) from similar historical answer keys."
+    warning = (
+        f"Added {len(historical)} review-only workbook decision suggestion(s) from similar historical answer keys; "
+        "none were auto-included."
+    )
     warnings = list(result.warnings or [])
     if warning not in warnings:
         warnings.append(warning)
@@ -1350,7 +1355,7 @@ def _historical_answer_key_decision_cues(
         cue["formula_ready"] = formula_ready
         cue["missing_inputs"] = missing_inputs
         cue["confidence"] = round(min(0.92, 0.48 + min(support_count, 5) * 0.07 + min(best_score / 1000.0, 0.16)), 2)
-        cue["recommendation"] = "include_with_review" if formula_ready else "review_only_missing_inputs"
+        cue["recommendation"] = "review_only_historical_evidence" if formula_ready else "review_only_missing_inputs"
         cue["why_suggested"] = _clean_string(
             f"Seen in {support_count} similar historical answer key"
             f"{'' if support_count == 1 else 's'}"
@@ -1362,7 +1367,7 @@ def _historical_answer_key_decision_cues(
             "decision_id": cue.get("decision_id"),
             "template_bucket": cue.get("template_bucket"),
             "workbook_row": cue.get("workbook_row"),
-            "include": bool(formula_ready),
+            "include": False,
             "proposed_values": sample_inputs,
             "confidence": cue["confidence"],
             "review_required": True,
@@ -3164,25 +3169,29 @@ def _chat_prompt_messages(
         "If estimator_context.estimator_memory_guidance is present, treat those approved correction notes as shared estimator memory: "
         "use them to avoid repeating prior bad assumptions, unless the current user message explicitly says otherwise. "
         "Estimator memory outranks AI inference but does not override current-session user instructions, manual estimator edits, or workbook formulas. "
-        "When historical/template context supports a normal choice, make the best reviewed guess instead of leaving the decision blank; "
-        "set review_required true, lower confidence, and explain the evidence if the prompt did not explicitly confirm it. "
+        "When historical/template context suggests a normal choice, return it as an excluded review recommendation unless the current "
+        "notes or current-session estimator instruction supports including that specific scope item. Explain the evidence and missing support. "
         "If estimator_context.historical_job_context has matched_profiles or aggregate_priors, use those to judge which historical jobs "
         "are relevant by project class, market segment, building type, substrate, material system, warranty, and area bucket. "
         "If estimator_context.historical_context_decision_guidance is present, it maps those historical profiles to allowed workbook "
-        "decision IDs; use it to propose likely included rows when the current scope is similar. "
+        "decision IDs; use it to evaluate candidate rows, not as authority to include them. "
         "If estimator_context.historical_template_examples has matched_examples, treat them as compact worked examples from prior "
-        "estimates: compare the current job to each example, reuse normal decision patterns when the scope matches, and cite the "
+        "estimates: compare the current job to each example, use matching decision patterns as evidence, and cite the "
         "example in evidence. If a matched example includes reference_answer_key.decisions, those are normalized historical workbook "
         "decisions from the prior estimate; use their decision_id, template_bucket, workbook_row, line_item, inputs, and calculated_outputs "
         "as evidence for similar current decisions. Do not copy example quantities blindly when the current area, thickness, warranty, or substrate differs. "
         "If estimator_context.historical_answer_key_examples has matched_answer_keys, prioritize those over generic examples: they are "
         "the most similar historical estimate answer keys found for this scope. Use match_reasons and reference_answer_key.decisions "
-        "as evidence for included rows, product/system choices, labor/logistics patterns, markup/warranty assumptions, and typical "
-        "formula inputs. Still scale quantities to the current job and mark review_required when the prompt evidence is incomplete. "
-        "If estimator_context.historical_answer_key_decision_cues is present, use it as the compact first-pass checklist of likely "
+        "as evidence for product/system choices, labor/logistics patterns, markup/warranty assumptions, and typical formula inputs. "
+        "Do not include an answer-key row without current-scope support. Scale supported quantities to the current job and mark "
+        "review_required when the prompt evidence is incomplete. "
+        "If estimator_context.historical_answer_key_decision_cues is present, use it as a compact evidence checklist of potentially relevant "
         "workbook rows. Each cue is mined from similar historical answer keys and includes support_count, examples, sample_inputs, "
-        "sample_outputs, required_inputs, formula_ready, missing_inputs, why_suggested, and suggested_preference. Prefer these cues "
-        "over generic package cooccurrence when deciding what rows to propose. For formula_ready cues, start from suggested_preference "
+        "sample_outputs, required_inputs, formula_ready, missing_inputs, why_suggested, and suggested_preference. A formula-ready historical "
+        "row is still evidence only: do not set include true unless the current notes or current-session estimator instruction supports that "
+        "specific scope item. Naming a comparable project or section does not authorize copying unrelated rows from the comparable. "
+        "When the user names a section, use only evidence relevant to that section and the described work. Prefer these cues "
+        "over generic package cooccurrence when evaluating a row. For supported formula_ready cues, start from suggested_preference "
         "and adjust quantities to current area/thickness/trips when needed. For non-formula-ready cues, do not include the row unless "
         "you can fill the missing_inputs from current notes or other trusted context; otherwise leave it review-marked and explain. "
         "Use matched profiles as evidence for normal package inclusion and scope assumptions, but do not invent values that are not "

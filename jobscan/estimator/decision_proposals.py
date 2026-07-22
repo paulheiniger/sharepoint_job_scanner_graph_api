@@ -12,6 +12,7 @@ SOURCE_PRECEDENCE = {
     "ai_scope": 10,
     "product_guidance": 20,
     "historical_default": 30,
+    "historical_answer_key_context": 32,
     "historical_companion": 35,
     "deterministic_rule": 40,
     "reference_project": 45,
@@ -1012,8 +1013,19 @@ def _chat_estimator_proposals(template_type: str, scope: dict[str, Any]) -> list
         if review_required and not reasons:
             reasons.append("Estimator chat proposal requires estimator confirmation.")
         source = str(item.get("source") or "chat_estimator")
-        if source not in {"reference_template_summary", "reference_estimate_answer_key"}:
+        if source not in {
+            "historical_answer_key_context",
+            "reference_template_summary",
+            "reference_estimate_answer_key",
+        }:
             source = "chat_estimator"
+        include = item.get("include") if item.get("include") is not None else True
+        if source == "historical_answer_key_context":
+            include = False
+            review_required = True
+            historical_reason = "Historical comparable evidence requires current-scope confirmation before inclusion."
+            if historical_reason not in reasons:
+                reasons.append(historical_reason)
         raw_evidence = item.get("evidence")
         if isinstance(raw_evidence, dict):
             evidence = raw_evidence
@@ -1036,7 +1048,7 @@ def _chat_estimator_proposals(template_type: str, scope: dict[str, Any]) -> list
                 template_type=template_type,
                 template_bucket=target["template_bucket"],
                 workbook_row=target["workbook_row"],
-                include=item.get("include") if item.get("include") is not None else True,
+                include=include,
                 proposed_values=values,
                 confidence=max(0.0, min(confidence, 0.95)),
                 review_required=review_required,
