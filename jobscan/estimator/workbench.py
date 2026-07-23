@@ -779,7 +779,6 @@ ROOFING_GENERATOR_DEFAULT_DAYS = 7.0
 ROOFING_GENERATOR_DEFAULT_UNIT_PRICE = 50.0
 ROOFING_SALES_INSPECTION_DEFAULT_TRIPS = 1.0
 ROOFING_TRUCK_EXPENSE_DEFAULT_TRIPS = 16.0
-ROOFING_TRAVEL_DEFAULT_ROUND_TRIP_MILES = 20.0
 ROOFING_SALES_INSPECTION_DEFAULT_RATE = 0.75
 ROOFING_TRUCK_EXPENSE_DEFAULT_RATE = 1.0
 ROOFING_THINNER_TEMPLATE_ROW = 33
@@ -5874,6 +5873,152 @@ def _estimated_round_trip_miles_from_scope(scope: dict[str, Any] | None) -> floa
     return round(one_way * 2.0, 1)
 
 
+def _roofing_travel_mileage_is_manual(row: dict[str, Any]) -> bool:
+    source = str(first_nonblank(row.get("mileage_source"), row.get("include_source"), row.get("proposal_source"), "")).strip().lower()
+    return positive_number(row.get("round_trip_miles"), default=0.0) > 0 and (
+        bool(row.get("manual_override")) or source in {"estimator_edit", "manual_override", "manual_entry"}
+    )
+
+
+def _scope_has_site_address(scope: dict[str, Any] | None) -> bool:
+    scope = scope or {}
+    return bool(
+        first_nonblank(
+            scope.get("destination_address"),
+            scope.get("site_address"),
+            scope.get("address"),
+            scope.get("location"),
+        )
+    )
+
+
+def _set_roofing_travel_calculation_state(
+    row: dict[str, Any],
+    *,
+    scoped_round_trip_miles: float,
+    site_address_available: bool,
+) -> None:
+    bucket = str(row.get("template_bucket") or "")
+    if bucket not in {"sales_trips", "truck_expense"}:
+        return
+
+    row_number = str(row.get("workbook_row") or "")
+    manually_excluded = _manual_include_locked(row) and not bool(row.get("include"))
+    include = not manually_excluded
+    trips = positive_number(
+        row.get("trip_count"),
+        row.get("trips"),
+        default=ROOFING_SALES_INSPECTION_DEFAULT_TRIPS if bucket == "sales_trips" else ROOFING_TRUCK_EXPENSE_DEFAULT_TRIPS,
+    )
+    rate = positive_number(
+        row.get("unit_price"),
+        row.get("rate"),
+        default=ROOFING_SALES_INSPECTION_DEFAULT_RATE if bucket == "sales_trips" else ROOFING_TRUCK_EXPENSE_DEFAULT_RATE,
+    )
+    manual_mileage = _roofing_travel_mileage_is_manual(row)
+    if scoped_round_trip_miles > 0:
+        miles = scoped_round_trip_miles
+        mileage_source = "current_job_route"
+    elif manual_mileage:
+        miles = positive_number(row.get("round_trip_miles"), default=0.0)
+        mileage_source = "manual_entry"
+    else:
+        miles = 0.0
+        mileage_source = "current_job_route_missing"
+
+    formula = calculate_roofing_travel_cost(
+        trip_count=trips,
+        round_trip_miles=miles,
+        unit_price=rate,
+        include=include,
+    )
+    missing_inputs = [] if not include or miles > 0 else ["round_trip_miles" if site_address_available else "site_address"]
+    warning = (
+        "Current job route mileage could not be calculated from the site address."
+        if site_address_available
+        else "Current job address is required to calculate round-trip mileage."
+    )
+    warnings = [
+        str(item)
+        for item in row.get("compatibility_warnings") or []
+        if "round-trip miles" not in str(item).lower()
+        and "round_trip_miles" not in str(item).lower()
+        and "current job address" not in str(item).lower()
+    ]
+    if missing_inputs:
+        warnings.append(warning)
+
+    row.update(
+        {
+            "include": include,
+            "include_source": row.get("include_source") if _manual_include_locked(row) else "business_default",
+            "trip_count": formula.get("trip_count"),
+            "round_trip_miles": formula.get("round_trip_miles"),
+            "mileage_source": mileage_source,
+            "unit_price": formula.get("unit_price"),
+            "estimated_cost": formula.get("estimated_cost"),
+            "calculated_output": formula.get("estimated_cost"),
+            "formula_model": formula.get("formula_model"),
+            "formula_source": formula.get("formula_source"),
+            "calculation_status": "needs_input" if missing_inputs else ("ready" if include else "not_included"),
+            "missing_inputs": missing_inputs,
+            "compatibility_status": "review" if missing_inputs else ("compatible" if include else "not_included"),
+            "compatibility_warnings": list(dict.fromkeys(warnings)),
+            "calculated_output_summary": _value_summary(
+                {
+                    "trips": formula.get("trip_count"),
+                    "miles": formula.get("round_trip_miles"),
+                    "cost": formula.get("estimated_cost"),
+                }
+            ),
+            "decision_values": {
+                "trip_count": formula.get("trip_count"),
+                "round_trip_miles": formula.get("round_trip_miles"),
+                "unit_price": formula.get("unit_price"),
+            },
+            "editable_decision_value": {
+                "trip_count": formula.get("trip_count"),
+                "round_trip_miles": formula.get("round_trip_miles"),
+                "unit_price": formula.get("unit_price"),
+            },
+            "workbook_cell_write_preview": [
+                {"cell": f"Estimate!B{row_number}", "field": "trip_count", "value": formula.get("trip_count")},
+                {"cell": f"Estimate!C{row_number}", "field": "round_trip_miles", "value": formula.get("round_trip_miles")},
+                {"cell": f"Estimate!E{row_number}", "field": "unit_price", "value": formula.get("unit_price")},
+                {"cell": f"Estimate!H{row_number}", "field": "estimated_cost_formula_output", "value": formula.get("estimated_cost")},
+            ],
+        }
+    )
+    review_reasons = [
+        str(item)
+        for item in row.get("proposal_review_reasons") or []
+        if "current job address" not in str(item).lower()
+        and "current job route mileage" not in str(item).lower()
+    ]
+    if missing_inputs:
+        row["proposal_review_required"] = True
+        review_reasons.append(warning)
+    elif not review_reasons:
+        row["proposal_review_required"] = False
+    row["proposal_review_reasons"] = list(dict.fromkeys(review_reasons))
+
+
+def _enforce_roofing_travel_calculation_readiness(workbench: dict[str, Any]) -> dict[str, Any]:
+    scope = workbench.get("scope") or {}
+    if _is_insulation_scope(scope):
+        return workbench
+    scoped_round_trip_miles = _estimated_round_trip_miles_from_scope(scope)
+    site_address_available = _scope_has_site_address(scope)
+    for row in workbench.get("roofing_travel_freight_template_decisions") or []:
+        if isinstance(row, dict):
+            _set_roofing_travel_calculation_state(
+                row,
+                scoped_round_trip_miles=scoped_round_trip_miles,
+                site_address_available=site_address_available,
+            )
+    return workbench
+
+
 def _estimated_spray_foam_work_days(scope: dict[str, Any] | None, dependencies: dict[str, Any] | None = None) -> float:
     scope = scope or {}
     dependencies = dependencies or {}
@@ -9234,24 +9379,24 @@ def _build_roofing_travel_freight_template_decisions(
         ),
     ]
     scoped_round_trip_miles = _estimated_round_trip_miles_from_scope(scope)
-    for row_number, bucket, label, signal_terms, default_trips, default_rate, adder_keys in travel_specs:
+    site_address_available = _scope_has_site_address(scope)
+    for row_number, bucket, label, _signal_terms, default_trips, default_rate, adder_keys in travel_specs:
         existing = existing_by_row.get(str(row_number), {})
-        signal = bool(any((adder_by_key.get(key) or {}).get("include") for key in adder_keys) or _has_positive_note_signal(notes, signal_terms))
-        if bucket == "sales_trips":
-            signal = True
-        include = bool(existing["include"]) if "include" in existing else signal
+        include = bool(existing["include"]) if "include" in existing else True
         default_amount = adder_default(*adder_keys)
         trips = safe_number(first_nonblank(existing.get("trip_count"), existing.get("trips")), 0.0)
-        miles = safe_number(first_nonblank(existing.get("round_trip_miles"), existing.get("miles")), 0.0)
+        miles = (
+            scoped_round_trip_miles
+            if scoped_round_trip_miles > 0
+            else safe_number(first_nonblank(existing.get("round_trip_miles"), existing.get("miles")), 0.0)
+            if _roofing_travel_mileage_is_manual(existing)
+            else 0.0
+        )
         rate = safe_number(first_nonblank(existing.get("unit_price"), existing.get("rate"), default_rate), default_rate)
         if trips <= 0:
             trips = default_trips if include else 0.0
-        if miles <= 0:
-            miles = scoped_round_trip_miles if include and scoped_round_trip_miles > 0 else ROOFING_TRAVEL_DEFAULT_ROUND_TRIP_MILES if include else 0.0
         if include and trips <= 0:
             trips = default_trips
-        if include and miles <= 0:
-            miles = scoped_round_trip_miles if scoped_round_trip_miles > 0 else ROOFING_TRAVEL_DEFAULT_ROUND_TRIP_MILES
         if include and rate <= 0:
             rate = default_amount / (trips * miles) if default_amount > 0 and trips > 0 and miles > 0 else default_rate
         formula = calculate_roofing_travel_cost(
@@ -9264,7 +9409,11 @@ def _build_roofing_travel_freight_template_decisions(
         if include and trips <= 0:
             warnings.append("Trip count is missing.")
         if include and miles <= 0:
-            warnings.append("Round-trip miles are missing.")
+            warnings.append(
+                "Current job route mileage could not be calculated from the site address."
+                if site_address_available
+                else "Current job address is required to calculate round-trip mileage."
+            )
         if include and rate <= 0:
             warnings.append("Mileage rate is missing.")
         rows.append(
@@ -9277,12 +9426,15 @@ def _build_roofing_travel_freight_template_decisions(
                 "resolved_template_option": label,
                 "trip_count": formula.get("trip_count"),
                 "round_trip_miles": formula.get("round_trip_miles"),
+                "mileage_source": "current_job_route" if scoped_round_trip_miles > 0 else "manual_entry" if miles > 0 else "current_job_route_missing",
                 "unit_price": formula.get("unit_price"),
                 "estimated_cost": formula.get("estimated_cost"),
                 "formula_model": formula.get("formula_model"),
                 "formula_source": formula.get("formula_source"),
                 "compatibility_status": "review" if warnings else "compatible",
                 "compatibility_warnings": warnings,
+                "calculation_status": "needs_input" if include and miles <= 0 else ("ready" if include else "not_included"),
+                "missing_inputs": ["round_trip_miles" if site_address_available else "site_address"] if include and miles <= 0 else [],
                 "notes": f"{label} uses trips x round-trip miles x rate in the workbook." + (" " + " ".join(warnings) if warnings else ""),
                 "decision_values": {
                     "trip_count": formula.get("trip_count"),
@@ -12919,6 +13071,7 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
         decision_sections=WORKBENCH_DECISION_SECTIONS,
     )
     updated = _refresh_roofing_labor_formula_outputs(updated)
+    updated = _enforce_roofing_travel_calculation_readiness(updated)
     updated = _guard_opposite_template_includes(updated)
     updated = _guard_insulation_scaffold_auto_includes(updated)
     updated = _guard_pricing_markup_auto_includes(updated)
@@ -13455,9 +13608,16 @@ def workbench_to_draft_workbook_inputs(workbench: dict[str, Any], *, recalculate
             "amount": safe_number(row.get("amount"), 0.0),
             "trip_count": safe_number(row.get("trip_count"), 0.0),
             "round_trip_miles": safe_number(row.get("round_trip_miles"), 0.0),
+            "mileage_source": row.get("mileage_source"),
             "unit": "trip" if bucket in {"sales_trips", "truck_expense"} else "unit",
             "unit_price": safe_number(row.get("unit_price"), 0.0),
             "estimated_cost": safe_number(row.get("estimated_cost"), 0.0),
+            "calculation_status": row.get("calculation_status"),
+            "missing_inputs": list(row.get("missing_inputs") or []),
+            "compatibility_status": row.get("compatibility_status"),
+            "compatibility_warnings": list(row.get("compatibility_warnings") or []),
+            "proposal_review_required": bool(row.get("proposal_review_required")),
+            "proposal_review_reasons": list(row.get("proposal_review_reasons") or []),
             "formula_model": row.get("formula_model"),
             "formula_source": row.get("formula_source"),
             "calculated_output_summary": row.get("calculated_output_summary"),

@@ -16,7 +16,7 @@ from . import ai_scope_interpreter
 from .calibration import calibrate_from_history
 from .data_loader import load_estimator_data
 from .decision_tree import evaluate_decision_tree
-from .field_notes import parse_field_notes, parsed_to_scope
+from .field_notes import parse_explicit_total_area, parse_field_notes, parsed_to_scope
 from .line_items import summarize_similar_job_buckets
 from .material_calibration import build_bucket_calibration, normalize_unit, sane_quantity_ratio
 from .materials import coating_gallons, find_current_price, historical_unit_cost
@@ -3178,10 +3178,12 @@ def _dimension_summary_value(summary: Any, key: str) -> Any:
 
 def resolve_estimated_sqft(parsed: Any, scope: dict[str, Any], overrides: dict[str, Any]) -> float | None:
     dimension_summary = getattr(parsed, "dimension_summary", {}) or scope.get("dimension_summary") or {}
+    explicit_total_sqft = parse_explicit_total_area(str(scope.get("notes") or ""))
     candidates = [
         overrides.get("estimated_sqft"),
         overrides.get("surface_area_sqft"),
         overrides.get("sqft_override"),
+        explicit_total_sqft,
         _dimension_summary_value(dimension_summary, "net_area_sqft"),
         getattr(parsed, "estimated_sqft", None),
         scope.get("estimated_sqft"),

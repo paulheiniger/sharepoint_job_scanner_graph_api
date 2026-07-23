@@ -101,6 +101,16 @@ def test_direct_sqft_and_dimensions_conflict_warns() -> None:
     assert parsed.dimension_summary["stated_sqft"] == 12000
 
 
+def test_explicit_total_roof_area_wins_over_nominal_material_dimensions() -> None:
+    parsed = parse_field_notes(
+        "Declared total roof area: 5,136 sq ft. "
+        "Install a new 2x10 wood nailer along 52 linear ft of roof edge."
+    )
+
+    assert parsed.estimated_sqft == 5136
+    assert any("differs from stated sqft" in warning for warning in parsed.review_flags)
+
+
 def test_estimator_chat_update_does_not_double_repeated_dimensions() -> None:
     summary = parse_dimensions(
         "CMU wall section is 25 ft by 40 ft.\n\n"

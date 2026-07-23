@@ -21,7 +21,7 @@ except Exception:  # pragma: no cover - optional HEIC dependency
 
 
 NOTE_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff", ".heic", ".heif"}
-NOTE_IMAGE_CACHE_VERSION = "note-image-v1"
+NOTE_IMAGE_CACHE_VERSION = "note-image-v2-annotated-takeoff"
 DEFAULT_NOTE_IMAGE_MODEL = "gpt-4o"
 DEFAULT_MAX_NOTE_IMAGES = 3
 
@@ -124,13 +124,30 @@ def note_image_messages(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for record in records
     ]
     prompt = (
-        "Read the selected handwritten or typed Spray-Tec field-note image(s). "
-        "Return strict JSON with keys: transcribed_text, normalized_estimator_notes, measurements, "
-        "customer_info, estimator_decision_cues, questions, unreadable_regions, confidence. "
-        "The normalized_estimator_notes should be ready to paste into the Estimating Assistant chat. "
-        "Preserve dimensions, quantities, R-values, roof/spray foam systems, materials, dates, locations, "
-        "access notes, warranty requests, and exclusions. Do not invent missing values; put uncertain items "
-        "in questions or unreadable_regions. Do not calculate prices.\n\n"
+        "Read the selected Spray-Tec estimating image(s). They may be handwritten notes, typed notes, sketches, "
+        "or annotated aerial/site maps where arrows, colored boundary lines, labels, and callout placement define scope. "
+        "Return strict JSON with keys: document_type, transcribed_text, normalized_estimator_notes, measurements, "
+        "customer_info, job_header, area_scopes, linear_scopes, retain_existing, scope_relationships, "
+        "area_reconciliation, estimator_decision_cues, questions, unreadable_regions, warnings, confidence. "
+        "The normalized_estimator_notes must be ready to paste into the Estimating Assistant chat.\n\n"
+        "For an annotated aerial takeoff:\n"
+        "- Read every visible label and associate each arrow or colored line with the roof edge/region it points to.\n"
+        "- area_scopes entries use: scope_id, parent_scope_id, scope_role (exclusive_area, nested_sub_scope, or deduction), "
+        "label, area_sqft, action, existing_system, proposed_assembly, "
+        "decking_replacement_sqft, thicknesses, location, evidence_text, confidence.\n"
+        "- linear_scopes entries use: item, action, linear_ft, size, location, treatment, retain_existing, "
+        "evidence_text, confidence.\n"
+        "- Preserve separate roof-area scopes. Distinguish exclusive area sections from nested sub-scopes such as "
+        "a deteriorated-decking allowance inside a larger tear-off area.\n"
+        "- Never add a nested sub-scope to the total roof area. Reconcile exclusive area sections against any declared total "
+        "in area_reconciliation and report discrepancies instead of silently changing a number.\n"
+        "- Preserve exact action language such as full removal, remove/replace decking, install over existing, remain, "
+        "seal seams, new edge metal, counter flashing, gutter, downspouts, nailer, ISO board, foam, and coating.\n"
+        "- Treat explicitly printed quantities as source evidence. Do not infer length or area from image scale.\n"
+        "- Do not confuse label colors with materials; color is only a callout/region association unless the annotation says otherwise.\n\n"
+        "For all images, preserve dimensions, quantities, R-values, roof/spray foam systems, materials, dates, locations, "
+        "access notes, warranty requests, exclusions, and items explicitly marked to remain. Do not invent missing values; "
+        "put uncertain items in questions or unreadable_regions. Do not calculate prices.\n\n"
         f"Local image metadata:\n{json.dumps(local_context, indent=2)}"
     )
     content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
@@ -151,10 +168,28 @@ def note_image_messages(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def normalize_note_image_payload(payload: dict[str, Any], *, records: list[dict[str, Any]]) -> dict[str, Any]:
+    job_header = _clean_dict(payload.get("job_header"))
+    customer_info = _clean_dict(payload.get("customer_info"))
+    area_scopes = _clean_dict_list(payload.get("area_scopes"))
+    linear_scopes = _clean_dict_list(payload.get("linear_scopes"))
+    retain_existing = _clean_list(payload.get("retain_existing"))
+    scope_relationships = _clean_list(payload.get("scope_relationships"))
+    area_reconciliation = _clean_dict(payload.get("area_reconciliation"))
+    structured_notes = annotated_scope_notes(
+        job_header=job_header,
+        customer_info=customer_info,
+        area_scopes=area_scopes,
+        linear_scopes=linear_scopes,
+        retain_existing=retain_existing,
+        scope_relationships=scope_relationships,
+        area_reconciliation=area_reconciliation,
+    )
     normalized_notes = str(payload.get("normalized_estimator_notes") or "").strip()
     transcribed = str(payload.get("transcribed_text") or "").strip()
     if not normalized_notes:
         normalized_notes = transcribed
+    if structured_notes and structured_notes not in normalized_notes:
+        normalized_notes = "\n\n".join(part for part in (normalized_notes, structured_notes) if part)
     warnings = _clean_list(payload.get("warnings"))
     conversion_warnings = [
         f"{record.get('file_name')}: {record.get('conversion_error')}"
@@ -164,8 +199,15 @@ def normalize_note_image_payload(payload: dict[str, Any], *, records: list[dict[
     return {
         "transcribed_text": transcribed,
         "normalized_estimator_notes": normalized_notes,
+        "document_type": str(payload.get("document_type") or "").strip(),
         "measurements": _clean_list(payload.get("measurements")),
-        "customer_info": payload.get("customer_info") if isinstance(payload.get("customer_info"), dict) else {},
+        "customer_info": customer_info,
+        "job_header": job_header,
+        "area_scopes": area_scopes,
+        "linear_scopes": linear_scopes,
+        "retain_existing": retain_existing,
+        "scope_relationships": scope_relationships,
+        "area_reconciliation": area_reconciliation,
         "estimator_decision_cues": _clean_list(payload.get("estimator_decision_cues")),
         "questions": _clean_list(payload.get("questions")),
         "unreadable_regions": _clean_list(payload.get("unreadable_regions")),
@@ -174,6 +216,100 @@ def normalize_note_image_payload(payload: dict[str, Any], *, records: list[dict[
         "source_images": payload.get("source_images") or [record.get("image_id") for record in records],
         "cache_hit": bool(payload.get("cache_hit")),
     }
+
+
+def annotated_scope_notes(
+    *,
+    job_header: dict[str, Any],
+    customer_info: dict[str, Any],
+    area_scopes: list[dict[str, Any]],
+    linear_scopes: list[dict[str, Any]],
+    retain_existing: list[str],
+    scope_relationships: list[str],
+    area_reconciliation: dict[str, Any],
+) -> str:
+    if not any((job_header, customer_info, area_scopes, linear_scopes, retain_existing, scope_relationships, area_reconciliation)):
+        return ""
+    lines = ["Structured scope extracted from annotated estimating image:"]
+    header = {**customer_info, **job_header}
+    header_parts = [
+        f"{label}: {header.get(key)}"
+        for key, label in (("job_name", "Job"), ("customer", "Customer"), ("site_address", "Address"))
+        if header.get(key) not in (None, "", [])
+    ]
+    if header_parts:
+        lines.append("- " + "; ".join(header_parts))
+    if header.get("declared_total_area_sqft") not in (None, "", []):
+        lines.append(f"- Declared total roof area: {header['declared_total_area_sqft']} sq ft")
+    for index, scope in enumerate(area_scopes, start=1):
+        parts = [
+            str(scope.get("label") or scope.get("scope_id") or f"Area {index}"),
+            f"scope role: {scope.get('scope_role')}" if scope.get("scope_role") else "",
+            f"parent scope: {scope.get('parent_scope_id')}" if scope.get("parent_scope_id") else "",
+            _quantity_text(scope.get("area_sqft"), "sq ft"),
+            str(scope.get("action") or ""),
+            str(scope.get("proposed_assembly") or ""),
+            _quantity_text(scope.get("decking_replacement_sqft"), "sq ft decking replacement"),
+            _dict_or_list_text(scope.get("thicknesses")),
+            str(scope.get("location") or ""),
+        ]
+        lines.append("- Area scope: " + "; ".join(part for part in parts if part))
+    for scope in linear_scopes:
+        parts = [
+            str(scope.get("action") or ""),
+            str(scope.get("item") or ""),
+            str(scope.get("size") or ""),
+            _quantity_text(scope.get("linear_ft"), "linear ft"),
+            str(scope.get("location") or ""),
+            str(scope.get("treatment") or ""),
+            "retain existing" if scope.get("retain_existing") is True else "",
+        ]
+        if any(parts):
+            lines.append("- Linear/detail scope: " + "; ".join(part for part in parts if part))
+    for item in retain_existing:
+        lines.append(f"- Existing item to remain: {item}")
+    for item in scope_relationships:
+        lines.append(f"- Scope relationship: {item}")
+    if area_reconciliation:
+        reconciliation = "; ".join(
+            f"{str(key).replace('_', ' ')}: {_dict_or_list_text(value)}"
+            for key, value in area_reconciliation.items()
+            if value not in (None, "", [])
+        )
+        if reconciliation:
+            lines.append("- Area reconciliation: " + reconciliation)
+    return "\n".join(lines)
+
+
+def _clean_dict(value: Any) -> dict[str, Any]:
+    return {str(key): item for key, item in value.items() if item not in (None, "", [])} if isinstance(value, dict) else {}
+
+
+def _clean_dict_list(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for item in value:
+        cleaned = _clean_dict(item)
+        if cleaned:
+            rows.append(cleaned)
+    return rows
+
+
+def _quantity_text(value: Any, unit: str) -> str:
+    if value in (None, ""):
+        return ""
+    return f"{value} {unit}"
+
+
+def _dict_or_list_text(value: Any) -> str:
+    if value in (None, "", []):
+        return ""
+    if isinstance(value, dict):
+        return ", ".join(f"{key}: {item}" for key, item in value.items())
+    if isinstance(value, (list, tuple, set)):
+        return ", ".join(str(item) for item in value)
+    return str(value)
 
 
 def convert_note_image_to_jpeg(source: Path, target: Path) -> str:

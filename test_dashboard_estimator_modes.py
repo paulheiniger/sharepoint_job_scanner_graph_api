@@ -91,6 +91,27 @@ def test_dashboard_imports_safely() -> None:
     assert hasattr(app, "operations_dashboard_page")
 
 
+def test_annotated_estimating_aerial_defaults_to_scope_reader() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    rows = app.estimator_upload_default_rows(
+        [
+            {
+                "image_id": "img-1",
+                "content_hash": "hash-1",
+                "file_name": "Aerial Map - For Estimating AI.png",
+                "category": "wide_overview",
+                "signals": [],
+                "quality_flags": [],
+                "selected": True,
+            }
+        ]
+    )
+
+    assert rows[0]["read_as_notes"] is True
+    assert rows[0]["use_as_site_photo"] is False
+
+
 def test_estimator_page_loads_workbook_data_only_when_building() -> None:
     app = importlib.import_module("dashboard.app")
     source = inspect.getsource(app.estimator_prototype_page)

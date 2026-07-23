@@ -769,9 +769,11 @@ def test_roofing_unchecked_rows_still_show_available_unit_prices() -> None:
     assert caulk["unit_price"] == 12
     assert fabric["include"] is False
     assert fabric["unit_price"] == 1
-    assert truck["include"] is False
+    assert truck["include"] is True
     assert truck["unit_price"] == 1.0
     assert truck["estimated_cost"] == 0
+    assert truck["calculation_status"] == "needs_input"
+    assert truck["missing_inputs"] == ["site_address"]
 
 
 def test_roofing_chat_preferences_fill_rows_without_exact_workbook_metadata() -> None:
@@ -816,8 +818,11 @@ def test_roofing_chat_preferences_fill_rows_without_exact_workbook_metadata() ->
     assert coating["estimated_cost"] > 0
     assert truck["include"] is True
     assert truck["trip_count"] == 1
-    assert truck["round_trip_miles"] == 50
-    assert truck["estimated_cost"] == 37.5
+    assert truck["round_trip_miles"] == 0
+    assert truck["estimated_cost"] == 0
+    assert truck["calculation_status"] == "needs_input"
+    assert truck["missing_inputs"] == ["site_address"]
+    assert any("Current job address" in warning for warning in truck["compatibility_warnings"])
     assert loading["include"] is True
     assert loading["workbook_row"] == "136"
     assert loading["hours_per_day"] == 0.25
@@ -1990,6 +1995,82 @@ def test_roofing_sales_and_truck_rows_use_scoped_route_mileage(monkeypatch) -> N
 
     assert travel_rows["sales_trips"]["round_trip_miles"] == 172.8
     assert travel_rows["truck_expense"]["round_trip_miles"] == 172.8
+    assert travel_rows["sales_trips"]["mileage_source"] == "current_job_route"
+    assert travel_rows["truck_expense"]["calculation_status"] == "ready"
+
+
+def test_roofing_travel_rows_ignore_comparable_mileage_until_current_address_is_available() -> None:
+    recommendation = roofing_recommendation()
+    workbench = build_estimating_workbench(
+        recommendation,
+        EstimatorData(),
+        scope_override={
+            "estimated_sqft": 1000,
+            "raw_input_notes": "Include the normal sales trips and truck expense.",
+            "estimator_chat": {
+                "source": "ai_chat",
+                "confidence": 0.8,
+                "workbook_decision_preferences": [
+                    {
+                        "template_bucket": "sales_trips",
+                        "include": True,
+                        "proposed_values": {"trip_count": 2, "round_trip_miles": 70, "unit_price": 0.75},
+                    },
+                    {
+                        "template_bucket": "truck_expense",
+                        "include": True,
+                        "proposed_values": {"trip_count": 2, "round_trip_miles": 75, "unit_price": 1.25},
+                    },
+                ],
+            },
+        },
+    )
+    rows = {
+        row["template_bucket"]: row
+        for row in workbench["roofing_travel_freight_template_decisions"]
+        if row["template_bucket"] in {"sales_trips", "truck_expense"}
+    }
+
+    assert rows["sales_trips"]["include"] is True
+    assert rows["truck_expense"]["include"] is True
+    assert rows["sales_trips"]["trip_count"] == 2
+    assert rows["truck_expense"]["trip_count"] == 2
+    assert rows["sales_trips"]["unit_price"] == 0.75
+    assert rows["truck_expense"]["unit_price"] == 1.25
+    assert rows["sales_trips"]["round_trip_miles"] == 0
+    assert rows["truck_expense"]["round_trip_miles"] == 0
+    assert rows["sales_trips"]["estimated_cost"] == 0
+    assert rows["truck_expense"]["estimated_cost"] == 0
+    assert rows["sales_trips"]["mileage_source"] == "current_job_route_missing"
+    assert rows["truck_expense"]["calculation_status"] == "needs_input"
+    assert rows["truck_expense"]["missing_inputs"] == ["site_address"]
+    draft = workbench_to_draft_workbook_inputs(workbench)
+    draft_truck = next(
+        row
+        for row in draft["workbook_decisions"]
+        if row.get("template_bucket") == "truck_expense"
+    )
+    assert draft_truck["calculation_status"] == "needs_input"
+    assert draft_truck["missing_inputs"] == ["site_address"]
+    assert draft_truck["mileage_source"] == "current_job_route_missing"
+
+
+def test_roofing_travel_rows_distinguish_missing_address_from_failed_route_lookup(monkeypatch) -> None:
+    monkeypatch.setattr(workbench_module, "estimate_one_way_miles", lambda scope: None)
+    recommendation = roofing_recommendation()
+    recommendation.parsed_fields["site_address"] = "100 Example Street, Lexington, KY"
+
+    workbench = build_estimating_workbench(recommendation, EstimatorData())
+    truck = next(
+        row
+        for row in workbench["roofing_travel_freight_template_decisions"]
+        if row["template_bucket"] == "truck_expense"
+    )
+
+    assert truck["include"] is True
+    assert truck["round_trip_miles"] == 0
+    assert truck["missing_inputs"] == ["round_trip_miles"]
+    assert any("could not be calculated" in warning for warning in truck["compatibility_warnings"])
 
 
 def test_insulation_foam_labor_uses_foam_set_driver_evidence() -> None:
@@ -2404,10 +2485,10 @@ def test_pricing_markup_recalculates_from_estimator_overrides() -> None:
     totals = summarize_workbench_totals(recalculated)
     draft_inputs = workbench_to_draft_workbook_inputs(recalculated)
 
-    assert totals["pre_markup_total"] == 177
-    assert totals["overhead_amount"] == 17.7
-    assert totals["profit_amount"] == 38.94
-    assert totals["draft_total"] == 233.64
+    assert totals["pre_markup_total"] == 162
+    assert totals["overhead_amount"] == 16.2
+    assert totals["profit_amount"] == 35.64
+    assert totals["draft_total"] == 213.84
     assert draft_inputs["pricing"]["overhead_pct"] == 10
     assert draft_inputs["pricing"]["profit_pct"] == 20
 
@@ -2652,7 +2733,9 @@ def test_roofing_workbench_defaults_one_sales_inspection_trip() -> None:
 
     assert trips["include"] is True
     assert trips["trip_count"] == 1
-    assert trips["estimated_cost"] == 15
+    assert trips["round_trip_miles"] == 0
+    assert trips["estimated_cost"] == 0
+    assert trips["calculation_status"] == "needs_input"
 
 
 def test_roofing_truck_expense_recalculates_when_unit_price_changes() -> None:
@@ -2665,6 +2748,7 @@ def test_roofing_truck_expense_recalculates_when_unit_price_changes() -> None:
     truck.update(
         {
             "include": True,
+            "manual_override": True,
             "trip_count": 2,
             "round_trip_miles": 100,
             "unit_price": 1.0,

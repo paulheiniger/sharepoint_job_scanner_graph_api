@@ -21178,6 +21178,10 @@ def render_estimator_photo_upload_panel(*, notes: str, estimate_type: str) -> di
 
 
 NOTE_IMAGE_NAME_HINTS = (
+    "annotated",
+    "estimating",
+    "estimate map",
+    "markup",
     "note",
     "notes",
     "field",
@@ -21223,13 +21227,14 @@ def render_estimator_note_image_upload(*, chat_key: str, estimate_type: str) -> 
     except (TypeError, ValueError):
         max_note_images = 3
     uploaded_files = st.file_uploader(
-        "Upload notes or site photos",
+        "Upload annotated takeoffs, notes, or site photos",
         type=["jpg", "jpeg", "png", "webp", "bmp", "tif", "tiff", "heic", "heif"],
         accept_multiple_files=True,
         key=f"estimator_note_image_uploads_{chat_key}",
         help=(
-            "Mark handwritten/printed pages as notes and job-condition photos as site photos. "
-            "Only note-marked images are parsed automatically; site photos are classified locally unless you run photo analysis separately."
+            "Mark annotated aerials, sketches, and handwritten/printed pages as scope/notes. "
+            "Mark unannotated job-condition photos as site photos. Scope/note images are read automatically; "
+            "site photos are classified locally unless you run photo analysis separately."
         ),
     )
     if not uploaded_files:
@@ -21257,8 +21262,8 @@ def render_estimator_note_image_upload(*, chat_key: str, estimate_type: str) -> 
         key=f"estimator_note_site_image_review_{chat_key}_{upload_key}",
         column_config={
             "read_as_notes": st.column_config.CheckboxColumn(
-                "Read as notes",
-                help="These images are sent to the note-reading model, capped by the note image limit.",
+                "Read as scope / notes",
+                help="Annotated aerials, sketches, takeoffs, and note pages are sent to the scope-reading model.",
             ),
             "use_as_site_photo": st.column_config.CheckboxColumn(
                 "Use as site photo",
@@ -21386,6 +21391,17 @@ def render_estimator_note_image_upload(*, chat_key: str, estimate_type: str) -> 
                 st.write("Questions:", "; ".join(str(item) for item in questions))
             if unreadable:
                 st.write("Unreadable:", "; ".join(str(item) for item in unreadable))
+            area_scopes = [row for row in result.get("area_scopes") or [] if isinstance(row, dict)]
+            linear_scopes = [row for row in result.get("linear_scopes") or [] if isinstance(row, dict)]
+            if area_scopes:
+                st.caption("Annotated area scopes")
+                st.dataframe(pd.DataFrame(area_scopes), use_container_width=True, hide_index=True)
+            if linear_scopes:
+                st.caption("Annotated linear/detail scopes")
+                st.dataframe(pd.DataFrame(linear_scopes), use_container_width=True, hide_index=True)
+            if result.get("area_reconciliation"):
+                st.caption("Area reconciliation")
+                st.json(result.get("area_reconciliation"))
     for warning in result.get("warnings") or []:
         st.warning(str(warning))
     return result
@@ -21462,7 +21478,13 @@ def render_estimator_chat_draft_panel(
     image_message_applied_key = f"estimator_note_image_chat_applied_{chat_key}_{extracted_note_key}"
     image_message = ""
     if extracted_note_text and not st.session_state.get(image_message_applied_key):
-        image_message = "Notes extracted from uploaded note image(s):\n" + extracted_note_text
+        document_type = str((note_image_result or {}).get("document_type") or "")
+        message_label = (
+            "Scope evidence extracted from uploaded annotated estimating image(s):"
+            if "annotated" in document_type or "takeoff" in document_type
+            else "Notes extracted from uploaded note image(s):"
+        )
+        image_message = message_label + "\n" + extracted_note_text
     photo_message = ""
     photo_context_key = ""
     if uploaded_photo_context:

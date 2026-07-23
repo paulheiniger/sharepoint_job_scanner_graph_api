@@ -71,6 +71,25 @@ def parse_field_sqft(text: str) -> float | None:
     return None
 
 
+def parse_explicit_total_area(text: str) -> float | None:
+    normalized = clean_text(text).replace(",", "")
+    patterns = (
+        r"\b(?:declared\s+)?total\s+(?:roof\s+)?area\s*[:=-]?\s*(?P<area>\d+(?:\.\d+)?)\s*(?P<k>k)?\s*(?:sq\.?\s*ft|sqft|sf|square\s*feet)\b",
+        r"\b(?P<area>\d+(?:\.\d+)?)\s*(?P<k>k)?\s*(?:sq\.?\s*ft|sqft|sf|square\s*feet)\s+(?:roof\s+)?total\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, normalized, re.I)
+        if not match:
+            continue
+        area = to_float(match.group("area"))
+        if area is None:
+            continue
+        if match.group("k") and area < 1000:
+            area *= 1000
+        return area
+    return None
+
+
 def parse_explicit_net_area(text: str, *, preferred_context: str = "") -> float | None:
     normalized = clean_text(text).replace(",", "")
     context = preferred_context.strip().lower()
@@ -847,6 +866,7 @@ def parse_field_notes(field_input: FieldNotesInput | str, overrides: dict[str, A
         dimension_dict["openings"] = insulation_scope.get("openings") or []
     override_sqft = optional_positive_float(field_input.estimated_sqft) or optional_positive_float(overrides.get("surface_area_sqft"))
     stated_sqft = to_float(dimension_dict.get("stated_sqft")) or parse_field_sqft(notes)
+    explicit_total_sqft = parse_explicit_total_area(notes)
     dimension_net_sqft = None
     if dimension_summary.included_areas or dimension_summary.deducted_areas:
         dimension_net_sqft = to_float(dimension_dict.get("net_area_sqft"))
@@ -855,6 +875,8 @@ def parse_field_notes(field_input: FieldNotesInput | str, overrides: dict[str, A
         sqft = override_sqft
     elif insulation_sqft:
         sqft = insulation_sqft
+    elif explicit_total_sqft:
+        sqft = explicit_total_sqft
     elif dimension_net_sqft:
         sqft = dimension_net_sqft
     elif stated_sqft:
