@@ -10,6 +10,8 @@ from uuid import uuid4
 
 import pandas as pd
 
+from jobscan.estimate_routing import is_insulation_quote, strip_negated_insulation_scope
+
 from . import ai_scope_interpreter
 from .calibration import calibrate_from_history
 from .data_loader import load_estimator_data
@@ -627,7 +629,8 @@ def scope_template_type(scope: dict[str, Any]) -> str:
     explicit_division = _normalized_text(scope.get("division"))
     if explicit_template == "insulation" or explicit_division == "insulation":
         return "insulation"
-    strong_insulation_signal = any(
+    insulation_quote = is_insulation_quote(text)
+    strong_insulation_signal = insulation_quote and any(
         term in text or term in project_type
         for term in (
             "spray foam",
@@ -645,7 +648,9 @@ def scope_template_type(scope: dict[str, Any]) -> str:
     )
     if is_roof_coating_scope(scope) and not strong_insulation_signal and not bool(scope.get("foam_required") or scope.get("foam_thickness_inches")):
         return "roofing"
-    if any(term in text or term in project_type for term in INSULATION_SCOPE_SIGNALS) or bool(scope.get("foam_required") or scope.get("foam_thickness_inches")):
+    if (
+        insulation_quote and any(term in text or term in project_type for term in INSULATION_SCOPE_SIGNALS)
+    ) or bool(scope.get("foam_required") or scope.get("foam_thickness_inches")):
         return "insulation"
     if is_roof_coating_scope(scope) or any(term in text or term in project_type for term in ROOFING_SCOPE_SIGNALS):
         return "roofing"
@@ -1873,7 +1878,10 @@ def _build_work_package_decisions(scope: dict[str, Any], decision: dict[str, Any
     coating_required = bool(scope.get("coating_required") or coating_type or "coating" in text)
     metal_context = substrate == "metal" or "metal roof" in text or "standing seam" in text or "r panel" in text
     flat_membrane_context = any(term in text for term in ("flat roof", "membrane", "tpo", "epdm", "modified bitumen", "mod bit"))
-    foam_context = bool(scope.get("foam_required") or scope.get("foam_thickness_inches")) or any(term in text for term in ("foam", "spf", "polyurethane foam"))
+    foam_text = strip_negated_insulation_scope(text)
+    foam_context = bool(scope.get("foam_required") or scope.get("foam_thickness_inches")) or any(
+        term in foam_text for term in ("foam", "spf", "polyurethane foam")
+    )
 
     packages: dict[str, WorkPackageDecision] = {}
     packages["coating"] = WorkPackageDecision(
@@ -1984,15 +1992,27 @@ def _build_work_package_decisions(scope: dict[str, Any], decision: dict[str, Any
         bool(explicit_fastener and not fastener_applies),
     )
 
-    caulk_applies: bool | str = "review" if _caulk_detail_needed(scope) else False
+    explicit_caulk = bool(
+        re.search(
+            r"\b(?:apply|install|include|add|use|tool)\b(?:\W+\w+){0,8}\W+\b(?:caulk|sealant)\b",
+            text,
+        )
+        or re.search(r"\b(?:crack|cracks)\b(?:\W+\w+){0,8}\W+\b(?:caulk|sealant|seal)\b", text)
+    )
+    caulk_needed = _caulk_detail_needed(scope)
+    caulk_applies: bool | str = True if explicit_caulk else "review" if caulk_needed else False
     packages["caulk_detail"] = WorkPackageDecision(
         "caulk_detail",
         caulk_applies,
-        0.62 if caulk_applies else 0.5,
-        "Details/penetrations/drains indicate a caulk/detail allowance should be reviewed." if caulk_applies else "No detail allowance trigger found.",
+        0.9 if explicit_caulk else 0.62 if caulk_applies else 0.5,
+        "Current notes explicitly require caulk/sealant work."
+        if explicit_caulk
+        else "Details/penetrations/drains indicate a caulk/detail allowance should be reviewed."
+        if caulk_applies
+        else "No detail allowance trigger found.",
         "detail_density",
-        "spot_area" if caulk_applies else "none",
-        bool(caulk_applies),
+        "spot_area" if caulk_applies is True else "unknown" if caulk_applies == "review" else "none",
+        caulk_applies is not True,
     )
 
     prep_applies = coating_required or any(term in text for term in ("power wash", "powerwash", "wash", "prep"))

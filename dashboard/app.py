@@ -42,6 +42,11 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 
 from jobscan.env import load_project_env
+from jobscan.estimate_routing import (
+    has_explicit_insulation_exclusion,
+    is_insulation_quote,
+    strip_negated_insulation_scope,
+)
 
 load_project_env()
 
@@ -1442,6 +1447,19 @@ def protect_scope_template_type_with_notes(scope: dict[str, Any], notes: str | N
         return scope_with_template_type(resolved_scope, note_template_type)
     if current_template_type == note_template_type:
         return resolved_scope
+    if (
+        current_template_type == "insulation"
+        and note_template_type != "insulation"
+        and has_explicit_insulation_exclusion(notes or "")
+        and not is_insulation_quote(notes or "")
+    ):
+        corrected_scope = scope_with_template_type(resolved_scope, note_template_type)
+        corrected_scope["project_type"] = {
+            "roofing": "roofing estimate",
+            "repair": "repair estimate",
+            "flooring": "flooring estimate",
+        }.get(note_template_type, note_template_type)
+        return corrected_scope
     # Treat explicit non-roof notes as authoritative over stale chat/reference state.
     if note_template_type in {"insulation", "flooring"}:
         return scope_with_template_type(resolved_scope, note_template_type)
@@ -19767,7 +19785,9 @@ def classify_estimate_type_from_notes(notes: str | None) -> str:
         return ESTIMATE_TYPE_RESTORATION
     repair_score = keyword_score(text_value, REPAIR_MODE_KEYWORDS)
     restoration_score = keyword_score(text_value, RESTORATION_MODE_KEYWORDS)
-    insulation_score = keyword_score(text_value, INSULATION_MODE_KEYWORDS)
+    insulation_text = strip_negated_insulation_scope(text_value)
+    insulation_quote = is_insulation_quote(text_value)
+    insulation_score = keyword_score(insulation_text, INSULATION_MODE_KEYWORDS) if insulation_quote else 0
     flooring_score = keyword_score(text_value, FLOORING_MODE_KEYWORDS)
     if re.search(r"\b\d+(?:,\d{3})?\s*(?:sqft|sq ft|sf|square feet)\b", text_value):
         restoration_score += 2
@@ -19775,7 +19795,9 @@ def classify_estimate_type_from_notes(notes: str | None) -> str:
         restoration_score += 2
     if any(term in text_value for term in ("pipe boot", "curb leak", "service call", "emergency", "small repair", "patch")):
         repair_score += 3
-    if any(term in text_value for term in ("walls", "attic", "crawlspace", "r-value", "dc315", "thermal barrier")):
+    if insulation_quote and any(
+        term in insulation_text for term in ("walls", "attic", "crawlspace", "r-value", "dc315", "thermal barrier")
+    ):
         insulation_score += 3
     if any(term in text_value for term in ("polyaspartic", "epoxy floor", "floor system", "concrete floor", "flake broadcast")):
         flooring_score += 3

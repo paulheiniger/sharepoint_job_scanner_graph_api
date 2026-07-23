@@ -10,6 +10,7 @@ from jobscan.estimator.field_estimator import build_labor_plan, build_material_p
 from jobscan.estimator.field_notes import parse_field_notes, parse_field_sqft
 from jobscan.estimator.schemas import EstimatorAssumptions, EstimatorData
 from jobscan.estimator.workbench import build_estimating_workbench
+from jobscan.estimate_routing import has_explicit_insulation_exclusion, is_insulation_quote
 
 
 TEST_CASE_A_NOTE = (
@@ -1342,6 +1343,63 @@ def test_insulation_email_routes_and_parses_building_dimensions() -> None:
     assert recommendation.estimate_status == "READY_TO_ESTIMATE"
     assert recommendation.estimate_low is None
     assert not recommendation.material_plan or all(row.get("category") != "coating" for row in recommendation.material_plan)
+
+
+def test_wall_coating_with_explicit_foam_exclusion_does_not_build_insulation_scope() -> None:
+    notes = (
+        "Similar to Estimate CMU Wall Repair - Preston Animal Hospital (Sec. 1 Rear Wall). "
+        "Pressure wash and scrape the masonry block. The section is 25' x 40'. "
+        "Apply acrylic coating over the full surface and Dynomic urethane caulk. "
+        "This project doesn't include foam."
+    )
+
+    recommendation = estimate_from_field_notes(
+        notes,
+        {"disable_ai_scope_interpreter": True},
+        data=EstimatorData(),
+    )
+
+    assert has_explicit_insulation_exclusion(notes) is True
+    assert is_insulation_quote(notes) is False
+    assert recommendation.parsed_fields["project_type"] == "wall coating"
+    assert recommendation.parsed_fields["division"] == "WALLS"
+    assert recommendation.parsed_fields["coating_type"] == "acrylic"
+    assert recommendation.parsed_fields["estimated_sqft"] == 1000
+    assert all(row.get("category") not in {"foam", "thermal_barrier"} for row in recommendation.material_plan)
+
+
+def test_cmu_wall_repair_scope_preserves_explicit_acrylic_and_sealant_decisions() -> None:
+    notes = (
+        "Similar to Estimate CMU Wall Repair - Preston Animal Hospital (Sec. 1 Rear Wall). "
+        "Pressure wash and scrape the masonry block. Any crack in the mortar joints or masonry block, "
+        "apply Dynomic sealant. Each block is 8in by 16in, total section is 25'x40'. "
+        "Include a boom lift. Labor rate is $45/hr per tech for 2 techs 1.2 burden rate. "
+        "Finish with Ancrylic coating over the entire surface."
+    )
+
+    recommendation = estimate_from_field_notes(
+        notes,
+        {"disable_ai_scope_interpreter": True},
+        data=EstimatorData(),
+    )
+    packages = recommendation.historical_calibration["work_package_decisions"]
+
+    assert recommendation.parsed_fields["division"] == "WALLS"
+    assert recommendation.parsed_fields["project_type"] == "wall repair"
+    assert recommendation.parsed_fields["substrate"] == "cmu"
+    assert recommendation.parsed_fields["estimated_sqft"] == 1000
+    assert recommendation.parsed_fields["coating_type"] == "acrylic"
+    assert packages["coating"]["applies"] is True
+    assert packages["caulk_detail"]["applies"] is True
+    assert packages["foam"]["applies"] is False
+    assert packages["fastener_treatment"]["applies"] is False
+
+
+def test_insulation_exclusion_does_not_hide_separately_scoped_foam_work() -> None:
+    notes = "No foam on the walls. Apply closed-cell spray foam to the ceiling at R-30."
+
+    assert has_explicit_insulation_exclusion(notes) is True
+    assert is_insulation_quote(notes) is True
 
 
 def test_insulation_email_with_r_target_and_assumed_rollup_height_computes_area_and_thickness() -> None:

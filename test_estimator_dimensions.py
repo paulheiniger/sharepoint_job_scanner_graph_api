@@ -101,6 +101,24 @@ def test_direct_sqft_and_dimensions_conflict_warns() -> None:
     assert parsed.dimension_summary["stated_sqft"] == 12000
 
 
+def test_estimator_chat_update_does_not_double_repeated_dimensions() -> None:
+    summary = parse_dimensions(
+        "CMU wall section is 25 ft by 40 ft.\n\n"
+        "Estimator chat update: Apply acrylic coating to the 25 ft by 40 ft CMU wall section."
+    )
+
+    assert summary.gross_area_sqft == 1000
+    assert len(summary.included_areas) == 1
+    assert any("repeated" in warning for warning in summary.warnings)
+
+
+def test_equal_sized_sections_are_not_deduplicated_without_chat_update_marker() -> None:
+    summary = parse_dimensions("North wall is 25 ft by 40 ft. South wall is 25 ft by 40 ft.")
+
+    assert summary.gross_area_sqft == 2000
+    assert len(summary.included_areas) == 2
+
+
 def test_ui_override_takes_priority_over_dimension_math() -> None:
     recommendation = estimate_from_field_notes(
         "Main roof is 120 ft by 100 ft. Silicone coating Louisville KY.",

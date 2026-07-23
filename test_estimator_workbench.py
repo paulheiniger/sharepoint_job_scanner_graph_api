@@ -1360,10 +1360,9 @@ def test_roofing_companion_relationships_suggest_primer_and_detail_rows() -> Non
     assert primer["include"] is False
     assert primer["estimated_cost"] == 0
     assert primer["proposal_source"] == "historical_companion"
-    assert any("no calculable cost" in warning for warning in primer["compatibility_warnings"])
     assert primer["proposal_evidence"]["relationship_package_cooccurrence"]
     assert primer["proposal_review_required"] is True
-    assert any("Historical companion suggestion" in warning for warning in primer["compatibility_warnings"])
+    assert any("Historical companion suggestion" in reason for reason in primer["proposal_review_reasons"])
     assert sealant["include"] is True
     assert sealant["estimated_cost"] > 0
     seams = next(row for row in workbench["roofing_detail_quantity_template_decisions"] if row["template_bucket"] == "seams_misc")
@@ -1415,7 +1414,131 @@ def test_fabric_companion_suggests_seam_detail_labor_review_marked() -> None:
     assert seam_labor["proposal_source"] == "historical_companion"
     assert seam_labor["proposal_review_required"] is True
     assert "fabric" in seam_labor["proposal_review_reasons"][0]
-    assert any("no calculable cost" in warning for warning in seam_labor["compatibility_warnings"])
+
+
+def test_cmu_wall_repair_scope_beats_historical_roofing_companions() -> None:
+    notes = (
+        "Similar to Estimate CMU Wall Repair - Preston Animal Hospital (Sec. 1 Rear Wall). "
+        "Pressure wash and scrape the masonry block. Any crack in the mortar joints or masonry block, "
+        "apply Dynomic sealant. Each block is 8in by 16in, total section is 25'x40'. "
+        "Include a boom lift. Labor rate is $45/hr per tech for 2 techs 1.2 burden rate. "
+        "Finish with Ancrylic coating over the entire surface."
+    )
+    data = roofing_companion_data()
+    recommendation = estimate_from_field_notes(
+        notes,
+        {"disable_ai_scope_interpreter": True},
+        data=data,
+    )
+
+    workbench = build_estimating_workbench(recommendation, data)
+
+    assert workbench["scope"]["coating_type"] == "acrylic"
+    assert workbench["scope"]["net_sqft"] == 1000
+    board_rows = workbench["roofing_board_fastener_template_decisions"]
+    assert all(
+        row["include"] is False
+        for row in board_rows
+        if row["template_bucket"] in {"board_stock", "fasteners", "plates"}
+    )
+    seam_labor = next(
+        row
+        for row in workbench["roofing_labor_template_decisions"]
+        if row["template_bucket"] == "labor_seam_sealer"
+    )
+    assert seam_labor["include"] is False
+    caulk = next(
+        row
+        for row in workbench["roofing_detail_template_decisions"]
+        if row["template_bucket"] == "caulk_detail"
+    )
+    assert caulk["include"] is True
+    lift = next(
+        row
+        for row in workbench["roofing_equipment_template_decisions"]
+        if row["template_bucket"] == "lift"
+    )
+    assert lift["include"] is True
+    assert lift["compatibility_status"] == "review"
+    included_labor = [row for row in workbench["roofing_labor_template_decisions"] if row["include"]]
+    assert included_labor
+    assert all(row["crew_size"] == 2 for row in included_labor)
+    assert all(row["hourly_rate"] == 54 for row in included_labor)
+    assert all(row["hourly_rate_source"] == "explicit_note" for row in included_labor)
+
+
+def test_named_comparable_scales_materials_then_drives_labor_from_scaled_quantity() -> None:
+    answer_key = {
+        "template_type": "roofing",
+        "job_context": {"area_sqft": 2000},
+        "decisions": [
+            {
+                "decision_id": "roofing_caulk_sealant_row_43",
+                "section": "roofing_detail_template_decisions",
+                "template_bucket": "caulk_detail",
+                "workbook_row": "43",
+                "include": True,
+                "inputs": {
+                    "estimated_units": 24,
+                    "unit_price": 12.5,
+                    "resolved_template_option": "Urethane Sausage",
+                },
+            },
+            {
+                "decision_id": "roofing_labor_caulk_row_126",
+                "section": "roofing_labor_template_decisions",
+                "template_bucket": "labor_caulk",
+                "workbook_row": "126",
+                "include": True,
+                "inputs": {"days": 1, "crew_size": 3, "daily_rate": 1044, "total_hours": 30},
+            },
+        ],
+    }
+    data = EstimatorData(
+        template_examples=pd.DataFrame(
+            [
+                {
+                    "document_id": "doc-1",
+                    "job_id": "job-1",
+                    "source_file": "Estimate CMU Wall Repair - Preston Animal Hospital (Sec. 1 Rear Wall).xlsx",
+                    "template_type": "roofing",
+                    "answer_key_json": json.dumps(answer_key),
+                }
+            ]
+        )
+    )
+    notes = (
+        "Similar to Estimate CMU Wall Repair - Preston Animal Hospital (Sec. 1 Rear Wall). "
+        "Apply Dynomic sealant to cracks over a 25' x 40' section. "
+        "Labor rate is $45/hr per tech for 2 techs 1.2 burden rate. Finish with acrylic coating."
+    )
+    recommendation = estimate_from_field_notes(
+        notes,
+        {"disable_ai_scope_interpreter": True},
+        data=data,
+    )
+
+    workbench = build_estimating_workbench(recommendation, data)
+
+    caulk = next(
+        row
+        for row in workbench["roofing_detail_template_decisions"]
+        if row["template_bucket"] == "caulk_detail" and row["include"]
+    )
+    assert caulk["estimated_units"] == 12
+    assert caulk["unit_price"] == 12.5
+    assert caulk["estimated_cost"] == 150
+    caulk_labor = next(
+        row
+        for row in workbench["roofing_labor_template_decisions"]
+        if row["template_bucket"] == "labor_caulk"
+    )
+    assert caulk_labor["include"] is True
+    assert caulk_labor["labor_driver_quantity"] == 12
+    assert caulk_labor["historical_driver_rate"] == 1.25
+    assert caulk_labor["total_hours"] == 15
+    assert caulk_labor["hourly_rate"] == 54
+    assert caulk_labor["estimated_cost"] == 810
 
 
 def test_open_seams_do_not_auto_check_fabric_without_quantity_or_explicit_fabric() -> None:

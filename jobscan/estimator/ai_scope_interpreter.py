@@ -6,6 +6,8 @@ import os
 import re
 from typing import Any, Callable
 
+from jobscan.estimate_routing import has_explicit_insulation_exclusion, is_insulation_quote
+
 from .dimensions import parse_dimensions
 from .rules import first_nonblank, to_float
 
@@ -1190,6 +1192,7 @@ def merge_ai_scope_with_deterministic(
     final_scope = dict(deterministic_scope)
     merge_decisions: list[dict[str, Any]] = []
     ai_review_flags = list(ai_scope.get("review_flags") or [])
+    insulation_explicitly_excluded = has_explicit_insulation_exclusion(notes) and not is_insulation_quote(notes)
 
     def set_field(field: str, value: Any, reason: str) -> None:
         old = final_scope.get(field)
@@ -1228,6 +1231,17 @@ def merge_ai_scope_with_deterministic(
 
     for field in ("project_type", "division", "building_type", "substrate", "coating_type", "estimate_mode"):
         if ai_scope.get(field):
+            if insulation_explicitly_excluded and is_insulation_quote(str(ai_scope[field])):
+                merge_decisions.append(
+                    {
+                        "field": field,
+                        "from": ai_scope[field],
+                        "to": final_scope.get(field),
+                        "decision": "rejected",
+                        "reason": "Explicit notes exclude insulation/foam scope.",
+                    }
+                )
+                continue
             set_field(field, ai_scope[field], f"AI interpreted {field}.")
     for field in ("coating_required", "coating_path_review"):
         if ai_scope.get(field):
@@ -1323,12 +1337,26 @@ def merge_ai_scope_with_deterministic(
             final_scope[field] = ai_scope[field]
 
     if isinstance(ai_scope.get("scope_packages"), dict):
-        final_scope["ai_scope_packages"] = ai_scope["scope_packages"]
+        ai_scope_packages = dict(ai_scope["scope_packages"])
+        if insulation_explicitly_excluded:
+            for package_name in list(ai_scope_packages):
+                if any(term in str(package_name).lower() for term in ("foam", "insulation", "thermal_barrier")):
+                    ai_scope_packages[package_name] = False
+        final_scope["ai_scope_packages"] = ai_scope_packages
     for field in ("defects", "scope_triggers", "partial_scope", "confidence_by_field", "evidence_by_field", "contradictions", "missing_questions", "dimension_evidence"):
         value = ai_scope.get(field)
+        if insulation_explicitly_excluded and field == "scope_triggers" and isinstance(value, dict):
+            value = dict(value)
+            for trigger_name in list(value):
+                if any(term in str(trigger_name).lower() for term in ("foam", "insulation", "thermal_barrier")):
+                    value[trigger_name] = False
         if value not in (None, "", [], {}):
             final_scope[field] = value
             merge_decisions.append({"field": field, "to": value, "decision": "accepted", "reason": "AI scope interpreter structured field."})
+    insulation_only_fields = {
+        "gross_insulation_area_sqft",
+        "net_insulation_area_sqft",
+    }
     for field in (
         "building_length_ft",
         "building_width_ft",
@@ -1352,6 +1380,8 @@ def merge_ai_scope_with_deterministic(
         "assumptions",
     ):
         value = ai_scope.get(field)
+        if insulation_explicitly_excluded and field in insulation_only_fields:
+            continue
         if value not in (None, "", [], {}):
             final_scope[field] = value
             merge_decisions.append({"field": field, "to": value, "decision": "accepted", "reason": "AI insulation structured field validated by deterministic math."})

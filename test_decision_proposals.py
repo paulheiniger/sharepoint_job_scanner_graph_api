@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import json
+
+import pandas as pd
+
 from jobscan.estimator.decision_proposals import (
     DecisionProposal,
     apply_decision_proposals_to_workbench,
     build_decision_proposals,
     merge_decision_proposals,
 )
+from jobscan.estimator.schemas import EstimatorData
 
 
 def test_note_triggered_scope_rules_do_not_create_inclusion_proposals_by_default() -> None:
@@ -347,6 +352,109 @@ def test_reference_answer_key_proposal_overrides_fallback_labor_values() -> None
     assert labor["daily_rate"] == 1835.66
     assert labor["total_hours"] == 89.25
     assert labor["proposal_source"] == "reference_estimate_answer_key"
+
+
+def test_named_reference_uses_only_scope_authorized_active_answer_key_rows() -> None:
+    answer_key = {
+        "template_type": "roofing",
+        "job_context": {"area_sqft": 2000, "substrate": "metal", "project_type": "roof_spf"},
+        "summary": {"source_row_count": 2},
+        "decisions": [
+            {
+                "decision_id": "roofing_caulk_sealant_row_43",
+                "section": "roofing_detail_template_decisions",
+                "template_bucket": "caulk_detail",
+                "workbook_row": "43",
+                "include": True,
+                "inputs": {
+                    "estimated_units": 24,
+                    "unit_price": 12.5,
+                    "resolved_template_option": "Urethane Sausage",
+                },
+            },
+            {
+                "decision_id": "roofing_generator_row_99",
+                "section": "roofing_equipment_template_decisions",
+                "template_bucket": "generator",
+                "workbook_row": "99",
+                "include": True,
+                "inputs": {"estimated_units": 1, "unit_price": 50},
+            },
+            {
+                "decision_id": "roofing_labor_prep_row_116",
+                "section": "roofing_labor_template_decisions",
+                "template_bucket": "labor_prep",
+                "workbook_row": "116",
+                "include": True,
+                "inputs": {
+                    "days": 0.25,
+                    "crew_size": 3,
+                    "daily_rate": 1044,
+                    "total_hours": 7.5,
+                },
+            },
+            {
+                "decision_id": "roofing_labor_caulk_row_126",
+                "section": "roofing_labor_template_decisions",
+                "template_bucket": "labor_caulk",
+                "workbook_row": "126",
+                "include": True,
+                "inputs": {"days": 1, "crew_size": 3, "daily_rate": 1044, "total_hours": 30},
+            },
+        ],
+    }
+    data = EstimatorData(
+        template_examples=pd.DataFrame(
+            [
+                {
+                    "document_id": "doc-1",
+                    "job_id": "job-1",
+                    "source_file": "Estimate CMU Wall Repair - Preston Animal Hospital (Sec. 1 Rear Wall).xlsx",
+                    "template_type": "roofing",
+                    "answer_key_json": json.dumps(answer_key),
+                }
+            ]
+        )
+    )
+    proposals = build_decision_proposals(
+        {
+            "template_type": "roofing",
+            "estimated_sqft": 1000,
+            "substrate": "cmu",
+            "project_type": "wall repair",
+            "notes": "Similar to Estimate CMU Wall Repair - Preston Animal Hospital (Sec. 1 Rear Wall). Apply sealant.",
+            "work_package_decisions": {
+                "caulk_detail": {"applies": True},
+                "prep_powerwash": {"applies": True},
+                "coating": {"applies": True},
+            },
+            "explicit_labor_hourly_rate": 54,
+            "explicit_labor_crew_size": 2,
+        },
+        data=data,
+    )
+
+    assert {proposal["template_bucket"] for proposal in proposals} == {
+        "caulk_detail",
+        "labor_caulk",
+        "labor_prep",
+    }
+    caulk = next(proposal for proposal in proposals if proposal["template_bucket"] == "caulk_detail")
+    assert caulk["source"] == "reference_estimate_answer_key"
+    assert caulk["proposed_values"]["estimated_units"] == 12
+    assert caulk["proposed_values"]["unit_price"] == 12.5
+    assert caulk["proposed_values"]["resolved_template_option"] == "Urethane Sausage"
+    assert any("Reference area context conflicts" in reason for reason in caulk["review_reasons"])
+    prep = next(proposal for proposal in proposals if proposal["template_bucket"] == "labor_prep")
+    assert prep["proposed_values"]["historical_driver_rate"] == 3.75
+    assert "days" not in prep["proposed_values"]
+    assert "total_hours" not in prep["proposed_values"]
+    assert "crew_size" not in prep["proposed_values"]
+    assert "daily_rate" not in prep["proposed_values"]
+    caulk_labor = next(proposal for proposal in proposals if proposal["template_bucket"] == "labor_caulk")
+    assert caulk_labor["proposed_values"]["historical_driver_rate"] == 1.25
+    assert "days" not in caulk_labor["proposed_values"]
+    assert "total_hours" not in caulk_labor["proposed_values"]
 
 
 def test_insulation_answer_key_scope_wins_over_stale_roofing_division() -> None:

@@ -5,6 +5,8 @@ import math
 from dataclasses import asdict
 from typing import Any
 
+from jobscan.estimate_routing import is_insulation_quote
+
 from .dimensions import parse_dimensions
 from .insulation_surfaces import (
     DEFAULT_R_VALUE_PER_INCH_BY_FOAM_TYPE,
@@ -41,32 +43,6 @@ NUMBER_WORDS = {
     "eleven": 11,
     "twelve": 12,
 }
-
-INSULATION_ROUTE_KEYWORDS = (
-    "foam sprayed",
-    "spray foam",
-    "sprayed foam",
-    "foam insulation",
-    "insulated",
-    "insulation",
-    "r-value",
-    "dc315",
-    "thermal barrier",
-    "ignition barrier",
-    "attic",
-    "crawlspace",
-)
-
-ROOFING_ROUTE_KEYWORDS = (
-    "roof coating",
-    "silicone coating",
-    "roof restoration",
-    "roof repair",
-    "roof leak",
-    "membrane roof",
-    "standing seam roof",
-)
-
 
 def optional_positive_float(value: Any) -> float | None:
     number = to_float(value)
@@ -176,21 +152,6 @@ def parse_count_word(value: str) -> int | None:
         return int(text)
     except ValueError:
         return None
-
-
-def _route_score(text: str, keywords: tuple[str, ...]) -> int:
-    return sum(1 for keyword in keywords if keyword in text)
-
-
-def is_insulation_quote(text: str) -> bool:
-    normalized = clean_text(text).lower()
-    insulation_score = _route_score(normalized, INSULATION_ROUTE_KEYWORDS)
-    if any(phrase in normalized for phrase in ("outside walls", "walls and ceiling", "metal building")):
-        insulation_score += 2
-    roofing_score = _route_score(normalized, ROOFING_ROUTE_KEYWORDS)
-    if roofing_score > 0:
-        return insulation_score > roofing_score
-    return insulation_score > 0
 
 
 def _count_from_match(value: str | None) -> int | None:
@@ -908,6 +869,8 @@ def parse_field_notes(field_input: FieldNotesInput | str, overrides: dict[str, A
         coating_type = "hydrostop"
     elif "gaco" in text:
         coating_type = "gaco silicone"
+    elif "acrylic" in text or "ancrylic" in text:
+        coating_type = "acrylic"
     elif "polyurea" in text:
         coating_type = "polyurea"
     else:

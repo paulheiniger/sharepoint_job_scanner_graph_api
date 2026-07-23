@@ -200,6 +200,9 @@ REFERENCE_PROJECT_OVERRIDE_FIELDS = {
     "labor_rate",
     "total_hours",
     "editable_total_hours",
+    "historical_driver_rate",
+    "historical_driver_source",
+    "historical_driver_evidence_count",
     "formula_mode",
     "markup_treatment",
     "template_line",
@@ -469,11 +472,249 @@ def build_decision_proposals(scope: dict[str, Any], recommendation: Any = None, 
     template_type = "insulation" if _is_insulation_scope(scope) else "roofing"
     notes = _note_text(scope)
     proposals: list[DecisionProposal] = []
+    proposals.extend(_named_reference_answer_key_proposals(scope, data=data, template_type=template_type, notes=notes))
     proposals.extend(_reference_project_proposals(scope, data=data, template_type=template_type, notes=notes))
     proposals.extend(_photo_scope_proposals(template_type, scope))
     proposals.extend(_chat_estimator_proposals(template_type, scope))
     proposals.extend(_ai_scope_proposals(template_type, _ai_scope_debug(recommendation)))
     return merge_decision_proposals(proposals)
+
+
+def _named_reference_answer_key_proposals(
+    scope: dict[str, Any],
+    *,
+    data: Any = None,
+    template_type: str,
+    notes: str,
+) -> list[DecisionProposal]:
+    from .reference_answer_key import answer_key_to_workbook_decision_preferences
+
+    if not re.search(r"\b(?:similar\s+to|same\s+as|based\s+on|reference)\b", notes, flags=re.IGNORECASE):
+        return []
+    examples = getattr(data, "template_examples", pd.DataFrame()) if data is not None else pd.DataFrame()
+    if not isinstance(examples, pd.DataFrame) or examples.empty or "answer_key_json" not in examples.columns:
+        return []
+    note_key = _norm(notes)
+    matched: list[tuple[int, dict[str, Any]]] = []
+    for row in examples.fillna("").to_dict(orient="records"):
+        source_file = str(row.get("source_file") or "").strip()
+        source_stem = re.sub(r"\.(?:xlsx|xlsm|xls)$", "", source_file, flags=re.IGNORECASE)
+        source_key = _norm(source_stem)
+        if len(source_key) < 12 or source_key not in note_key:
+            continue
+        if _norm(row.get("template_type")) and _norm(row.get("template_type")) != _norm(template_type):
+            continue
+        matched.append((len(source_key), row))
+    if not matched:
+        return []
+    _, example = max(matched, key=lambda item: item[0])
+    try:
+        answer_key = json.loads(str(example.get("answer_key_json") or ""))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    if not isinstance(answer_key, dict):
+        return []
+    source_file = str(example.get("source_file") or "")
+    preferences = answer_key_to_workbook_decision_preferences(answer_key)
+    reference_area = _named_reference_area(answer_key, example)
+    current_area = _scope_area(scope)
+    area_scale = current_area / reference_area if current_area > 0 and reference_area > 0 else 0.0
+    context_mismatches = _named_reference_context_mismatches(answer_key, scope)
+    proposals: list[DecisionProposal] = []
+    for preference in preferences:
+        if not _named_reference_preference_authorized(preference, scope, notes):
+            continue
+        values = dict(preference.get("proposed_values") or {})
+        bucket = _canonical_package(preference.get("template_bucket"))
+        is_labor = str(preference.get("section") or "") == "roofing_labor_template_decisions"
+        if is_labor:
+            driver_values = _named_reference_labor_driver_values(
+                preference,
+                preferences,
+                reference_area=reference_area,
+            )
+            for field in (
+                "days",
+                "editable_days",
+                "crew_size",
+                "crew_people_selection",
+                "crew_selector_code",
+                "daily_rate",
+                "hourly_rate",
+                "labor_rate",
+                "total_hours",
+                "editable_total_hours",
+                "resolved_template_option",
+                "selected_pricing_candidate",
+            ):
+                values.pop(field, None)
+            values.update(driver_values)
+        elif area_scale > 0 and bucket not in {"overhead", "profit"}:
+            for field in ("estimated_units", "units", "quantity", "linear_ft"):
+                amount = _safe_number(values.get(field), 0.0)
+                if amount > 0:
+                    values[field] = round(amount * area_scale, 4)
+            amount = _safe_number(values.get("amount"), 0.0)
+            if amount > 0:
+                values["amount"] = round(amount * area_scale, 2)
+        raw_evidence = preference.get("evidence")
+        evidence_rows = [item for item in raw_evidence if isinstance(item, dict)] if isinstance(raw_evidence, list) else []
+        evidence_rows.append(
+            {
+                "document_id": example.get("document_id"),
+                "job_id": example.get("job_id"),
+                "source_file": source_file,
+                "match_method": "explicit_source_file_mention",
+                "reference_area_sqft": reference_area or None,
+                "current_area_sqft": current_area or None,
+                "area_scale_factor": round(area_scale, 6) if area_scale > 0 else None,
+                "reference_area_requires_review": bool(context_mismatches),
+            }
+        )
+        reasons = list(preference.get("review_reasons") or [])
+        reasons.append(f"Current notes explicitly reference {source_file}; only scope-authorized active answer-key rows were applied.")
+        if is_labor:
+            reasons.append("Reference labor duration and crew were not copied; labor is recalculated from current material quantities or current area.")
+        elif area_scale > 0:
+            reasons.append(f"Reference quantity was scaled by current/reference area ({current_area:g}/{reference_area:g} sq ft).")
+        elif any(_safe_number(values.get(field), 0.0) > 0 for field in ("estimated_units", "units", "quantity", "linear_ft")):
+            reasons.append("Reference area is missing; quantity remains review-required and was not treated as a scalable production rate.")
+        if context_mismatches:
+            reasons.append(
+                "Reference area context conflicts with the current scope "
+                f"({'; '.join(context_mismatches)}); verify the reference square footage before export."
+            )
+        proposals.append(
+            DecisionProposal(
+                decision_id=str(preference.get("decision_id") or ""),
+                template_type=template_type,
+                template_bucket=str(preference.get("template_bucket") or ""),
+                workbook_row=str(preference.get("workbook_row") or ""),
+                include=preference.get("include"),
+                proposed_values=values,
+                confidence=max(0.0, min(_safe_number(preference.get("confidence"), 0.88), 0.95)),
+                review_required=True,
+                review_reasons=list(dict.fromkeys(reasons)),
+                evidence={"reference_estimate_answer_key": evidence_rows},
+                source="reference_estimate_answer_key",
+                section=str(preference.get("section") or ""),
+            )
+        )
+    return proposals
+
+
+def _named_reference_area(answer_key: dict[str, Any], example: dict[str, Any]) -> float:
+    for field in ("verified_area_sqft", "reference_area_sqft"):
+        area = _safe_number(example.get(field), 0.0)
+        if area > 0:
+            return area
+    context = answer_key.get("job_context") if isinstance(answer_key.get("job_context"), dict) else {}
+    return _safe_number(context.get("area_sqft"), 0.0)
+
+
+def _named_reference_context_mismatches(answer_key: dict[str, Any], scope: dict[str, Any]) -> list[str]:
+    context = answer_key.get("job_context") if isinstance(answer_key.get("job_context"), dict) else {}
+    mismatches: list[str] = []
+    for current_value, reference_value, label in (
+        (
+            scope.get("roof_type_substrate") or scope.get("substrate"),
+            context.get("substrate"),
+            "substrate",
+        ),
+        (scope.get("project_type"), context.get("project_type"), "project type"),
+    ):
+        current = _norm(current_value)
+        reference = _norm(reference_value)
+        if current and reference and current != reference and current not in reference and reference not in current:
+            mismatches.append(f"{label} {reference_value!s} vs {current_value!s}")
+    return mismatches
+
+
+def _named_reference_labor_driver_values(
+    labor_preference: dict[str, Any],
+    preferences: list[dict[str, Any]],
+    *,
+    reference_area: float,
+) -> dict[str, Any]:
+    values = dict(labor_preference.get("proposed_values") or {})
+    hours = _safe_number(values.get("total_hours") or values.get("editable_total_hours"), 0.0)
+    bucket = _canonical_package(labor_preference.get("template_bucket"))
+    rate = 0.0
+    rate_unit = ""
+    if bucket in {"labor_prep", "labor_cleanup", "labor_loading"} and hours > 0 and reference_area > 0:
+        rate = hours / reference_area * 1000.0
+        rate_unit = "hours_per_1000_sqft"
+    material_bucket_by_labor = {
+        "labor_caulk": {"caulk_detail", "caulk_sealant"},
+        "labor_base": {"coating"},
+        "labor_top_coat": {"coating"},
+        "labor_prime": {"primer"},
+        "labor_seam_sealer": {"fabric", "seams_misc"},
+    }
+    material_buckets = material_bucket_by_labor.get(bucket) or set()
+    if hours > 0 and material_buckets:
+        material_quantity = 0.0
+        for preference in preferences:
+            if _canonical_package(preference.get("template_bucket")) not in material_buckets:
+                continue
+            material_values = preference.get("proposed_values") or {}
+            material_quantity += _safe_number(
+                material_values.get("estimated_units")
+                or material_values.get("units")
+                or material_values.get("quantity")
+                or material_values.get("estimated_gallons")
+                or material_values.get("linear_ft"),
+                0.0,
+            )
+        if material_quantity > 0:
+            rate = hours / material_quantity
+            rate_unit = "hours_per_material_unit"
+    if rate <= 0:
+        return {}
+    return {
+        "historical_driver_rate": round(rate, 6),
+        "historical_driver_source": "reference_estimate_answer_key",
+        "historical_driver_evidence_count": 1,
+        "labor_driver_rate_unit": rate_unit,
+    }
+
+
+def _named_reference_preference_authorized(
+    preference: dict[str, Any],
+    scope: dict[str, Any],
+    notes: str,
+) -> bool:
+    bucket = _canonical_package(preference.get("template_bucket"))
+    package_by_bucket = {
+        "coating": "coating",
+        "caulk_detail": "caulk_detail",
+        "caulk_sealant": "caulk_detail",
+        "labor_caulk": "caulk_detail",
+        "labor_prep": "prep_powerwash",
+        "labor_prime": "primer",
+        "labor_seam_sealer": "seam_treatment",
+        "fasteners": "fastener_treatment",
+        "plates": "fastener_treatment",
+    }
+    package = package_by_bucket.get(bucket)
+    contract = (scope.get("work_package_decisions") or {}).get(package) if package else None
+    if isinstance(contract, dict):
+        return contract.get("applies") is True
+    if bucket in {"labor_base", "labor_top_coat", "labor_cleanup"}:
+        coating = (scope.get("work_package_decisions") or {}).get("coating")
+        return isinstance(coating, dict) and coating.get("applies") is True
+    normalized_notes = _norm(notes)
+    explicit_terms = {
+        "lift": ("lift", "boom"),
+        "generator": ("generator",),
+        "sales_trips": ("sales trip", "inspection trip"),
+        "sales_inspection_trips": ("sales trip", "inspection trip"),
+        "truck_expense": ("truck", "mileage", "miles"),
+        "labor_loading": ("loading", "load materials"),
+        "labor_traveling": ("travel",),
+    }
+    terms = explicit_terms.get(bucket)
+    return bool(terms and any(term in normalized_notes for term in terms))
 
 
 def build_material_companion_proposals(workbench: dict[str, Any], data: Any = None) -> list[dict[str, Any]]:
@@ -970,6 +1211,7 @@ def _chat_estimator_proposals(template_type: str, scope: dict[str, Any]) -> list
     raw = chat_payload.get("workbook_decision_preferences") or scope.get("workbook_decision_preferences") or []
     proposals: list[DecisionProposal] = []
     normalized_template_type = _norm(template_type)
+    notes = _note_text(scope)
     raw_items = [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
     insulation_foam_items_without_row = [
         item
@@ -1026,6 +1268,25 @@ def _chat_estimator_proposals(template_type: str, scope: dict[str, Any]) -> list
             historical_reason = "Historical comparable evidence requires current-scope confirmation before inclusion."
             if historical_reason not in reasons:
                 reasons.append(historical_reason)
+        if bucket == "lift" and re.search(
+            r"\b(?:include|add|provide|need|use)\b(?:\W+\w+){0,5}\W+\b(?:boom\s+lift|lift)\b",
+            notes,
+            flags=re.IGNORECASE,
+        ):
+            include = True
+            source = "explicit_note"
+            if not values.get("period") or not (
+                values.get("unit_price")
+                or values.get("daily_rate")
+                or values.get("weekly_rate")
+                or values.get("monthly_rate")
+            ):
+                review_required = True
+                missing_lift_basis = (
+                    "Lift is explicitly required by the current notes; rental period and price must be supplied before export."
+                )
+                if missing_lift_basis not in reasons:
+                    reasons.append(missing_lift_basis)
         raw_evidence = item.get("evidence")
         if isinstance(raw_evidence, dict):
             evidence = raw_evidence
@@ -1789,13 +2050,13 @@ def _companion_proposal(
         ]
     }
     confidence = min(0.9, 0.35 + (rate * 0.4) + min(job_count, 20) / 100)
-    include = target_spec.get("section") != "roofing_detail_quantity_template_decisions"
     return DecisionProposal(
         decision_id=target_spec["decision_id"],
         template_type="roofing",
         template_bucket=target_spec["template_bucket"],
         workbook_row=target_spec["workbook_row"],
-        include=include,
+        # Co-occurrence is evidence, not current-job scope authorization.
+        include=None,
         proposed_values={},
         confidence=round(confidence, 4),
         review_required=True,
@@ -2153,7 +2414,7 @@ def _roofing_scope_proposals(scope: dict[str, Any], notes: str) -> list[Decision
             )
         )
     if any(term in text or term in flag_blob for term in ("caulk", "sealant", "penetration", "detail")):
-        proposals.append(_proposal(template_type, "roofing_detail_template_decisions", "roofing_caulk_sealant_row_43", "caulk_sealant", "43", include=True, confidence=0.75, note=_snippet(notes, ["caulk", "sealant", "penetration", "detail"])))
+        proposals.append(_proposal(template_type, "roofing_detail_template_decisions", "roofing_caulk_sealant_row_43", "caulk_sealant", "43", include=True, confidence=0.75, note=_snippet(notes, ["caulk", "sealant", "penetration", "detail"]), source="explicit_note"))
         proposals.append(_proposal(template_type, "roofing_detail_quantity_template_decisions", "roofing_penetrations_row_49", "penetrations", "49", include=True, confidence=0.7, review_reasons=["Detail quantity requires estimator count if units were not stated."], note=_snippet(notes, ["penetration", "detail"])))
     if any(term in text or term in flag_blob for term in ("seam", "seams")):
         proposals.append(_proposal(template_type, "roofing_detail_quantity_template_decisions", "roofing_seams_misc_row_47", "seams_misc", "47", include=True, confidence=0.7, review_reasons=["Seam quantity requires estimator linear footage if not stated."], note=_snippet(notes, ["seam", "seams"])))
@@ -2184,7 +2445,7 @@ def _roofing_scope_proposals(scope: dict[str, Any], notes: str) -> list[Decision
     if "generator" in text:
         proposals.append(_proposal(template_type, "roofing_equipment_template_decisions", "roofing_generator_row_99", "generator", "99", include=True, confidence=0.8, note=_snippet(notes, ["generator"])))
     if any(term in text for term in ("lift", "equipment access", "access/equipment")):
-        proposals.append(_proposal(template_type, "roofing_equipment_template_decisions", "roofing_lift_equipment_row_73", "lift", "73", include=True, confidence=0.65, review_reasons=["Access equipment type/period requires estimator confirmation."], note=_snippet(notes, ["lift", "access", "equipment"])))
+        proposals.append(_proposal(template_type, "roofing_equipment_template_decisions", "roofing_lift_equipment_row_73", "lift", "73", include=True, confidence=0.65, review_reasons=["Access equipment type/period requires estimator confirmation."], note=_snippet(notes, ["lift", "access", "equipment"]), source="explicit_note"))
     for decision_id, bucket, row, terms in (
         ("roofing_truck_expense_row_108", "truck_expense", "108", ["truck", "truck expense", "miles", "mileage", "round trip"]),
         ("roofing_labor_loading_row_136", "labor_loading", "136", ["loading", "setup", "set up"]),

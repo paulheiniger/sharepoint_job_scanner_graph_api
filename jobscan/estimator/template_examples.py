@@ -362,10 +362,64 @@ def _decision_summary(decisions: list[dict[str, Any]], *, limit: int = 10) -> st
     return "; ".join(labels)
 
 
+def _document_estimate_context(
+    estimates: pd.DataFrame,
+    *,
+    job_id: str,
+    source_file: str,
+) -> dict[str, Any]:
+    if estimates.empty or not source_file:
+        return {}
+    matched = estimates.copy()
+    if job_id and "job_id" in matched.columns:
+        matched = matched[matched["job_id"].fillna("").astype(str).str.strip().eq(job_id)]
+    source_name = source_file.strip().lower()
+    source_match = pd.Series(False, index=matched.index)
+    for column in ("source_file", "estimate_file", "source_path"):
+        if column not in matched.columns:
+            continue
+        values = matched[column].fillna("").astype(str).str.strip().str.lower()
+        source_match |= values.eq(source_name) | values.str.endswith(f"/{source_name}")
+    matched = matched[source_match]
+    if matched.empty:
+        return {}
+
+    context: dict[str, Any] = {}
+    if "estimated_sqft" in matched.columns:
+        areas = sorted(
+            {
+                round(_number(value), 6)
+                for value in matched["estimated_sqft"].tolist()
+                if _number(value) > 0
+            }
+        )
+        if len(areas) == 1:
+            context["area_sqft"] = areas[0]
+            context["area_source"] = "estimate_summary.estimated_sqft"
+    if "job_type" in matched.columns:
+        job_types = [_text(value) for value in matched["job_type"].tolist() if _text(value)]
+        if job_types:
+            context["project_type"] = max(set(job_types), key=job_types.count)
+    return context
+
+
+def _area_bucket(area: float) -> str:
+    if area <= 0:
+        return "unknown"
+    if area < 5_000:
+        return "under_5k"
+    if area < 15_000:
+        return "5k_15k"
+    if area < 50_000:
+        return "15k_50k"
+    return "50k_plus"
+
+
 def build_template_examples(data: Any) -> pd.DataFrame:
     rows = _frame(data, "template_rows")
     if rows.empty:
         return pd.DataFrame(columns=TEMPLATE_EXAMPLE_COLUMNS)
+    estimates = _frame(data, "estimates")
     profiles = _frame(data, "job_context_profiles")
     if profiles.empty:
         profiles = build_job_context_profiles(data)
@@ -389,6 +443,14 @@ def build_template_examples(data: Any) -> pd.DataFrame:
         profile = profiles_by_job.get(job_id, {})
         if not profile and profiles_by_job:
             continue
+        document_context = _document_estimate_context(
+            estimates,
+            job_id=job_id,
+            source_file=source_file,
+        )
+        document_area = _number(document_context.get("area_sqft"))
+        resolved_area = document_area
+        resolved_project_type = _text(document_context.get("project_type")) or _text(profile.get("project_class"))
         decisions = _important_decision_rows(group)
         if not decisions:
             continue
@@ -401,13 +463,14 @@ def build_template_examples(data: Any) -> pd.DataFrame:
                 "customer": _text(profile.get("customer")),
                 "job_name": _text(profile.get("job_name")),
                 "template_type": template_type,
-                "project_type": _text(profile.get("project_class")),
+                "project_type": resolved_project_type,
                 "market_segment": _text(profile.get("market_segment")),
                 "building_type": _text(profile.get("building_type")),
                 "substrate": _text(profile.get("substrate")),
                 "material_system": _text(profile.get("material_system")),
                 "scope_summary": _text(profile.get("scope_summary")),
-                "area_sqft": _number(profile.get("area_sqft")),
+                "area_sqft": resolved_area,
+                "area_source": _text(document_context.get("area_source")) or "unavailable",
                 "warranty_years": _number(profile.get("warranty_years")),
             },
         )
@@ -420,15 +483,15 @@ def build_template_examples(data: Any) -> pd.DataFrame:
                 "customer": _text(profile.get("customer")),
                 "job_name": _text(profile.get("job_name")),
                 "template_type": template_type,
-                "project_class": _text(profile.get("project_class")),
+                "project_class": resolved_project_type,
                 "market_segment": _text(profile.get("market_segment")),
                 "building_type": _text(profile.get("building_type")),
                 "substrate": _text(profile.get("substrate")),
                 "material_system": _text(profile.get("material_system")),
                 "material_packages_json": json.dumps(packages, sort_keys=True, default=str),
                 "warranty_years": _number(profile.get("warranty_years")),
-                "area_sqft": _number(profile.get("area_sqft")),
-                "area_bucket": _text(profile.get("area_bucket")),
+                "area_sqft": resolved_area,
+                "area_bucket": _area_bucket(resolved_area),
                 "scope_summary": _text(profile.get("scope_summary")),
                 "decision_summary": _decision_summary(decisions),
                 "decisions_json": json.dumps(decisions, sort_keys=True, default=str),

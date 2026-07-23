@@ -1712,6 +1712,51 @@ def test_deterministic_fallback_parses_explicit_sqft_without_identity_context() 
     assert result.scope_overrides["area_sqft"] == 975
 
 
+def test_chat_fallback_locks_roofing_when_notes_explicitly_exclude_foam() -> None:
+    notes = (
+        "CMU wall section is 25' x 40'. Apply acrylic coating and Dynomic urethane caulk. "
+        "This project doesn't include foam."
+    )
+
+    result = chat_assistant.deterministic_chat_fallback(
+        [{"role": "user", "content": notes}],
+        template_type_hint="roofing",
+    )
+
+    assert result.scope_overrides["template_type"] == "roofing"
+    assert result.scope_overrides["template_type_locked"] is True
+
+
+def test_ai_chat_cannot_override_explicit_foam_exclusion_to_insulation() -> None:
+    notes = (
+        "CMU wall section is 25' x 40'. Apply acrylic coating and Dynomic urethane caulk. "
+        "The estimate excludes foam."
+    )
+
+    def provider(messages, model):
+        return {
+            "assistant_message": "Drafted estimate.",
+            "estimator_notes": notes,
+            "scope_overrides": {
+                "template_type": "insulation",
+                "division": "Insulation",
+                "project_type": "spray foam insulation",
+            },
+            "workbook_decision_preferences": [],
+        }
+
+    result = chat_assistant.run_estimator_chat_turn(
+        [{"role": "user", "content": notes}],
+        template_type_hint="roofing",
+        provider=provider,
+        model="test-model",
+    )
+
+    assert result.scope_overrides["template_type"] == "roofing"
+    assert result.scope_overrides["division"] == "Roofing"
+    assert result.scope_overrides["project_type"] == "roofing estimate"
+
+
 def test_estimator_chat_aligns_single_insulation_foam_decision_to_deterministic_area() -> None:
     def provider(messages, model):
         return {

@@ -185,6 +185,41 @@ def test_ai_cannot_invent_square_footage_without_note_evidence() -> None:
     assert any("without note evidence" in flag for flag in review_flags)
 
 
+def test_ai_cannot_restore_insulation_scope_when_notes_explicitly_exclude_foam() -> None:
+    notes = "Acrylic coating on a 25' x 40' CMU wall. The estimate excludes foam and includes urethane caulk."
+    deterministic_scope = {
+        "notes": notes,
+        "project_type": "wall coating",
+        "division": "WALLS",
+        "coating_type": "acrylic",
+        "estimated_sqft": 1000,
+    }
+    ai_scope, _warnings = ai_scope_interpreter.validate_ai_scope(
+        {
+            "project_type": "spray foam insulation",
+            "division": "Insulation",
+            "estimate_mode": "insulation",
+            "gross_insulation_area_sqft": 1000,
+            "net_insulation_area_sqft": 1000,
+            "scope_packages": {"foam": True, "thermal_barrier": True, "coating": True},
+        }
+    )
+
+    final_scope, decisions, _review_flags = ai_scope_interpreter.merge_ai_scope_with_deterministic(
+        notes,
+        deterministic_scope,
+        ai_scope,
+    )
+
+    assert final_scope["project_type"] == "wall coating"
+    assert final_scope["division"] == "WALLS"
+    assert final_scope.get("net_insulation_area_sqft") is None
+    assert final_scope["ai_scope_packages"]["foam"] is False
+    assert final_scope["ai_scope_packages"]["thermal_barrier"] is False
+    assert final_scope["ai_scope_packages"]["coating"] is True
+    assert any(row["field"] == "project_type" and row["decision"] == "rejected" for row in decisions)
+
+
 def test_estimator_ai_fallback_without_api_key_still_uses_deterministic_parser(monkeypatch) -> None:
     monkeypatch.setenv("ENABLE_AI_SCOPE_INTERPRETER", "true")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)

@@ -154,6 +154,8 @@ def test_template_examples_capture_worked_decisions_and_match_scope() -> None:
     assert "Gaco E-5320 Primer" in roof["decisions_json"]
     answer_key = json.loads(roof["answer_key_json"])
     assert answer_key["schema_version"] == "reference_estimate_answer_key.v1"
+    assert answer_key["job_context"]["area_sqft"] == 0
+    assert answer_key["job_context"]["area_source"] == "unavailable"
     assert any(decision["decision_id"] == "roofing_coating_system_row_26" for decision in answer_key["decisions"])
 
     digest = build_template_example_digest(
@@ -180,6 +182,22 @@ def test_template_examples_capture_worked_decisions_and_match_scope() -> None:
 
 def test_template_examples_group_history_by_workbook_not_broad_job_folder() -> None:
     data = EstimatorData(
+        estimates=pd.DataFrame(
+            [
+                {
+                    "job_id": "R-FOLDER",
+                    "source_file": "Estimate Roofing - One.xlsx",
+                    "estimated_sqft": 1000,
+                    "job_type": "Roof Restoration",
+                },
+                {
+                    "job_id": "R-FOLDER",
+                    "source_file": "Estimate Roofing - Two.xlsx",
+                    "estimated_sqft": 2000,
+                    "job_type": "Roof Restoration",
+                },
+            ]
+        ),
         template_rows=pd.DataFrame(
             [
                 {
@@ -229,3 +247,9 @@ def test_template_examples_group_history_by_workbook_not_broad_job_folder() -> N
     assert len(examples) == 2
     assert set(examples["document_id"]) == {"D-1", "D-2"}
     assert all(json.loads(value)["summary"]["decision_count"] == 1 for value in examples["answer_key_json"])
+    by_document = {row["document_id"]: row for row in examples.to_dict(orient="records")}
+    assert by_document["D-1"]["area_sqft"] == 1000
+    assert by_document["D-2"]["area_sqft"] == 2000
+    first_answer_key = json.loads(by_document["D-1"]["answer_key_json"])
+    assert first_answer_key["job_context"]["area_sqft"] == 1000
+    assert first_answer_key["job_context"]["area_source"] == "estimate_summary.estimated_sqft"

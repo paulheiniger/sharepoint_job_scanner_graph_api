@@ -2669,6 +2669,35 @@ def test_auto_detect_classifies_spray_foam_building_email_as_insulation() -> Non
     assert mode == app.ESTIMATE_TYPE_INSULATION
 
 
+def test_auto_detect_does_not_treat_excluded_foam_as_insulation() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    notes = (
+        "CMU walls total 25' x 40'. Apply acrylic coating over the full surface. "
+        "This project doesn't include foam; include Dynomic urethane caulk."
+    )
+
+    assert app.classify_estimate_type_from_notes(notes) == app.ESTIMATE_TYPE_RESTORATION
+
+
+def test_scope_template_guard_rejects_insulation_when_notes_explicitly_exclude_foam() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    scope = {
+        "template_type": "insulation",
+        "division": "Insulation",
+        "project_type": "spray foam insulation",
+    }
+    protected = app.protect_scope_template_type_with_notes(
+        scope,
+        "Acrylic coating on a CMU wall. The estimate excludes foam and includes urethane caulk.",
+    )
+
+    assert protected["template_type"] == "roofing"
+    assert protected["division"] == "Roofing"
+    assert protected["project_type"] == "roofing estimate"
+
+
 def test_scope_template_guard_keeps_explicit_insulation_notes_insulation() -> None:
     app = importlib.import_module("dashboard.app")
 

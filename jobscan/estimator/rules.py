@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from jobscan.estimate_routing import strip_negated_insulation_scope
+
 
 BLANKS = {"", "nan", "none", "null", "n/a", "-"}
 
@@ -112,6 +114,8 @@ def extract_scope(notes: str, overrides: dict[str, Any] | None = None) -> dict[s
     overrides = overrides or {}
     notes_text = clean_text(notes)
     text = notes_text.lower()
+    insulation_text = strip_negated_insulation_scope(notes_text)
+    positive_foam_scope = any(term in insulation_text for term in ("foam", "spf", "polyurethane foam"))
 
     substrate = ""
     if "metal" in text:
@@ -134,14 +138,14 @@ def extract_scope(notes: str, overrides: dict[str, Any] | None = None) -> dict[s
         coating_type = "urethane"
 
     project_type = ""
-    if "repair" in text:
+    if "repair" in text and "roof" in text:
         project_type = "roof repair"
-    elif "spray foam" in text or "spf" in text or "foam insulation" in text:
-        project_type = "spray foam insulation" if "roof" not in text else "coated foam roof"
+    elif "spray foam" in insulation_text or "spf" in insulation_text or "foam insulation" in insulation_text:
+        project_type = "spray foam insulation" if "roof" not in insulation_text else "coated foam roof"
     elif "roof" in text:
         project_type = "roof coating" if coating_type else "roofing"
     elif "wall" in text:
-        project_type = "wall insulation"
+        project_type = "wall coating" if coating_type else "wall repair" if "repair" in text else "wall work"
 
     condition = ""
     no_visible_rust = bool(re.search(r"\b(?:no|without)\s+(?:visible\s+)?rust\b|\bno\s+rusted\s+fasteners?\b", text))
@@ -164,8 +168,8 @@ def extract_scope(notes: str, overrides: dict[str, Any] | None = None) -> dict[s
     prep = "high" if condition.startswith("poor") or "pressure wash" in text or "fastener" in text else ""
     surface_area = parse_sqft(notes_text)
     wall_area = parse_sqft(notes_text, wall=True)
-    foam_thickness = parse_foam_thickness(notes_text)
-    foam_type = parse_foam_type(notes_text)
+    foam_thickness = parse_foam_thickness(insulation_text) if positive_foam_scope else None
+    foam_type = parse_foam_type(insulation_text) if positive_foam_scope else ""
     warranty_target = parse_warranty_target(notes_text)
     location = detect_location(notes_text)
     insulation_missing = any(phrase in text for phrase in ("no insulation", "missing insulation", "uninsulated", "needs insulation"))
@@ -183,7 +187,7 @@ def extract_scope(notes: str, overrides: dict[str, Any] | None = None) -> dict[s
         "wall_area_sqft": wall_area,
         "coating_required": bool(coating_type or "coating" in text or "coat" in text),
         "coating_type": coating_type,
-        "foam_required": bool(foam_thickness or "foam" in text or "spf" in text),
+        "foam_required": bool(positive_foam_scope),
         "foam_type": foam_type,
         "foam_thickness_inches": foam_thickness,
         "insulation_present": insulation_present,

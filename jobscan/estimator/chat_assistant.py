@@ -13,6 +13,8 @@ from typing import Any, Callable, Iterable
 
 import pandas as pd
 
+from jobscan.estimate_routing import has_explicit_insulation_exclusion, is_insulation_quote
+
 from .estimator_memory import relevant_memory_rows
 from . import labor as estimator_labor
 from .foam_yield_history import build_foam_yield_history_digest
@@ -1833,7 +1835,7 @@ def _template_type_for_scope(scope: dict[str, Any]) -> str:
         str(scope.get(key) or "")
         for key in ("template_type", "division", "project_type", "raw_input_notes", "notes", "foam_type", "coating_type")
     ).lower()
-    if "insulation" in text or "foam" in text and "roof" not in text:
+    if is_insulation_quote(text):
         return "insulation"
     return "roofing"
 
@@ -1857,7 +1859,8 @@ def _template_type_from_chat_text(text: str) -> str:
         return ""
     if re.search(r"\b(polyaspartic|epoxy floor|floor system|concrete floor|flake broadcast)\b", normalized):
         return "flooring"
-    insulation_signal = re.search(
+    insulation_signal = is_insulation_quote(normalized)
+    insulation_detail_signal = re.search(
         r"\b(insulat(?:e|ed|ion)?|open[- ]?cell|closed[- ]?cell|r[- ]?\d+|thermal barrier|dc315|"
         r"attic|crawlspace|outside walls?|wall cavities?|metal building|pole barn|underside of (?:the )?roof deck)\b",
         normalized,
@@ -1875,7 +1878,7 @@ def _template_type_from_chat_text(text: str) -> str:
     )
     if insulation_signal and not roofing_signal:
         return "insulation"
-    if insulation_signal and explicit_insulation_scope and not re.search(r"\broof(?:ing)?\s+(?:system|bid|replacement|recovery|repair|coating)\b", normalized):
+    if insulation_signal and insulation_detail_signal and explicit_insulation_scope and not re.search(r"\broof(?:ing)?\s+(?:system|bid|replacement|recovery|repair|coating)\b", normalized):
         return "insulation"
     if roofing_signal or re.search(r"\broof(?:ing)?\b", normalized):
         return "roofing"
@@ -3063,7 +3066,9 @@ def deterministic_chat_fallback(
         scope["template_type"] = "roofing"
         scope["division"] = "Roofing"
         scope["project_type"] = "roofing estimate"
-    elif template_hint == "insulation" or re.search(r"\bfoam|spray|insulat", text, re.I):
+        if has_explicit_insulation_exclusion(text) and not is_insulation_quote(text):
+            scope["template_type_locked"] = True
+    elif template_hint == "insulation":
         scope["template_type"] = "insulation"
         scope["division"] = "Insulation"
         scope["project_type"] = "spray foam insulation"

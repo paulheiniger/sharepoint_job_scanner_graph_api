@@ -215,6 +215,8 @@ def parse_dimensions(raw_notes: str) -> DimensionSummary:
     ]
     if correction_markers:
         text = text[max(correction_markers) :]
+    chat_update_match = re.search(r"\bestimator\s+chat\s+update\s*:", text, re.I)
+    chat_update_start = chat_update_match.start() if chat_update_match else None
     if re.search(r"\bno\s+(?:deductions?|deducts?|openings?|areas?\s+to\s+deduct)\b", text, re.I):
         summary.no_deductions = True
     direct_deductions = _parse_direct_areas(text, summary)
@@ -224,6 +226,7 @@ def parse_dimensions(raw_notes: str) -> DimensionSummary:
         bounds = _sentence_bounds(text, match.start(), match.end())
         spans_by_sentence[bounds] = spans_by_sentence.get(bounds, 0) + 1
 
+    source_dimension_signatures: set[tuple[str, float, float, int]] = set()
     for match in matches:
         length = _number(match.group("length"))
         width = _number(match.group("width"))
@@ -238,6 +241,14 @@ def parse_dimensions(raw_notes: str) -> DimensionSummary:
         operation = _operation_for_context(context)
         sibling_count = spans_by_sentence.get((left, right), 1)
         quantity = _quantity_for_dimension(prefix, sibling_count)
+        signature = (operation, round(length, 4), round(width, 4), quantity)
+        if chat_update_start is not None and match.start() >= chat_update_start and signature in source_dimension_signatures:
+            warning = "Ignored a dimension repeated in the estimator chat update."
+            if warning not in summary.warnings:
+                summary.warnings.append(warning)
+            continue
+        if chat_update_start is None or match.start() < chat_update_start:
+            source_dimension_signatures.add(signature)
         area_each = length * width
         total_area = area_each * quantity
         unit_confidence = 0.9 if re.search(r"(?:ft|feet|foot|[']|[’])", match.group(0), re.I) else 0.75
