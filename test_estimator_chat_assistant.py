@@ -335,6 +335,12 @@ def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
                     "decision_id": "insulation_foam_template_selector",
                     "template_bucket": "foam",
                     "include": True,
+                    "proposed_values": {
+                        "basis_sqft": 2226,
+                        "thickness_inches": 5.5,
+                        "yield_or_coverage": 4500,
+                        "unit_price": 1600,
+                    },
                     "confidence": 0.8,
                 }
             ],
@@ -656,10 +662,101 @@ def test_historical_context_does_not_auto_include_comparable_project_rows() -> N
         context,
     )
 
-    assert len(result.workbook_decision_preferences) == 2
-    assert all(row["include"] is False for row in result.workbook_decision_preferences)
-    assert all(row["source"] == "historical_answer_key_context" for row in result.workbook_decision_preferences)
-    assert "none were auto-included" in result.warnings[0]
+    assert result.workbook_decision_preferences == []
+    assert result.warnings == []
+
+
+def test_malformed_ai_json_is_repaired_without_using_historical_fallback() -> None:
+    malformed = """{
+      "assistant_message": "Drafted the roofing estimate.",
+      "estimator_notes": "Grossman Tuning coated foam roof.",
+      "scope_overrides": {"template_type": "roofing", "estimated_sqft": 5136}
+      "workbook_decision_preferences": [],
+      "missing_questions": [],
+      "assumptions": [],
+      "warnings": [],
+      "confidence": 0.84,
+    }"""
+
+    result = run_estimator_chat_turn(
+        [
+            {
+                "role": "user",
+                "content": (
+                    "Grossman Tuning, 830 South 1st Street, Louisville, KY 40203. "
+                    "Total area approximately 5,136 sq ft. Install a coated foam roof."
+                ),
+            }
+        ],
+        template_type_hint="roofing",
+        provider=lambda messages, model: malformed,
+        model="test-model",
+    )
+
+    assert result.source == "ai_chat"
+    assert result.scope_overrides["estimated_sqft"] == 5136
+    assert result.raw_response["_json_repair_applied"] is True
+    assert not any("AI estimator chat failed" in warning for warning in result.warnings)
+
+
+def test_failed_ai_chat_does_not_promote_historical_rows_to_workbook_changes() -> None:
+    context_data = EstimatorData(
+        template_examples=pd.DataFrame(
+            [
+                {
+                    "example_id": "large-coating-job",
+                    "job_id": "large-coating-job",
+                    "template_type": "roofing",
+                    "project_class": "coated foam roof",
+                    "material_packages_json": json.dumps(["coating"]),
+                    "area_sqft": 14250,
+                    "scope_summary": "Large coated foam roof.",
+                    "answer_key_json": json.dumps(
+                        {
+                            "schema_version": "reference_estimate_answer_key.v1",
+                            "template_type": "roofing",
+                            "decisions": [
+                                {
+                                    "section": "roofing_coating_template_decisions",
+                                    "decision_id": "roofing_coating_system_row_26",
+                                    "template_bucket": "coating",
+                                    "workbook_row": "26",
+                                    "include": True,
+                                    "inputs": {
+                                        "basis_sqft": 14250,
+                                        "estimated_units": 256.5,
+                                        "gal_per_100_sqft": 1.8,
+                                        "unit_price": 42,
+                                    },
+                                }
+                            ],
+                        }
+                    ),
+                }
+            ]
+        )
+    )
+
+    def failing_provider(messages, model):
+        raise json.JSONDecodeError("bad estimator response", "{}", 1)
+
+    result = run_estimator_chat_turn(
+        [
+            {
+                "role": "user",
+                "content": "Grossman Tuning coated foam roof. Total Area: Approx. 5,136 sq.ft.",
+            }
+        ],
+        data=context_data,
+        template_type_hint="roofing",
+        provider=failing_provider,
+        model="test-model",
+    )
+
+    assert result.source == "deterministic_fallback"
+    assert result.scope_overrides["estimated_sqft"] == 5136
+    assert result.workbook_decision_preferences == []
+    assert any("AI estimator chat failed" in warning for warning in result.warnings)
 
 
 def test_estimator_chat_detects_answer_key_modes() -> None:

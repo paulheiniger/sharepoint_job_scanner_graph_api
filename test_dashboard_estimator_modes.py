@@ -2201,6 +2201,37 @@ def test_estimator_chat_decision_change_rows_summarize_structured_patches() -> N
     assert "crew_size=2" in rows[1]["field_changes"]
 
 
+def test_estimator_chat_decision_change_rows_hide_historical_evidence_rows() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    rows = app.estimator_chat_decision_change_rows(
+        [
+            {
+                "decision_id": "roofing_coating_system_row_26",
+                "template_bucket": "coating",
+                "workbook_row": "26",
+                "include": False,
+                "source": "historical_answer_key_context",
+                "proposed_values": {"basis_sqft": 14250},
+            }
+        ]
+    )
+
+    assert rows == []
+    assert app.estimator_chat_current_job_preferences(
+        [
+            {
+                "source": "historical_answer_key_context",
+                "decision_id": "roofing_coating_system_row_26",
+            },
+            {
+                "source": "ai_chat",
+                "decision_id": "roofing_coating_system_row_27",
+            },
+        ]
+    ) == [{"source": "ai_chat", "decision_id": "roofing_coating_system_row_27"}]
+
+
 def test_estimator_chat_decision_change_rows_sanitize_alias_only_logistics() -> None:
     app = importlib.import_module("dashboard.app")
 

@@ -424,19 +424,11 @@ def _merge_historical_context_preferences(
             continue
         matched_index = next((index for index, row in enumerate(merged) if _preference_matches(row, supplement)), None)
         if matched_index is None:
-            merged.append(dict(supplement))
             continue
         current = dict(merged[matched_index])
-        current_values = dict(current.get("proposed_values") or {})
-        supplement_values = dict(supplement.get("proposed_values") or {})
-        filled_values = dict(supplement_values)
-        filled_values.update({key: value for key, value in current_values.items() if value not in (None, "", [], {})})
-        current["proposed_values"] = filled_values
         for field in ("section", "template_bucket", "workbook_row", "decision_id"):
             if current.get(field) in (None, "") and supplement.get(field) not in (None, ""):
                 current[field] = supplement.get(field)
-        if current.get("include") in (None, ""):
-            current["include"] = supplement.get("include", True)
         current["review_required"] = bool(current.get("review_required", False) or supplement.get("review_required", False))
         review_reasons = list(current.get("review_reasons") or [])
         for reason in supplement.get("review_reasons") or []:
@@ -466,19 +458,22 @@ def _supplement_result_with_historical_context_preferences(
         historical,
         template_type=template_type,
     )
-    if len(merged_preferences) == len(result.workbook_decision_preferences or []):
-        # Existing rows may still have been filled with missing values.
-        if merged_preferences == (result.workbook_decision_preferences or []):
-            return result
+    if merged_preferences == (result.workbook_decision_preferences or []):
+        return result
+    matched_count = sum(
+        1
+        for row in merged_preferences
+        if any(_preference_matches(row, historical_row) for historical_row in historical)
+    )
     result.workbook_decision_preferences = merged_preferences
     result.raw_response = {
         **(result.raw_response or {}),
-        "historical_context_preference_count": len(historical),
+        "historical_context_preference_count": matched_count,
         "historical_context_preferences_applied": True,
     }
     warning = (
-        f"Added {len(historical)} review-only workbook decision suggestion(s) from similar historical answer keys; "
-        "none were auto-included."
+        f"Attached similar-job evidence to {matched_count} current workbook proposal(s); "
+        "no historical rows or quantities were added."
     )
     warnings = list(result.warnings or [])
     if warning not in warnings:
@@ -3309,8 +3304,23 @@ def _extract_json_object(value: Any) -> dict[str, Any]:
         match = re.search(r"\{.*\}", text, re.S)
         if not match:
             return {}
-        payload = json.loads(match.group(0))
+        candidate = match.group(0)
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            repaired = _repair_common_json_delimiters(candidate)
+            payload = json.loads(repaired)
+            if isinstance(payload, dict):
+                payload["_json_repair_applied"] = True
     return payload if isinstance(payload, dict) else {}
+
+
+def _repair_common_json_delimiters(text: str) -> str:
+    """Repair only common delimiter omissions in otherwise valid model JSON."""
+    repaired = re.sub(r",\s*([}\]])", r"\1", text)
+    value_token = r'(?:true|false|null|-?\d+(?:\.\d+)?|"(?:[^"\\]|\\.)*"|[}\]])'
+    next_key = r'(\s*\n\s*"[^"\\]*(?:\\.[^"\\]*)*"\s*:)'
+    return re.sub(rf"({value_token}){next_key}", r"\1,\2", repaired)
 
 
 def _clean_scope(scope: dict[str, Any]) -> dict[str, Any]:

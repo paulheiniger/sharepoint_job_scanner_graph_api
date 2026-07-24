@@ -298,7 +298,7 @@ def ensure_estimator_imports() -> None:
 
 DEFAULT_DATABASE_URL = "postgresql+psycopg2://spraytec:spraytec_dev_password@127.0.0.1:5433/spraytec_ops"
 ESTIMATOR_CHAT_SESSION_DIR = Path("output/estimator_chat_sessions")
-ESTIMATOR_CHAT_SESSION_SCHEMA_VERSION = 2
+ESTIMATOR_CHAT_SESSION_SCHEMA_VERSION = 3
 DECISION_EVIDENCE_DISPLAY_COLUMNS = [
     "decision_evidence_summary",
     "decision_evidence_types",
@@ -20360,11 +20360,18 @@ def estimator_chat_assistant_history_content(result: Any) -> str:
     return "\n".join(lines)
 
 
+def estimator_chat_current_job_preferences(preferences: Any) -> list[dict[str, Any]]:
+    return [
+        dict(item)
+        for item in (preferences if isinstance(preferences, list) else [])
+        if isinstance(item, dict)
+        if str(item.get("source") or "").strip().lower() != "historical_answer_key_context"
+    ]
+
+
 def estimator_chat_decision_change_rows(preferences: Any) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for item in preferences if isinstance(preferences, list) else []:
-        if not isinstance(item, dict):
-            continue
+    for item in estimator_chat_current_job_preferences(preferences):
         values = item.get("proposed_values") if isinstance(item.get("proposed_values"), dict) else {}
         template_bucket = str(item.get("template_bucket") or item.get("package") or "").strip().lower().replace(" ", "_")
         alias_text = " ".join(
@@ -21585,6 +21592,10 @@ def render_estimator_chat_draft_panel(
             st.caption("Paste field notes or answer follow-up questions in the message box.")
         return None
     result = result_payload if isinstance(result_payload, dict) else {}
+    if result:
+        result["workbook_decision_preferences"] = estimator_chat_current_job_preferences(
+            result.get("workbook_decision_preferences")
+        )
     if result and not st.session_state.get("estimator_notes"):
         fallback_notes = str(result.get("estimator_notes") or "").strip()
         if not fallback_notes:
