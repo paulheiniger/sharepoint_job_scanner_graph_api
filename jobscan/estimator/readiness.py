@@ -17,6 +17,57 @@ HIGH_IMPACT_ASSUMPTIONS = {
     "high",
     "material",
 }
+TEXT_DECISION_FIELDS = {
+    "foam_type",
+    "formula_mode",
+    "period",
+    "selected_item_name",
+    "selector_code",
+}
+
+
+def decision_edit_schema(
+    state: dict[str, Any],
+    decision: dict[str, Any],
+) -> dict[str, Any]:
+    """Return field metadata for editing one estimator decision."""
+
+    menu_row = _decision_menu_row(state, decision)
+    configured_fields = (
+        menu_row.get("editable_fields")
+        if isinstance(menu_row, dict)
+        else None
+    )
+    if not isinstance(configured_fields, list) or not configured_fields:
+        configured_fields = [
+            "include",
+            *(
+                str(field)
+                for field in (decision.get("proposed_values") or {})
+                if str(field).strip()
+            ),
+        ]
+    fields: list[dict[str, Any]] = []
+    for raw_field in configured_fields:
+        field = str(raw_field or "").strip()
+        if not field or field == "include":
+            continue
+        fields.append(
+            {
+                "field": field,
+                "label": field.replace("_", " ").title(),
+                "input_type": "text" if field in TEXT_DECISION_FIELDS else "number",
+            }
+        )
+    return {
+        "decision_id": str(
+            decision.get("decision_id")
+            or decision.get("template_bucket")
+            or ""
+        ),
+        "fields": fields,
+        "formula_requirements": _formula_requirements(state, decision),
+    }
 
 
 def evaluate_estimate_readiness(state: dict[str, Any]) -> dict[str, Any]:
@@ -224,6 +275,18 @@ def _formula_requirements(
     supplied = decision.get("formula_requirements")
     if isinstance(supplied, list) and supplied:
         return [str(value) for value in supplied if str(value).strip()]
+    row = _decision_menu_row(state, decision)
+    return [
+        str(value)
+        for value in row.get("formula_requirements") or []
+        if str(value).strip()
+    ]
+
+
+def _decision_menu_row(
+    state: dict[str, Any],
+    decision: dict[str, Any],
+) -> dict[str, Any]:
     template_type = str(
         state.get("template_type")
         or (state.get("scope_state") or {}).get("template_type")
@@ -243,12 +306,8 @@ def _formula_requirements(
             or (workbook_row and workbook_row == str(row.get("workbook_row") or ""))
             or (bucket and bucket == str(row.get("template_bucket") or "").strip().lower())
         ):
-            return [
-                str(value)
-                for value in row.get("formula_requirements") or []
-                if str(value).strip()
-            ]
-    return []
+            return dict(row)
+    return {}
 
 
 def _requirement_groups(requirements: Iterable[str]) -> list[list[tuple[str, ...]]]:

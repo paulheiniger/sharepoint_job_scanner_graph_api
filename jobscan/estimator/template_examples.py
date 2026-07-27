@@ -14,7 +14,10 @@ from sqlalchemy import bindparam, text
 from jobscan.db_connections import create_resilient_engine
 
 from .job_context_profiles import build_job_context_digest, build_job_context_profiles
-from .reference_answer_key import build_reference_estimate_answer_key
+from .reference_answer_key import (
+    answer_key_decision_is_active,
+    build_reference_estimate_answer_key,
+)
 
 
 TEMPLATE_EXAMPLE_COLUMNS = [
@@ -709,7 +712,16 @@ def _compact_answer_key(
         return {}
     preferred_decision_ids = preferred_decision_ids or set()
     preferred_buckets = preferred_buckets or set()
-    raw_decisions = [decision for decision in answer_key.get("decisions") or [] if isinstance(decision, dict)]
+    source_decisions = [
+        decision
+        for decision in answer_key.get("decisions") or []
+        if isinstance(decision, dict)
+    ]
+    raw_decisions = [
+        decision
+        for decision in source_decisions
+        if answer_key_decision_is_active(decision)
+    ]
     if preferred_decision_ids or preferred_buckets:
         raw_decisions = sorted(
             raw_decisions,
@@ -722,6 +734,11 @@ def _compact_answer_key(
         )
     decisions: list[dict[str, Any]] = []
     for decision in raw_decisions:
+        evidence = (
+            decision.get("evidence")
+            if isinstance(decision.get("evidence"), dict)
+            else {}
+        )
         decisions.append(
             {
                 "decision_id": decision.get("decision_id"),
@@ -733,7 +750,19 @@ def _compact_answer_key(
                 "template_option": decision.get("template_option"),
                 "inputs": decision.get("inputs") or {},
                 "calculated_outputs": decision.get("calculated_outputs") or {},
-                "evidence": decision.get("evidence") or {},
+                "evidence": {
+                    key: evidence.get(key)
+                    for key in (
+                        "source",
+                        "source_row",
+                        "source_template_row_id",
+                        "source_document_id",
+                        "source_file",
+                        "line_item",
+                        "template_bucket",
+                    )
+                    if evidence.get(key) not in (None, "", [], {})
+                },
                 "confidence": decision.get("confidence"),
                 "needs_review": decision.get("needs_review"),
             }
@@ -746,7 +775,16 @@ def _compact_answer_key(
         "job_context": answer_key.get("job_context") or {},
         "decisions": decisions,
         "summary": {
-            "decision_count": (answer_key.get("summary") or {}).get("decision_count", len(answer_key.get("decisions") or [])),
+            "decision_count": len(decisions),
+            "source_decision_count": (
+                (answer_key.get("summary") or {}).get(
+                    "decision_count",
+                    len(source_decisions),
+                )
+            ),
+            "active_decision_count": len(raw_decisions),
+            "omitted_inactive_decision_count": len(source_decisions) - len(raw_decisions),
+            "omitted_by_limit_count": max(0, len(raw_decisions) - len(decisions)),
             "unmapped_count": (answer_key.get("summary") or {}).get("unmapped_count", 0),
         },
     }
@@ -1067,7 +1105,10 @@ def build_template_example_digest(data: Any, *, scope: dict[str, Any] | None = N
     matched: list[dict[str, Any]] = []
     for score, row in scored[: max(0, int(limit or 3))]:
         decisions = _json_list(row.get("decisions_json"))
-        reference_answer_key = _compact_answer_key(_answer_key_for_example(data, row), limit=12)
+        reference_answer_key = _compact_answer_key(
+            _answer_key_for_example(data, row),
+            limit=6,
+        )
         matched.append(
             {
                 "example_id": row.get("example_id"),
@@ -1085,7 +1126,7 @@ def build_template_example_digest(data: Any, *, scope: dict[str, Any] | None = N
                 "area_sqft": row.get("area_sqft"),
                 "scope_summary": row.get("scope_summary"),
                 "decision_summary": row.get("decision_summary"),
-                "decisions": decisions[:18],
+                "decisions": decisions[:8],
                 "reference_answer_key": reference_answer_key,
             }
         )

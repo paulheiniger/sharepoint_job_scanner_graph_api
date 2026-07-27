@@ -29,6 +29,28 @@ from .schemas import EstimatorAssumptions, EstimatorData
 
 
 DEFAULT_CHAT_ESTIMATOR_MODEL = ""
+DEFAULT_ESTIMATOR_MAX_INPUT_CHARACTERS = 100_000
+DEFAULT_ESTIMATOR_PRO_MAX_INPUT_CHARACTERS = 60_000
+DEFAULT_ESTIMATOR_MAX_OUTPUT_TOKENS = 8_000
+PROMPT_CONTEXT_PRIORITY = (
+    "template_type",
+    "route_mileage",
+    "decision_menu",
+    "formula_requirements",
+    "estimator_memory_guidance",
+    "historical_answer_key_decision_cues",
+    "product_guidance_digest",
+    "pricing_candidates_by_bucket",
+    "template_fallback_defaults",
+    "historical_answer_key_examples",
+    "historical_template_examples",
+    "historical_job_context",
+    "historical_context_decision_guidance",
+    "foam_yield_history_digest",
+    "historical_decision_evidence",
+    "companion_relationships",
+    "reference_job_decisions",
+)
 INSULATION_CHAT_TEMPLATE_DEFAULTS = {
     "foam_yield_or_coverage": 2600.0,
     "foam_unit_price": 2.25,
@@ -197,6 +219,7 @@ def run_estimator_chat_turn(
         existing_decisions=existing_decisions or [],
         existing_session_state=existing_session_state or {},
         context=context,
+        model=model_name,
     )
     if provider is not None or os.getenv("OPENAI_API_KEY"):
         try:
@@ -1174,20 +1197,45 @@ def _build_estimator_context_summary(data: EstimatorData | None, *, scope: dict[
         decision_menu,
         template_type=template_type,
     )
-    summary["historical_template_examples"] = build_template_example_digest(data, scope=scope, limit=3)
+    summary["historical_template_examples"] = _generic_template_examples_without_answer_keys(
+        build_template_example_digest(
+            data,
+            scope=scope,
+            limit=2,
+        )
+    )
     summary["historical_answer_key_examples"] = build_similar_answer_key_digest(
         data,
         scope=scope,
-        limit=5,
-        decisions_per_example=80,
+        limit=2,
+        decisions_per_example=12,
         decision_menu=decision_menu,
     )
     summary["historical_answer_key_decision_cues"] = _historical_answer_key_decision_cues(
         summary["historical_answer_key_examples"],
         decision_menu,
-        limit=60,
+        limit=20,
     )
     return summary
+
+
+def _generic_template_examples_without_answer_keys(
+    digest: dict[str, Any],
+) -> dict[str, Any]:
+    """Avoid sending the same answer-key decisions in two context sections."""
+    matched = digest.get("matched_examples") if isinstance(digest, dict) else []
+    return {
+        **(digest if isinstance(digest, dict) else {}),
+        "matched_examples": [
+            {
+                key: value
+                for key, value in example.items()
+                if key != "reference_answer_key"
+            }
+            for example in matched or []
+            if isinstance(example, dict)
+        ],
+    }
 
 
 def _empty_chat_decision_context(scope: dict[str, Any] | None) -> dict[str, Any]:
@@ -3173,6 +3221,7 @@ def _chat_prompt_messages(
     existing_decisions: list[dict[str, Any]],
     existing_session_state: dict[str, Any],
     context: dict[str, Any],
+    model: str = "",
 ) -> list[dict[str, Any]]:
     today = date.today().isoformat()
     instructions = (
@@ -3192,9 +3241,7 @@ def _chat_prompt_messages(
         "decision IDs; use it to evaluate candidate rows, not as authority to include them. "
         "If estimator_context.historical_template_examples has matched_examples, treat them as compact worked examples from prior "
         "estimates: compare the current job to each example, use matching decision patterns as evidence, and cite the "
-        "example in evidence. If a matched example includes reference_answer_key.decisions, those are normalized historical workbook "
-        "decisions from the prior estimate; use their decision_id, template_bucket, workbook_row, line_item, inputs, and calculated_outputs "
-        "as evidence for similar current decisions. Do not copy example quantities blindly when the current area, thickness, warranty, or substrate differs. "
+        "example in evidence. Do not copy example quantities blindly when the current area, thickness, warranty, or substrate differs. "
         "If estimator_context.historical_answer_key_examples has matched_answer_keys, prioritize those over generic examples: they are "
         "the most similar historical estimate answer keys found for this scope. Use match_reasons and reference_answer_key.decisions "
         "as evidence for product/system choices, labor/logistics patterns, markup/warranty assumptions, and typical formula inputs. "
@@ -3278,10 +3325,147 @@ def _chat_prompt_messages(
         "estimator_context": context,
         "conversation": messages,
     }
-    return [
+    max_input_characters = _estimator_max_input_characters(model)
+    fixed_payload = {**user_payload, "estimator_context": {}}
+    fixed_messages = [
         {"role": "system", "content": instructions},
-        {"role": "user", "content": json.dumps(user_payload, indent=2, default=str)},
+        {
+            "role": "user",
+            "content": json.dumps(fixed_payload, indent=2, default=str),
+        },
     ]
+    context_budget = max(
+        0,
+        max_input_characters - _json_character_count(fixed_messages) - 1_000,
+    )
+    bounded_context = _bounded_prompt_context(context, context_budget)
+    user_payload["estimator_context"] = bounded_context
+    prompt_messages = [
+        {"role": "system", "content": instructions},
+        {
+            "role": "user",
+            "content": json.dumps(user_payload, indent=2, default=str),
+        },
+    ]
+    if _json_character_count(prompt_messages) > max_input_characters:
+        raise ValueError(
+            "Estimator prompt exceeds OPENAI_ESTIMATOR_MAX_INPUT_CHARACTERS "
+            "after context compaction."
+        )
+    return prompt_messages
+
+
+def _bounded_prompt_context(
+    context: dict[str, Any],
+    max_characters: int,
+) -> dict[str, Any]:
+    if max_characters <= 0:
+        return {
+            "_prompt_context_budget": {
+                "truncated": True,
+                "original_characters": _json_character_count(context),
+                "included_characters": 0,
+                "omitted_keys": sorted(str(key) for key in context),
+            }
+        }
+    original_characters = _json_character_count(context)
+    if original_characters <= max_characters:
+        return copy.deepcopy(context)
+
+    ordered_keys = [
+        *[key for key in PROMPT_CONTEXT_PRIORITY if key in context],
+        *[key for key in context if key not in PROMPT_CONTEXT_PRIORITY],
+    ]
+    bounded: dict[str, Any] = {}
+    omitted: list[str] = []
+    value_budget = max(0, max_characters - 600)
+    for key in ordered_keys:
+        remaining = value_budget - _json_character_count(bounded)
+        if remaining <= 20:
+            omitted.append(str(key))
+            continue
+        fitted = _fit_json_value(context[key], remaining)
+        if fitted is _PROMPT_VALUE_OMITTED:
+            omitted.append(str(key))
+            continue
+        bounded[key] = fitted
+        if _json_character_count(fitted) < _json_character_count(context[key]):
+            omitted.append(str(key))
+    bounded["_prompt_context_budget"] = {
+        "truncated": True,
+        "original_characters": original_characters,
+        "included_characters": _json_character_count(bounded),
+        "omitted_keys": sorted(set(omitted)),
+    }
+    return bounded
+
+
+_PROMPT_VALUE_OMITTED = object()
+
+
+def _fit_json_value(value: Any, max_characters: int) -> Any:
+    if max_characters <= 4:
+        return _PROMPT_VALUE_OMITTED
+    if _json_character_count(value) <= max_characters:
+        return copy.deepcopy(value)
+    if isinstance(value, str):
+        fitted = value[: max(0, max_characters - 8)]
+        while fitted and _json_character_count(fitted) > max_characters:
+            fitted = fitted[:-8]
+        return fitted if fitted else _PROMPT_VALUE_OMITTED
+    if isinstance(value, list):
+        fitted_list: list[Any] = []
+        for item in value:
+            remaining = max_characters - _json_character_count(fitted_list) - 2
+            fitted_item = _fit_json_value(item, remaining)
+            if fitted_item is _PROMPT_VALUE_OMITTED:
+                break
+            candidate = [*fitted_list, fitted_item]
+            if _json_character_count(candidate) > max_characters:
+                break
+            fitted_list = candidate
+            if _json_character_count(fitted_item) < _json_character_count(item):
+                break
+        return fitted_list if fitted_list else _PROMPT_VALUE_OMITTED
+    if isinstance(value, dict):
+        fitted_dict: dict[str, Any] = {}
+        for key, item in value.items():
+            remaining = max_characters - _json_character_count(fitted_dict) - len(str(key)) - 6
+            fitted_item = _fit_json_value(item, remaining)
+            if fitted_item is _PROMPT_VALUE_OMITTED:
+                continue
+            candidate = {**fitted_dict, str(key): fitted_item}
+            if _json_character_count(candidate) > max_characters:
+                continue
+            fitted_dict[str(key)] = fitted_item
+        return fitted_dict if fitted_dict else _PROMPT_VALUE_OMITTED
+    return _PROMPT_VALUE_OMITTED
+
+
+def _positive_int_environment(name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(1, value)
+
+
+def _estimator_max_input_characters(model: str) -> int:
+    general_limit = _positive_int_environment(
+        "OPENAI_ESTIMATOR_MAX_INPUT_CHARACTERS",
+        DEFAULT_ESTIMATOR_MAX_INPUT_CHARACTERS,
+    )
+    if "pro" not in str(model or "").strip().lower():
+        return general_limit
+    pro_limit = _positive_int_environment(
+        "OPENAI_ESTIMATOR_PRO_MAX_INPUT_CHARACTERS",
+        DEFAULT_ESTIMATOR_PRO_MAX_INPUT_CHARACTERS,
+    )
+    return min(general_limit, pro_limit)
+
+
+def _json_character_count(value: Any) -> int:
+    return len(json.dumps(value, default=str, separators=(",", ":")))
 
 
 def _call_openai_chat(messages: list[dict[str, Any]], model: str) -> dict[str, Any]:
@@ -3290,24 +3474,54 @@ def _call_openai_chat(messages: list[dict[str, Any]], model: str) -> dict[str, A
     except Exception as exc:  # pragma: no cover - optional dependency
         raise RuntimeError("openai package is not installed") from exc
     try:
-        timeout_seconds = float(os.getenv("OPENAI_ESTIMATOR_CHAT_TIMEOUT_SECONDS", "60"))
+        timeout_seconds = float(
+            os.getenv("OPENAI_ESTIMATOR_CHAT_TIMEOUT_SECONDS", "180")
+        )
     except (TypeError, ValueError):
-        timeout_seconds = 60.0
-    client = OpenAI(timeout=timeout_seconds)
-    response = client.chat.completions.create(
-        model=model,
-        temperature=0.2,
-        response_format={"type": "json_object"},
-        messages=messages,
+        timeout_seconds = 180.0
+    try:
+        max_retries = int(os.getenv("OPENAI_ESTIMATOR_MAX_RETRIES", "1"))
+    except (TypeError, ValueError):
+        max_retries = 1
+    client = OpenAI(timeout=timeout_seconds, max_retries=max(0, max_retries))
+    input_characters = _json_character_count(messages)
+    max_input_characters = _estimator_max_input_characters(model)
+    if input_characters > max_input_characters:
+        raise ValueError(
+            f"Estimator prompt blocked before API dispatch: {input_characters:,} "
+            f"characters exceeds the {max_input_characters:,}-character limit."
+        )
+    max_output_tokens = _positive_int_environment(
+        "OPENAI_ESTIMATOR_MAX_OUTPUT_TOKENS",
+        DEFAULT_ESTIMATOR_MAX_OUTPUT_TOKENS,
     )
-    payload = _extract_json_object(response.choices[0].message.content or "{}")
-    payload["_model_call"] = model_call_metadata(
-        role="estimator",
-        model=model,
-        usage=getattr(response, "usage", None),
-        request_id=str(getattr(response, "id", "") or ""),
-        response_model=str(getattr(response, "model", "") or ""),
-    )
+    request: dict[str, Any] = {
+        "model": model,
+        "input": messages,
+        "max_output_tokens": max_output_tokens,
+        "text": {"format": {"type": "json_object"}},
+    }
+    reasoning_effort = str(
+        os.getenv("OPENAI_ESTIMATOR_REASONING_EFFORT") or ""
+    ).strip()
+    if reasoning_effort:
+        request["reasoning"] = {"effort": reasoning_effort}
+    response = client.responses.create(**request)
+    payload = _extract_json_object(getattr(response, "output_text", "") or "{}")
+    payload["_model_call"] = {
+        **model_call_metadata(
+            role="estimator",
+            model=model,
+            usage=getattr(response, "usage", None),
+            request_id=str(getattr(response, "id", "") or ""),
+            response_model=str(getattr(response, "model", "") or ""),
+        ),
+        "input_characters": input_characters,
+        "estimated_input_tokens": (input_characters + 3) // 4,
+        "max_input_characters": max_input_characters,
+        "max_output_tokens": max_output_tokens,
+        "reasoning_effort": reasoning_effort,
+    }
     return payload
 
 

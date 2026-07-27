@@ -607,6 +607,52 @@ def _decision_has_active_formula_basis(target: dict[str, str], values: dict[str,
     return physical_units > 0 and unit_rate > 0
 
 
+def answer_key_decision_is_active(decision: dict[str, Any]) -> bool:
+    """Return whether a normalized answer-key decision represents used scope.
+
+    Historical evidence may be useful even when a price or another formula
+    input is missing, so this intentionally checks quantity/time basis rather
+    than full formula readiness.
+    """
+    if not isinstance(decision, dict) or decision.get("include") is False:
+        return False
+    inputs = decision.get("inputs") if isinstance(decision.get("inputs"), dict) else {}
+    outputs = (
+        decision.get("calculated_outputs")
+        if isinstance(decision.get("calculated_outputs"), dict)
+        else {}
+    )
+    if _first_positive_value(
+        outputs.get("estimated_cost"),
+        outputs.get("calculated_cost"),
+        outputs.get("line_total"),
+    ) > 0:
+        return True
+    usage_fields = (
+        "basis_sqft",
+        "area_sqft",
+        "board_area_sqft",
+        "quantity",
+        "linear_ft",
+        "units",
+        "estimated_units",
+        "estimated_sets",
+        "estimated_gallons",
+        "days",
+        "editable_days",
+        "hours_per_day",
+        "total_hours",
+        "editable_total_hours",
+        "trip_count",
+        "amount",
+        "markup_pct",
+        "overhead_pct",
+        "profit_pct",
+        "warranty_years",
+    )
+    return any(_positive_value(inputs.get(field)) > 0 for field in usage_fields)
+
+
 def _sanitize_answer_key_values_for_target(target: dict[str, Any], values: dict[str, Any]) -> dict[str, Any]:
     cleaned = dict(values or {})
     bucket = _norm(target.get("template_bucket"))

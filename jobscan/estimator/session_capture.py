@@ -728,6 +728,84 @@ def estimator_memory_candidates_from_edits(
     return candidates
 
 
+def estimator_memory_candidates_from_assumption_reviews(
+    review_rows: list[dict[str, Any]],
+    *,
+    session_id: str = "",
+    template_type: str = "",
+) -> list[dict[str, Any]]:
+    """Convert explicit assumption reviews into pending memory candidates."""
+
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    resolved_template_type = normalize_memory_token(template_type)
+    for row in review_rows or []:
+        if not isinstance(row, dict):
+            continue
+        assumption = str(row.get("assumption") or row.get("text") or "").strip()
+        assumption_id = str(row.get("assumption_id") or "").strip()
+        if not assumption or not assumption_id:
+            continue
+        confirmed = bool(row.get("confirmed"))
+        note = str(row.get("note") or row.get("confirmation_note") or "").strip()
+        disposition = "confirmed" if confirmed else "rejected"
+        signature = "|".join(
+            [
+                session_id,
+                resolved_template_type,
+                assumption_id,
+                disposition,
+                note,
+            ]
+        )
+        if signature in seen:
+            continue
+        seen.add(signature)
+        if confirmed:
+            guidance = (
+                f"Estimator confirmed this {resolved_template_type or 'estimate'} assumption: "
+                f"{assumption} Use it only as a reviewed prior for materially similar jobs; "
+                "current job evidence remains authoritative."
+            )
+        else:
+            guidance = (
+                f"Estimator rejected this {resolved_template_type or 'estimate'} assumption: "
+                f"{assumption} Do not apply it without explicit current-job evidence."
+            )
+        if note:
+            guidance = f"{guidance} Review note: {note}"
+        candidates.append(
+            {
+                "memory_id": str(
+                    uuid5(
+                        NAMESPACE_URL,
+                        f"spraytec-estimator-assumption-memory|{signature}",
+                    )
+                ),
+                "guidance": guidance,
+                "template_type": resolved_template_type,
+                "decision_id": "scope_assumption",
+                "template_bucket": "scope_assumptions",
+                "applies_when": {
+                    "source_session_id": session_id,
+                    "assumption_id": assumption_id,
+                    "assumption": assumption,
+                    "review_disposition": disposition,
+                    "review_note": note,
+                },
+                "rationale": (
+                    "Pending memory candidate generated from an explicit "
+                    "estimator assumption review."
+                ),
+                "source_type": "assumption_review",
+                "source_session_id": session_id or None,
+                "status": "pending",
+                "priority": "medium",
+            }
+        )
+    return candidates
+
+
 REFERENCE_MEMORY_VALUE_FIELDS = {
     "selector_code",
     "editable_selector_code",
@@ -1322,6 +1400,55 @@ def save_memory_candidates_from_edits(
             )
     candidates = estimator_memory_candidates_from_edits(
         edit_rows,
+        session_id=session_id,
+        template_type=resolved_template_type,
+    )
+    memory_ids: list[str] = []
+    for candidate in candidates:
+        memory_ids.append(
+            upsert_estimator_memory(
+                engine,
+                memory_id=candidate["memory_id"],
+                guidance=candidate["guidance"],
+                template_type=candidate["template_type"],
+                decision_id=candidate["decision_id"],
+                template_bucket=candidate["template_bucket"],
+                applies_when=candidate["applies_when"],
+                rationale=candidate["rationale"],
+                source_type=candidate["source_type"],
+                source_session_id=candidate["source_session_id"],
+                status=candidate["status"],
+                priority=candidate["priority"],
+            )
+        )
+    return memory_ids
+
+
+def save_memory_candidates_from_assumption_reviews(
+    engine: Engine,
+    session_id: str,
+    review_rows: list[dict[str, Any]],
+    *,
+    template_type: str = "",
+) -> list[str]:
+    if not review_rows:
+        return []
+    ensure_estimator_session_tables(engine)
+    resolved_template_type = template_type
+    if not resolved_template_type:
+        with engine.connect() as connection:
+            resolved_template_type = str(
+                connection.execute(
+                    text(
+                        "SELECT template_type FROM estimator_sessions "
+                        "WHERE session_id = :session_id"
+                    ),
+                    {"session_id": session_id},
+                ).scalar_one_or_none()
+                or ""
+            )
+    candidates = estimator_memory_candidates_from_assumption_reviews(
+        review_rows,
         session_id=session_id,
         template_type=resolved_template_type,
     )

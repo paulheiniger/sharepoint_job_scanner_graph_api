@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -19,9 +20,9 @@ from jobscan.estimator.staged_session import advance_estimate_session
 
 DEFAULT_CASES_PATH = (
     REPO_ROOT
-    / "output"
-    / "estimator_generated_cases"
-    / "generated_live_cases_chat_reviewed.jsonl"
+    / "evals"
+    / "estimator"
+    / "curated_staged_cases.json"
 )
 ACTIONABLE_KINDS = {
     "material",
@@ -131,6 +132,11 @@ def normalize_staged_case(row: dict[str, Any]) -> dict[str, Any]:
                 metadata.get("review_method")
                 or source_metadata.get("review_method")
             ),
+            "selection_policy": (
+                metadata.get("selection_policy")
+                or source_metadata.get("selection_policy")
+                or "exact"
+            ),
         },
     }
 
@@ -170,7 +176,8 @@ def run_staged_case(
     data: Any = None,
     provider: Callable[[list[dict[str, Any]], str], Any] | None = None,
 ) -> dict[str, Any]:
-    _result, state = advance_estimate_session(
+    started_at = time.monotonic()
+    result, state = advance_estimate_session(
         [{"role": "user", "content": str(case.get("notes") or "")}],
         data=data,
         template_type_hint=str(case.get("template_type") or ""),
@@ -178,6 +185,7 @@ def run_staged_case(
         model=model,
     )
     score = score_staged_state(case, state)
+    elapsed_seconds = round(time.monotonic() - started_at, 3)
     return {
         "case_id": case.get("case_id"),
         "model": model,
@@ -186,11 +194,27 @@ def run_staged_case(
         "session_summary": {
             "status": state.get("session_status"),
             "confidence": (state.get("confidence_summary") or {}).get("overall"),
+            "response_source": result.source,
             "scope": state.get("scope_state") or {},
             "decision_count": len(state.get("decision_template_state") or []),
             "question_count": len(state.get("unresolved_questions") or []),
+            "questions": list(state.get("unresolved_questions") or []),
+            "assumptions": list(state.get("assumptions") or []),
             "warning_count": len(state.get("review_flags") or []),
+            "warnings": list(state.get("review_flags") or []),
+            "assistant_message": str(result.assistant_message or ""),
+            "elapsed_seconds": elapsed_seconds,
+            "included_decision_buckets": sorted(
+                {
+                    _token(row.get("template_bucket"))
+                    for row in state.get("decision_template_state") or []
+                    if isinstance(row, dict)
+                    and row.get("include") is True
+                    and _token(row.get("template_bucket"))
+                }
+            ),
             "model_routes": state.get("model_routes") or [],
+            "model_call_history": state.get("model_call_history") or [],
         },
     }
 
@@ -201,48 +225,83 @@ def run_staged_benchmark(
     models: Iterable[str],
     data: Any = None,
     provider: Callable[[list[dict[str, Any]], str], Any] | None = None,
+    stop_on_terminal_error: bool = True,
 ) -> dict[str, Any]:
     selected_models = list(dict.fromkeys(str(model).strip() for model in models if str(model).strip()))
     if not selected_models:
         raise ValueError("At least one estimator model is required.")
     case_rows = list(cases)
-    results = [
-        run_staged_case(case, model=model, data=data, provider=provider)
-        for model in selected_models
-        for case in case_rows
-    ]
+    results: list[dict[str, Any]] = []
+    for model in selected_models:
+        for case in case_rows:
+            result = run_staged_case(
+                case,
+                model=model,
+                data=data,
+                provider=provider,
+            )
+            results.append(result)
+            if stop_on_terminal_error and _terminal_model_error(result):
+                break
     comparisons = []
     for model in selected_models:
         model_results = [row for row in results if row["model"] == model]
+        successful_results = [
+            row
+            for row in model_results
+            if (row.get("session_summary") or {}).get("response_source") == "ai_chat"
+        ]
         comparisons.append(
             {
                 "model": model,
-                "case_count": len(model_results),
+                "selected_case_count": len(case_rows),
+                "attempted_case_count": len(model_results),
+                "successful_model_case_count": len(successful_results),
+                "fallback_case_count": len(model_results) - len(successful_results),
+                "unattempted_case_count": max(0, len(case_rows) - len(model_results)),
                 "mean_score": _mean(
                     row["score"].get("overall_score")
                     for row in model_results
                 ),
+                "mean_model_score": _optional_mean(
+                    row["score"].get("overall_score")
+                    for row in successful_results
+                ),
                 "mean_decision_f1": _mean(
-                    (row["score"].get("metrics") or {}).get("template_selection_f1")
-                    for row in model_results
+                    (row["score"].get("metrics") or {}).get(
+                        "template_selection_f1"
+                    )
+                    for row in successful_results
                 ),
                 "mean_area_score": _mean(
                     (row["score"].get("metrics") or {}).get("square_footage_score")
-                    for row in model_results
+                    for row in successful_results
                 ),
                 "total_unnecessary_questions": sum(
                     int((row["score"].get("counts") or {}).get("unnecessary_questions") or 0)
-                    for row in model_results
+                    for row in successful_results
                 ),
                 "total_unsupported_assumptions": sum(
                     int((row["score"].get("counts") or {}).get("unsupported_assumptions") or 0)
-                    for row in model_results
+                    for row in successful_results
                 ),
             }
         )
+    benchmark_status = (
+        "curated"
+        if case_rows
+        and all(
+            str((row.get("source_metadata") or {}).get("promotion_status") or "")
+            .strip()
+            .lower()
+            in PROMOTABLE_STATUSES
+            for row in case_rows
+        )
+        else "review_only"
+    )
     return {
         "report_version": 1,
-        "benchmark_status": "review_only",
+        "benchmark_status": benchmark_status,
         "case_count": len(case_rows),
         "models": selected_models,
         "comparisons": sorted(
@@ -280,7 +339,15 @@ def score_staged_state(case: dict[str, Any], state: dict[str, Any]) -> dict[str,
         for row in actual_rows
         if row.get("include") is True and _token(row.get("template_bucket"))
     }
-    precision, recall, f1 = _set_scores(expected_included, actual_included)
+    selection_policy = str(
+        (case.get("source_metadata") or {}).get("selection_policy") or "exact"
+    ).strip().lower()
+    if selection_policy == "required_only":
+        precision = None
+        recall = _recall(expected_included, actual_included)
+        f1 = recall
+    else:
+        precision, recall, f1 = _set_scores(expected_included, actual_included)
     material_score = _material_choice_score(expected_rows, actual_rows)
     labor_expected = {
         _token(row.get("template_bucket"))
@@ -328,7 +395,11 @@ def score_staged_state(case: dict[str, Any], state: dict[str, Any]) -> dict[str,
         },
         "differences": {
             "missing_decision_buckets": sorted(expected_included - actual_included),
-            "unexpected_decision_buckets": sorted(actual_included - expected_included),
+            "unexpected_decision_buckets": (
+                []
+                if selection_policy == "required_only"
+                else sorted(actual_included - expected_included)
+            ),
             "violated_exclusions": sorted(expected_excluded & actual_included),
             "square_footage_relative_error": area_error,
         },
@@ -518,6 +589,28 @@ def _mean(values: Iterable[Any]) -> float:
     return round(sum(numbers) / len(numbers), 4) if numbers else 0.0
 
 
+def _optional_mean(values: Iterable[Any]) -> float | None:
+    numbers = [float(value) for value in values if value is not None]
+    return round(sum(numbers) / len(numbers), 4) if numbers else None
+
+
+def _terminal_model_error(result: dict[str, Any]) -> bool:
+    warnings = " ".join(
+        str(value)
+        for value in (result.get("session_summary") or {}).get("warnings") or []
+    ).lower()
+    return any(
+        marker in warnings
+        for marker in (
+            "insufficient_quota",
+            "authenticationerror",
+            "invalid api key",
+            "not a chat model",
+            "model_not_found",
+        )
+    )
+
+
 def _number(value: Any) -> float | None:
     try:
         number = float(value)
@@ -554,6 +647,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--dry-run",
         action="store_true",
         help="Validate case selection and model configuration without making model calls.",
+    )
+    parser.add_argument(
+        "--continue-after-model-error",
+        action="store_true",
+        help="Continue after terminal authentication, quota, or model configuration errors.",
     )
     return parser.parse_args(argv)
 
@@ -592,11 +690,18 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     data = load_data_for_eval(args.database_url)
-    report = run_staged_benchmark(cases, models=models, data=data)
+    report = run_staged_benchmark(
+        cases,
+        models=models,
+        data=data,
+        stop_on_terminal_error=not args.continue_after_model_error,
+    )
     print(
         "Staged estimator eval: "
         + ", ".join(
-            f"{row['model']} mean={row['mean_score']:.3f}"
+            f"{row['model']} end_to_end={row['mean_score']:.3f} "
+            f"model={row['mean_model_score'] if row['mean_model_score'] is not None else 'n/a'} "
+            f"successful={row['successful_model_case_count']}/{row['attempted_case_count']}"
             for row in report["comparisons"]
         )
     )

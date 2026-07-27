@@ -315,6 +315,16 @@ def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
         assert "historical_template_examples" in messages[1]["content"]
         assert "historical_answer_key_examples" in messages[1]["content"]
         assert "historical_answer_key_decision_cues" in messages[1]["content"]
+        payload = json.loads(messages[1]["content"])
+        assert all(
+            "reference_answer_key" not in example
+            for example in (
+                payload["estimator_context"]["historical_template_examples"].get(
+                    "matched_examples",
+                    [],
+                )
+            )
+        )
         assert "insulation_thermal_barrier_coating" in messages[1]["content"]
         assert "foam_yield_history_digest" in messages[1]["content"]
         assert "template_fallback_defaults" in messages[1]["content"]

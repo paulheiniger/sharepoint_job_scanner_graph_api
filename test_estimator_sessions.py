@@ -9,6 +9,7 @@ from jobscan.estimator.session_capture import (
     create_estimator_session,
     ensure_estimator_session_tables,
     estimator_cue_memory_candidates_from_reference_template,
+    estimator_memory_candidates_from_assumption_reviews,
     estimator_memory_candidates_from_edits,
     estimator_memory_candidates_from_reference_template,
     export_estimator_session_package,
@@ -21,6 +22,7 @@ from jobscan.estimator.session_capture import (
     save_decision_proposal,
     save_final_decisions,
     save_cue_memory_candidates_from_reference_template,
+    save_memory_candidates_from_assumption_reviews,
     save_memory_candidates_from_reference_template,
     save_memory_candidates_from_edits,
     save_scope_interpretation,
@@ -248,6 +250,46 @@ def test_estimator_memory_candidates_from_edits_are_pending_until_approved() -> 
 
     update_estimator_memory_status(engine, memory_ids, status="approved", approved_by="tester")
     assert len(approved_memory_frame(engine)) == 1
+
+
+def test_assumption_reviews_create_pending_memory_candidates() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    ensure_estimator_session_tables(engine)
+    session_id = create_estimator_session(
+        engine,
+        raw_input_notes="Roofing notes.",
+        division="Roofing",
+        template_type="roofing",
+    )
+    reviews = [
+        {
+            "assumption_id": "normal-access",
+            "assumption": "Normal roof access is available.",
+            "confirmed": False,
+            "note": "Estimator verified crane access is required.",
+        }
+    ]
+
+    candidates = estimator_memory_candidates_from_assumption_reviews(
+        reviews,
+        session_id=session_id,
+        template_type="roofing",
+    )
+    memory_ids = save_memory_candidates_from_assumption_reviews(
+        engine,
+        session_id,
+        reviews,
+    )
+    pending = estimator_memory_frame(engine, status="pending")
+
+    assert len(candidates) == 1
+    assert candidates[0]["source_type"] == "assumption_review"
+    assert candidates[0]["template_bucket"] == "scope_assumptions"
+    assert "rejected" in candidates[0]["guidance"]
+    assert len(memory_ids) == 1
+    assert len(pending) == 1
+    assert pending.iloc[0]["source_type"] == "assumption_review"
+    assert approved_memory_frame(engine).empty
 
 
 def test_reference_template_summary_decisions_create_pending_memory_candidates() -> None:

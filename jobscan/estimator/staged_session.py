@@ -7,7 +7,14 @@ from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Any, Callable, Iterable
 
-from .chat_assistant import EstimatorChatResult, estimator_context_summary, run_estimator_chat_turn
+from .chat_assistant import (
+    EstimatorChatResult,
+    _bounded_prompt_context,
+    _json_character_count,
+    _positive_int_environment,
+    estimator_context_summary,
+    run_estimator_chat_turn,
+)
 from .model_routing import (
     configured_estimator_models,
     model_call_metadata,
@@ -20,6 +27,8 @@ from .workbench import WORKBENCH_DECISION_SECTIONS, recalculate_workbench_tables
 PROMPT_VERSION = "staged_estimator_v2"
 REVIEW_PROMPT_VERSION = "staged_estimator_review_v1"
 SESSION_SCHEMA_VERSION = 3
+DEFAULT_REVIEW_MAX_INPUT_CHARACTERS = 75_000
+DEFAULT_REVIEW_MAX_OUTPUT_TOKENS = 6_000
 
 DEPENDENT_BUCKETS = {
     "foam": {"labor_foam", "drum_disposal", "truck_expense"},
@@ -1763,10 +1772,29 @@ def _review_prompt_messages(state: dict[str, Any], reasons: list[str]) -> list[d
         "approved_memories_used": state.get("approved_memories_used") or [],
         "review_flags": state.get("review_flags") or [],
     }
-    return [
+    max_input_characters = _positive_int_environment(
+        "OPENAI_REVIEW_MAX_INPUT_CHARACTERS",
+        DEFAULT_REVIEW_MAX_INPUT_CHARACTERS,
+    )
+    fixed_messages = [
         {"role": "system", "content": instructions},
-        {"role": "user", "content": json.dumps(compact, default=str)},
+        {"role": "user", "content": "{}"},
     ]
+    context_budget = max(
+        0,
+        max_input_characters - _json_character_count(fixed_messages) - 1_000,
+    )
+    bounded_compact = _bounded_prompt_context(compact, context_budget)
+    messages = [
+        {"role": "system", "content": instructions},
+        {"role": "user", "content": json.dumps(bounded_compact, default=str)},
+    ]
+    if _json_character_count(messages) > max_input_characters:
+        raise ValueError(
+            "Review prompt exceeds OPENAI_REVIEW_MAX_INPUT_CHARACTERS "
+            "after context compaction."
+        )
+    return messages
 
 
 def _call_review_model(messages: list[dict[str, Any]], model: str) -> dict[str, Any]:
@@ -1775,23 +1803,58 @@ def _call_review_model(messages: list[dict[str, Any]], model: str) -> dict[str, 
     except Exception as exc:  # pragma: no cover - optional dependency
         raise RuntimeError("openai package is not installed") from exc
     try:
-        timeout_seconds = float(os.getenv("OPENAI_REVIEW_TIMEOUT_SECONDS", "90"))
+        timeout_seconds = float(os.getenv("OPENAI_REVIEW_TIMEOUT_SECONDS", "180"))
     except (TypeError, ValueError):
-        timeout_seconds = 90.0
-    response = OpenAI(timeout=timeout_seconds).chat.completions.create(
-        model=model,
-        temperature=0.1,
-        response_format={"type": "json_object"},
-        messages=messages,
+        timeout_seconds = 180.0
+    try:
+        max_retries = int(os.getenv("OPENAI_REVIEW_MAX_RETRIES", "1"))
+    except (TypeError, ValueError):
+        max_retries = 1
+    request: dict[str, Any] = {
+        "model": model,
+        "input": messages,
+        "max_output_tokens": _positive_int_environment(
+            "OPENAI_REVIEW_MAX_OUTPUT_TOKENS",
+            DEFAULT_REVIEW_MAX_OUTPUT_TOKENS,
+        ),
+        "text": {"format": {"type": "json_object"}},
+    }
+    input_characters = _json_character_count(messages)
+    max_input_characters = _positive_int_environment(
+        "OPENAI_REVIEW_MAX_INPUT_CHARACTERS",
+        DEFAULT_REVIEW_MAX_INPUT_CHARACTERS,
     )
-    payload = _json_payload(response.choices[0].message.content or "{}")
-    payload["_model_call"] = model_call_metadata(
-        role="review",
-        model=model,
-        usage=getattr(response, "usage", None),
-        request_id=str(getattr(response, "id", "") or ""),
-        response_model=str(getattr(response, "model", "") or ""),
-    )
+    if input_characters > max_input_characters:
+        raise ValueError(
+            f"Review prompt blocked before API dispatch: {input_characters:,} "
+            f"characters exceeds the {max_input_characters:,}-character limit."
+        )
+    reasoning_effort = str(
+        os.getenv("OPENAI_REVIEW_REASONING_EFFORT")
+        or os.getenv("OPENAI_ESTIMATOR_REASONING_EFFORT")
+        or ""
+    ).strip()
+    if reasoning_effort:
+        request["reasoning"] = {"effort": reasoning_effort}
+    response = OpenAI(
+        timeout=timeout_seconds,
+        max_retries=max(0, max_retries),
+    ).responses.create(**request)
+    payload = _json_payload(getattr(response, "output_text", "") or "{}")
+    payload["_model_call"] = {
+        **model_call_metadata(
+            role="review",
+            model=model,
+            usage=getattr(response, "usage", None),
+            request_id=str(getattr(response, "id", "") or ""),
+            response_model=str(getattr(response, "model", "") or ""),
+        ),
+        "input_characters": input_characters,
+        "estimated_input_tokens": (input_characters + 3) // 4,
+        "max_input_characters": max_input_characters,
+        "max_output_tokens": request["max_output_tokens"],
+        "reasoning_effort": reasoning_effort,
+    }
     return payload
 
 

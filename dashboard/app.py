@@ -188,6 +188,7 @@ apply_review_recommendations = None
 estimate_review_reasons = None
 latest_correction_memory_edits = None
 evaluate_estimate_readiness = None
+decision_edit_schema = None
 update_estimate_decision = None
 confirm_estimate_assumption = None
 approve_estimate_session = None
@@ -215,7 +216,7 @@ def ensure_estimator_imports() -> None:
     global estimator_context_cache_stats, run_estimator_chat_turn
     global advance_estimate_session, new_estimate_session_state, reject_historical_precedent
     global run_estimate_review, apply_review_recommendations, estimate_review_reasons
-    global latest_correction_memory_edits, evaluate_estimate_readiness
+    global latest_correction_memory_edits, evaluate_estimate_readiness, decision_edit_schema
     global update_estimate_decision, confirm_estimate_assumption, approve_estimate_session
     global estimate_audit_report_json
     global extract_notes_from_images_with_ai, stage_note_images
@@ -284,6 +285,7 @@ def ensure_estimator_imports() -> None:
         approve_estimate_session as imported_approve_estimate_session,
     )
     from jobscan.estimator.readiness import (
+        decision_edit_schema as imported_decision_edit_schema,
         evaluate_estimate_readiness as imported_evaluate_estimate_readiness,
     )
     from jobscan.estimator.audit_report import (
@@ -338,6 +340,7 @@ def ensure_estimator_imports() -> None:
     estimate_review_reasons = imported_estimate_review_reasons
     latest_correction_memory_edits = imported_latest_correction_memory_edits
     evaluate_estimate_readiness = imported_evaluate_estimate_readiness
+    decision_edit_schema = imported_decision_edit_schema
     update_estimate_decision = imported_update_estimate_decision
     confirm_estimate_assumption = imported_confirm_estimate_assumption
     approve_estimate_session = imported_approve_estimate_session
@@ -1413,6 +1416,28 @@ def capture_estimator_memory_candidates(
     )
     if memory_ids:
         st.session_state["estimator_memory_pending_count"] = int(st.session_state.get("estimator_memory_pending_count") or 0) + len(memory_ids)
+    return list(memory_ids or [])
+
+
+def capture_assumption_memory_candidates(
+    session_id: str,
+    review_rows: list[dict[str, Any]],
+    *,
+    template_type: str = "",
+) -> list[str]:
+    if not session_id or not review_rows:
+        return []
+    memory_ids = capture_estimator_session_event(
+        estimator_sessions.save_memory_candidates_from_assumption_reviews,
+        session_id,
+        review_rows,
+        template_type=template_type,
+    )
+    if memory_ids:
+        st.session_state["estimator_memory_pending_count"] = (
+            int(st.session_state.get("estimator_memory_pending_count") or 0)
+            + len(memory_ids)
+        )
     return list(memory_ids or [])
 
 
@@ -21850,6 +21875,14 @@ def render_staged_estimate_state(
                             confirmed=True,
                             note=assumption_note,
                         )
+                        review_candidate = (updated.get("learning_candidates") or [])[-1:]
+                        memory_ids = capture_assumption_memory_candidates(
+                            database_session_id,
+                            review_candidate,
+                            template_type=str(updated.get("template_type") or estimate_type),
+                        )
+                        if review_candidate and memory_ids:
+                            review_candidate[0]["database_memory_ids"] = memory_ids
                         persist_review_state(updated)
                         st.rerun()
                     except Exception as exc:
@@ -21870,6 +21903,14 @@ def render_staged_estimate_state(
                             confirmed=False,
                             note=assumption_note,
                         )
+                        review_candidate = (updated.get("learning_candidates") or [])[-1:]
+                        memory_ids = capture_assumption_memory_candidates(
+                            database_session_id,
+                            review_candidate,
+                            template_type=str(updated.get("template_type") or estimate_type),
+                        )
+                        if review_candidate and memory_ids:
+                            review_candidate[0]["database_memory_ids"] = memory_ids
                         persist_review_state(updated)
                         st.rerun()
                     except Exception as exc:
@@ -21913,22 +21954,48 @@ def render_staged_estimate_state(
                 key=f"review_decision_{chat_key}",
             )
             selected_decision = decision_lookup.get(selected_decision_id, {})
-            edit_include = st.checkbox(
-                "Include in estimate",
-                value=bool(selected_decision.get("include")),
-                key=f"decision_include_{chat_key}_{selected_decision_id}",
-            )
-            proposed_values_text = st.text_area(
-                "Decision inputs (JSON)",
-                value=json.dumps(
-                    selected_decision.get("proposed_values") or {},
-                    indent=2,
-                    sort_keys=True,
-                    default=str,
+            edit_schema = decision_edit_schema(state, selected_decision)
+            edit_fields = edit_schema.get("fields") or []
+            proposed_values = selected_decision.get("proposed_values") or {}
+            edit_row = {"include": bool(selected_decision.get("include"))}
+            column_config: dict[str, Any] = {
+                "include": st.column_config.CheckboxColumn(
+                    "Include",
+                    help="Include this estimator decision in the workbook inputs.",
+                )
+            }
+            for field in edit_fields:
+                field_name = str(field.get("field") or "")
+                if not field_name:
+                    continue
+                edit_row[field_name] = proposed_values.get(field_name)
+                label = str(field.get("label") or field_name.replace("_", " ").title())
+                if field.get("input_type") == "text":
+                    column_config[field_name] = st.column_config.TextColumn(label)
+                else:
+                    column_config[field_name] = st.column_config.NumberColumn(
+                        label,
+                        min_value=0.0,
+                        step=0.1,
+                    )
+            editor_signature = hashlib.sha1(
+                json.dumps(edit_row, sort_keys=True, default=str).encode("utf-8")
+            ).hexdigest()[:10]
+            edited_decision = st.data_editor(
+                pd.DataFrame([edit_row]),
+                column_config=column_config,
+                disabled=[],
+                hide_index=True,
+                use_container_width=True,
+                num_rows="fixed",
+                key=(
+                    f"decision_fields_{chat_key}_{selected_decision_id}_"
+                    f"{editor_signature}"
                 ),
-                height=180,
-                key=f"decision_values_{chat_key}_{selected_decision_id}",
             )
+            requirements = edit_schema.get("formula_requirements") or []
+            if requirements:
+                st.caption("Workbook inputs: " + "; ".join(str(value) for value in requirements))
             decision_reason = st.text_input(
                 "Edit or acceptance note",
                 key=f"decision_reason_{chat_key}_{selected_decision_id}",
@@ -21940,13 +22007,25 @@ def render_staged_estimate_state(
                     key=f"apply_decision_edit_{chat_key}_{selected_decision_id}",
                 ):
                     try:
-                        parsed_values = json.loads(proposed_values_text or "{}")
-                        if not isinstance(parsed_values, dict):
-                            raise ValueError("Decision inputs must be a JSON object.")
+                        edited_row = (
+                            edited_decision.iloc[0].to_dict()
+                            if not edited_decision.empty
+                            else edit_row
+                        )
+                        parsed_values: dict[str, Any] = dict(proposed_values)
+                        for field in edit_fields:
+                            field_name = str(field.get("field") or "")
+                            value = edited_row.get(field_name)
+                            if value is None or pd.isna(value):
+                                parsed_values.pop(field_name, None)
+                                continue
+                            if isinstance(value, np.generic):
+                                value = value.item()
+                            parsed_values[field_name] = value
                         updated = update_estimate_decision(
                             state,
                             decision_id=selected_decision_id,
-                            include=edit_include,
+                            include=bool(edited_row.get("include")),
                             proposed_values=parsed_values,
                             reason=decision_reason,
                             action="edit",

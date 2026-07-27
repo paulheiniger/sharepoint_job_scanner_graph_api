@@ -42,12 +42,16 @@ The staged evaluator runs the same persistent session path used by the
 Estimating Assistant. Historical generated cases remain review-only until an
 estimator promotes them.
 
+The default staged benchmark is
+`evals/estimator/curated_staged_cases.json`. It contains only hand-authored,
+approved cases. Generated historical cases are deliberately not the default.
+
 Validate case selection without model calls:
 
 ```bash
 python -m evals.estimator.run_staged_estimator_eval \
   --dry-run \
-  --limit 10
+  --limit 4
 ```
 
 Compare two configured models and write a review report:
@@ -64,6 +68,26 @@ The live comparison requires `OPENAI_API_KEY`. It scores template selections,
 material choices, thickness, area, labor assumptions, pricing range when an
 authoritative expected total exists, exclusions, warranty, unnecessary
 questions, and unsupported assumptions.
+
+The persistent estimator and independent review use the Responses API. Set
+`OPENAI_ESTIMATOR_REASONING_EFFORT` and
+`OPENAI_REVIEW_REASONING_EFFORT` when the selected models support configurable
+reasoning. Request timing is controlled by
+`OPENAI_ESTIMATOR_CHAT_TIMEOUT_SECONDS`, `OPENAI_ESTIMATOR_MAX_RETRIES`,
+`OPENAI_REVIEW_TIMEOUT_SECONDS`, and `OPENAI_REVIEW_MAX_RETRIES`.
+Local cost circuit breakers default to 100,000 serialized input characters and
+8,000 output tokens for the estimator, and 75,000 input characters and 6,000
+output tokens for independent review. Models whose name contains `pro` have a
+stricter 60,000-character estimator ceiling. Override them with
+`OPENAI_ESTIMATOR_MAX_INPUT_CHARACTERS`,
+`OPENAI_ESTIMATOR_PRO_MAX_INPUT_CHARACTERS`,
+`OPENAI_ESTIMATOR_MAX_OUTPUT_TOKENS`,
+`OPENAI_REVIEW_MAX_INPUT_CHARACTERS`, and
+`OPENAI_REVIEW_MAX_OUTPUT_TOKENS`. Oversized requests fail locally before API
+dispatch.
+Terminal authentication, quota, and model-configuration failures stop further
+calls for that model by default. Use `--continue-after-model-error` only when
+continuing is intentional.
 
 Promote only cases explicitly marked `reviewed`, `approved`, or `promoted` into
 a curated benchmark artifact:

@@ -1,0 +1,114 @@
+{
+  "benchmark_status": "curated",
+  "case_count": 4,
+  "cases": [
+    {
+      "case_id": "roof_coating_basic_9536",
+      "notes": "Roof coating estimate for a commercial metal roof in Louisville KY. Main roof is 120 ft by 80 ft. Deduct two skylights, each 4 ft by 8 ft. Roof is fair overall but has rusted fasteners and some open seams. Customer wants a 10-year silicone coating system. Access is easy. Few penetrations. Use standard white silicone if available.",
+      "template_type": "roofing",
+      "expected_scope": {
+        "deduction_area_sqft": 64,
+        "estimated_sqft": 9536,
+        "gross_area_sqft": 9600,
+        "net_area_sqft": 9536,
+        "warranty_years": 10
+      },
+      "expected_decisions": [
+        {"template_bucket": "coating", "line_item_kind": "material", "expected_include": true},
+        {"template_bucket": "primer", "line_item_kind": "material", "expected_include": true},
+        {"template_bucket": "seams_misc", "line_item_kind": "material", "expected_include": true},
+        {"template_bucket": "labor_prep", "line_item_kind": "labor", "expected_include": true},
+        {"template_bucket": "labor_seam_sealer", "line_item_kind": "labor", "expected_include": true},
+        {"template_bucket": "labor_base", "line_item_kind": "labor", "expected_include": true},
+        {"template_bucket": "labor_top_coat", "line_item_kind": "labor", "expected_include": true},
+        {"template_bucket": "labor_cleanup", "line_item_kind": "labor", "expected_include": true},
+        {"template_bucket": "granules", "line_item_kind": "material", "expected_include": false},
+        {"template_bucket": "infrared_scan", "line_item_kind": "labor", "expected_include": false},
+        {"template_bucket": "foam", "line_item_kind": "material", "expected_include": false}
+      ],
+      "source_metadata": {
+        "promotion_status": "approved",
+        "review_method": "hand_authored_existing_eval",
+        "selection_policy": "required_only",
+        "source_file": "evals/estimator/field_notes_cases.json"
+      }
+    },
+    {
+      "case_id": "ir_scan_trigger",
+      "notes": "Roof restoration estimate in Louisville KY. Roof is roughly 18,000 sqft. Customer wants an infrared moisture scan before coating because there are active leaks and possible trapped moisture. Metal substrate, rusted fasteners, lots of penetrations. Considering 15-year silicone system.",
+      "template_type": "roofing",
+      "expected_scope": {
+        "estimated_sqft": 18000,
+        "warranty_years": 15
+      },
+      "expected_decisions": [
+        {"template_bucket": "coating", "line_item_kind": "material", "expected_include": true},
+        {"template_bucket": "primer", "line_item_kind": "material", "expected_include": true},
+        {"template_bucket": "infrared_scan", "line_item_kind": "labor", "expected_include": true},
+        {"template_bucket": "labor_prep", "line_item_kind": "labor", "expected_include": true},
+        {"template_bucket": "labor_seam_sealer", "line_item_kind": "labor", "expected_include": true},
+        {"template_bucket": "labor_base", "line_item_kind": "labor", "expected_include": true},
+        {"template_bucket": "labor_top_coat", "line_item_kind": "labor", "expected_include": true}
+      ],
+      "source_metadata": {
+        "promotion_status": "approved",
+        "review_method": "hand_authored_existing_eval",
+        "selection_policy": "required_only",
+        "source_file": "evals/estimator/field_notes_cases.json"
+      }
+    },
+    {
+      "case_id": "granules_trigger",
+      "notes": "Metal roof coating job in Bowling Green KY. Roof is 150 ft by 100 ft. Customer wants a 20-year silicone system with granules broadcast into the top coat. Roof has rusted seams and fasteners. Medium access with several rooftop units.",
+      "template_type": "roofing",
+      "expected_scope": {
+        "estimated_sqft": 15000,
+        "warranty_years": 20
+      },
+      "expected_decisions": [
+        {"template_bucket": "coating", "line_item_kind": "material", "expected_include": true},
+        {"template_bucket": "primer", "line_item_kind": "material", "expected_include": true},
+        {"template_bucket": "granules", "line_item_kind": "material", "expected_include": true},
+        {"template_bucket": "labor_prep", "line_item_kind": "labor", "expected_include": true},
+        {"template_bucket": "labor_seam_sealer", "line_item_kind": "labor", "expected_include": true},
+        {"template_bucket": "labor_base", "line_item_kind": "labor", "expected_include": true},
+        {"template_bucket": "labor_top_coat", "line_item_kind": "labor", "expected_include": true}
+      ],
+      "source_metadata": {
+        "promotion_status": "approved",
+        "review_method": "hand_authored_existing_eval",
+        "selection_policy": "required_only",
+        "source_file": "evals/estimator/field_notes_cases.json"
+      }
+    },
+    {
+      "case_id": "insulation_walls_with_deductions",
+      "notes": "Spray foam insulation estimate in Louisville KY. North wall is 120 ft by 18 ft. South wall is 120 ft by 18 ft. East wall is 80 ft by 18 ft. West wall is 80 ft by 18 ft. Deduct 8 overhead doors at 12 ft by 14 ft and 10 windows at 4 ft by 5 ft. Customer wants closed-cell foam, about 2 inches thick. Access is easy.",
+      "template_type": "insulation",
+      "expected_scope": {
+        "deduction_area_sqft": 1544,
+        "estimated_sqft": 5656,
+        "gross_area_sqft": 7200,
+        "net_area_sqft": 5656
+      },
+      "expected_decisions": [
+        {
+          "template_bucket": "foam",
+          "line_item_kind": "material",
+          "expected_include": true,
+          "thickness_inches": 2
+        },
+        {"template_bucket": "labor_foam", "line_item_kind": "labor", "expected_include": true},
+        {"template_bucket": "labor_loading", "line_item_kind": "labor", "expected_include": true},
+        {"template_bucket": "labor_traveling", "line_item_kind": "labor", "expected_include": true}
+      ],
+      "source_metadata": {
+        "promotion_status": "approved",
+        "review_method": "hand_authored_existing_eval",
+        "selection_policy": "required_only",
+        "source_file": "evals/estimator/field_notes_cases.json"
+      }
+    }
+  ],
+  "schema_version": 1
+}
