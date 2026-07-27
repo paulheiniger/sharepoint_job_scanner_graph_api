@@ -183,6 +183,10 @@ run_estimator_chat_turn = None
 advance_estimate_session = None
 new_estimate_session_state = None
 reject_historical_precedent = None
+run_estimate_review = None
+apply_review_recommendations = None
+estimate_review_reasons = None
+latest_correction_memory_edits = None
 extract_notes_from_images_with_ai = None
 stage_note_images = None
 answer_key_to_workbook_decision_preferences = None
@@ -205,6 +209,8 @@ def ensure_estimator_imports() -> None:
     global apply_photo_record_edits, build_photo_scope_context, merge_photo_ai_analysis, stage_uploaded_images
     global estimator_context_cache_stats, run_estimator_chat_turn
     global advance_estimate_session, new_estimate_session_state, reject_historical_precedent
+    global run_estimate_review, apply_review_recommendations, estimate_review_reasons
+    global latest_correction_memory_edits
     global extract_notes_from_images_with_ai, stage_note_images
     global answer_key_to_workbook_decision_preferences, build_reference_estimate_answer_key
     global build_template_examples
@@ -262,6 +268,10 @@ def ensure_estimator_imports() -> None:
         advance_estimate_session as imported_advance_estimate_session,
         new_estimate_session_state as imported_new_estimate_session_state,
         reject_historical_precedent as imported_reject_historical_precedent,
+        run_estimate_review as imported_run_estimate_review,
+        apply_review_recommendations as imported_apply_review_recommendations,
+        estimate_review_reasons as imported_estimate_review_reasons,
+        latest_correction_memory_edits as imported_latest_correction_memory_edits,
     )
     from jobscan.estimator.note_images import (
         extract_notes_from_images_with_ai as imported_extract_notes_from_images_with_ai,
@@ -307,6 +317,10 @@ def ensure_estimator_imports() -> None:
     advance_estimate_session = imported_advance_estimate_session
     new_estimate_session_state = imported_new_estimate_session_state
     reject_historical_precedent = imported_reject_historical_precedent
+    run_estimate_review = imported_run_estimate_review
+    apply_review_recommendations = imported_apply_review_recommendations
+    estimate_review_reasons = imported_estimate_review_reasons
+    latest_correction_memory_edits = imported_latest_correction_memory_edits
     extract_notes_from_images_with_ai = imported_extract_notes_from_images_with_ai
     stage_note_images = imported_stage_note_images
     answer_key_to_workbook_decision_preferences = imported_answer_key_to_workbook_decision_preferences
@@ -1362,9 +1376,14 @@ def current_estimator_session_id() -> str:
     return str(st.session_state.get("estimator_session_id") or "")
 
 
-def capture_estimator_memory_candidates(session_id: str, edit_rows: list[dict[str, Any]], *, template_type: str = "") -> None:
+def capture_estimator_memory_candidates(
+    session_id: str,
+    edit_rows: list[dict[str, Any]],
+    *,
+    template_type: str = "",
+) -> list[str]:
     if not session_id or not edit_rows:
-        return
+        return []
     memory_ids = capture_estimator_session_event(
         estimator_sessions.save_memory_candidates_from_edits,
         session_id,
@@ -1373,10 +1392,11 @@ def capture_estimator_memory_candidates(session_id: str, edit_rows: list[dict[st
     )
     if memory_ids:
         st.session_state["estimator_memory_pending_count"] = int(st.session_state.get("estimator_memory_pending_count") or 0) + len(memory_ids)
+    return list(memory_ids or [])
 
 
 def explicit_learning_memory_auto_approval_enabled() -> bool:
-    value = str(os.getenv("ESTIMATOR_AUTO_APPROVE_EXPLICIT_LEARNING_MEMORY", "1") or "").strip().lower()
+    value = str(os.getenv("ESTIMATOR_AUTO_APPROVE_EXPLICIT_LEARNING_MEMORY", "0") or "").strip().lower()
     return value not in {"0", "false", "no", "off"}
 
 
@@ -20648,6 +20668,9 @@ def persist_staged_estimate_session(
             evidence_summary={
                 "historical_comparison": state.get("historical_comparison") or [],
                 "approved_memories_used": state.get("approved_memories_used") or [],
+                "dependency_state": state.get("dependency_state") or {},
+                "review_state": state.get("review_state") or {},
+                "model_metadata": state.get("model_metadata") or {},
                 "prompt_version": state.get("prompt_version"),
             },
         )
@@ -21526,14 +21549,121 @@ def render_staged_estimate_state(
     result: dict[str, Any],
     estimate_type: str,
     database_session_id: str,
+    data: EstimatorData | None = None,
 ) -> None:
     status = str(state.get("session_status") or "collecting_information").replace("_", " ").title()
     confidence = (state.get("confidence_summary") or {}).get("overall")
     confidence_text = f" | Confidence {float(confidence):.0%}" if isinstance(confidence, (int, float)) else ""
     st.caption(f"Estimate session: {status}{confidence_text}")
+    review_reasons = estimate_review_reasons(state)
+    review_state = state.get("review_state") if isinstance(state.get("review_state"), dict) else {}
+    review_col, apply_col, approve_col = st.columns(3)
+    with review_col:
+        if st.button(
+            "Request stronger-model review",
+            key=f"request_estimate_review_{chat_key}",
+            help="Runs an advisory second pass using OPENAI_REVIEW_MODEL. It does not change decisions automatically.",
+        ):
+            try:
+                with st.spinner("Running independent estimate review..."):
+                    run_estimate_review(state, user_requested=True)
+                st.session_state[state_key] = state
+                result["staged_session_state"] = state
+                persist_staged_estimate_session(
+                    session_id=database_session_id,
+                    state=state,
+                    result=result,
+                )
+                save_estimator_chat_session(
+                    chat_key,
+                    history=history,
+                    result=result,
+                    estimator_notes=str(st.session_state.get("estimator_notes") or ""),
+                    estimate_type=estimate_type,
+                    staged_session_state=state,
+                    database_session_id=database_session_id,
+                )
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Estimate review failed: {type(exc).__name__}: {safe_exception_text(exc)}")
+    with apply_col:
+        review_patches = [
+            row.get("recommended_patch")
+            for row in review_state.get("issues") or []
+            if isinstance(row, dict) and isinstance(row.get("recommended_patch"), dict)
+        ]
+        if review_patches and review_state.get("status") == "completed" and not review_state.get("applied"):
+            if st.button("Apply review patches", key=f"apply_estimate_review_{chat_key}"):
+                try:
+                    updated = apply_review_recommendations(state, data=data)
+                    result["workbook_decision_preferences"] = updated.get("decision_template_state") or []
+                    result["staged_session_state"] = updated
+                    st.session_state[state_key] = updated
+                    persist_staged_estimate_session(
+                        session_id=database_session_id,
+                        state=updated,
+                        result=result,
+                    )
+                    save_estimator_chat_session(
+                        chat_key,
+                        history=history,
+                        result=result,
+                        estimator_notes=str(st.session_state.get("estimator_notes") or ""),
+                        estimate_type=estimate_type,
+                        staged_session_state=updated,
+                        database_session_id=database_session_id,
+                    )
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Could not apply review patches: {type(exc).__name__}: {safe_exception_text(exc)}")
+    with approve_col:
+        can_approve = bool(state.get("decision_template_state")) and not state.get("unresolved_questions")
+        if st.button(
+            "Approve for workbook",
+            key=f"approve_staged_estimate_{chat_key}",
+            disabled=not can_approve or state.get("session_status") == "approved",
+            help="Confirms the current decisions are ready for deterministic workbook generation.",
+        ):
+            approved_at = pd.Timestamp.utcnow().isoformat()
+            state["session_status"] = "approved"
+            state["current_stage"] = "approved"
+            state["approved_at"] = approved_at
+            state["updated_at"] = approved_at
+            state.setdefault("audit_events", []).append(
+                {
+                    "created_at": approved_at,
+                    "event_type": "estimate_approved",
+                    "decision_count": len(state.get("decision_template_state") or []),
+                }
+            )
+            result["staged_session_state"] = state
+            st.session_state[state_key] = state
+            persist_staged_estimate_session(
+                session_id=database_session_id,
+                state=state,
+                result=result,
+            )
+            save_estimator_chat_session(
+                chat_key,
+                history=history,
+                result=result,
+                estimator_notes=str(st.session_state.get("estimator_notes") or ""),
+                estimate_type=estimate_type,
+                staged_session_state=state,
+                database_session_id=database_session_id,
+            )
+            st.rerun()
+    if review_reasons and not review_state:
+        st.caption("Second review recommended: " + " ".join(review_reasons))
+    if review_state:
+        if review_state.get("status") == "stale":
+            st.warning("The previous stronger-model review is stale because the estimate changed.")
+        else:
+            verdict = str(review_state.get("verdict") or "completed").replace("_", " ").title()
+            st.info(f"Review verdict: {verdict}. {review_state.get('summary') or ''}".strip())
 
-    facts_tab, history_tab, assumptions_tab, decisions_tab, questions_tab, evidence_tab = st.tabs(
-        ["Job facts", "Similar jobs", "Assumptions", "Decisions", "Questions", "Evidence"]
+    facts_tab, history_tab, assumptions_tab, decisions_tab, calculations_tab, questions_tab, evidence_tab = st.tabs(
+        ["Job facts", "Similar jobs", "Assumptions", "Decisions", "Calculations", "Questions", "Evidence"]
     )
     with facts_tab:
         facts = state.get("job_facts") or []
@@ -21614,8 +21744,37 @@ def render_staged_estimate_state(
                     }
                 )
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            correction_edits = latest_correction_memory_edits(state)
+            if correction_edits and database_session_id:
+                if st.button(
+                    "Save latest correction as memory candidate",
+                    key=f"save_staged_memory_{chat_key}_{len(state.get('decision_change_history') or [])}",
+                    help="Creates pending memories for approval. It does not automatically activate them.",
+                ):
+                    memory_ids = capture_estimator_memory_candidates(
+                        database_session_id,
+                        correction_edits,
+                        template_type=str(state.get("template_type") or ""),
+                    )
+                    if memory_ids:
+                        st.success(f"Saved {len(memory_ids)} pending memory candidate(s) for approval.")
+                    else:
+                        st.info("No new reusable memory candidate was created.")
         else:
             st.caption("No decision-template proposals yet.")
+    with calculations_tab:
+        calculation_state = state.get("calculation_state") or {}
+        affected = calculation_state.get("affected_decision_ids") or []
+        st.caption(
+            f"Formula engine: {calculation_state.get('formula_engine') or 'not run'}"
+            + (f" | recalculated {len(affected)} decision(s) this turn" if affected else "")
+        )
+        if calculation_state.get("totals"):
+            st.json(calculation_state.get("totals"))
+        with st.expander("Dependency trace", expanded=False):
+            st.json(state.get("dependency_state") or {})
+        with st.expander("Decision calculation outputs", expanded=False):
+            st.json(calculation_state.get("decision_outputs") or {})
     with questions_tab:
         questions = state.get("unresolved_questions") or []
         warnings = state.get("review_flags") or []
@@ -21635,10 +21794,40 @@ def render_staged_estimate_state(
             st.json(state.get("estimating_plan") or {})
         with st.expander("Approved memories used", expanded=False):
             st.json(state.get("approved_memories_used") or [])
+        with st.expander("Approved memories retrieved but not applied", expanded=False):
+            used_ids = {
+                str(row.get("memory_id") or "")
+                for row in state.get("approved_memories_used") or []
+                if isinstance(row, dict)
+            }
+            st.json(
+                [
+                    row
+                    for row in state.get("approved_memories_retrieved") or []
+                    if str(row.get("memory_id") or "") not in used_ids
+                ]
+            )
+        with st.expander("Decision evidence and source IDs", expanded=False):
+            st.json(
+                [
+                    {
+                        "decision_id": row.get("decision_id"),
+                        "source_type": row.get("source_type") or row.get("source"),
+                        "source_ids": row.get("source_ids") or [],
+                        "evidence": row.get("evidence") or [],
+                        "review_required": row.get("review_required"),
+                    }
+                    for row in state.get("decision_template_state") or []
+                    if isinstance(row, dict)
+                ]
+            )
         with st.expander("Pricing records", expanded=False):
             st.json(state.get("retrieved_pricing_records") or [])
         with st.expander("Product evidence", expanded=False):
             st.json(state.get("retrieved_product_knowledge") or [])
+        if review_state:
+            with st.expander("Stronger-model review", expanded=True):
+                st.json(review_state)
 
 
 def render_estimator_chat_draft_panel(
@@ -21886,6 +22075,7 @@ def render_estimator_chat_draft_panel(
             estimate_type=estimate_type,
             staged_session_state=st.session_state.get(staged_state_key) or {},
             database_session_id=str(st.session_state.get(database_session_key) or ""),
+            data=data,
         )
     for message in chat_history[-10:]:
         role = str(message.get("role") or "assistant")
@@ -22703,7 +22893,21 @@ def estimator_prototype_page() -> None:
             else:
                 field_notes_data = None
     estimator_input_notes = chat_augmented_notes
-    build_requested = st.button("Build / Rebuild Filled Estimate Template", key="generate_field_estimate_recommendation")
+    staged_workflow_state = (
+        active_chat_context.get("staged_session_state")
+        if active_chat_context and isinstance(active_chat_context.get("staged_session_state"), dict)
+        else {}
+    )
+    staged_workflow_requires_approval = bool(staged_workflow_state) and str(
+        staged_workflow_state.get("session_status") or ""
+    ) not in {"approved", "workbook_generated"}
+    if staged_workflow_requires_approval:
+        st.caption("Approve the staged decision draft in the Estimating Assistant before generating the workbook.")
+    build_requested = st.button(
+        "Build / Rebuild Filled Estimate Template",
+        key="generate_field_estimate_recommendation",
+        disabled=staged_workflow_requires_approval,
+    )
     auto_build_requested = bool(st.session_state.pop("estimator_auto_build_requested", False))
     if auto_build_requested:
         st.info("Learning mode requested a workbook rebuild automatically.")

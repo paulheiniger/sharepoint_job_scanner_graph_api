@@ -615,6 +615,17 @@ def test_staged_estimator_state_survives_database_reload() -> None:
     assert reloaded["decision_template_state"][0]["include"] is False
     assert reloaded["conversation_history"][0]["content"] == "Exclude thermal barrier."
 
+    state["session_status"] = "approved"
+    state["current_stage"] = "approved"
+    state["approved_at"] = "2026-07-27T12:00:00+00:00"
+    save_estimate_session_state(engine, session_id, state)
+    with engine.connect() as connection:
+        approved_at = connection.execute(
+            text("SELECT approved_at FROM estimator_sessions WHERE session_id = :session_id"),
+            {"session_id": session_id},
+        ).scalar_one()
+    assert approved_at is not None
+
 
 def test_runtime_migration_adds_staged_columns_to_existing_sqlite_table() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)

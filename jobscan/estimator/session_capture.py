@@ -465,6 +465,7 @@ def save_estimate_session_state(
         conversation_history=history,
         model_metadata=model_metadata or state.get("model_metadata") or {},
         prompt_version=prompt_version or state.get("prompt_version"),
+        approved_at=state.get("approved_at"),
     )
 
 
