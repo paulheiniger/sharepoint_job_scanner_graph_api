@@ -17,6 +17,7 @@ from jobscan.estimator.chat_assistant import (
     _call_openai_chat,
     _chat_prompt_messages,
     _json_character_count,
+    run_estimator_chat_turn,
 )
 from jobscan.estimator.readiness import decision_edit_schema, evaluate_estimate_readiness
 from jobscan.estimator.staged_session import (
@@ -427,6 +428,78 @@ def test_estimator_prompt_context_is_bounded_before_dispatch(
     assert _json_character_count(messages) <= 30000
     assert budget["truncated"] is True
     assert "historical_answer_key_examples" in budget["omitted_keys"]
+
+
+def test_estimator_prompt_bounds_all_dynamic_branches_and_keeps_latest_instruction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_ESTIMATOR_MAX_INPUT_CHARACTERS", "20000")
+    latest_message = (
+        "CURRENT IMAGE SCOPE: 5,136 square feet with full removal and coated foam. "
+        + ("annotated scope detail " * 1200)
+        + " FINAL DIRECTIVE: preserve the 320 square foot decking repair."
+    )
+    decisions = [
+        {
+            "decision_id": f"roofing-row-{index}",
+            "include": True,
+            "proposed_values": {"basis_sqft": 5136, "estimated_units": index + 1},
+            "evidence": {"raw_text": "historical evidence " * 500},
+        }
+        for index in range(80)
+    ]
+    messages = _chat_prompt_messages(
+        [
+            *[
+                {"role": "assistant", "content": f"old turn {index} " + ("x" * 4000)}
+                for index in range(12)
+            ],
+            {"role": "user", "content": latest_message},
+        ],
+        template_type_hint="roofing",
+        existing_scope={"estimated_sqft": 5136, "scope_notes": "y" * 10000},
+        existing_decisions=decisions,
+        existing_session_state={
+            "job_facts": [{"label": "fact", "value": "z" * 10000}],
+            "visual_evidence": [{"area_scopes": ["v" * 10000]}],
+        },
+        context={
+            "historical_answer_key_examples": {
+                "matched_answer_keys": [{"raw_text": "h" * 100000}]
+            }
+        },
+    )
+    prompt_payload = json.loads(messages[1]["content"])
+    compact_conversation = prompt_payload["conversation"]
+    compact_decisions = prompt_payload["current_decision_template_state"]
+
+    assert _json_character_count(messages) <= 20000
+    assert "CURRENT IMAGE SCOPE" in compact_conversation[-1]["content"]
+    assert "FINAL DIRECTIVE" in compact_conversation[-1]["content"]
+    assert compact_decisions
+    assert all("evidence" not in decision for decision in compact_decisions)
+
+
+def test_irreducible_estimator_prompt_uses_fallback_instead_of_raising(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_ESTIMATOR_MAX_INPUT_CHARACTERS", "1000")
+    provider_called = False
+
+    def provider(_messages, _model):
+        nonlocal provider_called
+        provider_called = True
+        return {}
+
+    result = run_estimator_chat_turn(
+        [{"role": "user", "content": "Estimate the annotated roofing takeoff."}],
+        template_type_hint="roofing",
+        provider=provider,
+    )
+
+    assert provider_called is False
+    assert result.source == "deterministic_fallback"
+    assert any("prompt exceeds" in warning.lower() for warning in result.warnings)
 
 
 def test_model_calls_block_oversized_prompts_before_api_dispatch(

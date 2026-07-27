@@ -212,17 +212,17 @@ def run_estimator_chat_turn(
         or os.getenv("OPENAI_MODEL")
         or DEFAULT_CHAT_ESTIMATOR_MODEL
     )
-    prompt_messages = _chat_prompt_messages(
-        message_list,
-        template_type_hint=template_type_hint,
-        existing_scope=baseline_scope,
-        existing_decisions=existing_decisions or [],
-        existing_session_state=existing_session_state or {},
-        context=context,
-        model=model_name,
-    )
     if provider is not None or os.getenv("OPENAI_API_KEY"):
         try:
+            prompt_messages = _chat_prompt_messages(
+                message_list,
+                template_type_hint=template_type_hint,
+                existing_scope=baseline_scope,
+                existing_decisions=existing_decisions or [],
+                existing_session_state=existing_session_state or {},
+                context=context,
+                model=model_name,
+            )
             raw = provider(prompt_messages, model_name) if provider is not None else _call_openai_chat(prompt_messages, model_name)
             payload = _extract_json_object(raw)
             result = normalize_chat_payload(
@@ -3316,35 +3316,71 @@ def _chat_prompt_messages(
         "or final quote totals when evidence is weak. Use review_required for assumptions. "
         "Workbook formulas remain authoritative for final costs."
     )
-    user_payload = {
+    empty_payload = {
         "today": today,
         "template_type_hint": template_type_hint,
-        "existing_scope": existing_scope,
-        "persistent_session_state": existing_session_state,
-        "current_decision_template_state": existing_decisions,
-        "estimator_context": context,
-        "conversation": messages,
+        "existing_scope": {},
+        "persistent_session_state": {},
+        "current_decision_template_state": [],
+        "estimator_context": {},
+        "conversation": [],
     }
     max_input_characters = _estimator_max_input_characters(model)
-    fixed_payload = {**user_payload, "estimator_context": {}}
-    fixed_messages = [
+    minimum_messages = [
         {"role": "system", "content": instructions},
         {
             "role": "user",
-            "content": json.dumps(fixed_payload, indent=2, default=str),
+            "content": json.dumps(empty_payload, default=str, separators=(",", ": ")),
+        },
+    ]
+    dynamic_budget = max(
+        0,
+        max_input_characters - _json_character_count(minimum_messages) - 1_000,
+    )
+    compact_decisions = [
+        _compact_current_prompt_decision(row)
+        for row in existing_decisions
+        if isinstance(row, dict)
+    ]
+    user_payload = {
+        **empty_payload,
+        "conversation": _bounded_prompt_conversation(
+            messages,
+            int(dynamic_budget * 0.24),
+        ),
+        "existing_scope": _fit_prompt_payload_value(
+            existing_scope,
+            int(dynamic_budget * 0.08),
+            {},
+        ),
+        "current_decision_template_state": _fit_prompt_payload_value(
+            compact_decisions,
+            int(dynamic_budget * 0.22),
+            [],
+        ),
+        "persistent_session_state": _fit_prompt_payload_value(
+            existing_session_state,
+            int(dynamic_budget * 0.12),
+            {},
+        ),
+    }
+    messages_without_context = [
+        {"role": "system", "content": instructions},
+        {
+            "role": "user",
+            "content": json.dumps(user_payload, default=str, separators=(",", ": ")),
         },
     ]
     context_budget = max(
         0,
-        max_input_characters - _json_character_count(fixed_messages) - 1_000,
+        max_input_characters - _json_character_count(messages_without_context) - 600,
     )
-    bounded_context = _bounded_prompt_context(context, context_budget)
-    user_payload["estimator_context"] = bounded_context
+    user_payload["estimator_context"] = _bounded_prompt_context(context, context_budget)
     prompt_messages = [
         {"role": "system", "content": instructions},
         {
             "role": "user",
-            "content": json.dumps(user_payload, indent=2, default=str),
+            "content": json.dumps(user_payload, default=str, separators=(",", ": ")),
         },
     ]
     if _json_character_count(prompt_messages) > max_input_characters:
@@ -3353,6 +3389,84 @@ def _chat_prompt_messages(
             "after context compaction."
         )
     return prompt_messages
+
+
+def _compact_current_prompt_decision(row: dict[str, Any]) -> dict[str, Any]:
+    """Keep state needed for a decision patch without resending evidence blobs."""
+
+    allowed_fields = (
+        "decision_id",
+        "template_bucket",
+        "section",
+        "workbook_row",
+        "row_number",
+        "row_label",
+        "include",
+        "proposed_values",
+        "editable_selector_code",
+        "selected_pricing_candidate",
+        "confidence",
+        "review_required",
+        "review_status",
+        "source",
+        "source_type",
+        "source_ids",
+        "manual_override",
+        "locked",
+    )
+    return {
+        field: copy.deepcopy(row[field])
+        for field in allowed_fields
+        if field in row and row[field] not in (None, "", [], {})
+    }
+
+
+def _fit_prompt_payload_value(value: Any, max_characters: int, fallback: Any) -> Any:
+    fitted = _fit_json_value(value, max_characters)
+    return copy.deepcopy(fallback) if fitted is _PROMPT_VALUE_OMITTED else fitted
+
+
+def _fit_prompt_message_content(content: str, max_characters: int) -> str:
+    text = str(content or "").strip()
+    if not text or max_characters <= 8:
+        return ""
+    if _json_character_count(text) <= max_characters:
+        return text
+    marker = "\n...[earlier content compacted]...\n"
+    available = max(0, max_characters - _json_character_count(marker) - 4)
+    if available <= 16:
+        return text[: max(0, max_characters - 4)]
+    head_length = max(1, int(available * 0.7))
+    tail_length = max(1, available - head_length)
+    fitted = text[:head_length] + marker + text[-tail_length:]
+    while fitted and _json_character_count(fitted) > max_characters:
+        head_length = max(1, head_length - 8)
+        fitted = text[:head_length] + marker + text[-tail_length:]
+    return fitted
+
+
+def _bounded_prompt_conversation(
+    messages: list[dict[str, str]],
+    max_characters: int,
+) -> list[dict[str, str]]:
+    if max_characters <= 20:
+        return []
+    bounded: list[dict[str, str]] = []
+    for message in reversed(messages):
+        role = str(message.get("role") or "").strip().lower()
+        if role not in {"user", "assistant", "system"}:
+            continue
+        remaining = max_characters - _json_character_count(bounded) - 24
+        if remaining <= 8:
+            break
+        content = _fit_prompt_message_content(str(message.get("content") or ""), remaining)
+        if not content:
+            continue
+        candidate = [{"role": role, "content": content}, *bounded]
+        if _json_character_count(candidate) > max_characters:
+            continue
+        bounded = candidate
+    return bounded
 
 
 def _bounded_prompt_context(
