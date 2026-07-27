@@ -187,6 +187,10 @@ run_estimate_review = None
 apply_review_recommendations = None
 estimate_review_reasons = None
 latest_correction_memory_edits = None
+evaluate_estimate_readiness = None
+update_estimate_decision = None
+confirm_estimate_assumption = None
+approve_estimate_session = None
 estimate_audit_report_json = None
 extract_notes_from_images_with_ai = None
 stage_note_images = None
@@ -211,7 +215,8 @@ def ensure_estimator_imports() -> None:
     global estimator_context_cache_stats, run_estimator_chat_turn
     global advance_estimate_session, new_estimate_session_state, reject_historical_precedent
     global run_estimate_review, apply_review_recommendations, estimate_review_reasons
-    global latest_correction_memory_edits
+    global latest_correction_memory_edits, evaluate_estimate_readiness
+    global update_estimate_decision, confirm_estimate_assumption, approve_estimate_session
     global estimate_audit_report_json
     global extract_notes_from_images_with_ai, stage_note_images
     global answer_key_to_workbook_decision_preferences, build_reference_estimate_answer_key
@@ -274,6 +279,12 @@ def ensure_estimator_imports() -> None:
         apply_review_recommendations as imported_apply_review_recommendations,
         estimate_review_reasons as imported_estimate_review_reasons,
         latest_correction_memory_edits as imported_latest_correction_memory_edits,
+        update_estimate_decision as imported_update_estimate_decision,
+        confirm_estimate_assumption as imported_confirm_estimate_assumption,
+        approve_estimate_session as imported_approve_estimate_session,
+    )
+    from jobscan.estimator.readiness import (
+        evaluate_estimate_readiness as imported_evaluate_estimate_readiness,
     )
     from jobscan.estimator.audit_report import (
         estimate_audit_report_json as imported_estimate_audit_report_json,
@@ -326,6 +337,10 @@ def ensure_estimator_imports() -> None:
     apply_review_recommendations = imported_apply_review_recommendations
     estimate_review_reasons = imported_estimate_review_reasons
     latest_correction_memory_edits = imported_latest_correction_memory_edits
+    evaluate_estimate_readiness = imported_evaluate_estimate_readiness
+    update_estimate_decision = imported_update_estimate_decision
+    confirm_estimate_assumption = imported_confirm_estimate_assumption
+    approve_estimate_session = imported_approve_estimate_session
     estimate_audit_report_json = imported_estimate_audit_report_json
     extract_notes_from_images_with_ai = imported_extract_notes_from_images_with_ai
     stage_note_images = imported_stage_note_images
@@ -21557,6 +21572,28 @@ def render_staged_estimate_state(
     database_session_id: str,
     data: EstimatorData | None = None,
 ) -> None:
+    readiness = evaluate_estimate_readiness(state)
+    state["readiness_state"] = readiness
+
+    def persist_review_state(updated: dict[str, Any]) -> None:
+        result["workbook_decision_preferences"] = updated.get("decision_template_state") or []
+        result["staged_session_state"] = updated
+        st.session_state[state_key] = updated
+        persist_staged_estimate_session(
+            session_id=database_session_id,
+            state=updated,
+            result=result,
+        )
+        save_estimator_chat_session(
+            chat_key,
+            history=history,
+            result=result,
+            estimator_notes=str(st.session_state.get("estimator_notes") or ""),
+            estimate_type=estimate_type,
+            staged_session_state=updated,
+            database_session_id=database_session_id,
+        )
+
     status = str(state.get("session_status") or "collecting_information").replace("_", " ").title()
     confidence = (state.get("confidence_summary") or {}).get("overall")
     confidence_text = f" | Confidence {float(confidence):.0%}" if isinstance(confidence, (int, float)) else ""
@@ -21623,42 +21660,41 @@ def render_staged_estimate_state(
                 except Exception as exc:
                     st.error(f"Could not apply review patches: {type(exc).__name__}: {safe_exception_text(exc)}")
     with approve_col:
-        can_approve = bool(state.get("decision_template_state")) and not state.get("unresolved_questions")
+        can_approve = bool(readiness.get("ready"))
+        hard_errors = readiness.get("hard_errors") or []
+        approval_help = "Confirms the current decisions are ready for deterministic workbook generation."
+        if hard_errors:
+            approval_help = "Resolve: " + "; ".join(
+                str(row.get("message") or "")
+                for row in hard_errors[:3]
+                if isinstance(row, dict)
+            )
         if st.button(
             "Approve for workbook",
             key=f"approve_staged_estimate_{chat_key}",
             disabled=not can_approve or state.get("session_status") == "approved",
-            help="Confirms the current decisions are ready for deterministic workbook generation.",
+            help=approval_help,
         ):
-            approved_at = pd.Timestamp.utcnow().isoformat()
-            state["session_status"] = "approved"
-            state["current_stage"] = "approved"
-            state["approved_at"] = approved_at
-            state["updated_at"] = approved_at
-            state.setdefault("audit_events", []).append(
-                {
-                    "created_at": approved_at,
-                    "event_type": "estimate_approved",
-                    "decision_count": len(state.get("decision_template_state") or []),
-                }
-            )
-            result["staged_session_state"] = state
-            st.session_state[state_key] = state
-            persist_staged_estimate_session(
-                session_id=database_session_id,
-                state=state,
-                result=result,
-            )
-            save_estimator_chat_session(
-                chat_key,
-                history=history,
-                result=result,
-                estimator_notes=str(st.session_state.get("estimator_notes") or ""),
-                estimate_type=estimate_type,
-                staged_session_state=state,
-                database_session_id=database_session_id,
-            )
-            st.rerun()
+            try:
+                approved = approve_estimate_session(state)
+                persist_review_state(approved)
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Could not approve estimate: {type(exc).__name__}: {safe_exception_text(exc)}")
+    if readiness.get("ready"):
+        warning_count = int((readiness.get("counts") or {}).get("warning_count") or 0)
+        st.success(
+            "Workbook readiness checks passed."
+            + (f" {warning_count} review warning(s) remain." if warning_count else "")
+        )
+    else:
+        st.warning(
+            f"Workbook approval is blocked by "
+            f"{int((readiness.get('counts') or {}).get('hard_error_count') or 0)} readiness issue(s)."
+        )
+        with st.expander("Readiness issues", expanded=True):
+            for issue in readiness.get("hard_errors") or []:
+                st.write(f"- {issue.get('message')}")
     if review_reasons and not review_state:
         st.caption("Second review recommended: " + " ".join(review_reasons))
     if review_state:
@@ -21698,10 +21734,46 @@ def render_staged_estimate_state(
             score_label = f" | relevance {score}" if score not in (None, "") else ""
             with st.expander(f"{title}{score_label}", expanded=False):
                 st.write(job.get("scope_summary") or "No normalized scope summary available.")
+                precedent_summary = {
+                    "Area (sq ft)": job.get("square_feet"),
+                    "Quoted value": job.get("quoted_value"),
+                    "Final value": job.get("final_value"),
+                    "Material system": job.get("material_system"),
+                    "Warranty (years)": job.get("warranty_years"),
+                }
+                precedent_rows = [
+                    {"field": label, "value": value}
+                    for label, value in precedent_summary.items()
+                    if value not in (None, "", [], {})
+                ]
+                if precedent_rows:
+                    st.dataframe(
+                        pd.DataFrame(precedent_rows),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
                 if comparison.get("why_relevant"):
                     st.caption(f"Why retrieved: {comparison['why_relevant']}")
                 if comparison.get("differences"):
                     st.write("Differences:", "; ".join(str(value) for value in comparison["differences"]))
+                material_assumptions = (
+                    comparison.get("material_assumptions")
+                    or job.get("material_assumptions")
+                    or []
+                )
+                labor_assumptions = (
+                    comparison.get("labor_assumptions")
+                    or job.get("labor_assumptions")
+                    or []
+                )
+                if material_assumptions:
+                    st.markdown("**Material assumptions**")
+                    st.json(material_assumptions)
+                if labor_assumptions:
+                    st.markdown("**Labor assumptions**")
+                    st.json(labor_assumptions)
+                if job.get("source_file"):
+                    st.caption(f"Source file: {job['source_file']}")
                 source_url = str(job.get("source_url") or "")
                 if source_url:
                     st.markdown(f"[Open source estimate]({source_url})")
@@ -21729,9 +21801,82 @@ def render_staged_estimate_state(
                     )
                     st.rerun()
     with assumptions_tab:
-        assumptions = state.get("assumptions") or []
+        assumptions = [
+            {
+                **row,
+                "assumption_id": row.get("assumption_id")
+                or "assumption-"
+                + hashlib.sha256(
+                    str(row.get("assumption") or row.get("text") or "").encode("utf-8")
+                ).hexdigest()[:16],
+            }
+            for row in state.get("assumptions") or []
+            if isinstance(row, dict)
+        ]
         if assumptions:
             st.dataframe(pd.DataFrame(assumptions), use_container_width=True, hide_index=True)
+            assumption_ids = [
+                str(row.get("assumption_id") or "")
+                for row in assumptions
+                if isinstance(row, dict) and row.get("assumption_id")
+            ]
+            assumption_lookup = {
+                str(row.get("assumption_id") or ""): row
+                for row in assumptions
+                if isinstance(row, dict)
+            }
+            selected_assumption_id = st.selectbox(
+                "Review assumption",
+                options=assumption_ids,
+                format_func=lambda value: str(
+                    assumption_lookup.get(value, {}).get("assumption") or value
+                ),
+                key=f"review_assumption_{chat_key}",
+            )
+            assumption_note = st.text_input(
+                "Assumption review note",
+                key=f"review_assumption_note_{chat_key}_{selected_assumption_id}",
+            )
+            confirm_col, reject_col = st.columns(2)
+            with confirm_col:
+                if st.button(
+                    "Confirm assumption",
+                    key=f"confirm_assumption_{chat_key}_{selected_assumption_id}",
+                ):
+                    try:
+                        updated = confirm_estimate_assumption(
+                            state,
+                            assumption_id=selected_assumption_id,
+                            confirmed=True,
+                            note=assumption_note,
+                        )
+                        persist_review_state(updated)
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(
+                            f"Could not confirm assumption: {type(exc).__name__}: "
+                            f"{safe_exception_text(exc)}"
+                        )
+            with reject_col:
+                if st.button(
+                    "Reject assumption",
+                    key=f"reject_assumption_{chat_key}_{selected_assumption_id}",
+                    help="Rejecting an assumption blocks approval until the affected scope or decision is corrected.",
+                ):
+                    try:
+                        updated = confirm_estimate_assumption(
+                            state,
+                            assumption_id=selected_assumption_id,
+                            confirmed=False,
+                            note=assumption_note,
+                        )
+                        persist_review_state(updated)
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(
+                            f"Could not reject assumption: {type(exc).__name__}: "
+                            f"{safe_exception_text(exc)}"
+                        )
         else:
             st.caption("No unconfirmed assumptions.")
     with decisions_tab:
@@ -21747,9 +21892,94 @@ def render_staged_estimate_state(
                         "confidence": decision.get("confidence"),
                         "source": decision.get("source_type") or decision.get("source"),
                         "review": decision.get("review_required"),
+                        "status": decision.get("review_status") or "proposed",
                     }
                 )
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            decision_ids = [
+                str(row.get("decision_id") or row.get("template_bucket") or "")
+                for row in decisions
+                if isinstance(row, dict)
+                and (row.get("decision_id") or row.get("template_bucket"))
+            ]
+            decision_lookup = {
+                str(row.get("decision_id") or row.get("template_bucket") or ""): row
+                for row in decisions
+                if isinstance(row, dict)
+            }
+            selected_decision_id = st.selectbox(
+                "Review decision",
+                options=decision_ids,
+                key=f"review_decision_{chat_key}",
+            )
+            selected_decision = decision_lookup.get(selected_decision_id, {})
+            edit_include = st.checkbox(
+                "Include in estimate",
+                value=bool(selected_decision.get("include")),
+                key=f"decision_include_{chat_key}_{selected_decision_id}",
+            )
+            proposed_values_text = st.text_area(
+                "Decision inputs (JSON)",
+                value=json.dumps(
+                    selected_decision.get("proposed_values") or {},
+                    indent=2,
+                    sort_keys=True,
+                    default=str,
+                ),
+                height=180,
+                key=f"decision_values_{chat_key}_{selected_decision_id}",
+            )
+            decision_reason = st.text_input(
+                "Edit or acceptance note",
+                key=f"decision_reason_{chat_key}_{selected_decision_id}",
+            )
+            edit_col, accept_col = st.columns(2)
+            with edit_col:
+                if st.button(
+                    "Apply decision edit",
+                    key=f"apply_decision_edit_{chat_key}_{selected_decision_id}",
+                ):
+                    try:
+                        parsed_values = json.loads(proposed_values_text or "{}")
+                        if not isinstance(parsed_values, dict):
+                            raise ValueError("Decision inputs must be a JSON object.")
+                        updated = update_estimate_decision(
+                            state,
+                            decision_id=selected_decision_id,
+                            include=edit_include,
+                            proposed_values=parsed_values,
+                            reason=decision_reason,
+                            action="edit",
+                            data=data,
+                        )
+                        persist_review_state(updated)
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(
+                            f"Could not apply decision edit: {type(exc).__name__}: "
+                            f"{safe_exception_text(exc)}"
+                        )
+            with accept_col:
+                if st.button(
+                    "Accept current decision",
+                    key=f"accept_decision_{chat_key}_{selected_decision_id}",
+                    disabled=selected_decision.get("review_status") == "accepted",
+                ):
+                    try:
+                        updated = update_estimate_decision(
+                            state,
+                            decision_id=selected_decision_id,
+                            reason=decision_reason,
+                            action="accept",
+                            data=data,
+                        )
+                        persist_review_state(updated)
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(
+                            f"Could not accept decision: {type(exc).__name__}: "
+                            f"{safe_exception_text(exc)}"
+                        )
             correction_edits = latest_correction_memory_edits(state)
             if correction_edits and database_session_id:
                 if st.button(
@@ -21792,8 +22022,14 @@ def render_staged_estimate_state(
             st.markdown("**Warnings**")
             for warning in warnings:
                 st.write(f"- {warning}")
+        readiness_warnings = readiness.get("warnings") or []
+        if readiness_warnings:
+            st.markdown("**Readiness warnings**")
+            for warning in readiness_warnings:
+                st.write(f"- {warning.get('message')}")
         if not questions and not warnings:
-            st.caption("No open questions or warnings.")
+            if not readiness_warnings:
+                st.caption("No open questions or warnings.")
     with evidence_tab:
         st.caption("Detailed evidence is kept out of the main chat and attached to decisions by source ID.")
         st.download_button(
@@ -21805,6 +22041,8 @@ def render_staged_estimate_state(
         )
         with st.expander("Estimating plan", expanded=True):
             st.json(state.get("estimating_plan") or {})
+        with st.expander("Workbook readiness", expanded=True):
+            st.json(readiness)
         with st.expander("Uploaded visual evidence", expanded=False):
             st.json(state.get("uploaded_evidence") or [])
         with st.expander("Approved memories used", expanded=False):
@@ -21847,6 +22085,8 @@ def render_staged_estimate_state(
                     "calls": state.get("model_call_history") or [],
                 }
             )
+        with st.expander("Pending learning candidates", expanded=False):
+            st.json(state.get("learning_candidates") or [])
         if review_state:
             with st.expander("Stronger-model review", expanded=True):
                 st.json(review_state)
@@ -22924,18 +23164,36 @@ def estimator_prototype_page() -> None:
         if active_chat_context and isinstance(active_chat_context.get("staged_session_state"), dict)
         else {}
     )
-    staged_workflow_requires_approval = bool(staged_workflow_state) and str(
-        staged_workflow_state.get("session_status") or ""
-    ) not in {"approved", "workbook_generated"}
+    staged_readiness = (
+        evaluate_estimate_readiness(staged_workflow_state)
+        if staged_workflow_state
+        else {}
+    )
+    staged_workflow_requires_approval = bool(staged_workflow_state) and (
+        str(staged_workflow_state.get("session_status") or "")
+        not in {"approved", "workbook_generated"}
+        or not bool(staged_readiness.get("ready"))
+    )
     if staged_workflow_requires_approval:
-        st.caption("Approve the staged decision draft in the Estimating Assistant before generating the workbook.")
+        blocking_messages = [
+            str(row.get("message") or "")
+            for row in staged_readiness.get("hard_errors") or []
+            if isinstance(row, dict)
+        ]
+        st.caption(
+            "Approve the staged decision draft in the Estimating Assistant before generating the workbook."
+            + (f" Blocking issue: {blocking_messages[0]}" if blocking_messages else "")
+        )
     build_requested = st.button(
         "Build / Rebuild Filled Estimate Template",
         key="generate_field_estimate_recommendation",
         disabled=staged_workflow_requires_approval,
     )
     auto_build_requested = bool(st.session_state.pop("estimator_auto_build_requested", False))
-    if auto_build_requested:
+    if auto_build_requested and staged_workflow_requires_approval:
+        st.warning("Automatic workbook generation was held because the staged estimate is not approval-ready.")
+        auto_build_requested = False
+    elif auto_build_requested:
         st.info("Learning mode requested a workbook rebuild automatically.")
     if build_requested or auto_build_requested:
         try:

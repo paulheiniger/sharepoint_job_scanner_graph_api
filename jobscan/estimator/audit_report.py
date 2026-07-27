@@ -40,6 +40,7 @@ def build_estimate_audit_report(state: dict[str, Any]) -> dict[str, Any]:
             "created_at": state.get("created_at"),
             "updated_at": state.get("updated_at"),
             "approved_at": state.get("approved_at"),
+            "approved_by": state.get("approved_by"),
             "template_type": state.get("template_type"),
             "division": state.get("division"),
             "job_name": state.get("job_name"),
@@ -68,6 +69,7 @@ def build_estimate_audit_report(state: dict[str, Any]) -> dict[str, Any]:
             "dependency_trace": state.get("dependency_state") or {},
         },
         "review": state.get("review_state") or {},
+        "readiness": state.get("readiness_state") or {},
         "models": {
             "configuration": state.get("model_metadata") or {},
             "routes": state.get("model_routes") or [],
@@ -75,6 +77,7 @@ def build_estimate_audit_report(state: dict[str, Any]) -> dict[str, Any]:
             "usage_totals": usage_totals,
         },
         "changes": state.get("decision_change_history") or [],
+        "learning_candidates": state.get("learning_candidates") or [],
         "timeline": sorted(audit_events, key=lambda row: str(row.get("created_at") or "")),
         "warnings": state.get("review_flags") or [],
         "audit_completeness": completeness,
@@ -101,6 +104,9 @@ def _decision_audit_row(row: dict[str, Any]) -> dict[str, Any]:
         "calculated_outputs": row.get("calculated_outputs") or {},
         "confidence": row.get("confidence"),
         "review_required": row.get("review_required"),
+        "review_status": row.get("review_status"),
+        "accepted_at": row.get("accepted_at"),
+        "accepted_by": row.get("accepted_by"),
         "reason": row.get("reason"),
         "source_type": row.get("source_type") or row.get("source"),
         "source_ids": row.get("source_ids") or [],
@@ -142,6 +148,11 @@ def _audit_completeness(
     decisions: list[dict[str, Any]],
     calls: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    readiness = (
+        state.get("readiness_state")
+        if isinstance(state.get("readiness_state"), dict)
+        else {}
+    )
     decisions_without_sources = [
         row.get("decision_id")
         for row in decisions
@@ -158,6 +169,7 @@ def _audit_completeness(
         "has_model_call_usage": any(call.get("usage") for call in calls),
         "has_prompt_version": bool(state.get("prompt_version")),
         "approved": bool(state.get("approved_at")),
+        "readiness_passed": readiness.get("ready") if readiness else None,
         "decisions_without_sources": decisions_without_sources,
     }
     checks["ready_for_final_audit"] = bool(
@@ -167,5 +179,6 @@ def _audit_completeness(
         and checks["has_calculation_state"]
         and checks["has_prompt_version"]
         and not decisions_without_sources
+        and checks["readiness_passed"] is not False
     )
     return checks

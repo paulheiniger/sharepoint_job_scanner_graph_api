@@ -65,6 +65,19 @@ material choices, thickness, area, labor assumptions, pricing range when an
 authoritative expected total exists, exclusions, warranty, unnecessary
 questions, and unsupported assumptions.
 
+Promote only cases explicitly marked `reviewed`, `approved`, or `promoted` into
+a curated benchmark artifact:
+
+```bash
+python -m evals.estimator.run_staged_estimator_eval \
+  --cases output/estimator_generated_cases/generated_live_cases_chat_reviewed.jsonl \
+  --promote-reviewed-output output/evals/curated_staged_cases.json \
+  --promote-only
+```
+
+Cases marked `needs_review` or lacking an explicit promotion status are not
+included in the curated artifact.
+
 ## Relationship Mining Eval
 
 Run against database outputs:

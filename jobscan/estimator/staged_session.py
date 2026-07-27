@@ -13,12 +13,13 @@ from .model_routing import (
     model_call_metadata,
     route_estimator_model,
 )
+from .readiness import evaluate_estimate_readiness
 from .schemas import EstimatorData
 from .workbench import WORKBENCH_DECISION_SECTIONS, recalculate_workbench_tables, summarize_workbench_totals
 
 PROMPT_VERSION = "staged_estimator_v2"
 REVIEW_PROMPT_VERSION = "staged_estimator_review_v1"
-SESSION_SCHEMA_VERSION = 2
+SESSION_SCHEMA_VERSION = 3
 
 DEPENDENT_BUCKETS = {
     "foam": {"labor_foam", "drum_disposal", "truck_expense"},
@@ -120,6 +121,8 @@ def new_estimate_session_state(*, session_id: str = "", template_type: str = "")
         "model_call_history": [],
         "prompt_version": PROMPT_VERSION,
         "audit_events": [],
+        "readiness_state": {},
+        "learning_candidates": [],
     }
 
 
@@ -197,7 +200,10 @@ def advance_estimate_session(
             *(normalized_visual.get("questions") or []),
         ]
     )
-    assumptions = _normalize_assumptions(result.assumptions, result.raw_response)
+    assumptions = merge_estimate_assumptions(
+        state.get("assumptions"),
+        _normalize_assumptions(result.assumptions, result.raw_response),
+    )
     retrieved_memories = list(context.get("estimator_memory_guidance") or [])
     decisions, used_memories = attach_approved_memory_evidence(
         [_traceable_decision(row) for row in merged_decisions],
@@ -312,10 +318,14 @@ def advance_estimate_session(
             "prompt_version": PROMPT_VERSION,
         }
     )
+    if decision_changes or scope_changes:
+        state.pop("approved_at", None)
+        state.pop("approved_by", None)
     if decision_changes:
         state.setdefault("decision_change_history", []).append(
             {"created_at": now, "changes": decision_changes}
         )
+    state["readiness_state"] = evaluate_estimate_readiness(state)
     state.setdefault("audit_events", []).append(
         {
             "created_at": now,
@@ -745,6 +755,241 @@ def apply_review_recommendations(
             "decision_changes": changes,
         }
     )
+    updated.pop("approved_at", None)
+    updated.pop("approved_by", None)
+    updated["readiness_state"] = evaluate_estimate_readiness(updated)
+    return updated
+
+
+def update_estimate_decision(
+    state: dict[str, Any],
+    *,
+    decision_id: str,
+    include: bool | None = None,
+    proposed_values: dict[str, Any] | None = None,
+    reason: str = "",
+    action: str = "edit",
+    actor: str = "estimator",
+    data: EstimatorData | None = None,
+) -> dict[str, Any]:
+    """Apply an explicit estimator edit or acceptance to one decision."""
+
+    normalized_action = str(action or "edit").strip().lower()
+    if normalized_action not in {"accept", "edit"}:
+        raise ValueError("Decision action must be 'accept' or 'edit'.")
+    updated = deepcopy(state)
+    existing = [
+        row
+        for row in updated.get("decision_template_state") or []
+        if isinstance(row, dict)
+    ]
+    current = next(
+        (
+            row
+            for row in existing
+            if str(row.get("decision_id") or row.get("template_bucket") or "") == decision_id
+        ),
+        None,
+    )
+    if current is None:
+        raise ValueError(f"Decision not found: {decision_id}")
+
+    now = datetime.now(UTC).isoformat()
+    event_id = "estimator-action-" + _stable_evidence_token(
+        [updated.get("session_id"), decision_id, normalized_action, now]
+    )
+    changes: list[dict[str, Any]] = []
+    decisions = deepcopy(existing)
+    if normalized_action == "edit":
+        patch: dict[str, Any] = {
+            "decision_id": current.get("decision_id"),
+            "template_bucket": current.get("template_bucket"),
+            "section": current.get("section"),
+            "workbook_row": current.get("workbook_row"),
+            "source": "explicit_estimator_edit",
+            "source_type": "explicit_estimator_edit",
+            "confidence": 1.0,
+            "review_required": False,
+            "review_status": "edited",
+            "reviewed_at": now,
+            "reviewed_by": actor,
+            "reason": reason or "Edited directly by estimator.",
+            "source_ids": [
+                *list(current.get("source_ids") or []),
+                event_id,
+            ],
+        }
+        if include is not None:
+            patch["include"] = bool(include)
+        if proposed_values is not None:
+            patch["proposed_values"] = dict(proposed_values)
+        decisions, changes = merge_decision_patches(existing, [patch])
+        decisions = [_traceable_decision(row) for row in decisions]
+        decisions, calculation = recalculate_dependent_decisions(
+            scope=updated.get("scope_state") or {},
+            decisions=decisions,
+            decision_changes=changes,
+            scope_changes=[],
+            previous_calculation_state=updated.get("calculation_state"),
+            data=data,
+        )
+        updated["calculation_state"] = calculation
+    else:
+        for decision in decisions:
+            if str(decision.get("decision_id") or decision.get("template_bucket") or "") != decision_id:
+                continue
+            decision["review_status"] = "accepted"
+            decision["review_required"] = False
+            decision["accepted_at"] = now
+            decision["accepted_by"] = actor
+            if reason:
+                decision["acceptance_note"] = reason
+            break
+
+    updated["decision_template_state"] = decisions
+    if changes:
+        updated.setdefault("decision_change_history", []).append(
+            {
+                "created_at": now,
+                "source": "structured_estimator_edit",
+                "changes": changes,
+            }
+        )
+    updated.setdefault("audit_events", []).append(
+        {
+            "created_at": now,
+            "event_type": f"decision_{normalized_action}ed",
+            "event_id": event_id,
+            "decision_id": decision_id,
+            "actor": actor,
+            "reason": reason,
+            "changes": changes,
+        }
+    )
+    if normalized_action == "edit":
+        updated.setdefault("learning_candidates", []).append(
+            {
+                "candidate_id": event_id,
+                "candidate_type": "decision_correction",
+                "status": "pending",
+                "created_at": now,
+                "decision_id": decision_id,
+                "reason": reason,
+                "changes": changes,
+            }
+        )
+    updated.pop("approved_at", None)
+    updated.pop("approved_by", None)
+    updated["session_status"] = "estimator_review"
+    updated["current_stage"] = "structured_review"
+    updated["updated_at"] = now
+    updated["readiness_state"] = evaluate_estimate_readiness(updated)
+    return updated
+
+
+def confirm_estimate_assumption(
+    state: dict[str, Any],
+    *,
+    assumption_id: str,
+    confirmed: bool = True,
+    note: str = "",
+    actor: str = "estimator",
+) -> dict[str, Any]:
+    """Persist an estimator confirmation or rejection of one assumption."""
+
+    updated = deepcopy(state)
+    assumptions = [
+        _traceable_assumption(row)
+        for row in updated.get("assumptions") or []
+        if isinstance(row, dict)
+    ]
+    target = next(
+        (
+            row
+            for row in assumptions
+            if str(row.get("assumption_id") or "") == assumption_id
+        ),
+        None,
+    )
+    if target is None:
+        raise ValueError(f"Assumption not found: {assumption_id}")
+    now = datetime.now(UTC).isoformat()
+    event_id = "assumption-action-" + _stable_evidence_token(
+        [updated.get("session_id"), assumption_id, confirmed, now]
+    )
+    target["confirmed"] = bool(confirmed)
+    target["confirmation_status"] = "confirmed" if confirmed else "rejected"
+    target["confirmed_at"] = now
+    target["confirmed_by"] = actor
+    if note:
+        target["confirmation_note"] = note
+    updated["assumptions"] = assumptions
+    updated.setdefault("audit_events", []).append(
+        {
+            "created_at": now,
+            "event_type": "assumption_confirmed" if confirmed else "assumption_rejected",
+            "event_id": event_id,
+            "assumption_id": assumption_id,
+            "actor": actor,
+            "note": note,
+        }
+    )
+    updated.setdefault("learning_candidates", []).append(
+        {
+            "candidate_id": event_id,
+            "candidate_type": "assumption_review",
+            "status": "pending",
+            "created_at": now,
+            "assumption_id": assumption_id,
+            "assumption": target.get("assumption"),
+            "confirmed": bool(confirmed),
+            "note": note,
+        }
+    )
+    updated.pop("approved_at", None)
+    updated.pop("approved_by", None)
+    updated["session_status"] = "estimator_review"
+    updated["current_stage"] = "structured_review"
+    updated["updated_at"] = now
+    updated["readiness_state"] = evaluate_estimate_readiness(updated)
+    return updated
+
+
+def approve_estimate_session(
+    state: dict[str, Any],
+    *,
+    actor: str = "estimator",
+) -> dict[str, Any]:
+    """Approve a session only after deterministic readiness validation."""
+
+    updated = deepcopy(state)
+    readiness = evaluate_estimate_readiness(updated)
+    updated["readiness_state"] = readiness
+    if not readiness.get("ready"):
+        messages = [
+            str(row.get("message") or "")
+            for row in readiness.get("hard_errors") or []
+            if isinstance(row, dict)
+        ]
+        raise ValueError(
+            "Estimate is not ready for workbook approval: "
+            + "; ".join(messages[:5])
+        )
+    now = datetime.now(UTC).isoformat()
+    updated["session_status"] = "approved"
+    updated["current_stage"] = "approved"
+    updated["approved_at"] = now
+    updated["approved_by"] = actor
+    updated["updated_at"] = now
+    updated.setdefault("audit_events", []).append(
+        {
+            "created_at": now,
+            "event_type": "estimate_approved",
+            "actor": actor,
+            "decision_count": len(updated.get("decision_template_state") or []),
+            "readiness": readiness,
+        }
+    )
     return updated
 
 
@@ -838,9 +1083,10 @@ def reject_historical_precedent(
     reason: str = "",
 ) -> dict[str, Any]:
     updated = deepcopy(state)
+    now = datetime.now(UTC).isoformat()
     rejected = list(updated.get("rejected_precedents") or [])
     if precedent_id and not any(str(row.get("precedent_id") or "") == precedent_id for row in rejected):
-        rejected.append({"precedent_id": precedent_id, "reason": reason, "rejected_at": datetime.now(UTC).isoformat()})
+        rejected.append({"precedent_id": precedent_id, "reason": reason, "rejected_at": now})
     updated["rejected_precedents"] = rejected
     updated["retrieved_historical_jobs"] = [
         row
@@ -852,6 +1098,15 @@ def reject_historical_precedent(
         for row in updated.get("historical_comparison") or []
         if str(row.get("precedent_id") or "") != precedent_id
     ]
+    updated["updated_at"] = now
+    updated.setdefault("audit_events", []).append(
+        {
+            "created_at": now,
+            "event_type": "historical_precedent_rejected",
+            "precedent_id": precedent_id,
+            "reason": reason,
+        }
+    )
     return updated
 
 
@@ -905,6 +1160,12 @@ def _decision_key(row: dict[str, Any]) -> tuple[str, ...]:
 
 def _merge_decision(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
     merged = deepcopy(base)
+    before_inputs = (
+        base.get("include"),
+        deepcopy(base.get("proposed_values")),
+        base.get("editable_selector_code"),
+        base.get("selected_pricing_candidate"),
+    )
     for key, value in patch.items():
         if key == "proposed_values" and isinstance(value, dict):
             merged[key] = {**(merged.get(key) or {}), **value}
@@ -920,6 +1181,16 @@ def _merge_decision(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, An
             merged[key] = _unique_values([*(merged.get(key) or []), *(value if isinstance(value, list) else [value])])
         elif value is not None:
             merged[key] = deepcopy(value)
+    after_inputs = (
+        merged.get("include"),
+        deepcopy(merged.get("proposed_values")),
+        merged.get("editable_selector_code"),
+        merged.get("selected_pricing_candidate"),
+    )
+    if before_inputs != after_inputs and patch.get("review_status") not in {"accepted", "edited"}:
+        for field in ("accepted_at", "accepted_by", "acceptance_note"):
+            merged.pop(field, None)
+        merged["review_status"] = "proposed"
     return merged
 
 
@@ -1132,6 +1403,11 @@ def _historical_jobs(context: dict[str, Any], rejected: list[dict[str, Any]]) ->
         if not precedent_id or precedent_id in rejected_ids or precedent_id in seen:
             continue
         seen.add(precedent_id)
+        answer_key = (
+            raw.get("reference_answer_key")
+            if isinstance(raw.get("reference_answer_key"), dict)
+            else {}
+        )
         rows.append(
             {
                 "precedent_id": precedent_id,
@@ -1150,7 +1426,30 @@ def _historical_jobs(context: dict[str, Any], rejected: list[dict[str, Any]]) ->
                 "match_reasons": raw.get("match_reasons") or [],
                 "source_file": raw.get("source_file"),
                 "source_url": raw.get("source_url") or raw.get("folder_url") or raw.get("web_url"),
-                "reference_answer_key": raw.get("reference_answer_key") or {},
+                "quoted_value": _first_nonblank_value(
+                    raw.get("quoted_value"),
+                    raw.get("estimate_total"),
+                    raw.get("proposal_value"),
+                    answer_key.get("quoted_value"),
+                    answer_key.get("expected_total"),
+                ),
+                "final_value": _first_nonblank_value(
+                    raw.get("final_value"),
+                    raw.get("contract_value"),
+                    raw.get("actual_value"),
+                    answer_key.get("final_value"),
+                ),
+                "material_assumptions": (
+                    raw.get("material_assumptions")
+                    or answer_key.get("material_assumptions")
+                    or []
+                ),
+                "labor_assumptions": (
+                    raw.get("labor_assumptions")
+                    or answer_key.get("labor_assumptions")
+                    or []
+                ),
+                "reference_answer_key": answer_key,
                 "decisions": raw.get("decisions") or [],
             }
         )
@@ -1198,14 +1497,29 @@ def _historical_comparison(
                 "similarities": supplied.get("similarities") or job.get("match_reasons") or [],
                 "differences": _unique_strings(differences),
                 "template_selections": supplied.get("template_selections") or [],
-                "material_assumptions": supplied.get("material_assumptions") or [],
-                "labor_assumptions": supplied.get("labor_assumptions") or [],
+                "material_assumptions": (
+                    supplied.get("material_assumptions")
+                    or job.get("material_assumptions")
+                    or []
+                ),
+                "labor_assumptions": (
+                    supplied.get("labor_assumptions")
+                    or job.get("labor_assumptions")
+                    or []
+                ),
                 "exclusions": supplied.get("exclusions") or [],
                 "influence_confidence": supplied.get("influence_confidence")
                 or _score_to_confidence(job.get("similarity_score")),
             }
         )
     return comparisons
+
+
+def _first_nonblank_value(*values: Any) -> Any:
+    for value in values:
+        if value not in (None, "", [], {}):
+            return value
+    return None
 
 
 def _estimating_plan(
@@ -1245,19 +1559,72 @@ def _normalize_assumptions(values: Any, raw_response: dict[str, Any]) -> list[di
     rows: list[dict[str, Any]] = []
     for item in supplied if isinstance(supplied, list) else []:
         if isinstance(item, dict) and item.get("assumption"):
-            rows.append(dict(item))
+            rows.append(_traceable_assumption(item))
     for item in raw:
+        if isinstance(item, dict) and (item.get("assumption") or item.get("text")):
+            normalized = _traceable_assumption(item)
+            if not any(
+                str(row.get("assumption_id") or "") == normalized["assumption_id"]
+                for row in rows
+            ):
+                rows.append(normalized)
+            continue
         text = str(item or "").strip()
         if text and not any(str(row.get("assumption") or "") == text for row in rows):
             rows.append(
-                {
-                    "assumption": text,
-                    "confidence": "medium",
-                    "financial_impact": "unknown",
-                    "confirmed": False,
-                }
+                _traceable_assumption(
+                    {
+                        "assumption": text,
+                        "confidence": "medium",
+                        "financial_impact": "unknown",
+                        "confirmed": False,
+                    }
+                )
             )
     return rows
+
+
+def merge_estimate_assumptions(
+    existing: Any,
+    incoming: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge model assumptions without losing prior estimator confirmations."""
+
+    prior = {
+        str(row.get("assumption_id") or ""): dict(row)
+        for row in existing or []
+        if isinstance(row, dict) and row.get("assumption_id")
+    }
+    rows: list[dict[str, Any]] = []
+    for raw in incoming:
+        if not isinstance(raw, dict):
+            continue
+        row = _traceable_assumption(raw)
+        before = prior.get(str(row.get("assumption_id") or ""), {})
+        for field in (
+            "confirmed",
+            "confirmation_status",
+            "confirmed_at",
+            "confirmed_by",
+            "confirmation_note",
+        ):
+            if field in before:
+                row[field] = before[field]
+        rows.append(row)
+    return rows
+
+
+def _traceable_assumption(raw: dict[str, Any]) -> dict[str, Any]:
+    row = dict(raw)
+    text = str(row.get("assumption") or row.get("text") or "").strip()
+    row["assumption"] = text
+    row.setdefault(
+        "assumption_id",
+        "assumption-" + _stable_evidence_token([text]),
+    )
+    row.setdefault("confirmed", False)
+    row.setdefault("confirmation_status", "unconfirmed")
+    return row
 
 
 def _merge_rejected_precedents(existing: Any, raw_response: dict[str, Any]) -> list[dict[str, Any]]:

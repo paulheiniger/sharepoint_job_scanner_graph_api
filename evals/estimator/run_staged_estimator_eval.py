@@ -41,6 +41,11 @@ GENERIC_ITEM_NAMES = {
     "site address:",
     "today's date:",
 }
+PROMOTABLE_STATUSES = {
+    "approved",
+    "promoted",
+    "reviewed",
+}
 
 
 def load_staged_cases(path: Path) -> list[dict[str, Any]]:
@@ -59,13 +64,32 @@ def load_staged_cases(path: Path) -> list[dict[str, Any]]:
         normalize_staged_case(row)
         for row in rows
         if isinstance(row, dict)
-        and str(row.get("promotion_status") or row.get("metadata", {}).get("promotion_status") or "")
-        != "rejected"
+        and _promotion_status(row) != "rejected"
     ]
+
+
+def _promotion_status(row: dict[str, Any]) -> str:
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    source_metadata = (
+        row.get("source_metadata")
+        if isinstance(row.get("source_metadata"), dict)
+        else {}
+    )
+    return str(
+        row.get("promotion_status")
+        or metadata.get("promotion_status")
+        or source_metadata.get("promotion_status")
+        or ""
+    ).strip().lower()
 
 
 def normalize_staged_case(row: dict[str, Any]) -> dict[str, Any]:
     metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    source_metadata = (
+        row.get("source_metadata")
+        if isinstance(row.get("source_metadata"), dict)
+        else {}
+    )
     return {
         "case_id": row.get("case_id"),
         "notes": (
@@ -75,7 +99,12 @@ def normalize_staged_case(row: dict[str, Any]) -> dict[str, Any]:
             or ""
         ),
         "template_type": row.get("template_type") or metadata.get("template_type") or "",
-        "expected_scope": row.get("expected_scope_fields") or row.get("expected") or {},
+        "expected_scope": (
+            row.get("expected_scope_fields")
+            or row.get("expected_scope")
+            or row.get("expected")
+            or {}
+        ),
         "expected_decisions": [
             dict(item)
             for item in row.get("expected_decisions") or []
@@ -83,12 +112,55 @@ def normalize_staged_case(row: dict[str, Any]) -> dict[str, Any]:
         ],
         "expected_workbook_rows": row.get("expected_workbook_rows") or [],
         "source_metadata": {
-            "source_job_id": row.get("source_job_id") or metadata.get("source_job_id"),
-            "source_file": row.get("source_file") or metadata.get("source_file"),
-            "promotion_status": row.get("promotion_status") or metadata.get("promotion_status"),
-            "review_method": metadata.get("review_method"),
+            "source_job_id": (
+                row.get("source_job_id")
+                or metadata.get("source_job_id")
+                or source_metadata.get("source_job_id")
+            ),
+            "source_file": (
+                row.get("source_file")
+                or metadata.get("source_file")
+                or source_metadata.get("source_file")
+            ),
+            "promotion_status": (
+                row.get("promotion_status")
+                or metadata.get("promotion_status")
+                or source_metadata.get("promotion_status")
+            ),
+            "review_method": (
+                metadata.get("review_method")
+                or source_metadata.get("review_method")
+            ),
         },
     }
+
+
+def promote_reviewed_cases(
+    cases: Iterable[dict[str, Any]],
+    output_path: Path,
+) -> dict[str, Any]:
+    """Write only explicitly reviewed cases to a curated benchmark artifact."""
+
+    promoted = [
+        dict(case)
+        for case in cases
+        if str(
+            (case.get("source_metadata") or {}).get("promotion_status") or ""
+        ).strip().lower()
+        in PROMOTABLE_STATUSES
+    ]
+    payload = {
+        "schema_version": 1,
+        "benchmark_status": "curated",
+        "case_count": len(promoted),
+        "cases": promoted,
+    }
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True, default=str),
+        encoding="utf-8",
+    )
+    return payload
 
 
 def run_staged_case(
@@ -469,6 +541,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--database-url", default=os.getenv("NEON_DATABASE_URL"))
     parser.add_argument("--json-output", type=Path)
     parser.add_argument(
+        "--promote-reviewed-output",
+        type=Path,
+        help="Write cases explicitly marked reviewed/approved/promoted to a curated benchmark JSON file.",
+    )
+    parser.add_argument(
+        "--promote-only",
+        action="store_true",
+        help="Promote reviewed cases without running model evaluation.",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Validate case selection and model configuration without making model calls.",
@@ -484,6 +566,14 @@ def main(argv: list[str] | None = None) -> int:
         cases = [case for case in cases if str(case.get("case_id")) in selected]
     if args.limit > 0:
         cases = cases[: args.limit]
+    if args.promote_reviewed_output:
+        promoted = promote_reviewed_cases(cases, args.promote_reviewed_output)
+        print(
+            f"Promoted {promoted['case_count']} reviewed case(s) to "
+            f"{args.promote_reviewed_output}"
+        )
+        if args.promote_only:
+            return 0 if promoted["case_count"] else 1
     models = args.model or [configured_estimator_models().get("estimator_model")]
     models = [str(model) for model in models if str(model or "").strip()]
     if not cases:

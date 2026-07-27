@@ -1,0 +1,275 @@
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from evals.estimator.run_staged_estimator_eval import (
+    load_staged_cases,
+    promote_reviewed_cases,
+)
+from jobscan.estimator.audit_report import build_estimate_audit_report
+from jobscan.estimator.readiness import evaluate_estimate_readiness
+from jobscan.estimator.staged_session import (
+    _historical_jobs,
+    _merge_decision,
+    approve_estimate_session,
+    confirm_estimate_assumption,
+    merge_estimate_assumptions,
+    new_estimate_session_state,
+    update_estimate_decision,
+)
+
+
+def _ready_roofing_state() -> dict:
+    state = new_estimate_session_state(template_type="roofing")
+    state["scope_state"] = {
+        "template_type": "roofing",
+        "estimated_sqft": 5000,
+    }
+    state["decision_template_state"] = [
+        {
+            "decision_id": "roofing_coating_system_row_26",
+            "section": "roofing_coating_template_decisions",
+            "template_bucket": "coating",
+            "workbook_row": "26",
+            "include": True,
+            "proposed_values": {
+                "basis_sqft": 5000,
+                "gal_per_100_sqft": 1.5,
+                "unit_price": 42,
+            },
+            "source_type": "explicit_user_note",
+            "source_ids": ["note-1"],
+            "confidence": 0.92,
+        }
+    ]
+    return state
+
+
+def test_readiness_blocks_missing_workbook_inputs_and_questions() -> None:
+    state = _ready_roofing_state()
+    state["decision_template_state"][0]["proposed_values"].pop("unit_price")
+    state["unresolved_questions"] = ["Confirm roof area."]
+
+    readiness = evaluate_estimate_readiness(state)
+
+    assert readiness["ready"] is False
+    assert {
+        row["code"]
+        for row in readiness["hard_errors"]
+    } == {"missing_formula_input", "unresolved_question"}
+    with pytest.raises(ValueError, match="not ready"):
+        approve_estimate_session(state)
+
+
+def test_readiness_allows_warnings_but_blocks_bad_geometry() -> None:
+    state = _ready_roofing_state()
+    state["assumptions"] = [
+        {
+            "assumption_id": "assumption-1",
+            "assumption": "Existing membrane is suitable for coating.",
+            "financial_impact": "medium",
+            "confirmed": False,
+        }
+    ]
+
+    warning_only = evaluate_estimate_readiness(state)
+    assert warning_only["ready"] is True
+    assert warning_only["warnings"][0]["code"] == "unconfirmed_assumption"
+
+    state["scope_state"].update(
+        {
+            "gross_wall_area_sqft": 1000,
+            "opening_area_known_sqft": 1200,
+        }
+    )
+    invalid = evaluate_estimate_readiness(state)
+    assert invalid["ready"] is False
+    assert any(
+        row["code"] == "geometry_deduction_exceeds_area"
+        for row in invalid["hard_errors"]
+    )
+
+
+def test_assumption_confirmation_persists_and_creates_learning_candidate() -> None:
+    merged = merge_estimate_assumptions(
+        [],
+        [
+            {
+                "assumption": "Use normal access.",
+                "financial_impact": "medium",
+            }
+        ],
+    )
+    state = _ready_roofing_state()
+    state["assumptions"] = merged
+    assumption_id = merged[0]["assumption_id"]
+
+    confirmed = confirm_estimate_assumption(
+        state,
+        assumption_id=assumption_id,
+        note="Estimator verified access.",
+    )
+    rerun_merge = merge_estimate_assumptions(
+        confirmed["assumptions"],
+        [{"assumption": "Use normal access.", "financial_impact": "medium"}],
+    )
+
+    assert confirmed["assumptions"][0]["confirmed"] is True
+    assert confirmed["audit_events"][-1]["event_type"] == "assumption_confirmed"
+    assert confirmed["learning_candidates"][-1]["candidate_type"] == "assumption_review"
+    assert rerun_merge[0]["confirmed"] is True
+
+
+def test_rejected_assumption_blocks_approval_until_corrected() -> None:
+    state = _ready_roofing_state()
+    state["assumptions"] = merge_estimate_assumptions(
+        [],
+        [{"assumption": "No primer is required.", "financial_impact": "medium"}],
+    )
+
+    rejected = confirm_estimate_assumption(
+        state,
+        assumption_id=state["assumptions"][0]["assumption_id"],
+        confirmed=False,
+    )
+
+    assert rejected["readiness_state"]["ready"] is False
+    assert rejected["readiness_state"]["hard_errors"][0]["code"] == (
+        "rejected_assumption_requires_correction"
+    )
+
+
+def test_structured_decision_edit_and_accept_are_audited() -> None:
+    state = _ready_roofing_state()
+
+    edited = update_estimate_decision(
+        state,
+        decision_id="roofing_coating_system_row_26",
+        include=True,
+        proposed_values={
+            "basis_sqft": 5200,
+            "gal_per_100_sqft": 1.5,
+            "unit_price": 42,
+        },
+        reason="Estimator corrected takeoff.",
+        action="edit",
+    )
+    accepted = update_estimate_decision(
+        edited,
+        decision_id="roofing_coating_system_row_26",
+        reason="Inputs verified.",
+        action="accept",
+    )
+
+    decision = accepted["decision_template_state"][0]
+    assert decision["proposed_values"]["basis_sqft"] == 5200
+    assert decision["review_status"] == "accepted"
+    assert decision["review_required"] is False
+    assert edited["learning_candidates"][-1]["candidate_type"] == "decision_correction"
+    assert accepted["audit_events"][-1]["event_type"] == "decision_accepted"
+
+
+def test_later_model_patch_clears_stale_decision_acceptance() -> None:
+    base = {
+        "decision_id": "coating",
+        "include": True,
+        "proposed_values": {"basis_sqft": 5000},
+        "review_status": "accepted",
+        "accepted_at": "2026-07-27T12:00:00+00:00",
+    }
+
+    updated = _merge_decision(
+        base,
+        {"decision_id": "coating", "proposed_values": {"basis_sqft": 5500}},
+    )
+
+    assert updated["review_status"] == "proposed"
+    assert "accepted_at" not in updated
+
+
+def test_approval_records_readiness_snapshot() -> None:
+    approved = approve_estimate_session(_ready_roofing_state(), actor="estimator-1")
+
+    assert approved["session_status"] == "approved"
+    assert approved["approved_by"] == "estimator-1"
+    assert approved["audit_events"][-1]["readiness"]["ready"] is True
+
+
+def test_historical_precedent_preserves_value_and_operating_assumptions() -> None:
+    rows = _historical_jobs(
+        {
+            "historical_answer_key_examples": {
+                "matched_answer_keys": [
+                    {
+                        "job_id": "job-1",
+                        "job_name": "Comparable roof",
+                        "area_sqft": 5000,
+                        "quoted_value": 87500,
+                        "contract_value": 86000,
+                        "material_assumptions": [{"system": "silicone"}],
+                        "labor_assumptions": [{"crew_size": 5}],
+                        "source_url": "https://example.invalid/job-1",
+                    }
+                ]
+            }
+        },
+        [],
+    )
+
+    assert rows[0]["quoted_value"] == 87500
+    assert rows[0]["final_value"] == 86000
+    assert rows[0]["material_assumptions"] == [{"system": "silicone"}]
+    assert rows[0]["labor_assumptions"] == [{"crew_size": 5}]
+
+
+def test_audit_report_includes_readiness_and_learning_candidates() -> None:
+    state = _ready_roofing_state()
+    state["readiness_state"] = evaluate_estimate_readiness(state)
+    state["learning_candidates"] = [{"candidate_id": "candidate-1", "status": "pending"}]
+
+    report = build_estimate_audit_report(state)
+
+    assert report["readiness"]["ready"] is True
+    assert report["learning_candidates"][0]["candidate_id"] == "candidate-1"
+
+
+def test_only_explicitly_reviewed_cases_are_promoted(tmp_path) -> None:
+    source_path = tmp_path / "cases.jsonl"
+    source_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "case_id": "reviewed",
+                        "generated_notes": "Reviewed notes.",
+                        "template_type": "roofing",
+                        "expected_scope_fields": {"estimated_sqft": 5000},
+                        "promotion_status": "approved",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "case_id": "pending",
+                        "generated_notes": "Pending notes.",
+                        "template_type": "roofing",
+                        "promotion_status": "needs_review",
+                    }
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    cases = load_staged_cases(source_path)
+    output_path = tmp_path / "curated.json"
+
+    report = promote_reviewed_cases(cases, output_path)
+    persisted = json.loads(output_path.read_text(encoding="utf-8"))
+    reloaded = load_staged_cases(output_path)
+
+    assert report["case_count"] == 1
+    assert persisted["cases"][0]["case_id"] == "reviewed"
+    assert persisted["benchmark_status"] == "curated"
+    assert reloaded[0]["source_metadata"]["promotion_status"] == "approved"
+    assert reloaded[0]["expected_scope"]["estimated_sqft"] == 5000
