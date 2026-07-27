@@ -97,7 +97,12 @@ def extract_notes_from_images_with_ai(
             "confidence": 0.0,
             "source_images": [],
         }
-    model_name = model or os.getenv("OPENAI_ESTIMATOR_NOTE_IMAGE_MODEL") or DEFAULT_NOTE_IMAGE_MODEL
+    model_name = (
+        model
+        or os.getenv("OPENAI_EXTRACTION_MODEL")
+        or os.getenv("OPENAI_ESTIMATOR_NOTE_IMAGE_MODEL")
+        or DEFAULT_NOTE_IMAGE_MODEL
+    )
     cache_path = note_image_cache_path(usable, model=model_name, cache_dir=cache_dir)
     if cache_path.exists():
         payload = json.loads(cache_path.read_text())

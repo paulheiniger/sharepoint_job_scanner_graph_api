@@ -357,7 +357,12 @@ def analyze_selected_photos_with_ai(
             "skip_reason": "no_selected_images",
             "selected_image_count": 0,
         }
-    model_name = model or os.getenv("OPENAI_ESTIMATOR_PHOTO_MODEL") or DEFAULT_PHOTO_AI_MODEL
+    model_name = (
+        model
+        or os.getenv("OPENAI_EXTRACTION_MODEL")
+        or os.getenv("OPENAI_ESTIMATOR_PHOTO_MODEL")
+        or DEFAULT_PHOTO_AI_MODEL
+    )
     cache_path = _photo_ai_cache_path(
         selected_records,
         template_type=template_type,

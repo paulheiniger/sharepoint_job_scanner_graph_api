@@ -27,7 +27,7 @@ from .template_examples import build_similar_answer_key_digest, build_template_e
 from .schemas import EstimatorAssumptions, EstimatorData
 
 
-DEFAULT_CHAT_ESTIMATOR_MODEL = "gpt-4o"
+DEFAULT_CHAT_ESTIMATOR_MODEL = ""
 INSULATION_CHAT_TEMPLATE_DEFAULTS = {
     "foam_yield_or_coverage": 2600.0,
     "foam_unit_price": 2.25,
@@ -100,6 +100,8 @@ def run_estimator_chat_turn(
     data: EstimatorData | None = None,
     template_type_hint: str = "",
     existing_scope: dict[str, Any] | None = None,
+    existing_decisions: list[dict[str, Any]] | None = None,
+    existing_session_state: dict[str, Any] | None = None,
     attached_reference_answer_key: dict[str, Any] | None = None,
     provider: Callable[[list[dict[str, Any]], str], Any] | None = None,
     model: str | None = None,
@@ -180,11 +182,19 @@ def run_estimator_chat_turn(
             matched_answer_key_summary,
             template_type_hint=template_type_hint,
         )
-    model_name = model or os.getenv("OPENAI_ESTIMATOR_CHAT_MODEL") or DEFAULT_CHAT_ESTIMATOR_MODEL
+    model_name = (
+        model
+        or os.getenv("OPENAI_ESTIMATOR_MODEL")
+        or os.getenv("OPENAI_ESTIMATOR_CHAT_MODEL")
+        or os.getenv("OPENAI_MODEL")
+        or DEFAULT_CHAT_ESTIMATOR_MODEL
+    )
     prompt_messages = _chat_prompt_messages(
         message_list,
         template_type_hint=template_type_hint,
         existing_scope=baseline_scope,
+        existing_decisions=existing_decisions or [],
+        existing_session_state=existing_session_state or {},
         context=context,
     )
     if provider is not None or os.getenv("OPENAI_API_KEY"):
@@ -3159,13 +3169,17 @@ def _chat_prompt_messages(
     *,
     template_type_hint: str,
     existing_scope: dict[str, Any],
+    existing_decisions: list[dict[str, Any]],
+    existing_session_state: dict[str, Any],
     context: dict[str, Any],
 ) -> list[dict[str, Any]]:
     today = date.today().isoformat()
     instructions = (
         "You are a senior Spray-Tec estimator working inside an estimating assistant. "
-        "Use the conversation, historical/template context, and product/pricing context to produce an estimator-ready draft. "
-        "Think like an estimator: extract takeoff, infer likely template decisions, explain assumptions, and ask only material missing questions. "
+        "Use the conversation, persistent job state, historical/template context, and product/pricing context to progressively improve an estimator-ready draft. "
+        "Work in this order: understand job facts without choosing products; compare only the supplied top historical jobs; form a concise estimating plan; "
+        "then propose traceable decision patches. On a correction turn, update only affected facts and decision nodes and preserve unrelated current decisions. "
+        "Think like an estimator: extract takeoff, explain assumptions, and ask only material missing questions. "
         "If estimator_context.estimator_memory_guidance is present, treat those approved correction notes as shared estimator memory: "
         "use them to avoid repeating prior bad assumptions, unless the current user message explicitly says otherwise. "
         "Estimator memory outranks AI inference but does not override current-session user instructions, manual estimator edits, or workbook formulas. "
@@ -3200,7 +3214,10 @@ def _chat_prompt_messages(
         "If the user gives a command such as remove fabric, use closed cell R-21, make labor 2.5 days, change units, or change price, "
         "treat it as a workbook decision patch and return it in workbook_decision_preferences. "
         "Return strict JSON only with keys: assistant_message, estimator_notes, scope_overrides, workbook_decision_preferences, "
-        "missing_questions, assumptions, warnings, confidence. "
+        "historical_comparison, estimating_plan, assumption_details, rejected_precedents, missing_questions, assumptions, warnings, confidence. "
+        "historical_comparison must cite precedent_id and state why_relevant, similarities, differences, and influence_confidence. "
+        "estimating_plan must separate proposed scope, takeoff assumptions, product families, labor setup, adders, exclusions, and unresolved questions. "
+        "A workbook_decision_preferences item is a patch. Do not repeat unchanged current_decision_template_state rows. "
         "scope_overrides should use workbook-facing field names such as template_type, division, project_type, foam_type, "
         "foam_thickness_inches, building_footprint_length_ft, building_footprint_width_ft, wall_height_ft, openings, "
         "outside_walls_included, ceiling_included, net_insulation_area_sqft, estimated_sqft, insulation_surface_areas, "
@@ -3255,6 +3272,8 @@ def _chat_prompt_messages(
         "today": today,
         "template_type_hint": template_type_hint,
         "existing_scope": existing_scope,
+        "persistent_session_state": existing_session_state,
+        "current_decision_template_state": existing_decisions,
         "estimator_context": context,
         "conversation": messages,
     }

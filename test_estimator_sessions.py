@@ -15,6 +15,7 @@ from jobscan.estimator.session_capture import (
     export_training_dataset,
     final_decisions_from_workbench,
     load_estimator_session_payload,
+    load_estimate_session_state,
     proposed_decisions_from_workbench,
     save_decision_edits,
     save_decision_proposal,
@@ -23,6 +24,7 @@ from jobscan.estimator.session_capture import (
     save_memory_candidates_from_reference_template,
     save_memory_candidates_from_edits,
     save_scope_interpretation,
+    save_estimate_session_state,
     save_session_artifact,
     update_estimator_session,
     workbook_cell_writes_from_inputs,
@@ -576,3 +578,72 @@ def test_estimator_session_lifecycle_and_exports(tmp_path) -> None:
         for decision in proposed_decisions
     )
     assert not any(row.get("section") == "materials" for row in rows[0]["workbook_cell_writes"])
+
+
+def test_staged_estimator_state_survives_database_reload() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    session_id = create_estimator_session(
+        engine,
+        raw_input_notes="30x40 metal building.",
+        division="Insulation",
+        template_type="insulation",
+    )
+    state = {
+        "session_id": session_id,
+        "raw_user_notes": "30x40 metal building. Exclude thermal barrier.",
+        "division": "Insulation",
+        "template_type": "insulation",
+        "session_status": "draft_ready",
+        "current_stage": "conversational_revision",
+        "scope_state": {"estimated_sqft": 2226},
+        "decision_template_state": [
+            {"decision_id": "thermal_barrier", "include": False, "source_type": "explicit_user_note"}
+        ],
+        "conversation_history": [
+            {"role": "user", "content": "Exclude thermal barrier."},
+        ],
+        "model_metadata": {"estimator_model": "test-estimator"},
+        "prompt_version": "staged_estimator_v1",
+    }
+
+    save_estimate_session_state(engine, session_id, state)
+    reloaded = load_estimate_session_state(engine, session_id)
+
+    assert reloaded["session_status"] == "draft_ready"
+    assert reloaded["current_stage"] == "conversational_revision"
+    assert reloaded["scope_state"]["estimated_sqft"] == 2226
+    assert reloaded["decision_template_state"][0]["include"] is False
+    assert reloaded["conversation_history"][0]["content"] == "Exclude thermal barrier."
+
+
+def test_runtime_migration_adds_staged_columns_to_existing_sqlite_table() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE estimator_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    created_at TIMESTAMP,
+                    updated_at TIMESTAMP,
+                    raw_input_notes TEXT
+                )
+                """
+            )
+        )
+
+    ensure_estimator_session_tables(engine)
+
+    with engine.connect() as connection:
+        columns = {
+            str(row[1])
+            for row in connection.execute(text("PRAGMA table_info(estimator_sessions)")).fetchall()
+        }
+    assert {
+        "session_status",
+        "current_stage",
+        "session_state",
+        "conversation_history",
+        "model_metadata",
+        "prompt_version",
+    }.issubset(columns)

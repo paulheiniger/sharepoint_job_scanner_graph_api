@@ -28,6 +28,16 @@ SESSION_TABLES = [
     "estimator_session_artifacts",
 ]
 
+ESTIMATE_SESSION_STATUSES = {
+    "collecting_information",
+    "analyzing",
+    "awaiting_clarification",
+    "draft_ready",
+    "estimator_review",
+    "approved",
+    "workbook_generated",
+}
+
 
 def _now() -> datetime:
     return datetime.now(UTC)
@@ -99,6 +109,14 @@ def ensure_estimator_session_tables(engine: Engine) -> None:
                 source_file_ids JSONB DEFAULT '[]'::jsonb,
                 ai_model TEXT,
                 estimate_status TEXT,
+                user_id TEXT,
+                session_status TEXT NOT NULL DEFAULT 'collecting_information',
+                current_stage TEXT NOT NULL DEFAULT 'job_understanding',
+                session_state JSONB DEFAULT '{}'::jsonb,
+                conversation_history JSONB DEFAULT '[]'::jsonb,
+                model_metadata JSONB DEFAULT '{}'::jsonb,
+                prompt_version TEXT,
+                approved_at TIMESTAMPTZ,
                 exported_workbook_path TEXT,
                 exported_at TIMESTAMPTZ
             )
@@ -182,6 +200,14 @@ def ensure_estimator_session_tables(engine: Engine) -> None:
                 source_file_ids TEXT,
                 ai_model TEXT,
                 estimate_status TEXT,
+                user_id TEXT,
+                session_status TEXT,
+                current_stage TEXT,
+                session_state TEXT,
+                conversation_history TEXT,
+                model_metadata TEXT,
+                prompt_version TEXT,
+                approved_at TIMESTAMP,
                 exported_workbook_path TEXT,
                 exported_at TIMESTAMP
             )
@@ -250,6 +276,36 @@ def ensure_estimator_session_tables(engine: Engine) -> None:
     with engine.begin() as connection:
         for statement in statements:
             connection.execute(text(statement))
+        if dialect.startswith("postgres"):
+            for statement in (
+                "ALTER TABLE estimator_sessions ADD COLUMN IF NOT EXISTS user_id TEXT",
+                "ALTER TABLE estimator_sessions ADD COLUMN IF NOT EXISTS session_status TEXT NOT NULL DEFAULT 'collecting_information'",
+                "ALTER TABLE estimator_sessions ADD COLUMN IF NOT EXISTS current_stage TEXT NOT NULL DEFAULT 'job_understanding'",
+                "ALTER TABLE estimator_sessions ADD COLUMN IF NOT EXISTS session_state JSONB DEFAULT '{}'::jsonb",
+                "ALTER TABLE estimator_sessions ADD COLUMN IF NOT EXISTS conversation_history JSONB DEFAULT '[]'::jsonb",
+                "ALTER TABLE estimator_sessions ADD COLUMN IF NOT EXISTS model_metadata JSONB DEFAULT '{}'::jsonb",
+                "ALTER TABLE estimator_sessions ADD COLUMN IF NOT EXISTS prompt_version TEXT",
+                "ALTER TABLE estimator_sessions ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ",
+            ):
+                connection.execute(text(statement))
+        else:
+            existing_columns = {
+                str(row[1])
+                for row in connection.execute(text("PRAGMA table_info(estimator_sessions)")).fetchall()
+            }
+            sqlite_columns = {
+                "user_id": "TEXT",
+                "session_status": "TEXT DEFAULT 'collecting_information'",
+                "current_stage": "TEXT DEFAULT 'job_understanding'",
+                "session_state": "TEXT DEFAULT '{}'",
+                "conversation_history": "TEXT DEFAULT '[]'",
+                "model_metadata": "TEXT DEFAULT '{}'",
+                "prompt_version": "TEXT",
+                "approved_at": "TIMESTAMP",
+            }
+            for column, sql_type in sqlite_columns.items():
+                if column not in existing_columns:
+                    connection.execute(text(f"ALTER TABLE estimator_sessions ADD COLUMN {column} {sql_type}"))
 
 
 def create_estimator_session(
@@ -266,6 +322,13 @@ def create_estimator_session(
     source_file_ids: Any = None,
     ai_model: str | None = None,
     estimate_status: str | None = None,
+    user_id: str | None = None,
+    session_status: str = "collecting_information",
+    current_stage: str = "job_understanding",
+    session_state: Any = None,
+    conversation_history: Any = None,
+    model_metadata: Any = None,
+    prompt_version: str | None = None,
     session_id: str | None = None,
 ) -> str:
     ensure_estimator_session_tables(engine)
@@ -287,6 +350,13 @@ def create_estimator_session(
         "source_file_ids": _json_dumps(source_file_ids if source_file_ids is not None else []),
         "ai_model": ai_model,
         "estimate_status": estimate_status,
+        "user_id": user_id,
+        "session_status": _normalize_session_status(session_status),
+        "current_stage": current_stage or "job_understanding",
+        "session_state": _json_dumps(session_state or {}),
+        "conversation_history": _json_dumps(conversation_history or []),
+        "model_metadata": _json_dumps(model_metadata or {}),
+        "prompt_version": prompt_version,
     }
     with engine.begin() as connection:
         connection.execute(
@@ -295,12 +365,17 @@ def create_estimator_session(
                 INSERT INTO estimator_sessions (
                     session_id, created_at, updated_at, division, template_type,
                     customer, job_name, site_address, raw_input_notes, input_source_type,
-                    photos_present, source_file_ids, ai_model, estimate_status
+                    photos_present, source_file_ids, ai_model, estimate_status,
+                    user_id, session_status, current_stage, session_state,
+                    conversation_history, model_metadata, prompt_version
                 )
                 VALUES (
                     :session_id, :created_at, :updated_at, :division, :template_type,
                     :customer, :job_name, :site_address, :raw_input_notes, :input_source_type,
-                    :photos_present, {_json_expr(dialect, "source_file_ids")}, :ai_model, :estimate_status
+                    :photos_present, {_json_expr(dialect, "source_file_ids")}, :ai_model, :estimate_status,
+                    :user_id, :session_status, :current_stage, {_json_expr(dialect, "session_state")},
+                    {_json_expr(dialect, "conversation_history")}, {_json_expr(dialect, "model_metadata")},
+                    :prompt_version
                 )
                 """
             ),
@@ -322,6 +397,15 @@ def update_estimator_session(engine: Engine, session_id: str, **fields: Any) -> 
         "source_file_ids",
         "ai_model",
         "estimate_status",
+        "raw_input_notes",
+        "user_id",
+        "session_status",
+        "current_stage",
+        "session_state",
+        "conversation_history",
+        "model_metadata",
+        "prompt_version",
+        "approved_at",
         "exported_workbook_path",
         "exported_at",
     }
@@ -331,8 +415,11 @@ def update_estimator_session(engine: Engine, session_id: str, **fields: Any) -> 
     for key, value in fields.items():
         if key not in allowed:
             continue
-        params[key] = _json_dumps(value) if key == "source_file_ids" else value
-        assignments.append(f"{key} = {_json_expr(dialect, key) if key == 'source_file_ids' else ':' + key}")
+        if key == "session_status":
+            value = _normalize_session_status(value)
+        json_field = key in {"source_file_ids", "session_state", "conversation_history", "model_metadata"}
+        params[key] = _json_dumps(value) if json_field else value
+        assignments.append(f"{key} = {_json_expr(dialect, key) if json_field else ':' + key}")
     if len(assignments) == 1:
         return
     with engine.begin() as connection:
@@ -340,6 +427,73 @@ def update_estimator_session(engine: Engine, session_id: str, **fields: Any) -> 
             text(f"UPDATE estimator_sessions SET {', '.join(assignments)} WHERE session_id = :session_id"),
             params,
         )
+
+
+def _normalize_session_status(value: Any) -> str:
+    status = str(value or "collecting_information").strip().lower()
+    if status not in ESTIMATE_SESSION_STATUSES:
+        raise ValueError(f"Unsupported estimate session status: {status}")
+    return status
+
+
+def save_estimate_session_state(
+    engine: Engine,
+    session_id: str,
+    state: dict[str, Any],
+    *,
+    conversation_history: list[dict[str, Any]] | None = None,
+    model_metadata: dict[str, Any] | None = None,
+    prompt_version: str | None = None,
+) -> None:
+    """Persist the resumable staged estimator state on the existing session."""
+
+    session_status = _normalize_session_status(state.get("session_status"))
+    current_stage = str(state.get("current_stage") or "job_understanding")
+    history = conversation_history if conversation_history is not None else state.get("conversation_history") or []
+    update_estimator_session(
+        engine,
+        session_id,
+        raw_input_notes=state.get("raw_user_notes") or "",
+        division=state.get("division"),
+        template_type=state.get("template_type"),
+        job_name=state.get("job_name"),
+        site_address=state.get("site_address"),
+        ai_model=(model_metadata or state.get("model_metadata") or {}).get("estimator_model"),
+        session_status=session_status,
+        current_stage=current_stage,
+        session_state=state,
+        conversation_history=history,
+        model_metadata=model_metadata or state.get("model_metadata") or {},
+        prompt_version=prompt_version or state.get("prompt_version"),
+    )
+
+
+def load_estimate_session_state(engine: Engine, session_id: str) -> dict[str, Any]:
+    ensure_estimator_session_tables(engine)
+    with engine.connect() as connection:
+        row = connection.execute(
+            text(
+                """
+                SELECT session_state, conversation_history, session_status,
+                       current_stage, model_metadata, prompt_version
+                FROM estimator_sessions
+                WHERE session_id = :session_id
+                """
+            ),
+            {"session_id": session_id},
+        ).mappings().first()
+    if not row:
+        raise ValueError(f"Estimator session not found: {session_id}")
+    state = _maybe_json(row.get("session_state")) or {}
+    if not isinstance(state, dict):
+        state = {}
+    state.setdefault("session_id", session_id)
+    state.setdefault("session_status", row.get("session_status") or "collecting_information")
+    state.setdefault("current_stage", row.get("current_stage") or "job_understanding")
+    state.setdefault("conversation_history", _maybe_json(row.get("conversation_history")) or [])
+    state.setdefault("model_metadata", _maybe_json(row.get("model_metadata")) or {})
+    state.setdefault("prompt_version", row.get("prompt_version"))
+    return _jsonable(state)
 
 
 def save_scope_interpretation(
@@ -1283,6 +1437,8 @@ def save_final_decisions(
     update_estimator_session(
         engine,
         session_id,
+        session_status="workbook_generated",
+        current_stage="workbook_generation",
         exported_workbook_path=workbook_export_path,
         exported_at=exported_at,
     )
@@ -1353,6 +1509,8 @@ def load_estimator_session_payload(engine: Engine, session_id: str) -> dict[str,
             )
     for row in [payload["session"]]:
         row["source_file_ids"] = _maybe_json(row.get("source_file_ids"))
+        for column in ("session_state", "conversation_history", "model_metadata"):
+            row[column] = _maybe_json(row.get(column))
     for row in payload["scope_interpretations"]:
         for column in ("parsed_scope", "deterministic_scope", "assumptions", "missing_questions", "confidence_by_field", "review_flags"):
             row[column] = _maybe_json(row.get(column))
@@ -1371,7 +1529,13 @@ def load_estimator_session_payload(engine: Engine, session_id: str) -> dict[str,
     latest_final = _latest(payload["final_decisions"], "exported_at")
     payload["review"] = {
         "session_id": session_id,
+        "session_status": payload["session"].get("session_status"),
+        "current_stage": payload["session"].get("current_stage"),
         "raw_input_notes": payload["session"].get("raw_input_notes"),
+        "session_state": payload["session"].get("session_state") or {},
+        "conversation_history": payload["session"].get("conversation_history") or [],
+        "model_metadata": payload["session"].get("model_metadata") or {},
+        "prompt_version": payload["session"].get("prompt_version"),
         "parsed_scope": latest_scope.get("parsed_scope") or {},
         "assumptions": latest_scope.get("assumptions") or {},
         "missing_questions": latest_scope.get("missing_questions") or [],
@@ -1403,6 +1567,9 @@ def export_estimator_session_package(
     files = {
         "session_review.json": json.dumps(review, indent=2, sort_keys=True, default=str),
         "raw_notes.txt": review.get("raw_input_notes") or "",
+        "staged_session_state.json": json.dumps(review.get("session_state") or {}, indent=2, sort_keys=True, default=str),
+        "conversation_history.json": json.dumps(review.get("conversation_history") or [], indent=2, sort_keys=True, default=str),
+        "model_metadata.json": json.dumps(review.get("model_metadata") or {}, indent=2, sort_keys=True, default=str),
         "parsed_scope.json": json.dumps(review.get("parsed_scope") or {}, indent=2, sort_keys=True, default=str),
         "assumptions.json": json.dumps(review.get("assumptions") or {}, indent=2, sort_keys=True, default=str),
         "missing_questions.json": json.dumps(review.get("missing_questions") or [], indent=2, sort_keys=True, default=str),

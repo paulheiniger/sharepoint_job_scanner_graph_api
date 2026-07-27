@@ -15,9 +15,26 @@ CREATE TABLE IF NOT EXISTS estimator_sessions (
     source_file_ids JSONB DEFAULT '[]'::jsonb,
     ai_model TEXT,
     estimate_status TEXT,
+    user_id TEXT,
+    session_status TEXT NOT NULL DEFAULT 'collecting_information',
+    current_stage TEXT NOT NULL DEFAULT 'job_understanding',
+    session_state JSONB DEFAULT '{}'::jsonb,
+    conversation_history JSONB DEFAULT '[]'::jsonb,
+    model_metadata JSONB DEFAULT '{}'::jsonb,
+    prompt_version TEXT,
+    approved_at TIMESTAMPTZ,
     exported_workbook_path TEXT,
     exported_at TIMESTAMPTZ
 );
+
+ALTER TABLE estimator_sessions ADD COLUMN IF NOT EXISTS user_id TEXT;
+ALTER TABLE estimator_sessions ADD COLUMN IF NOT EXISTS session_status TEXT NOT NULL DEFAULT 'collecting_information';
+ALTER TABLE estimator_sessions ADD COLUMN IF NOT EXISTS current_stage TEXT NOT NULL DEFAULT 'job_understanding';
+ALTER TABLE estimator_sessions ADD COLUMN IF NOT EXISTS session_state JSONB DEFAULT '{}'::jsonb;
+ALTER TABLE estimator_sessions ADD COLUMN IF NOT EXISTS conversation_history JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE estimator_sessions ADD COLUMN IF NOT EXISTS model_metadata JSONB DEFAULT '{}'::jsonb;
+ALTER TABLE estimator_sessions ADD COLUMN IF NOT EXISTS prompt_version TEXT;
+ALTER TABLE estimator_sessions ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
 
 CREATE TABLE IF NOT EXISTS estimator_scope_interpretations (
     interpretation_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

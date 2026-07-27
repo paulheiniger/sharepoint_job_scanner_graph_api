@@ -2155,7 +2155,8 @@ def test_estimator_chat_panel_supports_multi_turn_replies() -> None:
 
     assert "st.chat_input" in source
     assert "estimator_chat_history_" in source
-    assert "existing_scope=existing_scope" in source
+    assert "previous_state=previous_staged_state" in source
+    assert "persist_staged_estimate_session" in source
     assert "estimator_chat_assistant_history_content" in source
     assert "Start a new estimate chat" in source
     assert "Workbook row changes proposed by chat" not in source

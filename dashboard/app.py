@@ -180,6 +180,9 @@ merge_photo_ai_analysis = None
 stage_uploaded_images = None
 estimator_context_cache_stats = None
 run_estimator_chat_turn = None
+advance_estimate_session = None
+new_estimate_session_state = None
+reject_historical_precedent = None
 extract_notes_from_images_with_ai = None
 stage_note_images = None
 answer_key_to_workbook_decision_preferences = None
@@ -201,6 +204,7 @@ def ensure_estimator_imports() -> None:
     global PHOTO_CATEGORY_OPTIONS, PHOTO_SIGNAL_OPTIONS, analyze_selected_photos_with_ai
     global apply_photo_record_edits, build_photo_scope_context, merge_photo_ai_analysis, stage_uploaded_images
     global estimator_context_cache_stats, run_estimator_chat_turn
+    global advance_estimate_session, new_estimate_session_state, reject_historical_precedent
     global extract_notes_from_images_with_ai, stage_note_images
     global answer_key_to_workbook_decision_preferences, build_reference_estimate_answer_key
     global build_template_examples
@@ -254,6 +258,11 @@ def ensure_estimator_imports() -> None:
         estimator_context_cache_stats as imported_estimator_context_cache_stats,
         run_estimator_chat_turn as imported_run_estimator_chat_turn,
     )
+    from jobscan.estimator.staged_session import (
+        advance_estimate_session as imported_advance_estimate_session,
+        new_estimate_session_state as imported_new_estimate_session_state,
+        reject_historical_precedent as imported_reject_historical_precedent,
+    )
     from jobscan.estimator.note_images import (
         extract_notes_from_images_with_ai as imported_extract_notes_from_images_with_ai,
         stage_note_images as imported_stage_note_images,
@@ -295,6 +304,9 @@ def ensure_estimator_imports() -> None:
     stage_uploaded_images = imported_stage_uploaded_images
     estimator_context_cache_stats = imported_estimator_context_cache_stats
     run_estimator_chat_turn = imported_run_estimator_chat_turn
+    advance_estimate_session = imported_advance_estimate_session
+    new_estimate_session_state = imported_new_estimate_session_state
+    reject_historical_precedent = imported_reject_historical_precedent
     extract_notes_from_images_with_ai = imported_extract_notes_from_images_with_ai
     stage_note_images = imported_stage_note_images
     answer_key_to_workbook_decision_preferences = imported_answer_key_to_workbook_decision_preferences
@@ -304,7 +316,7 @@ def ensure_estimator_imports() -> None:
 
 DEFAULT_DATABASE_URL = "postgresql+psycopg2://spraytec:spraytec_dev_password@127.0.0.1:5433/spraytec_ops"
 ESTIMATOR_CHAT_SESSION_DIR = Path("output/estimator_chat_sessions")
-ESTIMATOR_CHAT_SESSION_SCHEMA_VERSION = 3
+ESTIMATOR_CHAT_SESSION_SCHEMA_VERSION = 4
 DECISION_EVIDENCE_DISPLAY_COLUMNS = [
     "decision_evidence_summary",
     "decision_evidence_types",
@@ -20515,6 +20527,8 @@ def load_estimator_chat_session(thread_id: str) -> dict[str, Any]:
         payload["history"] = []
     if payload.get("result") is not None and not isinstance(payload.get("result"), dict):
         payload["result"] = {}
+    if payload.get("staged_session_state") is not None and not isinstance(payload.get("staged_session_state"), dict):
+        payload["staged_session_state"] = {}
     if int(payload.get("schema_version") or 0) != ESTIMATOR_CHAT_SESSION_SCHEMA_VERSION:
         user_history = [
             dict(message)
@@ -20540,6 +20554,8 @@ def save_estimator_chat_session(
     result: dict[str, Any] | None = None,
     estimator_notes: str = "",
     estimate_type: str = "",
+    staged_session_state: dict[str, Any] | None = None,
+    database_session_id: str = "",
 ) -> None:
     safe_thread_id = safe_estimator_chat_thread_id(thread_id)
     if not safe_thread_id:
@@ -20552,6 +20568,8 @@ def save_estimator_chat_session(
         "estimator_notes": str(estimator_notes or ""),
         "history": history or [],
         "result": result or {},
+        "staged_session_state": staged_session_state or {},
+        "database_session_id": str(database_session_id or ""),
     }
     try:
         ESTIMATOR_CHAT_SESSION_DIR.mkdir(parents=True, exist_ok=True)
@@ -20561,6 +20579,85 @@ def save_estimator_chat_session(
         temp_path.replace(path)
     except OSError:
         logger.exception("failed to save estimator chat session snapshot")
+
+
+def ensure_database_estimate_session(
+    *,
+    existing_session_id: str,
+    notes: str,
+    estimate_type: str,
+    state: dict[str, Any],
+) -> str:
+    if existing_session_id:
+        return existing_session_id
+    model_metadata = state.get("model_metadata") if isinstance(state.get("model_metadata"), dict) else {}
+    created = capture_estimator_session_event(
+        estimator_sessions.create_estimator_session,
+        raw_input_notes=notes,
+        division=state.get("division") or "",
+        template_type=state.get("template_type") or estimate_type,
+        job_name=state.get("job_name") or "",
+        site_address=state.get("site_address") or "",
+        input_source_type="estimator_chat",
+        ai_model=model_metadata.get("estimator_model") or "",
+        session_status=state.get("session_status") or "collecting_information",
+        current_stage=state.get("current_stage") or "job_understanding",
+        session_state=state,
+        conversation_history=state.get("conversation_history") or [],
+        model_metadata=model_metadata,
+        prompt_version=state.get("prompt_version") or "",
+    )
+    return str(created or "")
+
+
+def persist_staged_estimate_session(
+    *,
+    session_id: str,
+    state: dict[str, Any],
+    result: dict[str, Any],
+) -> None:
+    if not session_id:
+        return
+    model_metadata = state.get("model_metadata") if isinstance(state.get("model_metadata"), dict) else {}
+    capture_estimator_session_event(
+        estimator_sessions.save_estimate_session_state,
+        session_id,
+        state,
+        conversation_history=state.get("conversation_history") or [],
+        model_metadata=model_metadata,
+        prompt_version=state.get("prompt_version") or "",
+    )
+    capture_estimator_session_event(
+        estimator_sessions.save_scope_interpretation,
+        session_id,
+        parsed_scope=state.get("scope_state") or {},
+        deterministic_scope=result.get("scope_overrides") or {},
+        assumptions=state.get("assumptions") or [],
+        missing_questions=state.get("unresolved_questions") or [],
+        confidence_by_field=state.get("confidence_summary") or {},
+        review_flags=state.get("review_flags") or [],
+    )
+    decisions = state.get("decision_template_state") or []
+    if decisions:
+        capture_estimator_session_event(
+            estimator_sessions.save_decision_proposal,
+            session_id,
+            proposed_decisions=decisions,
+            template_type=state.get("template_type") or "",
+            proposal_source=result.get("source") or "staged_estimator_chat",
+            evidence_summary={
+                "historical_comparison": state.get("historical_comparison") or [],
+                "approved_memories_used": state.get("approved_memories_used") or [],
+                "prompt_version": state.get("prompt_version"),
+            },
+        )
+    audit_events = state.get("audit_events") or []
+    capture_estimator_session_event(
+        estimator_sessions.save_session_artifact,
+        session_id,
+        artifact_type="staged_estimator_turn",
+        artifact_json=audit_events[-1] if audit_events else {},
+    )
 
 
 def current_estimator_chat_thread_id() -> str:
@@ -21420,6 +21517,130 @@ def render_estimator_note_image_upload(*, chat_key: str, estimate_type: str) -> 
     return result
 
 
+def render_staged_estimate_state(
+    state: dict[str, Any],
+    *,
+    chat_key: str,
+    state_key: str,
+    history: list[dict[str, Any]],
+    result: dict[str, Any],
+    estimate_type: str,
+    database_session_id: str,
+) -> None:
+    status = str(state.get("session_status") or "collecting_information").replace("_", " ").title()
+    confidence = (state.get("confidence_summary") or {}).get("overall")
+    confidence_text = f" | Confidence {float(confidence):.0%}" if isinstance(confidence, (int, float)) else ""
+    st.caption(f"Estimate session: {status}{confidence_text}")
+
+    facts_tab, history_tab, assumptions_tab, decisions_tab, questions_tab, evidence_tab = st.tabs(
+        ["Job facts", "Similar jobs", "Assumptions", "Decisions", "Questions", "Evidence"]
+    )
+    with facts_tab:
+        facts = state.get("job_facts") or []
+        if facts:
+            st.dataframe(
+                pd.DataFrame(facts)[["label", "value", "fact_type", "source_type"]],
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.caption("No structured job facts yet.")
+    with history_tab:
+        jobs = state.get("retrieved_historical_jobs") or []
+        comparisons = {
+            str(row.get("precedent_id") or ""): row
+            for row in state.get("historical_comparison") or []
+            if isinstance(row, dict)
+        }
+        if not jobs:
+            st.caption("No sufficiently similar historical estimate has been retrieved yet.")
+        for job in jobs:
+            precedent_id = str(job.get("precedent_id") or "")
+            comparison = comparisons.get(precedent_id, {})
+            title = str(job.get("job_name") or job.get("customer") or precedent_id or "Historical estimate")
+            score = job.get("similarity_score")
+            score_label = f" | relevance {score}" if score not in (None, "") else ""
+            with st.expander(f"{title}{score_label}", expanded=False):
+                st.write(job.get("scope_summary") or "No normalized scope summary available.")
+                if comparison.get("why_relevant"):
+                    st.caption(f"Why retrieved: {comparison['why_relevant']}")
+                if comparison.get("differences"):
+                    st.write("Differences:", "; ".join(str(value) for value in comparison["differences"]))
+                source_url = str(job.get("source_url") or "")
+                if source_url:
+                    st.markdown(f"[Open source estimate]({source_url})")
+                if st.button("Reject this similar job", key=f"reject_precedent_{chat_key}_{precedent_id}"):
+                    updated = reject_historical_precedent(
+                        state,
+                        precedent_id=precedent_id,
+                        reason="Rejected by estimator in staged review.",
+                    )
+                    st.session_state[state_key] = updated
+                    result["staged_session_state"] = updated
+                    persist_staged_estimate_session(
+                        session_id=database_session_id,
+                        state=updated,
+                        result=result,
+                    )
+                    save_estimator_chat_session(
+                        chat_key,
+                        history=history,
+                        result=result,
+                        estimator_notes=str(st.session_state.get("estimator_notes") or ""),
+                        estimate_type=estimate_type,
+                        staged_session_state=updated,
+                        database_session_id=database_session_id,
+                    )
+                    st.rerun()
+    with assumptions_tab:
+        assumptions = state.get("assumptions") or []
+        if assumptions:
+            st.dataframe(pd.DataFrame(assumptions), use_container_width=True, hide_index=True)
+        else:
+            st.caption("No unconfirmed assumptions.")
+    with decisions_tab:
+        decisions = state.get("decision_template_state") or []
+        if decisions:
+            rows = []
+            for decision in decisions:
+                rows.append(
+                    {
+                        "decision": decision.get("decision_id") or decision.get("template_bucket"),
+                        "include": decision.get("include"),
+                        "proposed value": decision.get("proposed_values") or decision.get("proposed_value"),
+                        "confidence": decision.get("confidence"),
+                        "source": decision.get("source_type") or decision.get("source"),
+                        "review": decision.get("review_required"),
+                    }
+                )
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        else:
+            st.caption("No decision-template proposals yet.")
+    with questions_tab:
+        questions = state.get("unresolved_questions") or []
+        warnings = state.get("review_flags") or []
+        if questions:
+            st.markdown("**Open questions**")
+            for question in questions:
+                st.write(f"- {question}")
+        if warnings:
+            st.markdown("**Warnings**")
+            for warning in warnings:
+                st.write(f"- {warning}")
+        if not questions and not warnings:
+            st.caption("No open questions or warnings.")
+    with evidence_tab:
+        st.caption("Detailed evidence is kept out of the main chat and attached to decisions by source ID.")
+        with st.expander("Estimating plan", expanded=True):
+            st.json(state.get("estimating_plan") or {})
+        with st.expander("Approved memories used", expanded=False):
+            st.json(state.get("approved_memories_used") or [])
+        with st.expander("Pricing records", expanded=False):
+            st.json(state.get("retrieved_pricing_records") or [])
+        with st.expander("Product evidence", expanded=False):
+            st.json(state.get("retrieved_product_knowledge") or [])
+
+
 def render_estimator_chat_draft_panel(
     *,
     notes: str,
@@ -21440,11 +21661,15 @@ def render_estimator_chat_draft_panel(
     chat_key = str(thread_id)
     history_key = f"estimator_chat_history_{chat_key}"
     result_key = f"estimator_chat_result_{chat_key}"
+    staged_state_key = f"estimator_staged_session_{chat_key}"
+    database_session_key = f"estimator_database_session_id_{chat_key}"
     active_history_key = "estimator_chat_history_active"
     active_result_key = "estimator_chat_result_active"
     if st.button("Start a new estimate chat", key=f"estimator_chat_reset_{chat_key}"):
         st.session_state.pop(history_key, None)
         st.session_state.pop(result_key, None)
+        st.session_state.pop(staged_state_key, None)
+        st.session_state.pop(database_session_key, None)
         st.session_state.pop(active_history_key, None)
         st.session_state.pop(active_result_key, None)
         st.session_state.pop("estimator_notes", None)
@@ -21459,6 +21684,11 @@ def render_estimator_chat_draft_panel(
         saved_chat = load_estimator_chat_session(chat_key)
         saved_history = saved_chat.get("history") if isinstance(saved_chat.get("history"), list) else []
         saved_result = saved_chat.get("result") if isinstance(saved_chat.get("result"), dict) else {}
+        saved_staged_state = (
+            saved_chat.get("staged_session_state")
+            if isinstance(saved_chat.get("staged_session_state"), dict)
+            else {}
+        )
         if saved_history:
             chat_history = [dict(message) for message in saved_history if isinstance(message, dict)]
             st.session_state[history_key] = chat_history
@@ -21466,6 +21696,17 @@ def render_estimator_chat_draft_panel(
         if saved_result:
             st.session_state[result_key] = saved_result
             st.session_state[active_result_key] = saved_result
+        if saved_staged_state:
+            st.session_state[staged_state_key] = saved_staged_state
+        saved_database_session_id = str(saved_chat.get("database_session_id") or "")
+        if saved_database_session_id:
+            loaded_database_state = capture_estimator_session_event(
+                estimator_sessions.load_estimate_session_state,
+                saved_database_session_id,
+            )
+            if isinstance(loaded_database_state, dict) and loaded_database_state:
+                st.session_state[staged_state_key] = loaded_database_state
+            st.session_state[database_session_key] = saved_database_session_id
         saved_notes = str(saved_chat.get("estimator_notes") or "").strip()
         if saved_notes and not st.session_state.get("estimator_notes"):
             st.session_state["estimator_notes"] = saved_notes
@@ -21524,11 +21765,9 @@ def render_estimator_chat_draft_panel(
         messages = [dict(message) for message in chat_history]
         messages.append({"role": "user", "content": user_message})
         previous_result = st.session_state.get(result_key)
-        existing_scope = (
-            previous_result.get("scope_overrides")
-            if isinstance(previous_result, dict) and isinstance(previous_result.get("scope_overrides"), dict)
-            else {}
-        )
+        previous_staged_state = st.session_state.get(staged_state_key)
+        if not isinstance(previous_staged_state, dict):
+            previous_staged_state = new_estimate_session_state(template_type=estimate_type)
         attached_reference_answer_key = (
             previous_result.get("reference_answer_key")
             if isinstance(previous_result, dict) and isinstance(previous_result.get("reference_answer_key"), dict)
@@ -21545,11 +21784,11 @@ def render_estimator_chat_draft_panel(
                 chat_template_type_hint = detected_message_type
             chat_data = ensure_chat_data()
             with estimator_perf_step("chat context and response"):
-                result = run_estimator_chat_turn(
+                result, staged_state = advance_estimate_session(
                     messages,
                     data=chat_data,
                     template_type_hint=chat_template_type_hint,
-                    existing_scope=existing_scope,
+                    previous_state=previous_staged_state,
                     attached_reference_answer_key=attached_reference_answer_key,
                 )
             context_cache_after = estimator_context_cache_stats()
@@ -21565,6 +21804,9 @@ def render_estimator_chat_draft_panel(
         st.session_state[history_key] = messages
         st.session_state[active_history_key] = messages
         result_payload = result.to_dict()
+        result_payload["workbook_decision_preferences"] = staged_state.get("decision_template_state") or []
+        result_payload["scope_overrides"] = staged_state.get("scope_state") or result_payload.get("scope_overrides") or {}
+        result_payload["staged_session_state"] = staged_state
         result_payload = preserve_attached_reference_answer_key_context(
             result_payload,
             previous_result if isinstance(previous_result, dict) else {},
@@ -21578,13 +21820,31 @@ def render_estimator_chat_draft_panel(
                 st.session_state["estimator_auto_build_requested"] = True
         st.session_state[result_key] = result_payload
         st.session_state[active_result_key] = result_payload
+        st.session_state[staged_state_key] = staged_state
         st.session_state["estimator_notes"] = result.estimator_notes or user_message
+        database_session_id = ensure_database_estimate_session(
+            existing_session_id=str(st.session_state.get(database_session_key) or ""),
+            notes=str(st.session_state.get("estimator_notes") or ""),
+            estimate_type=chat_template_type_hint,
+            state=staged_state,
+        )
+        if database_session_id:
+            st.session_state[database_session_key] = database_session_id
+            staged_state["session_id"] = database_session_id
+            st.session_state["estimator_session_id"] = database_session_id
+            persist_staged_estimate_session(
+                session_id=database_session_id,
+                state=staged_state,
+                result=result_payload,
+            )
         save_estimator_chat_session(
             chat_key,
             history=messages,
             result=result_payload,
             estimator_notes=str(st.session_state.get("estimator_notes") or ""),
             estimate_type=chat_template_type_hint,
+            staged_session_state=staged_state,
+            database_session_id=database_session_id,
         )
         if image_message:
             st.session_state[image_message_applied_key] = True
@@ -21624,6 +21884,8 @@ def render_estimator_chat_draft_panel(
             result=result,
             estimator_notes=str(st.session_state.get("estimator_notes") or ""),
             estimate_type=estimate_type,
+            staged_session_state=st.session_state.get(staged_state_key) or {},
+            database_session_id=str(st.session_state.get(database_session_key) or ""),
         )
     for message in chat_history[-10:]:
         role = str(message.get("role") or "assistant")
@@ -21638,6 +21900,17 @@ def render_estimator_chat_draft_panel(
                 use_container_width=True,
                 hide_index=True,
             )
+    staged_state = st.session_state.get(staged_state_key)
+    if isinstance(staged_state, dict) and staged_state:
+        render_staged_estimate_state(
+            staged_state,
+            chat_key=chat_key,
+            state_key=staged_state_key,
+            history=chat_history,
+            result=result,
+            estimate_type=estimate_type,
+            database_session_id=str(st.session_state.get(database_session_key) or ""),
+        )
     return result if use_chat_draft else None
 
 

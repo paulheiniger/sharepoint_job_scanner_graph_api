@@ -676,7 +676,11 @@ def _call_openai_scope_interpreter(notes: str, deterministic_scope: dict[str, An
         from openai import OpenAI  # type: ignore
     except Exception as exc:  # pragma: no cover - depends on optional dependency
         raise RuntimeError("openai package is not installed") from exc
-    model = os.getenv("OPENAI_SCOPE_INTERPRETER_MODEL") or "gpt-4o-mini"
+    model = (
+        os.getenv("OPENAI_EXTRACTION_MODEL")
+        or os.getenv("OPENAI_SCOPE_INTERPRETER_MODEL")
+        or "gpt-4o-mini"
+    )
     try:
         timeout_seconds = float(os.getenv("OPENAI_SCOPE_INTERPRETER_TIMEOUT_SECONDS", "8"))
     except (TypeError, ValueError):
