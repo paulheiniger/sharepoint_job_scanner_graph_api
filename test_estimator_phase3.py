@@ -42,6 +42,22 @@ def test_model_routing_uses_role_specific_environment(monkeypatch) -> None:
     }
 
 
+def test_model_routing_defaults_estimator_to_gpt_55(monkeypatch) -> None:
+    for name in (
+        "OPENAI_ESTIMATOR_MODEL",
+        "OPENAI_ESTIMATOR_CHAT_MODEL",
+        "OPENAI_MODEL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    models = configured_estimator_models()
+    route = route_estimator_model("estimator")
+
+    assert models["estimator_model"] == "gpt-5.5"
+    assert route["model"] == "gpt-5.5"
+    assert route["selection_source"] == "default_configuration"
+
+
 def test_visual_evidence_preserves_annotated_scope_and_photo_proposals() -> None:
     visual = build_staged_visual_evidence(
         {

@@ -16,7 +16,7 @@ import pandas as pd
 from jobscan.estimate_routing import has_explicit_insulation_exclusion, is_insulation_quote
 
 from .estimator_memory import relevant_memory_rows
-from .model_routing import model_call_metadata
+from .model_routing import DEFAULT_ESTIMATOR_MODEL, model_call_metadata
 from . import labor as estimator_labor
 from .foam_yield_history import build_foam_yield_history_digest
 from .job_context_profiles import build_job_context_digest
@@ -28,7 +28,7 @@ from .template_examples import build_similar_answer_key_digest, build_template_e
 from .schemas import EstimatorAssumptions, EstimatorData
 
 
-DEFAULT_CHAT_ESTIMATOR_MODEL = ""
+DEFAULT_CHAT_ESTIMATOR_MODEL = DEFAULT_ESTIMATOR_MODEL
 DEFAULT_ESTIMATOR_MAX_INPUT_CHARACTERS = 100_000
 DEFAULT_ESTIMATOR_PRO_MAX_INPUT_CHARACTERS = 60_000
 DEFAULT_ESTIMATOR_MAX_OUTPUT_TOKENS = 8_000

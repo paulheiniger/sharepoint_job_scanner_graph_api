@@ -5,6 +5,8 @@ from datetime import UTC, datetime
 from typing import Any
 
 
+DEFAULT_ESTIMATOR_MODEL = "gpt-5.5"
+
 MODEL_ENVIRONMENT_VARIABLES = {
     "extraction": ("OPENAI_EXTRACTION_MODEL", "OPENAI_MODEL"),
     "estimator": (
@@ -17,12 +19,16 @@ MODEL_ENVIRONMENT_VARIABLES = {
 
 
 def configured_estimator_models() -> dict[str, str]:
-    """Resolve role-specific model configuration without hard-coded model IDs."""
+    """Resolve role-specific model configuration and estimator defaults."""
 
-    return {
+    configured = {
         f"{role}_model": _first_environment_value(names)
         for role, names in MODEL_ENVIRONMENT_VARIABLES.items()
     }
+    configured["estimator_model"] = (
+        configured["estimator_model"] or DEFAULT_ESTIMATOR_MODEL
+    )
+    return configured
 
 
 def route_estimator_model(
@@ -40,7 +46,12 @@ def route_estimator_model(
     configured = str(models.get(f"{normalized_role}_model") or "").strip()
     selected = str(explicit_model or configured).strip()
     reasons = list(trigger_reasons or [])
-    source = "explicit_override" if explicit_model else "environment_configuration"
+    if explicit_model:
+        source = "explicit_override"
+    elif _first_environment_value(MODEL_ENVIRONMENT_VARIABLES[normalized_role]):
+        source = "environment_configuration"
+    else:
+        source = "default_configuration"
     if normalized_role == "review":
         if user_requested:
             reasons.append("Estimator requested an independent review.")

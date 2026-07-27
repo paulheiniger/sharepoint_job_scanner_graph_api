@@ -72,7 +72,9 @@ questions, and unsupported assumptions.
 The persistent estimator and independent review use the Responses API. Set
 `OPENAI_ESTIMATOR_REASONING_EFFORT` and
 `OPENAI_REVIEW_REASONING_EFFORT` when the selected models support configurable
-reasoning. Request timing is controlled by
+reasoning. The estimator defaults to `gpt-5.5` when no estimator model
+environment variable or explicit override is provided. Request timing is
+controlled by
 `OPENAI_ESTIMATOR_CHAT_TIMEOUT_SECONDS`, `OPENAI_ESTIMATOR_MAX_RETRIES`,
 `OPENAI_REVIEW_TIMEOUT_SECONDS`, and `OPENAI_REVIEW_MAX_RETRIES`.
 Local cost circuit breakers default to 100,000 serialized input characters and
