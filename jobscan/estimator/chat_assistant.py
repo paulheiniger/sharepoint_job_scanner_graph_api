@@ -3383,10 +3383,75 @@ def _chat_prompt_messages(
             "content": json.dumps(user_payload, default=str, separators=(",", ": ")),
         },
     ]
+    for key, fallback in (
+        ("estimator_context", {}),
+        ("persistent_session_state", {}),
+        ("current_decision_template_state", []),
+        ("existing_scope", {}),
+    ):
+        prompt_characters = _json_character_count(prompt_messages)
+        if prompt_characters <= max_input_characters:
+            break
+        current_value = user_payload.get(key)
+        current_characters = _json_character_count(current_value)
+        target_characters = max(
+            0,
+            current_characters - (prompt_characters - max_input_characters) - 300,
+        )
+        user_payload[key] = _fit_prompt_payload_value(
+            current_value,
+            target_characters,
+            fallback,
+        )
+        prompt_messages = [
+            {"role": "system", "content": instructions},
+            {
+                "role": "user",
+                "content": json.dumps(user_payload, default=str, separators=(",", ": ")),
+            },
+        ]
     if _json_character_count(prompt_messages) > max_input_characters:
+        payload_without_conversation = {
+            **user_payload,
+            "conversation": [],
+        }
+        messages_without_conversation = [
+            {"role": "system", "content": instructions},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    payload_without_conversation,
+                    default=str,
+                    separators=(",", ": "),
+                ),
+            },
+        ]
+        conversation_budget = max(
+            0,
+            max_input_characters
+            - _json_character_count(messages_without_conversation)
+            - 100,
+        )
+        user_payload["conversation"] = _bounded_prompt_conversation(
+            messages,
+            conversation_budget,
+        )
+        prompt_messages = [
+            {"role": "system", "content": instructions},
+            {
+                "role": "user",
+                "content": json.dumps(user_payload, default=str, separators=(",", ": ")),
+            },
+        ]
+    if _json_character_count(prompt_messages) > max_input_characters:
+        prompt_characters = _json_character_count(prompt_messages)
+        minimum_characters = _json_character_count(minimum_messages)
         raise ValueError(
             "Estimator prompt exceeds OPENAI_ESTIMATOR_MAX_INPUT_CHARACTERS "
-            "after context compaction."
+            "after adaptive compaction "
+            f"(prompt_characters={prompt_characters}, "
+            f"configured_limit={max_input_characters}, "
+            f"minimum_prompt_characters={minimum_characters})."
         )
     return prompt_messages
 
