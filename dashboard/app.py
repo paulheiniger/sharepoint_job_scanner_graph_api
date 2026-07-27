@@ -2409,6 +2409,132 @@ def enrich_job_tracking_summary_with_estimated_materials(df: pd.DataFrame) -> pd
     return enriched
 
 
+def dashboard_source_file_key(value: object) -> str:
+    text_clean = text_value(value).replace("\\", "/").rsplit("/", 1)[-1]
+    return re.sub(r"[^a-z0-9]+", "", text_clean.lower())
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_dashboard_document_links(job_ids: tuple[str, ...]) -> pd.DataFrame:
+    document_cols = relation_columns("documents")
+    if not job_ids or not {"job_id", "file_name"}.issubset(document_cols):
+        return pd.DataFrame()
+    drive_cols = relation_columns("sharepoint_drive_items")
+    join_sql = ""
+    drive_url_expr = "NULL"
+    if (
+        {"drive_id", "drive_item_id"}.issubset(document_cols)
+        and {"drive_id", "drive_item_id", "web_url"}.issubset(drive_cols)
+    ):
+        join_sql = """
+            LEFT JOIN sharepoint_drive_items s
+              ON s.drive_id = d.drive_id
+             AND s.drive_item_id = d.drive_item_id
+        """
+        drive_url_expr = sql_column("s", drive_cols, "web_url")
+    try:
+        with get_engine().connect() as connection:
+            return pd.read_sql_query(
+                text(
+                    f"""
+                    SELECT
+                        d.job_id,
+                        {sql_column('d', document_cols, 'file_name')} AS source_file,
+                        {sql_coalesce([
+                            sql_nonblank_column('d', document_cols, 'sharepoint_url'),
+                            drive_url_expr,
+                        ])} AS source_file_url,
+                        {sql_coalesce([
+                            sql_nonblank_column('d', document_cols, 'relative_path'),
+                            (
+                                "CASE "
+                                f"WHEN {sql_nonblank_column('d', document_cols, 'folder_path')} IS NOT NULL "
+                                f"THEN RTRIM({sql_column('d', document_cols, 'folder_path')}, '/') "
+                                f"|| '/' || {sql_column('d', document_cols, 'file_name')} "
+                                "ELSE NULL END"
+                            ),
+                        ])} AS source_file_path,
+                        {sql_column('d', document_cols, 'modified_at')} AS source_modified_at
+                    FROM documents d
+                    {join_sql}
+                    WHERE d.job_id = ANY(:job_ids)
+                      AND {sql_column('d', document_cols, 'deleted_at', 'NULL')} IS NULL
+                    ORDER BY {sql_column('d', document_cols, 'modified_at', 'NULL')} DESC NULLS LAST
+                    """
+                ),
+                connection,
+                params={"job_ids": list(job_ids)},
+            )
+    except Exception:
+        logger.exception("dashboard document link lookup failed")
+        return pd.DataFrame()
+
+
+def enrich_rows_with_source_file_links(df: pd.DataFrame) -> pd.DataFrame:
+    if (
+        not isinstance(df, pd.DataFrame)
+        or df.empty
+        or "job_id" not in df.columns
+        or "source_file" not in df.columns
+    ):
+        return df
+    out = df.copy()
+    source_values = out["source_file"].fillna("").astype(str).str.strip()
+    out["source_file_url"] = source_values.where(
+        source_values.str.lower().str.startswith(("http://", "https://")),
+        "",
+    )
+    if "source_file_path" not in out.columns:
+        out["source_file_path"] = out.get("source_path", "")
+    job_ids = tuple(
+        sorted(
+            {
+                text_value(value)
+                for value in out["job_id"]
+                if text_value(value)
+            }
+        )
+    )
+    links = load_dashboard_document_links(job_ids)
+    if links.empty:
+        return out
+    links = links.copy()
+    links["_source_file_key"] = links["source_file"].apply(dashboard_source_file_key)
+    links["job_id"] = links["job_id"].fillna("").astype(str)
+    links = links[
+        links["job_id"].ne("") & links["_source_file_key"].ne("")
+    ].drop_duplicates(["job_id", "_source_file_key"])
+    out["job_id"] = out["job_id"].fillna("").astype(str)
+    source_keys = out["source_file"].fillna("").astype(str).str.strip()
+    if "source_file_path" in out.columns:
+        source_keys = source_keys.where(
+            source_keys.ne(""),
+            out["source_file_path"].fillna("").astype(str).str.strip(),
+        )
+    out["_source_file_key"] = source_keys.apply(dashboard_source_file_key)
+    out = out.merge(
+        links[
+            [
+                "job_id",
+                "_source_file_key",
+                "source_file_url",
+                "source_file_path",
+            ]
+        ],
+        on=["job_id", "_source_file_key"],
+        how="left",
+        suffixes=("", "_document"),
+    )
+    for column in ("source_file_url", "source_file_path"):
+        document_column = f"{column}_document"
+        out[column] = out[column].where(
+            out[column].fillna("").astype(str).str.strip().ne(""),
+            out.get(document_column, ""),
+        )
+        out = out.drop(columns=[document_column], errors="ignore")
+    return out.drop(columns=["_source_file_key"], errors="ignore")
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def load_job_tracking_dashboard_summary(include_estimated_materials: bool = True) -> pd.DataFrame:
     tracking_cols = relation_columns("job_tracking_summary")
@@ -2439,6 +2565,7 @@ def load_job_tracking_dashboard_summary(include_estimated_materials: bool = True
         "folder_url": sql_column("j", job_cols, "folder_url") if has_jobs else "NULL",
         "tracking_file": sql_column("t", tracking_cols, "tracking_file"),
         "source_file": sql_column("t", tracking_cols, "source_file"),
+        "source_path": sql_column("t", tracking_cols, "source_path"),
         "tracking_notes": sql_column("t", tracking_cols, "tracking_notes"),
         "tracking_warnings": sql_column("t", tracking_cols, "tracking_warnings"),
     }
@@ -2591,7 +2718,7 @@ def load_job_tracking_dashboard_summary(include_estimated_materials: bool = True
         default="Historical / proposed",
     )
     df = with_folder_link(df)
-    return df
+    return enrich_rows_with_source_file_links(df)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -2617,6 +2744,8 @@ def load_job_tracking_dashboard_daily() -> pd.DataFrame:
             ]
         ),
         "division": sql_column("j", job_cols, "division") if has_jobs else "NULL",
+        "folder_url": sql_column("j", job_cols, "folder_url") if has_jobs else "NULL",
+        "folder_path": sql_column("j", job_cols, "folder_path") if has_jobs else "NULL",
         "work_date": sql_column("d", daily_cols, "work_date"),
         "crew": sql_column("d", daily_cols, "crew"),
         "notes": sql_column("d", daily_cols, "notes"),
@@ -2626,6 +2755,7 @@ def load_job_tracking_dashboard_daily() -> pd.DataFrame:
                 sql_column("d", daily_cols, "tracking_file"),
             ]
         ),
+        "source_path": sql_column("d", daily_cols, "source_path"),
     }
     numeric_fields = [
         "labor_hours",
@@ -2686,7 +2816,7 @@ def load_job_tracking_dashboard_daily() -> pd.DataFrame:
         if column in df.columns:
             total_hours = total_hours.add(numeric_series(df, column).reindex(df.index).fillna(0), fill_value=0)
     df["total_hours"] = total_hours
-    return df
+    return enrich_rows_with_source_file_links(with_folder_link(df))
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -2931,6 +3061,15 @@ def summarize_job_tracking_daily_for_dashboard(daily: pd.DataFrame) -> pd.DataFr
             agg[target] = (source, "sum")
     if "notes" in df.columns:
         agg["tracking_notes"] = ("notes", lambda values: "; ".join(dict.fromkeys(text_value(value) for value in values if text_value(value)))[:2000])
+    for column in (
+        "source_file_url",
+        "source_file_path",
+        "folder_link_or_path",
+        "folder_url",
+        "folder_path",
+    ):
+        if column in df.columns:
+            agg[column] = (column, "first")
     summary = df.groupby(group_cols, dropna=False).agg(**agg).reset_index()
     if "actual_labor_hours" not in summary.columns:
         summary["actual_labor_hours"] = np.nan
@@ -8534,6 +8673,37 @@ def with_folder_link(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+DASHBOARD_LINK_COLUMNS = {
+    "folder": "Job Folder",
+    "folder_url": "Job Folder",
+    "folder_link_or_path": "Job Folder",
+    "source_file_url": "Source File",
+    "sharepoint_url": "Source File",
+    "proposal_url": "Proposal",
+    "document_url": "Source File",
+}
+
+
+def configure_dashboard_link_columns(
+    display_df: pd.DataFrame,
+    column_config: dict[str, Any],
+    column_labels: dict[str, str] | None = None,
+) -> None:
+    """Render persisted HTTP URLs as compact clickable links in data tables."""
+    for column, default_label in DASHBOARD_LINK_COLUMNS.items():
+        if column not in display_df.columns:
+            continue
+        values = display_df[column].fillna("").astype(str).str.strip()
+        urls = values.where(values.str.lower().str.startswith(("http://", "https://")), "")
+        if not urls.ne("").any():
+            continue
+        display_df[column] = urls
+        column_config[column] = st.column_config.LinkColumn(
+            (column_labels or {}).get(column) or default_label,
+            display_text="Open",
+        )
+
+
 def show_empty(message: str = "No rows match the current filters.") -> None:
     st.info(message)
 
@@ -8623,6 +8793,7 @@ def show_table(
             (column_labels or {}).get(column),
             format="$%.0f",
         )
+    configure_dashboard_link_columns(display_df, column_config, column_labels)
     if not column_config:
         column_config = None
     if row_style_column and row_style_column in table_df.columns and row_style_colors:
@@ -13559,13 +13730,48 @@ def load_office_timesheet_entries() -> pd.DataFrame:
         "next_action_due": "next_action_due",
         "notes": "notes",
         "source_file": "source_file",
+        "source_file_path": "source_file_path",
+        "source_drive_id": "source_drive_id",
+        "source_drive_item_id": "source_drive_item_id",
+        "source_row": "source_row",
         "source_sheet": "source_sheet",
         "source_app": "source_app",
         "warnings": "warnings",
     }
     select_parts = [f"{sql_column('t', cols, source)} AS {alias}" for source, alias in fields.items()]
+    drive_cols = relation_columns("sharepoint_drive_items")
+    join_sql = ""
+    source_url_expr = "NULL"
+    if (
+        {"source_drive_id", "source_drive_item_id"}.issubset(cols)
+        and {"drive_id", "drive_item_id", "web_url"}.issubset(drive_cols)
+    ):
+        join_sql = """
+            LEFT JOIN sharepoint_drive_items s
+              ON s.drive_id = t.source_drive_id
+             AND s.drive_item_id = t.source_drive_item_id
+        """
+        source_url_expr = sql_column("s", drive_cols, "web_url")
+    select_parts.append(
+        f"""
+        COALESCE(
+            NULLIF({source_url_expr}, ''),
+            CASE
+                WHEN LOWER(COALESCE({sql_column('t', cols, 'source_file_path')}, '')) LIKE 'http%'
+                THEN {sql_column('t', cols, 'source_file_path')}
+                ELSE NULL
+            END
+        ) AS source_file_url
+        """
+    )
     try:
-        return safe_load(f"SELECT {', '.join(select_parts)} FROM office_timesheet_entries t")
+        return safe_load(
+            f"""
+            SELECT {', '.join(select_parts)}
+            FROM office_timesheet_entries t
+            {join_sql}
+            """
+        )
     except Exception:
         return pd.DataFrame()
 
@@ -13850,6 +14056,8 @@ def prepare_timesheet_activity_rows(timesheets: pd.DataFrame, jobs: pd.DataFrame
         "row_type",
         "notes",
         "source_file",
+        "source_file_path",
+        "source_file_url",
         "source_sheet",
         "warnings",
         "start_time",
@@ -14162,6 +14370,24 @@ def office_timesheet_entry_page() -> None:
         recent_app_entries = existing_timesheets[
             existing_timesheets.get("source_app", pd.Series("", index=existing_timesheets.index)).fillna("").astype(str).eq("office_timesheet_app")
         ].copy()
+        if (
+            not recent_app_entries.empty
+            and isinstance(jobs, pd.DataFrame)
+            and not jobs.empty
+            and "job_id" in recent_app_entries.columns
+            and "job_id" in jobs.columns
+        ):
+            folder_columns = [
+                column
+                for column in ("job_id", "folder_link_or_path")
+                if column in jobs.columns
+            ]
+            if len(folder_columns) == 2:
+                recent_app_entries = recent_app_entries.merge(
+                    jobs[folder_columns].drop_duplicates("job_id"),
+                    on="job_id",
+                    how="left",
+                )
 
     employee_col, date_col = st.columns([1.4, 1])
     with employee_col:
@@ -14279,6 +14505,7 @@ def office_timesheet_entry_page() -> None:
                 "next_action_owner",
                 "next_action_due",
                 "notes",
+                "folder_link_or_path",
             ],
             height=360,
             sort_by="work_date",
@@ -16618,6 +16845,11 @@ def timesheet_job_touches_page() -> None:
                 "match_status",
                 "match_score",
                 "source_file",
+                "source_file_url",
+                "source_file_path",
+                "source_sheet",
+                "source_row",
+                "folder_link_or_path",
             ],
             height=560,
         )
@@ -16808,6 +17040,8 @@ def job_tracking_dashboard_page() -> None:
                 "labor_delta_hours",
                 "actual_mileage",
                 "source_file",
+                "source_file_url",
+                "source_file_path",
                 "folder_link_or_path",
                 "tracking_warnings",
             ],
@@ -16842,6 +17076,9 @@ def job_tracking_dashboard_page() -> None:
                     "estimated_mileage",
                     "last_work_date",
                     "source_file",
+                    "source_file_url",
+                    "source_file_path",
+                    "folder_link_or_path",
                     "tracking_warnings",
                 ],
                 height=520,
@@ -16910,6 +17147,9 @@ def job_tracking_dashboard_page() -> None:
                     "crew",
                     "notes",
                     "source_file",
+                    "source_file_url",
+                    "source_file_path",
+                    "folder_link_or_path",
                 ],
                 height=640,
             )
@@ -16950,6 +17190,9 @@ def job_tracking_dashboard_page() -> None:
             "estimated_caulk",
             "last_work_date",
             "source_file",
+            "source_file_url",
+            "source_file_path",
+            "folder_link_or_path",
         ]
 
         st.subheader("Roofing Materials Actual vs Estimate")
@@ -17006,6 +17249,9 @@ def job_tracking_dashboard_page() -> None:
             "estimated_caulk",
             "last_work_date",
             "source_file",
+            "source_file_url",
+            "source_file_path",
+            "folder_link_or_path",
         ]
         available_insulation_summary = [column for column in insulation_summary_columns if column in insulation_summary.columns]
         has_insulation_values = any(
@@ -17046,6 +17292,10 @@ def job_tracking_dashboard_page() -> None:
             "caulk",
             "crew",
             "notes",
+            "source_file",
+            "source_file_url",
+            "source_file_path",
+            "folder_link_or_path",
         ]
         if not roofing_daily.empty and any(
             column in roofing_daily.columns and numeric_series(roofing_daily, column).notna().any()
@@ -25929,6 +26179,10 @@ def render_dashboard_source_references(page: str) -> None:
         "These references describe the immediate datasets and important fallback or aggregation rules used on this page. "
         "PostgreSQL dashboard-view definitions are maintained in `db/dashboard_views.sql`; application-side joins and "
         "normalization are in `dashboard/app.py`."
+    )
+    st.caption(
+        "Open links in Job Folder and Source File columns use persisted SharePoint web URLs. "
+        "A visible path or filename without an Open link has not been resolved to an authoritative URL."
     )
     source_frame = pd.DataFrame(references).rename(
         columns={

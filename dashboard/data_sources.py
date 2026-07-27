@@ -121,7 +121,7 @@ PAGE_SOURCE_REFERENCES: dict[str, tuple[DashboardSourceReference, ...]] = {
             "office_timesheet_entries",
             "PostgreSQL table",
             "Entered/imported office time, milestones, next actions, and notes",
-            "Rows retain source_file, source_sheet, and source_app when imported.",
+            "Imported rows retain source file, sheet, row, Graph drive/item IDs, and file path. Persisted Graph IDs resolve to clickable SharePoint file links.",
         ),
         _ref(
             "dashboard_jobs",
@@ -149,7 +149,7 @@ PAGE_SOURCE_REFERENCES: dict[str, tuple[DashboardSourceReference, ...]] = {
             "job_tracking_summary; job_tracking_daily_entries",
             "PostgreSQL view/table",
             "Job-level and daily labor, travel, production, material, and weather entries",
-            "Dashboard totals aggregate daily entries by job and work date.",
+            "Dashboard totals aggregate daily entries by job and work date. Source filenames are matched to persisted document/drive metadata for clickable file links when an exact job-and-filename match exists.",
         ),
         _ref(
             "job_tracking_estimated_material_snapshot; job_tracking_estimate_budget_snapshot",
@@ -489,14 +489,37 @@ PAGE_AUDIT_NOTES: dict[str, tuple[str, ...]] = {
     "Sales Dashboard": (
         "Sales stage and KPI counts are inferred from current pipeline/folder evidence; the weekly KPI section is explicitly a proxy until activity tracking is complete.",
         "sales_value can come from the job estimate, VSimple bid amount, or VSimple billing amount when earlier values are missing.",
+        "Job-level exception tables link to the SharePoint job folder. Aggregate pipeline, estimator, category, and lead-source totals are grouped from those filtered job rows and therefore do not have one source file.",
     ),
     "Operations Dashboard": (
         "Check whether snapshot tables or live assembly were used before reconciling a number; both paths are documented above.",
         "AR Over 60 and accounting actuals are not connected and must not be treated as complete financial metrics.",
+        "Operational rollups combine job folders, crew_schedule, extracted estimate budgets, and job-tracking actuals. Job-level tables link to the folder; aggregate status and risk metrics reconcile to the filtered job rows beneath them.",
     ),
     "Job Board": (
         "The page coalesces fields from several sources. Blank/zero primary values may be enriched from accepted VSimple matches or extracted estimates.",
         "Folder-name and document-text matches are lower-confidence fallbacks than stable job_id/Graph identifiers.",
+        "The Folder column opens the persisted SharePoint folder URL when available. Proposal, estimate, contract, and tracking filenames are document signals; a filename without a persisted file URL is not presented as a clickable file.",
+    ),
+    "Office Timesheet": (
+        "App-entered rows originate in office_timesheet_entries and link to the selected job folder. Imported rows retain source workbook path and Graph IDs; Graph-matched sources open the exact SharePoint workbook.",
+    ),
+    "Timesheet Job Touches": (
+        "Recent Activity preserves the imported source workbook, sheet, row, and exact file link where Graph identifiers are available. Projects Moving links to the matched job folder.",
+        "Employee, code, daily-touch, and weighted-touch charts aggregate office_timesheet_entries after date filters and job matching; no single file or folder represents those totals.",
+    ),
+    "Job Tracking": (
+        "Actual production comes from job_tracking_daily_entries and job_tracking_summary. Exact job-and-filename matches to documents/sharepoint_drive_items provide clickable tracking-workbook links; the full stored path remains visible when no URL resolves.",
+        "Estimate-vs-actual and material variance views combine tracking actuals with job_tracking estimate snapshots or estimate_template_rows fallback values. Those variance numbers therefore do not originate from one file.",
+    ),
+    "Schedule Calendar": (
+        "Planned events come from crew_schedule; optional actual-work events come from job_tracking_daily_entries. Selected job panels link to the SharePoint folder and available source documents.",
+    ),
+    "Daily Crew Dispatch": (
+        "Dispatch rows are operational entries stored in daily_dispatch tables. Job identity and folder links come from dashboard_jobs; roster and assignment totals are aggregates of the selected dispatch date.",
+    ),
+    "Daily Production": (
+        "Production and material totals aggregate submitted daily_production_entries and daily_production_material_usage rows. Job folder links come from dashboard_jobs; form-entered records do not have a separate SharePoint source file.",
     ),
     "Owner Overview": (
         "Totals are job-row totals, while action/warning views may contain multiple rows per job. Do not add issue-row counts to job counts.",
@@ -519,6 +542,15 @@ PAGE_AUDIT_NOTES: dict[str, tuple[str, ...]] = {
     "Estimating Assistant": (
         "Historical examples and product documents are evidence. Current-job workbook changes should be traceable to current scope, explicit defaults, or reviewed estimator decisions.",
     ),
+    "Pricing Catalog": (
+        "Catalog rows retain source_file, source_type, source_sheet, and source_page when imported. A source filename is not made clickable unless a persisted URL is available; vendor/category rollups aggregate multiple pricing records.",
+    ),
+    "Ask Spray-Tec": (
+        "Answers can combine jobs, documents, schedules, tracking, timesheets, estimates, and pricing. Record-level citations should be used for specific facts; summaries may draw from multiple persisted datasets.",
+    ),
+    "Admin / Health": (
+        "Health counts and timestamps are direct database metadata checks. They describe ingestion coverage and freshness rather than a SharePoint file or job folder.",
+    ),
 }
 
 
@@ -532,4 +564,3 @@ def audit_notes_for_page(page: str) -> tuple[str, ...]:
 
 def all_dashboard_pages() -> tuple[str, ...]:
     return tuple(DASHBOARD_CORE_PAGES + DASHBOARD_LEGACY_PAGES)
-

@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 
 import dashboard.app as app
+import pandas as pd
 from dashboard.data_sources import (
     DASHBOARD_CORE_PAGES,
     DASHBOARD_LEGACY_PAGES,
@@ -60,3 +61,109 @@ def test_sales_and_operations_sources_disclose_fallback_paths() -> None:
     assert "vsimple" in sales_text
     assert "operations_dashboard_ops_snapshot" in operations_text
     assert "otherwise" in operations_text
+
+
+def test_current_aggregate_pages_explain_underlying_lineage() -> None:
+    for page in [
+        "Sales Dashboard",
+        "Operations Dashboard",
+        "Timesheet Job Touches",
+        "Job Tracking",
+        "Schedule Calendar",
+        "Daily Crew Dispatch",
+        "Daily Production",
+    ]:
+        assert audit_notes_for_page(page)
+
+
+def test_job_tracking_source_file_resolves_exact_document_link(monkeypatch) -> None:
+    monkeypatch.setattr(
+        app,
+        "load_dashboard_document_links",
+        lambda _job_ids: pd.DataFrame(
+            [
+                {
+                    "job_id": "job-1",
+                    "source_file": "Job Tracking.xlsx",
+                    "source_file_url": "https://example.test/job-tracking",
+                    "source_file_path": "Contracted/job-1/Job Tracking.xlsx",
+                }
+            ]
+        ),
+    )
+
+    enriched = app.enrich_rows_with_source_file_links(
+        pd.DataFrame(
+            [
+                {
+                    "job_id": "job-1",
+                    "source_file": "/tmp/Job Tracking.xlsx",
+                }
+            ]
+        )
+    )
+
+    assert enriched.iloc[0]["source_file_url"] == "https://example.test/job-tracking"
+    assert enriched.iloc[0]["source_file_path"] == "Contracted/job-1/Job Tracking.xlsx"
+
+
+def test_job_tracking_source_path_resolves_when_filename_is_blank(monkeypatch) -> None:
+    monkeypatch.setattr(
+        app,
+        "load_dashboard_document_links",
+        lambda _job_ids: pd.DataFrame(
+            [
+                {
+                    "job_id": "job-1",
+                    "source_file": "Job Tracking.xlsx",
+                    "source_file_url": "https://example.test/job-tracking",
+                    "source_file_path": "Contracted/job-1/Job Tracking.xlsx",
+                }
+            ]
+        ),
+    )
+
+    enriched = app.enrich_rows_with_source_file_links(
+        pd.DataFrame(
+            [
+                {
+                    "job_id": "job-1",
+                    "source_file": "",
+                    "source_path": "Contracted/job-1/Job Tracking.xlsx",
+                }
+            ]
+        )
+    )
+
+    assert enriched.iloc[0]["source_file_url"] == "https://example.test/job-tracking"
+    assert enriched.iloc[0]["source_file_path"] == "Contracted/job-1/Job Tracking.xlsx"
+
+
+def test_dashboard_link_columns_keep_only_clickable_urls(monkeypatch) -> None:
+    monkeypatch.setattr(
+        app.st.column_config,
+        "LinkColumn",
+        lambda label, **kwargs: {"label": label, **kwargs},
+    )
+    frame = pd.DataFrame(
+        {
+            "folder_link_or_path": [
+                "https://example.test/folder",
+                "Contracted/job-2",
+            ],
+            "source_file_url": [
+                "https://example.test/file",
+                "",
+            ],
+        }
+    )
+    config: dict[str, object] = {}
+
+    app.configure_dashboard_link_columns(frame, config)
+
+    assert frame["folder_link_or_path"].tolist() == [
+        "https://example.test/folder",
+        "",
+    ]
+    assert config["folder_link_or_path"]["display_text"] == "Open"
+    assert config["source_file_url"]["label"] == "Source File"
