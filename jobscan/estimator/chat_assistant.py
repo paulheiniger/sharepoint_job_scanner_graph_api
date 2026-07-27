@@ -32,6 +32,65 @@ DEFAULT_CHAT_ESTIMATOR_MODEL = DEFAULT_ESTIMATOR_MODEL
 DEFAULT_ESTIMATOR_MAX_INPUT_CHARACTERS = 100_000
 DEFAULT_ESTIMATOR_PRO_MAX_INPUT_CHARACTERS = 60_000
 DEFAULT_ESTIMATOR_MAX_OUTPUT_TOKENS = 8_000
+ESTIMATOR_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "name": "spraytec_estimator_turn",
+    "description": "A structured estimator draft and workbook decision patch.",
+    "strict": False,
+    "schema": {
+        "type": "object",
+        "properties": {
+            "assistant_message": {"type": "string"},
+            "estimator_notes": {"type": "string"},
+            "scope_overrides": {"type": "object"},
+            "workbook_decision_preferences": {
+                "type": "array",
+                "items": {"type": "object"},
+            },
+            "historical_comparison": {
+                "type": "array",
+                "items": {"type": "object"},
+            },
+            "estimating_plan": {"type": "object"},
+            "assumption_details": {
+                "type": "array",
+                "items": {"type": "object"},
+            },
+            "rejected_precedents": {
+                "type": "array",
+                "items": {"type": "object"},
+            },
+            "missing_questions": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+            "assumptions": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+            "warnings": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+            "confidence": {"type": "number"},
+        },
+        "required": [
+            "assistant_message",
+            "estimator_notes",
+            "scope_overrides",
+            "workbook_decision_preferences",
+            "historical_comparison",
+            "estimating_plan",
+            "assumption_details",
+            "rejected_precedents",
+            "missing_questions",
+            "assumptions",
+            "warnings",
+            "confidence",
+        ],
+        "additionalProperties": False,
+    },
+}
 PROMPT_CONTEXT_PRIORITY = (
     "template_type",
     "route_mileage",
@@ -1921,7 +1980,8 @@ def _template_type_from_chat_text(text: str) -> str:
     )
     roofing_signal = re.search(
         r"\b(roof restoration|roof repair|roof coating|membrane|tpo|epdm|bur|silicone coating|ponding|"
-        r"blister|fasteners?|seams?|curbs?|drains?|tear[- ]?out)\b",
+        r"coated foam roof|roof area|roof replacement|roof recovery|blister|fasteners?|seams?|curbs?|drains?|"
+        r"tear[- ]?out|wood decking|edge metal|gutters?|downspouts?|coping|counter ?flashing)\b",
         normalized,
     )
     explicit_insulation_scope = re.search(
@@ -3678,7 +3738,10 @@ def _call_openai_chat(messages: list[dict[str, Any]], model: str) -> dict[str, A
         "model": model,
         "input": messages,
         "max_output_tokens": max_output_tokens,
-        "text": {"format": {"type": "json_object"}},
+        "text": {
+            "format": copy.deepcopy(ESTIMATOR_RESPONSE_FORMAT),
+            "verbosity": "low",
+        },
     }
     reasoning_effort = str(
         os.getenv("OPENAI_ESTIMATOR_REASONING_EFFORT") or ""
@@ -3729,11 +3792,26 @@ def _extract_json_object(value: Any) -> dict[str, Any]:
         try:
             payload = json.loads(candidate)
         except json.JSONDecodeError:
-            repaired = _repair_common_json_delimiters(candidate)
-            payload = json.loads(repaired)
+            payload = _load_json_with_local_repairs(candidate)
             if isinstance(payload, dict):
                 payload["_json_repair_applied"] = True
     return payload if isinstance(payload, dict) else {}
+
+
+def _load_json_with_local_repairs(text: str, *, max_repairs: int = 24) -> Any:
+    repaired = _repair_common_json_delimiters(text)
+    for _ in range(max_repairs + 1):
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError as exc:
+            if "Expecting ',' delimiter" not in exc.msg:
+                raise
+            position = max(0, min(exc.pos, len(repaired)))
+            next_character = repaired[position : position + 1]
+            if next_character not in {'"', "{", "["}:
+                raise
+            repaired = repaired[:position] + "," + repaired[position:]
+    return json.loads(repaired)
 
 
 def _repair_common_json_delimiters(text: str) -> str:
@@ -4521,7 +4599,10 @@ def _fallback_estimator_notes(raw_text: str, scope: dict[str, Any]) -> str:
 
 def _fallback_assistant_message(scope: dict[str, Any], questions: list[str]) -> str:
     area = scope.get("estimated_sqft")
-    if area:
+    template_type = _template_type_for_scope(scope)
+    if area and template_type == "roofing":
+        message = f"I drafted a workbook-ready roofing scope with about {area:,.0f} sq ft of roof area."
+    elif area:
         message = f"I drafted a workbook-ready insulation scope with about {area:,.0f} sq ft of spray area."
     else:
         message = "I drafted preliminary estimator notes, but key dimensions are still missing."

@@ -709,6 +709,54 @@ def test_malformed_ai_json_is_repaired_without_using_historical_fallback() -> No
     assert not any("AI estimator chat failed" in warning for warning in result.warnings)
 
 
+def test_malformed_ai_json_repairs_missing_comma_between_decision_objects() -> None:
+    malformed = """{
+      "assistant_message": "Drafted the roofing estimate.",
+      "estimator_notes": "Grossman Tuning coated foam roof.",
+      "scope_overrides": {"template_type": "roofing", "estimated_sqft": 5136},
+      "workbook_decision_preferences": [
+        {"decision_id": "roofing_foam_row_19", "include": true}
+        {"decision_id": "roofing_coating_row_26", "include": true}
+      ],
+      "missing_questions": [],
+      "assumptions": [],
+      "warnings": [],
+      "confidence": 0.84
+    }"""
+
+    result = run_estimator_chat_turn(
+        [{"role": "user", "content": "Grossman Tuning coated foam roof, 5,136 sq ft."}],
+        template_type_hint="roofing",
+        provider=lambda messages, model: malformed,
+        model="test-model",
+    )
+
+    assert result.source == "ai_chat"
+    assert len(result.workbook_decision_preferences) == 2
+    assert result.raw_response["_json_repair_applied"] is True
+
+
+def test_grossman_annotated_scope_fallback_is_classified_as_roofing() -> None:
+    result = chat_assistant.deterministic_chat_fallback(
+        [
+            {
+                "role": "user",
+                "content": (
+                    "Grossman Tuning total roof area approximately 5,136 sq ft. "
+                    "Full removal down to wood decking with 2 inch Resista ISO board "
+                    "and 1.5 inch coated foam roof. Install edge metal, gutters, "
+                    "downspouts, coping seam caulk, and counter flashing."
+                ),
+            }
+        ],
+        template_type_hint="roofing",
+    )
+
+    assert result.scope_overrides["template_type"] == "roofing"
+    assert "roofing scope" in result.assistant_message.lower()
+    assert "insulation scope" not in result.assistant_message.lower()
+
+
 def test_failed_ai_chat_does_not_promote_historical_rows_to_workbook_changes() -> None:
     context_data = EstimatorData(
         template_examples=pd.DataFrame(

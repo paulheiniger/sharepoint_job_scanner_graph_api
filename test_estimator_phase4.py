@@ -682,10 +682,10 @@ def test_persistent_estimator_models_use_responses_api(
     assert estimator["assistant_message"] == "ok"
     assert review["assistant_message"] == "ok"
     assert len(requests) == 2
-    assert all(
-        request["text"] == {"format": {"type": "json_object"}}
-        for request in requests
-    )
+    assert requests[0]["text"]["format"]["type"] == "json_schema"
+    assert requests[0]["text"]["format"]["name"] == "spraytec_estimator_turn"
+    assert requests[0]["text"]["verbosity"] == "low"
+    assert requests[1]["text"] == {"format": {"type": "json_object"}}
     assert all(
         request["reasoning"] == {"effort": "medium"}
         for request in requests
