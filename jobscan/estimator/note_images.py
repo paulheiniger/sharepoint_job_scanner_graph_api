@@ -9,6 +9,8 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from .model_routing import model_call_metadata, route_estimator_model
+
 try:
     from PIL import Image
 except Exception:  # pragma: no cover - optional runtime dependency
@@ -97,12 +99,19 @@ def extract_notes_from_images_with_ai(
             "confidence": 0.0,
             "source_images": [],
         }
-    model_name = (
-        model
-        or os.getenv("OPENAI_EXTRACTION_MODEL")
+    model_route = route_estimator_model("extraction", explicit_model=model)
+    model_name = str(
+        model_route.get("model")
         or os.getenv("OPENAI_ESTIMATOR_NOTE_IMAGE_MODEL")
         or DEFAULT_NOTE_IMAGE_MODEL
     )
+    if not model_route.get("model"):
+        model_route = {
+            **model_route,
+            "model": model_name,
+            "configured": True,
+            "selection_source": "legacy_extraction_fallback",
+        }
     cache_path = note_image_cache_path(usable, model=model_name, cache_dir=cache_dir)
     if cache_path.exists():
         payload = json.loads(cache_path.read_text())
@@ -113,6 +122,8 @@ def extract_notes_from_images_with_ai(
     raw = provider(messages, model_name) if provider is not None else call_openai_note_image_extraction(messages, model_name)
     payload = extract_json_object(raw)
     payload["cache_hit"] = False
+    payload.setdefault("ai_model", model_name)
+    payload.setdefault("model_route", model_route)
     payload["source_images"] = [record.get("image_id") for record in usable]
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
@@ -220,6 +231,10 @@ def normalize_note_image_payload(payload: dict[str, Any], *, records: list[dict[
         "confidence": _safe_float(payload.get("confidence"), 0.0),
         "source_images": payload.get("source_images") or [record.get("image_id") for record in records],
         "cache_hit": bool(payload.get("cache_hit")),
+        "analysis_method": "ai_visual_extraction",
+        "ai_model": str(payload.get("ai_model") or ""),
+        "model_call": payload.get("_model_call") if isinstance(payload.get("_model_call"), dict) else {},
+        "model_route": payload.get("model_route") if isinstance(payload.get("model_route"), dict) else {},
     }
 
 
@@ -336,7 +351,7 @@ def convert_note_image_to_jpeg(source: Path, target: Path) -> str:
         return f"Could not convert image for note extraction: {type(exc).__name__}: {exc}"
 
 
-def call_openai_note_image_extraction(messages: list[dict[str, Any]], model: str) -> str:
+def call_openai_note_image_extraction(messages: list[dict[str, Any]], model: str) -> dict[str, Any]:
     if not os.getenv("OPENAI_API_KEY"):
         raise RuntimeError("OPENAI_API_KEY is not set")
     try:
@@ -354,7 +369,16 @@ def call_openai_note_image_extraction(messages: list[dict[str, Any]], model: str
         response_format={"type": "json_object"},
         messages=messages,
     )
-    return response.choices[0].message.content or "{}"
+    payload = extract_json_object(response.choices[0].message.content or "{}")
+    payload["ai_model"] = model
+    payload["_model_call"] = model_call_metadata(
+        role="extraction",
+        model=model,
+        usage=getattr(response, "usage", None),
+        request_id=str(getattr(response, "id", "") or ""),
+        response_model=str(getattr(response, "model", "") or ""),
+    )
+    return payload
 
 
 def note_image_cache_path(records: list[dict[str, Any]], *, model: str, cache_dir: str | Path) -> Path:

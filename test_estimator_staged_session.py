@@ -208,7 +208,7 @@ def test_approved_memory_is_attached_only_to_matching_decision() -> None:
     updated, used = attach_approved_memory_evidence(decisions, memories)
 
     assert [row["memory_id"] for row in used] == ["memory-foam"]
-    assert updated[0]["evidence"][0]["source_type"] == "approved_memory"
+    assert updated[0]["evidence"]["approved_memory"][0]["source_type"] == "approved_memory"
     assert updated[0]["source_ids"] == ["memory-foam"]
     assert updated[1]["evidence"] == []
 

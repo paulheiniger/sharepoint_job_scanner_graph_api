@@ -12,6 +12,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
+from .audit_report import build_estimate_audit_report
 from .evidence_export import sanitize_for_export
 from .estimator_memory import normalize_memory_token, upsert_estimator_memory
 from .workbench import recalculate_workbench_tables, summarize_workbench_totals
@@ -1565,8 +1566,10 @@ def export_estimator_session_package(
     else:
         output.parent.mkdir(parents=True, exist_ok=True)
     review = payload["review"]
+    audit_report = build_estimate_audit_report(review.get("session_state") or {})
     files = {
         "session_review.json": json.dumps(review, indent=2, sort_keys=True, default=str),
+        "session_audit_report.json": json.dumps(audit_report, indent=2, sort_keys=True, default=str),
         "raw_notes.txt": review.get("raw_input_notes") or "",
         "staged_session_state.json": json.dumps(review.get("session_state") or {}, indent=2, sort_keys=True, default=str),
         "conversation_history.json": json.dumps(review.get("conversation_history") or [], indent=2, sort_keys=True, default=str),

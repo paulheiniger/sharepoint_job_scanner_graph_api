@@ -36,6 +36,35 @@ python evals/estimator/run_estimator_eval.py \
 database-backed estimator data with the existing `load_estimator_data` path.
 When it is missing, the eval still runs in limited mode.
 
+## Persistent Estimator Chat Eval
+
+The staged evaluator runs the same persistent session path used by the
+Estimating Assistant. Historical generated cases remain review-only until an
+estimator promotes them.
+
+Validate case selection without model calls:
+
+```bash
+python -m evals.estimator.run_staged_estimator_eval \
+  --dry-run \
+  --limit 10
+```
+
+Compare two configured models and write a review report:
+
+```bash
+python -m evals.estimator.run_staged_estimator_eval \
+  --model "$OPENAI_ESTIMATOR_MODEL" \
+  --model "$OPENAI_REVIEW_MODEL" \
+  --database-url "$NEON_DATABASE_URL" \
+  --json-output output/evals/staged_estimator_comparison.json
+```
+
+The live comparison requires `OPENAI_API_KEY`. It scores template selections,
+material choices, thickness, area, labor assumptions, pricing range when an
+authoritative expected total exists, exclusions, warranty, unnecessary
+questions, and unsupported assumptions.
+
 ## Relationship Mining Eval
 
 Run against database outputs:
@@ -68,4 +97,3 @@ python evals/relationship_mining/run_relationship_eval.py \
 
 Failures should guide small, targeted patches. Prefer improving one parser,
 rule, or relationship query at a time, then rerun the relevant eval case.
-

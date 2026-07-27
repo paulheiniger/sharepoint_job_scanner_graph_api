@@ -538,6 +538,7 @@ def test_estimator_session_lifecycle_and_exports(tmp_path) -> None:
     with zipfile.ZipFile(zip_path) as archive:
         names = set(archive.namelist())
         assert {
+            "session_audit_report.json",
             "session_review.json",
             "session_payload.json",
             "raw_notes.txt",
@@ -550,8 +551,10 @@ def test_estimator_session_lifecycle_and_exports(tmp_path) -> None:
             "workbook_cell_writes.json",
         }.issubset(names)
         review = json.loads(archive.read("session_review.json"))
+        audit_report = json.loads(archive.read("session_audit_report.json"))
         assert review["raw_input_notes"] == "Roof coating notes from email."
         assert review["workbook_export_path"] == "output/estimates/session_test.xlsx"
+        assert audit_report["report_version"] == 1
 
     compact_zip_path = export_estimator_session_package(
         engine,
@@ -562,6 +565,7 @@ def test_estimator_session_lifecycle_and_exports(tmp_path) -> None:
     with zipfile.ZipFile(compact_zip_path) as archive:
         names = set(archive.namelist())
         assert "session_review.json" in names
+        assert "session_audit_report.json" in names
         assert "session_payload.json" not in names
         assert "session_payload_omitted.txt" in names
 

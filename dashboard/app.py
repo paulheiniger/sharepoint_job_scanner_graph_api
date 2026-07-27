@@ -187,6 +187,7 @@ run_estimate_review = None
 apply_review_recommendations = None
 estimate_review_reasons = None
 latest_correction_memory_edits = None
+estimate_audit_report_json = None
 extract_notes_from_images_with_ai = None
 stage_note_images = None
 answer_key_to_workbook_decision_preferences = None
@@ -211,6 +212,7 @@ def ensure_estimator_imports() -> None:
     global advance_estimate_session, new_estimate_session_state, reject_historical_precedent
     global run_estimate_review, apply_review_recommendations, estimate_review_reasons
     global latest_correction_memory_edits
+    global estimate_audit_report_json
     global extract_notes_from_images_with_ai, stage_note_images
     global answer_key_to_workbook_decision_preferences, build_reference_estimate_answer_key
     global build_template_examples
@@ -273,6 +275,9 @@ def ensure_estimator_imports() -> None:
         estimate_review_reasons as imported_estimate_review_reasons,
         latest_correction_memory_edits as imported_latest_correction_memory_edits,
     )
+    from jobscan.estimator.audit_report import (
+        estimate_audit_report_json as imported_estimate_audit_report_json,
+    )
     from jobscan.estimator.note_images import (
         extract_notes_from_images_with_ai as imported_extract_notes_from_images_with_ai,
         stage_note_images as imported_stage_note_images,
@@ -321,6 +326,7 @@ def ensure_estimator_imports() -> None:
     apply_review_recommendations = imported_apply_review_recommendations
     estimate_review_reasons = imported_estimate_review_reasons
     latest_correction_memory_edits = imported_latest_correction_memory_edits
+    estimate_audit_report_json = imported_estimate_audit_report_json
     extract_notes_from_images_with_ai = imported_extract_notes_from_images_with_ai
     stage_note_images = imported_stage_note_images
     answer_key_to_workbook_decision_preferences = imported_answer_key_to_workbook_decision_preferences
@@ -21790,8 +21796,17 @@ def render_staged_estimate_state(
             st.caption("No open questions or warnings.")
     with evidence_tab:
         st.caption("Detailed evidence is kept out of the main chat and attached to decisions by source ID.")
+        st.download_button(
+            "Download session audit report",
+            data=estimate_audit_report_json(state),
+            file_name=f"estimator_session_{state.get('session_id') or chat_key}_audit.json",
+            mime="application/json",
+            key=f"download_estimator_audit_{chat_key}",
+        )
         with st.expander("Estimating plan", expanded=True):
             st.json(state.get("estimating_plan") or {})
+        with st.expander("Uploaded visual evidence", expanded=False):
+            st.json(state.get("uploaded_evidence") or [])
         with st.expander("Approved memories used", expanded=False):
             st.json(state.get("approved_memories_used") or [])
         with st.expander("Approved memories retrieved but not applied", expanded=False):
@@ -21825,6 +21840,13 @@ def render_staged_estimate_state(
             st.json(state.get("retrieved_pricing_records") or [])
         with st.expander("Product evidence", expanded=False):
             st.json(state.get("retrieved_product_knowledge") or [])
+        with st.expander("Model routing and usage", expanded=False):
+            st.json(
+                {
+                    "routes": state.get("model_routes") or [],
+                    "calls": state.get("model_call_history") or [],
+                }
+            )
         if review_state:
             with st.expander("Stronger-model review", expanded=True):
                 st.json(review_state)
@@ -21979,6 +22001,10 @@ def render_estimator_chat_draft_panel(
                     template_type_hint=chat_template_type_hint,
                     previous_state=previous_staged_state,
                     attached_reference_answer_key=attached_reference_answer_key,
+                    visual_evidence={
+                        "note_image_result": note_image_result or {},
+                        "photo_context": uploaded_photo_context or {},
+                    },
                 )
             context_cache_after = estimator_context_cache_stats()
             context_cache_hits = int(context_cache_after.get("hit", 0)) - int(context_cache_before.get("hit", 0))

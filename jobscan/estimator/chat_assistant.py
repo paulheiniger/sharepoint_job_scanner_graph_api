@@ -16,6 +16,7 @@ import pandas as pd
 from jobscan.estimate_routing import has_explicit_insulation_exclusion, is_insulation_quote
 
 from .estimator_memory import relevant_memory_rows
+from .model_routing import model_call_metadata
 from . import labor as estimator_labor
 from .foam_yield_history import build_foam_yield_history_digest
 from .job_context_profiles import build_job_context_digest
@@ -3283,7 +3284,7 @@ def _chat_prompt_messages(
     ]
 
 
-def _call_openai_chat(messages: list[dict[str, Any]], model: str) -> str:
+def _call_openai_chat(messages: list[dict[str, Any]], model: str) -> dict[str, Any]:
     try:
         from openai import OpenAI  # type: ignore
     except Exception as exc:  # pragma: no cover - optional dependency
@@ -3299,7 +3300,15 @@ def _call_openai_chat(messages: list[dict[str, Any]], model: str) -> str:
         response_format={"type": "json_object"},
         messages=messages,
     )
-    return response.choices[0].message.content or "{}"
+    payload = _extract_json_object(response.choices[0].message.content or "{}")
+    payload["_model_call"] = model_call_metadata(
+        role="estimator",
+        model=model,
+        usage=getattr(response, "usage", None),
+        request_id=str(getattr(response, "id", "") or ""),
+        response_model=str(getattr(response, "model", "") or ""),
+    )
+    return payload
 
 
 def _clean_messages(messages: Iterable[dict[str, str]]) -> list[dict[str, str]]:

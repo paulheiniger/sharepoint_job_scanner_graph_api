@@ -10,6 +10,8 @@ import shutil
 from pathlib import Path
 from typing import Any, Iterable
 
+from .model_routing import model_call_metadata, route_estimator_model
+
 
 try:
     import pillow_heif
@@ -357,12 +359,19 @@ def analyze_selected_photos_with_ai(
             "skip_reason": "no_selected_images",
             "selected_image_count": 0,
         }
-    model_name = (
-        model
-        or os.getenv("OPENAI_EXTRACTION_MODEL")
+    model_route = route_estimator_model("extraction", explicit_model=model)
+    model_name = str(
+        model_route.get("model")
         or os.getenv("OPENAI_ESTIMATOR_PHOTO_MODEL")
         or DEFAULT_PHOTO_AI_MODEL
     )
+    if not model_route.get("model"):
+        model_route = {
+            **model_route,
+            "model": model_name,
+            "configured": True,
+            "selection_source": "legacy_extraction_fallback",
+        }
     cache_path = _photo_ai_cache_path(
         selected_records,
         template_type=template_type,
@@ -387,6 +396,8 @@ def analyze_selected_photos_with_ai(
         {
             "analysis_method": "ai_vision",
             "ai_model": model_name,
+            "model_call": payload.get("_model_call") if isinstance(payload.get("_model_call"), dict) else {},
+            "model_route": model_route,
             "cache_hit": False,
             "selected_image_count": len(selected_records),
             "selected_image_ids": [record.get("image_id") for record in selected_records],
@@ -860,7 +871,7 @@ def _photo_ai_messages(records: list[dict[str, Any]], *, template_type: str, not
     ]
 
 
-def _call_openai_photo_analysis(messages: list[dict[str, Any]], model: str) -> str:
+def _call_openai_photo_analysis(messages: list[dict[str, Any]], model: str) -> dict[str, Any]:
     if not os.getenv("OPENAI_API_KEY"):
         raise RuntimeError("OPENAI_API_KEY is not set")
     try:
@@ -878,7 +889,15 @@ def _call_openai_photo_analysis(messages: list[dict[str, Any]], model: str) -> s
         response_format={"type": "json_object"},
         messages=messages,
     )
-    return response.choices[0].message.content or "{}"
+    payload = _extract_json_object(response.choices[0].message.content or "{}")
+    payload["_model_call"] = model_call_metadata(
+        role="extraction",
+        model=model,
+        usage=getattr(response, "usage", None),
+        request_id=str(getattr(response, "id", "") or ""),
+        response_model=str(getattr(response, "model", "") or ""),
+    )
+    return payload
 
 
 def _extract_json_object(value: Any) -> dict[str, Any]:

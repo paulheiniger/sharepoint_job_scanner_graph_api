@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from copy import deepcopy
@@ -7,6 +8,11 @@ from datetime import UTC, datetime
 from typing import Any, Callable, Iterable
 
 from .chat_assistant import EstimatorChatResult, estimator_context_summary, run_estimator_chat_turn
+from .model_routing import (
+    configured_estimator_models,
+    model_call_metadata,
+    route_estimator_model,
+)
 from .schemas import EstimatorData
 from .workbench import WORKBENCH_DECISION_SECTIONS, recalculate_workbench_tables, summarize_workbench_totals
 
@@ -73,21 +79,6 @@ FACT_LABELS = {
 }
 
 
-def configured_estimator_models() -> dict[str, str]:
-    """Resolve role-specific models without embedding model IDs in workflow code."""
-
-    generic = str(os.getenv("OPENAI_MODEL") or "").strip()
-    return {
-        "extraction_model": str(os.getenv("OPENAI_EXTRACTION_MODEL") or generic).strip(),
-        "estimator_model": str(
-            os.getenv("OPENAI_ESTIMATOR_MODEL")
-            or os.getenv("OPENAI_ESTIMATOR_CHAT_MODEL")
-            or generic
-        ).strip(),
-        "review_model": str(os.getenv("OPENAI_REVIEW_MODEL") or "").strip(),
-    }
-
-
 def new_estimate_session_state(*, session_id: str = "", template_type: str = "") -> dict[str, Any]:
     now = datetime.now(UTC).isoformat()
     return {
@@ -125,6 +116,8 @@ def new_estimate_session_state(*, session_id: str = "", template_type: str = "")
         "dependency_state": {},
         "review_state": {},
         "model_metadata": configured_estimator_models(),
+        "model_routes": [],
+        "model_call_history": [],
         "prompt_version": PROMPT_VERSION,
         "audit_events": [],
     }
@@ -137,6 +130,7 @@ def advance_estimate_session(
     previous_state: dict[str, Any] | None = None,
     template_type_hint: str = "",
     attached_reference_answer_key: dict[str, Any] | None = None,
+    visual_evidence: dict[str, Any] | None = None,
     provider: Callable[[list[dict[str, Any]], str], Any] | None = None,
     model: str | None = None,
 ) -> tuple[EstimatorChatResult, dict[str, Any]]:
@@ -156,7 +150,8 @@ def advance_estimate_session(
     )
     history = _clean_messages(messages)
     models = configured_estimator_models()
-    estimator_model = str(model or models.get("estimator_model") or "").strip()
+    estimator_route = route_estimator_model("estimator", explicit_model=model)
+    estimator_model = str(estimator_route.get("model") or "").strip()
     existing_scope = state.get("scope_state") if isinstance(state.get("scope_state"), dict) else {}
     existing_decisions = (
         state.get("decision_template_state")
@@ -176,9 +171,13 @@ def advance_estimate_session(
     )
 
     scope = dict(result.scope_overrides or {})
+    normalized_visual = build_staged_visual_evidence(visual_evidence or {})
     merged_decisions, decision_changes = merge_decision_patches(
         existing_decisions,
-        result.workbook_decision_preferences,
+        [
+            *(normalized_visual.get("decision_patches") or []),
+            *result.workbook_decision_preferences,
+        ],
     )
     context = estimator_context_summary(data, scope=scope)
     rejected = _merge_rejected_precedents(state.get("rejected_precedents"), result.raw_response)
@@ -188,8 +187,16 @@ def advance_estimate_session(
         scope,
         result.raw_response.get("historical_comparison") if isinstance(result.raw_response, dict) else None,
     )
-    job_facts = _job_facts(scope, history)
-    questions = _unique_strings(result.missing_questions)
+    job_facts = _merge_job_facts(
+        _job_facts(scope, history),
+        normalized_visual.get("job_facts") or [],
+    )
+    questions = _unique_strings(
+        [
+            *result.missing_questions,
+            *(normalized_visual.get("questions") or []),
+        ]
+    )
     assumptions = _normalize_assumptions(result.assumptions, result.raw_response)
     retrieved_memories = list(context.get("estimator_memory_guidance") or [])
     decisions, used_memories = attach_approved_memory_evidence(
@@ -215,6 +222,23 @@ def advance_estimate_session(
     )
     status = _session_status(questions, decisions)
     now = datetime.now(UTC).isoformat()
+    model_call = (
+        result.raw_response.get("_model_call")
+        if isinstance(result.raw_response, dict)
+        and isinstance(result.raw_response.get("_model_call"), dict)
+        else {}
+    )
+    model_routes = list(state.get("model_routes") or [])
+    model_routes.extend(normalized_visual.get("model_routes") or [])
+    model_routes.append(estimator_route)
+    model_call_history = list(state.get("model_call_history") or [])
+    model_call_history.extend(normalized_visual.get("model_calls") or [])
+    if model_call:
+        model_call_history.append(model_call)
+    uploaded_evidence = _merge_uploaded_evidence(
+        state.get("uploaded_evidence"),
+        normalized_visual.get("records") or [],
+    )
     if (
         decision_changes or scope_changes
     ) and isinstance(state.get("review_state"), dict) and state.get("review_state"):
@@ -240,6 +264,7 @@ def advance_estimate_session(
                 or ""
             ),
             "raw_user_notes": raw_notes,
+            "uploaded_evidence": uploaded_evidence,
             "job_facts": job_facts,
             "scope_state": scope,
             "assumptions": assumptions,
@@ -250,7 +275,12 @@ def advance_estimate_session(
             "estimating_plan": _estimating_plan(scope, decisions, questions, assumptions, result.raw_response),
             "decision_template_state": decisions,
             "conversation_history": history,
-            "review_flags": _unique_strings(result.warnings),
+            "review_flags": _unique_strings(
+                [
+                    *result.warnings,
+                    *(normalized_visual.get("warnings") or []),
+                ]
+            ),
             "confidence_summary": {
                 "overall": float(result.confidence or 0.0),
                 "source": result.source,
@@ -273,6 +303,12 @@ def advance_estimate_session(
                 "estimator_model": estimator_model,
                 "response_source": result.source,
             },
+            "model_routes": model_routes[-50:],
+            "model_call_history": _dedupe_dict_rows(
+                model_call_history,
+                ("request_id", "completed_at", "requested_model"),
+            )[-100:],
+            "visual_evidence_summary": normalized_visual.get("summary") or {},
             "prompt_version": PROMPT_VERSION,
         }
     )
@@ -294,11 +330,156 @@ def advance_estimate_session(
                 row.get("memory_id") for row in used_memories if row.get("memory_id")
             ],
             "decision_ids_recalculated": calculation_state.get("affected_decision_ids") or [],
+            "visual_evidence_ids": [
+                row.get("evidence_id")
+                for row in normalized_visual.get("records") or []
+                if row.get("evidence_id")
+            ],
             "model": estimator_model,
+            "model_call": model_call,
+            "model_route": estimator_route,
             "prompt_version": PROMPT_VERSION,
         }
     )
     return result, state
+
+
+def build_staged_visual_evidence(visual_evidence: dict[str, Any]) -> dict[str, Any]:
+    """Normalize selected visual inputs into traceable staged-session evidence."""
+
+    note_result = (
+        visual_evidence.get("note_image_result")
+        if isinstance(visual_evidence.get("note_image_result"), dict)
+        else {}
+    )
+    photo_context = (
+        visual_evidence.get("photo_context")
+        if isinstance(visual_evidence.get("photo_context"), dict)
+        else {}
+    )
+    records: list[dict[str, Any]] = []
+    facts: list[dict[str, Any]] = []
+    questions: list[str] = []
+    warnings: list[str] = []
+    model_calls: list[dict[str, Any]] = []
+    model_routes: list[dict[str, Any]] = []
+    decision_patches: list[dict[str, Any]] = []
+
+    if note_result:
+        source_images = _unique_strings(note_result.get("source_images") or [])
+        evidence_id = "visual-note-" + _stable_evidence_token(
+            [*source_images, note_result.get("document_type")]
+        )
+        record = {
+            "evidence_id": evidence_id,
+            "evidence_type": "annotated_scope_image",
+            "document_type": note_result.get("document_type"),
+            "source_image_ids": source_images,
+            "confidence": _number(note_result.get("confidence")),
+            "analysis_method": note_result.get("analysis_method") or "ai_visual_extraction",
+            "ai_model": note_result.get("ai_model"),
+            "job_header": note_result.get("job_header") or {},
+            "customer_info": note_result.get("customer_info") or {},
+            "measurements": note_result.get("measurements") or [],
+            "area_scopes": note_result.get("area_scopes") or [],
+            "linear_scopes": note_result.get("linear_scopes") or [],
+            "retain_existing": note_result.get("retain_existing") or [],
+            "scope_relationships": note_result.get("scope_relationships") or [],
+            "area_reconciliation": note_result.get("area_reconciliation") or {},
+            "estimator_decision_cues": note_result.get("estimator_decision_cues") or [],
+            "cache_hit": bool(note_result.get("cache_hit")),
+        }
+        records.append(record)
+        facts.extend(_visual_job_facts(record))
+        questions.extend(str(value) for value in note_result.get("questions") or [])
+        questions.extend(
+            f"Clarify unreadable image region: {value}"
+            for value in note_result.get("unreadable_regions") or []
+        )
+        warnings.extend(str(value) for value in note_result.get("warnings") or [])
+        if isinstance(note_result.get("model_call"), dict) and note_result.get("model_call"):
+            model_calls.append(dict(note_result["model_call"]))
+        if isinstance(note_result.get("model_route"), dict) and note_result.get("model_route"):
+            model_routes.append(dict(note_result["model_route"]))
+
+    if photo_context:
+        ai_analysis = (
+            photo_context.get("ai_photo_analysis")
+            if isinstance(photo_context.get("ai_photo_analysis"), dict)
+            else {}
+        )
+        selected_ids = _unique_strings(
+            photo_context.get("selected_image_ids")
+            or [
+                row.get("image_id")
+                for row in ai_analysis.get("source_images") or []
+                if isinstance(row, dict)
+            ]
+        )
+        selected_hashes = _unique_strings(photo_context.get("selected_hashes") or [])
+        evidence_id = "site-photo-" + _stable_evidence_token([*selected_ids, *selected_hashes])
+        records.append(
+            {
+                "evidence_id": evidence_id,
+                "evidence_type": "site_photo_analysis",
+                "source_image_ids": selected_ids,
+                "source_hashes": selected_hashes,
+                "confidence": _number(photo_context.get("confidence")),
+                "analysis_method": (
+                    "ai_vision"
+                    if photo_context.get("ai_photo_analysis_used")
+                    else "local_photo_classification"
+                ),
+                "signals": photo_context.get("signals") or [],
+                "visible_issues": photo_context.get("visible_issues") or [],
+                "risk_flags": photo_context.get("risk_flags") or [],
+                "missing_photos": photo_context.get("missing_photos") or [],
+            }
+        )
+        questions.extend(
+            f"Photo evidence is incomplete: provide {value}."
+            for value in photo_context.get("missing_photos") or []
+        )
+        warnings.extend(str(value) for value in photo_context.get("risk_flags") or [])
+        decision_patches.extend(
+            {
+                **dict(row),
+                "review_required": True,
+                "source": "photo_evidence",
+            }
+            for row in photo_context.get("photo_decision_proposals") or []
+            if isinstance(row, dict)
+        )
+        if isinstance(ai_analysis.get("model_call"), dict) and ai_analysis.get("model_call"):
+            model_calls.append(dict(ai_analysis["model_call"]))
+        if isinstance(ai_analysis.get("model_route"), dict) and ai_analysis.get("model_route"):
+            model_routes.append(dict(ai_analysis["model_route"]))
+
+    return {
+        "records": records,
+        "job_facts": facts,
+        "questions": _unique_strings(questions),
+        "warnings": _unique_strings(warnings),
+        "decision_patches": decision_patches,
+        "model_calls": _dedupe_dict_rows(
+            model_calls,
+            ("request_id", "completed_at", "requested_model"),
+        ),
+        "model_routes": _dedupe_dict_rows(
+            model_routes,
+            ("role", "model", "routed_at"),
+        ),
+        "summary": {
+            "evidence_count": len(records),
+            "annotated_scope_count": sum(
+                1 for row in records if row.get("evidence_type") == "annotated_scope_image"
+            ),
+            "site_photo_count": sum(
+                1 for row in records if row.get("evidence_type") == "site_photo_analysis"
+            ),
+            "decision_patch_count": len(decision_patches),
+        },
+    }
 
 
 def attach_approved_memory_evidence(
@@ -323,22 +504,16 @@ def attach_approved_memory_evidence(
                 or (memory_bucket and memory_bucket == bucket)
             ):
                 continue
-            raw_evidence = decision.get("evidence")
-            evidence = (
-                list(raw_evidence)
-                if isinstance(raw_evidence, list)
-                else [raw_evidence]
-                if isinstance(raw_evidence, dict)
-                else []
-            )
+            evidence = _normalize_decision_evidence(decision.get("evidence"))
             evidence_row = {
                 "source_type": "approved_memory",
                 "memory_id": memory.get("memory_id"),
                 "guidance": memory.get("guidance"),
                 "rationale": memory.get("rationale"),
             }
-            if evidence_row not in evidence:
-                evidence.append(evidence_row)
+            memory_evidence = evidence.setdefault("approved_memory", [])
+            if evidence_row not in memory_evidence:
+                memory_evidence.append(evidence_row)
             decision["evidence"] = evidence
             source_ids = list(decision.get("source_ids") or [])
             memory_id = str(memory.get("memory_id") or "")
@@ -470,14 +645,21 @@ def run_estimate_review(
     model: str | None = None,
     user_requested: bool = False,
 ) -> dict[str, Any]:
-    models = configured_estimator_models()
-    review_model = str(model or models.get("review_model") or "").strip()
+    reasons = estimate_review_reasons(state, user_requested=user_requested)
+    review_route = route_estimator_model(
+        "review",
+        state=state,
+        explicit_model=model,
+        user_requested=user_requested,
+        trigger_reasons=reasons,
+    )
+    review_model = str(review_route.get("model") or "").strip()
     if not review_model:
         raise ValueError("OPENAI_REVIEW_MODEL is not configured.")
-    reasons = estimate_review_reasons(state, user_requested=user_requested)
     prompt = _review_prompt_messages(state, reasons)
     raw = provider(prompt, review_model) if provider is not None else _call_review_model(prompt, review_model)
     payload = _json_payload(raw)
+    model_call = payload.get("_model_call") if isinstance(payload.get("_model_call"), dict) else {}
     verdict = str(payload.get("verdict") or "needs_clarification").strip().lower()
     if verdict not in {"approve", "needs_changes", "needs_clarification"}:
         verdict = "needs_clarification"
@@ -496,11 +678,16 @@ def run_estimate_review(
         ],
         "confidence": _score_to_confidence(payload.get("confidence")),
         "applied": False,
+        "model_route": review_route,
+        "model_call": model_call,
     }
     state["review_state"] = review
     state["session_status"] = "estimator_review"
     state["current_stage"] = "independent_review"
     state["updated_at"] = review["reviewed_at"]
+    state.setdefault("model_routes", []).append(review_route)
+    if model_call:
+        state.setdefault("model_call_history", []).append(model_call)
     state.setdefault("audit_events", []).append(
         {
             "created_at": review["reviewed_at"],
@@ -508,6 +695,8 @@ def run_estimate_review(
             "model": review_model,
             "verdict": review["verdict"],
             "issue_count": len(review["issues"]),
+            "model_call": model_call,
+            "model_route": review_route,
             "prompt_version": REVIEW_PROMPT_VERSION,
         }
     )
@@ -686,6 +875,19 @@ def _compact_state_for_model(state: dict[str, Any]) -> dict[str, Any]:
         "unresolved_questions": state.get("unresolved_questions") or [],
         "rejected_precedents": state.get("rejected_precedents") or [],
         "estimating_plan": state.get("estimating_plan") or {},
+        "visual_evidence": [
+            {
+                "evidence_id": row.get("evidence_id"),
+                "evidence_type": row.get("evidence_type"),
+                "confidence": row.get("confidence"),
+                "area_scopes": row.get("area_scopes") or [],
+                "linear_scopes": row.get("linear_scopes") or [],
+                "signals": row.get("signals") or [],
+                "risk_flags": row.get("risk_flags") or [],
+            }
+            for row in state.get("uploaded_evidence") or []
+            if isinstance(row, dict)
+        ][:8],
     }
 
 
@@ -706,7 +908,15 @@ def _merge_decision(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, An
     for key, value in patch.items():
         if key == "proposed_values" and isinstance(value, dict):
             merged[key] = {**(merged.get(key) or {}), **value}
-        elif key in {"evidence", "source_ids", "assumptions", "review_reasons"}:
+        elif key == "evidence":
+            evidence = _normalize_decision_evidence(merged.get("evidence"))
+            incoming = _normalize_decision_evidence(value)
+            for source_type, rows in incoming.items():
+                evidence[source_type] = _unique_values(
+                    [*(evidence.get(source_type) or []), *rows]
+                )
+            merged[key] = evidence
+        elif key in {"source_ids", "assumptions", "review_reasons"}:
             merged[key] = _unique_values([*(merged.get(key) or []), *(value if isinstance(value, list) else [value])])
         elif value is not None:
             merged[key] = deepcopy(value)
@@ -715,8 +925,14 @@ def _merge_decision(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, An
 
 def _traceable_decision(row: dict[str, Any]) -> dict[str, Any]:
     decision = deepcopy(row)
-    evidence = decision.get("evidence")
-    evidence_rows = evidence if isinstance(evidence, list) else ([evidence] if isinstance(evidence, dict) else [])
+    evidence = _normalize_decision_evidence(decision.get("evidence"))
+    decision["evidence"] = evidence
+    evidence_rows = [
+        item
+        for rows in evidence.values()
+        for item in rows
+        if isinstance(item, dict)
+    ]
     source_ids = list(decision.get("source_ids") or [])
     for item in evidence_rows:
         if not isinstance(item, dict):
@@ -733,6 +949,21 @@ def _traceable_decision(row: dict[str, Any]) -> dict[str, Any]:
     decision.setdefault("review_required", float(decision.get("confidence") or 0.0) < 0.7)
     decision.setdefault("reason", "; ".join(str(value) for value in decision.get("review_reasons") or []))
     return decision
+
+
+def _normalize_decision_evidence(value: Any) -> dict[str, list[dict[str, Any]]]:
+    if isinstance(value, dict):
+        normalized: dict[str, list[dict[str, Any]]] = {}
+        for source_type, rows in value.items():
+            items = rows if isinstance(rows, list) else [rows]
+            cleaned = [dict(item) for item in items if isinstance(item, dict)]
+            if cleaned:
+                normalized[str(source_type)] = cleaned
+        return normalized
+    if isinstance(value, list):
+        cleaned = [dict(item) for item in value if isinstance(item, dict)]
+        return {"legacy": cleaned} if cleaned else {}
+    return {}
 
 
 def _job_facts(scope: dict[str, Any], history: list[dict[str, str]]) -> list[dict[str, Any]]:
@@ -759,6 +990,131 @@ def _job_facts(scope: dict[str, Any], history: list[dict[str, str]]) -> list[dic
             }
         )
     return rows
+
+
+def _visual_job_facts(record: dict[str, Any]) -> list[dict[str, Any]]:
+    evidence_id = str(record.get("evidence_id") or "")
+    confidence = _number(record.get("confidence"))
+    rows: list[dict[str, Any]] = []
+    header = {
+        **(record.get("customer_info") or {}),
+        **(record.get("job_header") or {}),
+    }
+    for field, label in (
+        ("job_name", "Job name"),
+        ("customer", "Customer"),
+        ("customer_name", "Customer"),
+        ("site_address", "Site address"),
+        ("declared_total_area_sqft", "Declared total area"),
+    ):
+        if header.get(field) in (None, "", [], {}):
+            continue
+        rows.append(
+            {
+                "field": field,
+                "label": label,
+                "value": header[field],
+                "fact_type": "visual_extraction",
+                "source_type": "annotated_scope_image",
+                "source_ids": [evidence_id],
+                "confidence": confidence,
+            }
+        )
+    for index, scope in enumerate(record.get("area_scopes") or [], start=1):
+        if not isinstance(scope, dict):
+            continue
+        scope_id = str(scope.get("scope_id") or f"area_{index}")
+        rows.append(
+            {
+                "field": f"visual_area_scope:{scope_id}",
+                "label": str(scope.get("label") or f"Area scope {index}"),
+                "value": dict(scope),
+                "fact_type": "visual_extraction",
+                "source_type": "annotated_scope_image",
+                "source_ids": [evidence_id],
+                "confidence": _number(scope.get("confidence")) or confidence,
+            }
+        )
+    for index, scope in enumerate(record.get("linear_scopes") or [], start=1):
+        if not isinstance(scope, dict):
+            continue
+        rows.append(
+            {
+                "field": f"visual_linear_scope:{index}",
+                "label": str(scope.get("item") or f"Linear scope {index}"),
+                "value": dict(scope),
+                "fact_type": "visual_extraction",
+                "source_type": "annotated_scope_image",
+                "source_ids": [evidence_id],
+                "confidence": _number(scope.get("confidence")) or confidence,
+            }
+        )
+    return rows
+
+
+def _merge_job_facts(*fact_groups: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for group in fact_groups:
+        for row in group or []:
+            if not isinstance(row, dict):
+                continue
+            key = (
+                str(row.get("field") or ""),
+                json.dumps(row.get("value"), sort_keys=True, default=str),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(dict(row))
+    return rows
+
+
+def _merge_uploaded_evidence(
+    existing: Any,
+    additions: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows = [dict(row) for row in existing or [] if isinstance(row, dict)]
+    positions = {
+        str(row.get("evidence_id") or ""): index
+        for index, row in enumerate(rows)
+        if str(row.get("evidence_id") or "")
+    }
+    for addition in additions or []:
+        if not isinstance(addition, dict):
+            continue
+        evidence_id = str(addition.get("evidence_id") or "")
+        if evidence_id and evidence_id in positions:
+            rows[positions[evidence_id]] = dict(addition)
+        else:
+            if evidence_id:
+                positions[evidence_id] = len(rows)
+            rows.append(dict(addition))
+    return rows
+
+
+def _stable_evidence_token(values: Iterable[Any]) -> str:
+    payload = "|".join(str(value or "") for value in values)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _dedupe_dict_rows(
+    rows: Iterable[dict[str, Any]],
+    fields: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    seen: set[tuple[str, ...]] = set()
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        key = tuple(str(row.get(field) or "") for field in fields)
+        if not any(key):
+            key = (json.dumps(row, sort_keys=True, default=str),)
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append(dict(row))
+    return output
 
 
 def _historical_jobs(context: dict[str, Any], rejected: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1046,7 +1402,7 @@ def _review_prompt_messages(state: dict[str, Any], reasons: list[str]) -> list[d
     ]
 
 
-def _call_review_model(messages: list[dict[str, Any]], model: str) -> str:
+def _call_review_model(messages: list[dict[str, Any]], model: str) -> dict[str, Any]:
     try:
         from openai import OpenAI  # type: ignore
     except Exception as exc:  # pragma: no cover - optional dependency
@@ -1061,7 +1417,15 @@ def _call_review_model(messages: list[dict[str, Any]], model: str) -> str:
         response_format={"type": "json_object"},
         messages=messages,
     )
-    return response.choices[0].message.content or "{}"
+    payload = _json_payload(response.choices[0].message.content or "{}")
+    payload["_model_call"] = model_call_metadata(
+        role="review",
+        model=model,
+        usage=getattr(response, "usage", None),
+        request_id=str(getattr(response, "id", "") or ""),
+        response_model=str(getattr(response, "model", "") or ""),
+    )
+    return payload
 
 
 def _json_payload(value: Any) -> dict[str, Any]:
