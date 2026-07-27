@@ -96,16 +96,16 @@ PROMPT_CONTEXT_PRIORITY = (
     "route_mileage",
     "decision_menu",
     "formula_requirements",
+    "foam_yield_history_digest",
+    "pricing_candidates_by_bucket",
+    "template_fallback_defaults",
     "estimator_memory_guidance",
     "historical_answer_key_decision_cues",
     "product_guidance_digest",
-    "pricing_candidates_by_bucket",
-    "template_fallback_defaults",
     "historical_answer_key_examples",
     "historical_template_examples",
     "historical_job_context",
     "historical_context_decision_guidance",
-    "foam_yield_history_digest",
     "historical_decision_evidence",
     "companion_relationships",
     "reference_job_decisions",
@@ -120,6 +120,12 @@ INSULATION_CHAT_TEMPLATE_DEFAULTS = {
     "loading_hourly_rate": 25.5,
     "traveling_hourly_rate": 13.0,
     "generator_daily_rate": 40.0,
+}
+ROOFING_CHAT_TEMPLATE_DEFAULTS = {
+    "foam_yield_or_coverage": 2600.0,
+    "foam_unit_price": 2.25,
+    "sales_trip_unit_price": 0.75,
+    "truck_trip_unit_price": 1.0,
 }
 DETERMINISTIC_DIMENSION_FIELDS = {
     "building_footprint_length_ft",
@@ -296,6 +302,8 @@ def run_estimator_chat_turn(
             fallback_result = _attach_context_retrieval_summary(deterministic_baseline, context)
             if not ((structured_answer_key.mapped_row_count or reference_summary.mapped_row_count) and not should_apply_reference):
                 fallback_result = _supplement_result_with_historical_context_preferences(fallback_result, context)
+            if not should_apply_reference:
+                fallback_result = _apply_context_calculation_defaults(fallback_result, context)
             return _apply_learning_intent(
                 _align_decision_preferences_with_deterministic_scope(fallback_result),
                 learning_intent,
@@ -336,6 +344,7 @@ def run_estimator_chat_turn(
             )
         else:
             result = _supplement_result_with_historical_context_preferences(result, context)
+            result = _apply_context_calculation_defaults(result, context)
         result = _align_decision_preferences_with_deterministic_scope(result)
         return _apply_learning_intent(
             result,
@@ -352,6 +361,8 @@ def run_estimator_chat_turn(
     deterministic_result = _attach_context_retrieval_summary(deterministic_baseline, context)
     if not ((structured_answer_key.mapped_row_count or reference_summary.mapped_row_count) and not should_apply_reference):
         deterministic_result = _supplement_result_with_historical_context_preferences(deterministic_result, context)
+    if not should_apply_reference:
+        deterministic_result = _apply_context_calculation_defaults(deterministic_result, context)
     return _apply_learning_intent(
         _align_decision_preferences_with_deterministic_scope(deterministic_result),
         learning_intent,
@@ -573,6 +584,300 @@ def _supplement_result_with_historical_context_preferences(
         warnings.append(warning)
     result.warnings = warnings
     return result
+
+
+_CONTEXT_DEFAULT_FIELDS_BY_BUCKET: dict[str, tuple[str, ...]] = {
+    "foam": ("yield_or_coverage", "unit_price"),
+    "coating": ("gal_per_100_sqft", "unit_price"),
+    "primer": ("coverage_sqft_per_unit", "unit_price"),
+    "caulk_detail": ("unit_price",),
+    "fabric": ("coverage_sqft_per_unit", "unit_price"),
+    "board_stock": ("price_per_square",),
+    "fasteners": ("unit_price_per_thousand",),
+    "plates": ("unit_price_per_thousand",),
+    "granules": ("unit_price",),
+    "dumpster": ("unit_price",),
+    "lift": ("unit_price",),
+    "generator": ("unit_price",),
+    "labor_prep": ("crew_size", "daily_rate", "hourly_rate"),
+    "labor_seam_sealer": ("crew_size", "daily_rate", "hourly_rate"),
+    "labor_base": ("crew_size", "daily_rate", "hourly_rate"),
+    "labor_top_coat": ("crew_size", "daily_rate", "hourly_rate"),
+    "labor_cleanup": ("crew_size", "daily_rate", "hourly_rate"),
+    "sales_trips": ("unit_price",),
+    "truck_expense": ("unit_price",),
+}
+
+
+def _apply_context_calculation_defaults(
+    result: EstimatorChatResult,
+    context: dict[str, Any],
+) -> EstimatorChatResult:
+    """Fill formula inputs from trusted context without copying historical takeoff."""
+
+    template_type = _template_type_for_scope(result.scope_overrides or {}) or _clean_string(context.get("template_type"))
+    if template_type != "roofing":
+        return result
+    rows = [dict(row) for row in (result.workbook_decision_preferences or []) if isinstance(row, dict)]
+    cue_by_id: dict[str, dict[str, Any]] = {}
+    cue_by_row: dict[str, dict[str, Any]] = {}
+    for cue in context.get("historical_answer_key_decision_cues") or []:
+        if not isinstance(cue, dict):
+            continue
+        decision_id = _clean_string(cue.get("decision_id"))
+        workbook_row = _safe_row_number(cue.get("workbook_row"))
+        if decision_id:
+            cue_by_id.setdefault(decision_id, cue)
+        if workbook_row:
+            cue_by_row.setdefault(workbook_row, cue)
+
+    foam_digest = next(
+        (item for item in context.get("foam_yield_history_digest") or [] if isinstance(item, dict)),
+        {},
+    )
+    fallback_defaults = context.get("template_fallback_defaults") if isinstance(context.get("template_fallback_defaults"), dict) else {}
+    roofing_foam_fallback = (
+        fallback_defaults.get("roofing_foam")
+        if isinstance(fallback_defaults.get("roofing_foam"), dict)
+        else {}
+    )
+    changed_count = 0
+    roofing_foam_fallback_used = False
+    for index, raw_row in enumerate(rows):
+        row = dict(raw_row)
+        values = dict(row.get("proposed_values") or {})
+        bucket = _clean_string(row.get("template_bucket")).lower().replace(" ", "_").replace("-", "_")
+        decision_id = _clean_string(row.get("decision_id"))
+        workbook_row = _safe_row_number(row.get("workbook_row") or row.get("row_number"))
+        cue = cue_by_id.get(decision_id) or cue_by_row.get(workbook_row) or {}
+        suggested = cue.get("suggested_preference") if isinstance(cue.get("suggested_preference"), dict) else {}
+        cue_values = suggested.get("proposed_values") if isinstance(suggested.get("proposed_values"), dict) else {}
+        allowed_fields = _CONTEXT_DEFAULT_FIELDS_BY_BUCKET.get(bucket, ())
+        sources: list[dict[str, Any]] = []
+        for field in allowed_fields:
+            if _formula_value_present(values, field):
+                continue
+            candidate = cue_values.get(field)
+            if candidate in (None, ""):
+                continue
+            values[field] = candidate
+            sources.append(
+                {
+                    "source": "historical_answer_key_calculation_default",
+                    "field": field,
+                    "support_count": int(_safe_positive_number(cue.get("support_count"))),
+                    "best_similarity_score": _safe_positive_number(cue.get("best_similarity_score")),
+                }
+            )
+        if bucket == "foam":
+            if not _formula_value_present(values, "yield_or_coverage"):
+                historical_yield = _safe_positive_number(foam_digest.get("median_yield_or_coverage"))
+                fallback_yield = _safe_positive_number(roofing_foam_fallback.get("yield_or_coverage"))
+                values["yield_or_coverage"] = historical_yield or fallback_yield
+                if values["yield_or_coverage"]:
+                    roofing_foam_fallback_used = roofing_foam_fallback_used or not bool(historical_yield)
+                    sources.append(
+                        {
+                            "source": "foam_yield_history" if historical_yield else "roofing_template_fallback",
+                            "field": "yield_or_coverage",
+                            "evidence_count": int(_safe_positive_number(foam_digest.get("evidence_count"))),
+                        }
+                    )
+            if not _formula_value_present(values, "unit_price"):
+                historical_price = _safe_positive_number(foam_digest.get("median_unit_price"))
+                fallback_price = _safe_positive_number(roofing_foam_fallback.get("unit_price"))
+                values["unit_price"] = historical_price or fallback_price
+                if values["unit_price"]:
+                    roofing_foam_fallback_used = roofing_foam_fallback_used or not bool(historical_price)
+                    sources.append(
+                        {
+                            "source": "foam_yield_history" if historical_price else "roofing_template_fallback",
+                            "field": "unit_price",
+                            "evidence_count": int(_safe_positive_number(foam_digest.get("evidence_count"))),
+                        }
+                    )
+        values = {key: value for key, value in values.items() if value not in (None, "", 0, 0.0)}
+        if not sources:
+            continue
+        row["proposed_values"] = values
+        if _formula_disable_reason_present(row):
+            menu_row = _decision_menu_row_for_preference(row, template_type=template_type)
+            requirements = [str(item) for item in menu_row.get("formula_requirements") or []]
+            if not _missing_formula_requirements(values, requirements):
+                row["include"] = True
+                row["review_reasons"] = [
+                    reason
+                    for reason in row.get("review_reasons") or []
+                    if not _clean_string(reason).startswith("Included row is missing required calculation input(s):")
+                ]
+        row["review_required"] = True
+        row["evidence"] = _merge_preference_evidence(row.get("evidence"), sources)
+        rows[index] = row
+        changed_count += len(sources)
+
+    result.workbook_decision_preferences = _upsert_roofing_travel_defaults(
+        rows,
+        scope=result.scope_overrides or {},
+        context=context,
+    )
+    travel_ready = {
+        _clean_string(row.get("template_bucket")).lower().replace(" ", "_").replace("-", "_")
+        for row in result.workbook_decision_preferences
+        if bool(row.get("include"))
+        and not _missing_formula_requirements(
+            dict(row.get("proposed_values") or {}),
+            [
+                str(item)
+                for item in _decision_menu_row_for_preference(row, template_type="roofing").get("formula_requirements") or []
+            ],
+        )
+    }
+    if {"sales_trips", "truck_expense"}.issubset(travel_ready):
+        result.missing_questions = [
+            question
+            for question in result.missing_questions or []
+            if not (
+                ("mileage" in question.lower() or "round-trip" in question.lower())
+                and ("trip count" in question.lower() or "truck" in question.lower() or "sales" in question.lower())
+            )
+        ]
+    if changed_count:
+        result.raw_response = {
+            **(result.raw_response or {}),
+            "context_calculation_defaults_applied": changed_count,
+        }
+    if roofing_foam_fallback_used:
+        warning = (
+            "Roofing foam yield or price history was unavailable; used a review-marked workbook template fallback."
+        )
+        if warning not in (result.warnings or []):
+            result.warnings = [*(result.warnings or []), warning]
+    return result
+
+
+def _formula_disable_reason_present(row: dict[str, Any]) -> bool:
+    return any(
+        _clean_string(reason).startswith("Included row is missing required calculation input(s):")
+        for reason in row.get("review_reasons") or []
+    )
+
+
+def _roofing_work_days_from_preferences(rows: list[dict[str, Any]], scope: dict[str, Any]) -> int:
+    labor_days = 0.0
+    for row in rows:
+        if not bool(row.get("include")):
+            continue
+        bucket = _clean_string(row.get("template_bucket")).lower().replace(" ", "_").replace("-", "_")
+        if not bucket.startswith("labor_") or bucket in {"labor_loading", "labor_traveling"}:
+            continue
+        values = row.get("proposed_values") if isinstance(row.get("proposed_values"), dict) else {}
+        days = _safe_positive_number(values.get("days"))
+        if days <= 0:
+            hours = _safe_positive_number(values.get("total_hours") or values.get("editable_total_hours"))
+            crew_size = max(_safe_positive_number(values.get("crew_size")), 1.0)
+            days = hours / (crew_size * 8.0) if hours > 0 else 0.0
+        labor_days += days
+    if labor_days <= 0:
+        labor_days = _safe_positive_number(
+            scope.get("estimated_work_days")
+            or scope.get("estimated_days")
+            or scope.get("project_days")
+            or scope.get("job_days")
+        )
+    if labor_days <= 0:
+        area = _safe_positive_number(scope.get("estimated_sqft") or scope.get("area_sqft") or scope.get("net_sqft"))
+        labor_days = area / 1500.0 if area > 0 else 0.0
+    return max(1, math.ceil(labor_days)) if labor_days > 0 else 0
+
+
+def _upsert_roofing_travel_defaults(
+    rows: list[dict[str, Any]],
+    *,
+    scope: dict[str, Any],
+    context: dict[str, Any],
+) -> list[dict[str, Any]]:
+    route = context.get("route_mileage") if isinstance(context.get("route_mileage"), dict) else {}
+    round_trip_miles = _safe_positive_number(
+        route.get("estimated_round_trip_miles")
+        or route.get("round_trip_miles")
+        or scope.get("estimated_round_trip_miles")
+        or scope.get("round_trip_miles")
+    )
+    work_days = _roofing_work_days_from_preferences(rows, scope)
+    if round_trip_miles <= 0 or work_days <= 0:
+        return rows
+    fallback_defaults = context.get("template_fallback_defaults") if isinstance(context.get("template_fallback_defaults"), dict) else {}
+    travel_defaults = fallback_defaults.get("roofing_travel") if isinstance(fallback_defaults.get("roofing_travel"), dict) else {}
+    specifications = (
+        (
+            "roofing_sales_trips_row_106",
+            "sales_trips",
+            "106",
+            max(2, math.ceil(work_days / 5.0) + 1),
+            _safe_positive_number(travel_defaults.get("sales_trip_unit_price"))
+            or ROOFING_CHAT_TEMPLATE_DEFAULTS["sales_trip_unit_price"],
+        ),
+        (
+            "roofing_truck_expense_row_108",
+            "truck_expense",
+            "108",
+            work_days,
+            _safe_positive_number(travel_defaults.get("truck_trip_unit_price"))
+            or ROOFING_CHAT_TEMPLATE_DEFAULTS["truck_trip_unit_price"],
+        ),
+    )
+    updated = [dict(row) for row in rows]
+    for decision_id, bucket, workbook_row, trip_count, unit_price in specifications:
+        index = next(
+            (
+                row_index
+                for row_index, row in enumerate(updated)
+                if _clean_string(row.get("decision_id")) == decision_id
+                or _safe_row_number(row.get("workbook_row")) == workbook_row
+            ),
+            None,
+        )
+        row = dict(updated[index]) if index is not None else {
+            "decision_id": decision_id,
+            "section": "roofing_travel_freight_template_decisions",
+            "template_bucket": bucket,
+            "workbook_row": workbook_row,
+            "source": "deterministic_roofing_logistics",
+        }
+        values = dict(row.get("proposed_values") or {})
+        values.setdefault("trip_count", float(trip_count))
+        values["round_trip_miles"] = round(round_trip_miles, 1)
+        values.setdefault("unit_price", unit_price)
+        row["include"] = True
+        row["review_required"] = True
+        row["proposed_values"] = values
+        row["review_reasons"] = list(
+            dict.fromkeys(
+                [
+                    *(row.get("review_reasons") or []),
+                    "Trip count was estimated from the current labor plan; confirm vehicle and inspection cadence.",
+                ]
+            )
+        )
+        row["evidence"] = _merge_preference_evidence(
+            row.get("evidence"),
+            [
+                {
+                    "source": "current_job_route",
+                    "round_trip_miles": round(round_trip_miles, 1),
+                },
+                {
+                    "source": "current_labor_plan",
+                    "estimated_work_days": work_days,
+                    "trip_count_rule": "production_days" if bucket == "truck_expense" else "two_minimum_plus_one_per_five_work_days",
+                },
+            ],
+        )
+        if index is None:
+            updated.append(row)
+        else:
+            updated[index] = row
+    return _clean_decision_preferences(updated, template_type="roofing")
 
 
 def _best_learning_reference_summary(
@@ -1244,6 +1549,19 @@ def _build_estimator_context_summary(data: EstimatorData | None, *, scope: dict[
             },
         }
         if template_type == "insulation"
+        else {
+            "roofing_foam": {
+                "yield_or_coverage": ROOFING_CHAT_TEMPLATE_DEFAULTS["foam_yield_or_coverage"],
+                "unit_price": ROOFING_CHAT_TEMPLATE_DEFAULTS["foam_unit_price"],
+                "use_when": "Use only as a review-marked roofing workbook fallback when explicit roof SPF scope lacks a matching historical yield or current price.",
+            },
+            "roofing_travel": {
+                "sales_trip_unit_price": ROOFING_CHAT_TEMPLATE_DEFAULTS["sales_trip_unit_price"],
+                "truck_trip_unit_price": ROOFING_CHAT_TEMPLATE_DEFAULTS["truck_trip_unit_price"],
+                "use_when": "Derive trip counts from the current labor plan and use current-job route mileage; never copy mileage from a comparable.",
+            },
+        }
+        if template_type == "roofing"
         else {}
     )
     summary["pricing_candidates_by_bucket"] = _pricing_candidates_by_bucket(data, template_type=template_type)
@@ -1328,6 +1646,19 @@ def _empty_chat_decision_context(scope: dict[str, Any] | None) -> dict[str, Any]
                 },
             }
             if template_type == "insulation"
+            else {
+                "roofing_foam": {
+                    "yield_or_coverage": ROOFING_CHAT_TEMPLATE_DEFAULTS["foam_yield_or_coverage"],
+                    "unit_price": ROOFING_CHAT_TEMPLATE_DEFAULTS["foam_unit_price"],
+                    "use_when": "Use only as a review-marked roofing workbook fallback when explicit roof SPF scope lacks a matching historical yield or current price.",
+                },
+                "roofing_travel": {
+                    "sales_trip_unit_price": ROOFING_CHAT_TEMPLATE_DEFAULTS["sales_trip_unit_price"],
+                    "truck_trip_unit_price": ROOFING_CHAT_TEMPLATE_DEFAULTS["truck_trip_unit_price"],
+                    "use_when": "Derive trip counts from the current labor plan and use current-job route mileage; never copy mileage from a comparable.",
+                },
+            }
+            if template_type == "roofing"
             else {}
         ),
         "pricing_candidates_by_bucket": [],
@@ -2062,9 +2393,11 @@ def _pricing_candidates_by_bucket(data: EstimatorData, *, template_type: str) ->
             if key in seen:
                 continue
             seen.add(key)
+            decision_bucket = _pricing_decision_bucket(bucket, name)
             candidates.append(
                 {
                     "template_bucket": bucket,
+                    "decision_bucket": decision_bucket,
                     "candidate_name": name,
                     "unit": _clean_string(row.get("unit") or row.get("uom")),
                     "unit_price": _safe_number_or_blank(
@@ -2081,9 +2414,47 @@ def _pricing_candidates_by_bucket(data: EstimatorData, *, template_type: str) ->
                     "source": source_name,
                 }
             )
-            if len(candidates) >= 40:
-                return candidates
-    return candidates
+    if len(candidates) <= 40:
+        return candidates
+
+    # Catalogs are often ordered by vendor/category. Keep broad workbook coverage
+    # instead of letting the first coating category consume the entire prompt.
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for candidate in candidates:
+        group = _clean_string(candidate.get("decision_bucket") or candidate.get("template_bucket")).lower()
+        grouped.setdefault(group, []).append(candidate)
+    selected: list[dict[str, Any]] = []
+    while len(selected) < 40 and any(grouped.values()):
+        for group in list(grouped):
+            rows = grouped[group]
+            if not rows:
+                continue
+            selected.append(rows.pop(0))
+            if len(selected) >= 40:
+                break
+    return selected
+
+
+def _pricing_decision_bucket(category: str, name: str) -> str:
+    text = _clean_string(f"{category} {name}").lower()
+    mappings = (
+        ("fasteners", ("fastener", "screw")),
+        ("plates", ("plate", "stress plate")),
+        ("board_stock", ("iso board", "polyiso", "densdeck", "dens deck", "wood fiber", "gypsum board")),
+        ("edge_metal", ("edge metal", "foam stop", "foam-stop", "coping")),
+        ("gutter", ("gutter",)),
+        ("downspouts", ("downspout",)),
+        ("foam", ("roofing foam", "roof foam", "polyurethane foam", "3lb foam", "3 lb foam")),
+        ("primer", ("primer",)),
+        ("fabric", ("fabric",)),
+        ("granules", ("granule",)),
+        ("caulk_detail", ("caulk", "sealant", "mastic")),
+        ("coating", ("coating", "silicone", "acrylic", "urethane")),
+    )
+    for bucket, signals in mappings:
+        if any(signal in text for signal in signals):
+            return bucket
+    return _clean_string(category).lower().replace(" ", "_").replace("-", "_")
 
 
 def _product_guidance_digest(data: EstimatorData, *, template_type: str) -> list[dict[str, Any]]:
@@ -3360,8 +3731,10 @@ def _chat_prompt_messages(
         "product/template option, and thickness band. The digest is mined from historical estimates and includes product, thickness, "
         "square feet, estimated yield, and estimated sets examples; use it as evidence for yield_or_coverage and product selection. "
         "Include that evidence and set review_required when the historical range is wide or evidence is thin. "
-        "If no matching insulation foam history is available but template_fallback_defaults includes insulation foam yield/unit price, use those as "
-        "review-marked template fallbacks instead of saying yield or unit price is unavailable. "
+        "If no matching foam history is available but template_fallback_defaults includes the applicable roofing or insulation foam yield/unit price, "
+        "use those as review-marked workbook fallbacks instead of saying yield or unit price is unavailable. "
+        "Current pricing candidates, historical calculation inputs, and template fallbacks are usable calculation evidence: use the best matching "
+        "supported value, identify its source, and mark it for review rather than unchecking explicitly scoped work or asking the estimator to re-enter it. "
         "Do not assume a generic standard foam thickness such as 2 inches; derive thickness from explicit thickness, target R-value with "
         "product R-per-inch evidence, or matching historical template evidence, otherwise ask or mark thickness review_required. "
         "For roofing jobs, use roofing workbook buckets directly: foam for roof SPF, coating, primer, caulk_detail, fabric, seams_misc, "
@@ -3372,6 +3745,8 @@ def _chat_prompt_messages(
         "Roofing labor rows use the mixed labor formula: daily_rate and days when a daily rate is available, otherwise total_hours and hourly_rate. "
         "Roofing sales/truck travel rows use trip_count x round_trip_miles x unit_price. "
         "For roofing sales/truck rows, use the deterministic route mileage from estimator_context.route_mileage when an address was provided. "
+        "Derive current-job truck trip_count from the estimated production work days. Estimate a small sales/inspection cadence from the same labor plan; "
+        "mark both trip counts for review. Do not ask for mileage or trip counts when the address and labor plan make those inputs calculable. "
         "You may do takeoff math from explicit dimensions and deductions. Do not invent hidden warranty years, exact proprietary products, "
         "or final quote totals when evidence is weak. Use review_required for assumptions. "
         "Workbook formulas remain authoritative for final costs."
@@ -4482,6 +4857,17 @@ def _parse_site_address(text: str) -> str:
         text,
         re.I,
     )
+    if not match:
+        street_suffix = (
+            r"(?:street|st|avenue|ave|road|rd|boulevard|blvd|drive|dr|lane|ln|"
+            r"court|ct|circle|cir|parkway|pkwy|highway|hwy|way|place|pl)"
+        )
+        match = re.search(
+            rf"\b(\d{{1,6}}\s+[A-Za-z0-9][A-Za-z0-9 .'-]{{1,70}}\s+{street_suffix}\.?"
+            rf"\s*,?\s*[A-Za-z][A-Za-z .'-]{{1,50}}\s*,?\s*[A-Z]{{2}}\s+\d{{5}}(?:-\d{{4}})?)\b",
+            text,
+            re.I,
+        )
     if not match:
         return ""
     address = _clean_string(match.group(1))

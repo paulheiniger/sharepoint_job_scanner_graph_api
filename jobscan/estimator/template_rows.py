@@ -13,7 +13,7 @@ import pandas as pd
 from sqlalchemy import bindparam, create_engine, inspect, text
 from sqlalchemy.engine import Connection, Engine
 
-PARSER_VERSION = "document-content-template-v4"
+PARSER_VERSION = "document-content-template-v5"
 TEMPLATE_TYPE_ROOFING = "roofing"
 TEMPLATE_TYPE_INSULATION = "insulation"
 TEMPLATE_TYPE_FLOORING = "flooring"
@@ -962,6 +962,67 @@ def parse_document_content_row(row: dict[str, Any] | pd.Series, template_type: s
             elif row_number == 37:
                 out["formula_model"] = "thinner_units_from_coating_gallons"
                 out["quantity_cell_role"] = "estimated_units"
+        elif template_type == TEMPLATE_TYPE_ROOFING:
+            out["selector_code"] = numeric_at(cell_values, row_number, "A")
+            out["resolved_item_name"] = selected_item_name
+            if row_number in {19, 20, 21}:
+                out["area_sqft"] = numeric_at(cell_values, row_number, "C")
+                out["quantity"] = out["area_sqft"]
+                out["thickness_inches"] = bounded_numeric_at(
+                    cell_values,
+                    row_number,
+                    "D",
+                    min_value=0.01,
+                    max_value=24.0,
+                )
+                out["unit_price"] = numeric_at(cell_values, row_number, "E")
+                out["yield_or_coverage"] = bounded_numeric_at(
+                    cell_values,
+                    row_number,
+                    "F",
+                    min_value=100.0,
+                    max_value=20000.0,
+                )
+                out["yield_factor"] = out["yield_or_coverage"]
+                out["estimated_units"] = numeric_at(cell_values, row_number, "G")
+                out["estimated_cost"] = numeric_at(cell_values, row_number, "H")
+                if out["estimated_units"] is not None:
+                    out["estimated_sets"] = out["estimated_units"] / 1000
+                density_match = re.search(
+                    r"(\d+(?:\.\d+)?)\s*lb",
+                    str(out["resolved_item_name"] or ""),
+                    flags=re.IGNORECASE,
+                )
+                if density_match:
+                    out["foam_density_lb"] = float(density_match.group(1))
+                if out["area_sqft"] and out["thickness_inches"] and out["estimated_units"]:
+                    basis = out["area_sqft"] * out["thickness_inches"]
+                    out["units_per_sqft_per_inch"] = out["estimated_units"] / basis
+                    out["sets_per_sqft_per_inch"] = (
+                        out["estimated_sets"] / basis
+                        if out["estimated_sets"] is not None
+                        else None
+                    )
+                    if out["estimated_cost"]:
+                        out["cost_per_sqft_per_inch"] = out["estimated_cost"] / basis
+                out["formula_model"] = "foam_sets_from_area_thickness_yield"
+                out["quantity_cell_role"] = "area_sqft"
+            elif row_number in {26, 27, 28}:
+                out["area_sqft"] = numeric_at(cell_values, row_number, "C")
+                out["quantity"] = out["area_sqft"]
+                out["gal_per_100_sqft"] = bounded_numeric_at(
+                    cell_values,
+                    row_number,
+                    "D",
+                    min_value=0.01,
+                    max_value=20.0,
+                )
+                if out["gal_per_100_sqft"] is not None:
+                    out["gal_per_sqft"] = out["gal_per_100_sqft"] / 100
+                out["estimated_gallons"] = numeric_at(cell_values, row_number, "G")
+                out["estimated_units"] = out["estimated_gallons"]
+                out["formula_model"] = "coating_gallons_from_area_rate_waste"
+                out["quantity_cell_role"] = "area_sqft"
         elif template_type == TEMPLATE_TYPE_FLOORING:
             out["selector_code"] = numeric_at(cell_values, row_number, "A")
             out["resolved_item_name"] = selected_item_name
@@ -1167,12 +1228,38 @@ UPSERT_TEMPLATE_ROW_SQL = text(
 )
 
 
+POSTGRES_UPSERT_TEMPLATE_ROW_SQL = f"""
+    INSERT INTO estimate_template_rows ({_UPSERT_COLUMNS})
+    VALUES %s
+    ON CONFLICT (template_row_id) DO UPDATE SET
+        {_UPSERT_ASSIGNMENTS},
+        updated_at = CURRENT_TIMESTAMP
+"""
+
+
 def upsert_template_rows(conn: Connection, rows: list[dict[str, Any]], batch_size: int = 1000) -> int:
     if not rows:
         return 0
-    total = 0
     batch_size = max(batch_size, 1)
     prepared = [db_row(row) for row in rows]
+    if conn.dialect.name == "postgresql" and conn.dialect.driver == "psycopg2":
+        from psycopg2.extras import execute_values
+
+        raw_connection = conn.connection.driver_connection
+        values = [
+            tuple(row.get(column) for column in TEMPLATE_ROW_COLUMNS)
+            for row in prepared
+        ]
+        with raw_connection.cursor() as cursor:
+            execute_values(
+                cursor,
+                POSTGRES_UPSERT_TEMPLATE_ROW_SQL,
+                values,
+                page_size=batch_size,
+            )
+        return len(prepared)
+
+    total = 0
     for start in range(0, len(prepared), batch_size):
         batch = prepared[start : start + batch_size]
         conn.execute(UPSERT_TEMPLATE_ROW_SQL, batch)
@@ -1329,6 +1416,60 @@ def fetch_document_content_rows(conn: Connection, document_id: str | None = None
     return [dict(row) for row in rows]
 
 
+def fetch_document_content_rows_for_documents(
+    conn: Connection,
+    document_ids: list[str],
+) -> list[dict[str, Any]]:
+    clean_ids = list(dict.fromkeys(str(document_id) for document_id in document_ids if str(document_id).strip()))
+    if not clean_ids:
+        return []
+    statement = text(
+        """
+        SELECT
+            c.document_id,
+            c.job_id,
+            COALESCE(d.file_name, c.document_id) AS source_file,
+            c.sheet_name,
+            c.row_number,
+            c.cell_range,
+            c.text_content
+        FROM document_content c
+        LEFT JOIN documents d ON d.document_id = c.document_id
+        WHERE LOWER(COALESCE(c.sheet_name, '')) = 'estimate'
+          AND c.row_number IS NOT NULL
+          AND c.text_content ~ '[A-Z]{1,4}[0-9]+:'
+          AND LOWER(COALESCE(d.file_extension, '')) IN ('.xlsx', '.xlsm')
+          AND c.document_id IN :document_ids
+        ORDER BY c.document_id, c.row_number, c.cell_range
+        """
+    ).bindparams(bindparam("document_ids", expanding=True))
+    try:
+        rows = conn.execute(statement, {"document_ids": clean_ids}).mappings().all()
+    except Exception:
+        sqlite_statement = text(
+            """
+            SELECT
+                c.document_id,
+                c.job_id,
+                COALESCE(d.file_name, c.document_id) AS source_file,
+                c.sheet_name,
+                c.row_number,
+                c.cell_range,
+                c.text_content
+            FROM document_content c
+            LEFT JOIN documents d ON d.document_id = c.document_id
+            WHERE LOWER(COALESCE(c.sheet_name, '')) = 'estimate'
+              AND c.row_number IS NOT NULL
+              AND c.text_content LIKE '%:%'
+              AND LOWER(COALESCE(d.file_extension, '')) IN ('.xlsx', '.xlsm')
+              AND c.document_id IN :document_ids
+            ORDER BY c.document_id, c.row_number, c.cell_range
+            """
+        ).bindparams(bindparam("document_ids", expanding=True))
+        rows = conn.execute(sqlite_statement, {"document_ids": clean_ids}).mappings().all()
+    return [dict(row) for row in rows]
+
+
 def fetch_flooring_repair_candidate_documents(conn: Connection, limit_documents: int | None = None) -> list[dict[str, Any]]:
     params: dict[str, Any] = {"limit_documents": limit_documents}
     limit_sql = "LIMIT :limit_documents" if limit_documents is not None else ""
@@ -1463,6 +1604,7 @@ def parse_existing_document_content(
     document_id: str | None = None,
     batch_size: int = 1000,
     *,
+    document_batch_size: int = 100,
     limit_documents: int | None = None,
     document_type: str | None = None,
     xlsx_only: bool = True,
@@ -1491,30 +1633,51 @@ def parse_existing_document_content(
     bucket_counts: Counter[str] = Counter()
     kind_counts: Counter[str] = Counter()
 
-    for index, document in enumerate(candidate_documents, start=1):
-        current_document_id = str(document.get("document_id") or "")
-        source_file = str(document.get("source_file") or current_document_id)
+    document_batch_size = max(int(document_batch_size), 1)
+    for batch_start in range(0, documents_considered, document_batch_size):
+        document_batch = candidate_documents[batch_start : batch_start + document_batch_size]
+        document_ids = [str(document.get("document_id") or "") for document in document_batch]
         with engine.connect() as conn:
-            source_rows = fetch_document_content_rows(conn, document_id=current_document_id)
-        parsed_rows = parse_document_content_rows(source_rows)
-        unused_placeholder_ids = [template_row_id_for_content_row(row) for row in source_rows if is_unused_placeholder_adder_row(row)]
-        with engine.begin() as conn:
-            deleted_for_document = delete_template_rows_by_id(conn, unused_placeholder_ids)
-            upserted_for_document = upsert_template_rows(conn, parsed_rows, batch_size=batch_size)
+            batch_source_rows = fetch_document_content_rows_for_documents(conn, document_ids)
+        source_rows_by_document: dict[str, list[dict[str, Any]]] = {
+            document_id: [] for document_id in document_ids
+        }
+        for source_row in batch_source_rows:
+            source_rows_by_document.setdefault(str(source_row.get("document_id") or ""), []).append(source_row)
 
-        rows_read += len(source_rows)
-        rows_parsed += len(parsed_rows)
-        rows_upserted += upserted_for_document
-        rows_deleted += deleted_for_document
-        review_rows += sum(1 for row in parsed_rows if row.get("needs_review"))
-        bucket_counts.update(str(row.get("template_bucket")) for row in parsed_rows)
-        kind_counts.update(str(row.get("line_item_kind")) for row in parsed_rows)
-        if progress:
-            print(
-                f"[{index}/{documents_considered}] {source_file} — "
-                f"rows read: {len(source_rows)}, parsed/upserted: {len(parsed_rows)}/{upserted_for_document}",
-                flush=True,
+        parsed_by_document: list[tuple[int, str, list[dict[str, Any]], list[dict[str, Any]]]] = []
+        parsed_batch: list[dict[str, Any]] = []
+        unused_placeholder_ids: list[str] = []
+        for offset, document in enumerate(document_batch):
+            index = batch_start + offset + 1
+            current_document_id = str(document.get("document_id") or "")
+            source_file = str(document.get("source_file") or current_document_id)
+            source_rows = source_rows_by_document.get(current_document_id, [])
+            parsed_rows = parse_document_content_rows(source_rows)
+            parsed_by_document.append((index, source_file, source_rows, parsed_rows))
+            parsed_batch.extend(parsed_rows)
+            unused_placeholder_ids.extend(
+                template_row_id_for_content_row(row)
+                for row in source_rows
+                if is_unused_placeholder_adder_row(row)
             )
+
+        with engine.begin() as conn:
+            rows_deleted += delete_template_rows_by_id(conn, unused_placeholder_ids)
+            rows_upserted += upsert_template_rows(conn, parsed_batch, batch_size=batch_size)
+
+        for index, source_file, source_rows, parsed_rows in parsed_by_document:
+            rows_read += len(source_rows)
+            rows_parsed += len(parsed_rows)
+            review_rows += sum(1 for row in parsed_rows if row.get("needs_review"))
+            bucket_counts.update(str(row.get("template_bucket")) for row in parsed_rows)
+            kind_counts.update(str(row.get("line_item_kind")) for row in parsed_rows)
+            if progress:
+                print(
+                    f"[{index}/{documents_considered}] {source_file} — "
+                    f"rows read: {len(source_rows)}, parsed/upserted: {len(parsed_rows)}/{len(parsed_rows)}",
+                    flush=True,
+                )
 
     skipped = rows_read - rows_parsed
     return {
@@ -1654,6 +1817,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--only-unparsed", action="store_true", help="Only parse documents without rows for the current parser version.")
     parser.add_argument("--database-url", default=os.getenv("DATABASE_URL") or os.getenv("NEON_DATABASE_URL"))
     parser.add_argument("--batch-size", type=int, default=1000)
+    parser.add_argument("--document-batch-size", type=int, default=100)
     args = parser.parse_args(argv)
     if not args.parse_existing and not args.document_id and not args.repair_flooring_template_type:
         parser.error("Use --parse-existing, --document-id, or --repair-flooring-template-type.")
@@ -1677,6 +1841,7 @@ def main(argv: list[str] | None = None) -> int:
             engine,
             document_id=args.document_id,
             batch_size=args.batch_size,
+            document_batch_size=args.document_batch_size,
             limit_documents=args.limit_documents,
             document_type=args.document_type,
             xlsx_only=args.xlsx_only,

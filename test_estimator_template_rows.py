@@ -148,6 +148,47 @@ def test_row_26_maps_to_coating_and_extracts_material_fields() -> None:
     assert parsed["formula_cells"] == {"G26": "=formula"}
 
 
+def test_roofing_foam_row_preserves_area_thickness_yield_and_units() -> None:
+    parsed = tr.parse_document_content_row(
+        content_row(
+            19,
+            (
+                "A19: 11 | B19: Gaco Roof 2.7 | C19: 950 | D19: 1.5 | "
+                "E19: 2.25 | F19: 2900 | G19: 491.37931034482756 | H19: 1105.603448275862"
+            ),
+        ),
+        template_type=tr.TEMPLATE_TYPE_ROOFING,
+    )
+
+    assert parsed["template_bucket"] == "foam"
+    assert parsed["area_sqft"] == 950
+    assert parsed["thickness_inches"] == 1.5
+    assert parsed["yield_or_coverage"] == 2900
+    assert parsed["estimated_units"] == 491.37931034482756
+    assert parsed["estimated_sets"] == 0.49137931034482757
+    assert parsed["unit_price"] == 2.25
+    assert parsed["formula_model"] == "foam_sets_from_area_thickness_yield"
+    assert parsed["quantity_cell_role"] == "area_sqft"
+
+
+def test_roofing_coating_row_preserves_area_and_application_rate() -> None:
+    parsed = tr.parse_document_content_row(
+        content_row(
+            26,
+            "A26: 11 | B26: Gaco Silicone | C26: 9600 | D26: 1.5 | E26: 32 | G26: 165.6 | H26: 5299.2",
+        ),
+        template_type=tr.TEMPLATE_TYPE_ROOFING,
+    )
+
+    assert parsed["template_bucket"] == "coating"
+    assert parsed["area_sqft"] == 9600
+    assert parsed["gal_per_100_sqft"] == 1.5
+    assert parsed["gal_per_sqft"] == 0.015
+    assert parsed["estimated_gallons"] == 165.6
+    assert parsed["estimated_units"] == 165.6
+    assert parsed["formula_model"] == "coating_gallons_from_area_rate_waste"
+
+
 def test_row_39_maps_to_primer() -> None:
     parsed = tr.parse_document_content_row(content_row(39, "A39: Primer | B39: Bleed Block | C39: 2 | E39: 125"))
 

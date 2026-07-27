@@ -95,3 +95,41 @@ def test_roofing_foam_yield_digest_uses_mined_history_examples() -> None:
     assert digest[0]["median_estimated_sets"] == 0.84444
     assert digest[0]["examples"][0]["square_feet"] == 9600
     assert digest[0]["examples"][0]["estimated_sets"] == 0.84444
+
+
+def test_roofing_foam_yield_digest_does_not_fall_back_to_insulation_history() -> None:
+    data = EstimatorData(
+        foam_yield_history=pd.DataFrame(
+            [
+                {
+                    "template_type": "insulation",
+                    "product": "Gaco 2.0 lb.",
+                    "foam_type": "closed_cell",
+                    "thickness_inches": 3.0,
+                    "square_feet": 5000,
+                    "estimated_yield": 3500,
+                    "estimated_sets": 4.285714,
+                    "unit_price": 2.2,
+                }
+            ]
+        )
+    )
+
+    digest = build_foam_yield_history_digest(
+        data,
+        scope={"template_type": "roofing", "foam_thickness_inches": 1.5},
+        template_type="roofing",
+    )
+
+    assert digest == []
+
+
+def test_roofing_history_table_does_not_mine_insulation_template_rows() -> None:
+    data = foam_history_data()
+    data.template_rows = data.template_rows.loc[
+        data.template_rows["template_type"].eq("insulation")
+    ].copy()
+
+    history = build_foam_yield_history_table(data, template_type="roofing")
+
+    assert history.empty

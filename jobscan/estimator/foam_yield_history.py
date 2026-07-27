@@ -136,9 +136,9 @@ def _source_rows(data: Any, template_type: str) -> pd.DataFrame:
         if column not in rows.columns:
             rows[column] = ""
     if template_type:
-        scoped = rows[rows["template_type"].map(_normalized).eq(_normalized(template_type))].copy()
-        if not scoped.empty:
-            rows = scoped
+        rows = rows[
+            rows["template_type"].map(_normalized).eq(_normalized(template_type))
+        ].copy()
     bucket = rows["template_bucket"].map(_normalized)
     kind = rows["line_item_kind"].map(_normalized)
     foam_rows = rows[bucket.eq("foam") | (bucket.str.contains("foam", na=False) & kind.isin(["material", ""]))].copy()
@@ -168,6 +168,8 @@ def _record_from_row(row: dict[str, Any]) -> dict[str, Any] | None:
             row.get("row_label"),
             row.get("notes"),
         )
+    if not foam_type and template_type == "roofing":
+        foam_type = "closed_cell"
     area = _positive_number(
         row.get("area_sqft"),
         row.get("basis_sqft"),
@@ -270,9 +272,9 @@ def _history_source_frame(data: Any, template_type: str) -> pd.DataFrame:
     if "thickness_band" not in history.columns:
         history["thickness_band"] = history["thickness_inches"].map(thickness_band)
     if template_type:
-        scoped = history[history["template_type"].map(_normalized).eq(_normalized(template_type))].copy()
-        if not scoped.empty:
-            history = scoped
+        history = history[
+            history["template_type"].map(_normalized).eq(_normalized(template_type))
+        ].copy()
     return history
 
 

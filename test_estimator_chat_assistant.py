@@ -2404,3 +2404,156 @@ def test_estimator_chat_precomputes_route_mileage_from_address(monkeypatch) -> N
     assert seen_payload["estimator_context"]["route_mileage"]["estimated_round_trip_miles"] == 172.8
     assert result.scope_overrides["round_trip_miles"] == 172.8
     assert not result.missing_questions
+
+
+def test_estimator_chat_parses_unlabeled_us_address_and_derives_roofing_travel(monkeypatch) -> None:
+    seen_payload = {}
+
+    def fake_estimate_one_way_miles(scope):
+        assert scope["destination_address"] == "830 South 1st Street, Louisville, KY 40203"
+        return 35.0
+
+    def provider(messages, _model):
+        seen_payload.update(json.loads(messages[1]["content"]))
+        return {
+            "assistant_message": "Drafted current-job labor and travel.",
+            "estimator_notes": "Grossman Tuning roofing estimate.",
+            "scope_overrides": {"template_type": "roofing", "estimated_sqft": 5136},
+            "workbook_decision_preferences": [
+                {
+                    "decision_id": "roofing_labor_base_row_122",
+                    "section": "roofing_labor_template_decisions",
+                    "template_bucket": "labor_base",
+                    "workbook_row": "122",
+                    "include": True,
+                    "proposed_values": {"days": 6, "crew_size": 5, "daily_rate": 1800},
+                }
+            ],
+            "missing_questions": [],
+            "confidence": 0.8,
+        }
+
+    monkeypatch.setattr(chat_assistant.estimator_labor, "estimate_one_way_miles", fake_estimate_one_way_miles)
+
+    result = run_estimator_chat_turn(
+        [
+            {
+                "role": "user",
+                "content": (
+                    "Grossman Tuning located at 830 South 1st Street, Louisville, KY 40203 "
+                    "has 5,136 sq.ft. of coated foam roofing."
+                ),
+            }
+        ],
+        template_type_hint="roofing",
+        provider=provider,
+        model="test-model",
+    )
+
+    assert seen_payload["existing_scope"]["site_address"] == "830 South 1st Street, Louisville, KY 40203"
+    assert seen_payload["estimator_context"]["route_mileage"]["estimated_round_trip_miles"] == 70.0
+    by_id = {row["decision_id"]: row for row in result.workbook_decision_preferences}
+    assert by_id["roofing_sales_trips_row_106"]["include"] is True
+    assert by_id["roofing_sales_trips_row_106"]["proposed_values"] == {
+        "trip_count": 3.0,
+        "round_trip_miles": 70.0,
+        "unit_price": 0.75,
+    }
+    assert by_id["roofing_truck_expense_row_108"]["proposed_values"] == {
+        "trip_count": 6.0,
+        "round_trip_miles": 70.0,
+        "unit_price": 1.0,
+    }
+
+
+def test_estimator_chat_restores_explicit_roof_foam_with_historical_yield_default() -> None:
+    data = EstimatorData(
+        foam_yield_history=pd.DataFrame(
+            [
+                {
+                    "template_type": "roofing",
+                    "foam_type": "closed_cell",
+                    "product": "Roof SPF",
+                    "template_option": "Roof SPF",
+                    "template_option_normalized": "roof spf",
+                    "thickness_inches": 1.5,
+                    "thickness_band": "0-2",
+                    "square_feet": 5000,
+                    "area_sqft": 5000,
+                    "yield_or_coverage": 2800,
+                    "estimated_yield": 2800,
+                    "estimated_units": 2678.57,
+                    "estimated_sets": 2.67857,
+                    "unit_price": 2.1,
+                    "job_id": "R1",
+                }
+            ]
+        )
+    )
+
+    def provider(_messages, _model):
+        return {
+            "assistant_message": "Included the explicitly scoped roof foam.",
+            "estimator_notes": "Install 1.5 inch coated roof foam.",
+            "scope_overrides": {"template_type": "roofing", "estimated_sqft": 5136},
+            "workbook_decision_preferences": [
+                {
+                    "decision_id": "roofing_foam_row_19",
+                    "section": "roofing_foam_template_decisions",
+                    "template_bucket": "foam",
+                    "workbook_row": "19",
+                    "include": True,
+                    "proposed_values": {
+                        "basis_sqft": 5136,
+                        "thickness_inches": 1.5,
+                    },
+                }
+            ],
+            "missing_questions": [],
+            "confidence": 0.8,
+        }
+
+    result = run_estimator_chat_turn(
+        [{"role": "user", "content": "Install 1.5 inch coated foam roof over 5,136 sq.ft."}],
+        data=data,
+        template_type_hint="roofing",
+        provider=provider,
+        model="test-model",
+    )
+
+    foam = next(row for row in result.workbook_decision_preferences if row["decision_id"] == "roofing_foam_row_19")
+    assert foam["include"] is True
+    assert foam["proposed_values"]["yield_or_coverage"] == 2800
+    assert foam["proposed_values"]["unit_price"] == 2.1
+    assert foam["review_required"] is True
+    assert result.raw_response["context_calculation_defaults_applied"] == 2
+
+
+def test_pricing_context_keeps_cross_bucket_candidates_when_catalog_is_coating_heavy() -> None:
+    coating_rows = [
+        {
+            "category": "Coatings",
+            "item_name": f"Coating {index}",
+            "unit_price": 100 + index,
+        }
+        for index in range(60)
+    ]
+    data = EstimatorData(
+        pricing=pd.DataFrame(
+            [
+                *coating_rows,
+                {"category": "Roofing Board", "item_name": "2 inch ISO Board", "unit_price": 155},
+                {"category": "Fasteners", "item_name": "Roof Fasteners", "unit_price": 250},
+            ]
+        )
+    )
+
+    context = estimator_context_summary(data, scope={"template_type": "roofing"})
+    decision_buckets = {
+        row["decision_bucket"]
+        for row in context["pricing_candidates_by_bucket"]
+    }
+
+    assert "coating" in decision_buckets
+    assert "board_stock" in decision_buckets
+    assert "fasteners" in decision_buckets
