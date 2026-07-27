@@ -108,6 +108,12 @@ from jobscan.job_search import (
     search_jobs,
     tokenize_search_text,
 )
+from dashboard.data_sources import (
+    DASHBOARD_CORE_PAGES,
+    DASHBOARD_LEGACY_PAGES,
+    audit_notes_for_page,
+    references_for_page,
+)
 estimate_from_field_notes = None
 load_estimator_data = None
 
@@ -25072,6 +25078,59 @@ def admin_health_page() -> None:
     render_estimator_memory_admin()
 
 
+def render_dashboard_source_references(page: str) -> None:
+    references = references_for_page(page)
+    if not references:
+        return
+
+    st.divider()
+    st.subheader("Data sources and calculation notes")
+    st.caption(
+        "These references describe the immediate datasets and important fallback or aggregation rules used on this page. "
+        "PostgreSQL dashboard-view definitions are maintained in `db/dashboard_views.sql`; application-side joins and "
+        "normalization are in `dashboard/app.py`."
+    )
+    source_frame = pd.DataFrame(references).rename(
+        columns={
+            "source": "Source",
+            "source_type": "Type",
+            "used_for": "Used for",
+            "lineage_or_rule": "Lineage / aggregation rule",
+        }
+    )
+    st.dataframe(
+        source_frame,
+        width="stretch",
+        hide_index=True,
+        height=min(360, 38 + 46 * len(source_frame)),
+        column_config={
+            "Source": st.column_config.TextColumn(width="medium"),
+            "Type": st.column_config.TextColumn(width="small"),
+            "Used for": st.column_config.TextColumn(width="medium"),
+            "Lineage / aggregation rule": st.column_config.TextColumn(width="large"),
+        },
+    )
+
+    audit_notes = audit_notes_for_page(page)
+    if audit_notes:
+        st.markdown("**Reconciliation notes**")
+        for note in audit_notes:
+            st.markdown(f"- {note}")
+
+    active_filters: list[str] = []
+    if selected_divisions:
+        active_filters.append(f"Division: {', '.join(selected_divisions)}")
+    if selected_pipeline_statuses:
+        active_filters.append(f"Pipeline: {', '.join(selected_pipeline_statuses)}")
+    if selected_statuses:
+        active_filters.append(f"Status: {', '.join(selected_statuses)}")
+    if customer_search:
+        active_filters.append(f"Customer search: {customer_search}")
+    if active_filters:
+        st.caption("Active global filters applied before displayed totals: " + " | ".join(active_filters))
+    st.caption("Most dashboard reads are cached for up to 5 minutes. Admin / Health can be used to inspect source freshness and row counts.")
+
+
 def render_dashboard_page(page: str) -> None:
     if page == "Owner Overview":
         owner_overview_page()
@@ -25133,6 +25192,7 @@ def render_dashboard_page(page: str) -> None:
         pricing_catalog_page()
     else:
         raw_tables_page()
+    render_dashboard_source_references(page)
 
 
 def main() -> None:
@@ -25142,43 +25202,9 @@ def main() -> None:
     with st.sidebar:
         render_sidebar_brand()
         render_database_target_debug()
-        core_pages = [
-            "Sales Dashboard",
-            "Operations Dashboard",
-            "Job Board",
-            "Office Timesheet",
-            "Timesheet Job Touches",
-            "Job Tracking",
-            "Schedule Calendar",
-            "Daily Crew Dispatch",
-            "Daily Production",
-            "Estimating Assistant",
-            "AI Roof Measure",
-            "Pricing Catalog",
-            "Ask Spray-Tec",
-            "BidScope AI",
-            "Admin / Health",
-        ]
-        legacy_pages = [
-            "Owner Overview",
-            "Pipeline / Money",
-            "Sales Follow-Up",
-            "Contracted Backlog / Scheduling",
-            "Project Scheduling",
-            "Jobs Needing Action",
-            "Closeout / Billing Risk",
-            "Documentation Risk",
-            "Job Warnings",
-            "Estimate Analytics",
-            "Estimate Quality Issues",
-            "Line Item Analysis",
-            "Estimate Adders",
-            "STAMP Tracking",
-            "Raw Tables",
-        ]
         show_legacy_pages = st.checkbox("Show legacy/raw dashboard pages", value=False)
         show_perf_timings = st.checkbox("Show performance timings", value=False, key="show_dashboard_perf_timings")
-        page_options = core_pages + (legacy_pages if show_legacy_pages else [])
+        page_options = DASHBOARD_CORE_PAGES + (DASHBOARD_LEGACY_PAGES if show_legacy_pages else [])
         page = st.radio(
             "Page",
             page_options,
