@@ -22367,6 +22367,10 @@ def render_staged_estimate_state(
         warnings = state.get("review_flags") or []
         if questions:
             st.markdown("**Open questions**")
+            st.caption(
+                "Open questions are advisory. Approval is blocked only when an included "
+                "workbook row is missing required inputs or another deterministic readiness check fails."
+            )
             for question in questions:
                 st.write(f"- {question}")
         if warnings:

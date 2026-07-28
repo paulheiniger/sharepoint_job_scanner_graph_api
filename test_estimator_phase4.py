@@ -60,7 +60,7 @@ def _ready_roofing_state() -> dict:
     return state
 
 
-def test_readiness_blocks_missing_workbook_inputs_and_questions() -> None:
+def test_readiness_blocks_missing_workbook_inputs_but_warns_on_questions() -> None:
     state = _ready_roofing_state()
     state["decision_template_state"][0]["proposed_values"].pop("unit_price")
     state["unresolved_questions"] = ["Confirm roof area."]
@@ -68,12 +68,36 @@ def test_readiness_blocks_missing_workbook_inputs_and_questions() -> None:
     readiness = evaluate_estimate_readiness(state)
 
     assert readiness["ready"] is False
-    assert {
-        row["code"]
-        for row in readiness["hard_errors"]
-    } == {"missing_formula_input", "unresolved_question"}
+    assert {row["code"] for row in readiness["hard_errors"]} == {
+        "missing_formula_input"
+    }
+    assert any(
+        row["code"] == "unresolved_question"
+        for row in readiness["warnings"]
+    )
     with pytest.raises(ValueError, match="not ready"):
         approve_estimate_session(state)
+
+
+def test_open_questions_do_not_block_formula_ready_workbook_approval() -> None:
+    state = _ready_roofing_state()
+    state["unresolved_questions"] = [
+        "Confirm the warranty term before the final quote.",
+        "Will the crew need a lift?",
+    ]
+
+    readiness = evaluate_estimate_readiness(state)
+    approved = approve_estimate_session(state)
+
+    assert readiness["ready"] is True
+    assert readiness["hard_errors"] == []
+    assert [row["code"] for row in readiness["warnings"]] == [
+        "unresolved_question",
+        "unresolved_question",
+    ]
+    assert readiness["checks"]["questions_resolved"] is False
+    assert readiness["checks"]["open_questions_are_advisory"] is True
+    assert approved["session_status"] == "approved"
 
 
 def test_readiness_allows_warnings_but_blocks_bad_geometry() -> None:

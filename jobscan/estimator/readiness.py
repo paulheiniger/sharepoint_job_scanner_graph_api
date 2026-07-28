@@ -95,11 +95,16 @@ def evaluate_estimate_readiness(state: dict[str, Any]) -> dict[str, Any]:
             )
         )
 
-    for question in state.get("unresolved_questions") or []:
-        hard_errors.append(
+    open_questions = [
+        str(question)
+        for question in state.get("unresolved_questions") or []
+        if str(question).strip()
+    ]
+    for question in open_questions:
+        warnings.append(
             _issue(
                 "unresolved_question",
-                str(question),
+                question,
             )
         )
 
@@ -157,7 +162,8 @@ def evaluate_estimate_readiness(state: dict[str, Any]) -> dict[str, Any]:
         "checks": {
             "has_decisions": bool(decisions),
             "has_included_decisions": bool(included),
-            "questions_resolved": not bool(state.get("unresolved_questions")),
+            "questions_resolved": not bool(open_questions),
+            "open_questions_are_advisory": bool(open_questions),
             "formula_inputs_complete": not any(
                 row.get("code") == "missing_formula_input" for row in hard_errors
             ),
