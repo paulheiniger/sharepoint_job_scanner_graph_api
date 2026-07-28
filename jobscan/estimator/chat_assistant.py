@@ -16,6 +16,10 @@ import pandas as pd
 from jobscan.estimate_routing import has_explicit_insulation_exclusion, is_insulation_quote
 
 from .estimator_memory import relevant_memory_rows
+from .decision_proposals import (
+    canonicalize_structured_roofing_scope,
+    compile_deterministic_scope_proposals,
+)
 from .model_routing import DEFAULT_ESTIMATOR_MODEL, model_call_metadata
 from . import labor as estimator_labor
 from .foam_yield_history import build_foam_yield_history_digest
@@ -255,6 +259,8 @@ def run_estimator_chat_turn(
         _merge_chat_scopes(existing_scope or {}, deterministic_baseline.scope_overrides),
         raw_message_list,
     )
+    if _template_type_for_scope(baseline_scope) == "roofing":
+        baseline_scope = canonicalize_structured_roofing_scope(baseline_scope)
     baseline_scope = _enrich_scope_with_route_mileage(baseline_scope)
     deterministic_baseline.scope_overrides = baseline_scope
     context = estimator_context_summary(data, scope=baseline_scope)
@@ -297,9 +303,19 @@ def run_estimator_chat_turn(
                 baseline_notes=deterministic_baseline.estimator_notes,
             )
             result = _attach_context_retrieval_summary(result, context)
+            result = _apply_deterministic_scope_compiler(
+                result,
+                data=data,
+                existing_decisions=existing_decisions or [],
+            )
         except Exception as exc:
             deterministic_baseline.warnings.append(f"AI estimator chat failed; used deterministic fallback. {type(exc).__name__}: {exc}")
             fallback_result = _attach_context_retrieval_summary(deterministic_baseline, context)
+            fallback_result = _apply_deterministic_scope_compiler(
+                fallback_result,
+                data=data,
+                existing_decisions=existing_decisions or [],
+            )
             if not ((structured_answer_key.mapped_row_count or reference_summary.mapped_row_count) and not should_apply_reference):
                 fallback_result = _supplement_result_with_historical_context_preferences(fallback_result, context)
             if not should_apply_reference:
@@ -359,6 +375,11 @@ def run_estimator_chat_turn(
         )
     deterministic_baseline.warnings.append("OPENAI_API_KEY is not configured; used deterministic estimator-chat fallback.")
     deterministic_result = _attach_context_retrieval_summary(deterministic_baseline, context)
+    deterministic_result = _apply_deterministic_scope_compiler(
+        deterministic_result,
+        data=data,
+        existing_decisions=existing_decisions or [],
+    )
     if not ((structured_answer_key.mapped_row_count or reference_summary.mapped_row_count) and not should_apply_reference):
         deterministic_result = _supplement_result_with_historical_context_preferences(deterministic_result, context)
     if not should_apply_reference:
@@ -374,6 +395,80 @@ def run_estimator_chat_turn(
         ),
         answer_key_mode=answer_key_mode,
     )
+
+
+def _apply_deterministic_scope_compiler(
+    result: EstimatorChatResult,
+    *,
+    data: EstimatorData | None,
+    existing_decisions: list[dict[str, Any]],
+) -> EstimatorChatResult:
+    scope = result.scope_overrides or {}
+    if _template_type_for_scope(scope) != "roofing":
+        return result
+    canonical_scope = canonicalize_structured_roofing_scope(scope)
+    result.scope_overrides = canonical_scope
+    compiled = [
+        proposal.to_dict()
+        for proposal in compile_deterministic_scope_proposals(canonical_scope, data=data)
+    ]
+    protected = [
+        row
+        for row in existing_decisions or []
+        if isinstance(row, dict)
+        and _clean_string(row.get("source")).lower()
+        in {"estimator_edit", "manual_estimator_edit"}
+    ]
+    compiled = [
+        row
+        for row in compiled
+        if not any(_preference_matches(row, protected_row) for protected_row in protected)
+    ]
+    preferences: list[dict[str, Any]] = []
+    for row in compiled:
+        copied = dict(row)
+        evidence = copied.get("evidence") if isinstance(copied.get("evidence"), dict) else {}
+        copied["evidence"] = [
+            {"source_type": source_type, **item}
+            for source_type, items in evidence.items()
+            for item in (items if isinstance(items, list) else [items])
+            if isinstance(item, dict)
+        ]
+        preferences.append(copied)
+    result.workbook_decision_preferences = _clean_decision_preferences(
+        _merge_decision_preferences(
+            result.workbook_decision_preferences,
+            preferences,
+        ),
+        template_type="roofing",
+    )
+    compiler_audit = {
+        "canonical_scope_version": canonical_scope.get("canonical_scope_version"),
+        "canonical_area_total_sqft": canonical_scope.get("canonical_area_total_sqft"),
+        "exclusive_area_sqft": canonical_scope.get("canonical_exclusive_area_sqft"),
+        "nested_area_sqft": canonical_scope.get("canonical_nested_area_sqft"),
+        "linear_totals": canonical_scope.get("canonical_linear_totals") or {},
+        "scope_conflicts": canonical_scope.get("scope_conflicts") or [],
+        "proposal_count": len(preferences),
+        "automatic_comparable": next(
+            (
+                evidence
+                for row in preferences
+                for evidence in row.get("evidence") or []
+                if evidence.get("source_type") == "automatic_comparable"
+            ),
+            {},
+        ),
+    }
+    result.raw_response = {
+        **(result.raw_response or {}),
+        "deterministic_scope_compiler": compiler_audit,
+    }
+    for conflict in canonical_scope.get("scope_conflicts") or []:
+        warning = f"Scope reconciliation: {conflict}"
+        if warning not in result.warnings:
+            result.warnings.append(warning)
+    return result
 
 
 LEARNING_INTENT_PATTERNS: tuple[tuple[str, str], ...] = (
@@ -577,7 +672,7 @@ def _supplement_result_with_historical_context_preferences(
     }
     warning = (
         f"Attached similar-job evidence to {matched_count} current workbook proposal(s); "
-        "no historical rows or quantities were added."
+        "this evidence-attachment step did not add decisions or quantities."
     )
     warnings = list(result.warnings or [])
     if warning not in warnings:
@@ -609,6 +704,12 @@ _CONTEXT_DEFAULT_FIELDS_BY_BUCKET: dict[str, tuple[str, ...]] = {
     "labor_cleanup": ("crew_size", "daily_rate", "hourly_rate"),
     "sales_trips": ("unit_price",),
     "truck_expense": ("unit_price",),
+}
+
+_UNIT_PRICE_FIELDS = {
+    "unit_price",
+    "price_per_square",
+    "unit_price_per_thousand",
 }
 
 
@@ -649,6 +750,7 @@ def _apply_context_calculation_defaults(
     )
     changed_count = 0
     roofing_foam_fallback_used = False
+    latest_historical_price_rows_used = 0
     for index, raw_row in enumerate(rows):
         row = dict(raw_row)
         values = dict(row.get("proposed_values") or {})
@@ -678,6 +780,8 @@ def _apply_context_calculation_defaults(
         for field in allowed_fields:
             if _formula_value_present(values, field):
                 continue
+            if field not in _UNIT_PRICE_FIELDS:
+                continue
             price_candidate = _trusted_context_price_candidate(
                 context,
                 bucket=bucket,
@@ -685,17 +789,62 @@ def _apply_context_calculation_defaults(
                 row=row,
             )
             candidate_price = _safe_positive_number(price_candidate.get("unit_price"))
-            if candidate_price <= 0:
+            if candidate_price > 0:
+                values[field] = candidate_price
+                sources.append(
+                    {
+                        "source": price_candidate.get("source"),
+                        "field": field,
+                        "candidate_name": price_candidate.get("candidate_name"),
+                        "lookup_table_id": price_candidate.get("lookup_table_id"),
+                        "workbook_sheet": price_candidate.get("workbook_sheet"),
+                        "workbook_row": price_candidate.get("workbook_row"),
+                    }
+                )
                 continue
-            values[field] = candidate_price
+            latest_historical_price = _latest_historical_price_candidate(
+                context,
+                bucket=bucket,
+                values=values,
+                row=row,
+            )
+            latest_price = _safe_positive_number(latest_historical_price.get("unit_price"))
+            if latest_price > 0:
+                values[field] = latest_price
+                values["unit_price_source"] = "latest_historical_estimate"
+                values["unit_price_historical"] = True
+                values["unit_price_source_file"] = latest_historical_price.get("source_file")
+                values["unit_price_source_date"] = latest_historical_price.get("source_effective_at")
+                values["unit_price_source_item"] = latest_historical_price.get("item_name")
+                sources.append(
+                    {
+                        "source": "latest_historical_estimate",
+                        "field": field,
+                        "candidate_name": latest_historical_price.get("item_name"),
+                        "match_quality": latest_historical_price.get("match_quality"),
+                        "source_document_id": latest_historical_price.get("source_document_id"),
+                        "source_job_id": latest_historical_price.get("source_job_id"),
+                        "source_file": latest_historical_price.get("source_file"),
+                        "source_sharepoint_url": latest_historical_price.get("source_sharepoint_url"),
+                        "source_effective_at": latest_historical_price.get("source_effective_at"),
+                        "source_date_basis": latest_historical_price.get("source_date_basis"),
+                        "historical_observation_count": latest_historical_price.get(
+                            "historical_observation_count"
+                        ),
+                    }
+                )
+                latest_historical_price_rows_used += 1
+                continue
+            historical_price = _safe_positive_number(values.get("historical_unit_price"))
+            if historical_price <= 0:
+                continue
+            values[field] = historical_price
             sources.append(
                 {
-                    "source": price_candidate.get("source"),
+                    "source": "automatic_comparable_price_fallback",
                     "field": field,
-                    "candidate_name": price_candidate.get("candidate_name"),
-                    "lookup_table_id": price_candidate.get("lookup_table_id"),
-                    "workbook_sheet": price_candidate.get("workbook_sheet"),
-                    "workbook_row": price_candidate.get("workbook_row"),
+                    "candidate_name": values.get("selected_pricing_candidate")
+                    or values.get("resolved_template_option"),
                 }
             )
         if bucket == "foam":
@@ -740,6 +889,20 @@ def _apply_context_calculation_defaults(
                     if not _clean_string(reason).startswith("Included row is missing required calculation input(s):")
                 ]
         row["review_required"] = True
+        latest_price_sources = [
+            source for source in sources if source.get("source") == "latest_historical_estimate"
+        ]
+        if latest_price_sources:
+            latest_source = latest_price_sources[0]
+            source_file = _clean_string(latest_source.get("source_file")) or "a prior estimate"
+            source_date = _clean_string(latest_source.get("source_effective_at"))
+            price_reason = (
+                f"Unit price is a historical fallback from {source_file}"
+                f"{f' ({source_date[:10]})' if source_date else ''}; verify before quoting."
+            )
+            row["review_reasons"] = list(
+                dict.fromkeys([*(row.get("review_reasons") or []), price_reason])
+            )
         row["evidence"] = _merge_preference_evidence(row.get("evidence"), sources)
         rows[index] = row
         changed_count += len(sources)
@@ -774,7 +937,15 @@ def _apply_context_calculation_defaults(
         result.raw_response = {
             **(result.raw_response or {}),
             "context_calculation_defaults_applied": changed_count,
+            "latest_historical_price_rows_used": latest_historical_price_rows_used,
         }
+    if latest_historical_price_rows_used:
+        warning = (
+            f"Used the latest matching historical estimate unit price for "
+            f"{latest_historical_price_rows_used} review-marked workbook row(s)."
+        )
+        if warning not in (result.warnings or []):
+            result.warnings = [*(result.warnings or []), warning]
     if roofing_foam_fallback_used:
         warning = (
             "Roofing foam yield or price history was unavailable; used a review-marked workbook template fallback."
@@ -979,6 +1150,73 @@ def _trusted_context_price_candidate(
     if len(trusted) == 1:
         return trusted[0]
     return {}
+
+
+def _latest_historical_price_candidate(
+    context: dict[str, Any],
+    *,
+    bucket: str,
+    values: dict[str, Any],
+    row: dict[str, Any],
+) -> dict[str, Any]:
+    candidates = [
+        dict(candidate)
+        for candidate in context.get("_deterministic_latest_historical_unit_prices") or []
+        if isinstance(candidate, dict)
+        and _clean_string(candidate.get("template_bucket")).lower().replace(" ", "_").replace("-", "_")
+        == bucket
+        and _safe_positive_number(candidate.get("unit_price")) > 0
+    ]
+    if not candidates:
+        return {}
+
+    workbook_row = _safe_row_number(row.get("workbook_row") or row.get("row_number"))
+    row_candidates = [
+        candidate
+        for candidate in candidates
+        if _safe_row_number(candidate.get("workbook_row") or candidate.get("source_row")) == workbook_row
+    ]
+    selected_name = _clean_string(
+        values.get("selected_item_name")
+        or values.get("selected_pricing_candidate")
+        or values.get("resolved_template_option")
+        or row.get("selected_item_name")
+    )
+    selected_tokens = _historical_price_name_tokens(selected_name)
+    named_candidates = [
+        candidate
+        for candidate in row_candidates or candidates
+        if selected_tokens
+        and selected_tokens <= _historical_price_name_tokens(
+            candidate.get("item_name_normalized") or candidate.get("item_name")
+        )
+    ]
+    if named_candidates:
+        selected = max(named_candidates, key=_historical_price_recency_key)
+        selected["match_quality"] = "workbook_row_and_item" if selected in row_candidates else "bucket_and_item"
+        return selected
+    if row_candidates:
+        selected = max(row_candidates, key=_historical_price_recency_key)
+        selected["match_quality"] = "workbook_row_latest"
+        return selected
+    selected = max(candidates, key=_historical_price_recency_key)
+    selected["match_quality"] = "bucket_latest_review"
+    return selected
+
+
+def _historical_price_name_tokens(value: Any) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", _clean_string(value).lower())
+        if token not in {"new", "existing", "row", "roofing", "material", "materials"}
+    }
+
+
+def _historical_price_recency_key(candidate: dict[str, Any]) -> tuple[str, int]:
+    return (
+        _clean_string(candidate.get("source_effective_at")),
+        int(_safe_positive_number(candidate.get("historical_observation_count"))),
+    )
 
 
 def _formula_disable_reason_present(row: dict[str, Any]) -> bool:
@@ -1665,6 +1903,9 @@ def _estimator_data_signature(data: EstimatorData | None) -> str:
         "template_lookup_tables": _frame_signature(getattr(data, "template_lookup_tables", None)),
         "pricing": _frame_signature(getattr(data, "pricing", None)),
         "pricing_catalog": _frame_signature(getattr(data, "pricing_catalog", None)),
+        "latest_historical_unit_prices": _frame_signature(
+            getattr(data, "latest_historical_unit_prices", None)
+        ),
         "product_catalog": _frame_signature(getattr(data, "product_catalog", None)),
         "product_properties": _frame_signature(getattr(data, "product_properties", None)),
         "foam_yield_history": _frame_signature(getattr(data, "foam_yield_history", None)),
@@ -1713,6 +1954,7 @@ def _build_estimator_context_summary(data: EstimatorData | None, *, scope: dict[
     summary: dict[str, Any] = {
         "template_rows": _frame_len(data.template_rows),
         "pricing_rows": _frame_len(data.pricing),
+        "latest_historical_unit_price_rows": _frame_len(data.latest_historical_unit_prices),
         "product_rows": _frame_len(data.product_catalog),
         "decision_recommendation_rows": _frame_len(data.estimator_decision_recommendations),
         **_empty_chat_decision_context(scope),
@@ -1819,6 +2061,10 @@ def _build_estimator_context_summary(data: EstimatorData | None, *, scope: dict[
         else {}
     )
     summary["pricing_candidates_by_bucket"] = _pricing_candidates_by_bucket(data, template_type=template_type)
+    summary["_deterministic_latest_historical_unit_prices"] = _latest_historical_unit_price_records(
+        data,
+        template_type=template_type,
+    )
     summary["product_guidance_digest"] = _product_guidance_digest(data, template_type=template_type)
     summary["companion_relationships"] = _companion_relationships(data, template_type=template_type)
     summary["reference_job_decisions"] = _reference_job_decisions(data, scope=scope, template_type=template_type)
@@ -2717,6 +2963,55 @@ def _pricing_candidates_by_bucket(data: EstimatorData, *, template_type: str) ->
             if len(selected) >= 40:
                 break
     return selected
+
+
+def _latest_historical_unit_price_records(
+    data: EstimatorData,
+    *,
+    template_type: str,
+) -> list[dict[str, Any]]:
+    frame = data.latest_historical_unit_prices
+    if not isinstance(frame, pd.DataFrame) or frame.empty:
+        return []
+    filtered = _filter_template_frame(frame, template_type)
+    if filtered.empty:
+        return []
+    preferred = [
+        "template_type",
+        "template_bucket",
+        "template_section",
+        "line_item_kind",
+        "workbook_row",
+        "selector_code",
+        "item_name",
+        "item_name_normalized",
+        "unit",
+        "unit_price",
+        "source_document_id",
+        "source_job_id",
+        "source_file",
+        "source_sheet",
+        "source_row",
+        "source_sharepoint_url",
+        "source_modified_at",
+        "source_year",
+        "source_effective_at",
+        "source_date_basis",
+        "usage_evidence",
+        "historical_observation_count",
+    ]
+    available = [column for column in preferred if column in filtered.columns]
+    if not available:
+        return []
+    for column in ("template_bucket", "workbook_row", "source_effective_at"):
+        if column not in filtered.columns:
+            filtered[column] = ""
+    ordered = filtered.sort_values(
+        ["template_bucket", "workbook_row", "source_effective_at"],
+        ascending=[True, True, False],
+        na_position="last",
+    )
+    return _context_records(ordered, available, limit=500)
 
 
 def _template_lookup_pricing_candidates(
@@ -4332,6 +4627,11 @@ def _bounded_prompt_context(
     context: dict[str, Any],
     max_characters: int,
 ) -> dict[str, Any]:
+    context = {
+        key: value
+        for key, value in context.items()
+        if not str(key).startswith("_deterministic_")
+    }
     if max_characters <= 0:
         return {
             "_prompt_context_budget": {

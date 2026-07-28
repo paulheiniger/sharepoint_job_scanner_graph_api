@@ -209,6 +209,7 @@ def test_current_visual_scope_is_available_during_first_estimator_turn() -> None
                     "declared_total_area_sqft": 5136,
                 },
                 "linear_scopes": linear_scopes,
+                "normalized_estimator_notes": "24' Counter Flashing required.",
                 "confidence": 0.95,
             }
         },
@@ -217,6 +218,9 @@ def test_current_visual_scope_is_available_during_first_estimator_turn() -> None
     )
 
     assert updated["scope_state"]["linear_scopes"] == linear_scopes
+    assert updated["scope_state"]["annotated_scope_text"] == "24' Counter Flashing required."
+    assert updated["scope_state"]["canonical_linear_totals"]["counter_flashing"] == 24
+    assert updated["deterministic_scope_compiler"]["linear_totals"]["counter_flashing"] == 24
     assert updated["scope_state"]["estimated_sqft"] == 5136
     assert updated["site_address"] == "830 South 1st Street, Louisville, KY 40203"
 

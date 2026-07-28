@@ -630,6 +630,7 @@ def _scope_answer_key_text(scope: dict[str, Any]) -> str:
         "roof_condition",
         "access_complexity",
         "raw_input_notes",
+        "annotated_scope_text",
         "notes",
         "estimator_notes",
     )

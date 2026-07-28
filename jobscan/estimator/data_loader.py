@@ -154,6 +154,7 @@ ESTIMATOR_NUMERIC_COLUMNS = [
     "median_total_hours",
     "median_crew_size",
     "evidence_count",
+    "historical_observation_count",
     "job_count",
     "area_sqft",
     "hours_per_sqft",
@@ -219,6 +220,7 @@ def normalize_estimator_dataframe(df: pd.DataFrame | None) -> pd.DataFrame:
 def normalize_estimator_data(data: EstimatorData) -> EstimatorData:
     data.pricing_catalog = normalize_estimator_dataframe(data.pricing_catalog)
     data.pricing = normalize_estimator_dataframe(data.pricing)
+    data.latest_historical_unit_prices = normalize_estimator_dataframe(data.latest_historical_unit_prices)
     data.template_rows = normalize_estimator_dataframe(data.template_rows)
     data.line_items = normalize_estimator_dataframe(data.line_items)
     data.classified_line_items = normalize_estimator_dataframe(data.classified_line_items)
@@ -620,6 +622,23 @@ def load_estimator_data_from_database(database_url: str, *, load_profile: str = 
             else:
                 data.template_examples = _read_sql_dataframe(connection, f"SELECT * FROM {template_examples_relation}")
             data.source_files_used.append(f"database: {template_examples_relation}")
+
+        latest_historical_prices_relation = "analytics.estimator_latest_historical_unit_prices"
+        if relation_exists(connection, latest_historical_prices_relation):
+            data.latest_historical_unit_prices = _read_sql_dataframe(
+                connection,
+                f"""
+                SELECT *
+                FROM {latest_historical_prices_relation}
+                ORDER BY template_type, template_bucket, workbook_row, source_effective_at DESC
+                """,
+            )
+            data.source_files_used.append(f"database: {latest_historical_prices_relation}")
+        else:
+            data.warnings.append(
+                "Latest historical unit-price table is unavailable; run "
+                "db/refresh_estimator_latest_historical_unit_prices.sql."
+            )
 
         recommendation_relation = "analytics.estimator_decision_recommendations"
         if relation_exists(connection, recommendation_relation):

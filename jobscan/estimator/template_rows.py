@@ -1294,18 +1294,53 @@ def fetch_template_candidate_documents(
         "parser_version": PARSER_VERSION,
     }
     extension_filter = "AND LOWER(COALESCE(d.file_extension, '')) IN ('.xlsx', '.xlsm')" if xlsx_only else ""
-    only_unparsed_filter = (
-        """
-          AND NOT EXISTS (
-              SELECT 1
-              FROM estimate_template_rows t
-              WHERE t.document_id = c.document_id
-                AND t.parser_version = :parser_version
-          )
-        """
-        if only_unparsed
-        else ""
+    document_content_columns = {
+        str(column.get("name") or "")
+        for column in inspect(conn).get_columns("document_content")
+    }
+    template_row_columns = {
+        str(column.get("name") or "")
+        for column in inspect(conn).get_columns("estimate_template_rows")
+    }
+    can_detect_changed_content = (
+        "updated_at" in document_content_columns
+        and "updated_at" in template_row_columns
     )
+    parser_state_join = ""
+    only_unparsed_filter = ""
+    if only_unparsed:
+        if can_detect_changed_content:
+            parser_state_join = """
+            LEFT JOIN (
+                SELECT document_id, MAX(updated_at) AS parsed_at
+                FROM estimate_template_rows
+                WHERE parser_version = :parser_version
+                GROUP BY document_id
+            ) parser_state ON parser_state.document_id = c.document_id
+            """
+            if conn.dialect.name == "postgresql":
+                only_unparsed_filter = """
+                  AND (
+                      parser_state.document_id IS NULL
+                      OR c.updated_at > parser_state.parsed_at
+                  )
+                """
+            else:
+                only_unparsed_filter = """
+                  AND (
+                      parser_state.document_id IS NULL
+                      OR datetime(c.updated_at) > datetime(parser_state.parsed_at)
+                  )
+                """
+        else:
+            only_unparsed_filter = """
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM estimate_template_rows t
+                  WHERE t.document_id = c.document_id
+                    AND t.parser_version = :parser_version
+              )
+            """
     limit_sql = "LIMIT :limit_documents" if limit_documents is not None else ""
     statement = text(
         f"""
@@ -1315,6 +1350,7 @@ def fetch_template_candidate_documents(
             COUNT(*) AS rows_available
         FROM document_content c
         LEFT JOIN documents d ON d.document_id = c.document_id
+        {parser_state_join}
         WHERE LOWER(COALESCE(c.sheet_name, '')) = 'estimate'
           AND c.row_number IS NOT NULL
           AND c.text_content ~ '[A-Z]{{1,4}}[0-9]+:'
@@ -1331,18 +1367,7 @@ def fetch_template_candidate_documents(
         rows = conn.execute(statement, params).mappings().all()
     except Exception:
         sqlite_extension_filter = "AND LOWER(COALESCE(d.file_extension, '')) IN ('.xlsx', '.xlsm')" if xlsx_only else ""
-        sqlite_only_unparsed_filter = (
-            """
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM estimate_template_rows t
-                  WHERE t.document_id = c.document_id
-                    AND t.parser_version = :parser_version
-              )
-            """
-            if only_unparsed
-            else ""
-        )
+        sqlite_only_unparsed_filter = only_unparsed_filter
         sqlite_statement = text(
             f"""
             SELECT
@@ -1351,6 +1376,7 @@ def fetch_template_candidate_documents(
                 COUNT(*) AS rows_available
             FROM document_content c
             LEFT JOIN documents d ON d.document_id = c.document_id
+            {parser_state_join}
             WHERE LOWER(COALESCE(c.sheet_name, '')) = 'estimate'
               AND c.row_number IS NOT NULL
               AND c.text_content LIKE '%:%'

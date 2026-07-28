@@ -49,6 +49,9 @@ def test_normalize_estimator_dataframe_handles_database_style_columns() -> None:
 def test_normalize_estimator_data_keeps_pricing_and_classification_aliases() -> None:
     data = EstimatorData(
         pricing_catalog=pd.DataFrame([{"product_name": "Silicone", "price_per_gallon": "38", "is_current": True}]),
+        latest_historical_unit_prices=pd.DataFrame(
+            [{"template_bucket": "coating", "unit_price": "35", "historical_observation_count": "7"}]
+        ),
         template_rows=pd.DataFrame([{"template_bucket": "labor_prep", "crew_size": "bad"}]),
         line_item_classifications=pd.DataFrame([{"template_bucket": "coating", "estimated_cost": "1200"}]),
         estimator_memory=pd.DataFrame(
@@ -68,6 +71,8 @@ def test_normalize_estimator_data_keeps_pricing_and_classification_aliases() -> 
 
     assert normalized.pricing.iloc[0]["price_per_gallon"] == 38
     assert normalized.pricing_catalog.iloc[0]["price_per_gallon"] == 38
+    assert normalized.latest_historical_unit_prices.iloc[0]["unit_price"] == 35
+    assert normalized.latest_historical_unit_prices.iloc[0]["historical_observation_count"] == 7
     assert pd.isna(normalized.template_rows.iloc[0]["crew_size"])
     assert normalized.classified_line_items.iloc[0]["estimated_cost"] == 1200
     assert normalized.line_item_classifications.iloc[0]["estimated_cost"] == 1200

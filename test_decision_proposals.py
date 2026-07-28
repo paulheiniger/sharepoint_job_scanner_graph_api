@@ -8,9 +8,299 @@ from jobscan.estimator.decision_proposals import (
     DecisionProposal,
     apply_decision_proposals_to_workbench,
     build_decision_proposals,
+    canonicalize_structured_roofing_scope,
+    compile_deterministic_scope_proposals,
     merge_decision_proposals,
 )
 from jobscan.estimator.schemas import EstimatorData
+
+
+def grossman_structured_scope() -> dict:
+    return {
+        "template_type": "roofing",
+        "division": "Roofing",
+        "job_name": "Grossman Tuning",
+        "site_address": "830 South 1st Street, Louisville, KY 40203",
+        "raw_input_notes": (
+            "Approx. 5,136 sq.ft. total. Full removal down to wood decking. "
+            "Install 2 inch Resista ISO board and 1.5 inch coated foam roof. "
+            "Terra cotta coping to remain; seal seams with caulk. "
+            "24' Counter Flashing required."
+        ),
+        "area_scopes": [
+            {
+                "scope_id": "area_1",
+                "label": "Main Roof Area",
+                "scope_role": "exclusive_area",
+                "area_sqft": 3120,
+                "action": "Full removal down to wood decking",
+                "proposed_assembly": '2" Resista ISO board & 1.5" Coated Foam Roof',
+            },
+            {
+                "scope_id": "area_2",
+                "label": "Deteriorated Decking",
+                "scope_role": "nested_sub_scope",
+                "parent_scope_id": "area_1",
+                "area_sqft": 320,
+                "action": "Remove/replace deteriorated decking",
+            },
+            {
+                "scope_id": "area_3",
+                "label": "Secondary Roof Area",
+                "scope_role": "exclusive_area",
+                "area_sqft": 2016,
+                "proposed_assembly": 'New 1.5" Coated Foam over existing roof',
+            },
+        ],
+        "linear_scopes": [
+            {"item": "Edge Metal", "size": '3.5"', "linear_ft": 52},
+            {"item": "Gutter & Downspouts", "linear_ft": 52},
+            {"item": "Foam-Stop Edge Metal", "size": '2"', "linear_ft": 24},
+            {
+                "item": "Wood Nailer & Foam-Stop Edge Metal",
+                "size": '2x10 nailer; 3" foam stop',
+                "linear_ft": 52,
+            },
+        ],
+        "retain_existing": [
+            {
+                "item": "Terra Cotta Coping",
+                "action": "Remain",
+                "treatment": "seal seams (caulk)",
+            }
+        ],
+        "area_reconciliation": {
+            "declared_total_area_sqft": 5136,
+            "calculated_total_area_sqft": 5456,
+        },
+    }
+
+
+def grossman_estimator_data() -> EstimatorData:
+    answer_key = {
+        "schema_version": "reference_estimate_answer_key.v1",
+        "template_type": "roofing",
+        "job_context": {"area_sqft": 2200},
+        "decisions": [
+            {
+                "section": "roofing_foam_template_decisions",
+                "decision_id": "roofing_foam_row_19",
+                "template_bucket": "foam",
+                "workbook_row": "19",
+                "include": True,
+                "inputs": {
+                    "basis_sqft": 2200,
+                    "thickness_inches": 1.25,
+                    "yield_or_coverage": 2700,
+                    "unit_price": 2.05,
+                },
+            },
+            {
+                "section": "roofing_coating_template_decisions",
+                "decision_id": "roofing_coating_system_row_26",
+                "template_bucket": "coating",
+                "workbook_row": "26",
+                "include": True,
+                "inputs": {
+                    "basis_sqft": 2200,
+                    "gal_per_100_sqft": 1.52,
+                    "unit_price": 42,
+                },
+            },
+            {
+                "section": "roofing_labor_template_decisions",
+                "decision_id": "roofing_labor_prep_row_116",
+                "template_bucket": "labor_prep",
+                "workbook_row": "116",
+                "include": True,
+                "inputs": {
+                    "days": 0.5,
+                    "crew_size": 6,
+                    "daily_rate": 1894.2,
+                    "total_hours": 33,
+                },
+            },
+            {
+                "section": "roofing_labor_template_decisions",
+                "decision_id": "roofing_labor_base_row_122",
+                "template_bucket": "labor_base",
+                "workbook_row": "122",
+                "include": True,
+                "inputs": {
+                    "days": 1,
+                    "crew_size": 6,
+                    "daily_rate": 1894.2,
+                    "total_hours": 66,
+                },
+            },
+            {
+                "section": "roofing_equipment_template_decisions",
+                "decision_id": "roofing_generator_row_99",
+                "template_bucket": "generator",
+                "workbook_row": "99",
+                "include": True,
+                "inputs": {"estimated_units": 5, "unit_price": 40},
+            },
+        ],
+    }
+    return EstimatorData(
+        template_examples=pd.DataFrame(
+            [
+                {
+                    "example_id": "closer-recoat-without-foam-row",
+                    "job_id": "recoat-only",
+                    "job_name": "Closer Recoat",
+                    "source_file": "Estimate Closer Recoat.xlsx",
+                    "template_type": "roofing",
+                    "project_class": "coated foam roof",
+                    "material_packages_json": json.dumps(["foam", "coating"]),
+                    "area_sqft": 5136,
+                    "scope_summary": "Exact-size coated foam roof with board and caulk metadata.",
+                    "answer_key_json": json.dumps(
+                        {
+                            "schema_version": "reference_estimate_answer_key.v1",
+                            "template_type": "roofing",
+                            "job_context": {"area_sqft": 5136},
+                            "decisions": [
+                                {
+                                    "section": "roofing_coating_template_decisions",
+                                    "decision_id": "roofing_coating_system_row_26",
+                                    "template_bucket": "coating",
+                                    "workbook_row": "26",
+                                    "include": True,
+                                    "inputs": {
+                                        "basis_sqft": 5136,
+                                        "gal_per_100_sqft": 1,
+                                        "unit_price": 37,
+                                    },
+                                }
+                            ],
+                        }
+                    ),
+                },
+                {
+                    "example_id": "wet-reroof-repair",
+                    "job_id": "pearl-street",
+                    "job_name": "204 Pearl Street Wet RR + Repairs",
+                    "source_file": "Estimate 204 Pearl Street Wet RR + Repairs.xlsx",
+                    "template_type": "roofing",
+                    "project_class": "coated foam roof",
+                    "material_packages_json": json.dumps(["foam", "coating"]),
+                    "area_sqft": 2200,
+                    "scope_summary": "Tear-off, ISO, coated SPF roof, and repairs.",
+                    "answer_key_json": json.dumps(answer_key),
+                }
+            ]
+        ),
+        template_lookup_tables=pd.DataFrame(
+            [
+                {
+                    "lookup_table_id": "materials-board-2",
+                    "sheet_name": "Materials",
+                    "table_name": "board",
+                    "lookup_key": "Resista ISO",
+                    "row_number": 7,
+                    "values_json": json.dumps({"A": "Resista ISO", "B": '2" board', "C": 77.47}),
+                },
+                {
+                    "lookup_table_id": "materials-plates",
+                    "sheet_name": "Materials",
+                    "table_name": "plates",
+                    "lookup_key": "Carlisle Plates",
+                    "row_number": 19,
+                    "values_json": json.dumps({"A": "Carlisle Plates", "B": "1000 count", "C": 79.05}),
+                },
+            ]
+        ),
+        template_labor_options=pd.DataFrame(
+            [
+                {
+                    "template_labor_option_id": "people-rate-prep-crew-6",
+                    "template_type": "roofing",
+                    "template_name": "Current Roofing Template.xlsx",
+                    "source_type": "people_daily_rate_selector",
+                    "source_table": "people_daily_rate_selector",
+                    "row_number": 116,
+                    "labor_package": "labor_prep",
+                    "lookup_key": "6",
+                    "source_values_json": {
+                        "crew_size": 6,
+                        "daily_rate": 2100,
+                    },
+                }
+            ]
+        ),
+    )
+
+
+def test_grossman_scope_canonicalization_preserves_nested_area_and_linear_takeoff() -> None:
+    scope = canonicalize_structured_roofing_scope(grossman_structured_scope())
+
+    assert scope["canonical_area_total_sqft"] == 5136
+    assert scope["canonical_exclusive_area_sqft"] == 5136
+    assert scope["canonical_nested_area_sqft"] == 320
+    assert scope["foam_basis_sqft"] == 5136
+    assert scope["coating_basis_sqft"] == 5136
+    assert scope["board_basis_sqft"] == 3120
+    assert scope["decking_replacement_sqft"] == 320
+    assert scope["foam_thickness_inches"] == 1.5
+    assert scope["board_thickness_inches"] == 2
+    assert scope["canonical_linear_totals"] == {
+        "edge_metal": 128,
+        "gutter": 52,
+        "downspouts": 52,
+        "wood_nailer": 52,
+        "counter_flashing": 24,
+    }
+    assert any("nested scope" in conflict for conflict in scope["scope_conflicts"])
+
+
+def test_grossman_scope_compiler_scales_one_comparable_and_prefers_materials_price() -> None:
+    proposals = compile_deterministic_scope_proposals(
+        grossman_structured_scope(),
+        data=grossman_estimator_data(),
+    )
+    by_bucket = {proposal.template_bucket: proposal for proposal in proposals}
+
+    foam = by_bucket["foam"]
+    assert foam.proposed_values["basis_sqft"] == 5136
+    assert foam.proposed_values["thickness_inches"] == 1.5
+    assert foam.proposed_values["yield_or_coverage"] == 2700
+    assert foam.proposed_values["historical_unit_price"] == 2.05
+    assert foam.source == "deterministic_scope_compiler"
+    assert "automatic_comparable" in foam.evidence
+    assert foam.evidence["automatic_comparable"][0]["job_id"] == "pearl-street"
+
+    coating = by_bucket["coating"]
+    assert coating.proposed_values["basis_sqft"] == 5136
+    assert coating.proposed_values["gal_per_100_sqft"] == 1.52
+
+    board = by_bucket["board_stock"]
+    assert board.proposed_values["basis_sqft"] == 3120
+    assert board.proposed_values["price_per_square"] == 77.47
+    assert board.proposed_values["selected_pricing_candidate"].startswith("Resista ISO")
+
+    plates = by_bucket["plates"]
+    assert plates.proposed_values["board_area_sqft"] == 3120
+    assert plates.proposed_values["unit_price_per_thousand"] == 79.05
+    assert by_bucket["fasteners"].proposed_values["scope_status"] == "recognized_awaiting_price"
+
+    assert by_bucket["edge_metal"].proposed_values["linear_ft"] == 128
+    assert by_bucket["gutter"].proposed_values["linear_ft"] == 52
+    assert by_bucket["downspouts"].proposed_values["linear_ft"] == 52
+    assert by_bucket["wood_nailer"].proposed_values["linear_ft"] == 52
+    assert by_bucket["counter_flashing"].proposed_values["linear_ft"] == 24
+    assert by_bucket["dumpster"].proposed_values["basis_sqft"] == 3120
+
+    assert by_bucket["labor_prep"].proposed_values["total_hours"] == 77.0
+    assert by_bucket["labor_prep"].proposed_values["daily_rate"] == 2100
+    assert by_bucket["labor_prep"].proposed_values["historical_daily_rate"] == 1894.2
+    assert by_bucket["labor_prep"].evidence["current_people_rate"][0][
+        "template_labor_option_id"
+    ] == "people-rate-prep-crew-6"
+    assert by_bucket["labor_base"].proposed_values["total_hours"] == 154.1
+    assert by_bucket["labor_base"].proposed_values["daily_rate"] == 1894.2
+    assert by_bucket["generator"].proposed_values["days"] == 12
 
 
 def test_note_triggered_scope_rules_do_not_create_inclusion_proposals_by_default() -> None:

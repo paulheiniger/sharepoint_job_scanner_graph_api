@@ -20729,6 +20729,7 @@ def estimator_chat_decision_change_rows(preferences: Any) -> list[dict[str, Any]
         } or workbook_row in {"95", "97", "99", "100", "136", "138", "141", "144"}
         direct_field_names = {
             "basis_sqft",
+            "board_area_sqft",
             "thickness_inches",
             "debris_thickness_inches",
             "tearout_thickness_inches",
@@ -20736,6 +20737,8 @@ def estimator_chat_decision_change_rows(preferences: Any) -> list[dict[str, Any]
             "foam_thickness_inches",
             "gal_per_100_sqft",
             "unit_price",
+            "price_per_square",
+            "unit_price_per_thousand",
             "estimated_units",
             "linear_ft",
             "days",
@@ -20786,8 +20789,15 @@ def estimator_chat_decision_change_rows(preferences: Any) -> list[dict[str, Any]
             f"row {item.get('workbook_row') or item.get('row_number')}" if item.get("workbook_row") or item.get("row_number") else "",
         ]
         include_value = item.get("include")
+        scope_status = str(
+            values.get("scope_status")
+            or item.get("scope_status")
+            or ""
+        ).strip().lower()
         action = "update"
-        if include_value is True:
+        if scope_status == "recognized_awaiting_price":
+            action = "recognized, awaiting price"
+        elif include_value is True:
             action = "include"
         elif include_value is False:
             action = "remove"
@@ -22370,6 +22380,12 @@ def render_staged_estimate_state(
         )
         with st.expander("Estimating plan", expanded=True):
             st.json(state.get("estimating_plan") or {})
+        with st.expander("Deterministic scope compiler", expanded=True):
+            compiler_audit = state.get("deterministic_scope_compiler") or {}
+            if compiler_audit:
+                st.json(compiler_audit)
+            else:
+                st.caption("No deterministic scope compiler audit is available for this run.")
         with st.expander("Workbook readiness", expanded=True):
             st.json(readiness)
         with st.expander("Uploaded visual evidence", expanded=False):

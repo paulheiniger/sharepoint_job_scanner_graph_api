@@ -46,6 +46,7 @@ DOCUMENT_PROGRESS_EVERY="${DOCUMENT_PROGRESS_EVERY:-100}"
 MAX_DOCUMENT_FAILURES="${MAX_DOCUMENT_FAILURES:-200}"
 
 RUN_DOCUMENT_EXTRACTION="${RUN_DOCUMENT_EXTRACTION:-1}"
+RUN_ESTIMATE_TEMPLATE_ROW_REFRESH="${RUN_ESTIMATE_TEMPLATE_ROW_REFRESH:-1}"
 RUN_SQL_REFRESHES="${RUN_SQL_REFRESHES:-1}"
 RUN_SHAREPOINT_JOB_INDEX_SYNC="${RUN_SHAREPOINT_JOB_INDEX_SYNC:-1}"
 RUN_DOCUMENT_STATUS="${RUN_DOCUMENT_STATUS:-1}"
@@ -147,9 +148,18 @@ if [[ "$RUN_DOCUMENT_EXTRACTION" == "1" ]]; then
       --database-url "$DATABASE_URL_EFFECTIVE"
 fi
 
+if [[ "$RUN_ESTIMATE_TEMPLATE_ROW_REFRESH" == "1" ]]; then
+  run_step "Parse new or changed estimate workbooks into template rows" \
+    "$PYTHON_BIN" -m jobscan.estimator.template_rows \
+      --parse-existing \
+      --only-unparsed \
+      --database-url "$DATABASE_URL_EFFECTIVE"
+fi
+
 if [[ "$RUN_SQL_REFRESHES" == "1" ]]; then
   run_step "Ensure job tracking material fields" run_sql_file "db/add_job_tracking_foam_fields.sql"
   run_step "Ensure daily production tables" run_sql_file "db/add_daily_production_entries.sql"
+  run_step "Refresh latest historical estimator unit prices" run_sql_file "db/refresh_estimator_latest_historical_unit_prices.sql"
   run_step "Refresh dashboard views" run_sql_file "db/dashboard_views.sql"
   run_step "Refresh job document signals" run_sql_file "db/refresh_job_document_signals.sql"
   run_step "Refresh job board static snapshot" run_sql_file "db/refresh_job_board_static_snapshot.sql"

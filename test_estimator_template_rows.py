@@ -47,7 +47,8 @@ def create_sqlite_schema(engine) -> None:
                     sheet_name TEXT,
                     row_number INTEGER,
                     cell_range TEXT,
-                    text_content TEXT
+                    text_content TEXT,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
@@ -872,6 +873,70 @@ def test_parse_existing_only_unparsed_skips_current_parser_rows() -> None:
             text("SELECT DISTINCT document_id FROM estimate_template_rows ORDER BY document_id")
         ).scalars().all()
     assert parsed_documents == ["DOC1", "DOC2"]
+
+
+def test_parse_existing_only_unparsed_reparses_changed_document_content() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    create_sqlite_schema(engine)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO documents (document_id, job_id, file_name, file_extension, document_type)
+                VALUES ('DOC1', 'JOB1', 'Estimate Changed.xlsx', '.xlsx', 'estimate')
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO document_content (
+                    content_id, document_id, job_id, sheet_name, row_number,
+                    cell_range, text_content, updated_at
+                )
+                VALUES (
+                    'CONTENT1', 'DOC1', 'JOB1', 'Estimate', 26, 'A26:H26',
+                    'A26: 11 | B26: Silicone | C26: 10 | E26: 44 | H26: 440',
+                    '2026-07-20 12:00:00'
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO estimate_template_rows (
+                    template_row_id, document_id, job_id, sheet_name, row_number,
+                    cell_range, template_bucket, line_item_kind, needs_review,
+                    parser_version, updated_at
+                )
+                VALUES (
+                    'existing', 'DOC1', 'JOB1', 'Estimate', 26, 'A26:H26',
+                    'coating', 'material', false, :parser_version,
+                    '2026-07-19 12:00:00'
+                )
+                """
+            ),
+            {"parser_version": tr.PARSER_VERSION},
+        )
+
+    first = tr.parse_existing_document_content(engine, only_unparsed=True)
+    second = tr.parse_existing_document_content(engine, only_unparsed=True)
+
+    assert first["documents_considered"] == 1
+    assert first["rows_upserted"] == 1
+    assert second["documents_considered"] == 0
+    with engine.connect() as conn:
+        unit_price = conn.execute(
+            text(
+                """
+                SELECT unit_price
+                FROM estimate_template_rows
+                WHERE document_id = 'DOC1' AND template_row_id <> 'existing'
+                """
+            )
+        ).scalar_one()
+    assert unit_price == 44
 
 
 def test_unused_placeholder_adder_deletes_stale_template_row() -> None:

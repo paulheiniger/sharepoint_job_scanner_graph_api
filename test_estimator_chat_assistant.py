@@ -970,6 +970,146 @@ def test_materials_lookup_price_reenables_formula_ready_iso_board_row() -> None:
     assert board["evidence"][0]["workbook_sheet"] == "Materials"
 
 
+def test_latest_historical_price_reenables_unpriced_explicit_row_and_keeps_provenance() -> None:
+    data = EstimatorData(
+        latest_historical_unit_prices=pd.DataFrame(
+            [
+                {
+                    "template_type": "roofing",
+                    "template_bucket": "gutter",
+                    "workbook_row": 84,
+                    "item_name": "New Gutter",
+                    "item_name_normalized": "new gutter",
+                    "unit": "lf",
+                    "unit_price": 18.5,
+                    "source_document_id": "doc-gutter",
+                    "source_job_id": "job-gutter",
+                    "source_file": "Estimate Roofing - Recent Gutter Job.xlsx",
+                    "source_sharepoint_url": "https://example.invalid/recent-gutter-job",
+                    "source_effective_at": "2026-07-20T15:30:00+00:00",
+                    "source_date_basis": "document_modified_at",
+                    "historical_observation_count": 9,
+                }
+            ]
+        )
+    )
+
+    seen_payload: dict = {}
+
+    def provider(messages, _model):
+        seen_payload.update(json.loads(messages[1]["content"]))
+        return {
+            "assistant_message": "Drafted gutter scope.",
+            "estimator_notes": "Install 52 linear feet of gutter.",
+            "scope_overrides": {"template_type": "roofing"},
+            "workbook_decision_preferences": [
+                {
+                    "decision_id": "roofing_gutter_row_84",
+                    "section": "roofing_detail_quantity_template_decisions",
+                    "template_bucket": "gutter",
+                    "workbook_row": "84",
+                    "include": False,
+                    "review_required": True,
+                    "proposed_values": {"linear_ft": 52},
+                    "review_reasons": [
+                        "Included row is missing required calculation input(s): unit_price"
+                    ],
+                }
+            ],
+            "historical_comparison": [],
+            "estimating_plan": {},
+            "assumption_details": [],
+            "rejected_precedents": [],
+            "missing_questions": [],
+            "assumptions": [],
+            "warnings": [],
+            "confidence": 0.85,
+        }
+
+    result = run_estimator_chat_turn(
+        [{"role": "user", "content": "Install 52 linear feet of new gutter."}],
+        data=data,
+        template_type_hint="roofing",
+        provider=provider,
+        model="test-model",
+    )
+
+    gutter = next(
+        row for row in result.workbook_decision_preferences if row["decision_id"] == "roofing_gutter_row_84"
+    )
+    assert gutter["include"] is True
+    assert gutter["proposed_values"]["unit_price"] == 18.5
+    assert gutter["proposed_values"]["unit_price_source"] == "latest_historical_estimate"
+    assert gutter["proposed_values"]["unit_price_historical"] is True
+    assert gutter["proposed_values"]["unit_price_source_file"] == "Estimate Roofing - Recent Gutter Job.xlsx"
+    assert gutter["evidence"][0]["source_document_id"] == "doc-gutter"
+    assert any("verify before quoting" in reason for reason in gutter["review_reasons"])
+    assert result.raw_response["latest_historical_price_rows_used"] == 1
+    assert "_deterministic_latest_historical_unit_prices" not in seen_payload["estimator_context"]
+
+
+def test_current_materials_price_precedes_latest_historical_price() -> None:
+    data = EstimatorData(
+        template_lookup_tables=pd.DataFrame(
+            [
+                {
+                    "lookup_table_id": "gutter-current",
+                    "template_type": "roofing",
+                    "sheet_name": "Materials",
+                    "table_name": "solvents",
+                    "row_number": 12,
+                    "lookup_key": "Gutter",
+                    "values_json": '{"A": "Gutter", "C": 21.25}',
+                }
+            ]
+        ),
+        pricing_catalog=pd.DataFrame(
+            [{"category": "Gutter", "product_name": "New Gutter", "unit_price": 22.0}]
+        ),
+        latest_historical_unit_prices=pd.DataFrame(
+            [
+                {
+                    "template_type": "roofing",
+                    "template_bucket": "gutter",
+                    "workbook_row": 84,
+                    "item_name": "New Gutter",
+                    "unit_price": 18.5,
+                    "source_effective_at": "2026-07-20T15:30:00+00:00",
+                }
+            ]
+        ),
+    )
+
+    result = run_estimator_chat_turn(
+        [{"role": "user", "content": "Install 52 linear feet of new gutter."}],
+        data=data,
+        template_type_hint="roofing",
+        provider=lambda _messages, _model: {
+            "assistant_message": "Drafted gutter scope.",
+            "estimator_notes": "Install gutter.",
+            "scope_overrides": {"template_type": "roofing"},
+            "workbook_decision_preferences": [
+                {
+                    "decision_id": "roofing_gutter_row_84",
+                    "template_bucket": "gutter",
+                    "workbook_row": "84",
+                    "include": True,
+                    "proposed_values": {"linear_ft": 52},
+                }
+            ],
+            "missing_questions": [],
+            "confidence": 0.8,
+        },
+        model="test-model",
+    )
+
+    gutter = next(
+        row for row in result.workbook_decision_preferences if row["decision_id"] == "roofing_gutter_row_84"
+    )
+    assert gutter["proposed_values"]["unit_price"] == 22.0
+    assert "unit_price_historical" not in gutter["proposed_values"]
+
+
 def test_failed_ai_chat_does_not_promote_historical_rows_to_workbook_changes() -> None:
     context_data = EstimatorData(
         template_examples=pd.DataFrame(
@@ -1028,6 +1168,157 @@ def test_failed_ai_chat_does_not_promote_historical_rows_to_workbook_changes() -
     assert result.scope_overrides["estimated_sqft"] == 5136
     assert result.workbook_decision_preferences == []
     assert any("AI estimator chat failed" in warning for warning in result.warnings)
+
+
+def test_failed_ai_chat_compiles_structured_roof_scope_and_scales_comparable() -> None:
+    answer_key = {
+        "schema_version": "reference_estimate_answer_key.v1",
+        "template_type": "roofing",
+        "job_context": {"area_sqft": 2200},
+        "decisions": [
+            {
+                "section": "roofing_foam_template_decisions",
+                "decision_id": "roofing_foam_row_19",
+                "template_bucket": "foam",
+                "workbook_row": "19",
+                "include": True,
+                "inputs": {
+                    "basis_sqft": 2200,
+                    "thickness_inches": 1.25,
+                    "yield_or_coverage": 2700,
+                    "unit_price": 2.05,
+                },
+            },
+            {
+                "section": "roofing_coating_template_decisions",
+                "decision_id": "roofing_coating_system_row_26",
+                "template_bucket": "coating",
+                "workbook_row": "26",
+                "include": True,
+                "inputs": {
+                    "basis_sqft": 2200,
+                    "gal_per_100_sqft": 1.52,
+                    "unit_price": 42,
+                },
+            },
+            {
+                "section": "roofing_labor_template_decisions",
+                "decision_id": "roofing_labor_base_row_122",
+                "template_bucket": "labor_base",
+                "workbook_row": "122",
+                "include": True,
+                "inputs": {
+                    "days": 1,
+                    "crew_size": 6,
+                    "daily_rate": 1894.2,
+                    "total_hours": 66,
+                },
+            },
+        ],
+    }
+    data = EstimatorData(
+        template_examples=pd.DataFrame(
+            [
+                {
+                    "example_id": "wet-reroof-repair",
+                    "job_id": "pearl-street",
+                    "job_name": "204 Pearl Street Wet RR + Repairs",
+                    "source_file": "Estimate 204 Pearl Street Wet RR + Repairs.xlsx",
+                    "template_type": "roofing",
+                    "project_class": "coated foam roof",
+                    "material_packages_json": json.dumps(["foam", "coating"]),
+                    "area_sqft": 2200,
+                    "scope_summary": "Tear-off, ISO, coated SPF roof, and repairs.",
+                    "answer_key_json": json.dumps(answer_key),
+                }
+            ]
+        ),
+        template_lookup_tables=pd.DataFrame(
+            [
+                {
+                    "lookup_table_id": "materials-board-2",
+                    "sheet_name": "Materials",
+                    "table_name": "board",
+                    "lookup_key": "Resista ISO",
+                    "row_number": 7,
+                    "values_json": json.dumps({"A": "Resista ISO", "B": '2" board', "C": 77.47}),
+                }
+            ]
+        ),
+    )
+    scope = {
+        "template_type": "roofing",
+        "division": "Roofing",
+        "job_name": "Grossman Tuning",
+        "site_address": "830 South 1st Street, Louisville, KY 40203",
+        "raw_input_notes": (
+            "Approx. 5,136 sq.ft. total. Full removal down to wood decking. "
+            "Install 2 inch Resista ISO board and 1.5 inch coated foam roof. "
+            "Terra cotta coping to remain; seal seams with caulk."
+        ),
+        "area_scopes": [
+            {
+                "scope_id": "area_1",
+                "scope_role": "exclusive_area",
+                "area_sqft": 3120,
+                "action": "Full removal down to wood decking",
+                "proposed_assembly": '2" Resista ISO board & 1.5" Coated Foam Roof',
+            },
+            {
+                "scope_id": "area_2",
+                "scope_role": "nested_sub_scope",
+                "parent_scope_id": "area_1",
+                "area_sqft": 320,
+                "action": "Remove/replace deteriorated decking",
+            },
+            {
+                "scope_id": "area_3",
+                "scope_role": "exclusive_area",
+                "area_sqft": 2016,
+                "proposed_assembly": 'New 1.5" Coated Foam over existing roof',
+            },
+        ],
+        "linear_scopes": [
+            {"item": "Edge Metal", "linear_ft": 52},
+            {"item": "Gutter & Downspouts", "linear_ft": 52},
+            {"item": "Foam-Stop Edge Metal", "linear_ft": 24},
+        ],
+        "area_reconciliation": {
+            "declared_total_area_sqft": 5136,
+            "calculated_total_area_sqft": 5456,
+        },
+    }
+
+    def failing_provider(messages, model):
+        raise json.JSONDecodeError("bad estimator response", "{}", 1)
+
+    result = run_estimator_chat_turn(
+        [{"role": "user", "content": "Build the estimate from the uploaded annotated takeoff."}],
+        data=data,
+        template_type_hint="roofing",
+        existing_scope=scope,
+        provider=failing_provider,
+        model="test-model",
+    )
+
+    by_bucket = {
+        row["template_bucket"]: row
+        for row in result.workbook_decision_preferences
+    }
+    assert result.source == "deterministic_fallback"
+    assert result.scope_overrides["canonical_area_total_sqft"] == 5136
+    assert result.scope_overrides["canonical_nested_area_sqft"] == 320
+    assert by_bucket["foam"]["include"] is True
+    assert by_bucket["foam"]["proposed_values"]["basis_sqft"] == 5136
+    assert by_bucket["coating"]["include"] is True
+    assert by_bucket["board_stock"]["proposed_values"]["basis_sqft"] == 3120
+    assert by_bucket["board_stock"]["proposed_values"]["price_per_square"] == 77.47
+    assert by_bucket["edge_metal"]["proposed_values"]["linear_ft"] == 76
+    assert by_bucket["gutter"]["proposed_values"]["linear_ft"] == 52
+    assert by_bucket["downspouts"]["proposed_values"]["linear_ft"] == 52
+    assert by_bucket["labor_base"]["proposed_values"]["total_hours"] == 154.1
+    assert result.raw_response["deterministic_scope_compiler"]["proposal_count"] >= 8
+    assert any("canonical total excludes it" in warning for warning in result.warnings)
 
 
 def test_estimator_chat_detects_answer_key_modes() -> None:

@@ -2233,6 +2233,39 @@ def test_estimator_chat_decision_change_rows_hide_historical_evidence_rows() -> 
     ) == [{"source": "ai_chat", "decision_id": "roofing_coating_system_row_27"}]
 
 
+def test_estimator_chat_decision_change_rows_distinguish_recognized_unpriced_scope() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    rows = app.estimator_chat_decision_change_rows(
+        [
+            {
+                "decision_id": "roofing_edge_metal_row_82",
+                "template_bucket": "edge_metal",
+                "workbook_row": "82",
+                "include": False,
+                "proposed_values": {
+                    "linear_ft": 128,
+                    "scope_status": "recognized_awaiting_price",
+                },
+                "review_reasons": ["Scope is recognized; a current price is still required."],
+            },
+            {
+                "decision_id": "roofing_free_adder_wood_nailer",
+                "template_bucket": "wood_nailer",
+                "include": True,
+                "proposed_values": {
+                    "linear_ft": 52,
+                    "scope_status": "recognized_awaiting_price",
+                },
+            },
+        ]
+    )
+
+    assert rows[0]["action"] == "recognized, awaiting price"
+    assert rows[0]["field_changes"] == "linear_ft=128"
+    assert rows[1]["action"] == "recognized, awaiting price"
+
+
 def test_estimator_chat_decision_change_rows_sanitize_alias_only_logistics() -> None:
     app = importlib.import_module("dashboard.app")
 

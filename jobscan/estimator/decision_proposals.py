@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable
@@ -15,6 +16,8 @@ SOURCE_PRECEDENCE = {
     "historical_answer_key_context": 32,
     "historical_companion": 35,
     "deterministic_rule": 40,
+    "automatic_comparable": 44,
+    "deterministic_scope_compiler": 46,
     "reference_project": 45,
     "chat_estimator": 48,
     "reference_template_summary": 49,
@@ -470,14 +473,814 @@ def _merge_evidence(left: dict[str, Any], right: dict[str, Any]) -> dict[str, li
 
 def build_decision_proposals(scope: dict[str, Any], recommendation: Any = None, data: Any = None) -> list[dict[str, Any]]:
     template_type = "insulation" if _is_insulation_scope(scope) else "roofing"
+    scope = canonicalize_structured_roofing_scope(scope) if template_type == "roofing" else scope
     notes = _note_text(scope)
     proposals: list[DecisionProposal] = []
+    proposals.extend(compile_deterministic_scope_proposals(scope, data=data))
     proposals.extend(_named_reference_answer_key_proposals(scope, data=data, template_type=template_type, notes=notes))
     proposals.extend(_reference_project_proposals(scope, data=data, template_type=template_type, notes=notes))
     proposals.extend(_photo_scope_proposals(template_type, scope))
     proposals.extend(_chat_estimator_proposals(template_type, scope))
     proposals.extend(_ai_scope_proposals(template_type, _ai_scope_debug(recommendation)))
     return merge_decision_proposals(proposals)
+
+
+def canonicalize_structured_roofing_scope(scope: dict[str, Any]) -> dict[str, Any]:
+    """Normalize explicit area/linear takeoff without reparsing it through AI."""
+
+    normalized = dict(scope or {})
+    if _is_insulation_scope(normalized):
+        return normalized
+    area_scopes = [dict(row) for row in normalized.get("area_scopes") or [] if isinstance(row, dict)]
+    linear_scopes = [dict(row) for row in normalized.get("linear_scopes") or [] if isinstance(row, dict)]
+    conflicts = [str(value) for value in normalized.get("scope_conflicts") or [] if str(value).strip()]
+    exclusive_total = 0.0
+    nested_total = 0.0
+    foam_area = 0.0
+    coating_area = 0.0
+    board_area = 0.0
+    decking_area = 0.0
+    foam_thicknesses: list[float] = []
+    board_thicknesses: list[float] = []
+    area_audit: list[dict[str, Any]] = []
+    for index, row in enumerate(area_scopes, start=1):
+        area = _safe_number(
+            row.get("area_sqft") or row.get("basis_sqft") or row.get("estimated_sqft"),
+            0.0,
+        )
+        role = _norm(row.get("scope_role") or row.get("role"))
+        is_nested = role in {"nested sub scope", "nested", "deduction"} or bool(row.get("parent_scope_id"))
+        text = " ".join(
+            str(row.get(key) or "")
+            for key in (
+                "label",
+                "action",
+                "existing_system",
+                "proposed_assembly",
+                "treatment",
+                "evidence_text",
+            )
+        )
+        text_key = _norm(text)
+        if is_nested:
+            nested_total += area
+        else:
+            exclusive_total += area
+            if "foam" in text_key:
+                foam_area += area
+            if any(token in text_key for token in ("coated foam", "coating", "coat")):
+                coating_area += area
+            if any(token in text_key for token in ("iso board", "resista iso", "cover board")):
+                board_area += area
+        if any(token in text_key for token in ("deteriorated decking", "replace decking", "deck replacement")):
+            decking_area += _safe_number(row.get("decking_replacement_sqft"), 0.0) or area
+        foam_thickness = _material_thickness(text, ("coated foam", "foam roof", "foam"))
+        board_thickness = _material_thickness(text, ("resista iso", "iso board", "iso"))
+        if foam_thickness > 0:
+            foam_thicknesses.append(foam_thickness)
+        if board_thickness > 0:
+            board_thicknesses.append(board_thickness)
+        area_audit.append(
+            {
+                "scope_id": row.get("scope_id") or f"area_{index}",
+                "area_sqft": area,
+                "scope_role": role or ("nested_sub_scope" if is_nested else "exclusive_area"),
+                "included_in_total": not is_nested,
+                "scope_text": text.strip(),
+            }
+        )
+
+    reconciliation = (
+        normalized.get("area_reconciliation")
+        if isinstance(normalized.get("area_reconciliation"), dict)
+        else {}
+    )
+    declared_total = _first_positive_value(
+        reconciliation,
+        "declared_total_area_sqft",
+        "declared_total",
+        "declared_area_sqft",
+    ) or _first_positive_value(
+        normalized,
+        "declared_total_area_sqft",
+        "estimated_sqft",
+        "net_sqft",
+        "area_sqft",
+    )
+    source_calculated_total = _first_positive_value(
+        reconciliation,
+        "calculated_total_area_sqft",
+        "calculated_total",
+        "calculated_area_sqft",
+    )
+    if exclusive_total > 0 and declared_total > 0 and abs(exclusive_total - declared_total) > 1.0:
+        conflicts.append(
+            f"Exclusive area scopes total {exclusive_total:g} sq ft but the declared total is {declared_total:g} sq ft."
+        )
+    if (
+        source_calculated_total > 0
+        and exclusive_total > 0
+        and abs(source_calculated_total - exclusive_total) > 1.0
+        and abs(source_calculated_total - (exclusive_total + nested_total)) <= 1.0
+    ):
+        conflicts.append(
+            f"Source reconciliation added {nested_total:g} sq ft of nested scope; canonical total excludes it."
+        )
+    canonical_total = declared_total or exclusive_total
+    if exclusive_total > 0 and (declared_total <= 0 or abs(exclusive_total - declared_total) <= 1.0):
+        canonical_total = exclusive_total
+    if canonical_total > 0:
+        normalized["estimated_sqft"] = round(canonical_total, 3)
+        normalized["net_sqft"] = round(canonical_total, 3)
+        normalized["area_sqft"] = round(canonical_total, 3)
+    linear_totals: dict[str, float] = {}
+    linear_breakdown: dict[str, list[dict[str, Any]]] = {}
+    for index, row in enumerate(linear_scopes, start=1):
+        linear_ft = _safe_number(
+            row.get("linear_ft") or row.get("lineal_ft") or row.get("length_ft"),
+            0.0,
+        )
+        if linear_ft <= 0:
+            continue
+        text = _norm(
+            " ".join(
+                str(row.get(key) or "")
+                for key in ("item", "action", "size", "treatment", "evidence_text")
+            )
+        )
+        buckets: list[str] = []
+        if any(token in text for token in ("edge metal", "foam stop", "foamstop")):
+            buckets.append("edge_metal")
+        if "gutter" in text:
+            buckets.append("gutter")
+        if "downspout" in text:
+            buckets.append("downspouts")
+        if "wood nailer" in text or "nailer" in text:
+            buckets.append("wood_nailer")
+        if "counter flashing" in text:
+            buckets.append("counter_flashing")
+        for bucket in buckets:
+            linear_totals[bucket] = linear_totals.get(bucket, 0.0) + linear_ft
+            linear_breakdown.setdefault(bucket, []).append(
+                {
+                    "linear_scope_index": index,
+                    "item": row.get("item"),
+                    "size": row.get("size"),
+                    "linear_ft": linear_ft,
+                    "evidence_text": row.get("evidence_text"),
+                }
+            )
+    notes = _note_text(normalized)
+    for bucket, terms in (
+        ("wood_nailer", ("wood nailer",)),
+        ("counter_flashing", ("counter flashing",)),
+    ):
+        if linear_totals.get(bucket, 0.0) > 0:
+            continue
+        linear_ft = _explicit_linear_measurement(notes, terms)
+        if linear_ft <= 0:
+            continue
+        linear_totals[bucket] = linear_ft
+        linear_breakdown.setdefault(bucket, []).append(
+            {
+                "linear_scope_index": None,
+                "item": bucket.replace("_", " ").title(),
+                "size": "",
+                "linear_ft": linear_ft,
+                "evidence_text": "Recovered from explicit annotated-note measurement.",
+            }
+        )
+
+    normalized.update(
+        {
+            "canonical_scope_version": "roofing_scope.v1",
+            "canonical_area_total_sqft": round(canonical_total, 3) if canonical_total > 0 else 0.0,
+            "canonical_exclusive_area_sqft": round(exclusive_total, 3),
+            "canonical_nested_area_sqft": round(nested_total, 3),
+            "foam_basis_sqft": round(foam_area, 3) if foam_area > 0 else 0.0,
+            "coating_basis_sqft": round(coating_area, 3)
+            if coating_area > 0
+            else 0.0,
+            "board_basis_sqft": round(board_area, 3),
+            "decking_replacement_sqft": round(decking_area, 3),
+            "foam_thickness_inches": _single_or_max(foam_thicknesses)
+            or _safe_number(normalized.get("foam_thickness_inches"), 0.0),
+            "board_thickness_inches": _single_or_max(board_thicknesses)
+            or _safe_number(normalized.get("board_thickness_inches"), 0.0),
+            "canonical_linear_totals": {key: round(value, 3) for key, value in linear_totals.items()},
+            "canonical_linear_breakdown": linear_breakdown,
+            "canonical_area_audit": area_audit,
+            "scope_conflicts": list(dict.fromkeys(conflicts)),
+        }
+    )
+    return normalized
+
+
+def compile_deterministic_scope_proposals(
+    scope: dict[str, Any],
+    *,
+    data: Any = None,
+) -> list[DecisionProposal]:
+    """Compile explicit scope and one matched answer key into workbook decisions."""
+
+    if _is_insulation_scope(scope):
+        return []
+    canonical = canonicalize_structured_roofing_scope(scope)
+    explicit = _structured_roofing_scope_proposals(canonical, data=data)
+    comparable = _automatic_comparable_answer_key_proposals(canonical, data=data)
+    return [
+        DecisionProposal(**row)
+        for row in merge_decision_proposals([*comparable, *explicit])
+    ]
+
+
+def _structured_roofing_scope_proposals(
+    scope: dict[str, Any],
+    *,
+    data: Any = None,
+) -> list[DecisionProposal]:
+    proposals: list[DecisionProposal] = []
+    total_area = _safe_number(scope.get("canonical_area_total_sqft"), 0.0)
+    foam_area = _safe_number(scope.get("foam_basis_sqft"), 0.0)
+    coating_area = _safe_number(scope.get("coating_basis_sqft"), 0.0)
+    board_area = _safe_number(scope.get("board_basis_sqft"), 0.0)
+    foam_thickness = _safe_number(scope.get("foam_thickness_inches"), 0.0)
+    board_thickness = _safe_number(scope.get("board_thickness_inches"), 0.0)
+    notes = _note_text(scope)
+    if foam_area > 0 and ("foam" in _norm(notes) or any("foam" in _norm(row.get("scope_text")) for row in scope.get("canonical_area_audit") or [])):
+        proposals.append(
+            _compiled_proposal(
+                "roofing_foam_row_19",
+                "roofing_foam_template_decisions",
+                "foam",
+                "19",
+                values={
+                    "basis_sqft": foam_area,
+                    "thickness_inches": foam_thickness,
+                },
+                reason="Explicit area scope requires coated SPF.",
+            )
+        )
+    if coating_area > 0:
+        proposals.append(
+            _compiled_proposal(
+                "roofing_coating_system_row_26",
+                "roofing_coating_template_decisions",
+                "coating",
+                "26",
+                values={"basis_sqft": coating_area},
+                reason="Explicit area scope requires a coated foam roof.",
+            )
+        )
+    if board_area > 0:
+        board_values = {
+            "basis_sqft": board_area,
+            "board_area_sqft": board_area,
+            "thickness_inches": board_thickness,
+        }
+        board_price = _materials_lookup_price(
+            data,
+            table_name="board",
+            thickness_inches=board_thickness,
+        )
+        if board_price:
+            board_values["price_per_square"] = board_price["unit_price"]
+            board_values["selected_pricing_candidate"] = board_price["candidate_name"]
+        proposals.append(
+            _compiled_proposal(
+                "roofing_board_stock_row_58",
+                "roofing_board_fastener_template_decisions",
+                "board_stock",
+                "58",
+                values=board_values,
+                reason="Explicit tear-off assembly requires ISO board.",
+                price_source=board_price,
+            )
+        )
+        for bucket, decision_id, row_number, table_name in (
+            ("fasteners", "roofing_fasteners_row_63", "63", "fasteners"),
+            ("plates", "roofing_plates_row_65", "65", "plates"),
+        ):
+            price = _materials_lookup_price(data, table_name=table_name)
+            values = {"board_area_sqft": board_area}
+            if price:
+                values["unit_price_per_thousand"] = price["unit_price"]
+                values["selected_pricing_candidate"] = price["candidate_name"]
+            proposals.append(
+                _compiled_proposal(
+                    decision_id,
+                    "roofing_board_fastener_template_decisions",
+                    bucket,
+                    row_number,
+                    values=values,
+                    reason=f"Explicit board-stock scope requires {bucket}.",
+                    price_source=price,
+                    recognized_unpriced=not bool(price),
+                )
+            )
+    structured_area_text = _norm(
+        " ".join(
+            str(row.get("scope_text") or "")
+            for row in scope.get("canonical_area_audit") or []
+            if isinstance(row, dict) and row.get("included_in_total")
+        )
+    )
+    if any(
+        token in structured_area_text
+        for token in ("full removal", "tear off", "down to wood decking")
+    ):
+        proposals.append(
+            _compiled_proposal(
+                "roofing_dumpsters_row_69",
+                "roofing_equipment_template_decisions",
+                "dumpster",
+                "69",
+                values={"basis_sqft": board_area or total_area},
+                reason="Full removal scope requires debris handling.",
+                recognized_unpriced=True,
+            )
+        )
+
+    linear_totals = scope.get("canonical_linear_totals") or {}
+    linear_breakdown = scope.get("canonical_linear_breakdown") or {}
+    for bucket, decision_id, row_number, label in (
+        ("edge_metal", "roofing_edge_metal_row_82", "82", "Edge metal"),
+        ("gutter", "roofing_gutter_row_84", "84", "Gutter"),
+        ("downspouts", "roofing_downspouts_row_86", "86", "Downspouts"),
+    ):
+        linear_ft = _safe_number(linear_totals.get(bucket), 0.0)
+        if linear_ft <= 0:
+            continue
+        proposals.append(
+            _compiled_proposal(
+                decision_id,
+                "roofing_accessory_template_decisions",
+                bucket,
+                row_number,
+                values={
+                    "linear_ft": linear_ft,
+                    "scope_breakdown": linear_breakdown.get(bucket) or [],
+                },
+                reason=f"Explicit annotated takeoff includes {linear_ft:g} LF of {label.lower()}.",
+                recognized_unpriced=True,
+            )
+        )
+    retain_text = _norm(
+        " ".join(
+            [
+                *(
+                    " ".join(str(item.get(key) or "") for key in ("item", "action", "treatment", "evidence_text"))
+                    if isinstance(item, dict)
+                    else str(item)
+                    for item in scope.get("retain_existing") or []
+                ),
+            ]
+        )
+    )
+    if "caulk" in retain_text or ("seal" in retain_text and "coping" in retain_text):
+        proposals.append(
+            _compiled_proposal(
+                "roofing_caulk_sealant_row_43",
+                "roofing_detail_template_decisions",
+                "caulk_detail",
+                "43",
+                values={},
+                reason="Existing coping is explicitly retained with sealed seams.",
+                recognized_unpriced=True,
+            )
+        )
+    for bucket, label in (
+        ("wood_nailer", "Wood nailer"),
+        ("counter_flashing", "Counter flashing"),
+    ):
+        linear_ft = _safe_number(linear_totals.get(bucket), 0.0)
+        if linear_ft <= 0:
+            continue
+        proposals.append(
+            _compiled_proposal(
+                f"roofing_free_adder_{bucket}",
+                "roofing_free_adder_template_decisions",
+                bucket,
+                "",
+                values={"template_line": label, "linear_ft": linear_ft},
+                reason=f"Explicit annotated takeoff includes {linear_ft:g} LF of {label.lower()}.",
+                recognized_unpriced=True,
+            )
+        )
+    return proposals
+
+
+def _automatic_comparable_answer_key_proposals(
+    scope: dict[str, Any],
+    *,
+    data: Any = None,
+) -> list[DecisionProposal]:
+    if data is None or _safe_number(scope.get("canonical_area_total_sqft"), 0.0) <= 0:
+        return []
+    if re.search(
+        r"\b(?:similar\s+to|same\s+as|based\s+on|reference)\b",
+        _note_text(scope),
+        flags=re.IGNORECASE,
+    ):
+        return []
+    try:
+        from .reference_answer_key import answer_key_to_workbook_decision_preferences
+        from .template_examples import build_similar_answer_key_digest
+
+        digest = build_similar_answer_key_digest(
+            data,
+            scope=scope,
+            limit=12,
+            decisions_per_example=80,
+        )
+    except Exception:
+        return []
+    matches = digest.get("matched_answer_keys") if isinstance(digest, dict) else []
+    if not isinstance(matches, list) or not matches:
+        return []
+    required_buckets = {
+        bucket
+        for bucket, area_field in (
+            ("foam", "foam_basis_sqft"),
+            ("coating", "coating_basis_sqft"),
+        )
+        if _safe_number(scope.get(area_field), 0.0) > 0
+    }
+    candidates: list[
+        tuple[int, float, dict[str, Any], dict[str, Any], list[dict[str, Any]]]
+    ] = []
+    for raw_match in matches:
+        if not isinstance(raw_match, dict):
+            continue
+        raw_answer_key = (
+            raw_match.get("reference_answer_key")
+            if isinstance(raw_match.get("reference_answer_key"), dict)
+            else {}
+        )
+        raw_preferences = answer_key_to_workbook_decision_preferences(raw_answer_key)
+        available_buckets = {
+            _canonical_package(row.get("template_bucket"))
+            for row in raw_preferences
+            if row.get("include") is not False
+        }
+        candidates.append(
+            (
+                len(required_buckets & available_buckets),
+                _safe_number(raw_match.get("similarity_score"), 0.0),
+                raw_match,
+                raw_answer_key,
+                raw_preferences,
+            )
+        )
+    if not candidates:
+        return []
+    _, _, match, answer_key, preferences = max(
+        candidates,
+        key=lambda item: (item[0], item[1]),
+    )
+    reference_area = _safe_number(
+        (answer_key.get("job_context") or {}).get("area_sqft")
+        or match.get("area_sqft"),
+        0.0,
+    )
+    current_area = _safe_number(scope.get("canonical_area_total_sqft"), 0.0)
+    area_scale = current_area / reference_area if reference_area > 0 else 0.0
+    proposals: list[DecisionProposal] = []
+    selected_coating = False
+    for preference in preferences:
+        bucket = _canonical_package(preference.get("template_bucket"))
+        if not _automatic_comparable_bucket_authorized(bucket, scope):
+            continue
+        if bucket in {"sales_trips", "truck_expense", "edge_metal", "gutter", "downspouts", "board_stock", "fasteners", "plates", "dumpster"}:
+            continue
+        if bucket == "coating":
+            if selected_coating:
+                continue
+            selected_coating = True
+        values = dict(preference.get("proposed_values") or {})
+        current_people_rate: dict[str, Any] = {}
+        reference_quantity = _safe_number(
+            values.get("estimated_units")
+            or values.get("units")
+            or values.get("quantity")
+            or values.get("estimated_gallons"),
+            0.0,
+        )
+        historical_unit_price = _safe_number(
+            values.get("unit_price")
+            or values.get("price_per_square")
+            or values.get("unit_price_per_thousand"),
+            0.0,
+        )
+        for field in (
+            "estimated_units",
+            "estimated_sets",
+            "estimated_gallons",
+            "units",
+            "quantity",
+            "estimated_cost",
+            "amount",
+            "linear_ft",
+        ):
+            values.pop(field, None)
+        if historical_unit_price > 0:
+            values["historical_unit_price"] = historical_unit_price
+            values.pop("unit_price", None)
+            values.pop("price_per_square", None)
+            values.pop("unit_price_per_thousand", None)
+        if bucket == "foam":
+            values["basis_sqft"] = _safe_number(scope.get("foam_basis_sqft"), current_area)
+            thickness = _safe_number(scope.get("foam_thickness_inches"), 0.0)
+            if thickness > 0:
+                values["thickness_inches"] = thickness
+        elif bucket == "coating":
+            values["basis_sqft"] = _safe_number(scope.get("coating_basis_sqft"), current_area)
+        elif bucket in {"caulk_detail", "caulk_sealant"} and reference_quantity > 0 and area_scale > 0:
+            values["estimated_units"] = round(reference_quantity * area_scale, 3)
+        elif bucket == "generator" and reference_quantity > 0 and area_scale > 0:
+            days = max(1, math.ceil(reference_quantity * area_scale))
+            values["days"] = days
+            values["estimated_units"] = days
+        elif bucket.startswith("labor_"):
+            reference_values = preference.get("proposed_values") or {}
+            reference_hours = _safe_number(
+                reference_values.get("total_hours") or reference_values.get("editable_total_hours"),
+                0.0,
+            )
+            crew_size = _safe_number(reference_values.get("crew_size"), 0.0)
+            if reference_hours > 0 and area_scale > 0:
+                total_hours = round(reference_hours * area_scale, 1)
+                values["total_hours"] = total_hours
+                values["editable_total_hours"] = total_hours
+                if crew_size > 0:
+                    values["crew_size"] = crew_size
+                    hours_per_crew_day = reference_hours / max(
+                        crew_size * _safe_number(reference_values.get("days"), 0.0),
+                        1.0,
+                    )
+                    values["days"] = round(
+                        total_hours / max(crew_size * hours_per_crew_day, 1.0),
+                        2,
+                    )
+                daily_rate = _safe_number(reference_values.get("daily_rate"), 0.0)
+                if daily_rate > 0:
+                    values["historical_daily_rate"] = daily_rate
+                    current_people_rate = _current_labor_daily_rate(
+                        data,
+                        crew_size=crew_size,
+                        workbook_row=preference.get("workbook_row"),
+                        bucket=bucket,
+                    )
+                    values["daily_rate"] = (
+                        current_people_rate.get("daily_rate")
+                        or daily_rate
+                    )
+        elif area_scale > 0:
+            for field in ("basis_sqft", "area_sqft"):
+                if _safe_number(values.get(field), 0.0) > 0:
+                    values[field] = round(current_area, 3)
+        evidence = {
+            "automatic_comparable": [
+                {
+                    "job_id": match.get("job_id"),
+                    "job_name": match.get("job_name"),
+                    "source_file": match.get("source_file"),
+                    "similarity_score": match.get("similarity_score"),
+                    "match_reasons": match.get("match_reasons") or [],
+                    "reference_area_sqft": reference_area,
+                    "current_area_sqft": current_area,
+                    "scale_factor": round(area_scale, 6) if area_scale > 0 else None,
+                }
+            ]
+        }
+        if current_people_rate:
+            evidence["current_people_rate"] = [current_people_rate]
+        proposals.append(
+            DecisionProposal(
+                decision_id=str(preference.get("decision_id") or ""),
+                template_type="roofing",
+                template_bucket=str(preference.get("template_bucket") or ""),
+                workbook_row=str(preference.get("workbook_row") or ""),
+                include=True,
+                proposed_values=values,
+                confidence=min(_safe_number(match.get("similarity_score"), 0.0) / 250.0, 0.88),
+                review_required=True,
+                review_reasons=[
+                    "Included from the closest scope-compatible answer key and scaled to current explicit takeoff.",
+                    "Current price sources should replace the historical unit price when available.",
+                ],
+                evidence=evidence,
+                source="automatic_comparable",
+                section=str(preference.get("section") or ""),
+            )
+        )
+    return proposals
+
+
+def _automatic_comparable_bucket_authorized(bucket: str, scope: dict[str, Any]) -> bool:
+    notes = _norm(_note_text(scope))
+    if bucket == "foam":
+        return _safe_number(scope.get("foam_basis_sqft"), 0.0) > 0
+    if bucket == "coating":
+        return _safe_number(scope.get("coating_basis_sqft"), 0.0) > 0
+    if bucket in {"caulk_detail", "caulk_sealant", "labor_caulk", "labor_seam_sealer"}:
+        return "caulk" in notes or ("seal" in notes and "coping" in notes)
+    if bucket == "generator":
+        return _safe_number(scope.get("foam_basis_sqft"), 0.0) > 0
+    if bucket in {"labor_prep", "labor_base", "labor_top_coat", "labor_cleanup"}:
+        return _safe_number(scope.get("canonical_area_total_sqft"), 0.0) > 0
+    if bucket == "labor_prime":
+        return "primer" in notes or "prime" in notes
+    return False
+
+
+def _compiled_proposal(
+    decision_id: str,
+    section: str,
+    bucket: str,
+    row: str,
+    *,
+    values: dict[str, Any],
+    reason: str,
+    price_source: dict[str, Any] | None = None,
+    recognized_unpriced: bool = False,
+) -> DecisionProposal:
+    evidence = {
+        "deterministic_scope_compiler": [
+            {
+                "reason": reason,
+                "price_source": price_source or {},
+            }
+        ]
+    }
+    reasons = [reason]
+    if recognized_unpriced:
+        reasons.append("Scope is recognized; a current price or formula input is still required.")
+    return DecisionProposal(
+        decision_id=decision_id,
+        template_type="roofing",
+        template_bucket=bucket,
+        workbook_row=row,
+        include=True,
+        proposed_values={
+            **values,
+            "scope_status": "recognized_awaiting_price" if recognized_unpriced else "calculation_ready",
+        },
+        confidence=0.96,
+        review_required=recognized_unpriced,
+        review_reasons=reasons,
+        evidence=evidence,
+        source="deterministic_scope_compiler",
+        section=section,
+    )
+
+
+def _materials_lookup_price(
+    data: Any,
+    *,
+    table_name: str,
+    thickness_inches: float = 0.0,
+) -> dict[str, Any]:
+    frame = getattr(data, "template_lookup_tables", pd.DataFrame()) if data is not None else pd.DataFrame()
+    if not isinstance(frame, pd.DataFrame) or frame.empty:
+        return {}
+    candidates: list[dict[str, Any]] = []
+    for row in frame.fillna("").to_dict(orient="records"):
+        if _norm(row.get("sheet_name")) != "materials" or _norm(row.get("table_name")) != _norm(table_name):
+            continue
+        try:
+            values = json.loads(str(row.get("values_json") or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            values = row.get("values_json") if isinstance(row.get("values_json"), dict) else {}
+        unit_price = _safe_number(values.get("C"), 0.0)
+        if unit_price <= 0:
+            continue
+        detail = str(values.get("B") or "").strip()
+        candidate_thickness = _material_thickness(detail, ("",))
+        candidates.append(
+            {
+                "candidate_name": " ".join(
+                    value
+                    for value in (str(row.get("lookup_key") or values.get("A") or "").strip(), detail)
+                    if value
+                ),
+                "unit_price": unit_price,
+                "thickness_inches": candidate_thickness,
+                "lookup_table_id": row.get("lookup_table_id"),
+                "workbook_sheet": row.get("sheet_name"),
+                "workbook_row": row.get("row_number"),
+            }
+        )
+    if thickness_inches > 0:
+        exact = [
+            candidate
+            for candidate in candidates
+            if abs(_safe_number(candidate.get("thickness_inches"), 0.0) - thickness_inches) < 0.01
+        ]
+        if len(exact) == 1:
+            return exact[0]
+    return candidates[0] if len(candidates) == 1 else {}
+
+
+def _current_labor_daily_rate(
+    data: Any,
+    *,
+    crew_size: float,
+    workbook_row: Any,
+    bucket: str,
+) -> dict[str, Any]:
+    frame = getattr(data, "template_labor_options", pd.DataFrame()) if data is not None else pd.DataFrame()
+    if not isinstance(frame, pd.DataFrame) or frame.empty or crew_size <= 0:
+        return {}
+    rows = frame.fillna("").to_dict(orient="records")
+    candidates: list[dict[str, Any]] = []
+    for row in rows:
+        if _norm(row.get("template_type")) != "roofing":
+            continue
+        if _norm(row.get("source_type")) != "people daily rate selector":
+            continue
+        if str(row.get("row_number") or "").strip() != str(workbook_row or "").strip():
+            continue
+        if _norm(row.get("labor_package")) and _norm(row.get("labor_package")) != _norm(bucket):
+            continue
+        if int(_safe_number(row.get("lookup_key"), 0.0)) != int(crew_size):
+            continue
+        raw_values = row.get("source_values_json")
+        if isinstance(raw_values, dict):
+            values = raw_values
+        else:
+            try:
+                values = json.loads(str(raw_values or "{}"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                values = {}
+        daily_rate = _safe_number(values.get("daily_rate") or values.get("rate"), 0.0)
+        if daily_rate <= 0:
+            hours_per_day = _safe_number(values.get("hours_per_day"), 0.0)
+            hourly_total = 0.0
+            for component in values.get("crew_components") or []:
+                if not isinstance(component, dict) or not component.get("component_formula"):
+                    continue
+                wage = _safe_number(component.get("hourly_wage"), 0.0)
+                burden = _safe_number(component.get("burden_rate"), 1.0) or 1.0
+                hourly_total += wage * burden
+            if hours_per_day > 0 and hourly_total > 0:
+                daily_rate = round(hourly_total * hours_per_day, 6)
+        if daily_rate <= 0:
+            continue
+        candidates.append(
+            {
+                "daily_rate": daily_rate,
+                "crew_size": int(crew_size),
+                "template_labor_option_id": row.get("template_labor_option_id"),
+                "template_name": row.get("template_name"),
+                "source_table": row.get("source_table"),
+            }
+        )
+    return candidates[0] if len(candidates) == 1 else {}
+
+
+def _material_thickness(text: Any, material_terms: Iterable[str]) -> float:
+    raw = str(text or "")
+    for term in material_terms:
+        escaped = re.escape(term)
+        patterns = (
+            rf"(\d+(?:\.\d+)?)\s*(?:in(?:ch(?:es)?)?|[\"”])?\s*(?:\w+\s+){{0,2}}{escaped}",
+            rf"{escaped}(?:\s+\w+){{0,2}}\s+(\d+(?:\.\d+)?)\s*(?:in(?:ch(?:es)?)?|[\"”])?",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, raw, flags=re.IGNORECASE)
+            if match:
+                return _safe_number(match.group(1), 0.0)
+    match = re.search(r"(\d+(?:\.\d+)?)\s*(?:in(?:ch(?:es)?)?|[\"”])", raw, flags=re.IGNORECASE)
+    return _safe_number(match.group(1), 0.0) if match else 0.0
+
+
+def _explicit_linear_measurement(text: Any, terms: Iterable[str]) -> float:
+    raw = str(text or "")
+    for term in terms:
+        escaped = re.escape(term)
+        patterns = (
+            rf"(\d+(?:\.\d+)?)\s*(?:'|ft\.?|feet|linear\s+f(?:ee)?t|lin\.?\s*ft\.?)\s*(?:of\s+)?{escaped}",
+            rf"{escaped}[^.\n]{{0,80}}?(\d+(?:\.\d+)?)\s*(?:'|ft\.?|feet|linear\s+f(?:ee)?t|lin\.?\s*ft\.?)",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, raw, flags=re.IGNORECASE)
+            if match:
+                return _safe_number(match.group(1), 0.0)
+    return 0.0
+
+
+def _first_positive_value(row: dict[str, Any], *keys: str) -> float:
+    for key in keys:
+        value = _safe_number(row.get(key), 0.0)
+        if value > 0:
+            return value
+    return 0.0
+
+
+def _single_or_max(values: Iterable[float]) -> float:
+    positive = [value for value in values if value > 0]
+    return max(positive) if positive else 0.0
 
 
 def _named_reference_answer_key_proposals(
@@ -2607,7 +3410,35 @@ def _is_insulation_scope(scope: dict[str, Any]) -> bool:
 
 
 def _note_text(scope: dict[str, Any]) -> str:
-    return str(scope.get("notes") or scope.get("raw_input_notes") or scope.get("scope_of_work") or "")
+    parts = [
+        str(scope.get("notes") or ""),
+        str(scope.get("raw_input_notes") or ""),
+        str(scope.get("scope_of_work") or ""),
+        str(scope.get("annotated_scope_text") or ""),
+    ]
+    for collection in ("area_scopes", "linear_scopes", "retain_existing"):
+        for row in scope.get(collection) or []:
+            if isinstance(row, dict):
+                parts.append(
+                    " ".join(
+                        str(value or "")
+                        for key, value in row.items()
+                        if key
+                        in {
+                            "label",
+                            "item",
+                            "action",
+                            "size",
+                            "existing_system",
+                            "proposed_assembly",
+                            "treatment",
+                            "evidence_text",
+                        }
+                    )
+                )
+            else:
+                parts.append(str(row or ""))
+    return "\n".join(part for part in parts if part.strip())
 
 
 def _norm(value: Any) -> str:

@@ -128,6 +128,7 @@ def new_estimate_session_state(*, session_id: str = "", template_type: str = "")
         "model_metadata": configured_estimator_models(),
         "model_routes": [],
         "model_call_history": [],
+        "deterministic_scope_compiler": {},
         "prompt_version": PROMPT_VERSION,
         "audit_events": [],
         "readiness_state": {},
@@ -246,6 +247,12 @@ def advance_estimate_session(
         and isinstance(result.raw_response.get("_model_call"), dict)
         else {}
     )
+    deterministic_scope_compiler = (
+        result.raw_response.get("deterministic_scope_compiler")
+        if isinstance(result.raw_response, dict)
+        and isinstance(result.raw_response.get("deterministic_scope_compiler"), dict)
+        else {}
+    )
     model_routes = list(state.get("model_routes") or [])
     model_routes.extend(normalized_visual.get("model_routes") or [])
     model_routes.append(estimator_route)
@@ -327,6 +334,7 @@ def advance_estimate_session(
                 ("request_id", "completed_at", "requested_model"),
             )[-100:],
             "visual_evidence_summary": normalized_visual.get("summary") or {},
+            "deterministic_scope_compiler": deterministic_scope_compiler,
             "prompt_version": PROMPT_VERSION,
         }
     )
@@ -391,6 +399,9 @@ def _scope_with_visual_evidence(
         value = record.get(field)
         if value not in (None, "", [], {}):
             merged[field] = value
+    annotated_scope_text = str(record.get("normalized_estimator_notes") or "").strip()
+    if annotated_scope_text:
+        merged["annotated_scope_text"] = annotated_scope_text
     header = {
         **(record.get("customer_info") or {}),
         **(record.get("job_header") or {}),
@@ -467,6 +478,7 @@ def build_staged_visual_evidence(visual_evidence: dict[str, Any]) -> dict[str, A
             "scope_relationships": note_result.get("scope_relationships") or [],
             "area_reconciliation": note_result.get("area_reconciliation") or {},
             "estimator_decision_cues": note_result.get("estimator_decision_cues") or [],
+            "normalized_estimator_notes": note_result.get("normalized_estimator_notes") or "",
             "cache_hit": bool(note_result.get("cache_hit")),
         }
         records.append(record)

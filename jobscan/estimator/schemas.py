@@ -23,6 +23,7 @@ class EstimatorData:
     job_package_summary: pd.DataFrame = field(default_factory=pd.DataFrame)
     pricing: pd.DataFrame = field(default_factory=pd.DataFrame)
     pricing_catalog: pd.DataFrame = field(default_factory=pd.DataFrame)
+    latest_historical_unit_prices: pd.DataFrame = field(default_factory=pd.DataFrame)
     product_catalog: pd.DataFrame = field(default_factory=pd.DataFrame)
     product_aliases: pd.DataFrame = field(default_factory=pd.DataFrame)
     product_documents: pd.DataFrame = field(default_factory=pd.DataFrame)
