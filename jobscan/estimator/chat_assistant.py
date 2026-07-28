@@ -596,6 +596,9 @@ _CONTEXT_DEFAULT_FIELDS_BY_BUCKET: dict[str, tuple[str, ...]] = {
     "fasteners": ("unit_price_per_thousand",),
     "plates": ("unit_price_per_thousand",),
     "granules": ("unit_price",),
+    "edge_metal": ("unit_price",),
+    "gutter": ("unit_price",),
+    "downspouts": ("unit_price",),
     "dumpster": ("unit_price",),
     "lift": ("unit_price",),
     "generator": ("unit_price",),
@@ -618,7 +621,10 @@ def _apply_context_calculation_defaults(
     template_type = _template_type_for_scope(result.scope_overrides or {}) or _clean_string(context.get("template_type"))
     if template_type != "roofing":
         return result
-    rows = [dict(row) for row in (result.workbook_decision_preferences or []) if isinstance(row, dict)]
+    rows = _upsert_explicit_linear_scope_preferences(
+        [dict(row) for row in (result.workbook_decision_preferences or []) if isinstance(row, dict)],
+        result.scope_overrides or {},
+    )
     cue_by_id: dict[str, dict[str, Any]] = {}
     cue_by_row: dict[str, dict[str, Any]] = {}
     for cue in context.get("historical_answer_key_decision_cues") or []:
@@ -669,6 +675,29 @@ def _apply_context_calculation_defaults(
                     "best_similarity_score": _safe_positive_number(cue.get("best_similarity_score")),
                 }
             )
+        for field in allowed_fields:
+            if _formula_value_present(values, field):
+                continue
+            price_candidate = _trusted_context_price_candidate(
+                context,
+                bucket=bucket,
+                values=values,
+                row=row,
+            )
+            candidate_price = _safe_positive_number(price_candidate.get("unit_price"))
+            if candidate_price <= 0:
+                continue
+            values[field] = candidate_price
+            sources.append(
+                {
+                    "source": price_candidate.get("source"),
+                    "field": field,
+                    "candidate_name": price_candidate.get("candidate_name"),
+                    "lookup_table_id": price_candidate.get("lookup_table_id"),
+                    "workbook_sheet": price_candidate.get("workbook_sheet"),
+                    "workbook_row": price_candidate.get("workbook_row"),
+                }
+            )
         if bucket == "foam":
             if not _formula_value_present(values, "yield_or_coverage"):
                 historical_yield = _safe_positive_number(foam_digest.get("median_yield_or_coverage"))
@@ -716,7 +745,7 @@ def _apply_context_calculation_defaults(
         changed_count += len(sources)
 
     result.workbook_decision_preferences = _upsert_roofing_travel_defaults(
-        rows,
+        _clean_decision_preferences(rows, template_type="roofing"),
         scope=result.scope_overrides or {},
         context=context,
     )
@@ -753,6 +782,203 @@ def _apply_context_calculation_defaults(
         if warning not in (result.warnings or []):
             result.warnings = [*(result.warnings or []), warning]
     return result
+
+
+def _upsert_explicit_linear_scope_preferences(
+    rows: list[dict[str, Any]],
+    scope: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Bind annotated-image linear takeoff to workbook rows without AI inference."""
+
+    menu_by_bucket = {
+        _clean_string(row.get("template_bucket")).lower(): row
+        for row in CHAT_DECISION_MENU.get("roofing", [])
+        if row.get("template_bucket") in {"edge_metal", "gutter", "downspouts"}
+    }
+    quantities: dict[str, float] = {}
+    evidence: dict[str, list[dict[str, Any]]] = {}
+    breakdowns: dict[str, list[dict[str, Any]]] = {}
+    for index, linear_scope in enumerate(scope.get("linear_scopes") or [], start=1):
+        if not isinstance(linear_scope, dict):
+            continue
+        linear_ft = _safe_positive_number(
+            linear_scope.get("linear_ft")
+            or linear_scope.get("lineal_ft")
+            or linear_scope.get("length_ft")
+        )
+        if linear_ft <= 0:
+            continue
+        text = _clean_string(
+            " ".join(
+                str(linear_scope.get(key) or "")
+                for key in (
+                    "item",
+                    "action",
+                    "size",
+                    "location",
+                    "treatment",
+                    "evidence_text",
+                )
+            )
+        ).lower()
+        matched: list[str] = []
+        if any(token in text for token in ("edge metal", "foam stop", "foam-stop")):
+            matched.append("edge_metal")
+        if "gutter" in text:
+            matched.append("gutter")
+        if "downspout" in text:
+            matched.append("downspouts")
+        for bucket in matched:
+            quantities[bucket] = quantities.get(bucket, 0.0) + linear_ft
+            breakdowns.setdefault(bucket, []).append(
+                {
+                    "item": linear_scope.get("item"),
+                    "size": linear_scope.get("size"),
+                    "linear_ft": linear_ft,
+                }
+            )
+            evidence.setdefault(bucket, []).append(
+                {
+                    "source": "annotated_scope_image",
+                    "linear_scope_index": index,
+                    "linear_ft": linear_ft,
+                    "evidence_text": linear_scope.get("evidence_text") or linear_scope.get("item"),
+                }
+            )
+    if not quantities:
+        return rows
+
+    updated = [dict(row) for row in rows]
+    for bucket, linear_ft in quantities.items():
+        menu_row = menu_by_bucket[bucket]
+        sizes = sorted(
+            {
+                _clean_string(item.get("size"))
+                for item in breakdowns[bucket]
+                if _clean_string(item.get("size"))
+            }
+        )
+        proposed_values: dict[str, Any] = {
+            "linear_ft": round(linear_ft, 3),
+            "scope_breakdown": breakdowns[bucket],
+        }
+        if sizes:
+            proposed_values["scope_sizes"] = sizes
+        patch = {
+            "decision_id": menu_row["decision_id"],
+            "section": menu_row["section"],
+            "template_bucket": bucket,
+            "workbook_row": menu_row["workbook_row"],
+            "label": menu_row["label"],
+            "include": True,
+            "proposed_values": proposed_values,
+            "source": "structured_visual_scope",
+            "review_required": True,
+            "evidence": evidence[bucket],
+        }
+        if bucket == "edge_metal" and len(sizes) > 1:
+            patch["review_reasons"] = [
+                "Explicit edge-metal takeoff contains multiple sizes; use separate adders or a verified blended unit price."
+            ]
+        match_index = next(
+            (index for index, row in enumerate(updated) if _preference_matches(row, patch)),
+            None,
+        )
+        if match_index is None:
+            updated.append(patch)
+            continue
+        current = dict(updated[match_index])
+        values = dict(current.get("proposed_values") or {})
+        values.update(proposed_values)
+        current_source = _clean_string(current.get("source")).lower()
+        if (
+            bucket == "edge_metal"
+            and len(sizes) > 1
+            and current_source not in {"estimator_edit", "manual_estimator_edit"}
+        ):
+            values.pop("unit_price", None)
+        current.update(
+            {
+                "decision_id": patch["decision_id"],
+                "section": patch["section"],
+                "template_bucket": bucket,
+                "workbook_row": patch["workbook_row"],
+                "include": True,
+                "source": patch["source"],
+                "review_required": True,
+                "proposed_values": values,
+                "evidence": _merge_preference_evidence(current.get("evidence"), patch["evidence"]),
+                "review_reasons": list(
+                    dict.fromkeys(
+                        [
+                            *(current.get("review_reasons") or []),
+                            *(patch.get("review_reasons") or []),
+                        ]
+                    )
+                ),
+            }
+        )
+        updated[match_index] = current
+    return updated
+
+
+def _trusted_context_price_candidate(
+    context: dict[str, Any],
+    *,
+    bucket: str,
+    values: dict[str, Any],
+    row: dict[str, Any],
+) -> dict[str, Any]:
+    candidates = [
+        candidate
+        for candidate in context.get("pricing_candidates_by_bucket") or []
+        if isinstance(candidate, dict)
+        and _clean_string(candidate.get("decision_bucket")).lower() == bucket
+        and _safe_positive_number(candidate.get("unit_price")) > 0
+    ]
+    if not candidates:
+        return {}
+    scope_sizes = [
+        _clean_string(value)
+        for value in values.get("scope_sizes") or []
+        if _clean_string(value)
+    ]
+    if bucket == "edge_metal" and len(set(scope_sizes)) > 1:
+        return {}
+    selected_name = _clean_string(
+        values.get("selected_item_name")
+        or values.get("item_name")
+        or row.get("selected_item_name")
+        or row.get("label")
+    ).lower()
+    if selected_name:
+        named = [
+            candidate
+            for candidate in candidates
+            if selected_name in _clean_string(candidate.get("candidate_name")).lower()
+            or _clean_string(candidate.get("candidate_name")).lower() in selected_name
+        ]
+        if len(named) == 1:
+            return named[0]
+    if bucket == "board_stock":
+        thickness = _safe_positive_number(values.get("thickness_inches"))
+        exact = [
+            candidate
+            for candidate in candidates
+            if candidate.get("source") == "template_lookup_materials"
+            and thickness > 0
+            and abs(_safe_positive_number(candidate.get("thickness_inches")) - thickness) < 0.01
+        ]
+        if len(exact) == 1:
+            return exact[0]
+    trusted = [
+        candidate
+        for candidate in candidates
+        if candidate.get("source") in {"template_lookup_materials", "pricing_catalog"}
+    ]
+    if len(trusted) == 1:
+        return trusted[0]
+    return {}
 
 
 def _formula_disable_reason_present(row: dict[str, Any]) -> bool:
@@ -1242,6 +1468,33 @@ CHAT_DECISION_MENU: dict[str, list[dict[str, Any]]] = {
             "formula_requirements": ["basis_sqft", "unit_price"],
         },
         {
+            "decision_id": "roofing_edge_metal_row_82",
+            "section": "roofing_accessory_template_decisions",
+            "template_bucket": "edge_metal",
+            "workbook_row": "82",
+            "label": "Edge Metal",
+            "editable_fields": ["include", "linear_ft", "unit_price"],
+            "formula_requirements": ["linear_ft", "unit_price"],
+        },
+        {
+            "decision_id": "roofing_gutter_row_84",
+            "section": "roofing_accessory_template_decisions",
+            "template_bucket": "gutter",
+            "workbook_row": "84",
+            "label": "Gutter",
+            "editable_fields": ["include", "linear_ft", "unit_price"],
+            "formula_requirements": ["linear_ft", "unit_price"],
+        },
+        {
+            "decision_id": "roofing_downspouts_row_86",
+            "section": "roofing_accessory_template_decisions",
+            "template_bucket": "downspouts",
+            "workbook_row": "86",
+            "label": "Downspouts",
+            "editable_fields": ["include", "linear_ft", "unit_price"],
+            "formula_requirements": ["linear_ft", "unit_price"],
+        },
+        {
             "decision_id": "roofing_dumpsters_row_69",
             "section": "roofing_equipment_template_decisions",
             "template_bucket": "dumpster",
@@ -1409,6 +1662,7 @@ def _estimator_data_signature(data: EstimatorData | None) -> str:
         "template_row_catalog": _frame_signature(getattr(data, "template_row_catalog", None)),
         "template_formula_models": _frame_signature(getattr(data, "template_formula_models", None)),
         "template_product_options": _frame_signature(getattr(data, "template_product_options", None)),
+        "template_lookup_tables": _frame_signature(getattr(data, "template_lookup_tables", None)),
         "pricing": _frame_signature(getattr(data, "pricing", None)),
         "pricing_catalog": _frame_signature(getattr(data, "pricing_catalog", None)),
         "product_catalog": _frame_signature(getattr(data, "product_catalog", None)),
@@ -2414,16 +2668,46 @@ def _pricing_candidates_by_bucket(data: EstimatorData, *, template_type: str) ->
                     "source": source_name,
                 }
             )
+    for candidate in _template_lookup_pricing_candidates(data, template_type=template_type):
+        key = (
+            _clean_string(candidate.get("template_bucket")).lower(),
+            _clean_string(candidate.get("candidate_name")).lower(),
+            _clean_string(candidate.get("source")),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(candidate)
+    candidates.sort(
+        key=lambda row: (
+            0 if row.get("unit_price") not in (None, "", 0, 0.0) else 1,
+            0 if row.get("source") == "template_lookup_materials" else 1,
+            _clean_string(row.get("decision_bucket")),
+            _clean_string(row.get("candidate_name")),
+        )
+    )
     if len(candidates) <= 40:
         return candidates
 
+    # Materials lookup rows are authoritative workbook pricing inputs and are
+    # compact enough to retain before balancing the remaining catalog sources.
+    selected = [
+        candidate
+        for candidate in candidates
+        if candidate.get("source") == "template_lookup_materials"
+    ][:40]
+    selected_ids = {id(candidate) for candidate in selected}
+    if len(selected) >= 40:
+        return selected
+
     # Catalogs are often ordered by vendor/category. Keep broad workbook coverage
-    # instead of letting the first coating category consume the entire prompt.
+    # instead of letting the first coating category consume the remaining prompt.
     grouped: dict[str, list[dict[str, Any]]] = {}
     for candidate in candidates:
+        if id(candidate) in selected_ids:
+            continue
         group = _clean_string(candidate.get("decision_bucket") or candidate.get("template_bucket")).lower()
         grouped.setdefault(group, []).append(candidate)
-    selected: list[dict[str, Any]] = []
     while len(selected) < 40 and any(grouped.values()):
         for group in list(grouped):
             rows = grouped[group]
@@ -2433,6 +2717,81 @@ def _pricing_candidates_by_bucket(data: EstimatorData, *, template_type: str) ->
             if len(selected) >= 40:
                 break
     return selected
+
+
+def _template_lookup_pricing_candidates(
+    data: EstimatorData,
+    *,
+    template_type: str,
+) -> list[dict[str, Any]]:
+    frame = data.template_lookup_tables
+    if not isinstance(frame, pd.DataFrame) or frame.empty:
+        return []
+    table_buckets = {
+        "board": "board_stock",
+        "fasteners": "fasteners",
+        "plates": "plates",
+        "fabric": "fabric",
+        "solvents": "thinner",
+    }
+    rows: list[dict[str, Any]] = []
+    for lookup in frame.fillna("").to_dict(orient="records"):
+        row_template_type = _clean_string(lookup.get("template_type")).lower()
+        if row_template_type and template_type and row_template_type != template_type:
+            continue
+        if _clean_string(lookup.get("sheet_name")).lower() != "materials":
+            continue
+        table_name = _clean_string(lookup.get("table_name")).lower()
+        decision_bucket = table_buckets.get(table_name)
+        if not decision_bucket:
+            continue
+        values = _json_payload(lookup.get("values_json"))
+        if not isinstance(values, dict):
+            continue
+        cost = _safe_positive_number(values.get("C"))
+        if cost <= 0:
+            continue
+        label = _clean_string(lookup.get("lookup_key") or values.get("A"))
+        detail = _clean_string(values.get("B"))
+        if table_name in {"board", "fasteners"} and detail:
+            label = f"{label} {detail}".strip()
+        elif table_name == "fabric":
+            label = f"{detail or label} Fabric".strip()
+        if not label:
+            label = table_name.replace("_", " ").title()
+        unit_price = cost
+        unit = _clean_string(values.get("E"))
+        if table_name == "fabric":
+            quantity = _safe_positive_number(values.get("D"))
+            if quantity > 0:
+                unit_price = cost / quantity
+                unit = "lf"
+        elif table_name in {"fasteners", "plates"}:
+            unit = "1000"
+        elif table_name == "board":
+            unit = unit or "Square"
+        rows.append(
+            {
+                "template_bucket": decision_bucket,
+                "decision_bucket": decision_bucket,
+                "candidate_name": label,
+                "unit": unit,
+                "unit_price": round(unit_price, 6),
+                "yield_or_coverage": "",
+                "thickness_inches": _dimension_inches(detail),
+                "source": "template_lookup_materials",
+                "lookup_table_id": lookup.get("lookup_table_id"),
+                "workbook_sheet": "Materials",
+                "workbook_row": _safe_row_number(lookup.get("row_number")),
+            }
+        )
+    return rows
+
+
+def _dimension_inches(value: Any) -> float:
+    text = _clean_string(value)
+    match = re.search(r"(\d+(?:\.\d+)?)\s*(?:in(?:ch(?:es)?)?|[\"”])?", text, flags=re.I)
+    return _safe_positive_number(match.group(1)) if match else 0.0
 
 
 def _pricing_decision_bucket(category: str, name: str) -> str:

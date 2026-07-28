@@ -168,6 +168,59 @@ def test_staged_turn_patches_existing_decision_state() -> None:
     assert updated["decision_change_history"][-1]["changes"][0]["decision_id"] == "insulation_foam_template_selector"
 
 
+def test_current_visual_scope_is_available_during_first_estimator_turn() -> None:
+    linear_scopes = [
+        {
+            "item": "Edge Metal, Gutter & Downspouts",
+            "linear_ft": 52,
+            "evidence_text": "52 lin.ft.",
+        }
+    ]
+
+    def provider(messages, model):
+        payload = messages[-1]["content"]
+        assert '"linear_scopes"' in payload
+        assert "Edge Metal, Gutter & Downspouts" in payload
+        return {
+            "assistant_message": "Drafted current visual scope.",
+            "estimator_notes": "Use the annotated takeoff.",
+            "scope_overrides": {"template_type": "roofing"},
+            "workbook_decision_preferences": [],
+            "historical_comparison": [],
+            "estimating_plan": {},
+            "assumption_details": [],
+            "rejected_precedents": [],
+            "missing_questions": [],
+            "assumptions": [],
+            "warnings": [],
+            "confidence": 0.85,
+        }
+
+    _, updated = advance_estimate_session(
+        [{"role": "user", "content": "Estimate the annotated roofing scope."}],
+        template_type_hint="roofing",
+        visual_evidence={
+            "note_image_result": {
+                "document_type": "annotated aerial takeoff",
+                "source_images": ["grossman-map"],
+                "job_header": {
+                    "job_name": "Grossman Tuning",
+                    "site_address": "830 South 1st Street, Louisville, KY 40203",
+                    "declared_total_area_sqft": 5136,
+                },
+                "linear_scopes": linear_scopes,
+                "confidence": 0.95,
+            }
+        },
+        provider=provider,
+        model="test-estimator",
+    )
+
+    assert updated["scope_state"]["linear_scopes"] == linear_scopes
+    assert updated["scope_state"]["estimated_sqft"] == 5136
+    assert updated["site_address"] == "830 South 1st Street, Louisville, KY 40203"
+
+
 def test_rejected_precedent_is_retained_and_removed_from_active_results() -> None:
     state = new_estimate_session_state()
     state["retrieved_historical_jobs"] = [

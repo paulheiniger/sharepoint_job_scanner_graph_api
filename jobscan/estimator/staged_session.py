@@ -164,7 +164,11 @@ def advance_estimate_session(
     models = configured_estimator_models()
     estimator_route = route_estimator_model("estimator", explicit_model=model)
     estimator_model = str(estimator_route.get("model") or "").strip()
-    existing_scope = state.get("scope_state") if isinstance(state.get("scope_state"), dict) else {}
+    normalized_visual = build_staged_visual_evidence(visual_evidence or {})
+    existing_scope = _scope_with_visual_evidence(
+        state.get("scope_state") if isinstance(state.get("scope_state"), dict) else {},
+        normalized_visual,
+    )
     existing_decisions = (
         state.get("decision_template_state")
         if isinstance(state.get("decision_template_state"), list)
@@ -183,7 +187,6 @@ def advance_estimate_session(
     )
 
     scope = dict(result.scope_overrides or {})
-    normalized_visual = build_staged_visual_evidence(visual_evidence or {})
     merged_decisions, decision_changes = merge_decision_patches(
         existing_decisions,
         [
@@ -361,6 +364,64 @@ def advance_estimate_session(
         }
     )
     return result, state
+
+
+def _scope_with_visual_evidence(
+    scope: dict[str, Any],
+    normalized_visual: dict[str, Any],
+) -> dict[str, Any]:
+    """Expose current structured image takeoff to the estimator on this turn."""
+
+    merged = dict(scope or {})
+    records = [
+        row
+        for row in normalized_visual.get("records") or []
+        if isinstance(row, dict) and row.get("evidence_type") == "annotated_scope_image"
+    ]
+    if not records:
+        return merged
+    record = records[-1]
+    for field in (
+        "area_scopes",
+        "linear_scopes",
+        "retain_existing",
+        "scope_relationships",
+        "area_reconciliation",
+    ):
+        value = record.get(field)
+        if value not in (None, "", [], {}):
+            merged[field] = value
+    header = {
+        **(record.get("customer_info") or {}),
+        **(record.get("job_header") or {}),
+    }
+    for source_key, destination_key in (
+        ("job_name", "job_name"),
+        ("customer", "customer"),
+        ("customer_name", "customer"),
+        ("site_address", "site_address"),
+        ("address", "site_address"),
+    ):
+        value = header.get(source_key)
+        if value not in (None, "", [], {}) and not merged.get(destination_key):
+            merged[destination_key] = value
+    declared_area = _number(
+        header.get("declared_total_area_sqft")
+        or (record.get("area_reconciliation") or {}).get("declared_total_area_sqft")
+        or (record.get("area_reconciliation") or {}).get("declared_total")
+    )
+    if declared_area > 0 and not (
+        merged.get("estimated_sqft")
+        or merged.get("net_sqft")
+        or merged.get("area_sqft")
+    ):
+        merged["estimated_sqft"] = declared_area
+    merged["visual_evidence_ids"] = [
+        row.get("evidence_id")
+        for row in records
+        if row.get("evidence_id")
+    ]
+    return merged
 
 
 def build_staged_visual_evidence(visual_evidence: dict[str, Any]) -> dict[str, Any]:

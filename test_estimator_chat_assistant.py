@@ -757,6 +757,219 @@ def test_grossman_annotated_scope_fallback_is_classified_as_roofing() -> None:
     assert "insulation scope" not in result.assistant_message.lower()
 
 
+def test_grossman_structured_linear_scope_binds_accessory_rows_and_prices() -> None:
+    data = EstimatorData(
+        pricing_catalog=pd.DataFrame(
+            [
+                {"category": "Edge Metal", "item_name": "Edge Metal", "unit_price": 12.5},
+                {"category": "Gutter", "item_name": "Gutter", "unit_price": 18.0},
+                {"category": "Downspouts", "item_name": "Downspouts", "unit_price": 14.0},
+            ]
+        )
+    )
+    existing_scope = {
+        "template_type": "roofing",
+        "estimated_sqft": 5136,
+        "linear_scopes": [
+            {
+                "item": "Edge Metal, Gutter & Downspouts",
+                "size": '3.5"',
+                "linear_ft": 52,
+                "evidence_text": '3.5" New Edge Metal, New Gutter & Downspouts, 52 lin.ft.',
+            },
+            {
+                "item": "Foam Stop Edge Metal",
+                "size": '2"',
+                "linear_ft": 24,
+            },
+            {
+                "item": "Wood nailer, Foam-Stop Edge Metal",
+                "size": '3"',
+                "linear_ft": 52,
+            },
+        ],
+    }
+
+    result = run_estimator_chat_turn(
+        [{"role": "user", "content": "Draft the Grossman roofing estimate."}],
+        data=data,
+        existing_scope=existing_scope,
+        template_type_hint="roofing",
+        provider=lambda _messages, _model: {
+            "assistant_message": "Drafted the roofing scope.",
+            "estimator_notes": "Use the explicit annotated takeoff.",
+            "scope_overrides": {"template_type": "roofing"},
+            "workbook_decision_preferences": [],
+            "historical_comparison": [],
+            "estimating_plan": {},
+            "assumption_details": [],
+            "rejected_precedents": [],
+            "missing_questions": [],
+            "assumptions": [],
+            "warnings": [],
+            "confidence": 0.9,
+        },
+        model="test-model",
+    )
+
+    rows = {
+        row["template_bucket"]: row
+        for row in result.workbook_decision_preferences
+        if row.get("template_bucket") in {"edge_metal", "gutter", "downspouts"}
+    }
+    assert rows["edge_metal"]["include"] is False
+    assert rows["edge_metal"]["proposed_values"]["linear_ft"] == 128
+    assert rows["edge_metal"]["proposed_values"]["scope_sizes"] == ['2"', '3"', '3.5"']
+    assert "unit_price" not in rows["edge_metal"]["proposed_values"]
+    assert rows["gutter"]["proposed_values"]["linear_ft"] == 52.0
+    assert rows["gutter"]["proposed_values"]["unit_price"] == 18.0
+    assert rows["downspouts"]["proposed_values"]["linear_ft"] == 52.0
+    assert rows["downspouts"]["proposed_values"]["unit_price"] == 14.0
+
+
+def test_pricing_context_uses_materials_lookup_for_exact_board_thickness() -> None:
+    data = EstimatorData(
+        template_lookup_tables=pd.DataFrame(
+            [
+                {
+                    "lookup_table_id": "iso-1",
+                    "template_type": "roofing",
+                    "sheet_name": "Materials",
+                    "table_name": "board",
+                    "row_number": 18,
+                    "lookup_key": "ISO board",
+                    "values_json": '{"A": "ISO board", "B": "1\\"", "C": 47.38, "D": 42.25, "E": "Square"}',
+                },
+                {
+                    "lookup_table_id": "iso-2",
+                    "template_type": "roofing",
+                    "sheet_name": "Materials",
+                    "table_name": "board",
+                    "row_number": 20,
+                    "lookup_key": "ISO board",
+                    "values_json": '{"A": "ISO board", "B": "2\\"", "C": 77.47, "D": 64.5, "E": "Square"}',
+                },
+            ]
+        )
+    )
+
+    context = estimator_context_summary(data, scope={"template_type": "roofing"})
+    two_inch = next(
+        row
+        for row in context["pricing_candidates_by_bucket"]
+        if row.get("lookup_table_id") == "iso-2"
+    )
+
+    assert two_inch["decision_bucket"] == "board_stock"
+    assert two_inch["unit_price"] == 77.47
+    assert two_inch["thickness_inches"] == 2.0
+    assert two_inch["workbook_sheet"] == "Materials"
+
+
+def test_pricing_context_retains_materials_rows_before_catalog_cap() -> None:
+    lookup_rows = [
+        {
+            "lookup_table_id": f"lookup-{index}",
+            "template_type": "roofing",
+            "sheet_name": "Materials",
+            "table_name": "board",
+            "row_number": 10 + index,
+            "lookup_key": "ISO board",
+            "values_json": json.dumps(
+                {
+                    "A": "ISO board",
+                    "B": f'{index + 1}"',
+                    "C": 40 + index,
+                    "D": 35 + index,
+                    "E": "Square",
+                }
+            ),
+        }
+        for index in range(7)
+    ]
+    data = EstimatorData(
+        template_lookup_tables=pd.DataFrame(lookup_rows),
+        pricing_catalog=pd.DataFrame(
+            [
+                {
+                    "category": "Coatings",
+                    "item_name": f"Coating {index}",
+                    "unit_price": 100 + index,
+                }
+                for index in range(80)
+            ]
+        ),
+    )
+
+    context = estimator_context_summary(
+        data,
+        scope={"template_type": "roofing", "pricing_cap_test": "materials-first"},
+    )
+    retained_lookup_ids = {
+        row.get("lookup_table_id")
+        for row in context["pricing_candidates_by_bucket"]
+        if row.get("source") == "template_lookup_materials"
+    }
+
+    assert retained_lookup_ids == {f"lookup-{index}" for index in range(7)}
+
+
+def test_materials_lookup_price_reenables_formula_ready_iso_board_row() -> None:
+    data = EstimatorData(
+        template_lookup_tables=pd.DataFrame(
+            [
+                {
+                    "lookup_table_id": "iso-2",
+                    "template_type": "roofing",
+                    "sheet_name": "Materials",
+                    "table_name": "board",
+                    "row_number": 20,
+                    "lookup_key": "ISO board",
+                    "values_json": '{"A": "ISO board", "B": "2\\"", "C": 77.47, "D": 64.5, "E": "Square"}',
+                }
+            ]
+        )
+    )
+
+    result = run_estimator_chat_turn(
+        [{"role": "user", "content": "Install 2 inch ISO over 3,120 square feet."}],
+        data=data,
+        template_type_hint="roofing",
+        provider=lambda _messages, _model: {
+            "assistant_message": "Drafted ISO scope.",
+            "estimator_notes": "Install 2 inch ISO.",
+            "scope_overrides": {"template_type": "roofing"},
+            "workbook_decision_preferences": [
+                {
+                    "decision_id": "roofing_board_stock_row_59",
+                    "template_bucket": "board_stock",
+                    "workbook_row": "59",
+                    "include": False,
+                    "review_required": True,
+                    "proposed_values": {"basis_sqft": 3120, "thickness_inches": 2},
+                    "review_reasons": [
+                        "Included row is missing required calculation input(s): price_per_square"
+                    ],
+                }
+            ],
+            "historical_comparison": [],
+            "estimating_plan": {},
+            "assumption_details": [],
+            "rejected_precedents": [],
+            "missing_questions": [],
+            "assumptions": [],
+            "warnings": [],
+            "confidence": 0.85,
+        },
+        model="test-model",
+    )
+
+    board = result.workbook_decision_preferences[0]
+    assert board["include"] is True
+    assert board["proposed_values"]["price_per_square"] == 77.47
+    assert board["evidence"][0]["workbook_sheet"] == "Materials"
+
+
 def test_failed_ai_chat_does_not_promote_historical_rows_to_workbook_changes() -> None:
     context_data = EstimatorData(
         template_examples=pd.DataFrame(
