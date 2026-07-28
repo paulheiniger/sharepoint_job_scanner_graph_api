@@ -319,7 +319,11 @@ def run_estimator_chat_turn(
             if not ((structured_answer_key.mapped_row_count or reference_summary.mapped_row_count) and not should_apply_reference):
                 fallback_result = _supplement_result_with_historical_context_preferences(fallback_result, context)
             if not should_apply_reference:
-                fallback_result = _apply_context_calculation_defaults(fallback_result, context)
+                fallback_result = _apply_context_calculation_defaults(
+                    fallback_result,
+                    context,
+                    user_messages=message_list,
+                )
             return _apply_learning_intent(
                 _align_decision_preferences_with_deterministic_scope(fallback_result),
                 learning_intent,
@@ -360,7 +364,11 @@ def run_estimator_chat_turn(
             )
         else:
             result = _supplement_result_with_historical_context_preferences(result, context)
-            result = _apply_context_calculation_defaults(result, context)
+            result = _apply_context_calculation_defaults(
+                result,
+                context,
+                user_messages=message_list,
+            )
         result = _align_decision_preferences_with_deterministic_scope(result)
         return _apply_learning_intent(
             result,
@@ -383,7 +391,11 @@ def run_estimator_chat_turn(
     if not ((structured_answer_key.mapped_row_count or reference_summary.mapped_row_count) and not should_apply_reference):
         deterministic_result = _supplement_result_with_historical_context_preferences(deterministic_result, context)
     if not should_apply_reference:
-        deterministic_result = _apply_context_calculation_defaults(deterministic_result, context)
+        deterministic_result = _apply_context_calculation_defaults(
+            deterministic_result,
+            context,
+            user_messages=message_list,
+        )
     return _apply_learning_intent(
         _align_decision_preferences_with_deterministic_scope(deterministic_result),
         learning_intent,
@@ -712,10 +724,41 @@ _UNIT_PRICE_FIELDS = {
     "unit_price_per_thousand",
 }
 
+_PRICE_BUCKET_ALIASES = {
+    "dumpsters": "dumpster",
+    "disposal": "dumpster",
+    "fastener": "fasteners",
+    "plate": "plates",
+}
+
+_PRICE_QUESTION_BUCKET_TERMS = {
+    "dumpster": ("dumpster", "disposal"),
+    "fasteners": ("fastener", "screw", "auger"),
+    "plates": ("plate",),
+}
+
+_ROOFING_LABOR_MATERIAL_DRIVERS = {
+    "labor_base": ({"coating"}, {"26"}),
+    "labor_top_coat": ({"coating"}, {"27"}),
+    "labor_prime": ({"primer"}, set()),
+    "labor_seam_sealer": ({"fabric", "seams_misc"}, set()),
+    "labor_caulk": ({"caulk_detail", "caulk_sealant"}, set()),
+}
+
+_ROOFING_LABOR_AREA_DRIVERS = {
+    "labor_prep",
+    "labor_cleanup",
+    "labor_loading",
+    "labor_misc",
+    "labor_details",
+}
+
 
 def _apply_context_calculation_defaults(
     result: EstimatorChatResult,
     context: dict[str, Any],
+    *,
+    user_messages: Iterable[dict[str, Any]] | None = None,
 ) -> EstimatorChatResult:
     """Fill formula inputs from trusted context without copying historical takeoff."""
 
@@ -874,14 +917,23 @@ def _apply_context_calculation_defaults(
                             "evidence_count": int(_safe_positive_number(foam_digest.get("evidence_count"))),
                         }
                     )
+        menu_row = _decision_menu_row_for_preference(row, template_type=template_type)
+        requirements = [str(item) for item in menu_row.get("formula_requirements") or []]
+        missing_requirements = _missing_formula_requirements(values, requirements)
+        if not missing_requirements and values.get("scope_status") == "recognized_awaiting_price":
+            values["scope_status"] = "calculation_ready"
+            row["review_reasons"] = [
+                reason
+                for reason in row.get("review_reasons") or []
+                if _clean_string(reason)
+                != "Scope is recognized; a current price or formula input is still required."
+            ]
         values = {key: value for key, value in values.items() if value not in (None, "", 0, 0.0)}
         if not sources:
             continue
         row["proposed_values"] = values
         if _formula_disable_reason_present(row):
-            menu_row = _decision_menu_row_for_preference(row, template_type=template_type)
-            requirements = [str(item) for item in menu_row.get("formula_requirements") or []]
-            if not _missing_formula_requirements(values, requirements):
+            if not missing_requirements:
                 row["include"] = True
                 row["review_reasons"] = [
                     reason
@@ -907,6 +959,12 @@ def _apply_context_calculation_defaults(
         rows[index] = row
         changed_count += len(sources)
 
+    rows = _scale_historical_roofing_labor_preferences(
+        rows,
+        context=context,
+        scope=result.scope_overrides or {},
+        user_messages=user_messages,
+    )
     result.workbook_decision_preferences = _upsert_roofing_travel_defaults(
         _clean_decision_preferences(rows, template_type="roofing"),
         scope=result.scope_overrides or {},
@@ -933,6 +991,10 @@ def _apply_context_calculation_defaults(
                 and ("trip count" in question.lower() or "truck" in question.lower() or "sales" in question.lower())
             )
         ]
+    result.missing_questions = _remove_resolved_price_questions(
+        result.missing_questions,
+        result.workbook_decision_preferences,
+    )
     if changed_count:
         result.raw_response = {
             **(result.raw_response or {}),
@@ -953,6 +1015,283 @@ def _apply_context_calculation_defaults(
         if warning not in (result.warnings or []):
             result.warnings = [*(result.warnings or []), warning]
     return result
+
+
+def _scale_historical_roofing_labor_preferences(
+    rows: list[dict[str, Any]],
+    *,
+    context: dict[str, Any],
+    scope: dict[str, Any],
+    user_messages: Iterable[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Replace copied comparable durations with current-job driver calculations."""
+
+    cue_by_id: dict[str, dict[str, Any]] = {}
+    cue_by_row: dict[str, dict[str, Any]] = {}
+    for cue in context.get("historical_answer_key_decision_cues") or []:
+        if not isinstance(cue, dict):
+            continue
+        decision_id = _clean_string(cue.get("decision_id"))
+        workbook_row = _safe_row_number(cue.get("workbook_row"))
+        if decision_id:
+            cue_by_id[decision_id] = cue
+        if workbook_row:
+            cue_by_row[workbook_row] = cue
+
+    current_quantities = _current_roofing_material_driver_quantities(rows)
+    current_area = _safe_positive_number(
+        scope.get("canonical_area_total_sqft")
+        or scope.get("estimated_sqft")
+        or scope.get("net_sqft")
+        or scope.get("gross_sqft")
+    )
+    scaled_rows: list[dict[str, Any]] = []
+    for raw_row in rows:
+        row = dict(raw_row)
+        bucket = _clean_string(row.get("template_bucket")).lower().replace(" ", "_").replace("-", "_")
+        if not bucket.startswith("labor_"):
+            scaled_rows.append(row)
+            continue
+        if _explicit_current_labor_duration(user_messages, labor_bucket=bucket):
+            scaled_rows.append(row)
+            continue
+        cue = cue_by_id.get(_clean_string(row.get("decision_id"))) or cue_by_row.get(
+            _safe_row_number(row.get("workbook_row"))
+        )
+        if not isinstance(cue, dict):
+            scaled_rows.append(row)
+            continue
+        driver = cue.get("labor_driver") if isinstance(cue, dict) and isinstance(cue.get("labor_driver"), dict) else {}
+        rate = _safe_positive_number(driver.get("historical_driver_rate"))
+        if rate <= 0:
+            scaled_rows.append(
+                _reject_unscaled_historical_labor_duration(
+                    row,
+                    "Historical labor evidence did not contain enough area or material quantity to derive a production rate.",
+                )
+            )
+            continue
+        driver_type = _clean_string(driver.get("labor_driver_type"))
+        quantity = (
+            current_area
+            if driver_type == "project_sqft"
+            else _safe_positive_number(current_quantities.get(bucket))
+        )
+        divisor = 1000.0 if driver_type == "project_sqft" else 1.0
+        if quantity <= 0:
+            scaled_rows.append(
+                _reject_unscaled_historical_labor_duration(
+                    row,
+                    "The current job is missing the project area or material quantity required to scale historical labor.",
+                )
+            )
+            continue
+
+        values = dict(row.get("proposed_values") or {})
+        for field in (
+            "days",
+            "editable_days",
+            "total_hours",
+            "editable_total_hours",
+        ):
+            values.pop(field, None)
+        for field in ("resolved_template_option", "selected_pricing_candidate"):
+            if _safe_positive_number(values.get(field)) > 0:
+                values.pop(field, None)
+        total_hours = quantity / divisor * rate
+        crew_size = int(_safe_positive_number(values.get("crew_size")) or 4)
+        rounded_hours = round(total_hours, 1)
+        rounded_days = round(rounded_hours / max(crew_size * 10.0, 1.0), 2)
+        values.update(
+            {
+                "total_hours": rounded_hours,
+                "editable_total_hours": rounded_hours,
+                "days": rounded_days,
+                "editable_days": rounded_days,
+                "historical_driver_rate": round(rate, 6),
+                "historical_driver_source": "historical_answer_key_production_rate",
+                "historical_driver_evidence_count": int(
+                    _safe_positive_number(cue.get("support_count"))
+                ),
+                "labor_driver_type": driver_type,
+                "labor_driver_quantity": round(quantity, 4),
+                "labor_driver_unit": driver.get("labor_driver_unit"),
+                "labor_driver_rate_unit": driver.get("labor_driver_rate_unit"),
+                "labor_driver_applied": True,
+            }
+        )
+        row["proposed_values"] = values
+        driver_evidence = {
+            "source": "historical_answer_key_labor_driver",
+            "driver_type": driver_type,
+            "driver_quantity": round(quantity, 4),
+            "driver_rate": round(rate, 6),
+            "driver_rate_unit": driver.get("labor_driver_rate_unit"),
+            "calculated_total_hours": rounded_hours,
+        }
+        evidence = row.get("evidence")
+        if isinstance(evidence, dict):
+            evidence = dict(evidence)
+            driver_rows = evidence.get("historical_labor_driver")
+            driver_rows = list(driver_rows) if isinstance(driver_rows, list) else []
+            driver_rows.append(driver_evidence)
+            evidence["historical_labor_driver"] = driver_rows
+            row["evidence"] = evidence
+        else:
+            evidence_rows = list(evidence) if isinstance(evidence, list) else []
+            evidence_rows.append(driver_evidence)
+            row["evidence"] = evidence_rows
+        reasons = list(row.get("review_reasons") or [])
+        reason = (
+            "Labor duration was recalculated from the historical production rate "
+            "and the current job's material quantity or project area; comparable "
+            "days and total hours were not copied."
+        )
+        if reason not in reasons:
+            reasons.append(reason)
+        row["review_reasons"] = reasons
+        scaled_rows.append(row)
+    return scaled_rows
+
+
+def _explicit_current_labor_duration(
+    user_messages: Iterable[dict[str, Any]] | None,
+    *,
+    labor_bucket: str = "",
+) -> bool:
+    text = " ".join(
+        str(message.get("content") or "")
+        for message in user_messages or []
+        if isinstance(message, dict)
+        and str(message.get("role") or "").lower() == "user"
+    )
+    generic = bool(
+        re.search(
+            r"\b(?:labor|crew)"
+            r"\b.{0,60}\b\d+(?:\.\d+)?\s*(?:crew\s*)?(?:hours?|hrs?|days?)\b",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        or re.search(
+            r"\b\d+(?:\.\d+)?\s*(?:crew\s*)?(?:hours?|hrs?|days?)\b.{0,60}"
+            r"\b(?:labor|crew)\b",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+    )
+    if generic:
+        return True
+    terms = {
+        "labor_prep": r"prep(?:aration)?|power\s*wash",
+        "labor_prime": r"prime|primer",
+        "labor_seam_sealer": r"seam",
+        "labor_base": r"base\s*coat",
+        "labor_top_coat": r"top\s*coat",
+        "labor_caulk": r"caulk|sealant",
+        "labor_details": r"detail",
+        "labor_cleanup": r"clean\s*up|cleanup",
+        "labor_loading": r"load(?:ing)?",
+        "labor_misc": r"misc(?:ellaneous)?",
+    }.get(labor_bucket)
+    if not terms:
+        return False
+    return bool(
+        re.search(
+            rf"\b(?:{terms})\b.{{0,60}}\b\d+(?:\.\d+)?\s*(?:crew\s*)?(?:hours?|hrs?|days?)\b",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        or re.search(
+            rf"\b\d+(?:\.\d+)?\s*(?:crew\s*)?(?:hours?|hrs?|days?)\b.{{0,60}}\b(?:{terms})\b",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+    )
+
+
+def _reject_unscaled_historical_labor_duration(
+    row: dict[str, Any],
+    reason: str,
+) -> dict[str, Any]:
+    rejected = dict(row)
+    values = dict(rejected.get("proposed_values") or {})
+    for field in (
+        "days",
+        "editable_days",
+        "total_hours",
+        "editable_total_hours",
+    ):
+        values.pop(field, None)
+    for field in ("resolved_template_option", "selected_pricing_candidate"):
+        if _safe_positive_number(values.get(field)) > 0:
+            values.pop(field, None)
+    rejected["proposed_values"] = values
+    rejected["include"] = False
+    rejected["review_required"] = True
+    reasons = list(rejected.get("review_reasons") or [])
+    message = (
+        f"{reason} Comparable days and total hours were not copied; estimator "
+        "review is required."
+    )
+    if message not in reasons:
+        reasons.append(message)
+    rejected["review_reasons"] = reasons
+    return rejected
+
+
+def _current_roofing_material_driver_quantities(
+    rows: Iterable[dict[str, Any]],
+) -> dict[str, float]:
+    by_bucket: dict[str, list[tuple[str, float]]] = {}
+    for row in rows:
+        if not isinstance(row, dict) or row.get("include") is not True:
+            continue
+        bucket = _clean_string(row.get("template_bucket")).lower().replace(" ", "_").replace("-", "_")
+        if bucket.startswith("labor_"):
+            continue
+        values = row.get("proposed_values") if isinstance(row.get("proposed_values"), dict) else {}
+        quantity = _roofing_material_quantity(bucket, values)
+        if quantity > 0:
+            by_bucket.setdefault(bucket, []).append(
+                (_safe_row_number(row.get("workbook_row")), quantity)
+            )
+
+    quantities: dict[str, float] = {}
+    for labor_bucket, (material_buckets, preferred_rows) in _ROOFING_LABOR_MATERIAL_DRIVERS.items():
+        candidates = [
+            (row_number, quantity)
+            for material_bucket in material_buckets
+            for row_number, quantity in by_bucket.get(material_bucket, [])
+        ]
+        preferred = [
+            quantity
+            for row_number, quantity in candidates
+            if row_number in preferred_rows
+        ]
+        quantities[labor_bucket] = sum(preferred or [quantity for _, quantity in candidates])
+    return quantities
+
+
+def _roofing_material_quantity(bucket: str, values: dict[str, Any]) -> float:
+    direct = _safe_positive_number(
+        values.get("estimated_gallons")
+        or values.get("estimated_units")
+        or values.get("units")
+        or values.get("quantity")
+        or values.get("linear_ft")
+    )
+    if direct > 0:
+        return direct
+    area = _safe_positive_number(values.get("basis_sqft") or values.get("area_sqft"))
+    if bucket == "coating" and area > 0:
+        rate = _safe_positive_number(values.get("gal_per_100_sqft"))
+        if rate > 0:
+            return area * rate / 100.0
+    if bucket == "primer" and area > 0:
+        coverage = _safe_positive_number(values.get("coverage_sqft_per_unit"))
+        if coverage > 0:
+            return area / coverage
+    return 0.0
 
 
 def _upsert_explicit_linear_scope_preferences(
@@ -1163,8 +1502,7 @@ def _latest_historical_price_candidate(
         dict(candidate)
         for candidate in context.get("_deterministic_latest_historical_unit_prices") or []
         if isinstance(candidate, dict)
-        and _clean_string(candidate.get("template_bucket")).lower().replace(" ", "_").replace("-", "_")
-        == bucket
+        and _canonical_price_bucket(candidate.get("template_bucket")) == _canonical_price_bucket(bucket)
         and _safe_positive_number(candidate.get("unit_price")) > 0
     ]
     if not candidates:
@@ -1202,6 +1540,52 @@ def _latest_historical_price_candidate(
     selected = max(candidates, key=_historical_price_recency_key)
     selected["match_quality"] = "bucket_latest_review"
     return selected
+
+
+def _canonical_price_bucket(value: Any) -> str:
+    bucket = _clean_string(value).lower().replace(" ", "_").replace("-", "_")
+    return _PRICE_BUCKET_ALIASES.get(bucket, bucket)
+
+
+def _remove_resolved_price_questions(
+    questions: Iterable[str],
+    rows: Iterable[dict[str, Any]],
+) -> list[str]:
+    resolved_buckets: set[str] = set()
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        bucket = _canonical_price_bucket(row.get("template_bucket"))
+        price_fields = _CONTEXT_DEFAULT_FIELDS_BY_BUCKET.get(bucket, ())
+        values = dict(row.get("proposed_values") or {})
+        if price_fields and any(
+            field in _UNIT_PRICE_FIELDS and _formula_value_present(values, field)
+            for field in price_fields
+        ):
+            resolved_buckets.add(bucket)
+
+    cleaned: list[str] = []
+    for question in questions or []:
+        text = _clean_string(question)
+        lowered = text.lower()
+        if not any(term in lowered for term in ("price", "pricing", "unit cost", "unit rate")):
+            cleaned.append(text)
+            continue
+        if any(
+            re.search(rf"\b{term}\b", lowered)
+            for term in ("quantity", "count", "size", "length", "thickness", "pattern", "specification")
+        ):
+            cleaned.append(text)
+            continue
+        mentioned = {
+            bucket
+            for bucket, terms in _PRICE_QUESTION_BUCKET_TERMS.items()
+            if any(re.search(rf"\b{re.escape(term)}s?\b", lowered) for term in terms)
+        }
+        if mentioned and mentioned <= resolved_buckets:
+            continue
+        cleaned.append(text)
+    return cleaned
 
 
 def _historical_price_name_tokens(value: Any) -> set[str]:
@@ -2177,6 +2561,104 @@ def _empty_chat_decision_context(scope: dict[str, Any] | None) -> dict[str, Any]
     return summary
 
 
+def _historical_answer_key_area(
+    example: dict[str, Any],
+    answer_key: dict[str, Any],
+) -> float:
+    context = (
+        answer_key.get("job_context")
+        if isinstance(answer_key.get("job_context"), dict)
+        else {}
+    )
+    return _safe_positive_number(
+        example.get("area_sqft")
+        or example.get("verified_area_sqft")
+        or context.get("area_sqft")
+        or context.get("estimated_sqft")
+    )
+
+
+def _historical_roofing_labor_driver(
+    labor_decision: dict[str, Any],
+    decisions: list[dict[str, Any]],
+    *,
+    reference_area: float,
+) -> dict[str, Any]:
+    if _clean_string(labor_decision.get("section")) != "roofing_labor_template_decisions":
+        return {}
+    bucket = _clean_string(labor_decision.get("template_bucket")).lower().replace(" ", "_").replace("-", "_")
+    inputs = (
+        labor_decision.get("inputs")
+        if isinstance(labor_decision.get("inputs"), dict)
+        else {}
+    )
+    hours = _safe_positive_number(
+        inputs.get("total_hours") or inputs.get("editable_total_hours")
+    )
+    if hours <= 0:
+        days = _safe_positive_number(inputs.get("days") or inputs.get("editable_days"))
+        crew = _safe_positive_number(inputs.get("crew_size"))
+        if days > 0 and crew > 0:
+            hours = days * crew * 10.0
+    if hours <= 0:
+        return {}
+
+    if bucket in _ROOFING_LABOR_AREA_DRIVERS and reference_area > 0:
+        return {
+            "labor_driver_type": "project_sqft",
+            "labor_driver_unit": "sqft",
+            "labor_driver_rate_unit": "hours_per_1000_sqft",
+            "historical_driver_rate": round(hours / reference_area * 1000.0, 6),
+        }
+
+    material_spec = _ROOFING_LABOR_MATERIAL_DRIVERS.get(bucket)
+    if not material_spec:
+        return {}
+    material_buckets, preferred_rows = material_spec
+    candidates: list[tuple[str, float]] = []
+    for decision in decisions:
+        material_bucket = _clean_string(decision.get("template_bucket")).lower().replace(" ", "_").replace("-", "_")
+        if material_bucket not in material_buckets:
+            continue
+        material_inputs = (
+            decision.get("inputs")
+            if isinstance(decision.get("inputs"), dict)
+            else {}
+        )
+        quantity = _roofing_material_quantity(material_bucket, material_inputs)
+        if quantity > 0:
+            candidates.append(
+                (_safe_row_number(decision.get("workbook_row")), quantity)
+            )
+    preferred = [
+        quantity
+        for row_number, quantity in candidates
+        if row_number in preferred_rows
+    ]
+    material_quantity = sum(preferred or [quantity for _, quantity in candidates])
+    if material_quantity <= 0:
+        return {}
+    driver_unit = "lf" if bucket == "labor_seam_sealer" else "unit"
+    if bucket in {"labor_base", "labor_top_coat"}:
+        driver_unit = "gal"
+    return {
+        "labor_driver_type": "material_quantity",
+        "labor_driver_unit": driver_unit,
+        "labor_driver_rate_unit": f"hours_per_{driver_unit}",
+        "historical_driver_rate": round(hours / material_quantity, 6),
+    }
+
+
+def _median_number(values: Iterable[float]) -> float:
+    ordered = sorted(float(value) for value in values)
+    if not ordered:
+        return 0.0
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / 2.0
+
+
 def _historical_answer_key_decision_cues(
     answer_key_examples: dict[str, Any],
     decision_menu: list[dict[str, Any]],
@@ -2231,7 +2713,15 @@ def _historical_answer_key_decision_cues(
             "match_reasons": [str(item) for item in (example.get("match_reasons") or [])[:5]],
         }
         answer_key = example.get("reference_answer_key") if isinstance(example.get("reference_answer_key"), dict) else {}
-        for decision in answer_key.get("decisions") or []:
+        answer_key_decisions = [
+            decision
+            for decision in answer_key.get("decisions") or []
+            if isinstance(decision, dict)
+        ]
+        reference_area = _historical_answer_key_area(example, answer_key)
+        if reference_area > 0:
+            example_ref["reference_area_sqft"] = round(reference_area, 4)
+        for decision in answer_key_decisions:
             if not isinstance(decision, dict):
                 continue
             section = _clean_string(decision.get("section"))
@@ -2245,6 +2735,26 @@ def _historical_answer_key_decision_cues(
             outputs = _compact_decision_values(
                 decision.get("calculated_outputs") if isinstance(decision.get("calculated_outputs"), dict) else {}
             )
+            labor_driver = _historical_roofing_labor_driver(
+                decision,
+                answer_key_decisions,
+                reference_area=reference_area,
+            )
+            if labor_driver:
+                inputs = {
+                    field: value
+                    for field, value in inputs.items()
+                    if field
+                    not in {
+                        "days",
+                        "editable_days",
+                        "total_hours",
+                        "editable_total_hours",
+                        "resolved_template_option",
+                        "selected_pricing_candidate",
+                    }
+                }
+                inputs.update(labor_driver)
             target = grouped.setdefault(
                 key,
                 {
@@ -2258,6 +2768,7 @@ def _historical_answer_key_decision_cues(
                     "examples": [],
                     "sample_inputs": {},
                     "sample_outputs": {},
+                    "labor_driver_rates": [],
                     "required_inputs": [],
                 },
             )
@@ -2273,6 +2784,10 @@ def _historical_answer_key_decision_cues(
                 line_item = _clean_string(decision.get("line_item") or decision.get("template_option"))
                 if line_item:
                     target["line_item"] = line_item
+            if labor_driver:
+                target["labor_driver_rates"].append(
+                    _safe_positive_number(labor_driver.get("historical_driver_rate"))
+                )
             if len(target["examples"]) < 3 and example_ref not in target["examples"]:
                 target["examples"].append(example_ref)
             menu_row = (
@@ -2286,6 +2801,26 @@ def _historical_answer_key_decision_cues(
 
     cues = list(grouped.values())
     for cue in cues:
+        driver_rates = [
+            _safe_positive_number(value)
+            for value in cue.pop("labor_driver_rates", [])
+            if _safe_positive_number(value) > 0
+        ]
+        if driver_rates:
+            sample_inputs = cue.get("sample_inputs") if isinstance(cue.get("sample_inputs"), dict) else {}
+            median_rate = _median_number(driver_rates)
+            sample_inputs["historical_driver_rate"] = round(median_rate, 6)
+            cue["sample_inputs"] = sample_inputs
+            cue["labor_driver"] = {
+                key: sample_inputs.get(key)
+                for key in (
+                    "labor_driver_type",
+                    "labor_driver_unit",
+                    "labor_driver_rate_unit",
+                    "historical_driver_rate",
+                )
+            }
+            cue["labor_driver"]["historical_driver_evidence_count"] = len(driver_rates)
         required_inputs = [str(value) for value in cue.get("required_inputs") or [] if str(value or "").strip()]
         sample_inputs = cue.get("sample_inputs") if isinstance(cue.get("sample_inputs"), dict) else {}
         formula_ready = _historical_cue_formula_ready(sample_inputs, required_inputs)
@@ -4341,6 +4876,9 @@ def _chat_prompt_messages(
         "over generic package cooccurrence when evaluating a row. For supported formula_ready cues, start from suggested_preference "
         "and adjust quantities to current area/thickness/trips when needed. For non-formula-ready cues, do not include the row unless "
         "you can fill the missing_inputs from current notes or other trusted context; otherwise leave it review-marked and explain. "
+        "Never copy labor days or total hours from a historical answer key into the current job. Historical labor is a production-rate "
+        "reference only: material labor must scale from the current material quantity, while prep, cleanup, loading, and other general "
+        "labor must scale from current project square footage. Preserve absolute labor time only when the current user explicitly states it. "
         "Use matched profiles as evidence for normal package inclusion and scope assumptions, but do not invent values that are not "
         "supported by the current prompt, workbook history, product guidance, or estimator memory. "
         "Ask questions only when the answer materially changes scope, safety/code compliance, system selection, warranty eligibility, or price. "
@@ -4393,6 +4931,10 @@ def _chat_prompt_messages(
         "product R-per-inch evidence, or matching historical template evidence, otherwise ask or mark thickness review_required. "
         "For roofing jobs, use roofing workbook buckets directly: foam for roof SPF, coating, primer, caulk_detail, fabric, seams_misc, "
         "penetrations, board_stock, fasteners, plates, granules, dumpster, lift, generator, sales_trips, truck_expense, and roofing labor buckets. "
+        "Multiple roof coating passes or products are often additive, such as separate base and top coats. When the current scope or a relevant "
+        "comparable supports multiple coating passes, preserve each pass as a distinct coating decision using separate available workbook rows "
+        "26, 27, and 28; do not collapse them merely because they share the coating bucket. Collapse only true duplicate proposals for the same "
+        "coating pass and workbook row. "
         "For roofing Loading row 136 and Traveling row 138, do not use days, crew_size, daily_rate, hourly_rate, or total_hours; "
         "use only hours_per_day, people_count, trip_count, and unit_price because those rows are logistics expense rows. "
         "For roofing Infrared row 141 use hours_per_day and unit_price; for Meals / Hotel row 144 use days, people_count, and unit_price. "
@@ -5304,6 +5846,8 @@ def _decision_menu_row_for_preference(row: dict[str, Any], *, template_type: str
 
 def _requirement_fields(requirement: str) -> list[str]:
     text = _clean_string(requirement).lower()
+    if text in FORMULA_INPUT_ALIASES:
+        return [text]
     fields = []
     for field in sorted(FORMULA_INPUT_ALIASES, key=len, reverse=True):
         if re.search(rf"(?<![a-z0-9]){re.escape(field)}(?![a-z0-9])", text):

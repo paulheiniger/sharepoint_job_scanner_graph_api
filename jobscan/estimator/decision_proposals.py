@@ -206,6 +206,11 @@ REFERENCE_PROJECT_OVERRIDE_FIELDS = {
     "historical_driver_rate",
     "historical_driver_source",
     "historical_driver_evidence_count",
+    "labor_driver_type",
+    "labor_driver_quantity",
+    "labor_driver_unit",
+    "labor_driver_rate_unit",
+    "labor_driver_applied",
     "formula_mode",
     "markup_treatment",
     "template_line",
@@ -251,6 +256,14 @@ CHAT_ESTIMATOR_OVERRIDE_FIELDS = {
     "daily_rate",
     "hourly_rate",
     "labor_rate",
+    "historical_driver_rate",
+    "historical_driver_source",
+    "historical_driver_evidence_count",
+    "labor_driver_type",
+    "labor_driver_quantity",
+    "labor_driver_unit",
+    "labor_driver_rate_unit",
+    "labor_driver_applied",
     "formula_mode",
     "markup_treatment",
     "template_line",
@@ -2016,6 +2029,28 @@ def _chat_estimator_proposals(template_type: str, scope: dict[str, Any]) -> list
     normalized_template_type = _norm(template_type)
     notes = _note_text(scope)
     raw_items = [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
+    roofing_coating_items = [
+        item
+        for item in raw_items
+        if normalized_template_type == "roofing"
+        and _canonical_package(item.get("template_bucket") or item.get("package") or item.get("category"))
+        == "coating"
+    ]
+    reserved_roofing_coating_rows = {
+        row_number
+        for item in roofing_coating_items
+        for row_number in (
+            str(item.get("workbook_row") or item.get("row_number") or "").strip()
+            or _decision_id_row_number(item.get("decision_id")),
+        )
+        if row_number in {"26", "27", "28"}
+    }
+    available_roofing_coating_rows = [
+        row_number
+        for row_number in ("26", "27", "28")
+        if row_number not in reserved_roofing_coating_rows
+    ]
+    assign_roofing_coating_rows = len(roofing_coating_items) > 1
     insulation_foam_items_without_row = [
         item
         for item in raw_items
@@ -2038,6 +2073,16 @@ def _chat_estimator_proposals(template_type: str, scope: dict[str, Any]) -> list
         if normalized_template_type != "roofing" and item_section.startswith("roofing "):
             continue
         bucket = _canonical_package(item.get("template_bucket") or item.get("package") or item.get("category"))
+        if assign_roofing_coating_rows and normalized_template_type == "roofing" and bucket == "coating":
+            if (
+                not str(item.get("workbook_row") or item.get("row_number") or "").strip()
+                and not _decision_id_row_number(item.get("decision_id"))
+                and available_roofing_coating_rows
+            ):
+                item = dict(item)
+                assigned_row = available_roofing_coating_rows.pop(0)
+                item["workbook_row"] = assigned_row
+                item["decision_id"] = f"roofing_coating_system_row_{assigned_row}"
         if assign_insulation_foam_rows and normalized_template_type == "insulation" and bucket == "foam":
             if (
                 not str(item.get("workbook_row") or item.get("row_number") or "").strip()

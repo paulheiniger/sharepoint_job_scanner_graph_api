@@ -75,6 +75,77 @@ def test_unchecked_workbench_rows_receive_latest_historical_unit_price() -> None
     assert row["unit_price_observation_count"] == 9
 
 
+def test_unchecked_workbench_uses_bucket_specific_price_fields_and_aliases() -> None:
+    data = EstimatorData(
+        latest_historical_unit_prices=pd.DataFrame(
+            [
+                {
+                    "template_type": "roofing",
+                    "template_bucket": "fasteners",
+                    "workbook_row": 63,
+                    "item_name": "Fasteners",
+                    "unit_price": 250.0,
+                    "source_effective_at": "2026-07-23T15:30:00+00:00",
+                },
+                {
+                    "template_type": "roofing",
+                    "template_bucket": "plates",
+                    "workbook_row": 65,
+                    "item_name": "Plates",
+                    "unit_price": 100.0,
+                    "source_effective_at": "2026-07-27T15:30:00+00:00",
+                },
+                {
+                    "template_type": "roofing",
+                    "template_bucket": "dumpsters",
+                    "workbook_row": 69,
+                    "item_name": "20 Yard",
+                    "unit_price": 600.0,
+                    "source_effective_at": "2026-07-23T15:30:00+00:00",
+                },
+            ]
+        )
+    )
+    workbench = {
+        "scope": {"template_type": "roofing"},
+        "roofing_board_fastener_template_decisions": [
+            {
+                "include": False,
+                "template_bucket": "fasteners",
+                "workbook_row": "63",
+            },
+            {
+                "include": False,
+                "template_bucket": "plates",
+                "workbook_row": "65",
+            },
+        ],
+        "roofing_equipment_template_decisions": [
+            {
+                "include": False,
+                "template_bucket": "dumpster",
+                "workbook_row": "69",
+            },
+        ],
+    }
+
+    updated = workbench_module._prefill_unchecked_latest_historical_unit_prices(
+        workbench,
+        data,
+    )
+    board_rows = {
+        row["template_bucket"]: row
+        for row in updated["roofing_board_fastener_template_decisions"]
+    }
+    dumpster = updated["roofing_equipment_template_decisions"][0]
+
+    assert board_rows["fasteners"]["unit_price_per_thousand"] == 250.0
+    assert board_rows["plates"]["unit_price_per_thousand"] == 100.0
+    assert "unit_price" not in board_rows["fasteners"]
+    assert dumpster["unit_price"] == 600.0
+    assert dumpster["unit_price_source"] == "latest_historical_estimate"
+
+
 def test_latest_historical_price_does_not_override_included_or_manual_rows() -> None:
     data = EstimatorData(
         latest_historical_unit_prices=pd.DataFrame(

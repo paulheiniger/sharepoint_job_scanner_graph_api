@@ -166,6 +166,33 @@ def test_equivalent_saved_aliases_approve_and_collapse_to_one_decision() -> None
     assert approved["decision_template_state"][0]["proposed_values"]["unit_price"] == 42
 
 
+def test_distinct_roof_coating_rows_can_both_be_approved() -> None:
+    state = _ready_roofing_state()
+    state["decision_template_state"].append(
+        {
+            **state["decision_template_state"][0],
+            "decision_id": "roofing_coating_system_row_27",
+            "workbook_row": "27",
+            "proposed_values": {
+                "basis_sqft": 5000,
+                "gal_per_100_sqft": 1.0,
+                "unit_price": 45,
+                "selected_item_name": "Top Coating",
+            },
+        }
+    )
+
+    readiness = evaluate_estimate_readiness(state)
+    approved = approve_estimate_session(state)
+
+    assert readiness["ready"] is True
+    assert readiness["checks"]["workbook_rows_unambiguous"] is True
+    assert [
+        row["workbook_row"]
+        for row in approved["decision_template_state"]
+    ] == ["26", "27"]
+
+
 def test_conflicting_saved_aliases_still_block_approval() -> None:
     state = _ready_roofing_state()
     state["decision_template_state"][0]["proposed_values"]["selector_code"] = "system-a"

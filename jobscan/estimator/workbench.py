@@ -12853,6 +12853,15 @@ def _prefill_unchecked_latest_historical_unit_prices(
     def normalized(value: Any) -> str:
         return " ".join(re.findall(r"[a-z0-9]+", str(value or "").lower()))
 
+    def canonical_bucket(value: Any) -> str:
+        bucket = normalized(value).replace(" ", "_")
+        return {
+            "dumpsters": "dumpster",
+            "disposal": "dumpster",
+            "fastener": "fasteners",
+            "plate": "plates",
+        }.get(bucket, bucket)
+
     def row_number(value: Any) -> str:
         number = safe_number(value, 0.0)
         return str(int(number)) if number > 0 else str(value or "").strip()
@@ -12863,13 +12872,16 @@ def _prefill_unchecked_latest_historical_unit_prices(
                 not isinstance(row, dict)
                 or bool(row.get("include"))
                 or bool(row.get("manual_override"))
-                or safe_number(row.get("unit_price"), 0.0) > 0
+                or any(
+                    safe_number(row.get(field), 0.0) > 0
+                    for field in ("unit_price", "price_per_square", "unit_price_per_thousand")
+                )
             ):
                 continue
             workbook_row = row_number(row.get("workbook_row") or row.get("row_number"))
             if not workbook_row:
                 continue
-            bucket = normalized(row.get("template_bucket") or row.get("package"))
+            bucket = canonical_bucket(row.get("template_bucket") or row.get("package"))
             candidates = [
                 candidate
                 for candidate in records
@@ -12879,7 +12891,7 @@ def _prefill_unchecked_latest_historical_unit_prices(
             bucket_candidates = [
                 candidate
                 for candidate in candidates
-                if bucket and normalized(candidate.get("template_bucket")) == bucket
+                if bucket and canonical_bucket(candidate.get("template_bucket")) == bucket
             ]
             candidates = bucket_candidates or candidates
             if not candidates:
@@ -12904,7 +12916,12 @@ def _prefill_unchecked_latest_historical_unit_prices(
                 )
             ]
             selected = (named_candidates or candidates)[0]
-            row["unit_price"] = float(selected["_unit_price_numeric"])
+            price_field = {
+                "board_stock": "price_per_square",
+                "fasteners": "unit_price_per_thousand",
+                "plates": "unit_price_per_thousand",
+            }.get(bucket, "unit_price")
+            row[price_field] = float(selected["_unit_price_numeric"])
             row["unit_price_source"] = "latest_historical_estimate"
             row["unit_price_historical"] = True
             row["unit_price_source_item"] = selected.get("item_name")

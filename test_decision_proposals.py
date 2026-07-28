@@ -878,6 +878,60 @@ def test_estimator_chat_roofing_shorthand_decision_ids_are_canonicalized() -> No
     assert primer["proposed_values"]["basis_sqft"] == 9600
 
 
+def test_estimator_chat_assigns_repeated_rowless_roof_coatings_to_distinct_rows() -> None:
+    proposals = build_decision_proposals(
+        {
+            "template_type": "roofing",
+            "division": "Roofing",
+            "estimated_sqft": 8000,
+            "estimator_chat": {
+                "source": "ai_chat",
+                "confidence": 0.8,
+                "assistant_message": "Use separate base and top coating passes from the comparable.",
+                "workbook_decision_preferences": [
+                    {
+                        "template_bucket": "coating",
+                        "include": True,
+                        "proposed_values": {
+                            "basis_sqft": 8000,
+                            "gal_per_100_sqft": 1.5,
+                            "unit_price": 36,
+                            "selected_pricing_candidate": "Base Coating",
+                        },
+                    },
+                    {
+                        "template_bucket": "coating",
+                        "include": True,
+                        "proposed_values": {
+                            "basis_sqft": 8000,
+                            "gal_per_100_sqft": 1.0,
+                            "unit_price": 42,
+                            "selected_pricing_candidate": "Top Coating",
+                        },
+                    },
+                ],
+            },
+        }
+    )
+
+    coatings = sorted(
+        (
+            proposal
+            for proposal in proposals
+            if proposal["section"] == "roofing_coating_template_decisions"
+        ),
+        key=lambda proposal: proposal["workbook_row"],
+    )
+
+    assert [proposal["workbook_row"] for proposal in coatings] == ["26", "27"]
+    assert [proposal["decision_id"] for proposal in coatings] == [
+        "roofing_coating_system_row_26",
+        "roofing_coating_system_row_27",
+    ]
+    assert coatings[0]["proposed_values"]["selected_pricing_candidate"] == "Base Coating"
+    assert coatings[1]["proposed_values"]["selected_pricing_candidate"] == "Top Coating"
+
+
 def test_historical_only_warranty_is_not_invented_without_prompt_evidence() -> None:
     proposals = build_decision_proposals(
         {

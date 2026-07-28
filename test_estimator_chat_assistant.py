@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 import pandas as pd
+import pytest
 
 import jobscan.estimator.chat_assistant as chat_assistant
 from jobscan.estimator.chat_assistant import (
@@ -302,6 +303,8 @@ def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
         assert "if include is true, proposed_values must provide the row's required calculation inputs" in messages[0]["content"]
         assert "Naming a comparable project or section does not authorize copying unrelated rows" in messages[0]["content"]
         assert "Do not include an answer-key row without current-scope support" in messages[0]["content"]
+        assert "Multiple roof coating passes or products are often additive" in messages[0]["content"]
+        assert "separate available workbook rows 26, 27, and 28" in messages[0]["content"]
         assert "estimator_context.decision_menu and estimator_context.formula_requirements" in messages[0]["content"]
         assert "common_template_buckets" in messages[1]["content"]
         assert "decision_recommendation_examples" in messages[1]["content"]
@@ -529,11 +532,150 @@ def test_estimator_context_builds_compact_historical_answer_key_decision_cues() 
     assert "similar historical answer keys" in coating["why_suggested"]
     assert len(coating["examples"]) == 2
     assert top_coat["support_count"] == 2
-    assert top_coat["formula_ready"] is True
+    assert top_coat["formula_ready"] is False
+    assert "days" not in top_coat["sample_inputs"]
+    assert "total_hours" not in top_coat["sample_inputs"]
+    assert top_coat["labor_driver"]["labor_driver_type"] == "material_quantity"
+    assert top_coat["labor_driver"]["labor_driver_unit"] == "gal"
+    assert top_coat["labor_driver"]["historical_driver_rate"] == pytest.approx(
+        50 / 144
+    )
     assert primer["formula_ready"] is False
     assert primer["suggested_preference"]["include"] is False
     assert "coverage_sqft_per_unit" in primer["missing_inputs"]
     assert "unit_price" in primer["missing_inputs"]
+
+
+def test_historical_labor_time_scales_from_current_material_quantity() -> None:
+    context = {
+        "template_type": "roofing",
+        "historical_answer_key_decision_cues": [
+            {
+                "decision_id": "roofing_labor_base_row_122",
+                "template_bucket": "labor_base",
+                "workbook_row": "122",
+                "support_count": 3,
+                "best_similarity_score": 220,
+                "labor_driver": {
+                    "labor_driver_type": "material_quantity",
+                    "labor_driver_unit": "gal",
+                    "labor_driver_rate_unit": "hours_per_gal",
+                    "historical_driver_rate": 0.5,
+                },
+                "suggested_preference": {
+                    "proposed_values": {
+                        "crew_size": 5,
+                        "daily_rate": 2037.75,
+                    }
+                },
+            }
+        ],
+    }
+    result = chat_assistant.EstimatorChatResult(
+        assistant_message="Drafted estimate.",
+        estimator_notes="Coated roof.",
+        scope_overrides={"template_type": "roofing", "estimated_sqft": 5136},
+        workbook_decision_preferences=[
+            {
+                "decision_id": "roofing_coating_system_row_26",
+                "template_bucket": "coating",
+                "workbook_row": "26",
+                "include": True,
+                "proposed_values": {
+                    "basis_sqft": 5136,
+                    "gal_per_100_sqft": 1.5,
+                    "unit_price": 42,
+                },
+            },
+            {
+                "decision_id": "roofing_labor_base_row_122",
+                "template_bucket": "labor_base",
+                "workbook_row": "122",
+                "include": True,
+                "proposed_values": {
+                    "days": 10,
+                    "crew_size": 5,
+                    "daily_rate": 2037.75,
+                    "total_hours": 550,
+                },
+            },
+        ],
+    )
+
+    updated = chat_assistant._apply_context_calculation_defaults(
+        result,
+        context,
+        user_messages=[
+            {
+                "role": "user",
+                "content": "Install coated foam roofing over 5,136 square feet.",
+            }
+        ],
+    )
+
+    labor = next(
+        row
+        for row in updated.workbook_decision_preferences
+        if row["decision_id"] == "roofing_labor_base_row_122"
+    )
+    values = labor["proposed_values"]
+    assert values["labor_driver_quantity"] == pytest.approx(77.04)
+    assert values["total_hours"] == pytest.approx(38.5)
+    assert values["days"] == pytest.approx(0.77)
+    assert values["historical_driver_rate"] == 0.5
+    assert values["historical_driver_source"] == (
+        "historical_answer_key_production_rate"
+    )
+
+
+def test_explicit_current_labor_duration_is_not_rescaled() -> None:
+    result = chat_assistant.EstimatorChatResult(
+        assistant_message="Drafted estimate.",
+        estimator_notes="Coated roof.",
+        scope_overrides={"template_type": "roofing", "estimated_sqft": 5136},
+        workbook_decision_preferences=[
+            {
+                "decision_id": "roofing_labor_base_row_122",
+                "template_bucket": "labor_base",
+                "workbook_row": "122",
+                "include": True,
+                "proposed_values": {
+                    "days": 2,
+                    "crew_size": 5,
+                    "daily_rate": 2037.75,
+                    "total_hours": 100,
+                },
+            }
+        ],
+    )
+    context = {
+        "template_type": "roofing",
+        "historical_answer_key_decision_cues": [
+            {
+                "decision_id": "roofing_labor_base_row_122",
+                "workbook_row": "122",
+                "labor_driver": {
+                    "labor_driver_type": "material_quantity",
+                    "historical_driver_rate": 0.5,
+                },
+            }
+        ],
+    }
+
+    updated = chat_assistant._apply_context_calculation_defaults(
+        result,
+        context,
+        user_messages=[
+            {
+                "role": "user",
+                "content": "Use 2 days for base coat labor.",
+            }
+        ],
+    )
+
+    values = updated.workbook_decision_preferences[0]["proposed_values"]
+    assert values["days"] == 2
+    assert values["total_hours"] == 100
 
 
 def test_historical_context_supplements_but_does_not_override_ai_decision_values() -> None:
@@ -1070,6 +1212,137 @@ def test_latest_historical_price_reenables_unpriced_explicit_row_and_keeps_prove
     assert any("verify before quoting" in reason for reason in gutter["review_reasons"])
     assert result.raw_response["latest_historical_price_rows_used"] == 1
     assert "_deterministic_latest_historical_unit_prices" not in seen_payload["estimator_context"]
+
+
+def test_context_prices_resolve_fasteners_plates_and_plural_dumpsters() -> None:
+    data = EstimatorData(
+        template_lookup_tables=pd.DataFrame(
+            [
+                {
+                    "lookup_table_id": "fastener-3.25",
+                    "template_type": "roofing",
+                    "sheet_name": "Materials",
+                    "table_name": "fasteners",
+                    "row_number": 25,
+                    "lookup_key": "Metal Screws",
+                    "values_json": '{"A": "Metal Screws", "B": 3.25, "C": 90.05, "D": 1000}',
+                },
+                {
+                    "lookup_table_id": "fastener-3.75",
+                    "template_type": "roofing",
+                    "sheet_name": "Materials",
+                    "table_name": "fasteners",
+                    "row_number": 26,
+                    "lookup_key": "Metal Screws",
+                    "values_json": '{"A": "Metal Screws", "B": 3.75, "C": 98.47, "D": 1000}',
+                },
+                {
+                    "lookup_table_id": "plates-current",
+                    "template_type": "roofing",
+                    "sheet_name": "Materials",
+                    "table_name": "plates",
+                    "row_number": 35,
+                    "lookup_key": "Carlisle",
+                    "values_json": '{"A": "Carlisle", "C": 79.05, "D": 1000}',
+                },
+            ]
+        ),
+        latest_historical_unit_prices=pd.DataFrame(
+            [
+                {
+                    "template_type": "roofing",
+                    "template_bucket": "fasteners",
+                    "workbook_row": 63,
+                    "item_name": "Fasteners",
+                    "unit_price": 250.0,
+                    "source_file": "Recent Roofing Estimate.xlsx",
+                    "source_effective_at": "2026-07-23T15:30:00+00:00",
+                },
+                {
+                    "template_type": "roofing",
+                    "template_bucket": "dumpsters",
+                    "workbook_row": 69,
+                    "item_name": "20 Yard",
+                    "unit_price": 600.0,
+                    "source_file": "Recent Roofing Estimate.xlsx",
+                    "source_effective_at": "2026-07-23T15:30:00+00:00",
+                },
+            ]
+        ),
+    )
+
+    missing_reason = "Included row is missing required calculation input(s): "
+    result = run_estimator_chat_turn(
+        [{"role": "user", "content": "Price the board attachment and dumpster rows."}],
+        data=data,
+        template_type_hint="roofing",
+        provider=lambda _messages, _model: {
+            "assistant_message": "Drafted attachment and disposal scope.",
+            "estimator_notes": "Board attachment and dumpster.",
+            "scope_overrides": {"template_type": "roofing"},
+            "workbook_decision_preferences": [
+                {
+                    "decision_id": "roofing_fasteners_row_63",
+                    "template_bucket": "fasteners",
+                    "workbook_row": "63",
+                    "include": False,
+                    "proposed_values": {
+                        "board_area_sqft": 3120,
+                        "scope_status": "recognized_awaiting_price",
+                    },
+                    "review_reasons": [missing_reason + "unit_price_per_thousand"],
+                },
+                {
+                    "decision_id": "roofing_plates_row_65",
+                    "template_bucket": "plates",
+                    "workbook_row": "65",
+                    "include": False,
+                    "proposed_values": {
+                        "board_area_sqft": 3120,
+                        "scope_status": "recognized_awaiting_price",
+                    },
+                    "review_reasons": [missing_reason + "unit_price_per_thousand"],
+                },
+                {
+                    "decision_id": "roofing_dumpsters_row_69",
+                    "template_bucket": "dumpster",
+                    "workbook_row": "69",
+                    "include": False,
+                    "proposed_values": {
+                        "basis_sqft": 3120,
+                        "thickness_inches": 2,
+                        "scope_status": "recognized_awaiting_price",
+                    },
+                    "review_reasons": [missing_reason + "unit_price"],
+                },
+            ],
+            "missing_questions": [
+                "What are the fasteners, plates, and dumpster unit prices?",
+                "What fastener size and unit price should be used?",
+            ],
+            "confidence": 0.8,
+        },
+        model="test-model",
+    )
+
+    by_bucket = {
+        row["template_bucket"]: row
+        for row in result.workbook_decision_preferences
+    }
+    assert by_bucket["fasteners"]["include"] is True
+    assert by_bucket["fasteners"]["proposed_values"]["unit_price_per_thousand"] == 250.0
+    assert by_bucket["fasteners"]["proposed_values"]["unit_price_source"] == "latest_historical_estimate"
+    assert by_bucket["plates"]["include"] is True
+    assert by_bucket["plates"]["proposed_values"]["unit_price_per_thousand"] == 79.05
+    assert by_bucket["dumpster"]["include"] is True
+    assert by_bucket["dumpster"]["proposed_values"]["unit_price"] == 600.0
+    assert all(
+        row["proposed_values"]["scope_status"] == "calculation_ready"
+        for row in by_bucket.values()
+    )
+    assert result.missing_questions == [
+        "What fastener size and unit price should be used?",
+    ]
 
 
 def test_current_materials_price_precedes_latest_historical_price() -> None:

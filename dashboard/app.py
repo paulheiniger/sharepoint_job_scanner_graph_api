@@ -22855,6 +22855,19 @@ def pricing_option_label(option: dict[str, Any]) -> str:
         return f"{label} - {unit_price}"
 
 
+def decision_row_option_editor_widget_scope(
+    section_key: str,
+    section_label: str,
+    editor_instance: str = "",
+) -> str:
+    instance = re.sub(
+        r"[^a-z0-9_]+",
+        "_",
+        text_value(editor_instance or section_label or section_key).lower(),
+    ).strip("_")
+    return f"{section_key}_{instance}"
+
+
 def render_decision_row_option_editor(
     *,
     section_key: str,
@@ -22864,6 +22877,7 @@ def render_decision_row_option_editor(
     workbench_key: str,
     scope_key: str,
     historical_filters_key: str,
+    editor_instance: str = "",
 ) -> list[dict[str, Any]]:
     editable_indexes = [
         idx
@@ -22873,11 +22887,19 @@ def render_decision_row_option_editor(
     if not editable_indexes:
         return rows
 
+    widget_scope = decision_row_option_editor_widget_scope(
+        section_key,
+        section_label,
+        editor_instance,
+    )
     selected_idx = st.selectbox(
         f"{section_label} row options",
         options=editable_indexes,
         format_func=lambda idx: decision_row_label(rows[idx], idx),
-        key=f"wb_row_option_editor_{section_key}_{workbench_key}_{scope_key}_{historical_filters_key}",
+        key=(
+            f"wb_row_option_editor_{widget_scope}_"
+            f"{workbench_key}_{scope_key}_{historical_filters_key}"
+        ),
         help="Select one row to edit with row-specific template and pricing options.",
     )
     edited_rows = [dict(row) for row in rows]
@@ -22906,7 +22928,10 @@ def render_decision_row_option_editor(
                     if selector_options[idx].get("selector_code")
                     else str(selector_options[idx].get("resolved_template_option") or "")
                 ),
-                key=f"wb_row_selector_{section_key}_{selected_idx}_{workbench_key}_{scope_key}_{historical_filters_key}",
+                key=(
+                    f"wb_row_selector_{widget_scope}_{selected_idx}_"
+                    f"{workbench_key}_{scope_key}_{historical_filters_key}"
+                ),
             )
         selector_option = selector_options[selected_selector]
         row["editable_selector_code"] = selector_option.get("selector_code") or row.get("editable_selector_code")
@@ -22927,7 +22952,10 @@ def render_decision_row_option_editor(
                 options=list(range(len(pricing_options))),
                 index=pricing_index,
                 format_func=lambda idx: pricing_option_label(pricing_options[idx]),
-                key=f"wb_row_pricing_{section_key}_{selected_idx}_{workbench_key}_{scope_key}_{historical_filters_key}",
+                key=(
+                    f"wb_row_pricing_{widget_scope}_{selected_idx}_"
+                    f"{workbench_key}_{scope_key}_{historical_filters_key}"
+                ),
             )
         pricing_option = pricing_options[selected_pricing]
         row["selected_pricing_candidate"] = pricing_option.get("item_name") or row.get("selected_pricing_candidate")
@@ -22951,7 +22979,10 @@ def render_decision_row_option_editor(
                     if crew_options[idx].get("selector_code")
                     else str(crew_options[idx].get("resolved_template_option") or "")
                 ),
-                key=f"wb_row_crew_{section_key}_{selected_idx}_{workbench_key}_{scope_key}_{historical_filters_key}",
+                key=(
+                    f"wb_row_crew_{widget_scope}_{selected_idx}_"
+                    f"{workbench_key}_{scope_key}_{historical_filters_key}"
+                ),
             )
         crew_option = crew_options[selected_crew]
         if "crew_people_selection" in editable_fields:
@@ -24636,6 +24667,7 @@ def estimator_prototype_page() -> None:
                     workbench_key=workbench_key,
                     scope_key=scope_key,
                     historical_filters_key=historical_filters_key,
+                    editor_instance="board_stock",
                 )
             merged_fastener_plate_rows = fastener_plate_rows
             if fastener_plate_rows:
@@ -24692,6 +24724,7 @@ def estimator_prototype_page() -> None:
                         workbench_key=workbench_key,
                         scope_key=scope_key,
                         historical_filters_key=historical_filters_key,
+                        editor_instance="fasteners_plates",
                     )
             merged_board_by_id = {
                 str(first_nonblank(row.get("decision_id"), row.get("workbook_row"), row.get("template_bucket"))): row

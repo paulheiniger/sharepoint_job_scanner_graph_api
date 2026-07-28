@@ -2138,6 +2138,25 @@ def test_decision_row_option_helpers_parse_row_specific_options() -> None:
     assert app.pricing_option_label(pricing_options[1]) == "Alternate Coating - review"
 
 
+def test_split_board_option_editors_have_distinct_widget_scopes() -> None:
+    app = importlib.import_module("dashboard.app")
+
+    board_scope = app.decision_row_option_editor_widget_scope(
+        "roofing_board_fastener_template_decisions",
+        "Roofing Board Stock",
+        "board_stock",
+    )
+    fastener_scope = app.decision_row_option_editor_widget_scope(
+        "roofing_board_fastener_template_decisions",
+        "Roofing Fasteners / Plates",
+        "fasteners_plates",
+    )
+
+    assert board_scope != fastener_scope
+    assert board_scope.endswith("_board_stock")
+    assert fastener_scope.endswith("_fasteners_plates")
+
+
 def test_estimator_page_exposes_optional_row_option_editor() -> None:
     app = importlib.import_module("dashboard.app")
 
