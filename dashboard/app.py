@@ -191,7 +191,6 @@ evaluate_estimate_readiness = None
 decision_edit_schema = None
 update_estimate_decision = None
 confirm_estimate_assumption = None
-approve_estimate_session = None
 estimate_audit_report_json = None
 extract_notes_from_images_with_ai = None
 stage_note_images = None
@@ -217,7 +216,7 @@ def ensure_estimator_imports() -> None:
     global advance_estimate_session, new_estimate_session_state, reject_historical_precedent
     global run_estimate_review, apply_review_recommendations, estimate_review_reasons
     global latest_correction_memory_edits, evaluate_estimate_readiness, decision_edit_schema
-    global update_estimate_decision, confirm_estimate_assumption, approve_estimate_session
+    global update_estimate_decision, confirm_estimate_assumption
     global estimate_audit_report_json
     global extract_notes_from_images_with_ai, stage_note_images
     global answer_key_to_workbook_decision_preferences, build_reference_estimate_answer_key
@@ -282,7 +281,6 @@ def ensure_estimator_imports() -> None:
         latest_correction_memory_edits as imported_latest_correction_memory_edits,
         update_estimate_decision as imported_update_estimate_decision,
         confirm_estimate_assumption as imported_confirm_estimate_assumption,
-        approve_estimate_session as imported_approve_estimate_session,
     )
     from jobscan.estimator.readiness import (
         decision_edit_schema as imported_decision_edit_schema,
@@ -343,7 +341,6 @@ def ensure_estimator_imports() -> None:
     decision_edit_schema = imported_decision_edit_schema
     update_estimate_decision = imported_update_estimate_decision
     confirm_estimate_assumption = imported_confirm_estimate_assumption
-    approve_estimate_session = imported_approve_estimate_session
     estimate_audit_report_json = imported_estimate_audit_report_json
     extract_notes_from_images_with_ai = imported_extract_notes_from_images_with_ai
     stage_note_images = imported_stage_note_images
@@ -692,6 +689,63 @@ INSULATION_DECISION_SECTIONS = [
     ("insulation_labor_template_decisions", "Insulation Labor Planning"),
     ("insulation_pricing_template_decisions", "Insulation Pricing"),
 ]
+
+ESTIMATOR_WORKBENCH_DECISION_SECTIONS = [
+    ("insulation_foam_template_decisions", "Insulation Foam"),
+    *INSULATION_DECISION_SECTIONS,
+    ("roofing_foam_template_decisions", "Roofing Foam"),
+    ("roofing_coating_template_decisions", "Roof Coating"),
+    ("roofing_primer_template_decisions", "Roof Primer"),
+    ("roofing_detail_template_decisions", "Roof Detail Materials"),
+    ("roofing_detail_quantity_template_decisions", "Roof Detail Quantities"),
+    ("roofing_board_fastener_template_decisions", "Roof Board / Fasteners"),
+    ("roofing_granules_template_decisions", "Roof Granules"),
+    ("roofing_equipment_template_decisions", "Roof Equipment"),
+    ("roofing_travel_freight_template_decisions", "Roof Travel / Freight"),
+    ("roofing_accessory_template_decisions", "Roof Accessories"),
+    ("roofing_logistics_expense_template_decisions", "Roof Loading / Travel / Lodging"),
+    ("roofing_free_adder_template_decisions", "Roof Adders"),
+    ("roofing_labor_template_decisions", "Roof Labor"),
+    ("pricing_markup_decisions", "Pricing Markup"),
+]
+
+COMPACT_ESTIMATE_EDITABLE_FIELDS = (
+    "include",
+    "editable_selector_code",
+    "selected_pricing_candidate",
+    "basis_sqft",
+    "board_area_sqft",
+    "thickness_inches",
+    "yield_or_coverage",
+    "gal_per_100_sqft",
+    "waste_factor_pct",
+    "coverage_sqft_per_unit",
+    "coverage_lbs_per_100_sqft",
+    "bag_weight_lbs",
+    "linear_ft",
+    "quantity",
+    "units",
+    "estimated_units",
+    "amount",
+    "days",
+    "period",
+    "hours_per_day",
+    "people_count",
+    "trip_count",
+    "round_trip_miles",
+    "crew_size",
+    "daily_rate",
+    "hourly_rate",
+    "total_hours",
+    "editable_total_hours",
+    "formula_mode",
+    "feet_per_unit",
+    "unit_price",
+    "price_per_square",
+    "unit_price_per_thousand",
+    "margin_pct",
+    "markup_pct",
+)
 
 ROOFING_FOAM_TEMPLATE_COMPACT_COLUMNS = [
     "include",
@@ -21897,7 +21951,7 @@ def render_staged_estimate_state(
     st.caption(f"Estimate session: {status}{confidence_text}")
     review_reasons = estimate_review_reasons(state)
     review_state = state.get("review_state") if isinstance(state.get("review_state"), dict) else {}
-    review_col, apply_col, approve_col = st.columns(3)
+    review_col, apply_col = st.columns(2)
     with review_col:
         if st.button(
             "Request stronger-model review",
@@ -21956,40 +22010,18 @@ def render_staged_estimate_state(
                     st.rerun()
                 except Exception as exc:
                     st.error(f"Could not apply review patches: {type(exc).__name__}: {safe_exception_text(exc)}")
-    with approve_col:
-        can_approve = bool(readiness.get("ready"))
-        hard_errors = readiness.get("hard_errors") or []
-        approval_help = "Confirms the current decisions are ready for deterministic workbook generation."
-        if hard_errors:
-            approval_help = "Resolve: " + "; ".join(
-                str(row.get("message") or "")
-                for row in hard_errors[:3]
-                if isinstance(row, dict)
-            )
-        if st.button(
-            "Approve for workbook",
-            key=f"approve_staged_estimate_{chat_key}",
-            disabled=not can_approve or state.get("session_status") == "approved",
-            help=approval_help,
-        ):
-            try:
-                approved = approve_estimate_session(state)
-                persist_review_state(approved)
-                st.rerun()
-            except Exception as exc:
-                st.error(f"Could not approve estimate: {type(exc).__name__}: {safe_exception_text(exc)}")
     if readiness.get("ready"):
         warning_count = int((readiness.get("counts") or {}).get("warning_count") or 0)
         st.success(
-            "Workbook readiness checks passed."
+            "Estimate inputs are calculation-ready."
             + (f" {warning_count} review warning(s) remain." if warning_count else "")
         )
     else:
-        st.warning(
-            f"Workbook approval is blocked by "
-            f"{int((readiness.get('counts') or {}).get('hard_error_count') or 0)} readiness issue(s)."
+        st.info(
+            f"{int((readiness.get('counts') or {}).get('hard_error_count') or 0)} input issue(s) remain. "
+            "Build Estimate will still use the best current assumptions and keep incomplete lines editable."
         )
-        with st.expander("Readiness issues", expanded=True):
+        with st.expander("Input issues", expanded=False):
             for issue in readiness.get("hard_errors") or []:
                 st.write(f"- {issue.get('message')}")
     if review_reasons and not review_state:
@@ -22000,6 +22032,13 @@ def render_staged_estimate_state(
         else:
             verdict = str(review_state.get("verdict") or "completed").replace("_", " ").title()
             st.info(f"Review verdict: {verdict}. {review_state.get('summary') or ''}".strip())
+
+    if not st.toggle(
+        "Show estimate analysis and evidence",
+        value=False,
+        key=f"show_staged_estimate_analysis_{chat_key}",
+    ):
+        return
 
     facts_tab, history_tab, assumptions_tab, decisions_tab, calculations_tab, questions_tab, evidence_tab = st.tabs(
         ["Job facts", "Similar jobs", "Assumptions", "Decisions", "Calculations", "Questions", "Evidence"]
@@ -22568,11 +22607,6 @@ def render_estimator_chat_draft_panel(
     if uploaded_photo_context and uploaded_photo_context.get("note_text") and not st.session_state.get(photo_message_applied_key):
         photo_message = "Site photo evidence summary:\n" + str(uploaded_photo_context.get("note_text") or "")
     user_message = "\n\n".join(part for part in [typed_message, image_message, photo_message] if part)
-    use_chat_draft = st.checkbox(
-        "Use this draft when building the workbook",
-        value=True,
-        key=f"estimator_chat_use_{chat_key}",
-    )
     if user_message:
         messages = [dict(message) for message in chat_history]
         messages.append({"role": "user", "content": user_message})
@@ -22630,6 +22664,7 @@ def render_estimator_chat_draft_panel(
         )
         if uploaded_photo_context:
             result_payload["photo_context"] = uploaded_photo_context
+        st.session_state["estimator_auto_build_requested"] = True
         if estimator_chat_learning_mode(result_payload):
             learning_intent = result_payload.get("learning_intent") if isinstance(result_payload.get("learning_intent"), dict) else {}
             if learning_intent.get("auto_build_workbook", True):
@@ -22728,7 +22763,7 @@ def render_estimator_chat_draft_panel(
             estimate_type=estimate_type,
             database_session_id=str(st.session_state.get(database_session_key) or ""),
         )
-    return result if use_chat_draft else None
+    return result
 
 
 def json_list_value(value: Any) -> list[Any]:
@@ -23067,6 +23102,334 @@ def merge_editable_rows(
     return merged
 
 
+def compact_estimate_input_fields(row: dict[str, Any]) -> tuple[str, ...]:
+    """Return the editable formula inputs that define one compact editor group."""
+
+    formula_model = text_value(
+        row.get("formula_model")
+        or row.get("formula_kind")
+        or row.get("formula")
+    ).lower()
+    bucket = re.sub(
+        r"[^a-z0-9]+",
+        "_",
+        text_value(
+            row.get("template_bucket")
+            or row.get("package_key")
+            or row.get("source_decision_id")
+        ).lower(),
+    ).strip("_")
+
+    if "foam_sets_from_area_thickness_yield" in formula_model or bucket == "foam":
+        fields = ["basis_sqft", "thickness_inches", "yield_or_coverage", "unit_price"]
+    elif "coating_gallons_from_area_rate_waste" in formula_model or bucket in {
+        "coating",
+        "thermal_barrier_coating",
+    }:
+        fields = ["basis_sqft", "gal_per_100_sqft", "waste_factor_pct", "unit_price"]
+    elif "primer_units_from_area_coverage" in formula_model or bucket == "primer":
+        fields = ["basis_sqft", "coverage_sqft_per_unit", "unit_price"]
+    elif "granules_units_from_area_rate" in formula_model or bucket == "granules":
+        fields = ["basis_sqft", "coverage_lbs_per_100_sqft", "bag_weight_lbs", "unit_price"]
+    elif "fastener_units_from_board_area" in formula_model or bucket in {
+        "fasteners",
+        "plates",
+        "fastener_treatment",
+    }:
+        fields = ["board_area_sqft", "unit_price_per_thousand"]
+    elif bucket == "board_stock":
+        fields = ["basis_sqft", "thickness_inches", "price_per_square"]
+    elif "travel_cost_from_trips_miles_rate" in formula_model or bucket in {
+        "sales_trips",
+        "sales_inspection_trips",
+        "truck_expense",
+    }:
+        fields = ["trip_count", "round_trip_miles", "unit_price"]
+    elif "hours_people_rate_trip_count" in formula_model or bucket in {
+        "labor_loading",
+        "labor_traveling",
+    }:
+        fields = ["hours_per_day", "people_count", "trip_count", "unit_price"]
+    elif "labor_cost_from_days_crew_rate" in formula_model or bucket.startswith("labor_"):
+        fields = [
+            "days",
+            "crew_size",
+            "daily_rate",
+            "total_hours",
+            "hourly_rate",
+            "formula_mode",
+        ]
+    elif "days_people_rate" in formula_model:
+        fields = ["days", "people_count", "unit_price"]
+    elif "hours_rate" in formula_model:
+        fields = ["hours_per_day", "unit_price"]
+    elif "days_rate" in formula_model or bucket == "generator":
+        fields = ["days", "unit_price"]
+    elif "linear_feet" in formula_model or bucket in {
+        "fabric",
+        "seams_misc",
+        "membrane",
+        "edge_metal",
+        "gutter",
+        "downspouts",
+        "wood_nailer",
+        "counter_flashing",
+    }:
+        fields = ["linear_ft", "unit_price"]
+    elif "direct" in formula_model or bucket in {
+        "freight",
+        "misc",
+        "warranty",
+        "misc_insurance",
+        "permits",
+        "free_adder",
+    }:
+        fields = ["amount"]
+    elif "markup" in formula_model or bucket in {"overhead", "profit", "markup"}:
+        fields = ["markup_pct"]
+    elif "units_cost" in formula_model or "manual_units_cost" in formula_model:
+        fields = ["estimated_units", "unit_price"]
+    else:
+        fields = [
+            field
+            for field in COMPACT_ESTIMATE_EDITABLE_FIELDS
+            if field != "include" and _compact_cell_has_value(row.get(field))
+        ]
+        if not fields:
+            fields = ["estimated_units", "unit_price"]
+
+    selection_fields: list[str] = []
+    if decision_row_selector_options(row) or text_value(row.get("editable_selector_code")):
+        selection_fields.append("editable_selector_code")
+    if decision_row_pricing_options(row) or text_value(row.get("selected_pricing_candidate")):
+        selection_fields.append("selected_pricing_candidate")
+    return tuple(unique_columns([*selection_fields, *fields]))
+
+
+def compact_estimate_group_label(input_fields: Iterable[str]) -> str:
+    fields = set(input_fields)
+    if {"basis_sqft", "thickness_inches", "yield_or_coverage"}.issubset(fields):
+        return "Foam"
+    if {"basis_sqft", "gal_per_100_sqft"}.issubset(fields):
+        return "Coatings"
+    if {"basis_sqft", "coverage_sqft_per_unit"}.issubset(fields):
+        return "Primer and area coverage"
+    if {"trip_count", "round_trip_miles"}.issubset(fields):
+        return "Mileage and trips"
+    if {"hours_per_day", "people_count", "trip_count"}.issubset(fields):
+        return "Loading and travel time"
+    if {"days", "crew_size", "daily_rate"}.issubset(fields):
+        return "Labor"
+    if "linear_ft" in fields:
+        return "Linear details"
+    if "board_area_sqft" in fields:
+        return "Fasteners and plates"
+    if "price_per_square" in fields:
+        return "Board stock"
+    if "amount" in fields:
+        return "Direct adders"
+    if "markup_pct" in fields:
+        return "Markup"
+    return "Materials and equipment"
+
+
+def compact_estimate_groups(workbench: dict[str, Any]) -> list[dict[str, Any]]:
+    """Group included workbench rows by the formula inputs an estimator edits."""
+
+    grouped: dict[tuple[str, ...], dict[str, Any]] = {}
+    section_labels = dict(ESTIMATOR_WORKBENCH_DECISION_SECTIONS)
+    for section_key, _section_label in ESTIMATOR_WORKBENCH_DECISION_SECTIONS:
+        for row_index, row in enumerate(workbench.get(section_key) or []):
+            if not isinstance(row, dict) or row.get("include") is not True:
+                continue
+            input_fields = compact_estimate_input_fields(row)
+            group = grouped.setdefault(
+                input_fields,
+                {
+                    "label": compact_estimate_group_label(input_fields),
+                    "input_fields": input_fields,
+                    "rows": [],
+                    "row_refs": [],
+                },
+            )
+            line_item = text_value(
+                row.get("resolved_template_option")
+                or row.get("template_line")
+                or row.get("labor_task")
+                or row.get("selected_pricing_candidate")
+                or row.get("decision_id")
+            )
+            display_row = {
+                "include": True,
+                "category": section_labels.get(section_key, section_key),
+                "workbook_row": row.get("workbook_row"),
+                "line_item": line_item,
+            }
+            for field in input_fields:
+                display_row[field] = row.get(field)
+            for field in ("estimated_units", "estimated_gallons", "estimated_cost"):
+                if field not in input_fields and _compact_cell_has_value(row.get(field)):
+                    display_row[field] = row.get(field)
+            group["rows"].append(display_row)
+            group["row_refs"].append((section_key, row_index))
+    return list(grouped.values())
+
+
+def apply_compact_estimate_group_edits(
+    workbench: dict[str, Any],
+    group: dict[str, Any],
+    edited_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    updated = copy.deepcopy(workbench)
+    editable_fields = {"include", *group.get("input_fields", ())}
+    for row_ref, edited in zip(group.get("row_refs") or [], edited_rows):
+        section_key, row_index = row_ref
+        section_rows = updated.get(section_key) or []
+        if row_index >= len(section_rows) or not isinstance(edited, dict):
+            continue
+        original = section_rows[row_index]
+        for field in editable_fields:
+            if field not in edited:
+                continue
+            if field == "include" and _editable_values_differ(original.get(field), edited[field]):
+                original["manual_override"] = True
+                original["include_source"] = "estimator_edit"
+            if field in {"total_hours", "editable_total_hours"} and _editable_values_differ(
+                original.get(field),
+                edited[field],
+            ):
+                original["manual_labor_hours_override"] = True
+                original["manual_override"] = True
+                original["total_hours_source"] = "estimator_override"
+                original["labor_driver_applied"] = False
+            original[field] = edited[field]
+    return updated
+
+
+def workbench_without_decision_rows(workbench: dict[str, Any]) -> dict[str, Any]:
+    hidden = dict(workbench)
+    for section_key, _label in ESTIMATOR_WORKBENCH_DECISION_SECTIONS:
+        hidden[section_key] = []
+    return hidden
+
+
+def render_compact_estimator_workbench(
+    workbench: dict[str, Any],
+    *,
+    workbench_key: str,
+    scope_key: str,
+    historical_filters_key: str,
+    previous_workbench_key: str,
+) -> dict[str, Any]:
+    edited = copy.deepcopy(workbench)
+    groups = compact_estimate_groups(edited)
+    if not groups:
+        st.info("No estimate line items are currently included. Add a line item or describe the required scope in chat.")
+    for group in groups:
+        st.markdown(f"#### {group['label']}")
+        display_df = pd.DataFrame(group["rows"])
+        column_order = list(display_df.columns)
+        editable = {"include", *group["input_fields"]}
+        group_key = hashlib.sha1(
+            "|".join(group["input_fields"]).encode("utf-8")
+        ).hexdigest()[:10]
+        edited_df = st.data_editor(
+            display_df,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="fixed",
+            key=(
+                f"wb_compact_group_{group_key}_{workbench_key}_"
+                f"{scope_key}_{historical_filters_key}"
+            ),
+            column_order=column_order,
+            column_config={
+                "include": "Include",
+                "category": "Category",
+                "workbook_row": "Row",
+                "line_item": "Line Item",
+                "editable_selector_code": "Template Option",
+                "selected_pricing_candidate": "Pricing Item",
+                "basis_sqft": "Sq Ft",
+                "board_area_sqft": "Board Sq Ft",
+                "thickness_inches": "Thickness",
+                "yield_or_coverage": "Yield",
+                "gal_per_100_sqft": "Gal / 100 Sq Ft",
+                "waste_factor_pct": "Waste %",
+                "coverage_sqft_per_unit": "Coverage",
+                "coverage_lbs_per_100_sqft": "Lb / 100 Sq Ft",
+                "bag_weight_lbs": "Bag Lb",
+                "linear_ft": "Linear Ft",
+                "estimated_units": "Units",
+                "amount": "Amount",
+                "days": "Days",
+                "hours_per_day": "Hours / Day",
+                "people_count": "People",
+                "trip_count": "Trips",
+                "round_trip_miles": "Round Trip Miles",
+                "crew_size": "Crew",
+                "daily_rate": "Daily Rate",
+                "hourly_rate": "Hourly Rate",
+                "total_hours": "Hours",
+                "formula_mode": "Formula",
+                "unit_price": "Unit Price",
+                "price_per_square": "Price / Square",
+                "unit_price_per_thousand": "Price / Thousand",
+                "markup_pct": "Markup %",
+                "estimated_gallons": "Gallons",
+                "estimated_cost": "Cost",
+            },
+            disabled=[column for column in column_order if column not in editable],
+        )
+        edited = apply_compact_estimate_group_edits(
+            edited,
+            group,
+            edited_df.to_dict(orient="records"),
+        )
+
+    excluded: list[tuple[str, int, str]] = []
+    section_labels = dict(ESTIMATOR_WORKBENCH_DECISION_SECTIONS)
+    for section_key, _label in ESTIMATOR_WORKBENCH_DECISION_SECTIONS:
+        for row_index, row in enumerate(edited.get(section_key) or []):
+            if not isinstance(row, dict) or row.get("include") is True:
+                continue
+            label = text_value(
+                row.get("resolved_template_option")
+                or row.get("template_line")
+                or row.get("labor_task")
+                or row.get("selected_pricing_candidate")
+                or row.get("decision_id")
+            )
+            row_number = text_value(row.get("workbook_row"))
+            excluded.append(
+                (
+                    section_key,
+                    row_index,
+                    f"{section_labels.get(section_key, section_key)} | Row {row_number} | {label}",
+                )
+            )
+    if excluded:
+        with st.expander("Add line item", expanded=False):
+            selected = st.selectbox(
+                "Available template line",
+                options=list(range(len(excluded))),
+                format_func=lambda idx: excluded[int(idx)][2],
+                key=f"wb_compact_add_line_{workbench_key}_{scope_key}_{historical_filters_key}",
+            )
+            if st.button(
+                "Add Selected Line",
+                key=f"wb_compact_add_line_button_{workbench_key}_{scope_key}_{historical_filters_key}",
+            ):
+                section_key, row_index, _label = excluded[int(selected)]
+                row = edited[section_key][row_index]
+                row["include"] = True
+                row["manual_override"] = True
+                row["include_source"] = "estimator_edit"
+                st.session_state[previous_workbench_key] = edited
+                st.rerun()
+    return edited
+
+
 def merge_dynamic_free_adder_rows(
     original_rows: list[dict[str, Any]],
     edited_rows: list[dict[str, Any]],
@@ -23381,7 +23744,7 @@ def estimator_prototype_page() -> None:
     ensure_estimator_imports()
     reset_estimator_perf_timings()
     st.title("Estimating Assistant")
-    st.caption("Describe the job, review what was parsed, then build the workbook draft. Estimator review is required before quoting.")
+    st.caption("Describe the job, build the estimate, and edit the included lines. Estimator review is required before quoting.")
 
     estimator_data_by_profile: dict[str, EstimatorData] = {}
 
@@ -23551,42 +23914,14 @@ def estimator_prototype_page() -> None:
             else:
                 field_notes_data = None
     estimator_input_notes = chat_augmented_notes
-    staged_workflow_state = (
-        active_chat_context.get("staged_session_state")
-        if active_chat_context and isinstance(active_chat_context.get("staged_session_state"), dict)
-        else {}
-    )
-    staged_readiness = (
-        evaluate_estimate_readiness(staged_workflow_state)
-        if staged_workflow_state
-        else {}
-    )
-    staged_workflow_requires_approval = bool(staged_workflow_state) and (
-        str(staged_workflow_state.get("session_status") or "")
-        not in {"approved", "workbook_generated"}
-        or not bool(staged_readiness.get("ready"))
-    )
-    if staged_workflow_requires_approval:
-        blocking_messages = [
-            str(row.get("message") or "")
-            for row in staged_readiness.get("hard_errors") or []
-            if isinstance(row, dict)
-        ]
-        st.caption(
-            "Approve the staged decision draft in the Estimating Assistant before generating the workbook."
-            + (f" Blocking issue: {blocking_messages[0]}" if blocking_messages else "")
-        )
     build_requested = st.button(
-        "Build / Rebuild Filled Estimate Template",
+        "Build Estimate",
         key="generate_field_estimate_recommendation",
-        disabled=staged_workflow_requires_approval,
+        type="primary",
     )
     auto_build_requested = bool(st.session_state.pop("estimator_auto_build_requested", False))
-    if auto_build_requested and staged_workflow_requires_approval:
-        st.warning("Automatic workbook generation was held because the staged estimate is not approval-ready.")
-        auto_build_requested = False
-    elif auto_build_requested:
-        st.info("Learning mode requested a workbook rebuild automatically.")
+    if auto_build_requested:
+        st.caption("Updating the estimate from the latest chat response.")
     if build_requested or auto_build_requested:
         try:
             build_data = ensure_estimator_data("interactive")
@@ -23824,7 +24159,7 @@ def estimator_prototype_page() -> None:
             if recommendation_notes != estimator_input_notes:
                 st.warning(
                     "The displayed repair estimate was generated from earlier notes. "
-                    "Click Build Filled Estimate Template again to refresh it for the current text."
+                    "Click Build Estimate again to refresh it for the current text."
                 )
             render_repair_estimate_result(
                 repair_payload,
@@ -23840,7 +24175,7 @@ def estimator_prototype_page() -> None:
             if recommendation_notes != estimator_input_notes:
                 st.warning(
                     "The displayed flooring estimate was generated from earlier notes. "
-                    "Click Build Filled Estimate Template again to refresh it for the current text."
+                    "Click Build Estimate again to refresh it for the current text."
                 )
             city_state_zip = ", ".join(part for part in [field_city, field_state] if part)
             render_flooring_estimate_result(
@@ -23857,7 +24192,7 @@ def estimator_prototype_page() -> None:
         if recommendation_notes != estimator_input_notes:
             st.warning(
                 "The displayed estimate was generated from earlier notes. "
-                "Click Build Filled Estimate Template again to refresh it for the current text."
+                "Click Build Estimate again to refresh it for the current text."
             )
         estimate_status = getattr(field_recommendation, "estimate_status", None) or field_recommendation.parsed_fields.get("estimate_status") or "READY_TO_ESTIMATE"
         parsed_fields = field_recommendation.parsed_fields
@@ -23925,16 +24260,9 @@ def estimator_prototype_page() -> None:
             with st.expander("Raw parser details", expanded=False):
                 st.dataframe(pd.DataFrame([parsed_fields]), use_container_width=True, hide_index=True)
         if estimate_status != "READY_TO_ESTIMATE":
-            surface_review_rows = build_surface_area_review_rows(parsed_fields)
-            if surface_review_rows:
-                st.markdown("**Surface Areas / Dimensions**")
-                show_table(
-                    dataframe_from_records(surface_review_rows),
-                    SURFACE_AREA_REVIEW_COLUMNS,
-                    height=220,
-                )
-            st.info("Estimate generation stopped before material selection, labor calibration, similar jobs, pricing, workbook export, and evidence export.")
-            return
+            st.info(
+                "Some inputs remain uncertain. The workbench below uses the best current assumptions so the estimate can still be edited."
+            )
         parsed_workbench = build_estimating_workbench_for_ui(
             field_recommendation,
             ensure_estimator_data("interactive"),
@@ -23994,87 +24322,34 @@ def estimator_prototype_page() -> None:
                     st.session_state[proposal_saved_key] = True
 
         st.markdown("### Estimator Workbench")
-        st.caption("Review and edit template decisions. Workbook formulas remain the calculation engine; these rows control the inputs.")
-        show_row_details = st.checkbox(
-            "Show detailed row diagnostics",
-            value=debug_mode,
-            key=f"wb_show_row_details_{workbench_key}_{historical_filters_key}",
-            help="Shows accepted/rejected evidence, percentile ranges, relaxed filters, and source diagnostics.",
+        st.caption(
+            "Edit the included estimate lines below. Lines with matching calculation inputs are grouped together; "
+            "workbook formulas remain authoritative."
         )
-        show_row_option_editor = st.checkbox(
-            "Show selected-row option editor",
-            value=False,
-            key=f"wb_show_row_option_editor_{workbench_key}_{historical_filters_key}",
-            help="Shows one focused editor per section with row-specific template, pricing, and crew dropdowns.",
-        )
-        surface_review_rows = build_surface_area_review_rows(parsed_fields, original_workbench)
-        if surface_review_rows:
-            st.markdown("#### Surface Areas / Dimensions")
-            st.caption("Review the parsed components once here. Target R and edited thickness feed the insulation foam decision; detailed formula trace stays in diagnostics.")
-            surface_area_editable_fields = {"target_r_value", "edited_thickness_inches"}
-            surface_area_column_order = (
-                SURFACE_AREA_DETAIL_COLUMNS
-                if show_row_details
-                else SURFACE_AREA_REVIEW_COLUMNS
+        show_row_details = False
+        show_row_option_editor = False
+        if debug_mode:
+            show_row_details = st.checkbox(
+                "Show detailed row diagnostics",
+                value=True,
+                key=f"wb_show_row_details_{workbench_key}_{historical_filters_key}",
+                help="Shows accepted/rejected evidence, percentile ranges, relaxed filters, and source diagnostics.",
             )
-            with estimator_perf_step("surface table prep"):
-                surface_area_display_df, surface_area_column_order = workbench_display_frame_from_records(
-                    surface_review_rows,
-                    surface_area_column_order,
-                    editable_fields=surface_area_editable_fields,
-                    show_row_details=show_row_details,
-                )
-            edited_surface_area_df = st.data_editor(
-                surface_area_display_df,
-                use_container_width=True,
-                hide_index=True,
-                num_rows="fixed",
-                key=f"wb_surface_area_review_{workbench_key}_{scope_key}_{historical_filters_key}",
-                column_order=surface_area_column_order,
-                column_config={
-                    "component": "Component",
-                    "quantity": "Qty",
-                    "length_ft": "Length",
-                    "width_ft": "Width",
-                    "height_ft": "Height",
-                    "gross_area_sqft": "Gross Sq Ft",
-                    "deduction_area_sqft": "Deductions",
-                    "net_area_sqft": "Net Sq Ft",
-                    "target_r_value": "Target R",
-                    "foam_type": "Foam Type",
-                    "edited_thickness_inches": "Edited Thickness",
-                    "area_formula": "Formula",
-                    "source_text": "Source Text",
-                    "confidence": "Confidence",
-                    "selected_source": "Selected Source",
-                    "ai_value": "AI Value",
-                    "deterministic_value": "Deterministic Value",
-                    "notes": "Notes",
-                },
-                disabled=[column for column in surface_area_column_order if column not in surface_area_editable_fields],
+            show_row_option_editor = st.checkbox(
+                "Show selected-row option editor",
+                value=False,
+                key=f"wb_show_row_option_editor_{workbench_key}_{historical_filters_key}",
+                help="Shows one focused editor per section with row-specific template, pricing, and crew dropdowns.",
             )
-            edited_surface_rows = edited_surface_area_df.to_dict(orient="records")
-            surfaces_by_type = {row.get("surface_type"): row for row in edited_workbench.get("insulation_surfaces") or []}
-            surfaces_by_name = {str(row.get("surface") or "").lower(): row for row in edited_workbench.get("insulation_surfaces") or []}
-            for row in edited_surface_rows:
-                if row.get("component_type") != "surface":
-                    continue
-                surface = surfaces_by_type.get(row.get("surface_type")) or surfaces_by_name.get(str(row.get("component") or "").lower())
-                if not surface:
-                    continue
-                for field in ("target_r_value", "edited_thickness_inches"):
-                    if row.get(field) not in (None, ""):
-                        surface[field] = row.get(field)
-            edited_workbench["insulation_surfaces"] = list(surfaces_by_type.values()) or list(surfaces_by_name.values())
-            if original_workbench.get("area_calculation_trace") and show_row_details:
-                with st.expander("Show formula trace", expanded=False):
-                    area_trace_rows = display_safe_records(original_workbench.get("area_calculation_trace") or [])
-                    area_trace_df = pd.DataFrame(area_trace_rows)
-                    st.dataframe(
-                        area_trace_df[[column for column in AREA_TRACE_COMPACT_COLUMNS if column in area_trace_df.columns]],
-                        use_container_width=True,
-                        hide_index=True,
-                    )
+        else:
+            edited_workbench = render_compact_estimator_workbench(
+                edited_workbench,
+                workbench_key=workbench_key,
+                scope_key=scope_key,
+                historical_filters_key=historical_filters_key,
+                previous_workbench_key=previous_workbench_key,
+            )
+            original_workbench = workbench_without_decision_rows(original_workbench)
 
         if original_workbench.get("insulation_foam_template_decisions"):
             st.markdown("#### Insulation Foam Template")
@@ -25341,10 +25616,10 @@ def estimator_prototype_page() -> None:
         with st.expander("Draft workbook input preview", expanded=False):
             st.json(draft_workbook_inputs_for_ui(edited_workbench))
 
-        st.markdown("**Excel Estimate Draft**")
+        st.markdown("**Excel compatibility export**")
         workbook_path_key = f"field_notes_excel_workbook_path_{workbench_key}"
         workbook_error_key = f"field_notes_excel_workbook_error_{workbench_key}"
-        if st.button("Generate Excel Estimate Draft", key=f"generate_field_notes_excel_workbook_{workbench_key}"):
+        if st.button("Export Excel Template", key=f"generate_field_notes_excel_workbook_{workbench_key}"):
             template_path = resolve_default_template_path()
             if not template_path.exists():
                 message = "Estimate template workbook not found. Add it to templates/Estimate - Full Turnkey.xlsx."
@@ -25396,10 +25671,10 @@ def estimator_prototype_page() -> None:
                             )
                     st.session_state[workbook_path_key] = str(output_path)
                     st.session_state.pop(workbook_error_key, None)
-                    st.success(f"Excel estimate draft created: {output_path}")
+                    st.success(f"Excel template export created: {output_path}")
                     st.caption(f"Estimator edit history captured: {feedback_path}")
                     st.download_button(
-                        "Download Excel Estimate Draft",
+                        "Download Excel Template",
                         data=output_path.read_bytes(),
                         file_name=output_path.name,
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -25420,7 +25695,7 @@ def estimator_prototype_page() -> None:
                     workbook_path_for_package = None
                 workbook_error_for_package = None if workbook_path_for_package else (
                     st.session_state.get(workbook_error_key)
-                    or "Workbook was not included. Use Generate Excel Estimate Draft first if the package needs the workbook."
+                    or "Workbook was not included. Use Export Excel Template first if the package needs the workbook."
                 )
                 draft_inputs_for_package = draft_workbook_inputs_for_ui(edited_workbench)
                 review_export_cache_key = stable_payload_hash(

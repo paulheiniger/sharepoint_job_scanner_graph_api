@@ -2183,7 +2183,86 @@ def test_estimator_chat_panel_supports_multi_turn_replies() -> None:
     assert "Workbook decision cues" not in source
     assert "Photos, job header" not in page_source
     assert "render_estimator_photo_upload_panel" not in page_source
-    assert "Build / Rebuild Filled Estimate Template" in page_source
+    assert '"Build Estimate"' in page_source
+    assert 'st.session_state["estimator_auto_build_requested"] = True' in source
+    assert "Use this draft when building the workbook" not in source
+
+
+def test_estimator_workbench_uses_one_build_action_without_approval_gate() -> None:
+    app = importlib.import_module("dashboard.app")
+    page_source = inspect.getsource(app.estimator_prototype_page)
+    staged_source = inspect.getsource(app.render_staged_estimate_state)
+
+    assert '"Build Estimate"' in page_source
+    assert "staged_workflow_requires_approval" not in page_source
+    assert "Approve for workbook" not in staged_source
+    assert "Show estimate analysis and evidence" in staged_source
+    assert "Surface Areas / Dimensions" not in page_source
+    assert '"Export Excel Template"' in page_source
+
+
+def test_compact_estimate_groups_show_only_included_rows_by_input_shape() -> None:
+    app = importlib.import_module("dashboard.app")
+    workbench = {
+        "roofing_coating_template_decisions": [
+            {
+                "include": True,
+                "decision_id": "coating-26",
+                "template_bucket": "coating",
+                "workbook_row": "26",
+                "resolved_template_option": "Base Coat",
+                "basis_sqft": 5000,
+                "gal_per_100_sqft": 1.5,
+                "waste_factor_pct": 5,
+                "unit_price": 42,
+                "estimated_gallons": 78.75,
+                "estimated_cost": 3307.5,
+            },
+            {
+                "include": False,
+                "decision_id": "coating-27",
+                "template_bucket": "coating",
+                "workbook_row": "27",
+                "resolved_template_option": "Top Coat",
+                "basis_sqft": 5000,
+                "gal_per_100_sqft": 1,
+                "unit_price": 45,
+            },
+        ],
+        "roofing_travel_freight_template_decisions": [
+            {
+                "include": True,
+                "decision_id": "truck-108",
+                "template_bucket": "truck_expense",
+                "workbook_row": "108",
+                "resolved_template_option": "Truck Expense",
+                "formula_model": "travel_cost_from_trips_miles_rate",
+                "trip_count": 8,
+                "round_trip_miles": 65,
+                "unit_price": 1.25,
+                "estimated_cost": 650,
+            }
+        ],
+    }
+
+    groups = app.compact_estimate_groups(workbench)
+
+    assert [group["label"] for group in groups] == ["Coatings", "Mileage and trips"]
+    assert sum(len(group["rows"]) for group in groups) == 2
+    assert all(
+        row["workbook_row"] != "27"
+        for group in groups
+        for row in group["rows"]
+    )
+    coating_group = groups[0]
+    edited_rows = [dict(coating_group["rows"][0], gal_per_100_sqft=1.7)]
+    updated = app.apply_compact_estimate_group_edits(
+        workbench,
+        coating_group,
+        edited_rows,
+    )
+    assert updated["roofing_coating_template_decisions"][0]["gal_per_100_sqft"] == 1.7
+    assert updated["roofing_coating_template_decisions"][1]["include"] is False
 
 
 def test_estimator_chat_decision_change_rows_summarize_structured_patches() -> None:
