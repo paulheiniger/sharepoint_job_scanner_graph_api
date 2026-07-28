@@ -28,6 +28,7 @@ from jobscan.estimator.staged_session import (
     approve_estimate_session,
     confirm_estimate_assumption,
     merge_estimate_assumptions,
+    merge_decision_patches,
     new_estimate_session_state,
     update_estimate_decision,
 )
@@ -98,6 +99,96 @@ def test_open_questions_do_not_block_formula_ready_workbook_approval() -> None:
     assert readiness["checks"]["questions_resolved"] is False
     assert readiness["checks"]["open_questions_are_advisory"] is True
     assert approved["session_status"] == "approved"
+
+
+def test_equivalent_decision_aliases_share_workbook_row_identity() -> None:
+    merged, _ = merge_decision_patches(
+        [
+            {
+                "decision_id": "roofing_foam",
+                "template_bucket": "roofing_foam",
+                "workbook_row": "19",
+                "include": True,
+                "proposed_values": {
+                    "basis_sqft": 5136,
+                    "selector_code": "Gaco RoofFoam",
+                },
+            }
+        ],
+        [
+            {
+                "decision_id": "roofing_foam_row_19",
+                "template_bucket": "roofing_foam",
+                "workbook_row": "19",
+                "include": True,
+                "proposed_values": {
+                    "thickness_inches": 1.5,
+                    "unit_price": 2.25,
+                },
+            }
+        ],
+    )
+
+    assert len(merged) == 1
+    assert merged[0]["decision_id"] == "roofing_foam_row_19"
+    assert merged[0]["proposed_values"] == {
+        "basis_sqft": 5136,
+        "selector_code": "Gaco RoofFoam",
+        "thickness_inches": 1.5,
+        "unit_price": 2.25,
+    }
+
+
+def test_equivalent_saved_aliases_approve_and_collapse_to_one_decision() -> None:
+    state = _ready_roofing_state()
+    state["decision_template_state"].insert(
+        0,
+        {
+            **state["decision_template_state"][0],
+            "decision_id": "roofing_coating_system",
+            "proposed_values": {
+                "basis_sqft": 5000,
+                "gal_per_100_sqft": 1.5,
+                "unit_price": 42,
+            },
+        },
+    )
+
+    readiness = evaluate_estimate_readiness(state)
+    approved = approve_estimate_session(state)
+
+    assert readiness["ready"] is True
+    assert approved["session_status"] == "approved"
+    assert len(approved["decision_template_state"]) == 1
+    assert approved["decision_template_state"][0]["decision_id"] == (
+        "roofing_coating_system_row_26"
+    )
+    assert approved["decision_template_state"][0]["proposed_values"]["unit_price"] == 42
+
+
+def test_conflicting_saved_aliases_still_block_approval() -> None:
+    state = _ready_roofing_state()
+    state["decision_template_state"][0]["proposed_values"]["selector_code"] = "system-a"
+    state["decision_template_state"].append(
+        {
+            **state["decision_template_state"][0],
+            "decision_id": "roofing_coating_system",
+            "proposed_values": {
+                **state["decision_template_state"][0]["proposed_values"],
+                "selector_code": "system-b",
+            },
+        }
+    )
+
+    readiness = evaluate_estimate_readiness(state)
+
+    assert readiness["ready"] is False
+    assert any(
+        row["code"] == "duplicate_workbook_selection"
+        for row in readiness["hard_errors"]
+    )
+    with pytest.raises(ValueError, match="Multiple included decisions"):
+        approve_estimate_session(state)
 
 
 def test_readiness_allows_warnings_but_blocks_bad_geometry() -> None:

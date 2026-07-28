@@ -1057,6 +1057,11 @@ def approve_estimate_session(
             "Estimate is not ready for workbook approval: "
             + "; ".join(messages[:5])
         )
+    updated["decision_template_state"] = normalize_decision_template_state(
+        updated.get("decision_template_state")
+    )
+    readiness = evaluate_estimate_readiness(updated)
+    updated["readiness_state"] = readiness
     now = datetime.now(UTC).isoformat()
     updated["session_status"] = "approved"
     updated["current_stage"] = "approved"
@@ -1135,7 +1140,9 @@ def merge_decision_patches(
         key = _decision_key(row)
         if key not in merged:
             order.append(key)
-        merged[key] = deepcopy(row)
+            merged[key] = deepcopy(row)
+        else:
+            merged[key] = _merge_decision(merged[key], row)
 
     changes: list[dict[str, Any]] = []
     for patch in patches or []:
@@ -1156,6 +1163,14 @@ def merge_decision_patches(
                 }
             )
     return [merged[key] for key in order], changes
+
+
+def normalize_decision_template_state(
+    decisions: Iterable[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Collapse aliases that target the same workbook row."""
+    normalized, _ = merge_decision_patches([], decisions)
+    return normalized
 
 
 def reject_historical_precedent(
@@ -1229,6 +1244,11 @@ def _compact_state_for_model(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _decision_key(row: dict[str, Any]) -> tuple[str, ...]:
+    workbook_row = str(
+        row.get("workbook_row") or row.get("row_number") or ""
+    ).strip()
+    if workbook_row:
+        return ("workbook_row", workbook_row)
     decision_id = str(row.get("decision_id") or "").strip()
     if decision_id:
         return ("decision_id", decision_id)

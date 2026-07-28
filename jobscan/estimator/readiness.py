@@ -385,7 +385,7 @@ def _decision_values(decision: dict[str, Any]) -> dict[str, Any]:
 def _duplicate_selection_errors(
     decisions: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    groups: dict[tuple[str, str], list[str]] = {}
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for decision in decisions:
         workbook_row = str(decision.get("workbook_row") or decision.get("row_number") or "").strip()
         exclusive_group = str(
@@ -399,13 +399,21 @@ def _duplicate_selection_errors(
         )
         if not key[1]:
             continue
-        groups.setdefault(key, []).append(
-            str(decision.get("decision_id") or decision.get("template_bucket") or key[1])
-        )
+        groups.setdefault(key, []).append(decision)
     rows = []
-    for (group_type, value), decision_ids in groups.items():
-        if len(decision_ids) < 2:
+    for (group_type, value), grouped_decisions in groups.items():
+        if len(grouped_decisions) < 2:
             continue
+        if group_type == "workbook_row" and _same_workbook_selection(grouped_decisions):
+            continue
+        decision_ids = [
+            str(
+                decision.get("decision_id")
+                or decision.get("template_bucket")
+                or value
+            )
+            for decision in grouped_decisions
+        ]
         rows.append(
             _issue(
                 "duplicate_workbook_selection",
@@ -416,6 +424,54 @@ def _duplicate_selection_errors(
             )
         )
     return rows
+
+
+def _same_workbook_selection(decisions: list[dict[str, Any]]) -> bool:
+    """Return true when duplicate rows are aliases, not competing selections."""
+
+    buckets = {
+        _canonical_decision_bucket(decision.get("template_bucket"))
+        for decision in decisions
+        if str(decision.get("template_bucket") or "").strip()
+    }
+    if len(buckets) > 1:
+        return False
+
+    for field in (
+        "selector_code",
+        "editable_selector_code",
+        "selected_item_name",
+        "selected_pricing_candidate",
+        "resolved_template_option",
+    ):
+        values = {
+            _normalized_selection_value(_decision_values(decision).get(field))
+            for decision in decisions
+            if _normalized_selection_value(_decision_values(decision).get(field))
+        }
+        if len(values) > 1:
+            return False
+    return True
+
+
+def _canonical_decision_bucket(value: Any) -> str:
+    normalized = _normalized_selection_value(value).replace(" ", "_")
+    if normalized.startswith("roofing_"):
+        normalized = normalized[len("roofing_") :]
+    return normalized
+
+
+def _normalized_selection_value(value: Any) -> str:
+    if isinstance(value, dict):
+        value = (
+            value.get("item_name")
+            or value.get("name")
+            or value.get("label")
+            or value.get("selector_code")
+            or value.get("id")
+            or ""
+        )
+    return " ".join(str(value or "").strip().lower().split())
 
 
 def _scope_geometry_errors(scope: dict[str, Any]) -> list[dict[str, Any]]:
