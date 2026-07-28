@@ -12813,6 +12813,111 @@ def _seed_roofing_rows_from_proposals(
     return workbench
 
 
+def _prefill_unchecked_latest_historical_unit_prices(
+    workbench: dict[str, Any],
+    data: Any,
+) -> dict[str, Any]:
+    """Prefill review rows without changing inclusion or overriding current prices."""
+    frame = getattr(data, "latest_historical_unit_prices", None)
+    if not isinstance(frame, pd.DataFrame) or frame.empty:
+        return workbench
+    template_type = "insulation" if _is_insulation_scope(workbench.get("scope") or {}) else "roofing"
+    scoped = frame.copy()
+    if "template_type" in scoped.columns:
+        scoped = scoped[
+            scoped["template_type"].fillna("").astype(str).str.strip().str.lower().eq(template_type)
+        ]
+    if scoped.empty or "unit_price" not in scoped.columns:
+        return workbench
+    scoped["_unit_price_numeric"] = pd.to_numeric(scoped["unit_price"], errors="coerce")
+    scoped = scoped[scoped["_unit_price_numeric"].fillna(0) > 0]
+    if "line_item_kind" in scoped.columns:
+        scoped = scoped[
+            ~scoped["line_item_kind"].fillna("").astype(str).str.strip().str.lower().eq("pricing")
+        ]
+    if scoped.empty:
+        return workbench
+    if "source_effective_at" in scoped.columns:
+        scoped["_source_effective_at_sort"] = pd.to_datetime(
+            scoped["source_effective_at"],
+            errors="coerce",
+            utc=True,
+        )
+        scoped = scoped.sort_values(
+            "_source_effective_at_sort",
+            ascending=False,
+            na_position="last",
+        )
+    records = scoped.to_dict(orient="records")
+
+    def normalized(value: Any) -> str:
+        return " ".join(re.findall(r"[a-z0-9]+", str(value or "").lower()))
+
+    def row_number(value: Any) -> str:
+        number = safe_number(value, 0.0)
+        return str(int(number)) if number > 0 else str(value or "").strip()
+
+    for section in WORKBENCH_DECISION_SECTIONS:
+        for row in workbench.get(section) or []:
+            if (
+                not isinstance(row, dict)
+                or bool(row.get("include"))
+                or bool(row.get("manual_override"))
+                or safe_number(row.get("unit_price"), 0.0) > 0
+            ):
+                continue
+            workbook_row = row_number(row.get("workbook_row") or row.get("row_number"))
+            if not workbook_row:
+                continue
+            bucket = normalized(row.get("template_bucket") or row.get("package"))
+            candidates = [
+                candidate
+                for candidate in records
+                if row_number(candidate.get("workbook_row") or candidate.get("source_row"))
+                == workbook_row
+            ]
+            bucket_candidates = [
+                candidate
+                for candidate in candidates
+                if bucket and normalized(candidate.get("template_bucket")) == bucket
+            ]
+            candidates = bucket_candidates or candidates
+            if not candidates:
+                continue
+            selected_name = normalized(
+                first_nonblank(
+                    row.get("selected_item_name"),
+                    row.get("resolved_item_name"),
+                    row.get("item_name"),
+                    row.get("template_line"),
+                    row.get("material"),
+                    row.get("adder"),
+                )
+            )
+            named_candidates = [
+                candidate
+                for candidate in candidates
+                if selected_name
+                and (
+                    selected_name in normalized(candidate.get("item_name"))
+                    or normalized(candidate.get("item_name")) in selected_name
+                )
+            ]
+            selected = (named_candidates or candidates)[0]
+            row["unit_price"] = float(selected["_unit_price_numeric"])
+            row["unit_price_source"] = "latest_historical_estimate"
+            row["unit_price_historical"] = True
+            row["unit_price_source_item"] = selected.get("item_name")
+            row["unit_price_source_file"] = selected.get("source_file")
+            row["unit_price_source_date"] = selected.get("source_effective_at")
+            row["unit_price_source_url"] = selected.get("source_sharepoint_url")
+            row["unit_price_source_job_id"] = selected.get("source_job_id")
+            row["unit_price_observation_count"] = selected.get(
+                "historical_observation_count"
+            )
+    return workbench
+
+
 def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float = DEFAULT_HOURLY_RATE, data: Any = None) -> dict[str, Any]:
     updated = deepcopy(workbench)
     existing_scope = updated.get("scope")
@@ -13070,6 +13175,7 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
         [*base_decision_proposals, *companion_proposals],
         decision_sections=WORKBENCH_DECISION_SECTIONS,
     )
+    updated = _prefill_unchecked_latest_historical_unit_prices(updated, data)
     updated = _refresh_roofing_labor_formula_outputs(updated)
     updated = _enforce_roofing_travel_calculation_readiness(updated)
     updated = _guard_opposite_template_includes(updated)

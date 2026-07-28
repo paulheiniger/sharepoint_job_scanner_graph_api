@@ -736,6 +736,30 @@ def test_malformed_ai_json_repairs_missing_comma_between_decision_objects() -> N
     assert result.raw_response["_json_repair_applied"] is True
 
 
+def test_malformed_ai_json_repairs_unescaped_inches_in_strings() -> None:
+    malformed = """{
+      "assistant_message": "Drafted the roofing estimate.",
+      "estimator_notes": "Install 2" Resista ISO and 1.5" Coated Foam Roof.",
+      "scope_overrides": {"template_type": "roofing", "estimated_sqft": 5136},
+      "workbook_decision_preferences": [],
+      "missing_questions": [],
+      "assumptions": [],
+      "warnings": [],
+      "confidence": 0.84
+    }"""
+
+    result = run_estimator_chat_turn(
+        [{"role": "user", "content": "Grossman Tuning coated foam roof, 5,136 sq ft."}],
+        template_type_hint="roofing",
+        provider=lambda messages, model: malformed,
+        model="test-model",
+    )
+
+    assert result.source == "ai_chat"
+    assert 'Install 2" Resista ISO and 1.5" Coated Foam Roof.' in result.estimator_notes
+    assert result.raw_response["_json_repair_applied"] is True
+
+
 def test_grossman_annotated_scope_fallback_is_classified_as_roofing() -> None:
     result = chat_assistant.deterministic_chat_fallback(
         [

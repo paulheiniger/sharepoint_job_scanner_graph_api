@@ -21227,10 +21227,22 @@ def draft_workbook_inputs_for_ui(workbench: dict[str, Any]) -> dict[str, Any]:
 
 
 def estimator_data_signature(data: EstimatorData) -> dict[str, Any]:
+    latest_prices = getattr(data, "latest_historical_unit_prices", pd.DataFrame())
+    latest_price_version = ""
+    if (
+        isinstance(latest_prices, pd.DataFrame)
+        and not latest_prices.empty
+        and "source_effective_at" in latest_prices.columns
+    ):
+        effective_values = latest_prices["source_effective_at"].dropna().astype(str)
+        if not effective_values.empty:
+            latest_price_version = str(effective_values.max())
     return {
         "source_files_used": list(data.source_files_used or []),
         "template_rows": len(data.template_rows),
         "pricing": len(data.pricing),
+        "latest_historical_unit_prices": len(latest_prices),
+        "latest_historical_unit_price_version": latest_price_version,
         "product_catalog": len(data.product_catalog),
         "product_properties": len(data.product_properties),
         "template_product_options": len(data.template_product_options),
@@ -23902,123 +23914,17 @@ def estimator_prototype_page() -> None:
             key=f"estimator_debug_mode_{workbench_key}",
         )
 
-        st.markdown("### Project Inputs")
-        st.caption("Review the job facts that drive historical defaults and workbook rows.")
         base_scope = parsed_workbench.get("scope") or {}
-        s1, s2, s3 = st.columns(3)
-        with s1:
-            edited_project_type = st.text_input("Project Type", value=str(base_scope.get("project_type") or ""), key=f"wb_project_type_{workbench_key}")
-            edited_substrate = st.text_input("Roof Type / Substrate", value=str(base_scope.get("roof_type_substrate") or ""), key=f"wb_substrate_{workbench_key}")
-            edited_gross = st.number_input("Gross Sq Ft", min_value=0.0, value=float(base_scope.get("gross_sqft") or 0), step=100.0, key=f"wb_gross_{workbench_key}")
-        with s2:
-            edited_deduction = st.number_input("Deduction Sq Ft", min_value=0.0, value=float(base_scope.get("deduction_sqft") or 0), step=25.0, key=f"wb_deduction_{workbench_key}")
-            default_net = float(base_scope.get("net_sqft") or max(edited_gross - edited_deduction, 0))
-            edited_net = st.number_input("Net Sq Ft", min_value=0.0, value=default_net, step=100.0, key=f"wb_net_{workbench_key}")
-            edited_warranty = st.number_input("Warranty", min_value=0.0, value=float(base_scope.get("warranty_years") or 0), step=5.0, key=f"wb_warranty_{workbench_key}")
-        with s3:
-            edited_coating = st.text_input("Coating Type", value=str(base_scope.get("coating_type") or ""), key=f"wb_coating_{workbench_key}")
-            edited_condition = st.text_input("Roof Condition", value=str(base_scope.get("roof_condition") or ""), key=f"wb_condition_{workbench_key}")
-            edited_access = st.text_input("Access", value=str(base_scope.get("access_complexity") or ""), key=f"wb_access_{workbench_key}")
-            edited_penetrations = st.text_input("Penetrations", value=str(base_scope.get("penetrations_complexity") or ""), key=f"wb_penetrations_{workbench_key}")
-        reference_defaults = parse_reference_job_ids(base_scope.get("reference_job_ids") or base_scope.get("reference_project_ids") or "")
-        reference_options, reference_labels = estimator_reference_job_options(
-            render_data,
-            template_type=str(base_scope.get("template_type") or historical_filters_from_scope(base_scope).get("template_type") or ""),
-        )
-        selected_reference_defaults = [job_id for job_id in reference_defaults if job_id in reference_options]
-        manual_reference_defaults = [job_id for job_id in reference_defaults if job_id not in reference_options]
-        selected_reference_job_ids = st.multiselect(
-            "Reference Jobs",
-            options=reference_options,
-            default=selected_reference_defaults,
-            format_func=lambda job_id: reference_labels.get(str(job_id), str(job_id)),
-            key=f"wb_reference_jobs_select_{workbench_key}",
-            help="Historical jobs selected here act as comparison anchors for estimator decisions.",
-        )
-        manual_reference_job_ids = st.text_input(
-            "Other Reference Job IDs",
-            value=", ".join(manual_reference_defaults),
-            key=f"wb_reference_jobs_manual_{workbench_key}",
-            help="Optional comma-separated job IDs not shown in the list.",
-        )
-        edited_reference_job_ids = [*selected_reference_job_ids, *parse_reference_job_ids(manual_reference_job_ids)]
-
-        edited_scope = {
-            **base_scope,
-            "project_type": edited_project_type,
-            "roof_type_substrate": edited_substrate,
-            "gross_sqft": edited_gross,
-            "deduction_sqft": edited_deduction,
-            "net_sqft": edited_net,
-            "warranty_years": edited_warranty,
-            "coating_type": edited_coating,
-            "roof_condition": edited_condition,
-            "access_complexity": edited_access,
-            "penetrations_complexity": edited_penetrations,
-            "reference_job_ids": edited_reference_job_ids,
-        }
+        edited_scope = dict(base_scope)
         scope_key = hashlib.sha1(json.dumps(edited_scope, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:8]
 
-        default_filters = historical_filters_from_scope(edited_scope)
-        st.markdown("### Stage 2 - Historical Defaults")
-        st.caption("Spray-Tec history fills in the template defaults. The parser chooses an initial comparison pool; the estimator can tighten or broaden it.")
-        with st.expander("Recommended historical filters / comparison pool", expanded=False):
-            st.caption("These filters only recalculate historical defaults. They do not change the parsed scope or hide estimator-editable rows.")
-            f1, f2, f3 = st.columns(3)
-            with f1:
-                filter_division = st.text_input("Division", value=str(default_filters.get("division") or "Roofing"), key=f"wb_filter_division_{workbench_key}")
-                filter_template_type = st.text_input("Template Type", value=str(default_filters.get("template_type") or "roofing"), key=f"wb_filter_template_{workbench_key}")
-                filter_project_type = st.text_input("Project Type", value=str(default_filters.get("project_type") or ""), key=f"wb_filter_project_{workbench_key}")
-                filter_substrate = st.text_input("Substrate", value=str(default_filters.get("substrate") or ""), key=f"wb_filter_substrate_{workbench_key}")
-            with f2:
-                filter_coating_type = st.text_input("Coating Type", value=str(default_filters.get("coating_type") or ""), key=f"wb_filter_coating_{workbench_key}")
-                filter_warranty = st.text_input(
-                    "Warranty Years",
-                    value=str(int(default_filters["warranty_years"])) if default_filters.get("warranty_years") else "",
-                    key=f"wb_filter_warranty_{workbench_key}",
-                )
-                filter_condition = st.text_input("Roof Condition", value=str(default_filters.get("roof_condition") or ""), key=f"wb_filter_condition_{workbench_key}")
-                filter_access = st.text_input("Access Complexity", value=str(default_filters.get("access_complexity") or ""), key=f"wb_filter_access_{workbench_key}")
-            with f3:
-                filter_penetrations = st.text_input("Penetration Complexity", value=str(default_filters.get("penetrations_complexity") or ""), key=f"wb_filter_penetrations_{workbench_key}")
-                filter_area_bucket = st.selectbox(
-                    "Area Bucket / Size Range",
-                    ["", "under_5k", "5k_15k", "15k_50k", "50k_plus"],
-                    index=["", "under_5k", "5k_15k", "15k_50k", "50k_plus"].index(str(default_filters.get("area_bucket") or "")),
-                    key=f"wb_filter_area_bucket_{workbench_key}",
-                )
-                filter_source_year = st.text_input("Source Year", value=str(default_filters.get("source_year") or ""), key=f"wb_filter_source_year_{workbench_key}")
-                filter_pipeline_status = st.text_input("Pipeline Status", value="", key=f"wb_filter_pipeline_status_{workbench_key}")
-            f4, f5, f6 = st.columns(3)
-            with f4:
-                filter_completed_only = st.checkbox("Completed Only", value=False, key=f"wb_filter_completed_only_{workbench_key}")
-            with f5:
-                filter_include_repairs = st.checkbox("Include Repairs", value=True, key=f"wb_filter_include_repairs_{workbench_key}")
-            with f6:
-                filter_min_evidence = st.number_input("Minimum Evidence Count", min_value=0, value=3, step=1, key=f"wb_filter_min_evidence_{workbench_key}")
-
         historical_filters = {
-            "division": filter_division,
-            "template_type": filter_template_type,
-            "project_type": filter_project_type,
-            "substrate": filter_substrate,
-            "coating_type": filter_coating_type,
-            "warranty_years": optional_positive_number(filter_warranty),
-            "roof_condition": filter_condition,
-            "access_complexity": filter_access,
-            "penetrations_complexity": filter_penetrations,
-            "area_bucket": filter_area_bucket,
-            "source_year": optional_positive_number(filter_source_year),
-            "pipeline_status": filter_pipeline_status,
-            "completed_only": filter_completed_only,
-            "include_repairs": filter_include_repairs,
-            "min_evidence_count": filter_min_evidence,
+            **historical_filters_from_scope(edited_scope),
+            "completed_only": False,
+            "include_repairs": True,
+            "min_evidence_count": 3,
         }
         historical_filters_key = historical_filter_hash(historical_filters)
-        reset_filtered_defaults = st.button(
-            "Reset all unedited rows to filtered historical defaults",
-            key=f"wb_reset_filtered_defaults_{workbench_key}_{historical_filters_key}",
-        )
         filtered_default_workbench = build_estimating_workbench_for_ui(
             field_recommendation,
             render_data,
@@ -24027,7 +23933,7 @@ def estimator_prototype_page() -> None:
             timing_label="filtered workbench build",
         )
         previous_workbench_key = f"wb_last_edited_{workbench_key}"
-        previous_workbench = None if reset_filtered_defaults else st.session_state.get(previous_workbench_key)
+        previous_workbench = st.session_state.get(previous_workbench_key)
         original_workbench = apply_historical_filter_update(previous_workbench, filtered_default_workbench)
         edited_workbench = dict(original_workbench)
         edited_workbench["scope"] = edited_scope
@@ -24052,7 +23958,7 @@ def estimator_prototype_page() -> None:
                 if proposal_id:
                     st.session_state[proposal_saved_key] = True
 
-        st.markdown("### Stage 3 - Estimator Workbench")
+        st.markdown("### Estimator Workbench")
         st.caption("Review and edit template decisions. Workbook formulas remain the calculation engine; these rows control the inputs.")
         show_row_details = st.checkbox(
             "Show detailed row diagnostics",

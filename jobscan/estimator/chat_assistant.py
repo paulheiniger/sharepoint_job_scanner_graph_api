@@ -4403,7 +4403,9 @@ def _chat_prompt_messages(
         "mark both trip counts for review. Do not ask for mileage or trip counts when the address and labor plan make those inputs calculable. "
         "You may do takeoff math from explicit dimensions and deductions. Do not invent hidden warranty years, exact proprietary products, "
         "or final quote totals when evidence is weak. Use review_required for assumptions. "
-        "Workbook formulas remain authoritative for final costs."
+        "Workbook formulas remain authoritative for final costs. "
+        "Keep the JSON response compact. Do not restate supplied context, repeat unchanged decisions, or include long narrative evidence. "
+        "Use short reason and evidence strings, and leave audit arrays empty when they add no current-turn information."
     )
     empty_payload = {
         "today": today,
@@ -4783,7 +4785,37 @@ def _call_openai_chat(messages: list[dict[str, Any]], model: str) -> dict[str, A
     if reasoning_effort:
         request["reasoning"] = {"effort": reasoning_effort}
     response = client.responses.create(**request)
-    payload = _extract_json_object(getattr(response, "output_text", "") or "{}")
+    output_text = getattr(response, "output_text", "") or ""
+    response_status = str(getattr(response, "status", "") or "").strip().lower()
+    incomplete_reason = _response_incomplete_reason(response)
+    if response_status == "incomplete":
+        try:
+            payload = _extract_json_object(output_text)
+        except (json.JSONDecodeError, ValueError):
+            payload = {}
+        if not payload:
+            payload = _extract_partial_estimator_payload(output_text)
+        if not payload:
+            raise RuntimeError(
+                "Estimator model response was incomplete"
+                + (f": {incomplete_reason}" if incomplete_reason else "")
+            )
+        payload["_model_response_incomplete"] = {
+            "reason": incomplete_reason or "unknown",
+            "partial_decisions_discarded": True,
+        }
+        warnings = payload.get("warnings")
+        if not isinstance(warnings, list):
+            warnings = []
+            payload["warnings"] = warnings
+        warning = (
+            "AI estimator response was truncated; retained complete scope fields "
+            "and regenerated workbook decisions deterministically."
+        )
+        if warning not in warnings:
+            warnings.append(warning)
+    else:
+        payload = _extract_json_object(output_text or "{}")
     payload["_model_call"] = {
         **model_call_metadata(
             role="estimator",
@@ -4799,6 +4831,13 @@ def _call_openai_chat(messages: list[dict[str, Any]], model: str) -> dict[str, A
         "reasoning_effort": reasoning_effort,
     }
     return payload
+
+
+def _response_incomplete_reason(response: Any) -> str:
+    details = getattr(response, "incomplete_details", None)
+    if isinstance(details, dict):
+        return str(details.get("reason") or "").strip()
+    return str(getattr(details, "reason", "") or "").strip()
 
 
 def _clean_messages(messages: Iterable[dict[str, str]]) -> list[dict[str, str]]:
@@ -4832,8 +4871,43 @@ def _extract_json_object(value: Any) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _extract_partial_estimator_payload(text: str) -> dict[str, Any]:
+    """Recover only completed high-level fields from a truncated model response."""
+    start = str(text or "").find("{")
+    if start < 0:
+        return {}
+    try:
+        from pydantic_core import from_json
+
+        parsed = from_json(str(text)[start:], allow_partial=True)
+    except (ImportError, TypeError, ValueError):
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    safe_keys = {
+        "assistant_message",
+        "estimator_notes",
+        "scope_overrides",
+        "missing_questions",
+        "assumptions",
+        "warnings",
+        "confidence",
+    }
+    payload = {key: value for key, value in parsed.items() if key in safe_keys}
+    if not any(
+        payload.get(key)
+        for key in ("assistant_message", "estimator_notes", "scope_overrides")
+    ):
+        return {}
+    payload["workbook_decision_preferences"] = []
+    payload["_partial_json_recovery_applied"] = True
+    return payload
+
+
 def _load_json_with_local_repairs(text: str, *, max_repairs: int = 24) -> Any:
-    repaired = _repair_common_json_delimiters(text)
+    repaired = _repair_common_json_delimiters(
+        _repair_unescaped_string_quotes(text)
+    )
     for _ in range(max_repairs + 1):
         try:
             return json.loads(repaired)
@@ -4846,6 +4920,52 @@ def _load_json_with_local_repairs(text: str, *, max_repairs: int = 24) -> Any:
                 raise
             repaired = repaired[:position] + "," + repaired[position:]
     return json.loads(repaired)
+
+
+def _repair_unescaped_string_quotes(text: str) -> str:
+    """Escape obvious inch/quote marks embedded in model-generated JSON strings."""
+    repaired: list[str] = []
+    in_string = False
+    escaped = False
+    length = len(text)
+    for index, character in enumerate(text):
+        if escaped:
+            repaired.append(character)
+            escaped = False
+            continue
+        if character == "\\" and in_string:
+            repaired.append(character)
+            escaped = True
+            continue
+        if character != '"':
+            repaired.append(character)
+            continue
+        if not in_string:
+            repaired.append(character)
+            in_string = True
+            continue
+
+        lookahead_index = index + 1
+        while lookahead_index < length and text[lookahead_index].isspace():
+            lookahead_index += 1
+        next_character = text[lookahead_index : lookahead_index + 1]
+        closes_before_missing_key_comma = bool(
+            next_character == '"'
+            and re.match(
+                r'"(?:[^"\\]|\\.)*"\s*:',
+                text[lookahead_index:],
+            )
+        )
+        if (
+            not next_character
+            or next_character in {",", "}", "]", ":"}
+            or closes_before_missing_key_comma
+        ):
+            repaired.append(character)
+            in_string = False
+        else:
+            repaired.append('\\"')
+    return "".join(repaired)
 
 
 def _repair_common_json_delimiters(text: str) -> str:

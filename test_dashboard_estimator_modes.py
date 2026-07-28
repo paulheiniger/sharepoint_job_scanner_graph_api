@@ -2039,15 +2039,15 @@ def test_estimator_page_no_longer_shows_structural_override_block() -> None:
     assert "Sqft override" not in source
 
 
-def test_estimator_page_exposes_reference_job_ids_scope_field() -> None:
+def test_estimator_page_preserves_parsed_reference_jobs_without_manual_controls() -> None:
     app = importlib.import_module("dashboard.app")
 
     source = inspect.getsource(app.estimator_prototype_page)
 
-    assert "Reference Jobs" in source
-    assert "Other Reference Job IDs" in source
-    assert "st.multiselect" in source
-    assert "reference_job_ids" in source
+    assert "Reference Jobs" not in source
+    assert "Other Reference Job IDs" not in source
+    assert "edited_scope = dict(base_scope)" in source
+    assert "historical_filters_from_scope(edited_scope)" in source
 
 
 def test_parse_reference_job_ids_accepts_common_separators() -> None:
@@ -2561,7 +2561,9 @@ def test_estimating_assistant_hides_parser_noise_from_main_flow() -> None:
     assert "Parsed Scope Summary" not in source
     assert "Show AI evidence and uncertainty" not in source
     assert "Scope Interpreter - Parsed Scope" not in source
-    assert "Project Inputs" in source
+    assert 'st.markdown("### Project Inputs")' not in source
+    assert 'st.markdown("### Stage 2 - Historical Defaults")' not in source
+    assert 'st.markdown("### Estimator Workbench")' in source
     assert "Parser diagnostics" in source
     assert 'edited_scope.get("template_type")' in source
 

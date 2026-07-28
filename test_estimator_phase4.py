@@ -697,6 +697,46 @@ def test_persistent_estimator_models_use_responses_api(
     assert [request["max_output_tokens"] for request in requests] == [321, 123]
 
 
+def test_incomplete_estimator_response_recovers_scope_and_discards_decisions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeResponses:
+        def create(self, **_kwargs):
+            return SimpleNamespace(
+                output_text=(
+                    '{"assistant_message":"Drafted the roof estimate",'
+                    '"estimator_notes":"Use 1.5 inch coated foam",'
+                    '"scope_overrides":{"template_type":"roofing","estimated_sqft":5136},'
+                    '"workbook_decision_preferences":[{"decision_id":"partial-row"'
+                ),
+                status="incomplete",
+                incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+                usage={"input_tokens": 10, "output_tokens": 8000},
+                id="response-incomplete",
+                model="test-estimator",
+            )
+
+    class FakeOpenAI:
+        def __init__(self, **_kwargs):
+            self.responses = FakeResponses()
+
+    monkeypatch.setattr("openai.OpenAI", FakeOpenAI)
+
+    payload = _call_openai_chat(
+        [{"role": "user", "content": "Draft estimate."}],
+        "test-estimator",
+    )
+
+    assert payload["scope_overrides"]["estimated_sqft"] == 5136
+    assert payload["workbook_decision_preferences"] == []
+    assert payload["_partial_json_recovery_applied"] is True
+    assert payload["_model_response_incomplete"] == {
+        "reason": "max_output_tokens",
+        "partial_decisions_discarded": True,
+    }
+    assert "regenerated workbook decisions deterministically" in payload["warnings"][0]
+
+
 def test_staged_benchmark_stops_after_terminal_model_error() -> None:
     cases = [
         {

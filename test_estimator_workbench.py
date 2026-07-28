@@ -28,6 +28,104 @@ def test_insulation_template_type_wins_over_stale_roofing_division() -> None:
     )
 
 
+def test_unchecked_workbench_rows_receive_latest_historical_unit_price() -> None:
+    data = EstimatorData(
+        latest_historical_unit_prices=pd.DataFrame(
+            [
+                {
+                    "template_type": "roofing",
+                    "template_bucket": "gutter",
+                    "line_item_kind": "material",
+                    "workbook_row": 84,
+                    "item_name": "New Gutter",
+                    "unit_price": 18.5,
+                    "source_job_id": "job-gutter",
+                    "source_file": "Estimate Roofing - Recent Gutter Job.xlsx",
+                    "source_sharepoint_url": "https://example.invalid/recent-gutter-job",
+                    "source_effective_at": "2026-07-20T15:30:00+00:00",
+                    "historical_observation_count": 9,
+                }
+            ]
+        )
+    )
+    workbench = {
+        "scope": {"template_type": "roofing"},
+        "roofing_detail_quantity_template_decisions": [
+            {
+                "include": False,
+                "template_bucket": "gutter",
+                "workbook_row": "84",
+                "template_line": "New Gutter",
+                "unit_price": 0.0,
+            }
+        ],
+    }
+
+    updated = workbench_module._prefill_unchecked_latest_historical_unit_prices(
+        workbench,
+        data,
+    )
+    row = updated["roofing_detail_quantity_template_decisions"][0]
+
+    assert row["include"] is False
+    assert row["unit_price"] == 18.5
+    assert row["unit_price_source"] == "latest_historical_estimate"
+    assert row["unit_price_historical"] is True
+    assert row["unit_price_source_file"] == "Estimate Roofing - Recent Gutter Job.xlsx"
+    assert row["unit_price_observation_count"] == 9
+
+
+def test_latest_historical_price_does_not_override_included_or_manual_rows() -> None:
+    data = EstimatorData(
+        latest_historical_unit_prices=pd.DataFrame(
+            [
+                {
+                    "template_type": "roofing",
+                    "template_bucket": "gutter",
+                    "line_item_kind": "material",
+                    "workbook_row": 84,
+                    "item_name": "New Gutter",
+                    "unit_price": 18.5,
+                    "source_effective_at": "2026-07-20T15:30:00+00:00",
+                }
+            ]
+        )
+    )
+    workbench = {
+        "scope": {"template_type": "roofing"},
+        "roofing_detail_quantity_template_decisions": [
+            {
+                "include": True,
+                "template_bucket": "gutter",
+                "workbook_row": "84",
+                "unit_price": 0.0,
+            },
+            {
+                "include": False,
+                "manual_override": True,
+                "template_bucket": "gutter",
+                "workbook_row": "84",
+                "unit_price": 0.0,
+            },
+            {
+                "include": False,
+                "template_bucket": "gutter",
+                "workbook_row": "84",
+                "unit_price": 22.0,
+            },
+        ],
+    }
+
+    updated = workbench_module._prefill_unchecked_latest_historical_unit_prices(
+        workbench,
+        data,
+    )
+    rows = updated["roofing_detail_quantity_template_decisions"]
+
+    assert [row["unit_price"] for row in rows] == [0.0, 0.0, 22.0]
+    assert all("unit_price_source" not in row for row in rows)
+
+
 def test_auto_included_zero_cost_insulation_rows_are_unchecked_when_inputs_missing() -> None:
     workbench = {
         "scope": {"template_type": "insulation", "division": "Insulation"},
