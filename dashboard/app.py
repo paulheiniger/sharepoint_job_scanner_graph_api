@@ -22772,6 +22772,7 @@ def render_estimator_chat_draft_panel(
     *,
     notes: str,
     estimate_type: str,
+    estimator_model: str = "",
     data: EstimatorData | None = None,
     data_loader: Callable[[], EstimatorData] | None = None,
 ) -> dict[str, Any] | None:
@@ -22916,6 +22917,7 @@ def render_estimator_chat_draft_panel(
                         "note_image_result": note_image_result or {},
                         "photo_context": uploaded_photo_context or {},
                     },
+                    model=estimator_model or None,
                 )
             context_cache_after = estimator_context_cache_stats()
             context_cache_hits = int(context_cache_after.get("hit", 0)) - int(context_cache_before.get("hit", 0))
@@ -23396,6 +23398,11 @@ def compact_estimate_input_fields(row: dict[str, Any]) -> tuple[str, ...]:
         ).lower(),
     ).strip("_")
 
+    is_labor_row = (
+        "labor_cost_from_days_crew_rate" in formula_model
+        or bucket.startswith("labor_")
+    )
+
     if "foam_sets_from_area_thickness_yield" in formula_model or bucket == "foam":
         fields = ["basis_sqft", "thickness_inches", "yield_or_coverage", "unit_price"]
     elif "coating_gallons_from_area_rate_waste" in formula_model or bucket in {
@@ -23426,7 +23433,7 @@ def compact_estimate_input_fields(row: dict[str, Any]) -> tuple[str, ...]:
         "labor_traveling",
     }:
         fields = ["hours_per_day", "people_count", "trip_count", "unit_price"]
-    elif "labor_cost_from_days_crew_rate" in formula_model or bucket.startswith("labor_"):
+    elif is_labor_row:
         fields = [
             "days",
             "crew_size",
@@ -23475,10 +23482,11 @@ def compact_estimate_input_fields(row: dict[str, Any]) -> tuple[str, ...]:
             fields = ["estimated_units", "unit_price"]
 
     selection_fields: list[str] = []
-    if decision_row_selector_options(row) or text_value(row.get("editable_selector_code")):
-        selection_fields.append("editable_selector_code")
-    if decision_row_pricing_options(row) or text_value(row.get("selected_pricing_candidate")):
-        selection_fields.append("selected_pricing_candidate")
+    if not is_labor_row:
+        if decision_row_selector_options(row) or text_value(row.get("editable_selector_code")):
+            selection_fields.append("editable_selector_code")
+        if decision_row_pricing_options(row) or text_value(row.get("selected_pricing_candidate")):
+            selection_fields.append("selected_pricing_candidate")
     return tuple(unique_columns([*selection_fields, *fields]))
 
 
@@ -23509,11 +23517,55 @@ def compact_estimate_group_label(input_fields: Iterable[str]) -> str:
     return "Materials and equipment"
 
 
+def compact_estimate_line_item_label(row: dict[str, Any]) -> str:
+    bucket = text_value(
+        row.get("template_bucket")
+        or row.get("package_key")
+        or row.get("source_decision_id")
+    ).lower()
+    formula_model = text_value(
+        row.get("formula_model")
+        or row.get("formula_kind")
+        or row.get("formula")
+    ).lower()
+    is_labor_row = (
+        bool(row.get("labor_task") or row.get("labor_package"))
+        or bucket.startswith("labor_")
+        or "labor_cost_from_days_crew_rate" in formula_model
+    )
+    candidates = (
+        [
+            row.get("labor_task"),
+            row.get("labor_package"),
+            row.get("source_labor_task"),
+            row.get("template_line"),
+            row.get("resolved_template_option"),
+        ]
+        if is_labor_row
+        else [
+            row.get("resolved_template_option"),
+            row.get("template_line"),
+            row.get("selected_pricing_candidate"),
+        ]
+    )
+    for candidate in candidates:
+        label = text_value(candidate)
+        if not label:
+            continue
+        if is_labor_row:
+            try:
+                float(label.replace(",", ""))
+            except ValueError:
+                return label
+            continue
+        return label
+    return text_value(row.get("decision_id"))
+
+
 def compact_estimate_groups(workbench: dict[str, Any]) -> list[dict[str, Any]]:
     """Group included workbench rows by the formula inputs an estimator edits."""
 
     grouped: dict[tuple[str, ...], dict[str, Any]] = {}
-    section_labels = dict(ESTIMATOR_WORKBENCH_DECISION_SECTIONS)
     for section_key, _section_label in ESTIMATOR_WORKBENCH_DECISION_SECTIONS:
         for row_index, row in enumerate(workbench.get(section_key) or []):
             if not isinstance(row, dict) or row.get("include") is not True:
@@ -23528,24 +23580,17 @@ def compact_estimate_groups(workbench: dict[str, Any]) -> list[dict[str, Any]]:
                     "row_refs": [],
                 },
             )
-            line_item = text_value(
-                row.get("resolved_template_option")
-                or row.get("template_line")
-                or row.get("labor_task")
-                or row.get("selected_pricing_candidate")
-                or row.get("decision_id")
-            )
             display_row = {
                 "include": True,
-                "category": section_labels.get(section_key, section_key),
                 "workbook_row": row.get("workbook_row"),
-                "line_item": line_item,
+                "line_item": compact_estimate_line_item_label(row),
             }
             for field in input_fields:
                 display_row[field] = row.get(field)
             for field in ("estimated_units", "estimated_gallons", "estimated_cost"):
                 if field not in input_fields and _compact_cell_has_value(row.get(field)):
                     display_row[field] = row.get(field)
+            display_row[CHOICE_SUMMARY_COLUMN] = choice_summary_for_row(row)
             group["rows"].append(display_row)
             group["row_refs"].append((section_key, row_index))
     return list(grouped.values())
@@ -23680,9 +23725,9 @@ def render_compact_estimator_workbench(
             column_order=column_order,
             column_config={
                 "include": "Include",
-                "category": "Category",
                 "workbook_row": "Row",
                 "line_item": "Line Item",
+                CHOICE_SUMMARY_COLUMN: "Evidence",
                 "editable_selector_code": "Template Option",
                 "selected_pricing_candidate": "Pricing Item",
                 "basis_sqft": "Sq Ft",
@@ -24092,6 +24137,22 @@ def estimator_prototype_page() -> None:
         return loaded
 
     with st.expander("Examples, routing, and data status", expanded=False):
+        configured_estimator_model = (
+            os.getenv("OPENAI_ESTIMATOR_MODEL")
+            or os.getenv("OPENAI_ESTIMATOR_CHAT_MODEL")
+            or os.getenv("OPENAI_MODEL")
+            or "gpt-5.5"
+        )
+        estimator_model_options = unique_columns(
+            ["gpt-5.4", configured_estimator_model, "gpt-5.5"]
+        )
+        estimator_model = st.selectbox(
+            "Estimator Model",
+            estimator_model_options,
+            index=0,
+            key="estimator_chat_model",
+            help="Applies to new Estimating Assistant chat turns. Model routing and token usage remain available in estimate analysis.",
+        )
         estimate_type_selection = st.selectbox(
             "Estimate Type",
             ESTIMATE_TYPE_OPTIONS,
@@ -24150,6 +24211,7 @@ def estimator_prototype_page() -> None:
     active_chat_context = render_estimator_chat_draft_panel(
         notes=notes,
         estimate_type=resolved_estimate_type,
+        estimator_model=estimator_model,
         data_loader=lambda: ensure_estimator_data("chat"),
     )
     if active_chat_context and isinstance(active_chat_context.get("scope_overrides"), dict):

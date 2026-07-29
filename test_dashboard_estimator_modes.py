@@ -2715,6 +2715,77 @@ def test_estimator_workbench_uses_compact_columns_by_default() -> None:
     assert "total_hours" not in app.INSULATION_DECISION_SECTION_COLUMNS["insulation_detail_material_template_decisions"]
 
 
+def test_compact_estimate_labor_rows_use_task_labels_and_evidence() -> None:
+    app = importlib.import_module("dashboard.app")
+    workbench = {
+        "roofing_labor_template_decisions": [
+            {
+                "include": True,
+                "template_bucket": "labor_prep",
+                "workbook_row": "116",
+                "labor_task": "Power Wash / Prep",
+                "labor_package": "Power Wash / Prep",
+                "resolved_template_option": "1",
+                "selected_pricing_candidate": "1",
+                "editable_selector_code": "1",
+                "selector_options_json": '[{"selector_code":"1","resolved_template_option":"1"}]',
+                "formula_model": "labor_cost_from_days_crew_rate",
+                "days": 0.4,
+                "crew_size": 5,
+                "daily_rate": 1667.25,
+                "total_hours": 22,
+                "formula_mode": "mixed_formula",
+                "estimated_cost": 666.9,
+                "decision_evidence_summary": "Scaled from comparable roof labor.",
+            },
+            {
+                "include": True,
+                "template_bucket": "labor_seam_sealer",
+                "workbook_row": "120",
+                "labor_task": "Seam Treatment",
+                "resolved_template_option": "1",
+                "formula_model": "labor_cost_from_days_crew_rate",
+                "days": 1,
+                "crew_size": 5,
+                "daily_rate": 1748.25,
+                "total_hours": 34.3,
+                "formula_mode": "mixed_formula",
+                "estimated_cost": 1748.25,
+            },
+        ]
+    }
+
+    groups = app.compact_estimate_groups(workbench)
+
+    assert len(groups) == 1
+    assert groups[0]["input_fields"] == (
+        "days",
+        "crew_size",
+        "daily_rate",
+        "total_hours",
+        "hourly_rate",
+        "formula_mode",
+    )
+    assert [row["line_item"] for row in groups[0]["rows"]] == [
+        "Power Wash / Prep",
+        "Seam Treatment",
+    ]
+    assert all("category" not in row for row in groups[0]["rows"])
+    assert all(app.CHOICE_SUMMARY_COLUMN in row for row in groups[0]["rows"])
+    assert "Scaled from comparable roof labor." in groups[0]["rows"][0][app.CHOICE_SUMMARY_COLUMN]
+
+
+def test_estimating_assistant_exposes_gpt_54_model_override() -> None:
+    app = importlib.import_module("dashboard.app")
+    page_source = inspect.getsource(app.estimator_prototype_page)
+    chat_source = inspect.getsource(app.render_estimator_chat_draft_panel)
+
+    assert '"gpt-5.4"' in page_source
+    assert '"Estimator Model"' in page_source
+    assert "estimator_model=estimator_model" in page_source
+    assert "model=estimator_model or None" in chat_source
+
+
 def test_project_display_frame_removes_hidden_compact_columns() -> None:
     app = importlib.import_module("dashboard.app")
     frame = pd.DataFrame(
