@@ -1019,6 +1019,142 @@ The profiler writes reviewable training artifacts:
 
 Confidence is based on supporting job counts: `high` for 10 or more jobs, `medium` for 4-9 jobs, and `low` below 4 jobs. The output includes supporting job IDs for debug/review; treat these files as training evidence, not automatic production rules.
 
+### Offline estimate scope archetype analysis
+
+Use the scope-archetype analyzer to build a workbook-level inclusion matrix and
+discover candidate job systems and conditional package relationships. This is a
+review-first workflow and does not write to Postgres. The complete discovery
+tables remain offline; only the bounded evidence catalog is eligible for the
+Estimator Assistant prompt.
+
+```bash
+python scripts/analyze_estimate_scope_archetypes.py \
+  --output-dir output/estimate_scope_archetypes
+```
+
+The script loads `.env` locally and uses `NEON_DATABASE_URL` or `DATABASE_URL`.
+It can also run against exported CSVs:
+
+```bash
+python scripts/analyze_estimate_scope_archetypes.py \
+  --template-rows-csv output/estimate_template_rows.csv \
+  --estimates-csv output/estimates.csv \
+  --jobs-csv output/jobs.csv \
+  --scope-text-csv output/historical_scope_texts.csv \
+  --output-dir output/estimate_scope_archetypes
+```
+
+The analysis:
+
+- treats each estimate workbook/document as a separate observation;
+- selects one training revision per job while flagging ambiguous revision choices;
+- classifies template rows as `included`, `excluded`, `unknown`, or
+  `not_applicable` using actual quantities, application inputs, hours, trips,
+  linear feet, and calculated costs;
+- preserves repeated package rows such as separate base and top coating rows;
+- separates base-system, scope-modifier, execution, and logistics decisions;
+- calculates directed confidence, Wilson lower bounds, lift, leverage, and
+  negative associations;
+- clusters only base-system and scope-modifier decisions so labor and logistics
+  do not define the job archetype; and
+- emits bounded JSONL packets for later AI naming and semantic review;
+- creates a deterministic, stratified 90-estimate review workbook whose row and
+  revision corrections can be reapplied to the complete analysis; and
+- evaluates rule precision on temporal and person-level holdouts with false
+  positives weighted three times as heavily as true positives.
+
+Apply a completed review workbook and rebuild every downstream artifact:
+
+```bash
+python scripts/analyze_estimate_scope_archetypes.py \
+  --review-overrides output/estimate_scope_archetypes/scope_archetype_review.xlsx \
+  --output-dir output/estimate_scope_archetypes_reviewed
+```
+
+Candidate archetype naming is opt-in because it makes paid API calls. Each
+packet is capped, processed independently, and cached for safe retry:
+
+```bash
+python scripts/analyze_estimate_scope_archetypes.py \
+  --run-ai-review \
+  --ai-model gpt-5.5 \
+  --max-ai-packets 17 \
+  --output-dir output/estimate_scope_archetypes_reviewed
+```
+
+The review workbook also contains a `rule_review` sheet with only candidates
+that survived the temporal and person-proxy holdouts. Every run writes two
+versioned catalogs:
+
+- `scope_pattern_evidence_catalog.json` contains AI-labeled archetypes and only
+  holdout-stable relationships. It is advisory evidence and retains its
+  unreviewed status.
+- `approved_scope_archetype_catalog.json` contains only explicitly approved
+  archetypes and rules.
+
+Complete the editable `review_` fields on the archetype and rule sheets to
+compile the approval-gated catalog:
+
+```bash
+python scripts/analyze_estimate_scope_archetypes.py \
+  --review-overrides output/estimate_scope_archetypes_reviewed/scope_archetype_review.xlsx \
+  --approved-catalog-output output/estimate_scope_archetypes_reviewed/approved_scope_archetype_catalog.json \
+  --output-dir output/estimate_scope_archetypes_reviewed
+```
+
+The repository loads
+`config/estimator_scope_patterns/scope_pattern_evidence_catalog.json` by
+default. Override it with a regenerated advisory or reviewed catalog:
+
+```bash
+export ESTIMATOR_SCOPE_PATTERN_CATALOG_PATH=/absolute/path/to/scope_pattern_evidence_catalog.json
+streamlit run dashboard/app.py --server.address 0.0.0.0 --server.port 8501
+```
+
+The catalog is validated as `shadow_only`: it cannot directly include, exclude,
+price, or resize a workbook row. The Estimator Assistant receives one unified
+historical evidence packet containing complete nonzero comparable decision
+manifests, relevant row details, the strongest matching scope pattern, and
+holdout-stable relationships. Zero-quantity material rows and zero-time labor
+rows are excluded. Legacy decision cues and generic package co-occurrence are
+not sent to the model or converted into workbench proposals.
+
+Key outputs are:
+
+- `row_classifications.csv`: row-level state, confidence, and classification reason;
+- `estimate_observations.csv`: workbook identity, revision selection, context,
+  and included decision sets;
+- `decision_matrix.csv`: the selected estimate-by-decision binary matrix;
+- `association_rules.csv` and `negative_associations.csv`: complete statistical
+  discovery outputs;
+- `rule_candidates.csv`: template-specific rules that pass the initial support,
+  Wilson-confidence, and lift gates;
+- `candidate_archetypes.csv`: deterministic system-level clusters with core,
+  typical, execution, and logistics evidence kept separate;
+- `ai_review_packets.jsonl`: representative estimates and bounded instructions
+  for later AI-assisted labeling;
+- `scope_archetype_review.xlsx`: editable estimate, row-state, and archetype
+  review sheets plus the stable-rule approval sheet;
+- `review_corrections.csv`: corrections that were validated and propagated into
+  a reviewed analysis;
+- `rule_holdout_evaluation.csv` and `rule_validation_summary.csv`: temporal and
+  person-level precision, false-positive-weighted precision, and stability;
+- `ai_archetype_labels.jsonl`: cached structured AI proposals when
+  `--run-ai-review` is explicitly supplied;
+- `archetype_review_catalog.csv`: deterministic clusters joined to AI and human
+  review fields, still marked offline;
+- `approved_scope_archetype_catalog.json`: content-hashed, approval-gated,
+  shadow-only workbench evidence;
+- `scope_pattern_evidence_catalog.json`: content-hashed advisory evidence from
+  AI-labeled archetypes and holdout-stable relationships;
+- `diagnostics.csv`, `analysis_summary.json`, and `report.md`: corpus quality,
+  thresholds, results, and review boundaries.
+
+Do not activate a candidate rule from these files without reviewing revision
+selection, source estimates, and holdout performance. The current person-level
+split uses SharePoint's `lastModifiedBy` value as an explicitly labeled proxy
+because the estimate history does not contain an authoritative estimator field.
+
 ### Repair estimator data pipeline
 
 VSimple repair exports are handled separately from full roof coating/restoration estimates. The sample workbook lives at `data/data.xlsx` and is treated as an immutable source input.

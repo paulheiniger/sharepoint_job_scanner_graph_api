@@ -1015,7 +1015,7 @@ def test_workbench_to_draft_inputs_can_skip_recalculation(monkeypatch) -> None:
     assert any(row["template_bucket"] == "coating" for row in draft["workbook_decisions"])
 
 
-def test_relationship_package_payload_filters_to_companion_eligible_rows() -> None:
+def test_legacy_package_cooccurrence_is_not_embedded_in_workbench() -> None:
     data = EstimatorData(
         relationship_package_cooccurrence=pd.DataFrame(
             [
@@ -1027,11 +1027,12 @@ def test_relationship_package_payload_filters_to_companion_eligible_rows() -> No
         )
     )
 
-    rows = workbench_module._relationship_package_cooccurrence_payload(data, limit=1)
+    workbench = build_estimating_workbench(
+        roofing_recommendation(),
+        data,
+    )
 
-    assert len(rows) == 1
-    assert rows[0]["package_b"] == "primer"
-    assert rows[0]["job_count"] == 12
+    assert "relationship_package_cooccurrence" not in workbench
 
 
 def test_chat_loading_travel_preferences_apply_to_logistics_expense_rows() -> None:
@@ -1515,7 +1516,7 @@ def test_workbench_uses_materials_lookup_pricing_for_board_and_fabric() -> None:
     assert any(candidate["source"] == "template_lookup_materials" for candidate in fabric["pricing_candidates"])
 
 
-def test_roofing_companion_relationships_suggest_primer_and_detail_rows() -> None:
+def test_legacy_package_cooccurrence_does_not_create_workbench_proposals() -> None:
     data = roofing_companion_data()
     data.pricing_catalog = roofing_primer_detail_pricing_data().pricing_catalog
     workbench = build_estimating_workbench(
@@ -1533,10 +1534,10 @@ def test_roofing_companion_relationships_suggest_primer_and_detail_rows() -> Non
 
     assert primer["include"] is False
     assert primer["estimated_cost"] == 0
-    assert primer["proposal_source"] == "historical_companion"
-    assert primer["proposal_evidence"]["relationship_package_cooccurrence"]
-    assert primer["proposal_review_required"] is True
-    assert any("Historical companion suggestion" in reason for reason in primer["proposal_review_reasons"])
+    assert primer["proposal_source"] == ""
+    assert not (primer.get("proposal_evidence") or {}).get(
+        "relationship_package_cooccurrence"
+    )
     assert sealant["include"] is True
     assert sealant["estimated_cost"] > 0
     seams = next(row for row in workbench["roofing_detail_quantity_template_decisions"] if row["template_bucket"] == "seams_misc")
@@ -1574,7 +1575,7 @@ def test_historical_companion_detail_quantity_without_basis_is_not_included() ->
     assert seams["estimated_cost"] == 0
 
 
-def test_fabric_companion_suggests_seam_detail_labor_review_marked() -> None:
+def test_fabric_does_not_trigger_legacy_companion_labor_proposal() -> None:
     workbench = build_estimating_workbench(roofing_recommendation(), roofing_companion_data())
     fabric = next(row for row in workbench["roofing_detail_template_decisions"] if row["template_bucket"] == "fabric")
     fabric["include"] = True
@@ -1585,9 +1586,8 @@ def test_fabric_companion_suggests_seam_detail_labor_review_marked() -> None:
     seam_labor = next(row for row in recalculated["roofing_labor_template_decisions"] if row["template_bucket"] == "labor_seam_sealer")
 
     assert seam_labor["include"] is False
-    assert seam_labor["proposal_source"] == "historical_companion"
-    assert seam_labor["proposal_review_required"] is True
-    assert "fabric" in seam_labor["proposal_review_reasons"][0]
+    assert seam_labor.get("proposal_source") in (None, "")
+    assert not seam_labor.get("proposal_review_reasons")
 
 
 def test_cmu_wall_repair_scope_beats_historical_roofing_companions() -> None:
@@ -1874,7 +1874,7 @@ def test_roofing_fastener_plate_units_calculate_from_board_area_pattern() -> Non
     assert rows["plates"]["estimated_cost"] == 72
 
 
-def test_manual_uncheck_prevents_companion_proposal_from_rechecking_row() -> None:
+def test_manual_uncheck_remains_without_legacy_companion_proposal() -> None:
     workbench = build_estimating_workbench(roofing_recommendation(), roofing_companion_data())
     primer = workbench["roofing_primer_template_decisions"][0]
     assert primer["include"] is False
@@ -1887,8 +1887,8 @@ def test_manual_uncheck_prevents_companion_proposal_from_rechecking_row() -> Non
 
     assert recalculated_primer["include"] is False
     assert recalculated_primer["manual_override"] is True
-    assert recalculated_primer["proposal_source"] == "historical_companion"
-    assert recalculated_primer["proposal_review_required"] is True
+    assert recalculated_primer.get("proposal_source") in (None, "")
+    assert not recalculated_primer.get("proposal_review_required")
 
 
 def test_reference_project_fills_material_and_labor_pattern_scaled_to_current_area() -> None:
@@ -3978,3 +3978,55 @@ def test_edit_history_tracks_decision_rows_not_flat_rows() -> None:
     assert any(row["section"] == "roofing_coating_template_decisions.roofing_coating_system_row_26" for row in rows)
     assert {row["field_name"] for row in rows} >= {"unit_price", "include"}
     assert not any(row["section"].startswith("materials.") for row in rows)
+
+
+def test_workbench_attaches_scope_archetype_evidence_without_applying_it() -> None:
+    from jobscan.estimator.scope_archetype_catalog import (
+        build_approved_scope_catalog,
+    )
+
+    catalog = build_approved_scope_catalog(
+        pd.DataFrame(
+            [
+                {
+                    "archetype_id": "A1",
+                    "template_type": "roofing",
+                    "review_proposed_name": "Reviewed coating restoration",
+                    "review_approved": True,
+                    "review_complete": True,
+                    "core_decisions_json": '["coating@row_26"]',
+                    "typical_decisions_json": '["primer@row_39"]',
+                    "ai_conditional_modifiers_json": "[]",
+                    "ai_required_signals_json": "[]",
+                    "ai_likely_exclusions_json": "[]",
+                    "observation_count": 20,
+                }
+            ]
+        ),
+        pd.DataFrame(
+            [
+                {
+                    "rule_key": "R1",
+                    "segment_value": "roofing",
+                    "antecedent": "coating@row_26",
+                    "consequent": "primer@row_39",
+                    "validation_status": "stable_candidate",
+                    "review_approved": True,
+                    "review_complete": True,
+                    "full_support_count": 18,
+                    "full_confidence": 0.9,
+                    "full_lift": 1.3,
+                }
+            ]
+        ),
+    )
+    data = EstimatorData(scope_archetype_catalog=catalog)
+
+    workbench = build_estimating_workbench(roofing_recommendation(), data)
+    evidence = workbench["scope_archetype_shadow_evidence"]
+
+    assert evidence["matched_archetypes"][0]["archetype_id"] == "A1"
+    assert evidence["companion_hints"][0]["possible_companion"] == "primer@row_39"
+    assert evidence["applied_automatically"] is False
+    primer_rows = workbench["roofing_primer_template_decisions"]
+    assert not any(row.get("include") is True for row in primer_rows)

@@ -1492,10 +1492,19 @@ def _dedupe_dict_rows(
 
 def _historical_jobs(context: dict[str, Any], rejected: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rejected_ids = {str(row.get("precedent_id") or "") for row in rejected}
-    answer_keys = (context.get("historical_answer_key_examples") or {}).get("matched_answer_keys") or []
-    examples = (context.get("historical_template_examples") or {}).get("matched_examples") or []
-    profiles = (context.get("historical_job_context") or {}).get("matched_profiles") or []
-    candidates = answer_keys or examples or profiles
+    packet = (
+        context.get("historical_evidence_packet")
+        if isinstance(context.get("historical_evidence_packet"), dict)
+        else {}
+    )
+    candidates = packet.get("matched_comparables") or []
+    if not candidates:
+        legacy = (
+            context.get("historical_answer_key_examples")
+            if isinstance(context.get("historical_answer_key_examples"), dict)
+            else {}
+        )
+        candidates = legacy.get("matched_answer_keys") or []
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     for raw in candidates:
@@ -1505,11 +1514,6 @@ def _historical_jobs(context: dict[str, Any], rejected: list[dict[str, Any]]) ->
         if not precedent_id or precedent_id in rejected_ids or precedent_id in seen:
             continue
         seen.add(precedent_id)
-        answer_key = (
-            raw.get("reference_answer_key")
-            if isinstance(raw.get("reference_answer_key"), dict)
-            else {}
-        )
         rows.append(
             {
                 "precedent_id": precedent_id,
@@ -1532,27 +1536,16 @@ def _historical_jobs(context: dict[str, Any], rejected: list[dict[str, Any]]) ->
                     raw.get("quoted_value"),
                     raw.get("estimate_total"),
                     raw.get("proposal_value"),
-                    answer_key.get("quoted_value"),
-                    answer_key.get("expected_total"),
                 ),
                 "final_value": _first_nonblank_value(
                     raw.get("final_value"),
                     raw.get("contract_value"),
                     raw.get("actual_value"),
-                    answer_key.get("final_value"),
                 ),
-                "material_assumptions": (
-                    raw.get("material_assumptions")
-                    or answer_key.get("material_assumptions")
-                    or []
-                ),
-                "labor_assumptions": (
-                    raw.get("labor_assumptions")
-                    or answer_key.get("labor_assumptions")
-                    or []
-                ),
-                "reference_answer_key": answer_key,
-                "decisions": raw.get("decisions") or [],
+                "material_assumptions": raw.get("material_assumptions") or [],
+                "labor_assumptions": raw.get("labor_assumptions") or [],
+                "active_decision_keys": raw.get("active_decision_keys") or [],
+                "manifest_complete": raw.get("manifest_complete"),
             }
         )
         if len(rows) >= 7:

@@ -488,6 +488,49 @@ def load_historical_scope_texts(connection: Any, *, limit: int | None = None) ->
     )
 
 
+def load_estimate_file_authorship(connection: Any) -> pd.DataFrame:
+    """Load a best-effort person proxy for offline estimator holdout analysis."""
+
+    required = ("estimates", "documents", "sharepoint_drive_items")
+    if not all(relation_exists(connection, relation) for relation in required):
+        return pd.DataFrame()
+    return _read_sql_dataframe(
+        connection,
+        """
+        SELECT DISTINCT ON (e.estimate_id)
+            e.estimate_id,
+            COALESCE(
+                NULLIF(s.metadata_json #>> '{lastModifiedBy,user,displayName}', ''),
+                NULLIF(s.metadata_json #>> '{lastModifiedBy,user,email}', '')
+            ) AS estimate_file_modified_by,
+            COALESCE(
+                NULLIF(s.metadata_json ->> 'lastModifiedDateTime', '')::timestamptz,
+                s.last_modified_at,
+                d.modified_at
+            ) AS estimate_file_modified_at
+        FROM estimates e
+        JOIN documents d
+          ON d.job_id = e.job_id
+         AND (
+              LOWER(d.file_name) = LOWER(REGEXP_REPLACE(e.source_path, '^.*/', ''))
+              OR LOWER(COALESCE(d.relative_path, '')) = LOWER(e.source_path)
+         )
+        LEFT JOIN sharepoint_drive_items s
+          ON s.drive_id = d.drive_id
+         AND s.drive_item_id = d.drive_item_id
+        ORDER BY
+            e.estimate_id,
+            (
+                COALESCE(
+                    NULLIF(s.metadata_json #>> '{lastModifiedBy,user,displayName}', ''),
+                    NULLIF(s.metadata_json #>> '{lastModifiedBy,user,email}', '')
+                ) IS NULL
+            ),
+            COALESCE(s.last_modified_at, d.modified_at) DESC NULLS LAST
+        """,
+    )
+
+
 def load_estimator_data_from_database(database_url: str, *, load_profile: str = ESTIMATOR_LOAD_PROFILE_FULL) -> EstimatorData:
     if load_profile not in ESTIMATOR_LOAD_PROFILES:
         raise ValueError(f"Unknown estimator load profile: {load_profile}")
@@ -510,6 +553,17 @@ def load_estimator_data_from_database(database_url: str, *, load_profile: str = 
         if relation_exists(connection, "estimates"):
             data.estimates = _read_sql_dataframe(connection, "SELECT * FROM estimates")
             data.source_files_used.append("database: estimates")
+            if not lightweight:
+                estimate_authorship = load_estimate_file_authorship(connection)
+                if not estimate_authorship.empty:
+                    data.estimates = data.estimates.merge(
+                        estimate_authorship,
+                        on="estimate_id",
+                        how="left",
+                    )
+                    data.source_files_used.append(
+                        "database: SharePoint estimate file authorship"
+                    )
         else:
             data.warnings.append("estimates table not found; estimate summary history is unavailable.")
 
@@ -703,11 +757,55 @@ def load_estimator_data(
         raise RuntimeError("Database-backed estimator data was required, but no database URL was provided.")
     if resolved_database_url:
         try:
-            return load_estimator_data_from_database(resolved_database_url, load_profile=load_profile)
+            data = load_estimator_data_from_database(
+                resolved_database_url,
+                load_profile=load_profile,
+            )
         except Exception as exc:
             if prefer_database:
                 raise RuntimeError(f"Database estimator load failed and local fallback is disabled. ({type(exc).__name__})") from exc
             data = _load_estimator_data_from_local_files(root)
             data.warnings.insert(0, f"Database estimator load failed; using local staging files. ({type(exc).__name__})")
-            return data
-    return _load_estimator_data_from_local_files(root)
+    else:
+        data = _load_estimator_data_from_local_files(root)
+    return _attach_scope_archetype_catalog(data, root)
+
+
+def _attach_scope_archetype_catalog(
+    data: EstimatorData,
+    root: Path,
+) -> EstimatorData:
+    configured_path = str(
+        os.getenv("ESTIMATOR_SCOPE_PATTERN_CATALOG_PATH")
+        or os.getenv("ESTIMATOR_SCOPE_ARCHETYPE_CATALOG_PATH")
+        or ""
+    ).strip()
+    advisory_path = (
+        root
+        / "config"
+        / "estimator_scope_patterns"
+        / "scope_pattern_evidence_catalog.json"
+    )
+    legacy_path = (
+        root
+        / "data"
+        / "estimator_scope_archetypes"
+        / "approved_scope_archetype_catalog.json"
+    )
+    default_path = advisory_path if advisory_path.exists() else legacy_path
+    if not configured_path and not default_path.exists():
+        return data
+    source = Path(configured_path).expanduser() if configured_path else default_path
+    if not source.is_absolute():
+        source = root / source
+    try:
+        from .scope_archetype_catalog import load_approved_scope_catalog
+
+        data.scope_archetype_catalog = load_approved_scope_catalog(source)
+        data.source_files_used.append(f"scope archetype catalog: {source}")
+    except Exception as exc:
+        data.warnings.append(
+            "Scope archetype catalog was ignored because validation failed: "
+            f"{type(exc).__name__}"
+        )
+    return data

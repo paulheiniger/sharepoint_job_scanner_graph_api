@@ -302,7 +302,8 @@ def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
         assert "Critical calculation rule" in messages[0]["content"]
         assert "if include is true, proposed_values must provide the row's required calculation inputs" in messages[0]["content"]
         assert "Naming a comparable project or section does not authorize copying unrelated rows" in messages[0]["content"]
-        assert "Do not include an answer-key row without current-scope support" in messages[0]["content"]
+        assert "historical_evidence_packet" in messages[0]["content"]
+        assert "complete active decision-key manifest" in messages[0]["content"]
         assert "Multiple roof coating passes or products are often additive" in messages[0]["content"]
         assert "separate available workbook rows 26, 27, and 28" in messages[0]["content"]
         assert "estimator_context.decision_menu and estimator_context.formula_requirements" in messages[0]["content"]
@@ -312,22 +313,13 @@ def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
         assert "formula_requirements" in messages[1]["content"]
         assert "pricing_candidates_by_bucket" in messages[1]["content"]
         assert "product_guidance_digest" in messages[1]["content"]
-        assert "companion_relationships" in messages[1]["content"]
-        assert "historical_job_context" in messages[1]["content"]
-        assert "historical_context_decision_guidance" in messages[1]["content"]
-        assert "historical_template_examples" in messages[1]["content"]
-        assert "historical_answer_key_examples" in messages[1]["content"]
-        assert "historical_answer_key_decision_cues" in messages[1]["content"]
+        assert "historical_evidence_packet" in messages[1]["content"]
+        assert "companion_relationships" not in messages[1]["content"]
+        assert "historical_answer_key_decision_cues" not in messages[1]["content"]
         payload = json.loads(messages[1]["content"])
-        assert all(
-            "reference_answer_key" not in example
-            for example in (
-                payload["estimator_context"]["historical_template_examples"].get(
-                    "matched_examples",
-                    [],
-                )
-            )
-        )
+        packet = payload["estimator_context"]["historical_evidence_packet"]
+        assert packet["matched_comparables"][0]["manifest_complete"] is True
+        assert "reference_answer_key" not in packet["matched_comparables"][0]
         assert "insulation_thermal_barrier_coating" in messages[1]["content"]
         assert "foam_yield_history_digest" in messages[1]["content"]
         assert "template_fallback_defaults" in messages[1]["content"]
@@ -388,11 +380,13 @@ def test_estimator_chat_uses_provider_payload_and_context_summary() -> None:
 
     context = json.loads(calls[0][0][1]["content"])["estimator_context"]
     assert context["estimator_memory_guidance"][0]["template_bucket"] == "labor_loading"
-    answer_key_examples = context["historical_answer_key_examples"]["matched_answer_keys"]
+    packet = context["historical_evidence_packet"]
+    answer_key_examples = packet["matched_comparables"]
     assert answer_key_examples
     assert answer_key_examples[0]["job_id"] == "I-HIST-1"
-    assert answer_key_examples[0]["reference_answer_key"]["decisions"][0]["decision_id"] == "insulation_foam_template_selector"
-    cues = context["historical_answer_key_decision_cues"]
+    assert answer_key_examples[0]["active_decision_keys"] == ["foam@row_19-21"]
+    assert answer_key_examples[0]["manifest_complete"] is True
+    cues = packet["decision_evidence"]
     assert cues
     foam_cue = next(row for row in cues if row["decision_id"] == "insulation_foam_template_selector")
     assert foam_cue["template_bucket"] == "foam"
@@ -437,7 +431,7 @@ def test_estimator_chat_marks_explicit_learning_messages() -> None:
     assert "Learning mode is on" in result.assistant_message
 
 
-def test_estimator_context_builds_compact_historical_answer_key_decision_cues() -> None:
+def test_estimator_context_builds_unified_historical_decision_evidence() -> None:
     answer_key = {
         "schema_version": "reference_estimate_answer_key.v1",
         "template_type": "roofing",
@@ -517,7 +511,15 @@ def test_estimator_context_builds_compact_historical_answer_key_decision_cues() 
         },
     )
 
-    cues = context["historical_answer_key_decision_cues"]
+    packet = context["historical_evidence_packet"]
+    assert packet["retrieval"]["all_manifests_complete"] is True
+    assert len(packet["matched_comparables"]) == 2
+    assert set(packet["matched_comparables"][0]["active_decision_keys"]) == {
+        "coating@row_26",
+        "labor_top_coat@row_124",
+        "primer@row_39",
+    }
+    cues = packet["decision_evidence"]
     coating = next(row for row in cues if row["decision_id"] == "roofing_coating_system_row_26")
     top_coat = next(row for row in cues if row["decision_id"] == "roofing_labor_top_coat_row_124")
     primer = next(row for row in cues if row["decision_id"] == "roofing_primer_row_39")
@@ -526,9 +528,9 @@ def test_estimator_context_builds_compact_historical_answer_key_decision_cues() 
     assert coating["sample_outputs"]["estimated_cost"] == 5299.2
     assert coating["formula_ready"] is True
     assert coating["missing_inputs"] == []
-    assert coating["suggested_preference"]["include"] is False
-    assert coating["recommendation"] == "review_only_historical_evidence"
-    assert coating["suggested_preference"]["proposed_values"]["unit_price"] == 32
+    assert coating["sample_inputs"]["unit_price"] == 32
+    assert "suggested_preference" not in coating
+    assert "recommendation" not in coating
     assert "similar historical answer keys" in coating["why_suggested"]
     assert len(coating["examples"]) == 2
     assert top_coat["support_count"] == 2
@@ -541,9 +543,84 @@ def test_estimator_context_builds_compact_historical_answer_key_decision_cues() 
         50 / 144
     )
     assert primer["formula_ready"] is False
-    assert primer["suggested_preference"]["include"] is False
+    assert "suggested_preference" not in primer
     assert "coverage_sqft_per_unit" in primer["missing_inputs"]
     assert "unit_price" in primer["missing_inputs"]
+
+
+def test_unified_comparable_manifest_is_complete_and_excludes_zero_contributors() -> None:
+    contributing = [
+        {
+            "section": "roofing_accessory_template_decisions",
+            "decision_id": f"roofing_misc_row_{index}",
+            "template_bucket": f"misc_materials_{index}",
+            "workbook_row": str(150 + index),
+            "inputs": {"estimated_units": 1, "unit_price": 10 + index},
+            "calculated_outputs": {"estimated_cost": 10 + index},
+        }
+        for index in range(20)
+    ]
+    answer_key = {
+        "schema_version": "reference_estimate_answer_key.v1",
+        "template_type": "roofing",
+        "decisions": [
+            *contributing,
+            {
+                "section": "roofing_accessory_template_decisions",
+                "decision_id": "zero-material",
+                "template_bucket": "misc_materials_zero",
+                "workbook_row": "190",
+                "inputs": {"estimated_units": 0, "unit_price": 25},
+            },
+            {
+                "section": "roofing_labor_template_decisions",
+                "decision_id": "zero-labor",
+                "template_bucket": "labor_misc",
+                "workbook_row": "191",
+                "inputs": {
+                    "days": 2,
+                    "crew_size": 5,
+                    "total_hours": 0,
+                    "daily_rate": 2000,
+                },
+            },
+        ],
+        "summary": {"decision_count": 22, "unmapped_count": 0},
+    }
+    data = EstimatorData(
+        template_examples=pd.DataFrame(
+            [
+                {
+                    "example_id": "complete-roof",
+                    "job_id": "R-COMPLETE",
+                    "job_name": "Complete comparable",
+                    "template_type": "roofing",
+                    "project_class": "roofing_restoration",
+                    "material_packages_json": json.dumps(
+                        ["misc_materials_0"]
+                    ),
+                    "scope_summary": "Roof restoration.",
+                    "answer_key_json": json.dumps(answer_key),
+                }
+            ]
+        )
+    )
+
+    context = estimator_context_summary(
+        data,
+        scope={
+            "template_type": "roofing",
+            "raw_input_notes": "Roof restoration.",
+        },
+    )
+
+    manifest = context["historical_evidence_packet"]["matched_comparables"][0]
+    assert manifest["manifest_complete"] is True
+    assert len(manifest["active_decision_keys"]) == 20
+    assert manifest["active_decision_count"] == 20
+    assert manifest["excluded_noncontributing_decision_count"] == 2
+    assert "misc_materials_zero@row_190" not in manifest["active_decision_keys"]
+    assert "labor_misc@row_191" not in manifest["active_decision_keys"]
 
 
 def test_historical_labor_time_scales_from_current_material_quantity() -> None:
@@ -751,7 +828,7 @@ def test_historical_context_supplements_but_does_not_override_ai_decision_values
     assert foam["proposed_values"]["unit_price"] == 1.7
     assert foam["include"] is True
     assert foam["source"] == "chat_estimator"
-    assert foam["evidence"][0]["source"] == "historical_answer_key_decision_cue"
+    assert foam["evidence"][0]["source"] == "historical_comparable_decision_evidence"
 
 
 def test_historical_context_does_not_auto_include_comparable_project_rows() -> None:
@@ -1983,13 +2060,14 @@ def test_estimator_chat_context_retrieves_similar_answer_keys_by_scope_packages(
         },
     )
 
-    matches = context["historical_answer_key_examples"]["matched_answer_keys"]
+    packet = context["historical_evidence_packet"]
+    matches = packet["matched_comparables"]
     assert matches[0]["job_id"] == "R-COAT"
     assert all(match["template_type"] == "roofing" for match in matches)
     assert "packages: coating" in "; ".join(matches[0]["match_reasons"])
-    decision_ids = [row["decision_id"] for row in matches[0]["reference_answer_key"]["decisions"]]
-    assert set(decision_ids[:2]) == {"roofing_coating_system_row_26", "roofing_foam_row_19"}
-    assert decision_ids.index("roofing_edge_metal_row_82") > 1
+    decision_keys = matches[0]["active_decision_keys"]
+    assert set(decision_keys[:2]) == {"coating@row_26", "foam@row_19"}
+    assert decision_keys.index("edge_metal@row_82") > 1
 
 
 def test_estimator_chat_context_boosts_answer_key_name_overlap() -> None:
@@ -2062,7 +2140,7 @@ def test_estimator_chat_context_boosts_answer_key_name_overlap() -> None:
         },
     )
 
-    matches = context["historical_answer_key_examples"]["matched_answer_keys"]
+    matches = context["historical_evidence_packet"]["matched_comparables"]
     assert matches[0]["job_id"] == "MUDD-B"
     assert any("name overlap" in reason for reason in matches[0]["match_reasons"])
 
@@ -2160,12 +2238,15 @@ def test_named_comparable_uses_best_matching_workbook_within_job() -> None:
         },
     )
 
-    matches = context["historical_answer_key_examples"]["matched_answer_keys"]
+    packet = context["historical_evidence_packet"]
+    matches = packet["matched_comparables"]
     assert len(matches) == 1
     assert "CMU Wall Repair" in matches[0]["source_file"]
-    decision_ids = {row["decision_id"] for row in matches[0]["reference_answer_key"]["decisions"]}
-    assert decision_ids == {"roofing_labor_prep_row_116", "roofing_labor_caulk_row_126"}
-    cue_ids = {row["decision_id"] for row in context["historical_answer_key_decision_cues"]}
+    assert set(matches[0]["active_decision_keys"]) == {
+        "labor_prep@row_116",
+        "labor_caulk@row_126",
+    }
+    cue_ids = {row["decision_id"] for row in packet["decision_evidence"]}
     assert "roofing_coating_system_row_26" not in cue_ids
     assert "roofing_granules_row_36" not in cue_ids
 
@@ -2236,11 +2317,11 @@ def test_estimator_chat_context_hydrates_answer_keys_for_compact_examples(monkey
         },
     )
 
-    matches = context["historical_answer_key_examples"]["matched_answer_keys"]
+    matches = context["historical_evidence_packet"]["matched_comparables"]
     assert fetch_calls
     assert matches
     assert matches[0]["job_id"] == "I-COMPACT"
-    assert matches[0]["reference_answer_key"]["decisions"][0]["decision_id"] == "insulation_foam_template_selector"
+    assert matches[0]["active_decision_keys"] == ["foam@row_19-21"]
 
 
 def test_estimator_chat_apply_matched_answer_key_uses_full_labor_rows() -> None:

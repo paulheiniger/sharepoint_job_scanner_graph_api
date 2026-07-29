@@ -28,7 +28,8 @@ from .reference_answer_key import (
     answer_key_to_workbook_decision_preferences,
     parse_reference_answer_key_text,
 )
-from .template_examples import build_similar_answer_key_digest, build_template_example_digest
+from .scope_archetype_catalog import build_scope_pattern_evidence
+from .template_examples import build_similar_answer_key_digest
 from .schemas import EstimatorAssumptions, EstimatorData
 
 
@@ -104,16 +105,18 @@ PROMPT_CONTEXT_PRIORITY = (
     "pricing_candidates_by_bucket",
     "template_fallback_defaults",
     "estimator_memory_guidance",
-    "historical_answer_key_decision_cues",
+    "historical_evidence_packet",
     "product_guidance_digest",
+)
+LEGACY_REDUNDANT_PROMPT_CONTEXT_KEYS = {
+    "companion_relationships",
+    "historical_answer_key_decision_cues",
     "historical_answer_key_examples",
-    "historical_template_examples",
-    "historical_job_context",
     "historical_context_decision_guidance",
     "historical_decision_evidence",
-    "companion_relationships",
-    "reference_job_decisions",
-)
+    "historical_job_context",
+    "historical_template_examples",
+}
 INSULATION_CHAT_TEMPLATE_DEFAULTS = {
     "foam_yield_or_coverage": 2600.0,
     "foam_unit_price": 2.25,
@@ -516,11 +519,35 @@ def detect_estimator_learning_intent(messages: Iterable[dict[str, Any]]) -> dict
     }
 
 
+def _context_decision_evidence(context: dict[str, Any]) -> list[dict[str, Any]]:
+    packet = (
+        context.get("historical_evidence_packet")
+        if isinstance(context, dict)
+        and isinstance(context.get("historical_evidence_packet"), dict)
+        else {}
+    )
+    rows = packet.get("decision_evidence")
+    if isinstance(rows, list):
+        return [row for row in rows if isinstance(row, dict)]
+    # Preserve old staged sessions without sending this legacy key to new calls.
+    legacy = (
+        context.get("historical_answer_key_decision_cues")
+        if isinstance(context, dict)
+        else []
+    )
+    return [row for row in legacy or [] if isinstance(row, dict)]
+
+
 def _attach_context_retrieval_summary(result: EstimatorChatResult, context: dict[str, Any]) -> EstimatorChatResult:
-    answer_key_context = context.get("historical_answer_key_examples") if isinstance(context, dict) else {}
+    packet = (
+        context.get("historical_evidence_packet")
+        if isinstance(context, dict)
+        and isinstance(context.get("historical_evidence_packet"), dict)
+        else {}
+    )
     matched = (
-        answer_key_context.get("matched_answer_keys")
-        if isinstance(answer_key_context, dict) and isinstance(answer_key_context.get("matched_answer_keys"), list)
+        packet.get("matched_comparables")
+        if isinstance(packet.get("matched_comparables"), list)
         else []
     )
     if not matched:
@@ -529,8 +556,6 @@ def _attach_context_retrieval_summary(result: EstimatorChatResult, context: dict
     for example in matched[:5]:
         if not isinstance(example, dict):
             continue
-        answer_key = example.get("reference_answer_key") if isinstance(example.get("reference_answer_key"), dict) else {}
-        decisions = answer_key.get("decisions") if isinstance(answer_key.get("decisions"), list) else []
         rows.append(
             {
                 "job_id": example.get("job_id"),
@@ -539,7 +564,8 @@ def _attach_context_retrieval_summary(result: EstimatorChatResult, context: dict
                 "source_file": example.get("source_file"),
                 "similarity_score": example.get("similarity_score"),
                 "match_reasons": example.get("match_reasons") or [],
-                "decision_count_sent": len(decisions),
+                "decision_count_sent": len(example.get("active_decision_keys") or []),
+                "manifest_complete": example.get("manifest_complete"),
             }
         )
     if not rows:
@@ -552,7 +578,7 @@ def _attach_context_retrieval_summary(result: EstimatorChatResult, context: dict
 
 
 def _historical_context_preferences_from_context(context: dict[str, Any], *, template_type: str = "") -> list[dict[str, Any]]:
-    cues = context.get("historical_answer_key_decision_cues") if isinstance(context, dict) else []
+    cues = _context_decision_evidence(context)
     if not isinstance(cues, list):
         return []
     rows: list[dict[str, Any]] = []
@@ -561,10 +587,11 @@ def _historical_context_preferences_from_context(context: dict[str, Any], *, tem
             continue
         if not cue.get("formula_ready"):
             continue
-        preference = cue.get("suggested_preference") if isinstance(cue.get("suggested_preference"), dict) else {}
-        if not preference:
-            continue
-        proposed_values = preference.get("proposed_values") if isinstance(preference.get("proposed_values"), dict) else {}
+        proposed_values = (
+            cue.get("sample_inputs")
+            if isinstance(cue.get("sample_inputs"), dict)
+            else {}
+        )
         if not proposed_values:
             continue
         support_count = int(_safe_positive_number(cue.get("support_count")))
@@ -572,7 +599,16 @@ def _historical_context_preferences_from_context(context: dict[str, Any], *, tem
         confidence = _safe_positive_number(cue.get("confidence"))
         if support_count < 2 and best_score < 120 and confidence < 0.58:
             continue
-        copied = dict(preference)
+        copied = {
+            field: cue.get(field)
+            for field in (
+                "section",
+                "decision_id",
+                "template_bucket",
+                "workbook_row",
+            )
+            if cue.get(field) not in (None, "")
+        }
         # Historical matches are evidence, not authorization to add scope.
         copied["include"] = False
         copied["review_required"] = True
@@ -586,7 +622,7 @@ def _historical_context_preferences_from_context(context: dict[str, Any], *, tem
         copied["review_reasons"] = review_reasons
         copied["evidence"] = [
             {
-                "source": "historical_answer_key_decision_cue",
+                "source": "historical_comparable_decision_evidence",
                 "support_count": support_count,
                 "best_similarity_score": round(best_score, 3),
                 "examples": cue.get("examples") or [],
@@ -771,7 +807,7 @@ def _apply_context_calculation_defaults(
     )
     cue_by_id: dict[str, dict[str, Any]] = {}
     cue_by_row: dict[str, dict[str, Any]] = {}
-    for cue in context.get("historical_answer_key_decision_cues") or []:
+    for cue in _context_decision_evidence(context):
         if not isinstance(cue, dict):
             continue
         decision_id = _clean_string(cue.get("decision_id"))
@@ -801,8 +837,22 @@ def _apply_context_calculation_defaults(
         decision_id = _clean_string(row.get("decision_id"))
         workbook_row = _safe_row_number(row.get("workbook_row") or row.get("row_number"))
         cue = cue_by_id.get(decision_id) or cue_by_row.get(workbook_row) or {}
-        suggested = cue.get("suggested_preference") if isinstance(cue.get("suggested_preference"), dict) else {}
-        cue_values = suggested.get("proposed_values") if isinstance(suggested.get("proposed_values"), dict) else {}
+        cue_values = (
+            cue.get("sample_inputs")
+            if isinstance(cue.get("sample_inputs"), dict)
+            else {}
+        )
+        if not cue_values:
+            suggested = (
+                cue.get("suggested_preference")
+                if isinstance(cue.get("suggested_preference"), dict)
+                else {}
+            )
+            cue_values = (
+                suggested.get("proposed_values")
+                if isinstance(suggested.get("proposed_values"), dict)
+                else {}
+            )
         allowed_fields = _CONTEXT_DEFAULT_FIELDS_BY_BUCKET.get(bucket, ())
         sources: list[dict[str, Any]] = []
         for field in allowed_fields:
@@ -1028,7 +1078,7 @@ def _scale_historical_roofing_labor_preferences(
 
     cue_by_id: dict[str, dict[str, Any]] = {}
     cue_by_row: dict[str, dict[str, Any]] = {}
-    for cue in context.get("historical_answer_key_decision_cues") or []:
+    for cue in _context_decision_evidence(context):
         if not isinstance(cue, dict):
             continue
         decision_id = _clean_string(cue.get("decision_id"))
@@ -1743,10 +1793,15 @@ def _matched_answer_key_reference_summary(
     *,
     template_type_hint: str = "",
 ) -> ParsedReferenceTemplateSummary:
-    answer_key_context = context.get("historical_answer_key_examples") if isinstance(context, dict) else {}
+    answer_key_context = (
+        context.get("historical_evidence_packet")
+        if isinstance(context, dict)
+        and isinstance(context.get("historical_evidence_packet"), dict)
+        else {}
+    )
     matched = (
-        answer_key_context.get("matched_answer_keys")
-        if isinstance(answer_key_context, dict) and isinstance(answer_key_context.get("matched_answer_keys"), list)
+        answer_key_context.get("matched_comparables")
+        if isinstance(answer_key_context.get("matched_comparables"), list)
         else []
     )
     if not matched:
@@ -1758,8 +1813,6 @@ def _matched_answer_key_reference_summary(
         if not isinstance(example, dict):
             continue
         answer_key = _full_answer_key_for_matched_example(data, example)
-        if not answer_key:
-            answer_key = example.get("reference_answer_key") if isinstance(example.get("reference_answer_key"), dict) else {}
         if not answer_key:
             continue
         summary = _reference_answer_key_summary(answer_key, template_type_hint=template_type_hint)
@@ -2296,7 +2349,12 @@ def _estimator_data_signature(data: EstimatorData | None) -> str:
         "job_context_profiles": _frame_signature(getattr(data, "job_context_profiles", None)),
         "template_examples": _frame_signature(getattr(data, "template_examples", None)),
         "decision_recommendations": _frame_signature(getattr(data, "estimator_decision_recommendations", None)),
-        "relationships": _frame_signature(getattr(data, "relationship_package_cooccurrence", None)),
+        "scope_pattern_catalog_version": str(
+            (
+                getattr(data, "scope_archetype_catalog", {}) or {}
+            ).get("catalog_version")
+            or ""
+        ),
         "estimator_memory": _frame_signature(getattr(data, "estimator_memory", None)),
     }
     return hashlib.sha1(json.dumps(signature, sort_keys=True, default=str).encode("utf-8")).hexdigest()
@@ -2408,7 +2466,6 @@ def _build_estimator_context_summary(data: EstimatorData | None, *, scope: dict[
             ],
             limit=25,
         )
-    summary["historical_decision_evidence"] = _historical_decision_evidence(data, template_type=template_type)
     summary["foam_yield_history_digest"] = build_foam_yield_history_digest(
         data,
         scope=scope,
@@ -2450,52 +2507,144 @@ def _build_estimator_context_summary(data: EstimatorData | None, *, scope: dict[
         template_type=template_type,
     )
     summary["product_guidance_digest"] = _product_guidance_digest(data, template_type=template_type)
-    summary["companion_relationships"] = _companion_relationships(data, template_type=template_type)
-    summary["reference_job_decisions"] = _reference_job_decisions(data, scope=scope, template_type=template_type)
-    summary["historical_job_context"] = build_job_context_digest(data, scope=scope, limit=5)
-    summary["historical_context_decision_guidance"] = _historical_context_decision_guidance(
-        summary["historical_job_context"],
-        decision_menu,
-        template_type=template_type,
-    )
-    summary["historical_template_examples"] = _generic_template_examples_without_answer_keys(
-        build_template_example_digest(
-            data,
-            scope=scope,
-            limit=2,
-        )
-    )
-    summary["historical_answer_key_examples"] = build_similar_answer_key_digest(
+    summary["historical_evidence_packet"] = _build_historical_evidence_packet(
         data,
         scope=scope,
-        limit=2,
-        decisions_per_example=12,
         decision_menu=decision_menu,
-    )
-    summary["historical_answer_key_decision_cues"] = _historical_answer_key_decision_cues(
-        summary["historical_answer_key_examples"],
-        decision_menu,
-        limit=20,
     )
     return summary
 
 
-def _generic_template_examples_without_answer_keys(
-    digest: dict[str, Any],
-) -> dict[str, Any]:
-    """Avoid sending the same answer-key decisions in two context sections."""
-    matched = digest.get("matched_examples") if isinstance(digest, dict) else []
+def _answer_key_decision_key(decision: dict[str, Any]) -> str:
+    bucket = _clean_string(decision.get("template_bucket")).lower()
+    bucket = re.sub(r"_+", "_", re.sub(r"[^a-z0-9]+", "_", bucket)).strip("_")
+    workbook_row = _safe_row_number(
+        decision.get("workbook_row") or decision.get("source_row")
+    )
+    if bucket and workbook_row:
+        return f"{bucket}@row_{workbook_row}"
+    return _clean_string(decision.get("decision_id"))
+
+
+def _comparable_manifest(example: dict[str, Any]) -> dict[str, Any]:
+    answer_key = (
+        example.get("reference_answer_key")
+        if isinstance(example.get("reference_answer_key"), dict)
+        else {}
+    )
+    summary = (
+        answer_key.get("summary")
+        if isinstance(answer_key.get("summary"), dict)
+        else {}
+    )
+    active_keys = list(
+        dict.fromkeys(
+            key
+            for key in (
+                _answer_key_decision_key(decision)
+                for decision in answer_key.get("decisions") or []
+                if isinstance(decision, dict)
+            )
+            if key
+        )
+    )
+    omitted_by_limit = int(
+        _safe_positive_number(summary.get("omitted_by_limit_count"))
+    )
     return {
-        **(digest if isinstance(digest, dict) else {}),
-        "matched_examples": [
-            {
-                key: value
-                for key, value in example.items()
-                if key != "reference_answer_key"
-            }
-            for example in matched or []
-            if isinstance(example, dict)
-        ],
+        "example_id": example.get("example_id"),
+        "job_id": example.get("job_id"),
+        "customer": example.get("customer"),
+        "job_name": example.get("job_name"),
+        "source_file": example.get("source_file"),
+        "similarity_score": example.get("similarity_score"),
+        "match_reasons": list(example.get("match_reasons") or []),
+        "template_type": example.get("template_type"),
+        "project_class": example.get("project_class"),
+        "market_segment": example.get("market_segment"),
+        "building_type": example.get("building_type"),
+        "substrate": example.get("substrate"),
+        "material_system": example.get("material_system"),
+        "warranty_years": example.get("warranty_years"),
+        "area_sqft": example.get("area_sqft"),
+        "scope_summary": example.get("scope_summary"),
+        "active_decision_keys": active_keys,
+        "active_decision_count": int(
+            _safe_positive_number(summary.get("active_decision_count"))
+            or len(active_keys)
+        ),
+        "manifest_basis": "nonzero_material_quantity_or_labor_time_or_cost_driver",
+        "excluded_noncontributing_decision_count": int(
+            _safe_positive_number(
+                summary.get("omitted_inactive_decision_count")
+            )
+        ),
+        "manifest_complete": omitted_by_limit == 0,
+        "omitted_by_limit_count": omitted_by_limit,
+    }
+
+
+def _build_historical_evidence_packet(
+    data: EstimatorData,
+    *,
+    scope: dict[str, Any],
+    decision_menu: list[dict[str, Any]],
+) -> dict[str, Any]:
+    complete_examples = build_similar_answer_key_digest(
+        data,
+        scope=scope,
+        limit=2,
+        # This object is transformed before prompt serialization. Use a high
+        # limit so absence from a manifest means historical non-use.
+        decisions_per_example=10_000,
+        decision_menu=decision_menu,
+    )
+    manifests = [
+        _comparable_manifest(example)
+        for example in complete_examples.get("matched_answer_keys") or []
+        if isinstance(example, dict)
+    ]
+    decision_evidence = [
+        {
+            key: value
+            for key, value in cue.items()
+            if key not in {"recommendation", "suggested_preference"}
+        }
+        for cue in _historical_answer_key_decision_cues(
+            complete_examples,
+            decision_menu,
+            limit=20,
+        )
+    ]
+    scope_patterns = build_scope_pattern_evidence(
+        scope,
+        getattr(data, "scope_archetype_catalog", {}),
+        comparable_manifests=manifests,
+        archetype_limit=1,
+        rule_limit=8,
+    )
+    return {
+        "schema_version": "estimator_historical_evidence.v1",
+        "advisory_only": True,
+        "matched_comparables": manifests,
+        "decision_evidence": decision_evidence,
+        "matched_scope_pattern": next(
+            iter(scope_patterns.get("matched_archetypes") or []),
+            {},
+        ),
+        "validated_relationships": scope_patterns.get(
+            "validated_relationships"
+        )
+        or [],
+        "catalog_version": scope_patterns.get("catalog_version"),
+        "retrieval": {
+            **(complete_examples.get("retrieval") or {}),
+            "matched_comparable_count": len(manifests),
+            "all_manifests_complete": all(
+                manifest.get("manifest_complete") is True
+                for manifest in manifests
+            ),
+        },
     }
 
 
@@ -2547,13 +2696,14 @@ def _empty_chat_decision_context(scope: dict[str, Any] | None) -> dict[str, Any]
         ),
         "pricing_candidates_by_bucket": [],
         "product_guidance_digest": [],
-        "companion_relationships": [],
-        "reference_job_decisions": [],
-        "historical_job_context": {"matched_profiles": [], "aggregate_priors": []},
-        "historical_context_decision_guidance": [],
-        "historical_template_examples": {"matched_examples": []},
-        "historical_answer_key_examples": {"matched_answer_keys": []},
-        "historical_answer_key_decision_cues": [],
+        "historical_evidence_packet": {
+            "schema_version": "estimator_historical_evidence.v1",
+            "advisory_only": True,
+            "matched_comparables": [],
+            "decision_evidence": [],
+            "matched_scope_pattern": {},
+            "validated_relationships": [],
+        },
     }
     route_mileage = _route_mileage_context(scope or {})
     if route_mileage:
@@ -4853,33 +5003,23 @@ def _chat_prompt_messages(
         "If estimator_context.estimator_memory_guidance is present, treat those approved correction notes as shared estimator memory: "
         "use them to avoid repeating prior bad assumptions, unless the current user message explicitly says otherwise. "
         "Estimator memory outranks AI inference but does not override current-session user instructions, manual estimator edits, or workbook formulas. "
-        "When historical/template context suggests a normal choice, return it as an excluded review recommendation unless the current "
-        "notes or current-session estimator instruction supports including that specific scope item. Explain the evidence and missing support. "
-        "If estimator_context.historical_job_context has matched_profiles or aggregate_priors, use those to judge which historical jobs "
-        "are relevant by project class, market segment, building type, substrate, material system, warranty, and area bucket. "
-        "If estimator_context.historical_context_decision_guidance is present, it maps those historical profiles to allowed workbook "
-        "decision IDs; use it to evaluate candidate rows, not as authority to include them. "
-        "If estimator_context.historical_template_examples has matched_examples, treat them as compact worked examples from prior "
-        "estimates: compare the current job to each example, use matching decision patterns as evidence, and cite the "
-        "example in evidence. Do not copy example quantities blindly when the current area, thickness, warranty, or substrate differs. "
-        "If estimator_context.historical_answer_key_examples has matched_answer_keys, prioritize those over generic examples: they are "
-        "the most similar historical estimate answer keys found for this scope. Use match_reasons and reference_answer_key.decisions "
-        "as evidence for product/system choices, labor/logistics patterns, markup/warranty assumptions, and typical formula inputs. "
-        "Do not include an answer-key row without current-scope support. Scale supported quantities to the current job and mark "
-        "review_required when the prompt evidence is incomplete. "
-        "If estimator_context.historical_answer_key_decision_cues is present, use it as a compact evidence checklist of potentially relevant "
-        "workbook rows. Each cue is mined from similar historical answer keys and includes support_count, examples, sample_inputs, "
-        "sample_outputs, required_inputs, formula_ready, missing_inputs, why_suggested, and suggested_preference. A formula-ready historical "
-        "row is still evidence only: do not set include true unless the current notes or current-session estimator instruction supports that "
-        "specific scope item. Naming a comparable project or section does not authorize copying unrelated rows from the comparable. "
-        "When the user names a section, use only evidence relevant to that section and the described work. Prefer these cues "
-        "over generic package cooccurrence when evaluating a row. For supported formula_ready cues, start from suggested_preference "
-        "and adjust quantities to current area/thickness/trips when needed. For non-formula-ready cues, do not include the row unless "
-        "you can fill the missing_inputs from current notes or other trusted context; otherwise leave it review-marked and explain. "
+        "If estimator_context.historical_evidence_packet is present, treat it as one advisory evidence source, never as a deterministic rule. "
+        "matched_comparables contains the complete active decision-key manifest for each supplied historical job; when manifest_complete is true, "
+        "absence from active_decision_keys is meaningful historical non-use. decision_evidence contains detailed quantities, formula readiness, "
+        "and labor production rates only for rows relevant to the current scope. matched_scope_pattern summarizes the strongest historical job "
+        "classification with core, typical, conditional, and excluded decisions. validated_relationships contains only holdout-stable conditional "
+        "associations relevant to the current job. Do not treat a relationship alone as authority for a new base scope. "
+        "Use this evidence order: explicit current-session instructions and estimator edits; deterministic workbook and product constraints; "
+        "a named complete comparable; a semantically matched scope pattern; validated relationships; then generic history. "
+        "When a matched scope pattern or complete comparable strongly supports a normal companion item and it is consistent with the current scope, "
+        "you may propose include=true as a review-marked estimator assumption even when the notes do not name every routine line. Cite the evidence "
+        "source and do not infer conditional modifiers whose required signals are absent. Naming a comparable project or section does not authorize "
+        "copying unrelated rows. Scale supported quantities to the current area, thickness, material quantity, and travel rather than copying them. "
+        "For non-formula-ready evidence, do not include the row unless missing inputs can be filled from current notes or other trusted context. "
         "Never copy labor days or total hours from a historical answer key into the current job. Historical labor is a production-rate "
         "reference only: material labor must scale from the current material quantity, while prep, cleanup, loading, and other general "
         "labor must scale from current project square footage. Preserve absolute labor time only when the current user explicitly states it. "
-        "Use matched profiles as evidence for normal package inclusion and scope assumptions, but do not invent values that are not "
+        "Use historical patterns as evidence for normal package inclusion and scope assumptions, but do not invent values that are not "
         "supported by the current prompt, workbook history, product guidance, or estimator memory. "
         "Ask questions only when the answer materially changes scope, safety/code compliance, system selection, warranty eligibility, or price. "
         "If the user gives a command such as remove fabric, use closed cell R-21, make labor 2.5 days, change units, or change price, "
@@ -5175,6 +5315,7 @@ def _bounded_prompt_context(
         key: value
         for key, value in context.items()
         if not str(key).startswith("_deterministic_")
+        and key not in LEGACY_REDUNDANT_PROMPT_CONTEXT_KEYS
     }
     if max_characters <= 0:
         return {

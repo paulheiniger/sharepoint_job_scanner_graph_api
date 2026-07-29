@@ -539,20 +539,24 @@ def test_estimator_prompt_context_is_bounded_before_dispatch(
 ) -> None:
     monkeypatch.setenv("OPENAI_ESTIMATOR_MAX_INPUT_CHARACTERS", "30000")
     context = {
-        "historical_answer_key_examples": {
-            "matched_answer_keys": [
+        "historical_evidence_packet": {
+            "matched_comparables": [
                 {
                     "example_id": f"example-{index}",
-                    "decisions": [
-                        {
-                            "decision_id": f"decision-{decision_index}",
-                            "evidence": {"raw_text": "x" * 5000},
-                        }
+                    "active_decision_keys": [
+                        f"decision-{decision_index}"
                         for decision_index in range(40)
                     ],
                 }
                 for index in range(5)
-            ]
+            ],
+            "decision_evidence": [
+                {
+                    "decision_id": f"decision-{index}",
+                    "evidence": {"raw_text": "x" * 5000},
+                }
+                for index in range(40)
+            ],
         }
     }
 
@@ -569,7 +573,7 @@ def test_estimator_prompt_context_is_bounded_before_dispatch(
 
     assert _json_character_count(messages) <= 30000
     assert budget["truncated"] is True
-    assert "historical_answer_key_examples" in budget["omitted_keys"]
+    assert "historical_evidence_packet" in budget["omitted_keys"]
 
 
 def test_estimator_prompt_bounds_all_dynamic_branches_and_keeps_latest_instruction(
@@ -606,8 +610,8 @@ def test_estimator_prompt_bounds_all_dynamic_branches_and_keeps_latest_instructi
             "visual_evidence": [{"area_scopes": ["v" * 10000]}],
         },
         context={
-            "historical_answer_key_examples": {
-                "matched_answer_keys": [{"raw_text": "h" * 100000}]
+            "historical_evidence_packet": {
+                "matched_comparables": [{"raw_text": "h" * 100000}]
             }
         },
     )
@@ -740,6 +744,16 @@ def test_compact_answer_key_omits_unused_material_and_labor_rows() -> None:
                     "inputs": {"basis_sqft": 0, "unit_price": 40},
                 },
                 {
+                    "decision_id": "zero-material-with-basis",
+                    "template_bucket": "coating",
+                    "inputs": {
+                        "basis_sqft": 5000,
+                        "estimated_gallons": 0,
+                        "unit_price": 42,
+                    },
+                    "calculated_outputs": {"estimated_cost": 2100},
+                },
+                {
                     "decision_id": "unused-labor",
                     "template_bucket": "labor_base",
                     "section": "roofing_labor_template_decisions",
@@ -748,6 +762,18 @@ def test_compact_answer_key_omits_unused_material_and_labor_rows() -> None:
                         "crew_size": 5,
                         "daily_rate": 2000,
                     },
+                },
+                {
+                    "decision_id": "zero-hours-with-days",
+                    "template_bucket": "labor_base",
+                    "section": "roofing_labor_template_decisions",
+                    "inputs": {
+                        "days": 2,
+                        "crew_size": 5,
+                        "daily_rate": 2000,
+                        "total_hours": 0,
+                    },
+                    "calculated_outputs": {"estimated_cost": 4000},
                 },
                 {
                     "decision_id": "used-labor",
@@ -767,7 +793,7 @@ def test_compact_answer_key_omits_unused_material_and_labor_rows() -> None:
         "used-coating",
         "used-labor",
     ]
-    assert compact["summary"]["omitted_inactive_decision_count"] == 2
+    assert compact["summary"]["omitted_inactive_decision_count"] == 4
 
 
 def test_pro_estimator_prompt_uses_stricter_input_budget(
@@ -781,7 +807,7 @@ def test_pro_estimator_prompt_uses_stricter_input_budget(
         existing_scope={},
         existing_decisions=[],
         existing_session_state={},
-        context={"historical_answer_key_examples": {"raw_text": "x" * 100000}},
+        context={"historical_evidence_packet": {"raw_text": "x" * 100000}},
         model="gpt-5.5-pro",
     )
 

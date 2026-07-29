@@ -16,7 +16,6 @@ from .decision_history import build_decision_recommendations, recommendation_loo
 from .decision_proposals import (
     apply_decision_proposals_to_workbench,
     build_decision_proposals,
-    build_material_companion_proposals,
 )
 from .formula_mirror import (
     calculate_insulation_foam,
@@ -72,6 +71,7 @@ from .insulation_performance import (
 )
 from .materials import find_current_price
 from .rules import first_nonblank, to_float
+from .scope_archetype_catalog import build_scope_archetype_shadow_evidence
 from .template_intelligence import FOAM_SELECTOR_MAP
 from jobscan.products.product_matching import product_context_for_decision
 
@@ -10381,25 +10381,6 @@ def _build_roofing_labor_template_decisions(
     return decisions
 
 
-def _relationship_package_cooccurrence_payload(data: Any, *, limit: int = 5000) -> list[dict[str, Any]]:
-    rows = _frame(data, "relationship_package_cooccurrence")
-    if rows.empty:
-        return []
-    rows = rows.copy()
-    rate_column = next((column for column in ("co_occurrence_rate", "cooccurrence_rate", "support", "rate") if column in rows.columns), "")
-    count_column = next((column for column in ("job_count", "evidence_count", "supporting_job_count", "count") if column in rows.columns), "")
-    if rate_column:
-        rate = pd.to_numeric(rows[rate_column], errors="coerce")
-        rows = rows[rate.fillna(0.0) >= 0.5].copy()
-    if count_column:
-        count = pd.to_numeric(rows[count_column], errors="coerce")
-        rows = rows[count.fillna(0.0) >= 3].copy()
-    sort_columns = [column for column in (count_column, rate_column) if column]
-    if sort_columns:
-        rows = rows.sort_values(sort_columns, ascending=False, na_position="last")
-    return _records(rows.head(limit))
-
-
 def _ai_scope_debug_context(recommendation: Any | None) -> dict[str, Any]:
     debug = _rec_value(recommendation, "debug", {}) or {}
     if not isinstance(debug, dict):
@@ -12682,9 +12663,16 @@ def build_estimating_workbench(
                 "applied_automatically": False,
             }
         ],
-        "relationship_package_cooccurrence": _relationship_package_cooccurrence_payload(data) if data is not None else [],
     }
     workbench["decision_proposals"] = build_decision_proposals(scope, recommendation=recommendation, data=data)
+    workbench["scope_archetype_shadow_evidence"] = (
+        build_scope_archetype_shadow_evidence(
+            workbench,
+            getattr(data, "scope_archetype_catalog", {}),
+        )
+        if data is not None
+        else build_scope_archetype_shadow_evidence(workbench, None)
+    )
     return recalculate_workbench_tables(workbench, data=data)
 
 
@@ -13186,10 +13174,9 @@ def recalculate_workbench_tables(workbench: dict[str, Any], hourly_rate: float =
     updated.pop("labor", None)
     updated.pop("adders", None)
     updated = _restore_manual_include_overrides(updated, manual_include_overrides)
-    companion_proposals = build_material_companion_proposals(updated)
     updated = apply_decision_proposals_to_workbench(
         updated,
-        [*base_decision_proposals, *companion_proposals],
+        base_decision_proposals,
         decision_sections=WORKBENCH_DECISION_SECTIONS,
     )
     updated = _prefill_unchecked_latest_historical_unit_prices(updated, data)

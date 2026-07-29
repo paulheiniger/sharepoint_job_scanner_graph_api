@@ -21291,6 +21291,7 @@ def estimator_data_signature(data: EstimatorData) -> dict[str, Any]:
         effective_values = latest_prices["source_effective_at"].dropna().astype(str)
         if not effective_values.empty:
             latest_price_version = str(effective_values.max())
+    scope_catalog = getattr(data, "scope_archetype_catalog", {}) or {}
     return {
         "source_files_used": list(data.source_files_used or []),
         "template_rows": len(data.template_rows),
@@ -21304,6 +21305,9 @@ def estimator_data_signature(data: EstimatorData) -> dict[str, Any]:
         "template_examples": len(getattr(data, "template_examples", pd.DataFrame())),
         "foam_yield_history": len(getattr(data, "foam_yield_history", pd.DataFrame())),
         "estimator_decision_recommendations": len(data.estimator_decision_recommendations),
+        "scope_archetype_catalog_version": str(
+            scope_catalog.get("catalog_version") or ""
+        ),
     }
 
 
@@ -23313,6 +23317,65 @@ def workbench_without_decision_rows(workbench: dict[str, Any]) -> dict[str, Any]
     return hidden
 
 
+def render_scope_archetype_shadow_evidence(workbench: dict[str, Any]) -> None:
+    evidence = workbench.get("scope_archetype_shadow_evidence") or {}
+    archetypes = [
+        row for row in evidence.get("matched_archetypes") or [] if isinstance(row, dict)
+    ]
+    hints = [
+        row for row in evidence.get("companion_hints") or [] if isinstance(row, dict)
+    ]
+    if not archetypes and not hints:
+        return
+    with st.expander("Historical scope patterns", expanded=False):
+        st.caption(
+            f"Shadow evidence from catalog {evidence.get('catalog_version') or '-'}. "
+            "No estimate lines were changed."
+        )
+        if archetypes:
+            st.markdown("**Similar job systems**")
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "archetype": row.get("name"),
+                            "match": row.get("match_score"),
+                            "historical_estimates": row.get(
+                                "source_observation_count"
+                            ),
+                            "matched_core": ", ".join(
+                                row.get("matched_core_decisions") or []
+                            ),
+                            "missing_core": ", ".join(
+                                row.get("missing_core_decisions") or []
+                            ),
+                        }
+                        for row in archetypes
+                    ]
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+        if hints:
+            st.markdown("**Possible companion decisions**")
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "observed": row.get("observed_decision"),
+                            "possible_companion": row.get("possible_companion"),
+                            "confidence": row.get("confidence"),
+                            "lift": row.get("lift"),
+                            "historical_support": row.get("support_count"),
+                        }
+                        for row in hints
+                    ]
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+
 def render_compact_estimator_workbench(
     workbench: dict[str, Any],
     *,
@@ -24316,6 +24379,10 @@ def estimator_prototype_page() -> None:
                     evidence_summary={
                         "historical_filters": historical_filters,
                         "totals": summarize_workbench_totals(filtered_default_workbench),
+                        "scope_archetype_shadow_evidence": filtered_default_workbench.get(
+                            "scope_archetype_shadow_evidence"
+                        )
+                        or {},
                     },
                 )
                 if proposal_id:
@@ -24326,6 +24393,7 @@ def estimator_prototype_page() -> None:
             "Edit the included estimate lines below. Lines with matching calculation inputs are grouped together; "
             "workbook formulas remain authoritative."
         )
+        render_scope_archetype_shadow_evidence(edited_workbench)
         show_row_details = False
         show_row_option_editor = False
         if debug_mode:

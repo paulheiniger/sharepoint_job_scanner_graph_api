@@ -622,27 +622,63 @@ def answer_key_decision_is_active(decision: dict[str, Any]) -> bool:
         if isinstance(decision.get("calculated_outputs"), dict)
         else {}
     )
-    if _first_positive_value(
-        outputs.get("estimated_cost"),
-        outputs.get("calculated_cost"),
-        outputs.get("line_total"),
-    ) > 0:
-        return True
-    usage_fields = (
-        "basis_sqft",
-        "area_sqft",
-        "board_area_sqft",
+    bucket = _norm(decision.get("template_bucket"))
+    section = _text(decision.get("section")).lower()
+    hour_fields = (
+        "total_hours",
+        "editable_total_hours",
+        "hours_per_day",
+    )
+    if bucket.startswith("labor_") or "labor_template_decisions" in section:
+        explicit_hours = [
+            inputs.get(field)
+            for field in hour_fields
+            if field in inputs
+        ]
+        if explicit_hours:
+            return any(_positive_value(value) > 0 for value in explicit_hours)
+        return (
+            _positive_value(inputs.get("days") or inputs.get("editable_days")) > 0
+            and _positive_value(
+                inputs.get("crew_size")
+                or inputs.get("crew_people_selection")
+                or inputs.get("people_count")
+            )
+            > 0
+        )
+
+    material_quantity_fields = (
         "quantity",
         "linear_ft",
         "units",
         "estimated_units",
         "estimated_sets",
         "estimated_gallons",
+    )
+    explicit_material_quantities = [
+        inputs.get(field)
+        for field in material_quantity_fields
+        if field in inputs
+    ]
+    if explicit_material_quantities:
+        return any(
+            _positive_value(value) > 0
+            for value in explicit_material_quantities
+        )
+
+    if _first_positive_value(
+        outputs.get("estimated_cost"),
+        outputs.get("calculated_cost"),
+        outputs.get("line_total"),
+    ) > 0:
+        return True
+
+    usage_fields = (
+        "basis_sqft",
+        "area_sqft",
+        "board_area_sqft",
         "days",
         "editable_days",
-        "hours_per_day",
-        "total_hours",
-        "editable_total_hours",
         "trip_count",
         "amount",
         "markup_pct",
