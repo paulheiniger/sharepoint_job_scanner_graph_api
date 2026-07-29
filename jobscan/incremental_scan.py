@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Connection, Engine
 
-from .db_loader import load_dataset
+from .db_loader import ensure_primary_id, load_dataset
 from .document_index import classify_document, stable_document_id
 from .estimate_datasets import scan_estimate_datasets_for_records
 from .extractors import SPREADSHEET_EXTS, scan_job_folder
@@ -98,6 +98,8 @@ class IncrementalRunReport:
     estimates_reparsed: int = 0
     tracking_reparsed: int = 0
     timesheets_reparsed: int = 0
+    job_files_downloaded: int = 0
+    job_files_deleted: int = 0
     documents_upserted: int = 0
     documents_queued_for_extraction: int = 0
     job_index_list_rows_synced: int = 0
@@ -431,11 +433,203 @@ def local_path_for_relative(cache_root: Path, relative_path: str) -> Path:
     return cache_root / normalize_drive_path(relative_path)
 
 
+def load_cache_manifest(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def cache_manifest_root_path(manifest: dict[str, Any]) -> str:
+    folders = manifest.get("folders") if isinstance(manifest.get("folders"), dict) else {}
+    root = folders.get(".") if isinstance(folders.get("."), dict) else {}
+    return normalize_drive_path(root.get("folder_path") or "")
+
+
+def cache_manifest_for_drive_path(
+    cache_root: Path,
+    drive_id: str,
+    drive_path: str,
+) -> tuple[Path, dict[str, Any], str] | None:
+    normalized_path = normalize_drive_path(drive_path)
+    candidates: list[tuple[int, Path, dict[str, Any], str]] = []
+    for manifest_path in cache_root.rglob(".jobscan_manifest.json"):
+        manifest = load_cache_manifest(manifest_path)
+        if drive_id and str(manifest.get("drive_id") or "") != drive_id:
+            continue
+        root_path = cache_manifest_root_path(manifest)
+        if not root_path:
+            continue
+        if normalized_path.lower() == root_path.lower() or normalized_path.lower().startswith(root_path.lower() + "/"):
+            candidates.append((len(root_path), manifest_path, manifest, root_path))
+    if not candidates:
+        return None
+    _length, manifest_path, manifest, root_path = max(candidates, key=lambda row: row[0])
+    return manifest_path, manifest, root_path
+
+
+def cache_relative_parts(drive_path: str, root_path: str) -> list[str]:
+    normalized_path = normalize_drive_path(drive_path)
+    normalized_root = normalize_drive_path(root_path)
+    relative = normalized_path[len(normalized_root) :].strip("/") if normalized_root else normalized_path
+    return [safe_cache_segment(part) for part in Path(relative).parts if part and part != "."]
+
+
+def cached_path_for_drive_item(
+    cache_root: Path,
+    item: IncrementalItem,
+    *,
+    prefer_manifest_item_path: bool = False,
+) -> tuple[Path, Path, dict[str, Any]] | None:
+    match = cache_manifest_for_drive_path(cache_root, item.drive_id, item.relative_path)
+    if not match:
+        return None
+    manifest_path, manifest, root_path = match
+    items = manifest.get("items") if isinstance(manifest.get("items"), dict) else {}
+    existing = items.get(item.drive_item_id) if isinstance(items.get(item.drive_item_id), dict) else {}
+    if prefer_manifest_item_path and existing.get("local_path"):
+        destination = manifest_path.parent / str(existing["local_path"])
+    else:
+        parts = cache_relative_parts(item.relative_path, root_path)
+        destination = manifest_path.parent.joinpath(*parts)
+    return destination, manifest_path, manifest
+
+
+def update_cache_manifest_item(
+    manifest_path: Path,
+    manifest: dict[str, Any],
+    item: IncrementalItem,
+    destination: Path,
+) -> None:
+    items = manifest.setdefault("items", {})
+    existing = items.get(item.drive_item_id) if isinstance(items.get(item.drive_item_id), dict) else {}
+    try:
+        local_path = str(destination.relative_to(manifest_path.parent))
+    except ValueError:
+        local_path = destination.name
+    items[item.drive_item_id] = {
+        **existing,
+        "name": item.name,
+        "drive_id": item.drive_id,
+        "drive_item_id": item.drive_item_id,
+        "graph_item_id": item.drive_item_id,
+        "id": item.drive_item_id,
+        "etag": item.etag or item.ctag,
+        "webUrl": item.web_url,
+        "lastModifiedDateTime": item.last_modified_at,
+        "local_path": local_path,
+    }
+    atomic_write_json(manifest_path, manifest)
+
+
+def refresh_changed_job_files(
+    client: GraphClient,
+    changeset: IncrementalChangeSet,
+    cache_root: Path,
+) -> tuple[int, int, list[dict[str, str]]]:
+    """Refresh changed estimate/tracking files in the existing scan-root cache."""
+
+    downloaded = 0
+    deleted = 0
+    failures: list[dict[str, str]] = []
+    changed_items = (
+        list(changeset.new_files)
+        + list(changeset.modified_files)
+        + list(changeset.moved_files)
+    )
+    for item in changed_items:
+        if item.processor not in {"estimate", "job_tracking"} or not item.is_file:
+            continue
+        target = cached_path_for_drive_item(cache_root, item)
+        old_target = cached_path_for_drive_item(
+            cache_root,
+            item,
+            prefer_manifest_item_path=True,
+        )
+        if not target:
+            failures.append(
+                {
+                    "processor": item.processor,
+                    "path": item.relative_path,
+                    "error": "No matching local scan-root manifest was found for the changed SharePoint workbook.",
+                }
+            )
+            continue
+        destination, manifest_path, manifest = target
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            client.download_item(item.drive_id, item.drive_item_id, destination)
+            if old_target and old_target[0] != destination and old_target[0].exists():
+                old_target[0].unlink()
+            update_cache_manifest_item(manifest_path, manifest, item, destination)
+            downloaded += 1
+        except Exception as exc:
+            failures.append(
+                {
+                    "processor": item.processor,
+                    "path": item.relative_path,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+
+    for item in changeset.deleted_files:
+        if item.processor not in {"estimate", "job_tracking"}:
+            continue
+        target = cached_path_for_drive_item(
+            cache_root,
+            item,
+            prefer_manifest_item_path=True,
+        )
+        if not target:
+            continue
+        destination, manifest_path, manifest = target
+        try:
+            if destination.exists():
+                destination.unlink()
+                deleted += 1
+            items = manifest.get("items") if isinstance(manifest.get("items"), dict) else {}
+            items.pop(item.drive_item_id, None)
+            atomic_write_json(manifest_path, manifest)
+        except OSError as exc:
+            failures.append(
+                {
+                    "processor": item.processor,
+                    "path": item.relative_path,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+    return downloaded, deleted, failures
+
+
+def cached_job_folder(
+    changeset: IncrementalChangeSet,
+    cache_root: Path,
+    job_path: str,
+) -> tuple[Path, Path] | None:
+    match = cache_manifest_for_drive_path(cache_root, changeset.drive_id, job_path)
+    if not match:
+        return None
+    manifest_path, _manifest, root_path = match
+    parts = cache_relative_parts(job_path, root_path)
+    return manifest_path.parent.joinpath(*parts), manifest_path.parent
+
+
 def scan_affected_job_records(changeset: IncrementalChangeSet, cache_root: Path) -> tuple[list[JobRecord], list[dict[str, str]]]:
     records: list[JobRecord] = []
     failures: list[dict[str, str]] = []
     for job_path in sorted(changeset.affected_job_paths):
-        local_job_path = local_path_for_relative(cache_root, job_path)
+        cached = cached_job_folder(changeset, cache_root, job_path)
+        if not cached:
+            failures.append(
+                {
+                    "processor": "job_index",
+                    "path": job_path,
+                    "error": "Affected job folder could not be mapped to a local scan-root manifest.",
+                }
+            )
+            continue
+        local_job_path, local_scan_root = cached
         if not local_job_path.exists() or not local_job_path.is_dir():
             failures.append(
                 {
@@ -446,8 +640,11 @@ def scan_affected_job_records(changeset: IncrementalChangeSet, cache_root: Path)
             )
             continue
         root_rule, _job_path, _job_id = map_path_to_job(job_path, list(filter(None, [item.root for item in list(changeset.new_files) + list(changeset.modified_files) + list(changeset.moved_files)])))
-        root = cache_root
-        record = scan_job_folder(local_job_path, root=root, scan_context=job_path)
+        record = scan_job_folder(
+            local_job_path,
+            root=local_scan_root,
+            scan_context=job_path,
+        )
         if root_rule:
             record.division = root_rule.division
             record.pipeline_status = root_rule.pipeline_status
@@ -455,6 +652,71 @@ def scan_affected_job_records(changeset: IncrementalChangeSet, cache_root: Path)
             record.source_year = root_rule.source_year
         records.append(record)
     return records, failures
+
+
+def group_records_by_local_scan_root(
+    changeset: IncrementalChangeSet,
+    cache_root: Path,
+    records: list[JobRecord],
+) -> dict[Path, list[JobRecord]]:
+    grouped: dict[Path, list[JobRecord]] = {}
+    for record in records:
+        scan_root = normalize_drive_path(getattr(record, "scan_root", None) or "")
+        drive_path = normalize_drive_path(
+            f"{scan_root}/{record.folder_path}" if scan_root else record.folder_path
+        )
+        match = cache_manifest_for_drive_path(
+            cache_root,
+            changeset.drive_id,
+            drive_path,
+        )
+        if not match:
+            continue
+        manifest_path, _manifest, _root_path = match
+        grouped.setdefault(manifest_path.parent, []).append(record)
+    return grouped
+
+
+def scan_estimates_for_affected_records(
+    changeset: IncrementalChangeSet,
+    cache_root: Path,
+    records: list[JobRecord],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    estimates: list[dict[str, Any]] = []
+    line_items: list[dict[str, Any]] = []
+    for local_root, root_records in group_records_by_local_scan_root(
+        changeset,
+        cache_root,
+        records,
+    ).items():
+        root_estimates, root_line_items = scan_estimate_datasets_for_records(
+            local_root,
+            root_records,
+        )
+        estimates.extend(root_estimates)
+        line_items.extend(root_line_items)
+    return estimates, line_items
+
+
+def scan_tracking_for_affected_records(
+    changeset: IncrementalChangeSet,
+    cache_root: Path,
+    records: list[JobRecord],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    summaries: list[dict[str, Any]] = []
+    daily_entries: list[dict[str, Any]] = []
+    for local_root, root_records in group_records_by_local_scan_root(
+        changeset,
+        cache_root,
+        records,
+    ).items():
+        root_summaries, root_daily = scan_job_tracking_for_records(
+            local_root,
+            root_records,
+        )
+        summaries.extend(root_summaries)
+        daily_entries.extend(root_daily)
+    return summaries, daily_entries
 
 
 def process_changed_jobs(changeset: IncrementalChangeSet, cache_root: Path, existing_jobs_path: Path, records: list[JobRecord] | None = None) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
@@ -478,6 +740,114 @@ def merge_child_rows(existing: list[dict[str, Any]], changed: list[dict[str, Any
     return merge_rows(retained, changed, key)
 
 
+def replace_tracking_output_rows(
+    existing_summaries: list[dict[str, Any]],
+    existing_daily: list[dict[str, Any]],
+    changed_summaries: list[dict[str, Any]],
+    changed_daily: list[dict[str, Any]],
+    affected_job_ids: set[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    normalized_existing_summaries = [
+        ensure_primary_id("job_tracking_summary", row)
+        for row in existing_summaries
+    ]
+    normalized_existing_daily = [
+        ensure_primary_id("job_tracking_daily", row)
+        for row in existing_daily
+    ]
+    normalized_changed_summaries = [
+        ensure_primary_id("job_tracking_summary", row)
+        for row in changed_summaries
+    ]
+    normalized_changed_daily = [
+        ensure_primary_id("job_tracking_daily", row)
+        for row in changed_daily
+    ]
+    replaced_tracking_ids = {
+        str(row.get("tracking_id"))
+        for row in normalized_existing_summaries
+        if str(row.get("job_id") or "") in affected_job_ids
+        and row.get("tracking_id")
+    }
+    retained_summaries = [
+        row
+        for row in normalized_existing_summaries
+        if str(row.get("job_id") or "") not in affected_job_ids
+    ]
+    retained_daily = [
+        row
+        for row in normalized_existing_daily
+        if str(row.get("job_id") or "") not in affected_job_ids
+        and str(row.get("tracking_id") or "") not in replaced_tracking_ids
+    ]
+    return (
+        merge_rows(
+            retained_summaries,
+            normalized_changed_summaries,
+            "tracking_id",
+        ),
+        merge_rows(
+            retained_daily,
+            normalized_changed_daily,
+            "tracking_entry_id",
+        ),
+    )
+
+
+def prune_job_tracking_rows_after_load(
+    engine: Engine,
+    job_ids: set[str],
+    keep_tracking_ids: set[str],
+    keep_entry_ids: set[str],
+) -> None:
+    clean_job_ids = sorted(job_id for job_id in job_ids if job_id)
+    if not clean_job_ids:
+        return
+    with engine.begin() as conn:
+        existing_tracking_ids = {
+            str(row.tracking_id)
+            for row in conn.execute(
+                text(
+                    "SELECT tracking_id FROM job_tracking_summary "
+                    "WHERE job_id = ANY(:job_ids)"
+                ),
+                {"job_ids": clean_job_ids},
+            )
+            if row.tracking_id
+        }
+        kept_parent_ids = existing_tracking_ids & keep_tracking_ids
+        if kept_parent_ids:
+            if keep_entry_ids:
+                conn.execute(
+                    text(
+                        "DELETE FROM job_tracking_daily_entries "
+                        "WHERE tracking_id = ANY(:tracking_ids) "
+                        "AND NOT (tracking_entry_id = ANY(:entry_ids))"
+                    ),
+                    {
+                        "tracking_ids": sorted(kept_parent_ids),
+                        "entry_ids": sorted(keep_entry_ids),
+                    },
+                )
+            else:
+                conn.execute(
+                    text(
+                        "DELETE FROM job_tracking_daily_entries "
+                        "WHERE tracking_id = ANY(:tracking_ids)"
+                    ),
+                    {"tracking_ids": sorted(kept_parent_ids)},
+                )
+        obsolete_tracking_ids = existing_tracking_ids - keep_tracking_ids
+        if obsolete_tracking_ids:
+            conn.execute(
+                text(
+                    "DELETE FROM job_tracking_summary "
+                    "WHERE tracking_id = ANY(:tracking_ids)"
+                ),
+                {"tracking_ids": sorted(obsolete_tracking_ids)},
+            )
+
+
 def ensure_incremental_tables(connection: Connection) -> None:
     connection.execute(
         text(
@@ -496,6 +866,11 @@ def ensure_incremental_tables(connection: Connection) -> None:
                 affected_documents INTEGER DEFAULT 0,
                 jobs_processed INTEGER DEFAULT 0,
                 files_processed INTEGER DEFAULT 0,
+                estimates_reparsed INTEGER DEFAULT 0,
+                tracking_reparsed INTEGER DEFAULT 0,
+                timesheets_reparsed INTEGER DEFAULT 0,
+                job_files_downloaded INTEGER DEFAULT 0,
+                job_files_deleted INTEGER DEFAULT 0,
                 failures INTEGER DEFAULT 0,
                 output_manifest_path TEXT,
                 error_message TEXT,
@@ -505,6 +880,14 @@ def ensure_incremental_tables(connection: Connection) -> None:
             """
         )
     )
+    for statement in (
+        "ALTER TABLE sharepoint_incremental_runs ADD COLUMN IF NOT EXISTS estimates_reparsed INTEGER DEFAULT 0",
+        "ALTER TABLE sharepoint_incremental_runs ADD COLUMN IF NOT EXISTS tracking_reparsed INTEGER DEFAULT 0",
+        "ALTER TABLE sharepoint_incremental_runs ADD COLUMN IF NOT EXISTS timesheets_reparsed INTEGER DEFAULT 0",
+        "ALTER TABLE sharepoint_incremental_runs ADD COLUMN IF NOT EXISTS job_files_downloaded INTEGER DEFAULT 0",
+        "ALTER TABLE sharepoint_incremental_runs ADD COLUMN IF NOT EXISTS job_files_deleted INTEGER DEFAULT 0",
+    ):
+        connection.execute(text(statement))
     connection.execute(
         text(
             """
@@ -537,12 +920,16 @@ def persist_incremental_run(engine: Engine, report: IncrementalRunReport, change
                 INSERT INTO sharepoint_incremental_runs (
                     run_id, drive_id, started_at, completed_at, status, affected_jobs, affected_estimates,
                     affected_tracking_files, affected_timesheet_files, affected_documents, jobs_processed,
-                    files_processed, failures, output_manifest_path, error_message, created_at, updated_at
+                    files_processed, estimates_reparsed, tracking_reparsed, timesheets_reparsed,
+                    job_files_downloaded, job_files_deleted, failures, output_manifest_path,
+                    error_message, created_at, updated_at
                 )
                 VALUES (
                     :run_id, :drive_id, :started_at, :completed_at, :status, :affected_jobs, :affected_estimates,
                     :affected_tracking_files, :affected_timesheet_files, :affected_documents, :jobs_processed,
-                    :files_processed, :failures, :output_manifest_path, :error_message, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                    :files_processed, :estimates_reparsed, :tracking_reparsed, :timesheets_reparsed,
+                    :job_files_downloaded, :job_files_deleted, :failures, :output_manifest_path,
+                    :error_message, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                 )
                 ON CONFLICT (run_id) DO UPDATE SET
                     completed_at = EXCLUDED.completed_at,
@@ -554,6 +941,11 @@ def persist_incremental_run(engine: Engine, report: IncrementalRunReport, change
                     affected_documents = EXCLUDED.affected_documents,
                     jobs_processed = EXCLUDED.jobs_processed,
                     files_processed = EXCLUDED.files_processed,
+                    estimates_reparsed = EXCLUDED.estimates_reparsed,
+                    tracking_reparsed = EXCLUDED.tracking_reparsed,
+                    timesheets_reparsed = EXCLUDED.timesheets_reparsed,
+                    job_files_downloaded = EXCLUDED.job_files_downloaded,
+                    job_files_deleted = EXCLUDED.job_files_deleted,
                     failures = EXCLUDED.failures,
                     output_manifest_path = EXCLUDED.output_manifest_path,
                     error_message = EXCLUDED.error_message,
@@ -573,6 +965,11 @@ def persist_incremental_run(engine: Engine, report: IncrementalRunReport, change
                 "affected_documents": report.documents,
                 "jobs_processed": report.jobs_reparsed,
                 "files_processed": report.estimates_reparsed + report.tracking_reparsed + report.timesheets_reparsed,
+                "estimates_reparsed": report.estimates_reparsed,
+                "tracking_reparsed": report.tracking_reparsed,
+                "timesheets_reparsed": report.timesheets_reparsed,
+                "job_files_downloaded": report.job_files_downloaded,
+                "job_files_deleted": report.job_files_deleted,
                 "failures": len(report.failures),
                 "output_manifest_path": report.output_manifest_path,
                 "error_message": "; ".join(f["error"] for f in report.failures)[:1000] if report.failures else None,
@@ -660,20 +1057,40 @@ def run_incremental(
     atomic_write_json(changed_docs_path, changed_docs)
     report.documents_upserted = len(changed_docs)
     report.documents_queued_for_extraction = sum(1 for row in changed_docs if row.get("extraction_status") == "pending")
+    affected_records: list[JobRecord] = []
 
     if not metadata_only:
+        (
+            report.job_files_downloaded,
+            report.job_files_deleted,
+            cache_refresh_failures,
+        ) = refresh_changed_job_files(client, changeset, cache_root)
+        report.failures.extend(cache_refresh_failures)
         changed_jobs_path = output_dir / "changed_jobs.json"
         all_jobs_path = output_dir / "job_index.json"
-        affected_records, job_failures = scan_affected_job_records(changeset, cache_root)
-        changed_jobs, job_failures = process_changed_jobs(changeset, cache_root, all_jobs_path, affected_records)
+        affected_records, scan_failures = scan_affected_job_records(
+            changeset,
+            cache_root,
+        )
+        changed_jobs, job_failures = process_changed_jobs(
+            changeset,
+            cache_root,
+            all_jobs_path,
+            affected_records,
+        )
         atomic_write_json(changed_jobs_path, changed_jobs)
         report.jobs_reparsed = len(changed_jobs)
+        report.failures.extend(scan_failures)
         report.failures.extend(job_failures)
 
         changed_estimates: list[dict[str, Any]] = []
         changed_line_items: list[dict[str, Any]] = []
         if affected_records and changeset.affected_estimate_files:
-            changed_estimates, changed_line_items = scan_estimate_datasets_for_records(cache_root, affected_records)
+            changed_estimates, changed_line_items = scan_estimates_for_affected_records(
+                changeset,
+                cache_root,
+                affected_records,
+            )
         atomic_write_json(output_dir / "changed_estimates.json", changed_estimates)
         atomic_write_json(output_dir / "changed_estimate_line_items.json", changed_line_items)
         existing_estimates = load_json_rows(output_dir / "estimate_summary.json")
@@ -689,21 +1106,70 @@ def run_incremental(
         changed_tracking_summary: list[dict[str, Any]] = []
         changed_tracking_daily: list[dict[str, Any]] = []
         if affected_records and changeset.affected_tracking_files:
-            changed_tracking_summary, changed_tracking_daily = scan_job_tracking_for_records(cache_root, affected_records)
-        atomic_write_json(output_dir / "changed_tracking_summary.json", changed_tracking_summary)
-        atomic_write_json(output_dir / "changed_tracking_daily_entries.json", changed_tracking_daily)
+            changed_tracking_summary, changed_tracking_daily = scan_tracking_for_affected_records(
+                changeset,
+                cache_root,
+                affected_records,
+            )
+        changed_tracking_summary = [
+            ensure_primary_id("job_tracking_summary", row)
+            for row in changed_tracking_summary
+        ]
+        changed_tracking_daily = [
+            ensure_primary_id("job_tracking_daily", row)
+            for row in changed_tracking_daily
+        ]
+        atomic_write_json(
+            output_dir / "changed_tracking_summary.json",
+            changed_tracking_summary,
+        )
+        atomic_write_json(
+            output_dir / "changed_tracking_daily_entries.json",
+            changed_tracking_daily,
+        )
         existing_tracking_summary = load_json_rows(output_dir / "job_tracking_summary.json")
+        existing_tracking_daily = load_json_rows(output_dir / "job_tracking_daily_entries.json")
+        tracking_job_ids = {
+            str(record.job_id)
+            for record in affected_records
+            if record.job_id
+        }
+        merged_tracking_summary, merged_tracking_daily = replace_tracking_output_rows(
+            existing_tracking_summary,
+            existing_tracking_daily,
+            changed_tracking_summary,
+            changed_tracking_daily,
+            tracking_job_ids,
+        )
         atomic_write_json(
             output_dir / "job_tracking_summary.json",
-            merge_rows(existing_tracking_summary, changed_tracking_summary, "tracking_id"),
+            merged_tracking_summary,
         )
-        affected_tracking_ids = {str(row.get("tracking_id")) for row in changed_tracking_summary if row.get("tracking_id")}
-        existing_tracking_daily = load_json_rows(output_dir / "job_tracking_daily_entries.json")
         atomic_write_json(
             output_dir / "job_tracking_daily_entries.json",
-            merge_child_rows(existing_tracking_daily, changed_tracking_daily, "tracking_entry_id", "tracking_id", affected_tracking_ids),
+            merged_tracking_daily,
         )
         report.tracking_reparsed = len(changed_tracking_summary)
+        active_tracking_changes = [
+            item
+            for item in (
+                list(changeset.new_files)
+                + list(changeset.modified_files)
+                + list(changeset.moved_files)
+            )
+            if item.processor == "job_tracking"
+        ]
+        if active_tracking_changes and report.tracking_reparsed == 0:
+            report.failures.append(
+                {
+                    "processor": "job_tracking",
+                    "path": active_tracking_changes[0].relative_path,
+                    "error": (
+                        f"{len(active_tracking_changes)} changed job-tracking workbook(s) "
+                        "were detected, but no tracking summaries were parsed."
+                    ),
+                }
+            )
 
         changed_timesheets, timesheet_failures = process_changed_timesheets(
             client=client,
@@ -768,6 +1234,32 @@ def run_incremental(
             path = output_dir / filename
             if path.exists() and load_json_rows(path):
                 load_dataset(engine, dataset_key, path, skip_missing=False)
+        if (
+            changeset.affected_tracking_files
+            and affected_records
+            and not any(
+                failure.get("processor") in {"job_tracking", "job_index"}
+                for failure in report.failures
+            )
+        ):
+            prune_job_tracking_rows_after_load(
+                engine,
+                {
+                    str(record.job_id)
+                    for record in affected_records
+                    if record.job_id
+                },
+                {
+                    str(row.get("tracking_id"))
+                    for row in changed_tracking_summary
+                    if row.get("tracking_id")
+                },
+                {
+                    str(row.get("tracking_entry_id"))
+                    for row in changed_tracking_daily
+                    if row.get("tracking_entry_id")
+                },
+            )
 
     report.status = "failed" if report.failures else "succeeded"
     report.completed_at = datetime.now(timezone.utc).isoformat()
@@ -789,6 +1281,11 @@ def print_report(report: IncrementalRunReport) -> None:
     print(f"Timesheet files: {report.timesheet_files}")
     print(f"Documents: {report.documents}")
     print(f"Jobs reparsed: {report.jobs_reparsed}")
+    print(f"Estimate summaries reparsed: {report.estimates_reparsed}")
+    print(f"Job tracking summaries reparsed: {report.tracking_reparsed}")
+    print(f"Timesheet entries reparsed: {report.timesheets_reparsed}")
+    print(f"Changed job workbooks downloaded: {report.job_files_downloaded}")
+    print(f"Deleted cached job workbooks removed: {report.job_files_deleted}")
     print(f"Documents upserted: {report.documents_upserted}")
     print(f"Documents queued for extraction: {report.documents_queued_for_extraction}")
     print(f"Failures: {len(report.failures)}")

@@ -10,7 +10,18 @@ from jobscan.graph_client import SharePointTarget
 
 
 class FakeClient:
-    pass
+    def __init__(self) -> None:
+        self.downloads: list[tuple[str, str, Path]] = []
+
+    def download_item(
+        self,
+        drive_id: str,
+        drive_item_id: str,
+        destination: Path,
+    ) -> None:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"updated workbook")
+        self.downloads.append((drive_id, drive_item_id, destination))
 
 
 class FakeEngine:
@@ -128,6 +139,190 @@ def test_changeset_routes_changed_files_and_deleted_documents() -> None:
     assert "2026 ROOFING/PROPOSED/Acme Roof/Estimate.xlsx" in changeset.affected_estimate_files
     assert "2026 ROOFING/PROPOSED/Acme Roof/Job Tracking Form.xlsx" in changeset.affected_tracking_files
     assert len(changeset.deleted_files) == 1
+
+
+def test_changed_tracking_workbook_refreshes_manifest_backed_cache(
+    tmp_path: Path,
+) -> None:
+    cache_root = tmp_path / ".cache" / "sharepoint"
+    scan_root = cache_root / "Data" / "2026 ROOFING_CONTRACTED"
+    job_folder = scan_root / "Acme Roof"
+    job_folder.mkdir(parents=True)
+    workbook = job_folder / "Job Tracking Form.xlsx"
+    workbook.write_bytes(b"old workbook")
+    manifest_path = scan_root / ".jobscan_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "drive_id": "drive",
+                "folders": {
+                    ".": {"folder_path": "2026 ROOFING/CONTRACTED"}
+                },
+                "items": {
+                    "tracking-1": {
+                        "local_path": "Acme Roof/Job Tracking Form.xlsx",
+                        "etag": "old",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    item = inc.IncrementalItem(
+        drive_id="drive",
+        drive_item_id="tracking-1",
+        change_type="modified",
+        relative_path=(
+            "2026 ROOFING/CONTRACTED/Acme Roof/"
+            "Job Tracking Form.xlsx"
+        ),
+        name="Job Tracking Form.xlsx",
+        is_file=True,
+        etag="new",
+        processor="job_tracking",
+    )
+    changeset = inc.IncrementalChangeSet(
+        sync_run_id="run",
+        drive_id="drive",
+        modified_files=[item],
+    )
+    client = FakeClient()
+
+    downloaded, deleted, failures = inc.refresh_changed_job_files(
+        client,
+        changeset,
+        cache_root,
+    )
+
+    assert downloaded == 1
+    assert deleted == 0
+    assert failures == []
+    assert workbook.read_bytes() == b"updated workbook"
+    refreshed_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert refreshed_manifest["items"]["tracking-1"]["etag"] == "new"
+    assert client.downloads[0][2] == workbook
+
+
+def test_affected_job_scans_from_manifest_root(tmp_path: Path) -> None:
+    cache_root = tmp_path / ".cache" / "sharepoint"
+    scan_root = cache_root / "Data" / "2026 ROOFING_CONTRACTED"
+    job_folder = scan_root / "Acme Roof"
+    job_folder.mkdir(parents=True)
+    (scan_root / ".jobscan_manifest.json").write_text(
+        json.dumps(
+            {
+                "drive_id": "drive",
+                "folders": {
+                    ".": {"folder_path": "2026 ROOFING/CONTRACTED"}
+                },
+                "items": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    item = inc.IncrementalItem(
+        drive_id="drive",
+        drive_item_id="tracking-1",
+        change_type="modified",
+        relative_path=(
+            "2026 ROOFING/CONTRACTED/Acme Roof/"
+            "Job Tracking Form.xlsx"
+        ),
+        name="Job Tracking Form.xlsx",
+        is_file=True,
+        root=inc.ScanRootRule(
+            "2026 ROOFING/CONTRACTED",
+            division="Roofing",
+            pipeline_status="Contracted",
+        ),
+        job_path="2026 ROOFING/CONTRACTED/Acme Roof",
+        job_id="job-hash",
+        processor="job_tracking",
+    )
+    changeset = inc.IncrementalChangeSet(
+        sync_run_id="run",
+        drive_id="drive",
+        modified_files=[item],
+        affected_job_paths={"2026 ROOFING/CONTRACTED/Acme Roof"},
+    )
+
+    records, failures = inc.scan_affected_job_records(
+        changeset,
+        cache_root,
+    )
+
+    assert failures == []
+    assert len(records) == 1
+    assert records[0].folder_path == "Acme Roof"
+    assert records[0].scan_root == "2026 ROOFING/CONTRACTED"
+    assert records[0].division == "Roofing"
+
+
+def test_tracking_output_replacement_removes_stale_rows_for_affected_job() -> None:
+    existing_summary = [
+        {
+            "job_id": "A",
+            "tracking_file": "A/Tracking.xlsx",
+            "actual_labor_hours": 10,
+        },
+        {
+            "job_id": "B",
+            "tracking_file": "B/Tracking.xlsx",
+            "actual_labor_hours": 20,
+        },
+    ]
+    existing_daily = [
+        {
+            "job_id": "A",
+            "tracking_file": "A/Tracking.xlsx",
+            "work_date": "2026-07-01",
+            "source_sheet": "Job Tracking",
+            "source_row": 5,
+            "labor_hours": 10,
+        },
+        {
+            "job_id": "B",
+            "tracking_file": "B/Tracking.xlsx",
+            "work_date": "2026-07-02",
+            "source_sheet": "Job Tracking",
+            "source_row": 5,
+            "labor_hours": 20,
+        },
+    ]
+    changed_summary = [
+        {
+            "job_id": "A",
+            "tracking_file": "A/Tracking.xlsx",
+            "actual_labor_hours": 12,
+        }
+    ]
+    changed_daily = [
+        {
+            "job_id": "A",
+            "tracking_file": "A/Tracking.xlsx",
+            "work_date": "2026-07-03",
+            "source_sheet": "Job Tracking",
+            "source_row": 6,
+            "labor_hours": 12,
+        }
+    ]
+
+    summaries, daily = inc.replace_tracking_output_rows(
+        existing_summary,
+        existing_daily,
+        changed_summary,
+        changed_daily,
+        {"A"},
+    )
+
+    assert {(row["job_id"], row["actual_labor_hours"]) for row in summaries} == {
+        ("A", 12),
+        ("B", 20),
+    }
+    assert {(row["job_id"], row["labor_hours"]) for row in daily} == {
+        ("A", 12),
+        ("B", 20),
+    }
 
 
 def test_moved_job_folder_marks_new_job_path() -> None:
@@ -273,7 +468,7 @@ def test_changed_estimate_merges_without_dropping_unrelated_outputs(monkeypatch,
     monkeypatch.setattr(inc, "process_changed_jobs", lambda *_args, **_kwargs: ([{"job_id": "JOB", "folder_path": "2026 ROOFING/PROPOSED/Acme Roof"}], []))
     monkeypatch.setattr(
         inc,
-        "scan_estimate_datasets_for_records",
+        "scan_estimates_for_affected_records",
         lambda *_args, **_kwargs: (
             [{"estimate_id": "changed-estimate", "job_id": "JOB", "estimated_value": 2}],
             [{"line_item_id": "changed-new-line", "estimate_id": "changed-estimate"}],

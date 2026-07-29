@@ -2873,6 +2873,185 @@ def load_job_tracking_dashboard_daily() -> pd.DataFrame:
     return enrich_rows_with_source_file_links(with_folder_link(df))
 
 
+JOB_TRACKING_ACTUAL_COLUMNS = [
+    "actual_labor_hours",
+    "actual_travel_hours",
+    "actual_load_hours",
+    "actual_os_hours",
+    "actual_mileage",
+    "actual_os_mileage",
+    "actual_foam_strokes",
+    "actual_foam_lbs",
+    "actual_foam_sqft",
+    "actual_base_coat_1",
+    "actual_base_coat_2",
+    "actual_granules",
+    "actual_af_buttergrade",
+    "actual_caulk",
+    "actual_primer",
+    "actual_sf",
+]
+
+JOB_TRACKING_MATERIAL_ACTUAL_COLUMNS = [
+    "actual_foam_strokes",
+    "actual_foam_lbs",
+    "actual_foam_sqft",
+    "actual_base_coat_1",
+    "actual_base_coat_2",
+    "actual_granules",
+    "actual_af_buttergrade",
+    "actual_caulk",
+    "actual_primer",
+    "actual_sf",
+]
+
+JOB_TRACKING_DAILY_VALUE_COLUMNS = [
+    "labor_hours",
+    "travel_hours",
+    "load_hours",
+    "os_hours",
+    "mileage",
+    "os_mileage",
+    "foam_strokes",
+    "foam_lbs",
+    "foam_sqft",
+    "base_coat_1",
+    "base_coat_2",
+    "granules",
+    "af_buttergrade",
+    "caulk",
+    "primer",
+    "sf",
+]
+
+JOB_TRACKING_DAILY_MATERIAL_COLUMNS = [
+    "foam_strokes",
+    "foam_lbs",
+    "foam_sqft",
+    "base_coat_1",
+    "base_coat_2",
+    "granules",
+    "af_buttergrade",
+    "caulk",
+    "primer",
+    "sf",
+]
+
+
+def any_positive_tracking_value(
+    df: pd.DataFrame,
+    columns: list[str],
+) -> pd.Series:
+    mask = pd.Series(False, index=df.index)
+    for column in columns:
+        if column in df.columns:
+            mask = mask | pd.to_numeric(df[column], errors="coerce").fillna(0).gt(0)
+    return mask
+
+
+def job_tracking_actuals_present_mask(df: pd.DataFrame) -> pd.Series:
+    if df.empty:
+        return pd.Series(False, index=df.index)
+    mask = any_positive_tracking_value(df, JOB_TRACKING_ACTUAL_COLUMNS)
+    if "actual_work_day_count" in df.columns:
+        mask = mask | pd.to_numeric(
+            df["actual_work_day_count"],
+            errors="coerce",
+        ).fillna(0).gt(0)
+    for column in ("last_work_date", "first_work_date"):
+        if column in df.columns:
+            mask = mask | pd.to_datetime(df[column], errors="coerce").notna()
+    return mask
+
+
+def job_tracking_material_actuals_present_mask(df: pd.DataFrame) -> pd.Series:
+    if df.empty:
+        return pd.Series(False, index=df.index)
+    return any_positive_tracking_value(df, JOB_TRACKING_MATERIAL_ACTUAL_COLUMNS)
+
+
+def job_tracking_daily_entry_present_mask(df: pd.DataFrame) -> pd.Series:
+    if df.empty:
+        return pd.Series(False, index=df.index)
+    mask = any_positive_tracking_value(df, JOB_TRACKING_DAILY_VALUE_COLUMNS)
+    for column in ("notes", "crew"):
+        if column in df.columns:
+            mask = mask | df[column].fillna("").astype(str).str.strip().ne("")
+    return mask
+
+
+def job_tracking_daily_material_present_mask(df: pd.DataFrame) -> pd.Series:
+    if df.empty:
+        return pd.Series(False, index=df.index)
+    return any_positive_tracking_value(
+        df,
+        JOB_TRACKING_DAILY_MATERIAL_COLUMNS,
+    )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_job_tracking_refresh_status() -> dict[str, object]:
+    run_columns = relation_columns("sharepoint_incremental_runs")
+    tracking_columns = relation_columns("job_tracking_summary")
+    if not run_columns and not tracking_columns:
+        return {}
+    result: dict[str, object] = {}
+    try:
+        engine = get_engine()
+        with engine.connect() as conn:
+            if run_columns:
+                select_fields = {
+                    "run_id": sql_column("r", run_columns, "run_id"),
+                    "status": sql_column("r", run_columns, "status"),
+                    "started_at": sql_column("r", run_columns, "started_at"),
+                    "completed_at": sql_column("r", run_columns, "completed_at"),
+                    "affected_tracking_files": sql_column(
+                        "r",
+                        run_columns,
+                        "affected_tracking_files",
+                    ),
+                    "tracking_reparsed": sql_column(
+                        "r",
+                        run_columns,
+                        "tracking_reparsed",
+                    ),
+                    "job_files_downloaded": sql_column(
+                        "r",
+                        run_columns,
+                        "job_files_downloaded",
+                    ),
+                    "failures": sql_column("r", run_columns, "failures"),
+                }
+                run_row = conn.execute(
+                    text(
+                        f"""
+                        SELECT {', '.join(f'{value} AS {key}' for key, value in select_fields.items())}
+                        FROM sharepoint_incremental_runs r
+                        ORDER BY r.started_at DESC NULLS LAST
+                        LIMIT 1
+                        """
+                    )
+                ).mappings().first()
+                if run_row:
+                    result.update(dict(run_row))
+            if tracking_columns:
+                tracking_row = conn.execute(
+                    text(
+                        f"""
+                        SELECT
+                            MAX({sql_column('t', tracking_columns, 'actual_last_work_date')}) AS latest_work_date,
+                            MAX({sql_column('t', tracking_columns, 'updated_at')}) AS tracking_updated_at
+                        FROM job_tracking_summary t
+                        """
+                    )
+                ).mappings().first()
+                if tracking_row:
+                    result.update(dict(tracking_row))
+    except Exception:
+        return {}
+    return result
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def load_schedule_job_tracking_summary(job_id: str) -> pd.DataFrame:
     job_id_text = text_value(job_id)
@@ -3979,7 +4158,11 @@ def job_tracking_quantity_unit(spec: dict[str, object], quantity_source_column: 
     return text_value(spec.get("quantity_unit"))
 
 
-def build_job_tracking_budget_health(summary: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+def build_job_tracking_budget_health(
+    summary: pd.DataFrame,
+    *,
+    include_empty_actual_buckets: bool = True,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     job_columns = [
         "job_id",
         "project",
@@ -4059,6 +4242,8 @@ def build_job_tracking_budget_health(summary: pd.DataFrame) -> tuple[pd.DataFram
                 actual_quantity = row_sum_positive_values(row, spec["actual_columns"])
                 estimated_quantity = row_sum_positive_values(row, spec["estimated_columns"])
                 quantity_source_column = None
+            if not include_empty_actual_buckets and actual_quantity is None:
+                continue
             if not budget_row and actual_quantity is None and estimated_quantity is None:
                 continue
             cost_basis = "estimate_template_rows"
@@ -4188,7 +4373,10 @@ def build_job_tracking_budget_health(summary: pd.DataFrame) -> tuple[pd.DataFram
 
 
 def render_job_tracking_budget_health(summary: pd.DataFrame) -> None:
-    budget_jobs, budget_buckets = build_job_tracking_budget_health(summary)
+    budget_jobs, budget_buckets = build_job_tracking_budget_health(
+        summary,
+        include_empty_actual_buckets=False,
+    )
     if budget_jobs.empty:
         st.info("No budget health rows could be built yet. This needs estimate costs plus job tracking actuals.")
         return
@@ -16973,6 +17161,61 @@ def job_tracking_dashboard_page() -> None:
         "Field production from job tracking forms, joined to the job board where possible. "
         "Use this to see active project touches and estimate-vs-actual production."
     )
+    refresh_status = load_job_tracking_refresh_status()
+    if refresh_status:
+        latest_run = pd.to_datetime(
+            refresh_status.get("completed_at")
+            or refresh_status.get("started_at"),
+            errors="coerce",
+        )
+        tracking_updated = pd.to_datetime(
+            refresh_status.get("tracking_updated_at"),
+            errors="coerce",
+        )
+        affected_tracking = int(
+            pd.to_numeric(
+                pd.Series([refresh_status.get("affected_tracking_files")]),
+                errors="coerce",
+            ).fillna(0).iloc[0]
+        )
+        tracking_reparsed = int(
+            pd.to_numeric(
+                pd.Series([refresh_status.get("tracking_reparsed")]),
+                errors="coerce",
+            ).fillna(0).iloc[0]
+        )
+        downloaded = int(
+            pd.to_numeric(
+                pd.Series([refresh_status.get("job_files_downloaded")]),
+                errors="coerce",
+            ).fillna(0).iloc[0]
+        )
+        latest_work = pd.to_datetime(
+            refresh_status.get("latest_work_date"),
+            errors="coerce",
+        )
+        st.caption(
+            "Tracking freshness: "
+            f"latest field date {latest_work.date().isoformat() if not pd.isna(latest_work) else 'not captured'}; "
+            f"tracking table updated {tracking_updated.strftime('%Y-%m-%d %H:%M') if not pd.isna(tracking_updated) else 'not captured'}; "
+            f"latest delta run {latest_run.strftime('%Y-%m-%d %H:%M') if not pd.isna(latest_run) else 'not captured'} "
+            f"found {affected_tracking} tracking file(s), downloaded {downloaded} changed job workbook(s), "
+            f"and reparsed {tracking_reparsed} tracking summary row(s)."
+        )
+        if (
+            affected_tracking > 0
+            and not pd.isna(latest_run)
+            and (
+                tracking_reparsed == 0
+                or pd.isna(tracking_updated)
+                or tracking_updated < latest_run - pd.Timedelta(minutes=5)
+            )
+        ):
+            st.warning(
+                "The latest SharePoint delta run found changed job-tracking files, "
+                "but the tracking dataset did not refresh from them. Check the run's "
+                "job workbook download and tracking reparse counters."
+            )
 
     section = choose_dashboard_section(
         "Job Tracking View",
@@ -16994,7 +17237,9 @@ def job_tracking_dashboard_page() -> None:
         return
 
     filter_source = summary_all if not summary_all.empty else daily_all
-    filter_col1, filter_col2, filter_col3, filter_col4, filter_col5 = st.columns([1.1, 1.0, 1.2, 1.4, 2.0])
+    filter_col1, filter_col2, filter_col3, filter_col4, filter_col5, filter_col6 = st.columns(
+        [1.1, 1.0, 1.2, 1.4, 2.0, 1.2]
+    )
     with filter_col1:
         active_only = st.checkbox("Active / recent only", value=True, key="job_tracking_active_recent_only")
     with filter_col2:
@@ -17005,6 +17250,12 @@ def job_tracking_dashboard_page() -> None:
         status_filter = st.multiselect("Tracking Status", options_from(summary_all, "tracking_status"), key="job_tracking_status")
     with filter_col5:
         search = st.text_input("Search customer, job, file, notes", key="job_tracking_search").strip()
+    with filter_col6:
+        include_without_actuals = st.checkbox(
+            "Include without actuals",
+            value=False,
+            key="job_tracking_include_without_actuals",
+        )
 
     summary = summary_all.copy()
     if not include_completed:
@@ -17015,6 +17266,8 @@ def job_tracking_dashboard_page() -> None:
         summary = summary[summary["division"].astype(str).isin(division_filter)]
     if status_filter and "tracking_status" in summary.columns:
         summary = summary[summary["tracking_status"].astype(str).isin(status_filter)]
+    if not include_without_actuals:
+        summary = summary[job_tracking_actuals_present_mask(summary)]
     if search:
         search_columns = [
             column
@@ -17174,7 +17427,14 @@ def job_tracking_dashboard_page() -> None:
         if daily.empty:
             st.caption("No daily job tracking entries match the current filters.")
         else:
-            recent_daily = daily.sort_values("work_date", ascending=False, na_position="last")
+            recent_daily = daily[job_tracking_daily_entry_present_mask(daily)].sort_values(
+                "work_date",
+                ascending=False,
+                na_position="last",
+            )
+            if recent_daily.empty:
+                st.caption("No populated daily job tracking entries match the current filters.")
+                return
             show_table(
                 recent_daily,
                 [
@@ -17213,6 +17473,18 @@ def job_tracking_dashboard_page() -> None:
         material_summary = rollup_job_tracking_production_summary(enriched_summary)
         roofing_summary, insulation_summary = split_tracking_material_rows(material_summary)
         roofing_daily, insulation_daily = split_tracking_material_rows(daily)
+        roofing_summary = roofing_summary[
+            job_tracking_material_actuals_present_mask(roofing_summary)
+        ]
+        insulation_summary = insulation_summary[
+            job_tracking_material_actuals_present_mask(insulation_summary)
+        ]
+        roofing_daily = roofing_daily[
+            job_tracking_daily_material_present_mask(roofing_daily)
+        ]
+        insulation_daily = insulation_daily[
+            job_tracking_daily_material_present_mask(insulation_daily)
+        ]
 
         material_summary_columns = [
             "project",

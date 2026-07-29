@@ -1,6 +1,60 @@
 import pandas as pd
 
 
+def test_job_tracking_actual_masks_remove_estimate_only_rows() -> None:
+    import dashboard.app as app
+
+    rows = pd.DataFrame(
+        [
+            {
+                "job_id": "ACTUAL",
+                "actual_labor_hours": 8,
+                "estimated_labor_hours": 10,
+                "last_work_date": "2026-07-28",
+            },
+            {
+                "job_id": "DATE_ONLY",
+                "actual_labor_hours": None,
+                "estimated_labor_hours": 10,
+                "last_work_date": "2026-07-27",
+            },
+            {
+                "job_id": "ESTIMATE_ONLY",
+                "actual_labor_hours": None,
+                "estimated_labor_hours": 10,
+                "last_work_date": None,
+            },
+        ]
+    )
+
+    mask = app.job_tracking_actuals_present_mask(rows)
+
+    assert rows.loc[mask, "job_id"].tolist() == ["ACTUAL", "DATE_ONLY"]
+
+
+def test_job_tracking_daily_and_material_masks_require_relevant_values() -> None:
+    import dashboard.app as app
+
+    rows = pd.DataFrame(
+        [
+            {"job_id": "LABOR", "labor_hours": 8, "foam_sqft": None},
+            {"job_id": "MATERIAL", "labor_hours": None, "foam_sqft": 500},
+            {"job_id": "NOTE", "notes": "Rain day"},
+            {"job_id": "EMPTY"},
+        ]
+    )
+
+    daily_mask = app.job_tracking_daily_entry_present_mask(rows)
+    material_mask = app.job_tracking_daily_material_present_mask(rows)
+
+    assert rows.loc[daily_mask, "job_id"].tolist() == [
+        "LABOR",
+        "MATERIAL",
+        "NOTE",
+    ]
+    assert rows.loc[material_mask, "job_id"].tolist() == ["MATERIAL"]
+
+
 def test_job_tracking_material_enrichment_and_split(monkeypatch) -> None:
     import dashboard.app as app
 
@@ -157,6 +211,49 @@ def test_job_tracking_budget_health_uses_estimate_cost_baselines(monkeypatch) ->
     assert insulation_job["budget_status"] == "On Track"
     assert insulation_job["actual_cost"] == 1000
     assert insulation_job["estimated_cost"] == 2000
+
+
+def test_job_tracking_budget_health_can_hide_empty_actual_buckets(
+    monkeypatch,
+) -> None:
+    import dashboard.app as app
+
+    summary = pd.DataFrame(
+        [
+            {
+                "job_id": "ROOF1",
+                "project": "Roof coating",
+                "actual_labor_hours": 12,
+                "estimated_labor_hours": 10,
+                "estimated_base_coat_1": 20,
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        app,
+        "load_job_tracking_estimate_budget_enrichment",
+        lambda job_ids: pd.DataFrame(
+            [
+                {
+                    "job_id": "ROOF1",
+                    "budget_bucket": "Labor",
+                    "estimated_bucket_cost": 1000,
+                },
+                {
+                    "job_id": "ROOF1",
+                    "budget_bucket": "Coating",
+                    "estimated_bucket_cost": 800,
+                },
+            ]
+        ),
+    )
+
+    _jobs, buckets = app.build_job_tracking_budget_health(
+        summary,
+        include_empty_actual_buckets=False,
+    )
+
+    assert buckets["bucket"].tolist() == ["Labor"]
 
 
 def test_job_tracking_material_rollup_collapses_duplicate_job_rows() -> None:
