@@ -47,6 +47,9 @@ SALES_FIELDS = (
     "proposal_file",
     "proposal_file_created_at",
     "proposal_file_modified_at",
+    "proposal_file_modified_by",
+    "estimate_file_modified_at",
+    "estimate_file_modified_by",
     "vsimple_deal_owner",
     "vsimple_estimator",
     "vsimple_lead_source",
@@ -170,6 +173,10 @@ def get_sales_pipeline(
                     in {"Contracted", "Contracted Repairs"}
                 ),
                 "unassigned_jobs": sum(not _sales_owner(row) for row in rows),
+                "inferred_owner_jobs": sum(
+                    _sales_owner_source(row).endswith("_modified_by")
+                    for row in rows
+                ),
                 "jobs_with_warnings": sum(
                     bool(str(row.get("warnings") or "").strip())
                     or row.get("has_warnings") is True
@@ -320,6 +327,10 @@ def get_sales_followups(
                     row.get("follow_up_state") == "no_date" for row in rows
                 ),
                 "unassigned_followups": sum(not row.get("owner") for row in rows),
+                "inferred_owner_followups": sum(
+                    str(row.get("owner_source") or "").endswith("_modified_by")
+                    for row in rows
+                ),
                 "data_quality_followups": sum(
                     row.get("followup_status") != "Ready for follow-up"
                     for row in rows
@@ -441,6 +452,9 @@ def _sales_snapshot_enrichment(
             "vsimple_referral_source",
             "proposal_file_created_at",
             "proposal_file_modified_at",
+            "proposal_file_modified_by",
+            "estimate_file_modified_at",
+            "estimate_file_modified_by",
             "proposal_url",
             "estimate_url",
         ),
@@ -505,6 +519,10 @@ def _owner_rollup(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             {
                 "owner": owner,
                 "job_count": len(items),
+                "inferred_job_count": sum(
+                    _sales_owner_source(item).endswith("_modified_by")
+                    for item in items
+                ),
                 "estimated_value": _sum_numeric(
                     item.get("estimated_value") for item in items
                 ),
@@ -516,25 +534,56 @@ def _owner_rollup(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _sales_owner(row: dict[str, Any]) -> str:
-    return str(
-        row.get("deal_owner")
-        or row.get("assigned_user")
-        or row.get("vsimple_deal_owner")
-        or row.get("vsimple_estimator")
-        or ""
-    ).strip()
+    source = _sales_owner_source(row)
+    return str(row.get(source) or "").strip() if source != "not_captured" else ""
 
 
 def _sales_owner_source(row: dict[str, Any]) -> str:
-    for field in (
-        "deal_owner",
-        "assigned_user",
-        "vsimple_deal_owner",
-        "vsimple_estimator",
-    ):
+    for field in ("deal_owner", "assigned_user"):
+        if str(row.get(field) or "").strip():
+            return field
+
+    sharepoint_source = _latest_sharepoint_editor_source(row)
+    if sharepoint_source:
+        return sharepoint_source
+
+    # VSimple is a historical export rather than an actively synchronized source,
+    # so use it only after current workflow and SharePoint activity evidence.
+    for field in ("vsimple_deal_owner", "vsimple_estimator"):
         if str(row.get(field) or "").strip():
             return field
     return "not_captured"
+
+
+NON_PERSON_SHAREPOINT_EDITORS = {
+    "communications intern",
+    "estimating",
+    "microsoft sharepoint",
+    "sharepoint app",
+    "system account",
+}
+
+
+def _latest_sharepoint_editor_source(row: dict[str, Any]) -> str:
+    candidates: list[tuple[str, str, str]] = []
+    for source_field, timestamp_field in (
+        ("proposal_file_modified_by", "proposal_file_modified_at"),
+        ("estimate_file_modified_by", "estimate_file_modified_at"),
+    ):
+        editor = str(row.get(source_field) or "").strip()
+        if not editor or editor.lower() in NON_PERSON_SHAREPOINT_EDITORS:
+            continue
+        timestamp = str(row.get(timestamp_field) or "").strip()
+        candidates.append((timestamp, source_field, editor))
+    if not candidates:
+        return ""
+    # ISO date/time values sort chronologically. If timestamps are missing, the
+    # proposal editor wins because proposal activity is the stronger sales signal.
+    candidates.sort(
+        key=lambda item: (bool(item[0]), item[0], item[1] == "proposal_file_modified_by"),
+        reverse=True,
+    )
+    return candidates[0][1]
 
 
 def _sales_lead_source(row: dict[str, Any]) -> str:

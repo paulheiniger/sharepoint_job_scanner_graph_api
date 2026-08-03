@@ -363,6 +363,94 @@ def test_grossman_planning_guidance_recommends_reviewable_purchase_rounding_and_
     assert labor["labor_cleanup"]["blocking_input_required"] is True
 
 
+def test_grossman_labor_guidance_deduplicates_seam_caulk_and_uses_task_driver(
+    monkeypatch,
+) -> None:
+    automatic_rows = [
+        DecisionProposal(
+            decision_id=f"automatic_{category}",
+            template_type="roofing",
+            template_bucket=category,
+            workbook_row=row,
+            include=True,
+            proposed_values={
+                "days": days,
+                "crew_size": 6,
+                "daily_rate": 1937.25,
+                "total_hours": hours,
+            },
+            confidence=0.88,
+            evidence={
+                "automatic_comparable": [
+                    {
+                        "job_id": "ST-MARGARET-MARY",
+                        "job_name": "St Margaret Mary",
+                        "source_file": "Estimate - St. MM.xlsx",
+                    }
+                ]
+            },
+        )
+        for category, row, days, hours in (
+            ("labor_seam_sealer", "120", 2.78, 170.7),
+            ("labor_caulk", "126", 1.85, 113.8),
+            ("labor_cleanup", "132", 2.78, 170.7),
+        )
+    ]
+    monkeypatch.setattr(
+        "jobscan.estimator.planning_guidance.compile_deterministic_scope_proposals",
+        lambda *_args, **_kwargs: automatic_rows,
+    )
+
+    result = build_estimator_planning_guidance(
+        scope=grossman_structured_scope(),
+        data=grossman_estimator_data(),
+        historical_labor_performance=[
+            {
+                "category": "labor_seam_sealer",
+                "total_hours": 62.5,
+                "crew_size": 5,
+                "days": 1.25,
+                "support_count": 2,
+                "confidence": 0.78,
+                "productivity": {},
+                "sources": [
+                    {
+                        "job_id": "REFERENCE",
+                        "file_name": "Reference Roof.xlsx",
+                        "reference_area_sqft": 14365,
+                    }
+                ],
+            },
+            {
+                "category": "labor_cleanup",
+                "crew_size": 5,
+                "support_count": 2,
+                "confidence": 0.78,
+                "productivity": {
+                    "driver_type": "project_sqft",
+                    "rate": 1.044205,
+                    "rate_unit": "hours_per_1000_sqft",
+                    "evidence_count": 2,
+                },
+                "sources": [
+                    {
+                        "job_id": "REFERENCE",
+                        "file_name": "Reference Roof.xlsx",
+                        "reference_area_sqft": 14365,
+                    }
+                ],
+            },
+        ],
+    )
+
+    labor = {row["category"]: row for row in result["labor_plan_guidance"]}
+    assert "labor_caulk" not in labor
+    assert labor["labor_seam_sealer"]["recommended_total_hours"] == 22.3
+    assert labor["labor_cleanup"]["recommended_total_hours"] == 5.4
+    assert labor["labor_seam_sealer"]["calibration_status"] == "historical_candidate"
+    assert labor["labor_cleanup"]["calibration_status"] == "historical_candidate"
+
+
 def test_grossman_planning_guidance_supplies_reviewable_logistics_baselines() -> None:
     data = grossman_estimator_data()
     result = build_estimator_planning_guidance(

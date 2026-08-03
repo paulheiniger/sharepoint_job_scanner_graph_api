@@ -87,8 +87,8 @@ ranked_documents AS (
             PARTITION BY job_id, document_kind
             ORDER BY
                 (NULLIF(file_modified_by, '') IS NULL),
-                file_created_at DESC NULLS LAST,
                 file_modified_at DESC NULLS LAST,
+                file_created_at DESC NULLS LAST,
                 file_name
         ) AS rn,
         COUNT(*) OVER (PARTITION BY job_id, document_kind) AS document_count
@@ -159,8 +159,8 @@ ranked_folder_documents AS (
             PARTITION BY folder_match_key, document_kind
             ORDER BY
                 (NULLIF(file_modified_by, '') IS NULL),
-                file_created_at DESC NULLS LAST,
                 file_modified_at DESC NULLS LAST,
+                file_created_at DESC NULLS LAST,
                 file_name
         ) AS rn
     FROM folder_documents

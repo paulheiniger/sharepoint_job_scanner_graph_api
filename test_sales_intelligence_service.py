@@ -30,7 +30,13 @@ def sales_engine():
                     warnings TEXT,
                     folder_url TEXT,
                     updated_at TIMESTAMP,
-                    refreshed_at TIMESTAMP
+                    refreshed_at TIMESTAMP,
+                    proposal_file_modified_at TIMESTAMP,
+                    proposal_file_modified_by TEXT,
+                    estimate_file_modified_at TIMESTAMP,
+                    estimate_file_modified_by TEXT,
+                    vsimple_deal_owner TEXT,
+                    vsimple_estimator TEXT
                 )
                 """
             )
@@ -38,7 +44,12 @@ def sales_engine():
         connection.execute(
             text(
                 """
-                INSERT INTO job_board_static_snapshot VALUES
+                INSERT INTO job_board_static_snapshot (
+                    job_id, division, pipeline_status, status, customer, job_name,
+                    estimated_value, estimated_sqft, price_per_sqft, has_proposal,
+                    has_signed_contract, has_warnings, warnings, folder_url,
+                    updated_at, refreshed_at
+                ) VALUES
                 ('JOB-P1', 'Roofing', 'Proposed', 'Open', 'Acme', 'Acme Roof',
                  90000, 10000, 9, 1, 0, 0, '',
                  'https://example.invalid/JOB-P1', '2026-07-30', '2026-07-30'),
@@ -51,6 +62,19 @@ def sales_engine():
                 ('JOB-D1', 'Roofing', 'Completed', 'Complete', 'Delta', 'Delta Shop',
                  50000, 5000, 10, 1, 1, 0, '',
                  'https://example.invalid/JOB-D1', '2026-07-27', '2026-07-30')
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                UPDATE job_board_static_snapshot
+                SET proposal_file_modified_at = '2026-07-31',
+                    proposal_file_modified_by = 'Alex',
+                    estimate_file_modified_at = '2026-07-30',
+                    estimate_file_modified_by = 'Taylor',
+                    vsimple_deal_owner = 'Legacy Owner'
+                WHERE job_id = 'JOB-P2'
                 """
             )
         )
@@ -128,8 +152,16 @@ def test_sales_pipeline_returns_rollups_and_top_opportunities() -> None:
     assert result["headline_metrics"]["pipeline_value"] == 270000
     assert result["headline_metrics"]["proposed_jobs"] == 2
     assert result["headline_metrics"]["contracted_jobs"] == 1
+    assert result["headline_metrics"]["inferred_owner_jobs"] == 1
+    assert result["headline_metrics"]["unassigned_jobs"] == 0
     assert result["records"][0]["job_id"] == "JOB-C1"
     assert result["records"][1]["deal_owner"] == "Pat"
+    inferred = next(row for row in result["records"] if row["job_id"] == "JOB-P2")
+    assert inferred["owner"] == "Alex"
+    assert inferred["owner_source"] == "proposal_file_modified_by"
+    assert next(
+        row for row in result["owner_rollup"] if row["owner"] == "Alex"
+    )["inferred_job_count"] == 1
     assert result["coverage"]["results_truncated"] is False
     assert result["source_links"]
 
@@ -153,7 +185,8 @@ def test_sales_followups_prioritize_overdue_and_explain_missing_data() -> None:
     assert result["schema_version"] == "spraytec.sales_followups.v1"
     assert result["headline_metrics"]["matching_followups"] == 2
     assert result["headline_metrics"]["overdue_followups"] == 1
-    assert result["headline_metrics"]["unassigned_followups"] == 1
+    assert result["headline_metrics"]["unassigned_followups"] == 0
+    assert result["headline_metrics"]["inferred_owner_followups"] == 1
     assert result["records"][0]["job_id"] == "JOB-P1"
     assert result["records"][0]["follow_up_state"] == "overdue"
     assert result["records"][1]["followup_status"] == "Missing square footage"
@@ -177,5 +210,36 @@ def test_sales_followups_support_owner_and_queue_filters() -> None:
     )
 
     assert [row["job_id"] for row in owned["records"]] == ["JOB-P1"]
-    assert [row["job_id"] for row in unassigned["records"]] == ["JOB-P2"]
+    assert unassigned["records"] == []
 
+
+def test_sales_owner_prefers_current_sharepoint_activity_over_vsimple_export() -> None:
+    result = get_sales_pipeline(engine=sales_engine(), limit=10)
+    row = next(record for record in result["records"] if record["job_id"] == "JOB-P2")
+
+    assert row["owner"] == "Alex"
+    assert row["owner_source"] == "proposal_file_modified_by"
+
+
+def test_sales_owner_uses_latest_person_editor_and_ignores_generic_accounts() -> None:
+    engine = sales_engine()
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                UPDATE job_board_static_snapshot
+                SET proposal_file_modified_at = '2026-07-31',
+                    proposal_file_modified_by = 'Estimating',
+                    estimate_file_modified_at = '2026-08-01',
+                    estimate_file_modified_by = 'Morgan',
+                    vsimple_deal_owner = 'Legacy Owner'
+                WHERE job_id = 'JOB-P2'
+                """
+            )
+        )
+
+    result = get_sales_pipeline(engine=engine, limit=10)
+    row = next(record for record in result["records"] if record["job_id"] == "JOB-P2")
+
+    assert row["owner"] == "Morgan"
+    assert row["owner_source"] == "estimate_file_modified_by"

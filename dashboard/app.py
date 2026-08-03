@@ -13275,8 +13275,8 @@ def load_job_board_document_dates() -> pd.DataFrame:
                     PARTITION BY job_id, document_kind
                     ORDER BY
                         (NULLIF(file_modified_by, '') IS NULL),
-                        file_created_at DESC NULLS LAST,
                         file_modified_at DESC NULLS LAST,
+                        file_created_at DESC NULLS LAST,
                         file_name
                 ) AS rn,
                 COUNT(*) OVER (PARTITION BY job_id, document_kind) AS document_count
@@ -13393,7 +13393,7 @@ def load_job_board_document_folder_dates() -> pd.DataFrame:
     docs["file_created_at"] = pd.to_datetime(docs["file_created_at"], errors="coerce")
     docs["file_modified_at"] = pd.to_datetime(docs["file_modified_at"], errors="coerce")
     docs = docs.sort_values(
-        ["folder_match_key", "document_kind", "has_modified_by", "file_created_at", "file_modified_at", "file_name"],
+        ["folder_match_key", "document_kind", "has_modified_by", "file_modified_at", "file_created_at", "file_name"],
         ascending=[True, True, False, False, False, True],
     )
     docs = docs.drop_duplicates(["folder_match_key", "document_kind"], keep="first")

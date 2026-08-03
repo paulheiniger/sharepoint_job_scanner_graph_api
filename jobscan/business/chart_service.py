@@ -193,6 +193,8 @@ def _build_schedule_gantt_dataset(
     clipped_before = 0
     clipped_after = 0
     unassigned = 0
+    duplicate_rows = 0
+    seen_schedule_rows: set[tuple[str, str, date, date]] = set()
     for raw in raw_rows:
         if not isinstance(raw, dict):
             continue
@@ -219,9 +221,19 @@ def _build_schedule_gantt_dataset(
         clipped_before += int(before)
         clipped_after += int(after)
         crew = str(raw.get("assigned_crew_leader") or "").strip() or "Unassigned"
-        unassigned += int(crew == "Unassigned")
         job_id = str(raw.get("job_id") or "").strip()
         job_name = str(raw.get("job_name") or raw.get("customer") or job_id).strip()
+        schedule_identity = (
+            (job_id or job_name).casefold(),
+            crew.casefold(),
+            raw_start,
+            raw_end,
+        )
+        if schedule_identity in seen_schedule_rows:
+            duplicate_rows += 1
+            continue
+        seen_schedule_rows.add(schedule_identity)
+        unassigned += int(crew == "Unassigned")
         task_label = f"{job_name} ({job_id})" if job_id else job_name
         rows.append(
             {
@@ -279,6 +291,11 @@ def _build_schedule_gantt_dataset(
         warnings.append(
             f"{unassigned} scheduled project(s) are grouped under Unassigned."
         )
+    if duplicate_rows:
+        warnings.append(
+            f"{duplicate_rows} exact duplicate schedule row(s) were omitted from "
+            "the Gantt chart."
+        )
     coverage = dict(source_coverage)
     coverage.update(
         {
@@ -290,6 +307,7 @@ def _build_schedule_gantt_dataset(
             "gantt_clipped_before_window_rows": clipped_before,
             "gantt_clipped_after_window_rows": clipped_after,
             "gantt_unassigned_rows": unassigned,
+            "gantt_duplicate_rows_omitted": duplicate_rows,
         }
     )
     return {

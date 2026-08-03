@@ -26,7 +26,7 @@ cache TTL shortened to reduce development cost and data staleness.
 Choose an immutable version tag and run from the repository root:
 
 ```bash
-IMAGE_TAG=0.13.15
+IMAGE_TAG=0.13.21
 
 docker build \
   --platform linux/amd64 \
@@ -86,6 +86,12 @@ curl \
   "${API_BASE}/health"
 
 curl \
+  --fail-with-body \
+  --silent \
+  --show-error \
+  "${API_BASE}/privacy"
+
+curl \
   --silent \
   --show-error \
   --output /dev/null \
@@ -136,3 +142,12 @@ testers to select GPT-5.6 Thinking for action-backed requests. Keep workbook
 endpoints consequential and require explicit estimator confirmation. Do not
 choose a blanket permanent approval for workbook-generating actions during
 read-only testing.
+
+For public link sharing, configure the action's Privacy Policy URL as:
+
+```text
+https://spraytec-business-api.icysand-5925ab36.eastus2.azurecontainerapps.io/privacy
+```
+
+The privacy route is intentionally public, excluded from the action OpenAPI
+contract, and does not disclose API credentials or internal data.

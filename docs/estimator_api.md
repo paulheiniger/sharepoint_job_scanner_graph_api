@@ -231,9 +231,12 @@ top opportunities, warnings, and source folders. By default it includes
 Proposed, Contracted, and Contracted Repairs jobs. Completed and other statuses
 are available only when requested.
 
-Owner evidence uses workflow overrides first, followed by accepted vSimple deal
-owner or estimator fields. Each record returns `owner_source` so the agent does
-not present fallback ownership as an unexplained fact.
+Owner evidence uses current workflow assignments first. When those are absent,
+the most recent person to modify the proposal or estimate in SharePoint is used
+as an explicitly inferred owner; the historical vSimple export is the final
+fallback. Each record returns `owner_source`, and owner rollups include
+`inferred_job_count`, so the agent does not present editor-based ownership as an
+authoritative assignment.
 
 ### `POST /v1/sales/follow-ups`
 

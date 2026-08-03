@@ -345,6 +345,14 @@ class EstimateContextResponse(BaseModel):
     retrieval_summary: dict[str, Any]
     response_budget: dict[str, Any] = Field(default_factory=dict)
     source_metadata: dict[str, Any] | None = None
+    planning_snapshot_token: str = Field(
+        default="",
+        max_length=30_000,
+        description=(
+            "Short-lived signed planning snapshot. Return this unchanged as "
+            "planning_snapshot_token when generating the reviewed workbook."
+        ),
+    )
 
 
 class EstimateWorkbookDimensionRow(BaseModel):
@@ -611,6 +619,14 @@ class EstimateWorkbookDraft(BaseModel):
         description=(
             "Required when labor_plan_mode is estimator_override; explain why the "
             "reviewed labor plan differs from the API recommendation."
+        ),
+    )
+    planning_snapshot_token: str = Field(
+        default="",
+        max_length=30_000,
+        description=(
+            "Unchanged token returned by the final estimator context call. A "
+            "valid matching token avoids repeating labor and logistics retrieval."
         ),
     )
     header: EstimateWorkbookHeader

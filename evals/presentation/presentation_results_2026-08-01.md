@@ -1,6 +1,26 @@
 # Spray-Tec presentation-readiness results — 2026-08-01
 
-## Executive result
+## Current verified result — 2026-08-03
+
+The four workbook cases that were partial in the original run now pass their
+presentation acceptance criteria on the deployed Azure API. Version `0.13.17`
+was checked through the same public HTTPS action host used by the Custom GPT.
+
+| Case | Current result | Current verification |
+|---|---|---|
+| Elsby repair workbook | **Pass** | Azure returned `201` in 3.51 seconds, used the roofing template, recalculated a $1,960.95 total job cost and $4,093.37 worksheet price with current labor and the explicit warranty allowance, and returned a downloadable HTTPS XLSX. No request-schema retry was required. |
+| Handwritten insulation workbook | **Pass** | Azure returned `201` in 2.74 seconds, used the stored insulation template, retained the 4,611-sq.-ft. signed area calculation and review allowances, recalculated a $14,128.44 total job cost and $22,282.20 worksheet price, and returned a downloadable HTTPS XLSX. |
+| Gardiner flooring workbook | **Pass** | Azure returned `201` in 2.26 seconds, used the stored flooring profile and NPI coating/labor rows, retained the unpriced corner-repair review item, recalculated a $2,606.79 total job cost and $5,970.83 worksheet price, and returned a downloadable HTTPS XLSX. |
+| Multiple warranty options | **Pass** | Azure returned `201` in 6.23 seconds and produced exactly two independently recalculated HTTPS XLSX files. The two-year option was $4,093.37 and the five-year option was $4,593.37, matching the explicit $500 allowance difference. Suspicious flat amounts in `warranty.unit_cost` remain rejected; flat allowances use `adders.amount`. |
+
+For every generated file, the live smoke test downloaded the returned URL,
+received `200`, verified the HTTPS scheme and XLSX `PK` signature, and observed
+the standard draft/recalculation/SharePoint warnings. Focused API, workbook,
+chart, sales, operations, office, and production-budget regression testing also
+passed 91 tests. The original results below are retained to show what failed
+before remediation; they are not the current presentation status.
+
+## Original executive result — 2026-08-01
 
 The owner-level interface is ready for a controlled presentation. Its strongest
 demonstrations are the five-action owner briefing and the sales pipeline chart.
@@ -12,7 +32,7 @@ Nine compact cases were run: five estimating cases and four owner-interface
 cases. Four passed, five were partial, and none failed to retrieve core
 business evidence or perform its primary calculation.
 
-## Case results
+## Original case results (historical)
 
 | Case | Result | User-level assessment |
 |---|---|---|

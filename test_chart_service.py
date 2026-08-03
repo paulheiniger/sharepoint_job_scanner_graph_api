@@ -108,3 +108,35 @@ def test_schedule_gantt_groups_crews_and_clips_long_projects_to_window() -> None
     csv_rows = list(csv.DictReader(io.StringIO(chart_dataset_csv(dataset))))
     assert csv_rows[0]["crew_leader"]
     assert csv_rows[0]["raw_start_date"]
+
+
+def test_schedule_gantt_omits_only_exact_duplicate_bars() -> None:
+    common = {
+        "job_id": "JOB-1",
+        "job_name": "Example Roof",
+        "assigned_crew_leader": "Santos",
+        "estimated_start_date": "2026-08-17",
+        "estimated_end_date": "2026-08-22",
+    }
+    dataset = build_chart_dataset(
+        "operations_schedule_gantt",
+        {
+            "filters_applied": {
+                "start_date": "2026-08-01",
+                "end_date": "2026-08-31",
+            },
+            "records": [
+                common,
+                dict(common),
+                {**common, "estimated_start_date": "2026-08-24"},
+                {**common, "assigned_crew_leader": "Gustavo"},
+            ],
+        },
+    )
+
+    assert len(dataset["rows"]) == 3
+    assert dataset["coverage"]["gantt_duplicate_rows_omitted"] == 1
+    assert any(
+        "1 exact duplicate schedule row" in warning
+        for warning in dataset["warnings"]
+    )

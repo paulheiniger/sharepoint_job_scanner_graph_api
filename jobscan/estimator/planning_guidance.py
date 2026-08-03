@@ -368,10 +368,19 @@ def _labor_guidance(
     historical_labor_performance: Iterable[Any],
 ) -> list[dict[str, Any]]:
     proposals = compile_deterministic_scope_proposals(scope, data=data)
+    required_categories = _required_labor_categories(scope)
+    required_category_set = set(required_categories)
+    # Cleanup and seam treatment vary materially with the current task driver.
+    # Do not scale their full days from a single whole-project comparable.
+    driver_first_categories = {"labor_cleanup", "labor_seam_sealer"}
     output: list[dict[str, Any]] = []
     for proposal in proposals:
         category = str(proposal.template_bucket or "")
         if not category.startswith("labor_"):
+            continue
+        if category not in required_category_set:
+            continue
+        if category in driver_first_categories:
             continue
         values = dict(proposal.proposed_values or {})
         total_hours = _number(
@@ -428,7 +437,7 @@ def _labor_guidance(
     historical = [
         row for row in historical_labor_performance if isinstance(row, dict)
     ]
-    for category in _required_labor_categories(scope):
+    for category in required_categories:
         if category in by_category:
             continue
         basis = _labor_basis(scope, category)
@@ -530,6 +539,21 @@ def _required_labor_categories(scope: dict[str, Any]) -> list[str]:
         required.append("labor_board")
     if _number(scope.get("coating_basis_sqft")) > 0:
         required.extend(("labor_base", "labor_top_coat"))
+    detail_text = " ".join(
+        str(scope.get(field) or "").lower()
+        for field in (
+            "raw_input_notes",
+            "raw_notes",
+            "scope_summary",
+            "retain_existing",
+            "linear_scopes",
+            "canonical_linear_breakdown",
+        )
+    )
+    if any(token in detail_text for token in ("caulk", "seal seam", "seam sealer")):
+        # Caulk and seam-sealer labor represent one field activity in this
+        # context. Use the seam-treatment driver and never include both rows.
+        required.append("labor_seam_sealer")
     required.append("labor_cleanup")
     return list(dict.fromkeys(required))
 

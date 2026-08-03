@@ -626,6 +626,13 @@
             "title": "Matched Scope Pattern",
             "type": "object"
           },
+          "planning_snapshot_token": {
+            "default": "",
+            "description": "Short-lived signed planning snapshot. Return this unchanged as planning_snapshot_token when generating the reviewed workbook.",
+            "maxLength": 30000,
+            "title": "Planning Snapshot Token",
+            "type": "string"
+          },
           "pricing_candidates": {
             "items": {
               "type": "object"
@@ -2143,6 +2150,13 @@
             "title": "Option Label",
             "type": "string"
           },
+          "planning_snapshot_token": {
+            "default": "",
+            "description": "Unchanged token returned by the final estimator context call. A valid matching token avoids repeating labor and logistics retrieval.",
+            "maxLength": 30000,
+            "title": "Planning Snapshot Token",
+            "type": "string"
+          },
           "pricing": {
             "$ref": "#/components/schemas/EstimateWorkbookPricing"
           },
@@ -2404,6 +2418,13 @@
             "maxItems": 40,
             "title": "Materials",
             "type": "array"
+          },
+          "planning_snapshot_token": {
+            "default": "",
+            "description": "Unchanged token returned by the final estimator context call. A valid matching token avoids repeating labor and logistics retrieval.",
+            "maxLength": 30000,
+            "title": "Planning Snapshot Token",
+            "type": "string"
           },
           "pricing": {
             "$ref": "#/components/schemas/EstimateWorkbookPricing"
@@ -4431,7 +4452,7 @@
   "info": {
     "description": "Estimator evidence, controlled workbook generation, and read-only operational intelligence for conversational agents.",
     "title": "Spray-Tec Business Intelligence API",
-    "version": "0.13.15"
+    "version": "0.13.21"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -4959,7 +4980,7 @@
     },
     "/v1/sales/pipeline": {
       "post": {
-        "description": "Returns bounded pipeline totals, stage and owner rollups, top opportunities, attention items, and source links. This operation is read-only.",
+        "description": "Returns bounded pipeline totals, stage and owner rollups, top opportunities, attention items, and source links. Current workflow assignments are authoritative; SharePoint proposal/estimate editors are explicitly labeled inferred fallbacks. This operation is read-only.",
         "operationId": "getSalesPipeline",
         "requestBody": {
           "content": {

@@ -9,7 +9,7 @@ from typing import Any
 from urllib.parse import urlencode, urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response
 
 from jobscan.business.chart_service import build_chart_dataset, chart_dataset_csv
 
@@ -31,6 +31,11 @@ from jobscan.business.sales_service import (
     get_sales_pipeline,
 )
 from jobscan.estimator.context_service import build_copilot_estimator_context
+from jobscan.estimator.planning_snapshot import (
+    PlanningSnapshotError,
+    create_planning_snapshot,
+    verify_planning_snapshot,
+)
 from jobscan.estimator.workbook_recommendations import (
     apply_api_planning_guidance,
     normalize_template_material_pricing,
@@ -80,8 +85,58 @@ app = FastAPI(
         "Estimator evidence, controlled workbook generation, and read-only "
         "operational intelligence for conversational agents."
     ),
-    version="0.13.15",
+    version="0.13.21",
 )
+
+
+PRIVACY_POLICY_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spray-Tec Business Assistant Privacy Policy</title>
+  <style>
+    body { font-family: system-ui, sans-serif; line-height: 1.55; margin: 0; color: #17202a; background: #f6f8fa; }
+    main { max-width: 760px; margin: 3rem auto; padding: 2rem; background: white; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,.08); }
+    h1, h2 { line-height: 1.2; }
+    h2 { margin-top: 1.8rem; }
+    a { color: #0957a5; }
+    .updated { color: #5f6b76; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Spray-Tec Business Assistant Privacy Policy</h1>
+  <p class="updated"><strong>Effective and last updated:</strong> August 3, 2026</p>
+  <p>This policy describes how Spray-Tec, Inc. handles information sent to the Spray-Tec Business Assistant API through a custom GPT or another authorized client.</p>
+
+  <h2>Information processed</h2>
+  <p>The service may process job notes, customer or project names, site addresses, measurements, scope details, estimating decisions, and operational questions supplied by a user. When a user provides an image or document to ChatGPT, the service generally receives the structured facts or notes that the GPT sends to the API, rather than the original file. The service also retrieves relevant information from Spray-Tec's internal estimating and operational data sources.</p>
+
+  <h2>How information is used</h2>
+  <p>Information is used only to retrieve business evidence, prepare summaries and charts, support estimate decisions, validate estimate inputs, and generate draft estimate workbooks requested by an authorized user. Drafts require human review and are not automatically uploaded to SharePoint.</p>
+
+  <h2>Storage and retention</h2>
+  <p>Context and reporting requests are processed to produce the requested response and are not intentionally added to a separate marketing or advertising database. Generated workbooks are stored temporarily by the API so the requesting user can download them; download links normally expire after 15 minutes. Limited technical logs and temporary service files may be retained as needed for security, troubleshooting, reliability, and service operation.</p>
+
+  <h2>Sharing and service providers</h2>
+  <p>Spray-Tec does not sell information submitted to this service. Information may be processed by service providers used to operate it, including OpenAI for the ChatGPT experience and Microsoft Azure for API hosting. Those providers handle information under their own terms and privacy commitments. Information may also be disclosed when required by law or to protect the security and integrity of the service.</p>
+
+  <h2>Security and appropriate use</h2>
+  <p>The API uses access controls and encrypted network connections. Users should submit only information needed for Spray-Tec business purposes and should not submit payment-card details, Social Security numbers, health information, passwords, or other unnecessary sensitive personal information.</p>
+
+  <h2>Your choices</h2>
+  <p>Access to a shared GPT can be stopped by discontinuing its use. Questions about information handled by Spray-Tec, or requests to review or delete information where applicable, may be directed to Spray-Tec using the contact information below. ChatGPT conversation controls and deletion requests are managed separately through the user's OpenAI account.</p>
+
+  <h2>Contact</h2>
+  <p>Spray-Tec, Inc.<br>
+     1132 Equity Street, Shelbyville, KY 40065<br>
+     <a href="mailto:info@spray-tec.com">info@spray-tec.com</a><br>
+     <a href="tel:+15026335499">502-633-5499</a></p>
+</main>
+</body>
+</html>
+"""
 
 
 def _prepare_workbook_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
@@ -105,6 +160,30 @@ def _prepare_workbook_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
         )
         if value
     )
+    snapshot_token = str(prepared.get("planning_snapshot_token") or "").strip()
+    if snapshot_token:
+        try:
+            context = verify_planning_snapshot(
+                snapshot_token,
+                scope=prepared["structured_scope"],
+                site_address=site_address,
+                signing_key=_artifact_signing_key(),
+            )
+            prepared, planning_warnings = apply_api_planning_guidance(
+                prepared,
+                context,
+            )
+            return prepared, [
+                *material_warnings,
+                "Reused the signed planning snapshot; labor and logistics "
+                "retrieval was not repeated.",
+                *planning_warnings,
+            ]
+        except PlanningSnapshotError:
+            material_warnings.append(
+                "The planning snapshot was unavailable, expired, altered, or "
+                "did not match the final geometry; labor guidance was refreshed."
+            )
     try:
         context = build_copilot_estimator_context(
             scope=prepared["structured_scope"],
@@ -163,8 +242,20 @@ def service_root() -> dict[str, Any]:
         "service": "spraytec-estimator-api",
         "version": app.version,
         "health": "/health",
+        "privacy": "/privacy",
         "openapi": "/openapi.json",
     }
+
+
+@app.api_route(
+    "/privacy",
+    methods=["GET", "HEAD"],
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+def privacy_policy() -> HTMLResponse:
+    """Return the public privacy policy required by shared GPT Actions."""
+    return HTMLResponse(PRIVACY_POLICY_HTML)
 
 
 @app.get("/health")
@@ -220,6 +311,18 @@ def estimate_context(
             include_source_metadata=payload.include_source_metadata,
             focus=payload.focus,
         )
+        signing_key = _artifact_signing_key()
+        if signing_key and context_payload.get("template_type") == "roofing":
+            context_scope = context_payload.get("scope") or payload.scope
+            if context_scope.get("area_scopes"):
+                context_payload["planning_snapshot_token"] = create_planning_snapshot(
+                    scope=context_scope,
+                    site_address=payload.site_address,
+                    labor_plan_guidance=context_payload.get("labor_plan_guidance") or [],
+                    logistics_guidance=context_payload.get("logistics_guidance") or [],
+                    signing_key=signing_key,
+                    ttl_seconds=_planning_snapshot_ttl_seconds(),
+                )
         return EstimateContextResponse.model_validate(context_payload)
     except HTTPException:
         raise
@@ -555,7 +658,9 @@ def job_context(
     summary="Summarize the current sales pipeline",
     description=(
         "Returns bounded pipeline totals, stage and owner rollups, top "
-        "opportunities, attention items, and source links. This operation is read-only."
+        "opportunities, attention items, and source links. Current workflow "
+        "assignments are authoritative; SharePoint proposal/estimate editors are "
+        "explicitly labeled inferred fallbacks. This operation is read-only."
     ),
 )
 def sales_pipeline(
@@ -1025,6 +1130,14 @@ def _artifact_signing_key() -> str:
 def _artifact_ttl_seconds() -> int:
     try:
         configured = int(os.getenv("ESTIMATOR_ARTIFACT_TTL_SECONDS") or "900")
+    except ValueError:
+        configured = 900
+    return min(max(configured, 60), 3_600)
+
+
+def _planning_snapshot_ttl_seconds() -> int:
+    try:
+        configured = int(os.getenv("ESTIMATOR_PLANNING_SNAPSHOT_TTL_SECONDS") or "900")
     except ValueError:
         configured = 900
     return min(max(configured, 60), 3_600)

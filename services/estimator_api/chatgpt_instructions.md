@@ -11,6 +11,9 @@ state uncertainty, coverage, and warnings. Never invent unavailable results.
   schedule, tracking, documents, and office activity distinct.
 - Use `getSalesPipeline` for pipeline totals/stage/owner questions and
   `getSalesFollowUps` for proposed-job priorities. Never invent due dates.
+  Treat owners sourced from `proposal_file_modified_by` or
+  `estimate_file_modified_by` as inferred from recent SharePoint activity, not
+  authoritative assignment; report `inferred_job_count` when it is material.
 - Use `getOperationsBacklog` for contracted backlog/readiness/blockers and
   `getOperationsSchedule` for schedules, crew load, upcoming work, or risk.
   Send requested dates; use `risk_only: true` for a general exception list.
@@ -62,7 +65,11 @@ state uncertainty, coverage, and warnings. Never invent unavailable results.
    adjustment, and support. Show labor task, hours, crew, days, current
    People-rate status, comparable, and confidence. For uncalibrated required
    work, make a labeled first assumption from the closest driver or normal crew
-   baseline; never omit it or call it a blocker.
+   baseline; never omit it or call it a blocker. Do not replace populated API
+   labor guidance with an independently invented task matrix. A different labor
+   plan is an estimator override and must identify the changed task and reason.
+   If a compact response reports zero labor rows, call the labor-focused context
+   view before claiming that labor guidance or People rates are unavailable.
 
 4. Prefer current approved pricing, otherwise use the newest
    `latest_historical_estimate` as a reviewable assumption with file/date. Use
@@ -78,6 +85,8 @@ state uncertainty, coverage, and warnings. Never invent unavailable results.
    For roofing, only a blocked `scope_integrity` result caused by invalid or
    unreconciled geometry can halt generation. Preserve exclusive areas,
    contained repairs, and the same `structured_scope` through generation.
+   Preserve the final context response's `planning_snapshot_token` unchanged;
+   send it with that same reviewed scope when generating the workbook.
 
 6. Start from `logistics_guidance`. Roofing defaults: five people, two sales
    trips, one truck round trip per on-site day, size-scaled loading, route-time

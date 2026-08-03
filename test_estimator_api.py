@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from services.estimator_api.server import app
 from services.estimator_api.generate_openapi import build_action_openapi
 from services.estimator_api.schemas import EstimateWorkbookRequest
+from jobscan.estimator.planning_snapshot import create_planning_snapshot
 from jobscan.estimator.workbook_service import (
     EstimateWorkbookArtifact,
     EstimateWorkbookInputError,
@@ -67,8 +68,22 @@ def test_service_root_supports_deployment_connectivity_checks() -> None:
         "service": "spraytec-estimator-api",
         "version": app.version,
         "health": "/health",
+        "privacy": "/privacy",
         "openapi": "/openapi.json",
     }
+
+
+def test_privacy_policy_is_public_html_and_excluded_from_openapi(monkeypatch) -> None:
+    monkeypatch.setenv("ESTIMATOR_API_KEY", "test-secret")
+
+    response = client.get("/privacy")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "Spray-Tec Business Assistant Privacy Policy" in response.text
+    assert "info@spray-tec.com" in response.text
+    assert client.head("/privacy").status_code == 200
+    assert "/privacy" not in client.get("/openapi.json").json()["paths"]
 
 
 def test_context_requires_input() -> None:
@@ -163,6 +178,54 @@ def test_context_accepts_custom_api_key_header(monkeypatch) -> None:
     )
 
     assert response.status_code == 200
+
+
+def test_context_returns_signed_planning_snapshot_for_structured_roofing(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ESTIMATOR_API_KEY", "test-secret")
+    payload = context_payload()
+    payload.update(
+        {
+            "scope": {
+                "template_type": "roofing",
+                "declared_total_area_sqft": 5000,
+                "area_scopes": [
+                    {
+                        "scope_id": "recover",
+                        "scope_role": "exclusive_area",
+                        "area_sqft": 5000,
+                    }
+                ],
+            },
+            "template_type": "roofing",
+            "labor_plan_guidance": [
+                {
+                    "category": "labor_prep",
+                    "recommended_days": 1,
+                    "recommended_crew_size": 5,
+                }
+            ],
+            "logistics_guidance": [],
+        }
+    )
+    monkeypatch.setattr(
+        "services.estimator_api.server.build_copilot_estimator_context",
+        lambda **_kwargs: payload,
+    )
+
+    response = client.post(
+        "/v1/estimating/context",
+        json={
+            "raw_notes": "Prepare and recoat 5,000 square feet",
+            "template_type": "roofing",
+            "site_address": "830 South 1st Street, Louisville, KY 40203",
+        },
+        headers={"Authorization": "Bearer test-secret"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["planning_snapshot_token"]
 
 
 def test_context_openapi_has_stable_operation_id() -> None:
@@ -373,6 +436,167 @@ def test_workbook_route_reapplies_api_labor_plan_before_generation(
     assert foam["price_per_set"] == 2100
     assert any(
         "API labor recommendations were applied" in warning
+        for warning in response.json()["warnings"]
+    )
+
+
+def test_workbook_route_reuses_matching_planning_snapshot(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    artifact_id = "d" * 32
+    stored_path = tmp_path / f"{artifact_id}__Estimate.xlsx"
+    stored_path.write_bytes(b"xlsx")
+    captured: dict = {}
+    monkeypatch.setenv("ESTIMATOR_API_KEY", "test-secret")
+    monkeypatch.setenv("ESTIMATOR_API_ARTIFACT_DIR", str(tmp_path))
+    structured_scope = {
+        "template_type": "roofing",
+        "declared_total_area_sqft": 5000,
+        "area_scopes": [
+            {
+                "scope_id": "recover",
+                "scope_role": "exclusive_area",
+                "area_sqft": 5000,
+            }
+        ],
+    }
+    token = create_planning_snapshot(
+        scope=structured_scope,
+        site_address="830 South 1st Street, Louisville, KY 40203",
+        labor_plan_guidance=[
+            {
+                "category": "labor_prep",
+                "recommended_days": 0.52,
+                "recommended_crew_size": 5,
+                "recommended_total_hours": 26.2,
+            }
+        ],
+        logistics_guidance=[
+            {
+                "category": "truck_expense",
+                "include": True,
+                "recommended_trip_count": 6,
+                "round_trip_miles": 62,
+            }
+        ],
+        signing_key="test-secret",
+    )
+
+    def retrieval_must_not_run(**_kwargs):
+        raise AssertionError("labor retrieval should be skipped for a valid snapshot")
+
+    def fake_create(payload, **_kwargs):
+        captured.update(payload)
+        return EstimateWorkbookArtifact(
+            artifact_id=artifact_id,
+            file_name="Estimate.xlsx",
+            path=stored_path,
+            calculated_outputs={"worksheet_price": 1.0},
+            template_profile={},
+        )
+
+    monkeypatch.setattr(
+        "services.estimator_api.server.build_copilot_estimator_context",
+        retrieval_must_not_run,
+    )
+    monkeypatch.setattr(
+        "services.estimator_api.server.create_estimate_workbook",
+        fake_create,
+    )
+    payload = workbook_request_payload()
+    payload.update(
+        {
+            "structured_scope": structured_scope,
+            "planning_snapshot_token": token,
+            "header": {
+                **payload["header"],
+                "site_address": "830 South 1st Street",
+                "city_state_zip": "Louisville, KY 40203",
+            },
+            "labor": [{"task": "labor_prep", "days": 3, "crew_size": 5}],
+            "logistics": [
+                {
+                    "category": "truck_expense",
+                    "item": "Production truck mileage",
+                    "trip_count": 9,
+                    "round_trip_miles": 62,
+                }
+            ],
+        }
+    )
+
+    response = client.post(
+        "/v1/estimating/workbook",
+        json=payload,
+        headers={"Authorization": "Bearer test-secret"},
+    )
+
+    assert response.status_code == 201
+    assert captured["labor"][0]["days"] == 0.52
+    assert captured["logistics"][0]["trip_count"] == 6
+    assert any(
+        "Reused the signed planning snapshot" in warning
+        for warning in response.json()["warnings"]
+    )
+
+
+def test_workbook_route_falls_back_when_planning_snapshot_is_invalid(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    artifact_id = "e" * 32
+    stored_path = tmp_path / f"{artifact_id}__Estimate.xlsx"
+    stored_path.write_bytes(b"xlsx")
+    calls = {"context": 0}
+    monkeypatch.setenv("ESTIMATOR_API_KEY", "test-secret")
+    monkeypatch.setenv("ESTIMATOR_API_ARTIFACT_DIR", str(tmp_path))
+
+    def fake_context(**_kwargs):
+        calls["context"] += 1
+        return {"labor_plan_guidance": [], "logistics_guidance": []}
+
+    monkeypatch.setattr(
+        "services.estimator_api.server.build_copilot_estimator_context",
+        fake_context,
+    )
+    monkeypatch.setattr(
+        "services.estimator_api.server.create_estimate_workbook",
+        lambda *_args, **_kwargs: EstimateWorkbookArtifact(
+            artifact_id=artifact_id,
+            file_name="Estimate.xlsx",
+            path=stored_path,
+            calculated_outputs={},
+            template_profile={},
+        ),
+    )
+    payload = workbook_request_payload()
+    payload.update(
+        {
+            "structured_scope": {
+                "declared_total_area_sqft": 5000,
+                "area_scopes": [
+                    {
+                        "scope_id": "recover",
+                        "scope_role": "exclusive_area",
+                        "area_sqft": 5000,
+                    }
+                ],
+            },
+            "planning_snapshot_token": "invalid-token",
+        }
+    )
+
+    response = client.post(
+        "/v1/estimating/workbook",
+        json=payload,
+        headers={"Authorization": "Bearer test-secret"},
+    )
+
+    assert response.status_code == 201
+    assert calls["context"] == 1
+    assert any(
+        "labor guidance was refreshed" in warning
         for warning in response.json()["warnings"]
     )
 
