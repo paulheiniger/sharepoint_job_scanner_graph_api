@@ -23,12 +23,17 @@ def build_estimator_planning_guidance(
     data: Any = None,
     historical_material_usage: Iterable[Any] = (),
     historical_labor_performance: Iterable[Any] = (),
+    route_mileage: dict[str, Any] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Build reviewable purchasing and labor candidates from existing evidence."""
 
     canonical = canonicalize_structured_roofing_scope(scope)
     if not canonical.get("canonical_area_audit"):
-        return {"purchasing_guidance": [], "labor_plan_guidance": []}
+        return {
+            "purchasing_guidance": [],
+            "labor_plan_guidance": [],
+            "logistics_guidance": [],
+        }
     purchasing = _purchasing_guidance(
         canonical,
         historical_material_usage=historical_material_usage,
@@ -39,10 +44,249 @@ def build_estimator_planning_guidance(
         historical_material_usage=historical_material_usage,
         historical_labor_performance=historical_labor_performance,
     )
+    logistics = _logistics_guidance(
+        canonical,
+        data=data,
+        labor_guidance=labor,
+        route_mileage=route_mileage or {},
+    )
     return {
         "purchasing_guidance": purchasing,
         "labor_plan_guidance": labor,
+        "logistics_guidance": logistics,
     }
+
+
+def _logistics_guidance(
+    scope: dict[str, Any],
+    *,
+    data: Any,
+    labor_guidance: list[dict[str, Any]],
+    route_mileage: dict[str, Any],
+) -> list[dict[str, Any]]:
+    area = _number(scope.get("canonical_area_total_sqft"))
+    board_area = _number(scope.get("board_basis_sqft"))
+    crew_size = int(_number(scope.get("estimated_crew_size"))) or 5
+    production_days = _production_days(scope, labor_guidance=labor_guidance)
+    round_trip_miles = _number(
+        route_mileage.get("estimated_round_trip_miles")
+        or route_mileage.get("round_trip_miles")
+    )
+    one_way_minutes = _number(route_mileage.get("duration_minutes_one_way"))
+    route_source = str(route_mileage.get("source") or "route_unavailable")
+    if one_way_minutes <= 0 and round_trip_miles > 0:
+        one_way_minutes = round_trip_miles / 2 / 50 * 60
+
+    loading_rate = _historical_loading_rate(data)
+    loading_people = 2
+    loading_person_hours = max(area / 1000 * loading_rate.get("rate", 4.625905), 2.0)
+    loading_hours_per_trip = min(
+        max(loading_person_hours / max(production_days * loading_people, 1), 0.5),
+        4.0,
+    )
+    loading_people_rate = _current_people_rate(
+        data,
+        category="labor_loading",
+        crew_size=loading_people,
+    )
+    traveling_people_rate = _current_people_rate(
+        data,
+        category="labor_traveling",
+        crew_size=crew_size,
+    )
+    travel_hours_per_trip = one_way_minutes * 2 / 60 if one_way_minutes > 0 else 0.0
+
+    output = [
+        {
+            "category": "crew_plan",
+            "recommended_crew_size": crew_size,
+            "method": "roofing_baseline_default"
+            if not _number(scope.get("estimated_crew_size"))
+            else "explicit_scope",
+            "assumption_status": "baseline_assumption",
+            "review_required": True,
+            "reason": "Roofing production defaults to a five-person crew unless current scope or reviewed evidence supports another crew.",
+        },
+        {
+            "category": "production_days",
+            "recommended_days": production_days,
+            "method": "calibrated_activity_days_plus_setup_cleanup",
+            "assumption_status": "baseline_assumption",
+            "review_required": True,
+            "reason": "Derived from supported prep, tear-off, board, base, and top-coat activity days with a setup/cleanup allowance.",
+        },
+        {
+            "category": "sales_inspection_trips",
+            "include": True,
+            "recommended_trip_count": 2,
+            "round_trip_miles": round_trip_miles or None,
+            "route_source": route_source,
+            "method": "spraytec_two_trip_baseline",
+            "assumption_status": "baseline_assumption",
+            "review_required": True,
+            "formula_input_mapping": {"trip_count": 2, "round_trip_miles": round_trip_miles or None},
+        },
+        {
+            "category": "truck_expense",
+            "include": True,
+            "recommended_trip_count": production_days,
+            "round_trip_miles": round_trip_miles or None,
+            "route_source": route_source,
+            "method": "one_production_truck_round_trip_per_site_day",
+            "assumption_status": "baseline_assumption",
+            "review_required": True,
+            "formula_input_mapping": {"trip_count": production_days, "round_trip_miles": round_trip_miles or None},
+        },
+        {
+            "category": "labor_loading",
+            "include": True,
+            "recommended_trip_count": production_days,
+            "recommended_hours_per_trip": round(loading_hours_per_trip, 2),
+            "recommended_crew_size": loading_people,
+            "estimated_total_person_hours": round(
+                loading_hours_per_trip * loading_people * production_days, 1
+            ),
+            "historical_hours_per_1000_sqft": loading_rate.get("rate"),
+            "historical_support_count": loading_rate.get("support_count", 0),
+            "current_people_daily_rate": loading_people_rate.get("daily_rate"),
+            "estimated_labor_cost_candidate": _per_trip_labor_cost(
+                hours_per_trip=loading_hours_per_trip,
+                crew_size=loading_people,
+                trip_count=production_days,
+                current_people_daily_rate=_number(loading_people_rate.get("daily_rate")),
+            ),
+            "method": "historical_roofing_loading_rate_scaled_by_project_area",
+            "assumption_status": "baseline_assumption",
+            "review_required": True,
+        },
+        {
+            "category": "labor_traveling",
+            "include": bool(travel_hours_per_trip > 0),
+            "recommended_trip_count": production_days,
+            "recommended_hours_per_trip": round(travel_hours_per_trip, 2)
+            if travel_hours_per_trip > 0
+            else None,
+            "recommended_crew_size": crew_size,
+            "estimated_total_person_hours": round(
+                travel_hours_per_trip * crew_size * production_days, 1
+            )
+            if travel_hours_per_trip > 0
+            else None,
+            "duration_minutes_one_way": round(one_way_minutes, 1)
+            if one_way_minutes > 0
+            else None,
+            "route_source": route_source,
+            "current_people_daily_rate": traveling_people_rate.get("daily_rate"),
+            "estimated_labor_cost_candidate": _per_trip_labor_cost(
+                hours_per_trip=travel_hours_per_trip,
+                crew_size=crew_size,
+                trip_count=production_days,
+                current_people_daily_rate=_number(traveling_people_rate.get("daily_rate")),
+            ),
+            "method": "mapbox_round_trip_drive_time_per_site_day"
+            if route_source == "mapbox_directions"
+            else "route_distance_time_fallback_per_site_day",
+            "assumption_status": "baseline_assumption",
+            "review_required": True,
+        },
+    ]
+
+    tearoff_required = "labor_tearoff" in _required_labor_categories(scope)
+    if tearoff_required:
+        dumpster_size = "40-yard" if board_area > 7500 else "30-yard" if board_area > 2000 else "20-yard"
+        output.append(
+            {
+                "category": "dumpster",
+                "include": True,
+                "recommended_quantity": 1,
+                "recommended_size": dumpster_size,
+                "basis_sqft": board_area or area,
+                "method": "tearoff_scope_baseline",
+                "assumption_status": "baseline_assumption",
+                "review_required": True,
+                "reason": "Tear-off scope normally requires debris disposal; verify debris thickness and container size.",
+            }
+        )
+    if _number(scope.get("foam_basis_sqft")) > 0 or _number(scope.get("coating_basis_sqft")) > 0:
+        output.append(
+            {
+                "category": "generator",
+                "include": True,
+                "recommended_days": production_days,
+                "method": "required_for_roofing_foam_or_coating",
+                "assumption_status": "deterministic_scope_rule",
+                "review_required": True,
+                "reason": "Roofing foam application and coating production require a generator; review the planned days and current daily rate.",
+            }
+        )
+    return output
+
+
+def _production_days(
+    scope: dict[str, Any],
+    *,
+    labor_guidance: list[dict[str, Any]],
+) -> int:
+    explicit = _number(
+        scope.get("estimated_work_days")
+        or scope.get("estimated_days")
+        or scope.get("project_days")
+        or scope.get("job_days")
+    )
+    if explicit > 0:
+        return max(1, math.ceil(explicit))
+    supported_categories = {
+        "labor_prep",
+        "labor_tearoff",
+        "labor_board",
+        "labor_base",
+        "labor_top_coat",
+    }
+    supported_days = sum(
+        min(_number(row.get("recommended_days")), 3.0)
+        for row in labor_guidance
+        if row.get("category") in supported_categories
+        and row.get("calibration_status") != "missing_calibration"
+    )
+    if supported_days > 0:
+        return max(1, min(math.ceil(supported_days + 0.5), 30))
+    area = _number(scope.get("canonical_area_total_sqft"))
+    return max(1, min(math.ceil(area / 1800), 30)) if area > 0 else 1
+
+
+def _historical_loading_rate(data: Any) -> dict[str, Any]:
+    frame = getattr(data, "relationship_labor_rates", None) if data is not None else None
+    if frame is None or not hasattr(frame, "empty") or frame.empty:
+        return {"rate": 4.625905, "support_count": 0}
+    candidates: list[dict[str, Any]] = []
+    for row in frame.fillna("").to_dict(orient="records"):
+        if _slug(row.get("template_type")) != "roofing":
+            continue
+        if _slug(row.get("labor_package")) != "labor_loading":
+            continue
+        rate = _number(row.get("median_hours_per_1000_sqft"))
+        support = int(
+            _number(row.get("job_count") or row.get("evidence_count"))
+        )
+        if 0.1 <= rate <= 25 and support >= 3:
+            candidates.append({"rate": rate, "support_count": support})
+    return max(candidates, key=lambda row: row["support_count"]) if candidates else {
+        "rate": 4.625905,
+        "support_count": 0,
+    }
+
+
+def _per_trip_labor_cost(
+    *,
+    hours_per_trip: float,
+    crew_size: int,
+    trip_count: int,
+    current_people_daily_rate: float,
+) -> float | None:
+    if hours_per_trip <= 0 or crew_size <= 0 or trip_count <= 0 or current_people_daily_rate <= 0:
+        return None
+    burdened_hourly_rate = current_people_daily_rate / (crew_size * 10)
+    return round(hours_per_trip * crew_size * trip_count * burdened_hourly_rate, 2)
 
 
 def _purchasing_guidance(

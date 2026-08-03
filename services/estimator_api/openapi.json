@@ -581,6 +581,13 @@
             "title": "Labor Plan Guidance",
             "type": "array"
           },
+          "logistics_guidance": {
+            "items": {
+              "type": "object"
+            },
+            "title": "Logistics Guidance",
+            "type": "array"
+          },
           "matched_comparables": {
             "items": {
               "type": "object"
@@ -4327,7 +4334,7 @@
   "info": {
     "description": "Estimator evidence, controlled workbook generation, and read-only operational intelligence for conversational agents.",
     "title": "Spray-Tec Business Intelligence API",
-    "version": "0.13.8"
+    "version": "0.13.9"
   },
   "openapi": "3.1.0",
   "paths": {

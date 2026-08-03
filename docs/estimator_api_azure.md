@@ -26,7 +26,7 @@ cache TTL shortened to reduce development cost and data staleness.
 Choose an immutable version tag and run from the repository root:
 
 ```bash
-IMAGE_TAG=0.13.8
+IMAGE_TAG=0.13.9
 
 docker build \
   --platform linux/amd64 \

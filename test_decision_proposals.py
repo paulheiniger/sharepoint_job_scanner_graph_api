@@ -336,6 +336,38 @@ def test_grossman_planning_guidance_recommends_reviewable_purchase_rounding_and_
     assert labor["labor_cleanup"]["blocking_input_required"] is True
 
 
+def test_grossman_planning_guidance_supplies_reviewable_logistics_baselines() -> None:
+    data = grossman_estimator_data()
+    result = build_estimator_planning_guidance(
+        scope=grossman_structured_scope(),
+        data=data,
+        route_mileage={
+            "estimated_round_trip_miles": 62,
+            "duration_minutes_one_way": 38,
+            "source": "mapbox_directions",
+        },
+    )
+    logistics = {row["category"]: row for row in result["logistics_guidance"]}
+
+    assert logistics["crew_plan"]["recommended_crew_size"] == 5
+    assert logistics["sales_inspection_trips"]["recommended_trip_count"] == 2
+    assert logistics["sales_inspection_trips"]["round_trip_miles"] == 62
+    assert logistics["truck_expense"]["recommended_trip_count"] == logistics[
+        "production_days"
+    ]["recommended_days"]
+    assert logistics["labor_loading"]["recommended_hours_per_trip"] > 0
+    assert logistics["labor_loading"]["recommended_crew_size"] == 2
+    assert logistics["labor_traveling"]["recommended_hours_per_trip"] == 1.27
+    assert logistics["labor_traveling"]["recommended_crew_size"] == 5
+    assert logistics["labor_traveling"]["route_source"] == "mapbox_directions"
+    assert logistics["dumpster"]["recommended_size"] == "30-yard"
+    assert logistics["generator"]["include"] is True
+    assert logistics["generator"]["recommended_days"] == logistics[
+        "production_days"
+    ]["recommended_days"]
+    assert logistics["generator"]["assumption_status"] == "deterministic_scope_rule"
+
+
 def test_small_roof_planning_rounds_without_large_project_bias() -> None:
     scope = {
         "template_type": "roofing",

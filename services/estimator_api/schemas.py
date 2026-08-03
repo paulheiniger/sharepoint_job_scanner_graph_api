@@ -316,6 +316,7 @@ class EstimateContextResponse(BaseModel):
     foam_yield_history: list[dict[str, Any]] = Field(default_factory=list)
     purchasing_guidance: list[dict[str, Any]] = Field(default_factory=list)
     labor_plan_guidance: list[dict[str, Any]] = Field(default_factory=list)
+    logistics_guidance: list[dict[str, Any]] = Field(default_factory=list)
     decision_concepts: list[DecisionConcept] = Field(default_factory=list)
     calculation_requirements: list[CalculationRequirement] = Field(
         default_factory=list

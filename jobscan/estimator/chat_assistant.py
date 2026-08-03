@@ -22,6 +22,7 @@ from .decision_proposals import (
 )
 from .model_routing import DEFAULT_ESTIMATOR_MODEL, model_call_metadata
 from . import labor as estimator_labor
+from .mapbox_routing import MapboxRoutingError, mapbox_route_distance
 from .foam_yield_history import build_foam_yield_history_digest
 from .job_context_profiles import build_job_context_digest
 from .reference_answer_key import (
@@ -5694,12 +5695,31 @@ def _route_mileage_context(scope: dict[str, Any]) -> dict[str, Any]:
             "estimated_one_way_miles": one_way,
             "estimated_round_trip_miles": explicit_round_trip,
             "round_trip_miles": explicit_round_trip,
+            "duration_minutes_one_way": _safe_positive_number(
+                scope.get("duration_minutes_one_way")
+                or scope.get("estimated_drive_time_minutes_one_way")
+            )
+            or None,
             "source": _clean_string(scope.get("route_mileage_source") or "provided_or_precomputed"),
         }
     destination = _scope_destination_address(scope)
     if not destination:
         return {}
     origin = _clean_string(scope.get("origin_address") or EstimatorAssumptions().origin_address)
+    try:
+        mapped_route = mapbox_route_distance(origin, destination)
+    except MapboxRoutingError:
+        mapped_route = None
+    if mapped_route is not None:
+        return {
+            "origin_address": origin,
+            "destination_address": destination,
+            "estimated_one_way_miles": mapped_route.one_way_miles,
+            "estimated_round_trip_miles": mapped_route.round_trip_miles,
+            "round_trip_miles": mapped_route.round_trip_miles,
+            "duration_minutes_one_way": mapped_route.duration_minutes_one_way,
+            "source": mapped_route.source,
+        }
     route_scope = {**scope, "origin_address": origin, "destination_address": destination}
     try:
         routed_one_way = estimator_labor.estimate_one_way_miles(route_scope)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pandas as pd
 
@@ -9,6 +10,7 @@ from jobscan.estimator.context_service import (
     build_copilot_estimator_context,
 )
 from jobscan.estimator import context_service
+from jobscan.estimator import chat_assistant
 from jobscan.estimator.schemas import EstimatorData
 
 
@@ -63,6 +65,27 @@ def test_context_reuses_read_only_estimator_data_within_ttl(monkeypatch) -> None
     assert len(calls) == 1
     assert calls[0]["load_profile"] == "chat"
     context_service._ESTIMATOR_DATA_CACHE.clear()
+
+
+def test_route_context_preserves_mapbox_drive_time(monkeypatch) -> None:
+    monkeypatch.setattr(
+        chat_assistant,
+        "mapbox_route_distance",
+        lambda origin, destination: SimpleNamespace(
+            one_way_miles=31.0,
+            round_trip_miles=62.0,
+            duration_minutes_one_way=38.0,
+            source="mapbox_directions",
+        ),
+    )
+
+    route = chat_assistant._route_mileage_context(
+        {"site_address": "830 South 1st Street, Louisville, KY 40203"}
+    )
+
+    assert route["estimated_round_trip_miles"] == 62.0
+    assert route["duration_minutes_one_way"] == 38.0
+    assert route["source"] == "mapbox_directions"
 
 
 def test_context_returns_reviewable_roofing_purchase_guidance() -> None:
@@ -199,7 +222,18 @@ def test_build_copilot_estimator_context_is_bounded_and_model_neutral(monkeypatc
                     ],
                 }
             ],
-            "_deterministic_latest_historical_unit_prices": [{"private": True}],
+            "_deterministic_latest_historical_unit_prices": [
+                {
+                    "template_bucket": "foam",
+                    "item_name": "Historical closed-cell foam",
+                    "unit": "set",
+                    "unit_price": 2450,
+                    "source_job_id": "PRICE-JOB-1",
+                    "source_file": "Estimate PRICE-JOB-1.xlsx",
+                    "source_effective_at": "2026-07-01T00:00:00Z",
+                    "historical_observation_count": 3,
+                }
+            ],
         }
 
     monkeypatch.setattr(
@@ -241,15 +275,24 @@ def test_build_copilot_estimator_context_is_bounded_and_model_neutral(monkeypatc
         "matched_scope_pattern": True,
         "validated_relationship_count": 1,
         "approved_memory_count": 1,
-        "pricing_bucket_count": 1,
+        "pricing_bucket_count": 2,
         "product_guidance_count": 1,
         "decision_concept_count": 1,
         "calculation_requirement_count": 1,
         "purchasing_guidance_count": 0,
         "labor_plan_guidance_count": 0,
+        "logistics_guidance_count": 0,
         "source_link_count": 1,
     }
     assert "_deterministic_latest_historical_unit_prices" not in result
+    historical_price = next(
+        row
+        for row in result["pricing_candidates"]
+        if row.get("source") == "latest_historical_estimate"
+    )
+    assert historical_price["unit_price"] == 2450
+    assert historical_price["price_authority"] == "fallback_if_current_unavailable"
+    assert historical_price["source_file"] == "Estimate PRICE-JOB-1.xlsx"
     assert result["decision_concepts"][0]["concept_id"] == "insulation.foam"
     assert "workbook_row" not in result["decision_concepts"][0]
     assert "active_decision_keys" not in result["matched_comparables"][0]
@@ -537,4 +580,4 @@ def test_grossman_roofing_context_stays_under_action_budget(monkeypatch) -> None
     assert result["scope"]["raw_input_notes_truncated"] is True
     assert result["response_budget"]["truncated"] is True
     assert result["response_budget"]["within_public_limit"] is True
-    assert "pricing_candidates" in result["response_budget"]["truncated_fields"]
+    assert len(result["pricing_candidates"]) <= 12

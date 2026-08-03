@@ -32,6 +32,7 @@ _BOUNDED_LIST_FIELDS = (
     "foam_yield_history",
     "purchasing_guidance",
     "labor_plan_guidance",
+    "logistics_guidance",
     "decision_concepts",
     "calculation_requirements",
     "source_links",
@@ -129,6 +130,7 @@ def build_copilot_estimator_context(
             "historical_labor_performance"
         )
         or [],
+        route_mileage=full_context.get("route_mileage") or {},
     )
     response: dict[str, Any] = {
         "schema_version": "spraytec.copilot_estimator_context.v1",
@@ -147,7 +149,7 @@ def build_copilot_estimator_context(
         "validated_relationships": historical_packet.get("validated_relationships")
         or [],
         "approved_memories": full_context.get("estimator_memory_guidance") or [],
-        "pricing_candidates": full_context.get("pricing_candidates_by_bucket") or [],
+        "pricing_candidates": _public_pricing_candidates(full_context),
         "product_guidance": full_context.get("product_guidance_digest") or [],
         "foam_yield_history": _without_verbose_examples(
             full_context.get("foam_yield_history_digest") or []
@@ -438,6 +440,7 @@ def _retrieval_summary(context: dict[str, Any]) -> dict[str, Any]:
         "labor_plan_guidance_count": len(
             context.get("labor_plan_guidance") or []
         ),
+        "logistics_guidance_count": len(context.get("logistics_guidance") or []),
         "source_link_count": len(context.get("source_links") or []),
     }
 
@@ -543,6 +546,82 @@ def _without_verbose_examples(values: list[Any]) -> list[Any]:
         else row
         for row in values
     ]
+
+
+def _public_pricing_candidates(full_context: dict[str, Any]) -> list[dict[str, Any]]:
+    """Expose current prices plus traceable last-estimate fallback candidates."""
+
+    current = [
+        dict(row)
+        for row in full_context.get("pricing_candidates_by_bucket") or []
+        if isinstance(row, dict)
+    ]
+    historical = [
+        row
+        for row in full_context.get("_deterministic_latest_historical_unit_prices") or []
+        if isinstance(row, dict) and _number(row.get("unit_price")) > 0
+    ]
+    selected_historical: list[dict[str, Any]] = []
+    per_bucket: dict[str, int] = {}
+    for row in historical:
+        bucket = str(row.get("template_bucket") or "").strip()
+        if not bucket or per_bucket.get(bucket, 0) >= 2:
+            continue
+        selected_historical.append(
+            {
+                "template_bucket": bucket,
+                "decision_bucket": bucket,
+                "candidate_name": str(row.get("item_name") or "Historical item"),
+                "unit": str(row.get("unit") or ""),
+                "unit_price": _number(row.get("unit_price")),
+                "source": "latest_historical_estimate",
+                "price_authority": "fallback_if_current_unavailable",
+                "unit_price_historical": True,
+                "review_required": True,
+                "source_document_id": row.get("source_document_id"),
+                "source_job_id": row.get("source_job_id"),
+                "source_file": row.get("source_file"),
+                "source_sharepoint_url": row.get("source_sharepoint_url"),
+                "source_effective_at": row.get("source_effective_at"),
+                "historical_observation_count": row.get(
+                    "historical_observation_count"
+                ),
+            }
+        )
+        per_bucket[bucket] = per_bucket.get(bucket, 0) + 1
+    bucket_order = list(
+        dict.fromkeys(
+            _pricing_bucket(row)
+            for row in [*current, *selected_historical]
+            if _pricing_bucket(row)
+        )
+    )
+    ordered: list[dict[str, Any]] = []
+    for bucket in bucket_order:
+        current_bucket = [row for row in current if _pricing_bucket(row) == bucket]
+        current_priced = [
+            row for row in current_bucket if _number(row.get("unit_price")) > 0
+        ]
+        if current_priced:
+            ordered.extend(current_priced[:2])
+            continue
+        ordered.extend(
+            row
+            for row in selected_historical
+            if _pricing_bucket(row) == bucket
+        )
+        ordered.extend(current_bucket[:1])
+    return ordered
+
+
+def _pricing_bucket(row: dict[str, Any]) -> str:
+    value = str(
+        row.get("decision_bucket") or row.get("template_bucket") or ""
+    ).strip().lower()
+    return {
+        "dumpsters": "dumpster",
+        "delivery_fee": "delivery",
+    }.get(value, value)
 
 
 def _calculation_requirements(
@@ -677,6 +756,14 @@ def _unique_strings(values: list[Any]) -> list[str]:
             if str(value or "").strip()
         )
     )
+
+
+def _number(value: Any) -> float:
+    try:
+        number = float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return number if math.isfinite(number) else 0.0
 
 
 def json_safe(value: Any) -> Any:
