@@ -887,6 +887,32 @@ def _identity_match_enabled(scope: dict[str, Any]) -> bool:
     )
 
 
+def _excluded_example(scope: dict[str, Any], row: dict[str, Any]) -> bool:
+    excluded_job_ids = {
+        _text(value).casefold()
+        for value in (
+            list(scope.get("exclude_job_ids") or [])
+            + [scope.get("target_job_id")]
+        )
+        if _text(value)
+    }
+    excluded_source_files = {
+        _norm(value)
+        for value in (
+            list(scope.get("exclude_source_files") or [])
+            + list(scope.get("target_source_files") or [])
+            + [scope.get("target_source_file")]
+        )
+        if _text(value)
+    }
+    job_id = _text(row.get("job_id")).casefold()
+    source_file = _norm(row.get("source_file") or row.get("file_name"))
+    return bool(
+        (job_id and job_id in excluded_job_ids)
+        or (source_file and source_file in excluded_source_files)
+    )
+
+
 def _answer_key_example_score(
     row: dict[str, Any],
     answer_key: dict[str, Any],
@@ -1001,8 +1027,12 @@ def build_similar_answer_key_digest(
     }
     preferred_buckets.update(_scope_answer_key_packages(scope))
     scored: list[tuple[float, dict[str, Any], dict[str, Any], list[str]]] = []
+    excluded_candidate_count = 0
     scope_template_type = _canonical_template_type(scope.get("template_type") or scope.get("division") or scope.get("project_type"))
     for row in examples.fillna("").to_dict(orient="records"):
+        if _excluded_example(scope, row):
+            excluded_candidate_count += 1
+            continue
         example_template_type = _canonical_template_type(row.get("template_type"))
         if scope_template_type and example_template_type and scope_template_type != example_template_type:
             continue
@@ -1073,6 +1103,7 @@ def build_similar_answer_key_digest(
         "matched_answer_keys": matched,
         "retrieval": {
             "candidate_count": len(scored),
+            "excluded_candidate_count": excluded_candidate_count,
             "limit": int(limit or 5),
             "decisions_per_example": int(decisions_per_example or 20),
             "preferred_buckets": sorted(preferred_buckets)[:30],

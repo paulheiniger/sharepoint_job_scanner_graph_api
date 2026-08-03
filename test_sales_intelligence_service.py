@@ -1,0 +1,181 @@
+from __future__ import annotations
+
+from sqlalchemy import create_engine, text
+
+from jobscan.business.sales_service import (
+    get_sales_followups,
+    get_sales_pipeline,
+)
+
+
+def sales_engine():
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE job_board_static_snapshot (
+                    job_id TEXT PRIMARY KEY,
+                    division TEXT,
+                    pipeline_status TEXT,
+                    status TEXT,
+                    customer TEXT,
+                    job_name TEXT,
+                    estimated_value NUMERIC,
+                    estimated_sqft NUMERIC,
+                    price_per_sqft NUMERIC,
+                    has_proposal BOOLEAN,
+                    has_signed_contract BOOLEAN,
+                    has_warnings BOOLEAN,
+                    warnings TEXT,
+                    folder_url TEXT,
+                    updated_at TIMESTAMP,
+                    refreshed_at TIMESTAMP
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO job_board_static_snapshot VALUES
+                ('JOB-P1', 'Roofing', 'Proposed', 'Open', 'Acme', 'Acme Roof',
+                 90000, 10000, 9, 1, 0, 0, '',
+                 'https://example.invalid/JOB-P1', '2026-07-30', '2026-07-30'),
+                ('JOB-P2', 'Insulation', 'Proposed', 'Open', 'Beta', 'Beta Plant',
+                 30000, NULL, NULL, 1, 0, 1, 'Missing takeoff',
+                 'https://example.invalid/JOB-P2', '2026-07-29', '2026-07-30'),
+                ('JOB-C1', 'Roofing', 'Contracted', 'Active', 'Cedar', 'Cedar Hall',
+                 150000, 20000, 7.5, 1, 1, 0, '',
+                 'https://example.invalid/JOB-C1', '2026-07-28', '2026-07-30'),
+                ('JOB-D1', 'Roofing', 'Completed', 'Complete', 'Delta', 'Delta Shop',
+                 50000, 5000, 10, 1, 1, 0, '',
+                 'https://example.invalid/JOB-D1', '2026-07-27', '2026-07-30')
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE job_workflow_overrides (
+                    job_id TEXT,
+                    workflow_status TEXT,
+                    deal_owner TEXT,
+                    assigned_user TEXT,
+                    follow_up_date DATE,
+                    priority TEXT,
+                    internal_notes TEXT,
+                    updated_at TIMESTAMP
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO job_workflow_overrides VALUES
+                ('JOB-P1', 'Follow-Up / Negotiation', 'Pat', '', '2026-07-01',
+                 'High', 'Call decision maker', '2026-07-30'),
+                ('JOB-C1', 'Ready to schedule', 'Jordan', '', NULL,
+                 'Normal', '', '2026-07-29')
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE dashboard_sales_followup (
+                    job_id TEXT,
+                    division TEXT,
+                    pipeline_status TEXT,
+                    status TEXT,
+                    customer TEXT,
+                    job_name TEXT,
+                    estimated_value NUMERIC,
+                    estimated_sqft NUMERIC,
+                    price_per_sqft NUMERIC,
+                    has_warnings BOOLEAN,
+                    warnings TEXT,
+                    folder_url TEXT,
+                    followup_status TEXT,
+                    updated_at TIMESTAMP
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO dashboard_sales_followup VALUES
+                ('JOB-P1', 'Roofing', 'Proposed', 'Open', 'Acme', 'Acme Roof',
+                 90000, 10000, 9, 0, '', 'https://example.invalid/JOB-P1',
+                 'Ready for follow-up', '2026-07-30'),
+                ('JOB-P2', 'Insulation', 'Proposed', 'Open', 'Beta', 'Beta Plant',
+                 30000, NULL, NULL, 1, 'Missing takeoff',
+                 'https://example.invalid/JOB-P2',
+                 'Missing square footage', '2026-07-29')
+                """
+            )
+        )
+    return engine
+
+
+def test_sales_pipeline_returns_rollups_and_top_opportunities() -> None:
+    result = get_sales_pipeline(engine=sales_engine(), limit=3)
+
+    assert result["schema_version"] == "spraytec.sales_pipeline.v1"
+    assert result["headline_metrics"]["job_count"] == 3
+    assert result["headline_metrics"]["pipeline_value"] == 270000
+    assert result["headline_metrics"]["proposed_jobs"] == 2
+    assert result["headline_metrics"]["contracted_jobs"] == 1
+    assert result["records"][0]["job_id"] == "JOB-C1"
+    assert result["records"][1]["deal_owner"] == "Pat"
+    assert result["coverage"]["results_truncated"] is False
+    assert result["source_links"]
+
+
+def test_sales_pipeline_can_include_completed() -> None:
+    result = get_sales_pipeline(
+        engine=sales_engine(),
+        include_completed=True,
+        limit=10,
+    )
+
+    assert result["headline_metrics"]["job_count"] == 4
+    assert any(
+        row["pipeline_status"] == "Completed" for row in result["stage_rollup"]
+    )
+
+
+def test_sales_followups_prioritize_overdue_and_explain_missing_data() -> None:
+    result = get_sales_followups(engine=sales_engine(), limit=10)
+
+    assert result["schema_version"] == "spraytec.sales_followups.v1"
+    assert result["headline_metrics"]["matching_followups"] == 2
+    assert result["headline_metrics"]["overdue_followups"] == 1
+    assert result["headline_metrics"]["unassigned_followups"] == 1
+    assert result["records"][0]["job_id"] == "JOB-P1"
+    assert result["records"][0]["follow_up_state"] == "overdue"
+    assert result["records"][1]["followup_status"] == "Missing square footage"
+    assert any(
+        item["type"] == "followup_data_quality"
+        for item in result["attention_items"]
+    )
+
+
+def test_sales_followups_support_owner_and_queue_filters() -> None:
+    owned = get_sales_followups(
+        engine=sales_engine(),
+        owner="Pat",
+        overdue_only=True,
+        limit=10,
+    )
+    unassigned = get_sales_followups(
+        engine=sales_engine(),
+        unassigned_only=True,
+        limit=10,
+    )
+
+    assert [row["job_id"] for row in owned["records"]] == ["JOB-P1"]
+    assert [row["job_id"] for row in unassigned["records"]] == ["JOB-P2"]
+

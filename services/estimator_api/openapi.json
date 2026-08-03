@@ -1,0 +1,4903 @@
+{
+  "components": {
+    "schemas": {
+      "CalculationRequirement": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "title": "Category",
+            "type": "string"
+          },
+          "concept_id": {
+            "title": "Concept Id",
+            "type": "string"
+          },
+          "required_inputs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Required Inputs",
+            "type": "array"
+          }
+        },
+        "required": [
+          "concept_id",
+          "category"
+        ],
+        "title": "CalculationRequirement",
+        "type": "object"
+      },
+      "ChartDatasetRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "default": "",
+            "maxLength": 100,
+            "title": "Code",
+            "type": "string"
+          },
+          "crew_leader": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Crew Leader",
+            "type": "string"
+          },
+          "dataset": {
+            "enum": [
+              "sales_pipeline_by_stage",
+              "sales_pipeline_by_owner",
+              "operations_backlog_by_division",
+              "operations_backlog_by_readiness",
+              "operations_schedule_by_crew",
+              "operations_schedule_by_health",
+              "operations_schedule_gantt",
+              "office_activity_by_day",
+              "office_activity_by_employee",
+              "office_activity_by_code",
+              "office_job_progress",
+              "production_budget_by_job",
+              "production_budget_by_bucket"
+            ],
+            "title": "Dataset",
+            "type": "string"
+          },
+          "division": {
+            "default": "",
+            "maxLength": 100,
+            "title": "Division",
+            "type": "string"
+          },
+          "employee": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Employee",
+            "type": "string"
+          },
+          "end_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End Date"
+          },
+          "gantt_limit": {
+            "default": 60,
+            "description": "Maximum project bars for operations_schedule_gantt. Other chart datasets continue to use limit.",
+            "maximum": 125.0,
+            "minimum": 1.0,
+            "title": "Gantt Limit",
+            "type": "integer"
+          },
+          "include_closed": {
+            "default": false,
+            "title": "Include Closed",
+            "type": "boolean"
+          },
+          "include_completed": {
+            "default": false,
+            "title": "Include Completed",
+            "type": "boolean"
+          },
+          "include_no_actuals": {
+            "default": false,
+            "title": "Include No Actuals",
+            "type": "boolean"
+          },
+          "include_unmatched": {
+            "default": true,
+            "title": "Include Unmatched",
+            "type": "boolean"
+          },
+          "include_unscheduled": {
+            "default": false,
+            "title": "Include Unscheduled",
+            "type": "boolean"
+          },
+          "job_ids": {
+            "items": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 25,
+            "title": "Job Ids",
+            "type": "array"
+          },
+          "limit": {
+            "default": 25,
+            "maximum": 25.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "lookback_days": {
+            "default": 90,
+            "maximum": 365.0,
+            "minimum": 7.0,
+            "title": "Lookback Days",
+            "type": "integer"
+          },
+          "needs_attention": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Needs Attention"
+          },
+          "over_plan_only": {
+            "default": false,
+            "title": "Over Plan Only",
+            "type": "boolean"
+          },
+          "owner": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Owner",
+            "type": "string"
+          },
+          "pipeline_statuses": {
+            "items": {
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 10,
+            "title": "Pipeline Statuses",
+            "type": "array"
+          },
+          "project_query": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Project Query",
+            "type": "string"
+          },
+          "readiness_statuses": {
+            "items": {
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 10,
+            "title": "Readiness Statuses",
+            "type": "array"
+          },
+          "risk_only": {
+            "default": false,
+            "title": "Risk Only",
+            "type": "boolean"
+          },
+          "stalled_after_days": {
+            "default": 7,
+            "maximum": 90.0,
+            "minimum": 1.0,
+            "title": "Stalled After Days",
+            "type": "integer"
+          },
+          "stalled_only": {
+            "default": false,
+            "title": "Stalled Only",
+            "type": "boolean"
+          },
+          "start_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Date"
+          },
+          "unscheduled_only": {
+            "default": false,
+            "title": "Unscheduled Only",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "dataset"
+        ],
+        "title": "ChartDatasetRequest",
+        "type": "object"
+      },
+      "ChartDatasetResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "category_field": {
+            "title": "Category Field",
+            "type": "string"
+          },
+          "coverage": {
+            "title": "Coverage",
+            "type": "object"
+          },
+          "data_freshness": {
+            "title": "Data Freshness",
+            "type": "object"
+          },
+          "dataset": {
+            "enum": [
+              "sales_pipeline_by_stage",
+              "sales_pipeline_by_owner",
+              "operations_backlog_by_division",
+              "operations_backlog_by_readiness",
+              "operations_schedule_by_crew",
+              "operations_schedule_by_health",
+              "operations_schedule_gantt",
+              "office_activity_by_day",
+              "office_activity_by_employee",
+              "office_activity_by_code",
+              "office_job_progress",
+              "production_budget_by_job",
+              "production_budget_by_bucket"
+            ],
+            "title": "Dataset",
+            "type": "string"
+          },
+          "end_field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End Field"
+          },
+          "filters_applied": {
+            "title": "Filters Applied",
+            "type": "object"
+          },
+          "group_field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group Field"
+          },
+          "recommended_chart_type": {
+            "enum": [
+              "bar",
+              "line",
+              "gantt"
+            ],
+            "title": "Recommended Chart Type",
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "type": "object"
+            },
+            "maxItems": 125,
+            "title": "Rows",
+            "type": "array"
+          },
+          "schema_version": {
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "series": {
+            "items": {
+              "$ref": "#/components/schemas/ChartSeries"
+            },
+            "title": "Series",
+            "type": "array"
+          },
+          "source_tables": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Tables",
+            "type": "array"
+          },
+          "start_field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Field"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "truth_class": {
+            "title": "Truth Class",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "schema_version",
+          "dataset",
+          "title",
+          "recommended_chart_type",
+          "category_field",
+          "series",
+          "truth_class"
+        ],
+        "title": "ChartDatasetResponse",
+        "type": "object"
+      },
+      "ChartSeries": {
+        "additionalProperties": false,
+        "properties": {
+          "field": {
+            "title": "Field",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "unit": {
+            "enum": [
+              "currency",
+              "count",
+              "days",
+              "hours",
+              "ratio"
+            ],
+            "title": "Unit",
+            "type": "string"
+          }
+        },
+        "required": [
+          "field",
+          "label",
+          "unit"
+        ],
+        "title": "ChartSeries",
+        "type": "object"
+      },
+      "DecisionConcept": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "title": "Category",
+            "type": "string"
+          },
+          "concept_id": {
+            "title": "Concept Id",
+            "type": "string"
+          },
+          "decision_type": {
+            "title": "Decision Type",
+            "type": "string"
+          },
+          "editable_inputs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Editable Inputs",
+            "type": "array"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "required_calculation_inputs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Required Calculation Inputs",
+            "type": "array"
+          }
+        },
+        "required": [
+          "concept_id",
+          "category",
+          "label",
+          "decision_type"
+        ],
+        "title": "DecisionConcept",
+        "type": "object"
+      },
+      "EstimateContextRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "exclude_job_ids": {
+            "description": "Historical job IDs that must not be used as comparables.",
+            "items": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Exclude Job Ids",
+            "type": "array"
+          },
+          "exclude_source_files": {
+            "description": "Completed estimate filenames that must not be used as evidence, including the target estimate in evaluation runs.",
+            "items": {
+              "maxLength": 300,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Exclude Source Files",
+            "type": "array"
+          },
+          "raw_notes": {
+            "default": "",
+            "description": "Original estimator notes or relevant conversation text.",
+            "maxLength": 50000,
+            "title": "Raw Notes",
+            "type": "string"
+          },
+          "reference_job_ids": {
+            "items": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 10,
+            "title": "Reference Job Ids",
+            "type": "array"
+          },
+          "scope": {
+            "description": "Structured current-job facts extracted by Copilot.",
+            "title": "Scope",
+            "type": "object"
+          },
+          "site_address": {
+            "default": "",
+            "description": "Current job site address used for route mileage.",
+            "maxLength": 500,
+            "title": "Site Address",
+            "type": "string"
+          },
+          "template_type": {
+            "default": "",
+            "description": "Estimator template family, normally insulation or roofing.",
+            "maxLength": 40,
+            "title": "Template Type",
+            "type": "string"
+          }
+        },
+        "title": "EstimateContextRequest",
+        "type": "object"
+      },
+      "EstimateContextResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "approved_memories": {
+            "items": {
+              "type": "object"
+            },
+            "title": "Approved Memories",
+            "type": "array"
+          },
+          "calculation_requirements": {
+            "items": {
+              "$ref": "#/components/schemas/CalculationRequirement"
+            },
+            "title": "Calculation Requirements",
+            "type": "array"
+          },
+          "decision_concepts": {
+            "items": {
+              "$ref": "#/components/schemas/DecisionConcept"
+            },
+            "title": "Decision Concepts",
+            "type": "array"
+          },
+          "decision_evidence": {
+            "items": {
+              "type": "object"
+            },
+            "title": "Decision Evidence",
+            "type": "array"
+          },
+          "foam_yield_history": {
+            "items": {
+              "type": "object"
+            },
+            "title": "Foam Yield History",
+            "type": "array"
+          },
+          "historical_assemblies": {
+            "items": {
+              "$ref": "#/components/schemas/HistoricalAssembly"
+            },
+            "title": "Historical Assemblies",
+            "type": "array"
+          },
+          "historical_labor_performance": {
+            "items": {
+              "$ref": "#/components/schemas/HistoricalLaborPerformance"
+            },
+            "title": "Historical Labor Performance",
+            "type": "array"
+          },
+          "historical_material_usage": {
+            "items": {
+              "$ref": "#/components/schemas/HistoricalMaterialUsage"
+            },
+            "title": "Historical Material Usage",
+            "type": "array"
+          },
+          "labor_plan_guidance": {
+            "items": {
+              "type": "object"
+            },
+            "title": "Labor Plan Guidance",
+            "type": "array"
+          },
+          "matched_comparables": {
+            "items": {
+              "type": "object"
+            },
+            "title": "Matched Comparables",
+            "type": "array"
+          },
+          "matched_scope_pattern": {
+            "title": "Matched Scope Pattern",
+            "type": "object"
+          },
+          "pricing_candidates": {
+            "items": {
+              "type": "object"
+            },
+            "title": "Pricing Candidates",
+            "type": "array"
+          },
+          "product_guidance": {
+            "items": {
+              "type": "object"
+            },
+            "title": "Product Guidance",
+            "type": "array"
+          },
+          "purchasing_guidance": {
+            "items": {
+              "type": "object"
+            },
+            "title": "Purchasing Guidance",
+            "type": "array"
+          },
+          "response_budget": {
+            "title": "Response Budget",
+            "type": "object"
+          },
+          "retrieval_exclusions": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": "Retrieval Exclusions",
+            "type": "object"
+          },
+          "retrieval_summary": {
+            "title": "Retrieval Summary",
+            "type": "object"
+          },
+          "route_mileage": {
+            "title": "Route Mileage",
+            "type": "object"
+          },
+          "schema_version": {
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "scope": {
+            "title": "Scope",
+            "type": "object"
+          },
+          "scope_integrity": {
+            "title": "Scope Integrity",
+            "type": "object"
+          },
+          "source_links": {
+            "items": {
+              "$ref": "#/components/schemas/EstimateSourceLink"
+            },
+            "title": "Source Links",
+            "type": "array"
+          },
+          "template_type": {
+            "title": "Template Type",
+            "type": "string"
+          },
+          "validated_relationships": {
+            "items": {
+              "type": "object"
+            },
+            "title": "Validated Relationships",
+            "type": "array"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "schema_version",
+          "scope",
+          "template_type",
+          "retrieval_summary"
+        ],
+        "title": "EstimateContextResponse",
+        "type": "object"
+      },
+      "EstimateSourceLink": {
+        "additionalProperties": false,
+        "properties": {
+          "customer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Customer"
+          },
+          "document_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Id"
+          },
+          "example_id": {
+            "default": "",
+            "title": "Example Id",
+            "type": "string"
+          },
+          "file_name": {
+            "default": "",
+            "title": "File Name",
+            "type": "string"
+          },
+          "file_web_url": {
+            "default": "",
+            "title": "File Web Url",
+            "type": "string"
+          },
+          "folder_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Folder Path"
+          },
+          "job_folder_web_url": {
+            "default": "",
+            "title": "Job Folder Web Url",
+            "type": "string"
+          },
+          "job_id": {
+            "default": "",
+            "title": "Job Id",
+            "type": "string"
+          },
+          "job_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Name"
+          },
+          "relative_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Relative Path"
+          },
+          "source_type": {
+            "title": "Source Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_type"
+        ],
+        "title": "EstimateSourceLink",
+        "type": "object"
+      },
+      "EstimateWorkbookAdder": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "anyOf": [
+              {
+                "maximum": 100000000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount"
+          },
+          "concept_id": {
+            "default": "",
+            "maxLength": 160,
+            "title": "Concept Id",
+            "type": "string"
+          },
+          "include": {
+            "default": true,
+            "title": "Include",
+            "type": "boolean"
+          },
+          "label": {
+            "maxLength": 240,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "needs_review": {
+            "default": false,
+            "title": "Needs Review",
+            "type": "boolean"
+          },
+          "notes": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Notes",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label"
+        ],
+        "title": "EstimateWorkbookAdder",
+        "type": "object"
+      },
+      "EstimateWorkbookAreaScope": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Action",
+            "type": "string"
+          },
+          "area_sqft": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 10000000.0,
+            "title": "Area Sqft",
+            "type": "number"
+          },
+          "decking_replacement_sqft": {
+            "anyOf": [
+              {
+                "maximum": 10000000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decking Replacement Sqft"
+          },
+          "evidence_text": {
+            "default": "",
+            "maxLength": 1000,
+            "title": "Evidence Text",
+            "type": "string"
+          },
+          "existing_system": {
+            "default": "",
+            "maxLength": 300,
+            "title": "Existing System",
+            "type": "string"
+          },
+          "label": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Label",
+            "type": "string"
+          },
+          "parent_scope_id": {
+            "default": "",
+            "maxLength": 100,
+            "title": "Parent Scope Id",
+            "type": "string"
+          },
+          "proposed_assembly": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Proposed Assembly",
+            "type": "string"
+          },
+          "scope_id": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Scope Id",
+            "type": "string"
+          },
+          "scope_role": {
+            "enum": [
+              "exclusive_area",
+              "nested_sub_scope",
+              "deduction"
+            ],
+            "title": "Scope Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "scope_id",
+          "scope_role",
+          "area_sqft"
+        ],
+        "title": "EstimateWorkbookAreaScope",
+        "type": "object"
+      },
+      "EstimateWorkbookDimensionRow": {
+        "additionalProperties": false,
+        "properties": {
+          "area_sqft": {
+            "maximum": 10000000.0,
+            "minimum": -10000000.0,
+            "title": "Area Sqft",
+            "type": "number"
+          },
+          "description": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Description",
+            "type": "string"
+          }
+        },
+        "required": [
+          "description",
+          "area_sqft"
+        ],
+        "title": "EstimateWorkbookDimensionRow",
+        "type": "object"
+      },
+      "EstimateWorkbookHeader": {
+        "additionalProperties": false,
+        "properties": {
+          "city_state_zip": {
+            "default": "",
+            "maxLength": 200,
+            "title": "City State Zip",
+            "type": "string"
+          },
+          "contact": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Contact",
+            "type": "string"
+          },
+          "email": {
+            "default": "",
+            "maxLength": 254,
+            "title": "Email",
+            "type": "string"
+          },
+          "estimated_crew_size": {
+            "anyOf": [
+              {
+                "maximum": 8.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Crew Size"
+          },
+          "estimated_days": {
+            "anyOf": [
+              {
+                "maximum": 10000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Days"
+          },
+          "estimated_hours": {
+            "anyOf": [
+              {
+                "maximum": 10000000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Hours"
+          },
+          "estimated_sqft": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 10000000.0,
+            "title": "Estimated Sqft",
+            "type": "number"
+          },
+          "estimator": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Estimator",
+            "type": "string"
+          },
+          "job_name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Job Name",
+            "type": "string"
+          },
+          "job_type": {
+            "default": "Roofing",
+            "maxLength": 120,
+            "title": "Job Type",
+            "type": "string"
+          },
+          "mobilizations": {
+            "anyOf": [
+              {
+                "maximum": 1000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mobilizations"
+          },
+          "phone": {
+            "default": "",
+            "maxLength": 80,
+            "title": "Phone",
+            "type": "string"
+          },
+          "repair_area_description": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Repair Area Description",
+            "type": "string"
+          },
+          "site_address": {
+            "default": "",
+            "maxLength": 300,
+            "title": "Site Address",
+            "type": "string"
+          },
+          "sqft_calculation_rows": {
+            "description": "Signed area components for the insulation Sq Ft Calculation sheet; opening deductions should be negative.",
+            "items": {
+              "$ref": "#/components/schemas/EstimateWorkbookDimensionRow"
+            },
+            "maxItems": 12,
+            "title": "Sqft Calculation Rows",
+            "type": "array"
+          },
+          "title": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Title",
+            "type": "string"
+          },
+          "warranty_description": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Warranty Description",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_name",
+          "estimated_sqft"
+        ],
+        "title": "EstimateWorkbookHeader",
+        "type": "object"
+      },
+      "EstimateWorkbookLabor": {
+        "additionalProperties": false,
+        "properties": {
+          "concept_id": {
+            "default": "",
+            "maxLength": 160,
+            "title": "Concept Id",
+            "type": "string"
+          },
+          "crew_size": {
+            "anyOf": [
+              {
+                "maximum": 8.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Crew Size"
+          },
+          "daily_rate": {
+            "anyOf": [
+              {
+                "maximum": 10000000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Daily Rate"
+          },
+          "days": {
+            "anyOf": [
+              {
+                "maximum": 10000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Days"
+          },
+          "estimated_cost": {
+            "anyOf": [
+              {
+                "maximum": 100000000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Cost"
+          },
+          "hourly_rate": {
+            "anyOf": [
+              {
+                "maximum": 100000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hourly Rate"
+          },
+          "hours_per_trip": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 24.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Loading or traveling hours per trip for labor_loading and labor_traveling.",
+            "title": "Hours Per Trip"
+          },
+          "include": {
+            "default": true,
+            "title": "Include",
+            "type": "boolean"
+          },
+          "label": {
+            "default": "",
+            "maxLength": 240,
+            "title": "Label",
+            "type": "string"
+          },
+          "notes": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Notes",
+            "type": "string"
+          },
+          "task": {
+            "anyOf": [
+              {
+                "enum": [
+                  "labor_setup_safety",
+                  "labor_full_repair",
+                  "labor_prep",
+                  "labor_tearoff",
+                  "labor_board",
+                  "labor_base",
+                  "labor_caulk",
+                  "labor_details",
+                  "labor_top_coat",
+                  "labor_cleanup",
+                  "labor_loading",
+                  "labor_traveling"
+                ],
+                "type": "string"
+              },
+              {
+                "enum": [
+                  "labor_set_up",
+                  "labor_mask",
+                  "labor_prime",
+                  "labor_membrane",
+                  "labor_foam",
+                  "labor_dc_315",
+                  "labor_misc",
+                  "labor_cleanup",
+                  "labor_loading",
+                  "labor_traveling"
+                ],
+                "type": "string"
+              },
+              {
+                "enum": [
+                  "labor_floor_grind_patch",
+                  "labor_floor_corner_repair",
+                  "labor_floor_prep_base_flake",
+                  "labor_floor_patch_grind",
+                  "labor_floor_primer",
+                  "labor_floor_base_707",
+                  "labor_floor_details",
+                  "labor_floor_top_coat",
+                  "labor_floor_cleanup",
+                  "labor_loading",
+                  "labor_traveling"
+                ],
+                "type": "string"
+              }
+            ],
+            "title": "Task"
+          },
+          "total_hours": {
+            "anyOf": [
+              {
+                "maximum": 10000000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Hours"
+          }
+        },
+        "required": [
+          "task"
+        ],
+        "title": "EstimateWorkbookLabor",
+        "type": "object"
+      },
+      "EstimateWorkbookLogistics": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "anyOf": [
+              {
+                "maximum": 100000000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount"
+          },
+          "area_sqft": {
+            "anyOf": [
+              {
+                "maximum": 10000000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Measured scope area before purchasing or production allowance.",
+            "title": "Area Sqft"
+          },
+          "basis_sqft": {
+            "anyOf": [
+              {
+                "maximum": 10000000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Formula or purchase basis after any explicit allowance.",
+            "title": "Basis Sqft"
+          },
+          "category": {
+            "anyOf": [
+              {
+                "enum": [
+                  "sales_inspection_trips",
+                  "truck_expense",
+                  "dumpster",
+                  "lift",
+                  "generator",
+                  "delivery_fee",
+                  "freight"
+                ],
+                "type": "string"
+              },
+              {
+                "enum": [
+                  "sales_inspection_trips",
+                  "truck_expense",
+                  "lift",
+                  "delivery_fee",
+                  "generator",
+                  "space_heater",
+                  "freight",
+                  "drum_disposal",
+                  "abaa_audits",
+                  "abaa_fee"
+                ],
+                "type": "string"
+              }
+            ],
+            "title": "Category"
+          },
+          "concept_id": {
+            "default": "",
+            "maxLength": 160,
+            "title": "Concept Id",
+            "type": "string"
+          },
+          "days": {
+            "anyOf": [
+              {
+                "maximum": 10000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Days"
+          },
+          "debris_thickness_inches": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Debris Thickness Inches"
+          },
+          "estimated_cost": {
+            "anyOf": [
+              {
+                "maximum": 100000000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Cost"
+          },
+          "estimated_gallons": {
+            "anyOf": [
+              {
+                "maximum": 100000000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Gallons"
+          },
+          "estimated_units": {
+            "anyOf": [
+              {
+                "maximum": 100000000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Units"
+          },
+          "feet_per_unit": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 100000.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Feet Per Unit"
+          },
+          "gal_per_100_sqft": {
+            "anyOf": [
+              {
+                "maximum": 1000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gal Per 100 Sqft"
+          },
+          "include": {
+            "default": true,
+            "title": "Include",
+            "type": "boolean"
+          },
+          "item": {
+            "default": "",
+            "maxLength": 240,
+            "title": "Item",
+            "type": "string"
+          },
+          "linear_ft": {
+            "anyOf": [
+              {
+                "maximum": 100000000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Linear Ft"
+          },
+          "margin_pct": {
+            "anyOf": [
+              {
+                "maximum": 500.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Margin Pct"
+          },
+          "notes": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Notes",
+            "type": "string"
+          },
+          "period": {
+            "anyOf": [
+              {
+                "maximum": 10000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period"
+          },
+          "price_per_square": {
+            "anyOf": [
+              {
+                "maximum": 10000000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Per Square"
+          },
+          "quantity": {
+            "anyOf": [
+              {
+                "maximum": 100000000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quantity"
+          },
+          "quantity_adjustment_reason": {
+            "default": "",
+            "description": "Required when basis_sqft differs from measured area_sqft; explain sheet rounding, waste, production allowance, or another reviewed basis.",
+            "maxLength": 500,
+            "title": "Quantity Adjustment Reason",
+            "type": "string"
+          },
+          "round_trip_miles": {
+            "anyOf": [
+              {
+                "maximum": 100000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Current origin-to-site-to-origin miles for each trip.",
+            "title": "Round Trip Miles"
+          },
+          "selector_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selector Code"
+          },
+          "size": {
+            "default": "",
+            "maxLength": 80,
+            "title": "Size",
+            "type": "string"
+          },
+          "thickness_inches": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thickness Inches"
+          },
+          "trip_count": {
+            "anyOf": [
+              {
+                "maximum": 10000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Number of round trips for a logistics line. Put this on the sales_inspection_trips or truck_expense item, not on labor.",
+            "title": "Trip Count"
+          },
+          "unit_price": {
+            "anyOf": [
+              {
+                "maximum": 10000000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit Price"
+          },
+          "waste_factor_pct": {
+            "anyOf": [
+              {
+                "maximum": 500.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Waste Factor Pct"
+          },
+          "yield_factor": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 10000000.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Yield Factor"
+          }
+        },
+        "required": [
+          "category"
+        ],
+        "title": "EstimateWorkbookLogistics",
+        "type": "object"
+      },
+      "EstimateWorkbookMaterial": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "anyOf": [
+              {
+                "maximum": 100000000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount"
+          },
+          "area_sqft": {
+            "anyOf": [
+              {
+                "maximum": 10000000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Measured scope area before purchasing or production allowance.",
+            "title": "Area Sqft"
+          },
+          "basis_sqft": {
+            "anyOf": [
+              {
+                "maximum": 10000000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Formula or purchase basis after any explicit allowance.",
+            "title": "Basis Sqft"
+          },
+          "category": {
+            "anyOf": [
+              {
+                "enum": [
+                  "roofing_foam",
+                  "coating",
+                  "seams_misc",
+                  "penetrations",
+                  "hvac_units",
+                  "drains",
+                  "primer",
+                  "caulk_detail",
+                  "caulk_sealant",
+                  "fabric",
+                  "board_stock",
+                  "fasteners",
+                  "plates",
+                  "granules",
+                  "edge_metal",
+                  "gutter",
+                  "downspouts",
+                  "roof_hatch",
+                  "scuppers",
+                  "curbs",
+                  "ladders",
+                  "pitch_pockets",
+                  "misc",
+                  "thinner"
+                ],
+                "type": "string"
+              },
+              {
+                "enum": [
+                  "foam",
+                  "membrane",
+                  "primer",
+                  "coating",
+                  "thermal_barrier_coating",
+                  "thinner",
+                  "caulk_sealant",
+                  "misc"
+                ],
+                "type": "string"
+              }
+            ],
+            "title": "Category"
+          },
+          "concept_id": {
+            "default": "",
+            "maxLength": 160,
+            "title": "Concept Id",
+            "type": "string"
+          },
+          "days": {
+            "anyOf": [
+              {
+                "maximum": 10000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Days"
+          },
+          "debris_thickness_inches": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Debris Thickness Inches"
+          },
+          "estimated_cost": {
+            "anyOf": [
+              {
+                "maximum": 100000000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Cost"
+          },
+          "estimated_gallons": {
+            "anyOf": [
+              {
+                "maximum": 100000000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Gallons"
+          },
+          "estimated_units": {
+            "anyOf": [
+              {
+                "maximum": 100000000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Units"
+          },
+          "feet_per_unit": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 100000.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Feet Per Unit"
+          },
+          "gal_per_100_sqft": {
+            "anyOf": [
+              {
+                "maximum": 1000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gal Per 100 Sqft"
+          },
+          "include": {
+            "default": true,
+            "title": "Include",
+            "type": "boolean"
+          },
+          "item": {
+            "default": "",
+            "maxLength": 240,
+            "title": "Item",
+            "type": "string"
+          },
+          "linear_ft": {
+            "anyOf": [
+              {
+                "maximum": 100000000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Linear Ft"
+          },
+          "margin_pct": {
+            "anyOf": [
+              {
+                "maximum": 500.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Margin Pct"
+          },
+          "notes": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Notes",
+            "type": "string"
+          },
+          "period": {
+            "anyOf": [
+              {
+                "maximum": 10000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period"
+          },
+          "price_per_square": {
+            "anyOf": [
+              {
+                "maximum": 10000000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Per Square"
+          },
+          "quantity": {
+            "anyOf": [
+              {
+                "maximum": 100000000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quantity"
+          },
+          "quantity_adjustment_reason": {
+            "default": "",
+            "description": "Required when basis_sqft differs from measured area_sqft; explain sheet rounding, waste, production allowance, or another reviewed basis.",
+            "maxLength": 500,
+            "title": "Quantity Adjustment Reason",
+            "type": "string"
+          },
+          "round_trip_miles": {
+            "anyOf": [
+              {
+                "maximum": 100000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Current origin-to-site-to-origin miles for each trip.",
+            "title": "Round Trip Miles"
+          },
+          "selector_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selector Code"
+          },
+          "size": {
+            "default": "",
+            "maxLength": 80,
+            "title": "Size",
+            "type": "string"
+          },
+          "thickness_inches": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thickness Inches"
+          },
+          "trip_count": {
+            "anyOf": [
+              {
+                "maximum": 10000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Number of round trips for a logistics line. Put this on the sales_inspection_trips or truck_expense item, not on labor.",
+            "title": "Trip Count"
+          },
+          "unit_price": {
+            "anyOf": [
+              {
+                "maximum": 10000000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit Price"
+          },
+          "waste_factor_pct": {
+            "anyOf": [
+              {
+                "maximum": 500.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Waste Factor Pct"
+          },
+          "yield_factor": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 10000000.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Yield Factor"
+          }
+        },
+        "required": [
+          "category"
+        ],
+        "title": "EstimateWorkbookMaterial",
+        "type": "object"
+      },
+      "EstimateWorkbookOption": {
+        "additionalProperties": false,
+        "properties": {
+          "adders": {
+            "items": {
+              "$ref": "#/components/schemas/EstimateWorkbookAdder"
+            },
+            "maxItems": 20,
+            "title": "Adders",
+            "type": "array"
+          },
+          "header": {
+            "$ref": "#/components/schemas/EstimateWorkbookHeader"
+          },
+          "labor": {
+            "items": {
+              "$ref": "#/components/schemas/EstimateWorkbookLabor"
+            },
+            "maxItems": 25,
+            "title": "Labor",
+            "type": "array"
+          },
+          "logistics": {
+            "items": {
+              "$ref": "#/components/schemas/EstimateWorkbookLogistics"
+            },
+            "maxItems": 25,
+            "title": "Logistics",
+            "type": "array"
+          },
+          "materials": {
+            "items": {
+              "$ref": "#/components/schemas/EstimateWorkbookMaterial"
+            },
+            "maxItems": 40,
+            "title": "Materials",
+            "type": "array"
+          },
+          "option_label": {
+            "description": "User-facing option name used in the output filename, such as 10-year warranty or Base area plus alternate bay.",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Option Label",
+            "type": "string"
+          },
+          "pricing": {
+            "$ref": "#/components/schemas/EstimateWorkbookPricing"
+          },
+          "scope_of_work": {
+            "items": {
+              "maxLength": 1000,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 30,
+            "title": "Scope Of Work",
+            "type": "array"
+          },
+          "spec_notes": {
+            "items": {
+              "maxLength": 1000,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Spec Notes",
+            "type": "array"
+          },
+          "structured_scope": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EstimateWorkbookStructuredScope"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Structured roofing takeoff used for deterministic area-integrity validation before workbook creation."
+          },
+          "template_type": {
+            "default": "roofing",
+            "enum": [
+              "roofing",
+              "insulation",
+              "flooring"
+            ],
+            "title": "Template Type",
+            "type": "string"
+          },
+          "warranty": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EstimateWorkbookWarranty"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "header",
+          "option_label"
+        ],
+        "title": "EstimateWorkbookOption",
+        "type": "object"
+      },
+      "EstimateWorkbookOptionArtifact": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "calculated_outputs": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "title": "Calculated Outputs",
+            "type": "object"
+          },
+          "download_url": {
+            "title": "Download Url",
+            "type": "string"
+          },
+          "expires_at": {
+            "title": "Expires At",
+            "type": "string"
+          },
+          "file_name": {
+            "title": "File Name",
+            "type": "string"
+          },
+          "option_label": {
+            "title": "Option Label",
+            "type": "string"
+          },
+          "template_profile": {
+            "title": "Template Profile",
+            "type": "object"
+          },
+          "template_type": {
+            "title": "Template Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "option_label",
+          "artifact_id",
+          "file_name",
+          "template_type",
+          "download_url",
+          "expires_at"
+        ],
+        "title": "EstimateWorkbookOptionArtifact",
+        "type": "object"
+      },
+      "EstimateWorkbookOptionsRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed": {
+            "default": false,
+            "description": "Must be true after the estimator explicitly approves creation of every listed option.",
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/EstimateWorkbookOption"
+            },
+            "maxItems": 6,
+            "minItems": 2,
+            "title": "Options",
+            "type": "array"
+          }
+        },
+        "required": [
+          "options"
+        ],
+        "title": "EstimateWorkbookOptionsRequest",
+        "type": "object"
+      },
+      "EstimateWorkbookOptionsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "artifacts": {
+            "items": {
+              "$ref": "#/components/schemas/EstimateWorkbookOptionArtifact"
+            },
+            "title": "Artifacts",
+            "type": "array"
+          },
+          "schema_version": {
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "schema_version",
+          "artifacts"
+        ],
+        "title": "EstimateWorkbookOptionsResponse",
+        "type": "object"
+      },
+      "EstimateWorkbookPricing": {
+        "additionalProperties": false,
+        "properties": {
+          "overhead_pct": {
+            "anyOf": [
+              {
+                "maximum": 500.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overhead Pct"
+          },
+          "profit_pct": {
+            "anyOf": [
+              {
+                "maximum": 500.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profit Pct"
+          }
+        },
+        "title": "EstimateWorkbookPricing",
+        "type": "object"
+      },
+      "EstimateWorkbookRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "adders": {
+            "items": {
+              "$ref": "#/components/schemas/EstimateWorkbookAdder"
+            },
+            "maxItems": 20,
+            "title": "Adders",
+            "type": "array"
+          },
+          "confirmed": {
+            "default": false,
+            "description": "Must be true after the estimator explicitly approves file creation.",
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "header": {
+            "$ref": "#/components/schemas/EstimateWorkbookHeader"
+          },
+          "labor": {
+            "items": {
+              "$ref": "#/components/schemas/EstimateWorkbookLabor"
+            },
+            "maxItems": 25,
+            "title": "Labor",
+            "type": "array"
+          },
+          "logistics": {
+            "items": {
+              "$ref": "#/components/schemas/EstimateWorkbookLogistics"
+            },
+            "maxItems": 25,
+            "title": "Logistics",
+            "type": "array"
+          },
+          "materials": {
+            "items": {
+              "$ref": "#/components/schemas/EstimateWorkbookMaterial"
+            },
+            "maxItems": 40,
+            "title": "Materials",
+            "type": "array"
+          },
+          "pricing": {
+            "$ref": "#/components/schemas/EstimateWorkbookPricing"
+          },
+          "scope_of_work": {
+            "items": {
+              "maxLength": 1000,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 30,
+            "title": "Scope Of Work",
+            "type": "array"
+          },
+          "spec_notes": {
+            "items": {
+              "maxLength": 1000,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Spec Notes",
+            "type": "array"
+          },
+          "structured_scope": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EstimateWorkbookStructuredScope"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Structured roofing takeoff used for deterministic area-integrity validation before workbook creation."
+          },
+          "template_type": {
+            "default": "roofing",
+            "enum": [
+              "roofing",
+              "insulation",
+              "flooring"
+            ],
+            "title": "Template Type",
+            "type": "string"
+          },
+          "warranty": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EstimateWorkbookWarranty"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "header"
+        ],
+        "title": "EstimateWorkbookRequest",
+        "type": "object"
+      },
+      "EstimateWorkbookResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "calculated_outputs": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "title": "Calculated Outputs",
+            "type": "object"
+          },
+          "download_url": {
+            "title": "Download Url",
+            "type": "string"
+          },
+          "expires_at": {
+            "title": "Expires At",
+            "type": "string"
+          },
+          "file_name": {
+            "title": "File Name",
+            "type": "string"
+          },
+          "schema_version": {
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "template_profile": {
+            "title": "Template Profile",
+            "type": "object"
+          },
+          "template_type": {
+            "title": "Template Type",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "schema_version",
+          "artifact_id",
+          "file_name",
+          "template_type",
+          "download_url",
+          "expires_at"
+        ],
+        "title": "EstimateWorkbookResponse",
+        "type": "object"
+      },
+      "EstimateWorkbookStructuredScope": {
+        "additionalProperties": false,
+        "properties": {
+          "area_reconciliation": {
+            "title": "Area Reconciliation",
+            "type": "object"
+          },
+          "area_scopes": {
+            "items": {
+              "$ref": "#/components/schemas/EstimateWorkbookAreaScope"
+            },
+            "maxItems": 20,
+            "minItems": 1,
+            "title": "Area Scopes",
+            "type": "array"
+          },
+          "declared_total_area_sqft": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 10000000.0,
+            "title": "Declared Total Area Sqft",
+            "type": "number"
+          },
+          "template_type": {
+            "const": "roofing",
+            "default": "roofing",
+            "title": "Template Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "declared_total_area_sqft",
+          "area_scopes"
+        ],
+        "title": "EstimateWorkbookStructuredScope",
+        "type": "object"
+      },
+      "EstimateWorkbookWarranty": {
+        "additionalProperties": false,
+        "properties": {
+          "area_sqft": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 10000000.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Warranty area in square feet. Current templates calculate warranty cost over header.estimated_sqft, so this must match that value when provided. Use adders.amount for a localized flat allowance.",
+            "title": "Area Sqft"
+          },
+          "include": {
+            "default": true,
+            "title": "Include",
+            "type": "boolean"
+          },
+          "manufacturer": {
+            "default": "",
+            "maxLength": 160,
+            "title": "Manufacturer",
+            "type": "string"
+          },
+          "notes": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Notes",
+            "type": "string"
+          },
+          "pricing_basis": {
+            "const": "per_sqft",
+            "default": "per_sqft",
+            "description": "Warranty pricing is calculated per square foot by the template. Use an adders.amount entry for a flat warranty allowance.",
+            "title": "Pricing Basis",
+            "type": "string"
+          },
+          "unit_cost": {
+            "anyOf": [
+              {
+                "maximum": 25.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Warranty cost in dollars per square foot, multiplied by area_sqft. This is not a flat amount; use adders.amount for a flat cost.",
+            "title": "Unit Cost"
+          },
+          "warranty_type": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Warranty Type",
+            "type": "string"
+          },
+          "years": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Years"
+          }
+        },
+        "title": "EstimateWorkbookWarranty",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HistoricalAssembly": {
+        "additionalProperties": false,
+        "properties": {
+          "area_sqft": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Area Sqft"
+          },
+          "building_type": {
+            "default": "",
+            "title": "Building Type",
+            "type": "string"
+          },
+          "decision_categories": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Decision Categories",
+            "type": "array"
+          },
+          "example_id": {
+            "default": "",
+            "title": "Example Id",
+            "type": "string"
+          },
+          "job_id": {
+            "default": "",
+            "title": "Job Id",
+            "type": "string"
+          },
+          "label": {
+            "default": "",
+            "title": "Label",
+            "type": "string"
+          },
+          "market_segment": {
+            "default": "",
+            "title": "Market Segment",
+            "type": "string"
+          },
+          "match_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Match Reasons",
+            "type": "array"
+          },
+          "material_system": {
+            "default": "",
+            "title": "Material System",
+            "type": "string"
+          },
+          "observation_id": {
+            "title": "Observation Id",
+            "type": "string"
+          },
+          "project_class": {
+            "default": "",
+            "title": "Project Class",
+            "type": "string"
+          },
+          "scope_summary": {
+            "default": "",
+            "title": "Scope Summary",
+            "type": "string"
+          },
+          "similarity_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Similarity Score"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/HistoricalEvidenceSource"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "substrate": {
+            "default": "",
+            "title": "Substrate",
+            "type": "string"
+          },
+          "template_type": {
+            "title": "Template Type",
+            "type": "string"
+          },
+          "warranty_years": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warranty Years"
+          }
+        },
+        "required": [
+          "observation_id",
+          "template_type"
+        ],
+        "title": "HistoricalAssembly",
+        "type": "object"
+      },
+      "HistoricalEvidenceSource": {
+        "additionalProperties": false,
+        "properties": {
+          "document_id": {
+            "default": "",
+            "title": "Document Id",
+            "type": "string"
+          },
+          "example_id": {
+            "default": "",
+            "title": "Example Id",
+            "type": "string"
+          },
+          "file_name": {
+            "default": "",
+            "title": "File Name",
+            "type": "string"
+          },
+          "file_web_url": {
+            "default": "",
+            "title": "File Web Url",
+            "type": "string"
+          },
+          "folder_path": {
+            "default": "",
+            "title": "Folder Path",
+            "type": "string"
+          },
+          "job_id": {
+            "default": "",
+            "title": "Job Id",
+            "type": "string"
+          },
+          "label": {
+            "default": "",
+            "title": "Label",
+            "type": "string"
+          },
+          "match_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Match Reasons",
+            "type": "array"
+          },
+          "reference_area_sqft": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Area Sqft"
+          },
+          "relative_path": {
+            "default": "",
+            "title": "Relative Path",
+            "type": "string"
+          },
+          "similarity_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Similarity Score"
+          }
+        },
+        "title": "HistoricalEvidenceSource",
+        "type": "object"
+      },
+      "HistoricalLaborPerformance": {
+        "additionalProperties": false,
+        "properties": {
+          "activity": {
+            "default": "",
+            "title": "Activity",
+            "type": "string"
+          },
+          "category": {
+            "title": "Category",
+            "type": "string"
+          },
+          "concept_id": {
+            "title": "Concept Id",
+            "type": "string"
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          },
+          "crew_size": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Crew Size"
+          },
+          "daily_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Daily Rate"
+          },
+          "days": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Days"
+          },
+          "estimated_cost": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Cost"
+          },
+          "formula_ready": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Formula Ready"
+          },
+          "hourly_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hourly Rate"
+          },
+          "missing_inputs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing Inputs",
+            "type": "array"
+          },
+          "observation_id": {
+            "title": "Observation Id",
+            "type": "string"
+          },
+          "productivity": {
+            "$ref": "#/components/schemas/HistoricalLaborProductivity"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/HistoricalEvidenceSource"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "support_count": {
+            "default": 0,
+            "title": "Support Count",
+            "type": "integer"
+          },
+          "total_hours": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Hours"
+          }
+        },
+        "required": [
+          "observation_id",
+          "concept_id",
+          "category",
+          "productivity"
+        ],
+        "title": "HistoricalLaborPerformance",
+        "type": "object"
+      },
+      "HistoricalLaborProductivity": {
+        "additionalProperties": false,
+        "properties": {
+          "driver_quantity": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Driver Quantity"
+          },
+          "driver_type": {
+            "default": "",
+            "title": "Driver Type",
+            "type": "string"
+          },
+          "driver_unit": {
+            "default": "",
+            "title": "Driver Unit",
+            "type": "string"
+          },
+          "evidence_count": {
+            "default": 0,
+            "title": "Evidence Count",
+            "type": "integer"
+          },
+          "rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rate"
+          },
+          "rate_unit": {
+            "default": "",
+            "title": "Rate Unit",
+            "type": "string"
+          }
+        },
+        "title": "HistoricalLaborProductivity",
+        "type": "object"
+      },
+      "HistoricalMaterialUsage": {
+        "additionalProperties": false,
+        "properties": {
+          "application_parameters": {
+            "items": {
+              "$ref": "#/components/schemas/HistoricalMeasurement"
+            },
+            "title": "Application Parameters",
+            "type": "array"
+          },
+          "basis_measurements": {
+            "items": {
+              "$ref": "#/components/schemas/HistoricalMeasurement"
+            },
+            "title": "Basis Measurements",
+            "type": "array"
+          },
+          "category": {
+            "title": "Category",
+            "type": "string"
+          },
+          "concept_id": {
+            "title": "Concept Id",
+            "type": "string"
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          },
+          "estimated_cost": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Cost"
+          },
+          "formula_ready": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Formula Ready"
+          },
+          "material_name": {
+            "default": "",
+            "title": "Material Name",
+            "type": "string"
+          },
+          "missing_inputs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing Inputs",
+            "type": "array"
+          },
+          "observation_id": {
+            "title": "Observation Id",
+            "type": "string"
+          },
+          "quantity_measurements": {
+            "items": {
+              "$ref": "#/components/schemas/HistoricalMeasurement"
+            },
+            "title": "Quantity Measurements",
+            "type": "array"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/HistoricalEvidenceSource"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "support_count": {
+            "default": 0,
+            "title": "Support Count",
+            "type": "integer"
+          },
+          "unit_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit Price"
+          }
+        },
+        "required": [
+          "observation_id",
+          "concept_id",
+          "category"
+        ],
+        "title": "HistoricalMaterialUsage",
+        "type": "object"
+      },
+      "HistoricalMeasurement": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "unit": {
+            "title": "Unit",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "number"
+          }
+        },
+        "required": [
+          "name",
+          "value",
+          "unit"
+        ],
+        "title": "HistoricalMeasurement",
+        "type": "object"
+      },
+      "JobContextResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of": {
+            "title": "As Of",
+            "type": "string"
+          },
+          "attention_items": {
+            "items": {
+              "type": "object"
+            },
+            "maxItems": 25,
+            "title": "Attention Items",
+            "type": "array"
+          },
+          "coverage": {
+            "title": "Coverage",
+            "type": "object"
+          },
+          "data_freshness": {
+            "title": "Data Freshness",
+            "type": "object"
+          },
+          "documents": {
+            "items": {
+              "type": "object"
+            },
+            "maxItems": 20,
+            "title": "Documents",
+            "type": "array"
+          },
+          "job": {
+            "title": "Job",
+            "type": "object"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "recent_daily_tracking": {
+            "items": {
+              "type": "object"
+            },
+            "maxItems": 10,
+            "title": "Recent Daily Tracking",
+            "type": "array"
+          },
+          "recent_office_activity": {
+            "items": {
+              "type": "object"
+            },
+            "maxItems": 10,
+            "title": "Recent Office Activity",
+            "type": "array"
+          },
+          "response_budget": {
+            "title": "Response Budget",
+            "type": "object"
+          },
+          "schedule": {
+            "title": "Schedule",
+            "type": "object"
+          },
+          "schema_version": {
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "source_links": {
+            "items": {
+              "$ref": "#/components/schemas/JobSourceLink"
+            },
+            "title": "Source Links",
+            "type": "array"
+          },
+          "source_tables": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Tables",
+            "type": "array"
+          },
+          "tracking_summary": {
+            "items": {
+              "type": "object"
+            },
+            "maxItems": 5,
+            "title": "Tracking Summary",
+            "type": "array"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          },
+          "workflow": {
+            "title": "Workflow",
+            "type": "object"
+          }
+        },
+        "required": [
+          "schema_version",
+          "as_of",
+          "job_id",
+          "job"
+        ],
+        "title": "JobContextResponse",
+        "type": "object"
+      },
+      "JobSearchRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "division": {
+            "default": "",
+            "maxLength": 100,
+            "title": "Division",
+            "type": "string"
+          },
+          "job_ids": {
+            "description": "Optional authoritative job IDs to retrieve.",
+            "items": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 25,
+            "title": "Job Ids",
+            "type": "array"
+          },
+          "limit": {
+            "default": 10,
+            "maximum": 25.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "needs_attention": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "True returns jobs with operational warnings or missing artifacts.",
+            "title": "Needs Attention"
+          },
+          "owner": {
+            "default": "",
+            "description": "Exact deal owner or assigned user.",
+            "maxLength": 200,
+            "title": "Owner",
+            "type": "string"
+          },
+          "pipeline_status": {
+            "default": "",
+            "maxLength": 100,
+            "title": "Pipeline Status",
+            "type": "string"
+          },
+          "query": {
+            "default": "",
+            "description": "Customer, job name, address, city, folder name, or job ID text.",
+            "maxLength": 200,
+            "title": "Query",
+            "type": "string"
+          },
+          "workflow_status": {
+            "default": "",
+            "maxLength": 100,
+            "title": "Workflow Status",
+            "type": "string"
+          }
+        },
+        "title": "JobSearchRequest",
+        "type": "object"
+      },
+      "JobSearchResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of": {
+            "title": "As Of",
+            "type": "string"
+          },
+          "attention_items": {
+            "items": {
+              "type": "object"
+            },
+            "maxItems": 25,
+            "title": "Attention Items",
+            "type": "array"
+          },
+          "coverage": {
+            "title": "Coverage",
+            "type": "object"
+          },
+          "data_freshness": {
+            "title": "Data Freshness",
+            "type": "object"
+          },
+          "filters_applied": {
+            "title": "Filters Applied",
+            "type": "object"
+          },
+          "headline_metrics": {
+            "title": "Headline Metrics",
+            "type": "object"
+          },
+          "records": {
+            "items": {
+              "type": "object"
+            },
+            "maxItems": 25,
+            "title": "Records",
+            "type": "array"
+          },
+          "response_budget": {
+            "title": "Response Budget",
+            "type": "object"
+          },
+          "schema_version": {
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "source_links": {
+            "items": {
+              "$ref": "#/components/schemas/JobSourceLink"
+            },
+            "title": "Source Links",
+            "type": "array"
+          },
+          "source_tables": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Tables",
+            "type": "array"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "schema_version",
+          "as_of",
+          "filters_applied",
+          "headline_metrics"
+        ],
+        "title": "JobSearchResponse",
+        "type": "object"
+      },
+      "JobSourceLink": {
+        "additionalProperties": false,
+        "properties": {
+          "document_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Id"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "source_type": {
+            "title": "Source Type",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_type",
+          "job_id",
+          "label",
+          "url"
+        ],
+        "title": "JobSourceLink",
+        "type": "object"
+      },
+      "OfficeActivityRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "default": "",
+            "description": "Exact office work code, such as Estimating or Sales Call.",
+            "maxLength": 100,
+            "title": "Code",
+            "type": "string"
+          },
+          "employee": {
+            "default": "",
+            "description": "Exact employee name as captured in the source timesheet.",
+            "maxLength": 200,
+            "title": "Employee",
+            "type": "string"
+          },
+          "end_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Inclusive activity end date. Defaults to today.",
+            "title": "End Date"
+          },
+          "limit": {
+            "default": 10,
+            "maximum": 25.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "project_query": {
+            "default": "",
+            "description": "Case-insensitive text contained in the source project label.",
+            "maxLength": 200,
+            "title": "Project Query",
+            "type": "string"
+          },
+          "start_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Inclusive activity start date. Defaults to six days before end_date.",
+            "title": "Start Date"
+          },
+          "timed_only": {
+            "default": false,
+            "description": "Exclude activity-only touches without a positive captured duration.",
+            "title": "Timed Only",
+            "type": "boolean"
+          }
+        },
+        "title": "OfficeActivityRequest",
+        "type": "object"
+      },
+      "OfficeActivityResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of": {
+            "title": "As Of",
+            "type": "string"
+          },
+          "attention_items": {
+            "items": {
+              "type": "object"
+            },
+            "maxItems": 25,
+            "title": "Attention Items",
+            "type": "array"
+          },
+          "code_rollup": {
+            "items": {
+              "type": "object"
+            },
+            "maxItems": 25,
+            "title": "Code Rollup",
+            "type": "array"
+          },
+          "coverage": {
+            "title": "Coverage",
+            "type": "object"
+          },
+          "daily_rollup": {
+            "items": {
+              "type": "object"
+            },
+            "maxItems": 92,
+            "title": "Daily Rollup",
+            "type": "array"
+          },
+          "data_freshness": {
+            "title": "Data Freshness",
+            "type": "object"
+          },
+          "employee_rollup": {
+            "items": {
+              "type": "object"
+            },
+            "maxItems": 25,
+            "title": "Employee Rollup",
+            "type": "array"
+          },
+          "filters_applied": {
+            "title": "Filters Applied",
+            "type": "object"
+          },
+          "headline_metrics": {
+            "title": "Headline Metrics",
+            "type": "object"
+          },
+          "project_rollup": {
+            "items": {
+              "type": "object"
+            },
+            "maxItems": 25,
+            "title": "Project Rollup",
+            "type": "array"
+          },
+          "records": {
+            "items": {
+              "type": "object"
+            },
+            "maxItems": 25,
+            "title": "Records",
+            "type": "array"
+          },
+          "response_budget": {
+            "title": "Response Budget",
+            "type": "object"
+          },
+          "schema_version": {
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "source_links": {
+            "items": {
+              "$ref": "#/components/schemas/JobSourceLink"
+            },
+            "title": "Source Links",
+            "type": "array"
+          },
+          "source_tables": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Tables",
+            "type": "array"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "schema_version",
+          "as_of",
+          "filters_applied",
+          "headline_metrics"
+        ],
+        "title": "OfficeActivityResponse",
+        "type": "object"
+      },
+      "OfficeJobProgressRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "division": {
+            "default": "",
+            "maxLength": 100,
+            "title": "Division",
+            "type": "string"
+          },
+          "employee": {
+            "default": "",
+            "description": "Exact employee name as captured in the source timesheet.",
+            "maxLength": 200,
+            "title": "Employee",
+            "type": "string"
+          },
+          "include_closed": {
+            "default": false,
+            "description": "Include completed, invoiced, cancelled, or closed linked jobs.",
+            "title": "Include Closed",
+            "type": "boolean"
+          },
+          "include_unmatched": {
+            "default": true,
+            "description": "Include project labels needing job-link review.",
+            "title": "Include Unmatched",
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 10,
+            "maximum": 25.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "lookback_days": {
+            "default": 90,
+            "description": "Calendar-day activity lookback ending today.",
+            "maximum": 365.0,
+            "minimum": 7.0,
+            "title": "Lookback Days",
+            "type": "integer"
+          },
+          "project_query": {
+            "default": "",
+            "description": "Case-insensitive text contained in the source project label.",
+            "maxLength": 200,
+            "title": "Project Query",
+            "type": "string"
+          },
+          "stalled_after_days": {
+            "default": 7,
+            "description": "Mark projects stalled after this many days without activity.",
+            "maximum": 90.0,
+            "minimum": 1.0,
+            "title": "Stalled After Days",
+            "type": "integer"
+          },
+          "stalled_only": {
+            "default": false,
+            "title": "Stalled Only",
+            "type": "boolean"
+          }
+        },
+        "title": "OfficeJobProgressRequest",
+        "type": "object"
+      },
+      "OfficeJobProgressResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of": {
+            "title": "As Of",
+            "type": "string"
+          },
+          "attention_items": {
+            "items": {
+              "type": "object"
+            },
+            "maxItems": 25,
+            "title": "Attention Items",
+            "type": "array"
+          },
+          "coverage": {
+            "title": "Coverage",
+            "type": "object"
+          },
+          "data_freshness": {
+            "title": "Data Freshness",
+            "type": "object"
+          },
+          "filters_applied": {
+            "title": "Filters Applied",
+            "type": "object"
+          },
+          "headline_metrics": {
+            "title": "Headline Metrics",
+            "type": "object"
+          },
+          "link_status_rollup": {
+            "items": {
+              "type": "object"
+            },
+            "title": "Link Status Rollup",
+            "type": "array"
+          },
+          "methodology": {
+            "title": "Methodology",
+            "type": "object"
+          },
+          "owner_priorities": {
+            "items": {
+              "type": "object"
+            },
+            "maxItems": 5,
+            "title": "Owner Priorities",
+            "type": "array"
+          },
+          "records": {
+            "items": {
+              "type": "object"
+            },
+            "maxItems": 25,
+            "title": "Records",
+            "type": "array"
+          },
+          "response_budget": {
+            "title": "Response Budget",
+            "type": "object"
+          },
+          "schema_version": {
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "source_links": {
+            "items": {
+              "$ref": "#/components/schemas/JobSourceLink"
+            },
+            "title": "Source Links",
+            "type": "array"
+          },
+          "source_tables": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Tables",
+            "type": "array"
+          },
+          "truth_class": {
+            "title": "Truth Class",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "schema_version",
+          "as_of",
+          "truth_class",
+          "methodology",
+          "filters_applied",
+          "headline_metrics"
+        ],
+        "title": "OfficeJobProgressResponse",
+        "type": "object"
+      },
+      "OperationsBacklogRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "division": {
+            "default": "",
+            "maxLength": 100,
+            "title": "Division",
+            "type": "string"
+          },
+          "include_completed": {
+            "default": false,
+            "description": "Include jobs the operations snapshot classifies as completed.",
+            "title": "Include Completed",
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 10,
+            "maximum": 25.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "needs_attention": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Needs Attention"
+          },
+          "readiness_statuses": {
+            "items": {
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 10,
+            "title": "Readiness Statuses",
+            "type": "array"
+          },
+          "unscheduled_only": {
+            "default": false,
+            "title": "Unscheduled Only",
+            "type": "boolean"
+          }
+        },
+        "title": "OperationsBacklogRequest",
+        "type": "object"
+      },
+      "OperationsIntelligenceResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of": {
+            "title": "As Of",
+            "type": "string"
+          },
+          "attention_items": {
+            "items": {
+              "type": "object"
+            },
+            "maxItems": 25,
+            "title": "Attention Items",
+            "type": "array"
+          },
+          "coverage": {
+            "title": "Coverage",
+            "type": "object"
+          },
+          "crew_rollup": {
+            "items": {
+              "type": "object"
+            },
+            "title": "Crew Rollup",
+            "type": "array"
+          },
+          "data_freshness": {
+            "title": "Data Freshness",
+            "type": "object"
+          },
+          "division_rollup": {
+            "items": {
+              "type": "object"
+            },
+            "title": "Division Rollup",
+            "type": "array"
+          },
+          "filters_applied": {
+            "title": "Filters Applied",
+            "type": "object"
+          },
+          "headline_metrics": {
+            "title": "Headline Metrics",
+            "type": "object"
+          },
+          "project_health_rollup": {
+            "items": {
+              "type": "object"
+            },
+            "title": "Project Health Rollup",
+            "type": "array"
+          },
+          "readiness_rollup": {
+            "items": {
+              "type": "object"
+            },
+            "title": "Readiness Rollup",
+            "type": "array"
+          },
+          "records": {
+            "items": {
+              "type": "object"
+            },
+            "maxItems": 25,
+            "title": "Records",
+            "type": "array"
+          },
+          "response_budget": {
+            "title": "Response Budget",
+            "type": "object"
+          },
+          "schedule_health_rollup": {
+            "items": {
+              "type": "object"
+            },
+            "title": "Schedule Health Rollup",
+            "type": "array"
+          },
+          "schema_version": {
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "source_links": {
+            "items": {
+              "$ref": "#/components/schemas/JobSourceLink"
+            },
+            "title": "Source Links",
+            "type": "array"
+          },
+          "source_tables": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Tables",
+            "type": "array"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "schema_version",
+          "as_of",
+          "filters_applied",
+          "headline_metrics"
+        ],
+        "title": "OperationsIntelligenceResponse",
+        "type": "object"
+      },
+      "OperationsScheduleRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "crew_leader": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Crew Leader",
+            "type": "string"
+          },
+          "division": {
+            "default": "",
+            "maxLength": 100,
+            "title": "Division",
+            "type": "string"
+          },
+          "end_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Inclusive schedule window end. When both dates are omitted, the normal schedule view defaults to 14 days from today.",
+            "title": "End Date"
+          },
+          "include_completed": {
+            "default": false,
+            "title": "Include Completed",
+            "type": "boolean"
+          },
+          "include_unscheduled": {
+            "default": false,
+            "title": "Include Unscheduled",
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 10,
+            "maximum": 25.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "risk_only": {
+            "default": false,
+            "description": "Return jobs with a persisted schedule blocker or production-risk status. Without explicit dates, this searches all active operations rows.",
+            "title": "Risk Only",
+            "type": "boolean"
+          },
+          "start_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Inclusive schedule window start. When both dates are omitted, the normal schedule view defaults to today.",
+            "title": "Start Date"
+          }
+        },
+        "title": "OperationsScheduleRequest",
+        "type": "object"
+      },
+      "ProductionBudgetHealthRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "division": {
+            "default": "",
+            "maxLength": 100,
+            "title": "Division",
+            "type": "string"
+          },
+          "include_completed": {
+            "default": false,
+            "description": "Include completed, invoiced, cancelled, or closed jobs.",
+            "title": "Include Completed",
+            "type": "boolean"
+          },
+          "include_no_actuals": {
+            "default": false,
+            "description": "Include jobs with an estimate-derived budget but no comparable tracked quantities or hours.",
+            "title": "Include No Actuals",
+            "type": "boolean"
+          },
+          "job_ids": {
+            "description": "Optional authoritative job IDs. Leave empty for the prioritized portfolio view.",
+            "items": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 25,
+            "title": "Job Ids",
+            "type": "array"
+          },
+          "limit": {
+            "default": 10,
+            "maximum": 25.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "over_plan_only": {
+            "default": false,
+            "description": "Return only jobs whose comparable tracked usage exceeds plan.",
+            "title": "Over Plan Only",
+            "type": "boolean"
+          }
+        },
+        "title": "ProductionBudgetHealthRequest",
+        "type": "object"
+      },
+      "ProductionBudgetHealthResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of": {
+            "title": "As Of",
+            "type": "string"
+          },
+          "attention_items": {
+            "items": {
+              "type": "object"
+            },
+            "maxItems": 25,
+            "title": "Attention Items",
+            "type": "array"
+          },
+          "bucket_details": {
+            "items": {
+              "type": "object"
+            },
+            "maxItems": 125,
+            "title": "Bucket Details",
+            "type": "array"
+          },
+          "bucket_rollup": {
+            "items": {
+              "type": "object"
+            },
+            "title": "Bucket Rollup",
+            "type": "array"
+          },
+          "coverage": {
+            "title": "Coverage",
+            "type": "object"
+          },
+          "data_freshness": {
+            "title": "Data Freshness",
+            "type": "object"
+          },
+          "filters_applied": {
+            "title": "Filters Applied",
+            "type": "object"
+          },
+          "headline_metrics": {
+            "title": "Headline Metrics",
+            "type": "object"
+          },
+          "methodology": {
+            "title": "Methodology",
+            "type": "object"
+          },
+          "portfolio_rankings": {
+            "additionalProperties": {
+              "items": {
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "title": "Portfolio Rankings",
+            "type": "object"
+          },
+          "records": {
+            "items": {
+              "type": "object"
+            },
+            "maxItems": 25,
+            "title": "Records",
+            "type": "array"
+          },
+          "response_budget": {
+            "title": "Response Budget",
+            "type": "object"
+          },
+          "schema_version": {
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "source_links": {
+            "items": {
+              "$ref": "#/components/schemas/JobSourceLink"
+            },
+            "title": "Source Links",
+            "type": "array"
+          },
+          "source_tables": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Tables",
+            "type": "array"
+          },
+          "truth_class": {
+            "title": "Truth Class",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "schema_version",
+          "as_of",
+          "truth_class",
+          "methodology",
+          "filters_applied",
+          "headline_metrics"
+        ],
+        "title": "ProductionBudgetHealthResponse",
+        "type": "object"
+      },
+      "SalesFollowupRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "division": {
+            "default": "",
+            "maxLength": 100,
+            "title": "Division",
+            "type": "string"
+          },
+          "followup_status": {
+            "default": "",
+            "description": "Exact prepared follow-up status, such as Ready for follow-up.",
+            "maxLength": 100,
+            "title": "Followup Status",
+            "type": "string"
+          },
+          "limit": {
+            "default": 10,
+            "maximum": 25.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "overdue_only": {
+            "default": false,
+            "title": "Overdue Only",
+            "type": "boolean"
+          },
+          "owner": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Owner",
+            "type": "string"
+          },
+          "unassigned_only": {
+            "default": false,
+            "title": "Unassigned Only",
+            "type": "boolean"
+          }
+        },
+        "title": "SalesFollowupRequest",
+        "type": "object"
+      },
+      "SalesIntelligenceResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of": {
+            "title": "As Of",
+            "type": "string"
+          },
+          "attention_items": {
+            "items": {
+              "type": "object"
+            },
+            "maxItems": 25,
+            "title": "Attention Items",
+            "type": "array"
+          },
+          "coverage": {
+            "title": "Coverage",
+            "type": "object"
+          },
+          "data_freshness": {
+            "title": "Data Freshness",
+            "type": "object"
+          },
+          "filters_applied": {
+            "title": "Filters Applied",
+            "type": "object"
+          },
+          "headline_metrics": {
+            "title": "Headline Metrics",
+            "type": "object"
+          },
+          "owner_rollup": {
+            "items": {
+              "type": "object"
+            },
+            "title": "Owner Rollup",
+            "type": "array"
+          },
+          "records": {
+            "items": {
+              "type": "object"
+            },
+            "maxItems": 25,
+            "title": "Records",
+            "type": "array"
+          },
+          "response_budget": {
+            "title": "Response Budget",
+            "type": "object"
+          },
+          "schema_version": {
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "source_links": {
+            "items": {
+              "$ref": "#/components/schemas/JobSourceLink"
+            },
+            "title": "Source Links",
+            "type": "array"
+          },
+          "source_tables": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Tables",
+            "type": "array"
+          },
+          "stage_rollup": {
+            "items": {
+              "type": "object"
+            },
+            "title": "Stage Rollup",
+            "type": "array"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "schema_version",
+          "as_of",
+          "filters_applied",
+          "headline_metrics"
+        ],
+        "title": "SalesIntelligenceResponse",
+        "type": "object"
+      },
+      "SalesPipelineRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "division": {
+            "default": "",
+            "maxLength": 100,
+            "title": "Division",
+            "type": "string"
+          },
+          "include_completed": {
+            "default": false,
+            "description": "Include completed and other non-open pipeline statuses.",
+            "title": "Include Completed",
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 10,
+            "maximum": 25.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "owner": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Owner",
+            "type": "string"
+          },
+          "pipeline_statuses": {
+            "items": {
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 10,
+            "title": "Pipeline Statuses",
+            "type": "array"
+          }
+        },
+        "title": "SalesPipelineRequest",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Estimator evidence, controlled workbook generation, and read-only operational intelligence for conversational agents.",
+    "title": "Spray-Tec Business Intelligence API",
+    "version": "0.13.6"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/v1/estimating/context": {
+      "post": {
+        "description": "Returns a read-only evidence package for Copilot reasoning. This operation does not call an LLM or create an estimate.",
+        "operationId": "getEstimatorContext",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EstimateContextRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EstimateContextResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retrieve estimator evidence and deterministic context",
+        "x-openai-isConsequential": false
+      }
+    },
+    "/v1/estimating/workbook": {
+      "post": {
+        "description": "Profiles the selected roofing, insulation, or flooring template, creates and recalculates a draft, validates required cost outputs, and returns a short-lived download link. This consequential operation requires confirmed=true and does not call an LLM or upload to SharePoint.",
+        "operationId": "generateEstimateWorkbook",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EstimateWorkbookRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EstimateWorkbookResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create an estimate workbook after estimator confirmation",
+        "x-openai-isConsequential": true
+      }
+    },
+    "/v1/estimating/workbook-options": {
+      "post": {
+        "description": "Creates one independently recalculated and validated workbook for each complete option. Use for alternate warranties, areas, systems, or scope packages. The operation is atomic, requires confirmed=true, does not call an LLM, and does not upload files to SharePoint.",
+        "operationId": "generateEstimateWorkbookOptions",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EstimateWorkbookOptionsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EstimateWorkbookOptionsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create estimate workbooks for multiple approved options",
+        "x-openai-isConsequential": true
+      }
+    },
+    "/v1/jobs/search": {
+      "post": {
+        "description": "Returns a bounded list of jobs and operational attention signals. Use the returned stable job_id with getJobContext for detail.",
+        "operationId": "searchJobs",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JobSearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobSearchResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search the Spray-Tec job board",
+        "x-openai-isConsequential": false
+      }
+    },
+    "/v1/jobs/{job_id}/context": {
+      "get": {
+        "description": "Returns read-only job-board, workflow, schedule, tracking, document, and bounded office-activity evidence for an authoritative job_id.",
+        "operationId": "getJobContext",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobContextResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retrieve complete operational context for one job",
+        "x-openai-isConsequential": false
+      }
+    },
+    "/v1/office/activity": {
+      "post": {
+        "description": "Returns complete bounded-date rollups by employee, work code, project label, and day, plus recent source entries and timesheet links. Activity-only touches remain distinct from captured hours. This operation is read-only.",
+        "operationId": "getOfficeActivity",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OfficeActivityRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OfficeActivityResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Summarize office timesheet activity",
+        "x-openai-isConsequential": false
+      }
+    },
+    "/v1/office/job-progress": {
+      "post": {
+        "description": "Returns read-only office activity rollups by project label, including captured hours, milestones, next actions, stalled-work signals, and explicitly qualified authoritative or inferred job links. Progress means activity evidence, not percent complete.",
+        "operationId": "getOfficeJobProgress",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OfficeJobProgressRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OfficeJobProgressResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Summarize office work progress by project and qualified job link",
+        "x-openai-isConsequential": false
+      }
+    },
+    "/v1/operations/backlog": {
+      "post": {
+        "description": "Returns current contracted backlog totals, readiness and division rollups, prioritized blockers, and source folders. This operation is read-only.",
+        "operationId": "getOperationsBacklog",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperationsBacklogRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationsIntelligenceResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Summarize contracted backlog readiness",
+        "x-openai-isConsequential": false
+      }
+    },
+    "/v1/operations/production-budget-health": {
+      "post": {
+        "description": "Returns read-only production-plan cost proxies by job and budget bucket. Tracked quantities and hours are valued with estimate-derived rates. The results are not accounting actual costs, percent complete, or realized profitability.",
+        "operationId": "getProductionBudgetHealth",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProductionBudgetHealthRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductionBudgetHealthResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Compare tracked production usage with estimate-derived budgets",
+        "x-openai-isConsequential": false
+      }
+    },
+    "/v1/operations/schedule": {
+      "post": {
+        "description": "Returns a bounded schedule window or the active production-risk queue with crew, schedule health, project health, and tracking signals. This operation is read-only.",
+        "operationId": "getOperationsSchedule",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperationsScheduleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationsIntelligenceResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retrieve schedule workload and production risks",
+        "x-openai-isConsequential": false
+      }
+    },
+    "/v1/reporting/chart-data": {
+      "post": {
+        "description": "Reuses the authoritative sales, operations, office, or production-budget service and returns a normalized chart specification with bounded rows. The operation is read-only and does not generate narrative conclusions.",
+        "operationId": "getChartDataset",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChartDatasetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChartDatasetResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retrieve a chart-ready business dataset",
+        "x-openai-isConsequential": false
+      }
+    },
+    "/v1/reporting/chart-data.csv": {
+      "post": {
+        "description": "Returns the same normalized chart dataset as a CSV file for ChatGPT Data Analysis. The operation is read-only.",
+        "operationId": "downloadChartDatasetCsv",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChartDatasetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Chart-ready CSV file"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download a chart-ready business dataset as CSV",
+        "x-openai-isConsequential": false
+      }
+    },
+    "/v1/sales/follow-ups": {
+      "post": {
+        "description": "Returns a bounded, prioritized follow-up queue with ownership, due-state, data-quality issues, opportunity value, and source links. This operation is read-only.",
+        "operationId": "getSalesFollowUps",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SalesFollowupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SalesIntelligenceResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retrieve the proposed-job sales follow-up queue",
+        "x-openai-isConsequential": false
+      }
+    },
+    "/v1/sales/pipeline": {
+      "post": {
+        "description": "Returns bounded pipeline totals, stage and owner rollups, top opportunities, attention items, and source links. This operation is read-only.",
+        "operationId": "getSalesPipeline",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SalesPipelineRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SalesIntelligenceResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Summarize the current sales pipeline",
+        "x-openai-isConsequential": false
+      }
+    }
+  },
+  "servers": [
+    {
+      "description": "Replace with the deployed estimator API host.",
+      "url": "https://spraytec-business-api.icysand-5925ab36.eastus2.azurecontainerapps.io"
+    }
+  ]
+}

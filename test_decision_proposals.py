@@ -13,6 +13,9 @@ from jobscan.estimator.decision_proposals import (
     merge_decision_proposals,
 )
 from jobscan.estimator.schemas import EstimatorData
+from jobscan.estimator.scope_integrity import evaluate_roofing_scope_integrity
+from jobscan.estimator.planning_guidance import build_estimator_planning_guidance
+from jobscan.estimator.template_examples import build_similar_answer_key_digest
 
 
 def grossman_structured_scope() -> dict:
@@ -253,6 +256,196 @@ def test_grossman_scope_canonicalization_preserves_nested_area_and_linear_takeof
         "counter_flashing": 24,
     }
     assert any("nested scope" in conflict for conflict in scope["scope_conflicts"])
+
+
+def test_grossman_scope_integrity_accepts_nested_deck_repair() -> None:
+    result = evaluate_roofing_scope_integrity(grossman_structured_scope())
+
+    assert result["status"] == "valid_with_warnings"
+    assert result["blocking_issues"] == []
+    assert result["canonical_area_total_sqft"] == 5136
+    assert result["board_basis_sqft"] == 3120
+    assert result["decking_replacement_sqft"] == 320
+    assert result["requires_tearoff"] is True
+
+
+def test_grossman_scope_integrity_blocks_orphaned_nested_area() -> None:
+    scope = grossman_structured_scope()
+    scope["area_scopes"][1]["parent_scope_id"] = "missing-area"
+
+    result = evaluate_roofing_scope_integrity(scope)
+
+    assert result["status"] == "blocked"
+    assert any("missing parent" in issue for issue in result["blocking_issues"])
+
+
+def test_similar_answer_keys_hard_exclude_target_job_and_source_file() -> None:
+    data = grossman_estimator_data()
+    scope = grossman_structured_scope()
+    scope["exclude_job_ids"] = ["recoat-only"]
+    scope["exclude_source_files"] = [
+        "Estimate 204 Pearl Street Wet RR + Repairs.xlsx"
+    ]
+
+    result = build_similar_answer_key_digest(data, scope=scope, limit=5)
+
+    assert result["matched_answer_keys"] == []
+    assert result["retrieval"]["excluded_candidate_count"] == 2
+
+
+def test_grossman_planning_guidance_recommends_reviewable_purchase_rounding_and_labor() -> None:
+    result = build_estimator_planning_guidance(
+        scope=grossman_structured_scope(),
+        data=grossman_estimator_data(),
+    )
+
+    purchasing = {
+        row["category"]: row
+        for row in result["purchasing_guidance"]
+        if row["category"] in {"roofing_foam", "coating", "board_stock"}
+    }
+    assert purchasing["roofing_foam"]["measured_quantity"] == 5136
+    assert purchasing["roofing_foam"]["recommended_purchase_quantity"] == 5250
+    assert purchasing["coating"]["recommended_purchase_quantity"] == 5200
+    assert purchasing["board_stock"]["recommended_purchase_quantity"] == 3136
+    assert all(row["review_required"] for row in purchasing.values())
+
+    metal = [
+        row
+        for row in result["purchasing_guidance"]
+        if row["category"] == "edge_metal"
+    ]
+    assert sorted(row["recommended_purchase_quantity"] for row in metal) == [
+        30,
+        60,
+        60,
+    ]
+
+    labor = {row["category"]: row for row in result["labor_plan_guidance"]}
+    assert labor["labor_prep"]["recommended_total_hours"] == 77
+    assert labor["labor_prep"]["current_people_daily_rate"] == 2100
+    assert labor["labor_prep"]["rate_source"] == "current_people_tab"
+    assert labor["labor_base"]["recommended_total_hours"] == 154.1
+    assert labor["labor_base"]["formula_authority"] == (
+        "workbook_people_rate_and_labor_formula"
+    )
+    assert labor["labor_tearoff"]["calibration_status"] == "missing_calibration"
+    assert labor["labor_tearoff"]["blocking_input_required"] is True
+    assert labor["labor_board"]["blocking_input_required"] is True
+    assert labor["labor_top_coat"]["blocking_input_required"] is True
+    assert labor["labor_cleanup"]["blocking_input_required"] is True
+
+
+def test_small_roof_planning_rounds_without_large_project_bias() -> None:
+    scope = {
+        "template_type": "roofing",
+        "estimated_sqft": 484,
+        "area_scopes": [
+            {
+                "scope_id": "repair",
+                "scope_role": "exclusive_area",
+                "area_sqft": 484,
+                "action": "Install coated foam over existing roof",
+                "proposed_assembly": "1.5 inch coated foam roof",
+            }
+        ],
+        "area_reconciliation": {"declared_total_area_sqft": 484},
+    }
+
+    result = build_estimator_planning_guidance(scope=scope)
+    purchasing = {
+        row["category"]: row for row in result["purchasing_guidance"]
+    }
+
+    assert purchasing["roofing_foam"]["recommended_purchase_quantity"] == 500
+    assert purchasing["coating"]["recommended_purchase_quantity"] == 500
+    assert "board_stock" not in purchasing
+    assert purchasing["coating"]["adjustment_pct"] == 3.306
+
+
+def test_purchase_guidance_uses_supported_history_without_compounding_rounding() -> None:
+    scope = grossman_structured_scope()
+    result = build_estimator_planning_guidance(
+        scope=scope,
+        historical_material_usage=[
+            {
+                "category": "foam",
+                "basis_measurements": [
+                    {"name": "basis_sqft", "value": 5250, "unit": "sqft"}
+                ],
+                "support_count": 3,
+                "sources": [
+                    {"reference_area_sqft": 5000},
+                    {"reference_area_sqft": 5000},
+                ],
+            }
+        ],
+    )
+
+    foam = next(
+        row for row in result["purchasing_guidance"]
+        if row["category"] == "roofing_foam"
+    )
+    assert foam["historical_ratio"] == 1.05
+    assert foam["historical_support_count"] == 3
+    assert foam["recommended_purchase_quantity"] == 5250
+    assert foam["method"] == "package_rounding_with_historical_support"
+
+
+def test_labor_guidance_fills_required_task_from_semantic_productivity() -> None:
+    data = EstimatorData(
+        template_labor_options=pd.DataFrame(
+            [
+                {
+                    "template_labor_option_id": "people-top-5",
+                    "template_type": "roofing",
+                    "source_type": "people_daily_rate_selector",
+                    "labor_package": "labor_top_coat",
+                    "lookup_key": "5",
+                    "source_values_json": {"daily_rate": 2050},
+                }
+            ]
+        )
+    )
+    result = build_estimator_planning_guidance(
+        scope=grossman_structured_scope(),
+        data=data,
+        historical_labor_performance=[
+            {
+                "category": "labor_top_coat",
+                "total_hours": 50,
+                "crew_size": 5,
+                "days": 1,
+                "daily_rate": 1900,
+                "support_count": 3,
+                "confidence": 0.8,
+                "productivity": {
+                    "driver_type": "project_sqft",
+                    "rate": 10,
+                    "rate_unit": "hours_per_1000_sqft",
+                    "evidence_count": 3,
+                },
+                "sources": [
+                    {
+                        "job_id": "HIST-1",
+                        "file_name": "Historical roof.xlsx",
+                        "reference_area_sqft": 5000,
+                    }
+                ],
+            }
+        ],
+    )
+
+    labor = {row["category"]: row for row in result["labor_plan_guidance"]}
+    top = labor["labor_top_coat"]
+    assert top["calibration_status"] == "historical_candidate"
+    assert top["recommended_total_hours"] == 51.4
+    assert top["recommended_crew_size"] == 5
+    assert top["recommended_days"] == 1.03
+    assert top["current_people_daily_rate"] == 2050
+    assert top["rate_source"] == "current_people_tab"
+    assert top["estimated_labor_cost_candidate"] == 2111.5
+    assert top["blocking_input_required"] is False
 
 
 def test_grossman_scope_compiler_scales_one_comparable_and_prefers_materials_price() -> None:

@@ -1,0 +1,113 @@
+{
+  "suite_id": "spraytec_presentation_readiness_v1",
+  "purpose": "Compact user-facing demonstration and regression suite for the Azure-backed Spray-Tec Business Assistant.",
+  "cases": [
+    {
+      "case_id": "estimate_grossman_complex_roof",
+      "surface": "published_gpt",
+      "category": "estimating_context",
+      "prompt_summary": "Grossman Tuning 5,136 sq ft split roof, localized tear-off, ISO, coated foam, edge metal, gutter, nailer, flashing, and coping details.",
+      "expected": [
+        "Reconcile 3,120 plus 2,016 to 5,136 sq ft.",
+        "Keep the 320 sq ft removal area distinct from the full foam area.",
+        "Retrieve historical material, labor, mileage, pricing, and source-estimate evidence.",
+        "Distinguish current calculations, historical evidence, assumptions, and missing inputs.",
+        "Do not create a workbook without confirmation."
+      ]
+    },
+    {
+      "case_id": "estimate_elsby_repair_workbook",
+      "surface": "published_gpt",
+      "category": "estimating_execution",
+      "prompt_summary": "Elsby 50 by 12 ft corner-leak repair with explicit coating, sealants, labor, travel, overhead, profit, and workmanship warranty.",
+      "expected": [
+        "Show all proposed inputs and exclusions before generation.",
+        "Require explicit approval and unresolved mileage.",
+        "Generate and recalculate a roofing-template workbook after approval.",
+        "Return a clickable HTTPS download and validated cost summary."
+      ]
+    },
+    {
+      "case_id": "estimate_handwritten_insulation",
+      "surface": "live_api",
+      "category": "estimating_execution",
+      "fixture": "complete_insulation_payload",
+      "expected": [
+        "Generate the stored insulation template.",
+        "Calculate material, labor, total job cost, and worksheet price.",
+        "Return a clickable HTTPS download."
+      ]
+    },
+    {
+      "case_id": "estimate_gardiner_flooring",
+      "surface": "live_api",
+      "category": "estimating_execution",
+      "fixture": "complete_flooring_payload",
+      "expected": [
+        "Use the stored flooring template and NPI coating/labor rows.",
+        "Preserve the unpriced corner-repair review item.",
+        "Calculate labor, logistics, total job cost, and worksheet price.",
+        "Return a clickable HTTPS download."
+      ]
+    },
+    {
+      "case_id": "estimate_multiple_warranty_options",
+      "surface": "live_api",
+      "category": "estimating_options",
+      "prompt_summary": "Create separate two-year and five-year roofing repair workbooks from complete approved options.",
+      "expected": [
+        "Create exactly two independently recalculated workbooks.",
+        "Keep option labels and warranty assumptions distinct.",
+        "Reject ambiguous flat-versus-per-square-foot warranty pricing.",
+        "Return clickable HTTPS downloads."
+      ]
+    },
+    {
+      "case_id": "owner_attention_briefing",
+      "surface": "published_gpt",
+      "category": "owner_interface",
+      "prompt_summary": "Five most important actions across sales, backlog, scheduling, production-budget usage, and office work.",
+      "expected": [
+        "Use all relevant read-only operations.",
+        "Rank concrete actions rather than dumping records.",
+        "Separate authoritative facts, inferred office links, and cost proxies.",
+        "Provide source links and material freshness caveats."
+      ]
+    },
+    {
+      "case_id": "owner_sales_pipeline_chart",
+      "surface": "published_gpt",
+      "category": "owner_interface",
+      "prompt_summary": "Open sales pipeline by stage and salesperson with one decision-useful chart and unassigned exposure.",
+      "expected": [
+        "Use complete rollups for totals.",
+        "Render a labeled chart.",
+        "Report total value, opportunity count, and unassigned exposure.",
+        "State that pipeline is not forecasted revenue."
+      ]
+    },
+    {
+      "case_id": "owner_profitability_proxy",
+      "surface": "published_gpt",
+      "category": "owner_interface",
+      "prompt_summary": "Strongest and weakest tracked-job profitability proxies with strict limitations.",
+      "expected": [
+        "Rank comparable jobs using estimate-rate budget usage.",
+        "Disclose bounded-record or portfolio-coverage limitations.",
+        "Do not claim actual profit, final margin, percent complete, or forecast at completion."
+      ]
+    },
+    {
+      "case_id": "owner_office_activity_progress",
+      "surface": "published_gpt",
+      "category": "owner_interface",
+      "prompt_summary": "Seven-day office work, stalled projects, and unmatched activity.",
+      "expected": [
+        "Keep captured hours separate from activity-only touches.",
+        "Label all non-authoritative job links as inferred.",
+        "Prioritize actionable data-quality and stalled-work items.",
+        "Do not imply that missing activity proves no work occurred."
+      ]
+    }
+  ]
+}

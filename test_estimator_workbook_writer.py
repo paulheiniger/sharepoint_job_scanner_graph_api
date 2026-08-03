@@ -129,6 +129,121 @@ def test_generate_roofing_workbook_writes_decision_input_cells(tmp_path: Path) -
     assert ws["F167"].value == 25.5
 
 
+def test_generate_roofing_spec_template_maps_labor_by_label_and_preserves_special_adders(
+    tmp_path: Path,
+) -> None:
+    template_path = Path("templates/Estimate + Spec - Roofing.xlsx")
+    original_hash = file_hash(template_path)
+    inputs = {
+        "template_type": "roofing",
+        "header": {
+            "C2_job_name": "Template Aware Roof",
+            "C3_job_type": "roof coating",
+            "C4_site_address": "100 Main Street",
+            "C5_city_state_zip": "Louisville, KY 40202",
+            "C6_contact": "Taylor Customer",
+            "C8_email": "taylor@example.com",
+            "C9_phone": "555-0100",
+            "G9_estimator": "Spray-Tec Estimator",
+            "C12_estimated_sqft": 5000,
+            "mobilizations": 2,
+        },
+        "scope_of_work": [
+            "Power wash and prepare the existing roof surface.",
+            "Apply the selected base and top-coat system.",
+        ],
+        "spec_notes": ["Draft generated for estimator review."],
+        "workbook_decisions": [
+            {
+                "row_type": "material",
+                "category": "roofing_foam",
+                "item": "Roof foam area one",
+                "selector_code": 11,
+                "area_sqft": 3000,
+                "thickness_inches": 1.5,
+                "yield_factor": 2600,
+                "unit_price": 2.15,
+            },
+            {
+                "row_type": "material",
+                "category": "roofing_foam",
+                "item": "Roof foam area two",
+                "selector_code": 11,
+                "area_sqft": 2000,
+                "thickness_inches": 1.5,
+                "yield_factor": 2600,
+                "unit_price": 2.15,
+            },
+            {
+                "row_type": "labor",
+                "task": "labor_prep",
+                "adjusted_days": 1.5,
+                "crew_size": 4,
+            },
+            {
+                "row_type": "labor",
+                "task": "labor_base",
+                "adjusted_days": 2,
+                "crew_size": 4,
+            },
+            {
+                "row_type": "labor",
+                "task": "labor_top_coat",
+                "adjusted_days": 1,
+                "crew_size": 4,
+            },
+            {
+                "row_type": "adder",
+                "item": "Estimator review allowance",
+                "estimated_cost": 750,
+            },
+            {
+                "row_type": "material",
+                "category": "edge_metal",
+                "item": "24 gauge edge metal",
+                "linear_ft": 180,
+                "unit_price": 8.5,
+            },
+            {
+                "row_type": "material",
+                "category": "penetrations",
+                "item": "Roof penetrations",
+                "quantity": 6,
+            },
+        ],
+    }
+
+    output_path = generate_estimate_workbook(
+        inputs,
+        template_path,
+        tmp_path,
+        "template_aware_roof.xlsx",
+    )
+    workbook = openpyxl.load_workbook(output_path, data_only=False)
+    estimate = workbook["Estimate"]
+    job_spec = workbook["Job Spec"]
+
+    assert estimate["A116"].value == "FULL REPAIR "
+    assert estimate["C19"].value == 3000
+    assert estimate["C20"].value == 2000
+    assert estimate["B118"].value == 1.5
+    assert estimate["C118"].value == 4
+    assert estimate["B124"].value == 2
+    assert estimate["C124"].value == 4
+    assert estimate["B130"].value == 1
+    assert estimate["C130"].value == 4
+    assert estimate["A173"].value == "Warranty - 10yr"
+    assert estimate["A177"].value == "Estimator review allowance"
+    assert estimate["F177"].value == 750
+    assert estimate["C82"].value == 180
+    assert estimate["E82"].value == 8.5
+    assert estimate["D49"].value == 6
+    assert "Power wash and prepare" in job_spec["A13"].value
+    assert job_spec["B7"].value == 2
+    assert "Draft generated" in job_spec["A51"].value
+    assert file_hash(template_path) == original_hash
+
+
 def test_generate_insulation_workbook_writes_decision_input_cells(tmp_path: Path) -> None:
     template_path = minimal_template(tmp_path / "insulation_template.xlsx", template_type="insulation")
     inputs = {

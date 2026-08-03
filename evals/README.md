@@ -10,6 +10,36 @@ math, pricing, labor, relationship mining, and totals. Future AI-assisted note
 interpretation can be evaluated here, but these harnesses test structured
 outputs rather than free-form prose.
 
+## Owner Question Eval
+
+The owner-question suite defines 15 synthetic Spray-Tec business questions and
+the facts, sources, confidence classes, qualifications, and forbidden
+overclaims expected from an owner-facing agent. It distinguishes current API
+operations from remaining partial owner-level questions.
+
+Validate the suite and compare its required operations with the generated
+OpenAPI document:
+
+```bash
+python -m evals.owner.run_owner_question_eval
+```
+
+Write a machine-readable report:
+
+```bash
+python -m evals.owner.run_owner_question_eval \
+  --json-output output/evals/owner_question_eval.json
+```
+
+The runner can also score structured answer records with `--answers`. Synthetic
+proxy and inferred facts must retain their truth labels and qualifications;
+they cannot be presented as accounting actuals or authoritative job links.
+
+The current API implements `getProductionBudgetHealth` and
+`getOfficeJobProgress`. Production usage remains a cost proxy, while
+office-to-job text matches remain inferred unless a stable timesheet `job_id`
+is present.
+
 ## Field Notes Estimator Eval
 
 Run all field-notes cases:

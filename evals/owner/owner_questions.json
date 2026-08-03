@@ -1,0 +1,290 @@
+{
+  "suite_id": "spraytec_owner_questions_v1",
+  "description": "Synthetic owner-level questions used to evaluate evidence selection, source discipline, and confidence labeling without requiring production ground truth.",
+  "truth_classes": [
+    "authoritative",
+    "inferred",
+    "proxy"
+  ],
+  "cases": [
+    {
+      "case_id": "owner_attention_today",
+      "question": "What needs my attention today across sales, production, scheduling, and office work?",
+      "category": "executive_briefing",
+      "capability_status": "partial",
+      "required_operations": [
+        "getSalesFollowUps",
+        "getOperationsBacklog",
+        "getOperationsSchedule",
+        "getProductionBudgetHealth",
+        "getOfficeJobProgress"
+      ],
+      "synthetic_evidence": [
+        {"fact_id": "overdue_followups", "value": 6, "truth_class": "authoritative", "source_operation": "getSalesFollowUps", "source_table": "dashboard_sales_followup"},
+        {"fact_id": "missing_job_specs", "value": 2, "truth_class": "authoritative", "source_operation": "getOperationsBacklog", "source_table": "operations_dashboard_ops_snapshot"},
+        {"fact_id": "unassigned_scheduled_jobs", "value": 1, "truth_class": "authoritative", "source_operation": "getOperationsSchedule", "source_table": "operations_dashboard_ops_snapshot"},
+        {"fact_id": "jobs_over_production_plan", "value": 2, "truth_class": "proxy", "source_operation": "getProductionBudgetHealth", "source_table": "job_tracking_estimate_budget_snapshot"},
+        {"fact_id": "office_projects_without_confident_job_link", "value": 14, "truth_class": "inferred", "source_operation": "getOfficeJobProgress", "source_table": "office_timesheet_entries"}
+      ],
+      "expected": {
+        "must_report_fact_ids": ["overdue_followups", "missing_job_specs", "unassigned_scheduled_jobs", "jobs_over_production_plan"],
+        "must_include_truth_labels": ["proxy", "inferred"],
+        "required_qualifications": ["Production cost is estimate-rate usage, not accounting actual cost.", "Office-to-job links are inferred unless a direct job ID is present."],
+        "must_not_claim": ["accounting profit", "authoritative office job assignment"]
+      }
+    },
+    {
+      "case_id": "sales_pipeline_by_stage",
+      "question": "How much open sales pipeline do we have by stage and salesperson?",
+      "category": "sales",
+      "capability_status": "supported",
+      "required_operations": ["getSalesPipeline"],
+      "synthetic_evidence": [
+        {"fact_id": "open_pipeline_value", "value": 2400000, "truth_class": "authoritative", "source_operation": "getSalesPipeline", "source_table": "dashboard_sales_pipeline"},
+        {"fact_id": "open_opportunity_count", "value": 24, "truth_class": "authoritative", "source_operation": "getSalesPipeline", "source_table": "dashboard_sales_pipeline"},
+        {"fact_id": "unassigned_opportunity_count", "value": 3, "truth_class": "authoritative", "source_operation": "getSalesPipeline", "source_table": "dashboard_sales_pipeline"}
+      ],
+      "expected": {
+        "must_report_fact_ids": ["open_pipeline_value", "open_opportunity_count", "unassigned_opportunity_count"],
+        "must_include_truth_labels": [],
+        "required_qualifications": [],
+        "must_not_claim": ["forecasted revenue"]
+      }
+    },
+    {
+      "case_id": "sales_followup_priorities",
+      "question": "Which proposals need follow-up, and what should happen next?",
+      "category": "sales",
+      "capability_status": "supported",
+      "required_operations": ["getSalesFollowUps"],
+      "synthetic_evidence": [
+        {"fact_id": "overdue_followup_count", "value": 6, "truth_class": "authoritative", "source_operation": "getSalesFollowUps", "source_table": "dashboard_sales_followup"},
+        {"fact_id": "unassigned_followup_count", "value": 2, "truth_class": "authoritative", "source_operation": "getSalesFollowUps", "source_table": "dashboard_sales_followup"},
+        {"fact_id": "highest_priority_job_id", "value": "JOB-PROP-01", "truth_class": "authoritative", "source_operation": "getSalesFollowUps", "source_table": "dashboard_sales_followup"}
+      ],
+      "expected": {
+        "must_report_fact_ids": ["overdue_followup_count", "unassigned_followup_count", "highest_priority_job_id"],
+        "must_include_truth_labels": [],
+        "required_qualifications": [],
+        "must_not_claim": ["customer was contacted"]
+      }
+    },
+    {
+      "case_id": "contracted_backlog_readiness",
+      "question": "How much contracted backlog is ready, scheduled, or blocked?",
+      "category": "operations",
+      "capability_status": "supported",
+      "required_operations": ["getOperationsBacklog"],
+      "synthetic_evidence": [
+        {"fact_id": "contracted_backlog_value", "value": 1850000, "truth_class": "authoritative", "source_operation": "getOperationsBacklog", "source_table": "operations_dashboard_ops_snapshot"},
+        {"fact_id": "ready_to_schedule_jobs", "value": 5, "truth_class": "authoritative", "source_operation": "getOperationsBacklog", "source_table": "operations_dashboard_ops_snapshot"},
+        {"fact_id": "blocked_jobs", "value": 3, "truth_class": "authoritative", "source_operation": "getOperationsBacklog", "source_table": "operations_dashboard_ops_snapshot"}
+      ],
+      "expected": {
+        "must_report_fact_ids": ["contracted_backlog_value", "ready_to_schedule_jobs", "blocked_jobs"],
+        "must_include_truth_labels": [],
+        "required_qualifications": [],
+        "must_not_claim": ["recognized revenue"]
+      }
+    },
+    {
+      "case_id": "two_week_schedule",
+      "question": "Which jobs are expected to start during the next two weeks?",
+      "category": "scheduling",
+      "capability_status": "supported",
+      "required_operations": ["getOperationsSchedule"],
+      "synthetic_evidence": [
+        {"fact_id": "scheduled_job_count", "value": 4, "truth_class": "authoritative", "source_operation": "getOperationsSchedule", "source_table": "crew_schedule"},
+        {"fact_id": "scheduled_job_ids", "value": ["JOB-101", "JOB-102", "JOB-103", "JOB-104"], "truth_class": "authoritative", "source_operation": "getOperationsSchedule", "source_table": "crew_schedule"}
+      ],
+      "expected": {
+        "must_report_fact_ids": ["scheduled_job_count", "scheduled_job_ids"],
+        "must_include_truth_labels": [],
+        "required_qualifications": [],
+        "must_not_claim": ["confirmed mobilization"]
+      }
+    },
+    {
+      "case_id": "schedule_readiness_gaps",
+      "question": "Which scheduled jobs are missing a crew or another readiness requirement?",
+      "category": "scheduling",
+      "capability_status": "supported",
+      "required_operations": ["getOperationsSchedule"],
+      "synthetic_evidence": [
+        {"fact_id": "unassigned_job_ids", "value": ["JOB-102"], "truth_class": "authoritative", "source_operation": "getOperationsSchedule", "source_table": "operations_dashboard_ops_snapshot"},
+        {"fact_id": "blocked_scheduled_job_ids", "value": ["JOB-103"], "truth_class": "authoritative", "source_operation": "getOperationsSchedule", "source_table": "operations_dashboard_ops_snapshot"}
+      ],
+      "expected": {
+        "must_report_fact_ids": ["unassigned_job_ids", "blocked_scheduled_job_ids"],
+        "must_include_truth_labels": [],
+        "required_qualifications": [],
+        "must_not_claim": ["crew confirmed"]
+      }
+    },
+    {
+      "case_id": "jobs_behind_production_plan",
+      "question": "Which active jobs appear behind their production plan?",
+      "category": "production",
+      "capability_status": "supported",
+      "required_operations": ["getOperationsSchedule"],
+      "synthetic_evidence": [
+        {"fact_id": "production_risk_job_ids", "value": ["JOB-201", "JOB-202"], "truth_class": "authoritative", "source_operation": "getOperationsSchedule", "source_table": "operations_dashboard_ops_snapshot"},
+        {"fact_id": "highest_risk_reason", "value": "Labor hours exceed estimate", "truth_class": "authoritative", "source_operation": "getOperationsSchedule", "source_table": "operations_dashboard_ops_snapshot"}
+      ],
+      "expected": {
+        "must_report_fact_ids": ["production_risk_job_ids", "highest_risk_reason"],
+        "must_include_truth_labels": [],
+        "required_qualifications": ["The production-risk status is an operational warning, not a calculated completion forecast."],
+        "must_not_claim": ["forecasted completion date"]
+      }
+    },
+    {
+      "case_id": "quantity_overrun_jobs",
+      "question": "Which jobs have exceeded estimated labor or material quantities?",
+      "category": "production_cost",
+      "capability_status": "supported",
+      "required_operations": ["getProductionBudgetHealth"],
+      "synthetic_evidence": [
+        {"fact_id": "over_plan_job_ids", "value": ["JOB-201", "JOB-205"], "truth_class": "proxy", "source_operation": "getProductionBudgetHealth", "source_table": "job_tracking_estimate_budget_snapshot"},
+        {"fact_id": "job_201_over_plan_bucket", "value": "Labor", "truth_class": "proxy", "source_operation": "getProductionBudgetHealth", "source_table": "job_tracking_summary"}
+      ],
+      "expected": {
+        "must_report_fact_ids": ["over_plan_job_ids", "job_201_over_plan_bucket"],
+        "must_include_truth_labels": ["proxy"],
+        "required_qualifications": ["Tracked quantities and hours are compared with estimate-derived baselines."],
+        "must_not_claim": ["actual accounting cost"]
+      }
+    },
+    {
+      "case_id": "largest_overrun_exposure",
+      "question": "Where is the largest estimated dollar exposure from production overruns?",
+      "category": "production_cost",
+      "capability_status": "supported",
+      "required_operations": ["getProductionBudgetHealth"],
+      "synthetic_evidence": [
+        {"fact_id": "largest_exposure_job_id", "value": "JOB-205", "truth_class": "proxy", "source_operation": "getProductionBudgetHealth", "source_table": "job_tracking_estimate_budget_snapshot"},
+        {"fact_id": "largest_estimated_over_plan_amount", "value": 18400, "truth_class": "proxy", "source_operation": "getProductionBudgetHealth", "source_table": "job_tracking_estimate_budget_snapshot"}
+      ],
+      "expected": {
+        "must_report_fact_ids": ["largest_exposure_job_id", "largest_estimated_over_plan_amount"],
+        "must_include_truth_labels": ["proxy"],
+        "required_qualifications": ["Dollar exposure values tracked usage with estimate-derived unit rates."],
+        "must_not_claim": ["booked loss", "actual cost overrun"]
+      }
+    },
+    {
+      "case_id": "selected_job_budget_consumption",
+      "question": "For JOB-201, how much of its estimated production budget has been consumed?",
+      "category": "production_cost",
+      "capability_status": "supported",
+      "required_operations": ["getProductionBudgetHealth", "getJobContext"],
+      "synthetic_evidence": [
+        {"fact_id": "job_201_budget_used_pct", "value": 1.08, "truth_class": "proxy", "source_operation": "getProductionBudgetHealth", "source_table": "job_tracking_estimate_budget_snapshot"},
+        {"fact_id": "job_201_estimated_cost_used", "value": 97200, "truth_class": "proxy", "source_operation": "getProductionBudgetHealth", "source_table": "job_tracking_summary"},
+        {"fact_id": "job_201_estimated_production_budget", "value": 90000, "truth_class": "authoritative", "source_operation": "getProductionBudgetHealth", "source_table": "job_tracking_estimate_budget_snapshot"}
+      ],
+      "expected": {
+        "must_report_fact_ids": ["job_201_budget_used_pct", "job_201_estimated_cost_used", "job_201_estimated_production_budget"],
+        "must_include_truth_labels": ["proxy"],
+        "required_qualifications": ["Estimated cost used is not an accounting actual."],
+        "must_not_claim": ["108 percent complete"]
+      }
+    },
+    {
+      "case_id": "profitability_proxy_ranking",
+      "question": "Which tracked jobs currently have the strongest and weakest profitability proxies?",
+      "category": "profitability",
+      "capability_status": "supported",
+      "required_operations": ["getProductionBudgetHealth"],
+      "synthetic_evidence": [
+        {"fact_id": "strongest_cost_position_job_id", "value": "JOB-210", "truth_class": "proxy", "source_operation": "getProductionBudgetHealth", "source_table": "job_tracking_estimate_budget_snapshot"},
+        {"fact_id": "weakest_cost_position_job_id", "value": "JOB-205", "truth_class": "proxy", "source_operation": "getProductionBudgetHealth", "source_table": "job_tracking_estimate_budget_snapshot"},
+        {"fact_id": "weakest_budget_used_pct", "value": 1.22, "truth_class": "proxy", "source_operation": "getProductionBudgetHealth", "source_table": "job_tracking_summary"}
+      ],
+      "expected": {
+        "must_report_fact_ids": ["strongest_cost_position_job_id", "weakest_cost_position_job_id", "weakest_budget_used_pct"],
+        "must_include_truth_labels": ["proxy"],
+        "required_qualifications": ["This ranks estimate-rate production usage, not realized job profitability.", "Completion progress is not sufficiently authoritative for a forecast-at-completion margin."],
+        "must_not_claim": ["actual profit", "final margin", "most profitable job"]
+      }
+    },
+    {
+      "case_id": "office_work_this_week",
+      "question": "What did the office staff work on this week?",
+      "category": "office",
+      "capability_status": "supported",
+      "required_operations": ["getOfficeActivity"],
+      "synthetic_evidence": [
+        {"fact_id": "office_activity_entries", "value": 87, "truth_class": "authoritative", "source_operation": "getOfficeActivity", "source_table": "office_timesheet_entries"},
+        {"fact_id": "captured_office_hours", "value": 24.88, "truth_class": "authoritative", "source_operation": "getOfficeActivity", "source_table": "office_timesheet_entries"},
+        {"fact_id": "activity_only_entries", "value": 79, "truth_class": "authoritative", "source_operation": "getOfficeActivity", "source_table": "office_timesheet_entries"}
+      ],
+      "expected": {
+        "must_report_fact_ids": ["office_activity_entries", "captured_office_hours", "activity_only_entries"],
+        "must_include_truth_labels": [],
+        "required_qualifications": ["Activity-only entries are touches and must not be counted as worked hours."],
+        "must_not_claim": ["total office labor hours"]
+      }
+    },
+    {
+      "case_id": "stalled_office_progress",
+      "question": "Which projects appear to have stalled office progress?",
+      "category": "office",
+      "capability_status": "supported",
+      "required_operations": ["getOfficeJobProgress"],
+      "synthetic_evidence": [
+        {"fact_id": "stalled_inferred_job_ids", "value": ["JOB-301", "JOB-304"], "truth_class": "inferred", "source_operation": "getOfficeJobProgress", "source_table": "office_timesheet_entries"},
+        {"fact_id": "stalled_threshold_days", "value": 7, "truth_class": "inferred", "source_operation": "getOfficeJobProgress", "source_table": "office_timesheet_entries"}
+      ],
+      "expected": {
+        "must_report_fact_ids": ["stalled_inferred_job_ids", "stalled_threshold_days"],
+        "must_include_truth_labels": ["inferred"],
+        "required_qualifications": ["A stalled signal means no recent matched office touch; it does not prove no work occurred.", "Only direct or strong job matches may influence this list."],
+        "must_not_claim": ["no office work occurred", "authoritative job linkage"]
+      }
+    },
+    {
+      "case_id": "unmatched_office_activity",
+      "question": "Which office activities cannot be confidently connected to a job?",
+      "category": "office_data_quality",
+      "capability_status": "supported",
+      "required_operations": ["getOfficeJobProgress"],
+      "synthetic_evidence": [
+        {"fact_id": "unmatched_project_label_count", "value": 14, "truth_class": "inferred", "source_operation": "getOfficeJobProgress", "source_table": "office_timesheet_entries"},
+        {"fact_id": "review_project_label_count", "value": 3, "truth_class": "inferred", "source_operation": "getOfficeJobProgress", "source_table": "office_timesheet_entries"}
+      ],
+      "expected": {
+        "must_report_fact_ids": ["unmatched_project_label_count", "review_project_label_count"],
+        "must_include_truth_labels": ["inferred"],
+        "required_qualifications": ["Review, weak, and unmatched labels must not be rolled into job progress."],
+        "must_not_claim": ["these activities are unrelated to a job"]
+      }
+    },
+    {
+      "case_id": "owner_data_quality_gaps",
+      "question": "What missing or stale data most weakens today's owner briefing?",
+      "category": "data_quality",
+      "capability_status": "partial",
+      "required_operations": [
+        "getSalesPipeline",
+        "getOperationsBacklog",
+        "getOperationsSchedule",
+        "getOfficeActivity",
+        "getProductionBudgetHealth",
+        "getOfficeJobProgress"
+      ],
+      "synthetic_evidence": [
+        {"fact_id": "timesheet_direct_job_link_pct", "value": 0, "truth_class": "authoritative", "source_operation": "getOfficeActivity", "source_table": "office_timesheet_entries"},
+        {"fact_id": "tracked_jobs_without_cost_baseline", "value": 86, "truth_class": "proxy", "source_operation": "getProductionBudgetHealth", "source_table": "job_tracking_estimate_budget_snapshot"},
+        {"fact_id": "unassigned_sales_jobs", "value": 3, "truth_class": "authoritative", "source_operation": "getSalesPipeline", "source_table": "dashboard_sales_pipeline"},
+        {"fact_id": "office_labels_needing_review", "value": 17, "truth_class": "inferred", "source_operation": "getOfficeJobProgress", "source_table": "office_timesheet_entries"}
+      ],
+      "expected": {
+        "must_report_fact_ids": ["timesheet_direct_job_link_pct", "tracked_jobs_without_cost_baseline", "unassigned_sales_jobs", "office_labels_needing_review"],
+        "must_include_truth_labels": ["proxy", "inferred"],
+        "required_qualifications": ["Freshness must be reported separately for each source.", "Missing data must not be interpreted as zero activity or zero risk."],
+        "must_not_claim": ["complete business coverage"]
+      }
+    }
+  ]
+}

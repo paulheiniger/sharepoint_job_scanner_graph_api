@@ -251,6 +251,9 @@ def normalize_estimator_data(data: EstimatorData) -> EstimatorData:
     if data.job_context_profiles.empty and not data.template_rows.empty:
         data.job_context_profiles = normalize_estimator_dataframe(build_job_context_profiles(data))
     data.template_examples = normalize_estimator_dataframe(data.template_examples)
+    data.template_example_source_links = normalize_estimator_dataframe(
+        data.template_example_source_links
+    )
     if data.template_examples.empty and not data.template_rows.empty:
         data.template_examples = normalize_estimator_dataframe(build_template_examples(data))
     data.foam_yield_history = normalize_estimator_dataframe(data.foam_yield_history)
@@ -676,6 +679,14 @@ def load_estimator_data_from_database(database_url: str, *, load_profile: str = 
             else:
                 data.template_examples = _read_sql_dataframe(connection, f"SELECT * FROM {template_examples_relation}")
             data.source_files_used.append(f"database: {template_examples_relation}")
+            data.template_example_source_links = _load_template_example_source_links(
+                connection,
+                template_examples_relation,
+            )
+            if not data.template_example_source_links.empty:
+                data.source_files_used.append(
+                    "database: estimator template example source links"
+                )
 
         latest_historical_prices_relation = "analytics.estimator_latest_historical_unit_prices"
         if relation_exists(connection, latest_historical_prices_relation):
@@ -738,6 +749,69 @@ def load_estimator_data_from_database(database_url: str, *, load_profile: str = 
     if lightweight:
         data.source_files_used.append("estimator load profile: chat" if chat else "estimator load profile: interactive")
     return normalize_estimator_data(data)
+
+
+def _load_template_example_source_links(
+    connection: Any,
+    template_examples_relation: str,
+) -> pd.DataFrame:
+    document_columns = set(relation_columns(connection, "documents"))
+    example_columns = set(relation_columns(connection, template_examples_relation))
+    required_document_columns = {"document_id", "job_id", "file_name"}
+    required_example_columns = {"example_id", "document_id", "job_id", "source_file"}
+    if not required_document_columns.issubset(document_columns):
+        return pd.DataFrame()
+    if not required_example_columns.issubset(example_columns):
+        return pd.DataFrame()
+
+    drive_columns = set(relation_columns(connection, "sharepoint_drive_items"))
+    can_join_drive = (
+        {"drive_id", "drive_item_id"}.issubset(document_columns)
+        and {"drive_id", "drive_item_id", "web_url"}.issubset(drive_columns)
+    )
+    drive_join = (
+        """
+        LEFT JOIN sharepoint_drive_items s
+          ON s.drive_id = d.drive_id
+         AND s.drive_item_id = d.drive_item_id
+        """
+        if can_join_drive
+        else ""
+    )
+    source_url_terms = []
+    if can_join_drive:
+        source_url_terms.append("NULLIF(s.web_url, '')")
+    if "sharepoint_url" in document_columns:
+        source_url_terms.append("NULLIF(d.sharepoint_url, '')")
+    source_url_expr = (
+        f"COALESCE({', '.join(source_url_terms)})"
+        if len(source_url_terms) > 1
+        else source_url_terms[0]
+        if source_url_terms
+        else "NULL"
+    )
+    folder_path_expr = "d.folder_path" if "folder_path" in document_columns else "NULL"
+    relative_path_expr = (
+        "d.relative_path" if "relative_path" in document_columns else "NULL"
+    )
+    return _read_sql_dataframe(
+        connection,
+        f"""
+        SELECT DISTINCT
+            e.example_id,
+            e.job_id,
+            e.document_id,
+            e.source_file,
+            d.file_name,
+            {source_url_expr} AS source_url,
+            {folder_path_expr} AS folder_path,
+            {relative_path_expr} AS relative_path
+        FROM {template_examples_relation} e
+        JOIN documents d
+          ON d.document_id = e.document_id
+        {drive_join}
+        """,
+    )
 
 
 def load_estimator_data(

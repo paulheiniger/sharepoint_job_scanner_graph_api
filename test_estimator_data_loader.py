@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 import pandas as pd
+from sqlalchemy import create_engine, text
 
-from jobscan.estimator.data_loader import normalize_estimator_data, normalize_estimator_dataframe, normalize_numeric_columns
+from jobscan.estimator.data_loader import (
+    _load_template_example_source_links,
+    normalize_estimator_data,
+    normalize_estimator_dataframe,
+    normalize_numeric_columns,
+)
 from jobscan.estimator.schemas import EstimatorData
 
 
@@ -80,3 +86,99 @@ def test_normalize_estimator_data_keeps_pricing_and_classification_aliases() -> 
     assert normalized.estimator_memory.iloc[0]["priority"] == "high"
     assert normalized.estimator_memory.iloc[0]["template_bucket"] == "labor_loading"
     assert normalized.estimator_memory.iloc[0]["guidance"] == "Loading should usually be short."
+
+
+def test_template_example_source_links_use_document_and_drive_metadata() -> None:
+    engine = create_engine("sqlite://")
+    with engine.connect() as connection:
+        connection.execute(text("ATTACH DATABASE ':memory:' AS analytics"))
+        connection.execute(
+            text(
+                """
+                CREATE TABLE analytics.estimator_template_examples (
+                    example_id TEXT,
+                    document_id TEXT,
+                    job_id TEXT,
+                    source_file TEXT
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE documents (
+                    document_id TEXT,
+                    job_id TEXT,
+                    file_name TEXT,
+                    drive_id TEXT,
+                    drive_item_id TEXT,
+                    sharepoint_url TEXT,
+                    folder_path TEXT,
+                    relative_path TEXT
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE sharepoint_drive_items (
+                    drive_id TEXT,
+                    drive_item_id TEXT,
+                    web_url TEXT
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO analytics.estimator_template_examples
+                VALUES ('EX-1', 'DOC-1', 'JOB-1', 'Estimate JOB-1.xlsx')
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO documents
+                VALUES (
+                    'DOC-1',
+                    'JOB-1',
+                    'Estimate JOB-1.xlsx',
+                    'DRIVE-1',
+                    'ITEM-1',
+                    'https://fallback.invalid/estimate',
+                    'Jobs/2024/JOB-1/Estimates',
+                    'Estimates/Estimate JOB-1.xlsx'
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO sharepoint_drive_items
+                VALUES ('DRIVE-1', 'ITEM-1', 'https://sharepoint.invalid/estimate')
+                """
+            )
+        )
+
+        links = _load_template_example_source_links(
+            connection,
+            "analytics.estimator_template_examples",
+        )
+
+    assert links.to_dict(orient="records") == [
+        {
+            "example_id": "EX-1",
+            "job_id": "JOB-1",
+            "document_id": "DOC-1",
+            "source_file": "Estimate JOB-1.xlsx",
+            "file_name": "Estimate JOB-1.xlsx",
+            "source_url": "https://sharepoint.invalid/estimate",
+            "folder_path": "Jobs/2024/JOB-1/Estimates",
+            "relative_path": "Estimates/Estimate JOB-1.xlsx",
+        }
+    ]

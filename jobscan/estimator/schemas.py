@@ -41,6 +41,7 @@ class EstimatorData:
     historical_scope_texts: pd.DataFrame = field(default_factory=pd.DataFrame)
     job_context_profiles: pd.DataFrame = field(default_factory=pd.DataFrame)
     template_examples: pd.DataFrame = field(default_factory=pd.DataFrame)
+    template_example_source_links: pd.DataFrame = field(default_factory=pd.DataFrame)
     foam_yield_history: pd.DataFrame = field(default_factory=pd.DataFrame)
     decision_history_tables: dict[str, pd.DataFrame] = field(default_factory=dict)
     estimator_decision_recommendations: pd.DataFrame = field(default_factory=pd.DataFrame)
