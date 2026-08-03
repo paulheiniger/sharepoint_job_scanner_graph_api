@@ -267,6 +267,116 @@ def test_workbook_route_creates_signed_download(monkeypatch, tmp_path: Path) -> 
     assert tampered.status_code == 403
 
 
+def test_workbook_route_reapplies_api_labor_plan_before_generation(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    artifact_id = "c" * 32
+    stored_path = tmp_path / f"{artifact_id}__Estimate.xlsx"
+    stored_path.write_bytes(b"xlsx")
+    captured: dict = {}
+    monkeypatch.setenv("ESTIMATOR_API_KEY", "test-secret")
+    monkeypatch.setenv("ESTIMATOR_API_ARTIFACT_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        "services.estimator_api.server.build_copilot_estimator_context",
+        lambda **_kwargs: {
+            "labor_plan_guidance": [
+                {
+                    "category": "labor_prep",
+                    "activity": "Roof preparation",
+                    "recommended_days": 0.52,
+                    "recommended_crew_size": 5,
+                    "recommended_total_hours": 26.2,
+                    "calibration_status": "calibrated_candidate",
+                }
+            ],
+            "logistics_guidance": [
+                {
+                    "category": "truck_expense",
+                    "include": True,
+                    "recommended_trip_count": 6,
+                    "round_trip_miles": 62,
+                }
+            ],
+        },
+    )
+
+    def fake_create(payload, **_kwargs):
+        captured.update(payload)
+        return EstimateWorkbookArtifact(
+            artifact_id=artifact_id,
+            file_name="Estimate.xlsx",
+            path=stored_path,
+            calculated_outputs={"worksheet_price": 1.0},
+            template_profile={},
+        )
+
+    monkeypatch.setattr(
+        "services.estimator_api.server.create_estimate_workbook",
+        fake_create,
+    )
+    payload = workbook_request_payload()
+    payload.update(
+        {
+            "structured_scope": {
+                "declared_total_area_sqft": 5000,
+                "area_scopes": [
+                    {
+                        "scope_id": "recover",
+                        "scope_role": "exclusive_area",
+                        "area_sqft": 5000,
+                        "action": "Prepare and recoat existing roof",
+                    }
+                ],
+            },
+            "labor": [
+                {"task": "labor_full_repair", "days": 2, "crew_size": 5},
+                {"task": "labor_prep", "days": 3, "crew_size": 5},
+            ],
+            "logistics": [
+                {
+                    "category": "truck_expense",
+                    "item": "Production truck mileage",
+                    "trip_count": 9,
+                    "round_trip_miles": 62,
+                }
+            ],
+        }
+    )
+    payload["materials"].append(
+        {
+            "category": "roofing_foam",
+            "item": "Gaco Roof 2.7",
+            "area_sqft": 5000,
+            "thickness_inches": 1.5,
+            "yield_factor": 2700,
+            "unit_price": 2100,
+        }
+    )
+
+    response = client.post(
+        "/v1/estimating/workbook",
+        json=payload,
+        headers={"Authorization": "Bearer test-secret"},
+    )
+
+    assert response.status_code == 201
+    labor = {row["task"]: row for row in captured["labor"]}
+    assert "labor_full_repair" not in labor
+    assert labor["labor_prep"]["days"] == 0.52
+    logistics = {row["category"]: row for row in captured["logistics"]}
+    assert logistics["truck_expense"]["trip_count"] == 6
+    foam = next(
+        row for row in captured["materials"] if row["category"] == "roofing_foam"
+    )
+    assert foam["unit_price"] == 2.1
+    assert foam["price_per_set"] == 2100
+    assert any(
+        "API labor recommendations were applied" in warning
+        for warning in response.json()["warnings"]
+    )
+
+
 def test_workbook_route_uses_configured_https_public_origin(
     monkeypatch,
     tmp_path: Path,

@@ -15,9 +15,13 @@ from jobscan.estimator.workbook_profile import (
     discover_insulation_workbook_profile,
     discover_roofing_workbook_profile,
 )
+from jobscan.estimator.workbook_recommendations import (
+    normalize_template_material_pricing,
+)
 from jobscan.estimator.workbook_service import (
     EstimateWorkbookArtifact,
     EstimateWorkbookInputError,
+    EstimateWorkbookOutputError,
     create_estimate_workbook,
     create_estimate_workbook_options,
     estimate_template_path,
@@ -127,7 +131,10 @@ def grossman_integrity_payload() -> dict:
                     "scope_role": "exclusive_area",
                     "label": "Full-removal section",
                     "area_sqft": 3120,
-                    "action": "Full removal down to wood decking",
+                    "action": (
+                        "Full removal down to wood decking; replace deteriorated "
+                        "decking within the nested allowance"
+                    ),
                     "proposed_assembly": "2 inch Resista ISO and 1.5 inch coated foam roof",
                 },
                 {
@@ -786,6 +793,53 @@ def test_create_grossman_integrity_workbook_uses_purchase_bases(
     assert "98 full 4x8 sheets" in estimate_formulas["A58"].comment.text
     assert artifact.calculated_outputs["total_job_cost"] > 0
     assert artifact.calculated_outputs["worksheet_price"] > 0
+
+
+@pytest.mark.skipif(
+    not (shutil.which("soffice") or shutil.which("libreoffice")),
+    reason="A spreadsheet recalculation engine is not installed.",
+)
+def test_roofing_foam_set_price_cannot_create_a_thousand_fold_cost(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("ESTIMATOR_API_ARTIFACT_DIR", str(tmp_path))
+    payload = grossman_integrity_payload()
+    foam = next(
+        item for item in payload["materials"] if item["category"] == "roofing_foam"
+    )
+    foam["unit_price"] = 2_100
+    prepared, warnings = normalize_template_material_pricing(payload)
+
+    artifact = create_estimate_workbook(prepared, base_dir=Path.cwd())
+
+    values = openpyxl.load_workbook(artifact.path, data_only=True)["Estimate"]
+    assert values["E19"].value == pytest.approx(2.1)
+    assert values["H19"].value < 10_000
+    assert artifact.calculated_outputs["material_subtotal"] < 100_000
+    assert artifact.calculated_outputs["material_cost_per_sqft"] < 25
+    assert any("$2,100.00/set" in warning for warning in warnings)
+
+
+@pytest.mark.skipif(
+    not (shutil.which("soffice") or shutil.which("libreoffice")),
+    reason="A spreadsheet recalculation engine is not installed.",
+)
+def test_output_validation_rejects_economically_impossible_material_cost(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("ESTIMATOR_API_ARTIFACT_DIR", str(tmp_path))
+    payload = grossman_integrity_payload()
+    foam = next(
+        item for item in payload["materials"] if item["category"] == "roofing_foam"
+    )
+    foam["unit_price"] = 2_100
+
+    with pytest.raises(EstimateWorkbookOutputError, match=r"\$250"):
+        create_estimate_workbook(payload, base_dir=Path.cwd())
+
+    assert list(tmp_path.glob("*.xlsx")) == []
 
 
 @pytest.mark.skipif(

@@ -46,6 +46,38 @@ def evaluate_roofing_scope_integrity(scope: dict[str, Any] | None) -> dict[str, 
                 f"Nested area {row.get('scope_id') or row.get('label') or 'unnamed'} references missing parent {parent_id}."
             )
 
+    rows_by_id = {
+        str(row.get("scope_id") or "").strip(): row
+        for row in area_scopes
+        if str(row.get("scope_id") or "").strip()
+    }
+    for row in area_scopes:
+        parent_id = str(row.get("parent_scope_id") or "").strip()
+        if not parent_id or parent_id not in rows_by_id:
+            continue
+        text = " ".join(
+            str(row.get(key) or "").lower()
+            for key in ("label", "action", "proposed_assembly", "evidence_text")
+        )
+        if not any(
+            token in text
+            for token in (
+                "deteriorated decking",
+                "replace decking",
+                "deck replacement",
+            )
+        ):
+            continue
+        deck_area = _number(
+            row.get("decking_replacement_sqft") or row.get("area_sqft")
+        )
+        parent_area = _number(rows_by_id[parent_id].get("area_sqft"))
+        if deck_area > parent_area + 1.0:
+            blocking.append(
+                f"Nested deck-replacement area {deck_area:g} sq ft cannot "
+                f"exceed parent tear-off area {parent_area:g} sq ft."
+            )
+
     total = _number(canonical.get("canonical_area_total_sqft"))
     exclusive = _number(canonical.get("canonical_exclusive_area_sqft"))
     nested = _number(canonical.get("canonical_nested_area_sqft"))

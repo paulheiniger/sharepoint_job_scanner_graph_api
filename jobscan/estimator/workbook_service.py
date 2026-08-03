@@ -516,6 +516,28 @@ def validate_recalculated_workbook(
             issues,
         ),
     }
+    estimated_area_value = (payload.get("header") or {}).get("estimated_sqft")
+    estimated_area = (
+        float(estimated_area_value) if _positive_number(estimated_area_value) else None
+    )
+    if (
+        profile.template_type == "roofing"
+        and estimated_area is not None
+        and estimated_area >= 100
+    ):
+        material_cost_per_sqft = (
+            calculated_outputs["material_subtotal"] / estimated_area
+        )
+        calculated_outputs["material_cost_per_sqft"] = round(
+            material_cost_per_sqft,
+            4,
+        )
+        if material_cost_per_sqft > 250:
+            issues.append(
+                "Material subtotal exceeds $250 per estimated square foot; "
+                "verify template units such as roofing foam dollars per pound "
+                "versus dollars per 1,000-pound set."
+            )
 
     warranty = payload.get("warranty") or {}
     if warranty.get("include", False) and profile.warranty is not None:

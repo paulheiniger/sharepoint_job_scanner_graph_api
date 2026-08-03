@@ -117,6 +117,28 @@ def test_workbook_request_is_confirmation_gated_and_semantic() -> None:
         )
 
 
+def test_workbook_labor_override_requires_a_review_reason() -> None:
+    base = {
+        "confirmed": True,
+        "template_type": "roofing",
+        "header": {"job_name": "Reviewed labor exception", "estimated_sqft": 5000},
+        "labor": [{"task": "labor_prep", "days": 1, "crew_size": 5}],
+    }
+    with pytest.raises(ValidationError, match="labor_override_reason"):
+        EstimateWorkbookRequest.model_validate(
+            {**base, "labor_plan_mode": "estimator_override"}
+        )
+
+    request = EstimateWorkbookRequest.model_validate(
+        {
+            **base,
+            "labor_plan_mode": "estimator_override",
+            "labor_override_reason": "Estimator reviewed restricted access and reduced production.",
+        }
+    )
+    assert request.labor_plan_mode == "estimator_override"
+
+
 def test_workbook_request_accepts_structured_roofing_scope_and_quantity_provenance() -> None:
     request = EstimateWorkbookRequest.model_validate(
         {
@@ -163,6 +185,27 @@ def test_workbook_request_accepts_structured_roofing_scope_and_quantity_provenan
     assert request.structured_scope.area_scopes[1].parent_scope_id == "tearoff"
     assert request.materials[0].area_sqft == 3120
     assert request.materials[0].basis_sqft == 3136
+
+
+def test_workbook_request_accepts_roofing_foam_price_per_set() -> None:
+    request = EstimateWorkbookRequest.model_validate(
+        {
+            "confirmed": True,
+            "template_type": "roofing",
+            "header": {"job_name": "Foam unit contract", "estimated_sqft": 5000},
+            "materials": [
+                {
+                    "category": "roofing_foam",
+                    "area_sqft": 5000,
+                    "thickness_inches": 1.5,
+                    "yield_factor": 2700,
+                    "price_per_set": 2150,
+                }
+            ],
+        }
+    )
+
+    assert request.materials[0].price_per_set == 2150
 
 
 def test_workbook_request_accepts_insulation_decisions_and_area_reconciliation() -> None:

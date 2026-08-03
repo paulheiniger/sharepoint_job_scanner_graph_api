@@ -269,6 +269,33 @@ def test_grossman_scope_integrity_accepts_nested_deck_repair() -> None:
     assert result["requires_tearoff"] is True
 
 
+def test_parent_deck_repair_narrative_does_not_duplicate_nested_allowance() -> None:
+    scope = grossman_structured_scope()
+    scope["area_scopes"][0]["action"] = (
+        "Full removal down to wood decking; replace deteriorated decking; "
+        "install 2 inch Resista ISO and coated foam roof"
+    )
+
+    canonical = canonicalize_structured_roofing_scope(scope)
+    result = evaluate_roofing_scope_integrity(scope)
+
+    assert canonical["board_basis_sqft"] == 3120
+    assert canonical["decking_replacement_sqft"] == 320
+    assert result["blocking_issues"] == []
+
+
+def test_nested_deck_repair_cannot_exceed_its_parent_area() -> None:
+    scope = grossman_structured_scope()
+    scope["area_scopes"][1]["area_sqft"] = 3200
+
+    result = evaluate_roofing_scope_integrity(scope)
+
+    assert any(
+        "cannot exceed parent tear-off area" in issue
+        for issue in result["blocking_issues"]
+    )
+
+
 def test_grossman_scope_integrity_blocks_orphaned_nested_area() -> None:
     scope = grossman_structured_scope()
     scope["area_scopes"][1]["parent_scope_id"] = "missing-area"

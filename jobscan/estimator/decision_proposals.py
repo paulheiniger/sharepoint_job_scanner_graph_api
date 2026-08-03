@@ -516,6 +516,17 @@ def canonicalize_structured_roofing_scope(scope: dict[str, Any]) -> dict[str, An
     foam_thicknesses: list[float] = []
     board_thicknesses: list[float] = []
     area_audit: list[dict[str, Any]] = []
+    nested_deck_parent_ids = {
+        str(row.get("parent_scope_id") or "").strip()
+        for row in area_scopes
+        if str(row.get("parent_scope_id") or "").strip()
+        and (
+            _norm(row.get("scope_role") or row.get("role"))
+            in {"nested sub scope", "nested", "deduction"}
+            or bool(row.get("parent_scope_id"))
+        )
+        and _is_deck_replacement_scope(row)
+    }
     for index, row in enumerate(area_scopes, start=1):
         area = _safe_number(
             row.get("area_sqft") or row.get("basis_sqft") or row.get("estimated_sqft"),
@@ -545,8 +556,16 @@ def canonicalize_structured_roofing_scope(scope: dict[str, Any]) -> dict[str, An
                 coating_area += area
             if any(token in text_key for token in ("iso board", "resista iso", "cover board")):
                 board_area += area
-        if any(token in text_key for token in ("deteriorated decking", "replace decking", "deck replacement")):
-            decking_area += _safe_number(row.get("decking_replacement_sqft"), 0.0) or area
+        if _is_deck_replacement_text(text_key):
+            scope_id = str(row.get("scope_id") or "").strip()
+            # A parent narrative often repeats the child deck-repair scope. The
+            # nested child is the authoritative quantity and must not be added
+            # to the full parent tear-off area a second time.
+            if is_nested or scope_id not in nested_deck_parent_ids:
+                decking_area += (
+                    _safe_number(row.get("decking_replacement_sqft"), 0.0)
+                    or area
+                )
         foam_thickness = _material_thickness(text, ("coated foam", "foam roof", "foam"))
         board_thickness = _material_thickness(text, ("resista iso", "iso board", "iso"))
         if foam_thickness > 0:
@@ -687,6 +706,34 @@ def canonicalize_structured_roofing_scope(scope: dict[str, Any]) -> dict[str, An
         }
     )
     return normalized
+
+
+def _is_deck_replacement_scope(row: dict[str, Any]) -> bool:
+    text = _norm(
+        " ".join(
+            str(row.get(key) or "")
+            for key in (
+                "label",
+                "action",
+                "existing_system",
+                "proposed_assembly",
+                "treatment",
+                "evidence_text",
+            )
+        )
+    )
+    return _is_deck_replacement_text(text)
+
+
+def _is_deck_replacement_text(text: str) -> bool:
+    return any(
+        token in text
+        for token in (
+            "deteriorated decking",
+            "replace decking",
+            "deck replacement",
+        )
+    )
 
 
 def compile_deterministic_scope_proposals(

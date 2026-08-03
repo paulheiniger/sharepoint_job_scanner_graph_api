@@ -1521,6 +1521,20 @@
             ],
             "title": "Period"
           },
+          "price_per_set": {
+            "anyOf": [
+              {
+                "maximum": 10000000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Roofing foam price for one standard 1,000-pound set. The API converts this to the template's dollars-per-pound input.",
+            "title": "Price Per Set"
+          },
           "price_per_square": {
             "anyOf": [
               {
@@ -1629,6 +1643,7 @@
                 "type": "null"
               }
             ],
+            "description": "Price in the unit expected by the selected template row. For roofing_foam this is dollars per pound, not dollars per 1,000-pound set; use price_per_set when the source price is quoted per set.",
             "title": "Unit Price"
           },
           "waste_factor_pct": {
@@ -1908,6 +1923,20 @@
             ],
             "title": "Period"
           },
+          "price_per_set": {
+            "anyOf": [
+              {
+                "maximum": 10000000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Roofing foam price for one standard 1,000-pound set. The API converts this to the template's dollars-per-pound input.",
+            "title": "Price Per Set"
+          },
           "price_per_square": {
             "anyOf": [
               {
@@ -2016,6 +2045,7 @@
                 "type": "null"
               }
             ],
+            "description": "Price in the unit expected by the selected template row. For roofing_foam this is dollars per pound, not dollars per 1,000-pound set; use price_per_set when the source price is quoted per set.",
             "title": "Unit Price"
           },
           "waste_factor_pct": {
@@ -2072,6 +2102,23 @@
             "maxItems": 25,
             "title": "Labor",
             "type": "array"
+          },
+          "labor_override_reason": {
+            "default": "",
+            "description": "Required when labor_plan_mode is estimator_override; explain why the reviewed labor plan differs from the API recommendation.",
+            "maxLength": 1000,
+            "title": "Labor Override Reason",
+            "type": "string"
+          },
+          "labor_plan_mode": {
+            "default": "api_recommendation",
+            "description": "For roofing estimates with structured scope, the API recommendation is reapplied immediately before workbook generation. Use estimator_override only for a deliberately reviewed exception.",
+            "enum": [
+              "api_recommendation",
+              "estimator_override"
+            ],
+            "title": "Labor Plan Mode",
+            "type": "string"
           },
           "logistics": {
             "items": {
@@ -2324,6 +2371,23 @@
             "maxItems": 25,
             "title": "Labor",
             "type": "array"
+          },
+          "labor_override_reason": {
+            "default": "",
+            "description": "Required when labor_plan_mode is estimator_override; explain why the reviewed labor plan differs from the API recommendation.",
+            "maxLength": 1000,
+            "title": "Labor Override Reason",
+            "type": "string"
+          },
+          "labor_plan_mode": {
+            "default": "api_recommendation",
+            "description": "For roofing estimates with structured scope, the API recommendation is reapplied immediately before workbook generation. Use estimator_override only for a deliberately reviewed exception.",
+            "enum": [
+              "api_recommendation",
+              "estimator_override"
+            ],
+            "title": "Labor Plan Mode",
+            "type": "string"
           },
           "logistics": {
             "items": {
@@ -4367,7 +4431,7 @@
   "info": {
     "description": "Estimator evidence, controlled workbook generation, and read-only operational intelligence for conversational agents.",
     "title": "Spray-Tec Business Intelligence API",
-    "version": "0.13.12"
+    "version": "0.13.15"
   },
   "openapi": "3.1.0",
   "paths": {

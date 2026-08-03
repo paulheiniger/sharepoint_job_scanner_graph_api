@@ -31,6 +31,10 @@ from jobscan.business.sales_service import (
     get_sales_pipeline,
 )
 from jobscan.estimator.context_service import build_copilot_estimator_context
+from jobscan.estimator.workbook_recommendations import (
+    apply_api_planning_guidance,
+    normalize_template_material_pricing,
+)
 from jobscan.estimator.workbook_service import (
     EstimateWorkbookInputError,
     EstimateWorkbookOutputError,
@@ -76,8 +80,48 @@ app = FastAPI(
         "Estimator evidence, controlled workbook generation, and read-only "
         "operational intelligence for conversational agents."
     ),
-    version="0.13.12",
+    version="0.13.15",
 )
+
+
+def _prepare_workbook_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
+    prepared, material_warnings = normalize_template_material_pricing(
+        payload.model_dump()
+    )
+    if prepared.get("labor_plan_mode") == "estimator_override":
+        return prepared, [
+            *material_warnings,
+            "A reviewed estimator labor override was used: "
+            + str(prepared.get("labor_override_reason") or "").strip()
+        ]
+    if prepared.get("template_type") != "roofing" or not prepared.get("structured_scope"):
+        return prepared, material_warnings
+    header = prepared.get("header") or {}
+    site_address = ", ".join(
+        value
+        for value in (
+            str(header.get("site_address") or "").strip(),
+            str(header.get("city_state_zip") or "").strip(),
+        )
+        if value
+    )
+    try:
+        context = build_copilot_estimator_context(
+            scope=prepared["structured_scope"],
+            template_type_hint="roofing",
+            site_address=site_address,
+            database_url=_database_url(),
+            base_dir=PROJECT_ROOT,
+            focus="labor",
+        )
+    except Exception as exc:
+        return prepared, [
+            *material_warnings,
+            "API labor recommendations could not be refreshed before workbook "
+            f"generation ({type(exc).__name__}); submitted labor was retained."
+        ]
+    prepared, planning_warnings = apply_api_planning_guidance(prepared, context)
+    return prepared, [*material_warnings, *planning_warnings]
 
 
 def _public_download_origin(request: Request, artifact_id: str) -> str:
@@ -231,8 +275,9 @@ def estimate_workbook(
             detail="Estimate artifact signing is not configured.",
         )
     try:
+        prepared_payload, planning_warnings = _prepare_workbook_payload(payload)
         artifact = create_estimate_workbook(
-            payload.model_dump(),
+            prepared_payload,
             base_dir=PROJECT_ROOT,
         )
     except EstimateWorkbookInputError as exc:
@@ -269,6 +314,7 @@ def estimate_workbook(
         calculated_outputs=artifact.calculated_outputs,
         template_profile=artifact.template_profile,
         warnings=[
+            *planning_warnings,
             "Draft only: estimator review is required before use.",
             "The saved workbook was recalculated and required cost outputs were validated.",
             "The file has not been uploaded to SharePoint.",
@@ -325,14 +371,17 @@ def estimate_workbook_options(
             detail="Estimate artifact signing is not configured.",
         )
     try:
+        prepared_options: list[tuple[str, dict[str, Any]]] = []
+        planning_warnings: list[str] = []
+        for option in payload.options:
+            prepared, option_warnings = _prepare_workbook_payload(option)
+            prepared.pop("option_label", None)
+            prepared_options.append((option.option_label, prepared))
+            planning_warnings.extend(
+                f"{option.option_label}: {warning}" for warning in option_warnings
+            )
         generated = create_estimate_workbook_options(
-            [
-                (
-                    option.option_label,
-                    option.model_dump(exclude={"option_label"}),
-                )
-                for option in payload.options
-            ],
+            prepared_options,
             base_dir=PROJECT_ROOT,
         )
     except EstimateWorkbookInputError as exc:
@@ -380,6 +429,7 @@ def estimate_workbook_options(
         schema_version="spraytec.estimate_workbook_options.v1",
         artifacts=artifacts,
         warnings=[
+            *planning_warnings,
             "Draft options only: estimator review is required before use.",
             "Every workbook was recalculated and required cost outputs were validated.",
             "No option workbook has been uploaded to SharePoint.",

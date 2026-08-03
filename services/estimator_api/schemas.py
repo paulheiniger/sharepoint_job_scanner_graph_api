@@ -434,7 +434,25 @@ class EstimateWorkbookMaterial(BaseModel):
     thickness_inches: float | None = Field(default=None, ge=0, le=100)
     debris_thickness_inches: float | None = Field(default=None, ge=0, le=100)
     size: str = Field(default="", max_length=80)
-    unit_price: float | None = Field(default=None, ge=0, le=10_000_000)
+    unit_price: float | None = Field(
+        default=None,
+        ge=0,
+        le=10_000_000,
+        description=(
+            "Price in the unit expected by the selected template row. For "
+            "roofing_foam this is dollars per pound, not dollars per 1,000-pound "
+            "set; use price_per_set when the source price is quoted per set."
+        ),
+    )
+    price_per_set: float | None = Field(
+        default=None,
+        ge=0,
+        le=10_000_000,
+        description=(
+            "Roofing foam price for one standard 1,000-pound set. The API "
+            "converts this to the template's dollars-per-pound input."
+        ),
+    )
     price_per_square: float | None = Field(default=None, ge=0, le=10_000_000)
     amount: float | None = Field(default=None, ge=0, le=100_000_000)
     quantity: float | None = Field(default=None, ge=0, le=100_000_000)
@@ -579,6 +597,22 @@ class EstimateWorkbookDraft(BaseModel):
             "validation before workbook creation."
         ),
     )
+    labor_plan_mode: Literal["api_recommendation", "estimator_override"] = Field(
+        default="api_recommendation",
+        description=(
+            "For roofing estimates with structured scope, the API recommendation "
+            "is reapplied immediately before workbook generation. Use "
+            "estimator_override only for a deliberately reviewed exception."
+        ),
+    )
+    labor_override_reason: str = Field(
+        default="",
+        max_length=1_000,
+        description=(
+            "Required when labor_plan_mode is estimator_override; explain why the "
+            "reviewed labor plan differs from the API recommendation."
+        ),
+    )
     header: EstimateWorkbookHeader
     pricing: EstimateWorkbookPricing = Field(default_factory=EstimateWorkbookPricing)
     warranty: EstimateWorkbookWarranty | None = None
@@ -607,6 +641,14 @@ class EstimateWorkbookDraft(BaseModel):
             self.pricing.overhead_pct = overhead
         if self.pricing.profit_pct is None:
             self.pricing.profit_pct = profit
+        if (
+            self.labor_plan_mode == "estimator_override"
+            and not self.labor_override_reason.strip()
+        ):
+            raise ValueError(
+                "labor_override_reason is required when labor_plan_mode is "
+                "estimator_override."
+            )
         return self
 
 
