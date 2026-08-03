@@ -114,6 +114,11 @@ from dashboard.data_sources import (
     audit_notes_for_page,
     references_for_page,
 )
+from dashboard.job_board_kanban import (
+    build_job_board_kanban_payload,
+    component_event as job_board_kanban_event,
+    render_job_board_kanban,
+)
 estimate_from_field_notes = None
 load_estimator_data = None
 
@@ -2016,6 +2021,20 @@ CREATE TABLE IF NOT EXISTS job_workflow_overrides (
 """
 
 
+JOB_WORKFLOW_EVENTS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS job_workflow_events (
+    event_id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    from_status TEXT,
+    to_status TEXT,
+    event_source TEXT,
+    updated_by TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+)
+"""
+
+
 def clean_db_value(value):
     if value is None:
         return None
@@ -2154,6 +2173,8 @@ def ensure_job_workflow_overrides_table() -> None:
         conn.execute(text("ALTER TABLE job_workflow_overrides ADD COLUMN IF NOT EXISTS review_mark_completed BOOLEAN DEFAULT FALSE"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_job_workflow_status ON job_workflow_overrides(workflow_status)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_job_workflow_priority ON job_workflow_overrides(priority)"))
+        conn.execute(text(JOB_WORKFLOW_EVENTS_TABLE_SQL))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_job_workflow_events_job_created ON job_workflow_events(job_id, created_at DESC)"))
 
 
 def _first_positive_template_quantity(rows: pd.DataFrame, columns: list[str]) -> pd.Series:
@@ -4759,6 +4780,95 @@ def save_job_workflow_override(
     with engine.begin() as conn:
         conn.execute(upsert_sql, record)
     st.cache_data.clear()
+
+
+def save_job_board_status_move(
+    *,
+    event_id: object,
+    job_id: object,
+    from_status: object,
+    to_status: object,
+    updated_by: object | None = None,
+) -> bool:
+    """Persist one Kanban move without overwriting unrelated workflow fields."""
+
+    ensure_job_workflow_overrides_table()
+    event_id_text = text_value(event_id)
+    job_id_text = text_value(job_id)
+    from_status_text = normalize_board_status(from_status)
+    to_status_text = normalize_board_status(to_status)
+    if not event_id_text or len(event_id_text) > 160:
+        raise ValueError("A valid event_id is required to move a job card.")
+    if not job_id_text:
+        raise ValueError("job_id is required to move a job card.")
+    if to_status_text not in {*JOB_BOARD_STATUS_ORDER, *SALES_PIPELINE_STAGES}:
+        raise ValueError(f"Unsupported job board status: {to_status_text}")
+    if from_status_text == to_status_text:
+        return False
+
+    record = {
+        "event_id": event_id_text,
+        "job_id": job_id_text,
+        "event_type": "workflow_status_moved",
+        "from_status": clean_db_value(from_status_text),
+        "to_status": clean_db_value(to_status_text),
+        "event_source": "dashboard_job_board_kanban",
+        "updated_by": clean_db_value(updated_by),
+    }
+    event_sql = text(
+        """
+        INSERT INTO job_workflow_events (
+            event_id,
+            job_id,
+            event_type,
+            from_status,
+            to_status,
+            event_source,
+            updated_by,
+            created_at
+        )
+        VALUES (
+            :event_id,
+            :job_id,
+            :event_type,
+            :from_status,
+            :to_status,
+            :event_source,
+            :updated_by,
+            NOW()
+        )
+        ON CONFLICT (event_id) DO NOTHING
+        RETURNING event_id
+        """
+    )
+    status_sql = text(
+        """
+        INSERT INTO job_workflow_overrides (
+            job_id,
+            workflow_status,
+            updated_by,
+            updated_at
+        )
+        VALUES (
+            :job_id,
+            :to_status,
+            :updated_by,
+            NOW()
+        )
+        ON CONFLICT (job_id) DO UPDATE SET
+            workflow_status = EXCLUDED.workflow_status,
+            updated_by = EXCLUDED.updated_by,
+            updated_at = NOW()
+        """
+    )
+    engine = get_engine()
+    with engine.begin() as conn:
+        inserted_event_id = conn.execute(event_sql, record).scalar()
+        if not inserted_event_id:
+            return False
+        conn.execute(status_sql, record)
+    st.cache_data.clear()
+    return True
 
 
 SPRAYTEC_CHART_COLOR_SEQUENCE = [
@@ -13082,6 +13192,8 @@ JOB_BOARD_STATUS_ORDER = [
     "In Progress",
     "Completed",
     "Invoiced",
+    "Closed Won",
+    "Closed Lost",
     "Folder Created",
     "Other",
 ]
@@ -16083,8 +16195,9 @@ def job_board_summary(row: pd.Series) -> str:
     return "\n".join(parts)
 
 
-def render_job_board_documents(row: pd.Series) -> None:
-    st.subheader("Job Documents")
+def render_job_board_documents(row: pd.Series, *, show_heading: bool = True) -> None:
+    if show_heading:
+        st.subheader("Job Documents")
     render_document_access("Open Job Folder", row.get("folder_url") or row.get("folder_link_or_path") or row.get("folder_path"), "Job folder link not available.")
     render_document_access("Open Proposal / Estimate", row.get("proposal_file") or row.get("estimate_file"), "Proposal / estimate link not available.")
     render_document_access("Open Contract", row.get("contract_file"), "Contract link not available.")
@@ -16204,11 +16317,245 @@ def parsed_date_or_today(value: object) -> date:
     return parsed.date()
 
 
+def render_job_board_detail_panel(row: pd.Series, selected_job_id: str) -> None:
+    project = text_value(row.get("project")) or text_value(row.get("job_name")) or text_value(row.get("customer_display"))
+    customer = text_value(row.get("customer_display")) or text_value(row.get("customer"))
+    panel_title = project or customer or "Selected Job"
+    with st.expander(f"Selected Job: {panel_title}", expanded=True):
+        st.caption("All collected job information is kept here. Expand only the sections you need.")
+
+        with st.expander("Overview and commercial details", expanded=True):
+            detail_cols = st.columns(3)
+            overview_items = [
+                ("Project", project, "text"),
+                ("Customer", customer, "text"),
+                ("Division", row.get("division"), "text"),
+                ("Sales Stage", row.get("sales_stage"), "text"),
+                ("Win / Loss", row.get("win_loss_status"), "text"),
+                ("Estimator / Owner", row.get("estimator_display"), "text"),
+                ("Lead Source", row.get("lead_source_display"), "text"),
+                ("Priority", row.get("priority"), "text"),
+                ("Follow Up Date", row.get("follow_up_date"), "text"),
+                (
+                    "Address",
+                    " ".join(
+                        part
+                        for part in [
+                            text_value(row.get("site_address")),
+                            text_value(row.get("city")),
+                            text_value(row.get("state")),
+                            text_value(row.get("zip_code")),
+                        ]
+                        if part
+                    ),
+                    "text",
+                ),
+                ("Estimated / Proposal Value", row.get("sales_value"), "money"),
+                ("Estimated Sq Ft", row.get("estimated_sqft"), "number"),
+                ("Price / Sq Ft", row.get("price_per_sqft"), "money"),
+                ("Final Price", row.get("final_price"), "money"),
+                ("Invoice Amount", row.get("invoice_amount"), "money"),
+                ("Completion Date", row.get("completion_date_display"), "text"),
+            ]
+            for index, (label, value, kind) in enumerate(overview_items):
+                with detail_cols[index % 3]:
+                    st.write(f"**{label}:** {format_summary_value(value, kind=kind)}")
+
+        with st.expander("Estimate, proposal, and scope evidence", expanded=False):
+            evidence_cols = st.columns(3)
+            evidence_items = [
+                ("Project Category", row.get("project_category")),
+                ("Substrate", row.get("substrate_display")),
+                ("Material / System", row.get("material_system_display")),
+                ("Warranty", row.get("warranty_display")),
+                ("Proposal Status", row.get("proposal_status_flag")),
+                ("Proposal Created", row.get("proposal_created_at")),
+                ("Proposal Modified", row.get("proposal_modified_at")),
+                ("Proposal Modified By", row.get("proposal_modified_by")),
+                ("Estimate Created", row.get("estimate_created_at")),
+                ("Estimate Modified", row.get("estimate_modified_at")),
+                ("Estimate Modified By", row.get("estimate_modified_by")),
+                ("Labor Plan", row.get("labor_plan")),
+                ("Folder Rule", row.get("folder_pipeline_bucket")),
+                ("Pipeline Status", row.get("pipeline_status")),
+                ("Source Status", row.get("status")),
+                ("Last Scanned At", row.get("last_scanned_at")),
+            ]
+            for index, (label, value) in enumerate(evidence_items):
+                with evidence_cols[index % 3]:
+                    st.write(f"**{label}:** {format_summary_value(value)}")
+
+        with st.expander("Documents and source files", expanded=True):
+            render_job_board_documents(row, show_heading=False)
+
+        with st.expander("Workflow, ownership, and internal notes", expanded=False):
+            st.caption("These edits are stored in the app and do not overwrite SharePoint scan data.")
+            job_key = hashlib.sha1(str(selected_job_id).encode("utf-8")).hexdigest()[:12]
+            workflow_value = text_value(row.get("sales_stage")) or normalized_sales_stage(row)
+            workflow_options = SALES_PIPELINE_STAGES
+            workflow_index = workflow_options.index(workflow_value) if workflow_value in workflow_options else 0
+            priority_value = text_value(row.get("priority")) or "Normal"
+            priority_index = JOB_WORKFLOW_PRIORITY_OPTIONS.index(priority_value) if priority_value in JOB_WORKFLOW_PRIORITY_OPTIONS else JOB_WORKFLOW_PRIORITY_OPTIONS.index("Normal")
+            with st.form(f"job_workflow_form_{job_key}"):
+                edit_cols = st.columns(3)
+                with edit_cols[0]:
+                    workflow_status = st.selectbox(
+                        "Sales Stage",
+                        workflow_options,
+                        index=workflow_index,
+                        key=f"job_workflow_status_{job_key}",
+                    )
+                    deal_owner = st.text_input("Deal Owner", value=text_value(row.get("deal_owner")), key=f"job_deal_owner_{job_key}")
+                with edit_cols[1]:
+                    assigned_user = st.text_input("Assigned User", value=text_value(row.get("assigned_user")), key=f"job_assigned_user_{job_key}")
+                    follow_up_date = st.date_input(
+                        "Follow Up Date",
+                        value=parsed_date_or_today(row.get("follow_up_date")),
+                        key=f"job_follow_up_date_{job_key}",
+                    )
+                with edit_cols[2]:
+                    priority = st.selectbox(
+                        "Priority",
+                        JOB_WORKFLOW_PRIORITY_OPTIONS,
+                        index=priority_index,
+                        key=f"job_workflow_priority_{job_key}",
+                    )
+                    closed_did_not_get = st.checkbox(
+                        "Closed / Did Not Get",
+                        value=truthy_bool(row.get("closed_did_not_get")),
+                        key=f"job_closed_did_not_get_{job_key}",
+                    )
+                    review_mark_contracted = st.checkbox(
+                        "Contracted",
+                        value=truthy_bool(row.get("review_mark_contracted")),
+                        key=f"job_review_mark_contracted_{job_key}",
+                    )
+                    review_mark_completed = st.checkbox(
+                        "Completed",
+                        value=truthy_bool(row.get("review_mark_completed")),
+                        key=f"job_review_mark_completed_{job_key}",
+                    )
+                internal_notes = st.text_area(
+                    "Internal Notes",
+                    value=text_value(row.get("internal_notes")),
+                    height=120,
+                    key=f"job_internal_notes_{job_key}",
+                )
+                if st.form_submit_button("Save Workflow Changes"):
+                    try:
+                        save_job_workflow_override(
+                            job_id=selected_job_id,
+                            workflow_status=workflow_status,
+                            deal_owner=deal_owner,
+                            assigned_user=assigned_user,
+                            follow_up_date=follow_up_date,
+                            priority=priority,
+                            internal_notes=internal_notes,
+                            closed_did_not_get=closed_did_not_get,
+                            review_mark_contracted=review_mark_contracted,
+                            review_mark_completed=review_mark_completed,
+                            updated_by=os.getenv("USER"),
+                        )
+                        st.success("Workflow updated")
+                        st.rerun()
+                    except Exception as exc:
+                        show_database_error(exc)
+
+        with st.expander("Operational readiness and warnings", expanded=False):
+            operational_cols = st.columns(3)
+            operational_items = [
+                ("Signed Contract", bool_label(row.get("has_signed_contract"))),
+                ("Invoice", bool_label(row.get("has_invoice"))),
+                ("Warranty", bool_label(row.get("has_warranty"))),
+                ("Job Spec", bool_label(row.get("has_job_spec"))),
+                ("Aerial", bool_label(row.get("has_aerial"))),
+                ("Photo Count", format_summary_value(row.get("photo_count"), kind="number")),
+                ("Readiness", text_value(row.get("readiness_status")) or "-"),
+                ("Schedule Health", text_value(row.get("schedule_health")) or "-"),
+                ("Production Risk", text_value(row.get("production_risk_summary")) or "-"),
+            ]
+            for index, (label, value) in enumerate(operational_items):
+                with operational_cols[index % 3]:
+                    st.write(f"**{label}:** {value}")
+            warning_summary = text_value(row.get("warning_summary")) or text_value(row.get("warnings"))
+            if warning_summary:
+                st.warning(warning_summary)
+
+        with st.expander("Scheduling and crew plan", expanded=False):
+            schedule_cols = st.columns(2)
+            schedule_items = [
+                ("Crew Leader", row.get("assigned_crew_leader")),
+                ("Start Date", row.get("estimated_start_date")),
+                ("End Date", row.get("estimated_end_date")),
+                ("Duration Days", row.get("estimated_duration_days")),
+                ("Labor Hours", row.get("estimated_labor_hours")),
+                ("Crew Size", row.get("estimated_crew_size")),
+                ("Schedule Status", row.get("schedule_status")),
+                ("Schedule Priority", row.get("schedule_priority")),
+                ("Blocking Issue", row.get("blocking_issue")),
+                ("Schedule Notes", row.get("schedule_notes")),
+            ]
+            for index, (label, value) in enumerate(schedule_items):
+                with schedule_cols[index % 2]:
+                    st.write(f"**{label}:** {text_value(value) or '-'}")
+            st.caption("Use Schedule Calendar to move this job.")
+
+        with st.expander("Copyable job summary", expanded=False):
+            st.text_area(
+                "Copy into Teams or email",
+                value=job_board_summary(row),
+                height=210,
+                key=f"job_board_copy_summary_{hashlib.sha1(selected_job_id.encode('utf-8')).hexdigest()[:12]}",
+            )
+
+
+def process_job_board_kanban_event(
+    event: dict[str, Any] | None,
+    jobs: pd.DataFrame,
+    allowed_statuses: Iterable[str],
+) -> str | None:
+    """Apply one component event and return select, move, duplicate, or None."""
+
+    if not event:
+        return None
+    event_id = text_value(event.get("event_id"))
+    if not event_id or event_id == text_value(st.session_state.get("job_board_last_kanban_event_id")):
+        return "duplicate" if event_id else None
+    job_id = text_value(event.get("job_id"))
+    matching_rows = jobs[jobs["job_id"].fillna("").astype(str) == job_id] if job_id and "job_id" in jobs.columns else pd.DataFrame()
+    if matching_rows.empty:
+        raise ValueError("The selected job is no longer available in the current board data.")
+
+    event_type = text_value(event.get("type"))
+    if event_type == "select":
+        st.session_state["selected_job_board_job_id"] = job_id
+        st.session_state["job_board_last_kanban_event_id"] = event_id
+        return "select"
+    if event_type != "move":
+        return None
+
+    allowed = {text_value(status) for status in allowed_statuses}
+    to_status = normalize_board_status(event.get("to_status"))
+    if to_status not in allowed:
+        raise ValueError(f"{to_status} is not an available workflow lane.")
+    row = matching_rows.iloc[0]
+    from_status = text_value(row.get("sales_stage")) or normalized_sales_stage(row)
+    saved = save_job_board_status_move(
+        event_id=event_id,
+        job_id=job_id,
+        from_status=from_status,
+        to_status=to_status,
+        updated_by=os.getenv("USER"),
+    )
+    st.session_state["selected_job_board_job_id"] = job_id
+    st.session_state["job_board_last_kanban_event_id"] = event_id
+    return "move" if saved else "duplicate"
+
+
 def job_board_page() -> None:
     st.title("Job Board")
     st.caption("VSimple-style pipeline view built from Spray-Tec job data.")
     # TODO: add activity stream/comments.
-    # TODO: add true drag/drop kanban if moving away from Streamlit.
     # TODO: connect VSimple export/API if available.
 
     jobs = load_job_board_prepared_rows()
@@ -16307,6 +16654,48 @@ def job_board_page() -> None:
     )
 
     dashboard_rows = filtered.copy()
+
+    st.subheader("Interactive Pipeline Board")
+    st.caption(
+        "Drag a card between sales stages to save its stage immediately. Click a card to open its collected job details. "
+        "These moves update the dashboard workflow override and do not move SharePoint folders."
+    )
+    kanban_statuses = [
+        status
+        for status in SALES_PIPELINE_STAGES
+        if not (hide_completed and status in {"Closed Won", "Closed Lost"})
+    ]
+    kanban_payload = build_job_board_kanban_payload(
+        dashboard_rows.to_dict(orient="records"),
+        kanban_statuses,
+        selected_job_id=selected_job_id,
+        group_field="sales_stage",
+    )
+    kanban_result = render_job_board_kanban(kanban_payload, key="job_board_interactive_kanban")
+    try:
+        kanban_action = process_job_board_kanban_event(
+            job_board_kanban_event(kanban_result),
+            jobs,
+            [lane["status"] for lane in kanban_payload["lanes"]],
+        )
+        if kanban_action == "move":
+            st.toast("Workflow status updated", icon="✅")
+            st.rerun()
+        if kanban_action == "select":
+            st.rerun()
+    except Exception as exc:
+        st.error(f"The card change was not saved: {exc}")
+
+    selected_job_id = str(st.session_state.get("selected_job_board_job_id", "") or "")
+    if selected_job_id:
+        selected_detail_rows = jobs[jobs["job_id"].fillna("").astype(str) == selected_job_id]
+        if selected_detail_rows.empty:
+            st.warning("The selected job is no longer available in the current job data.")
+            if st.button("Clear selected job", key="clear_missing_selected_job_board_job"):
+                del st.session_state["selected_job_board_job_id"]
+                st.rerun()
+        else:
+            render_job_board_detail_panel(selected_detail_rows.iloc[0], selected_job_id)
 
     job_board_default_columns = [
         "project",
@@ -16560,199 +16949,6 @@ def job_board_page() -> None:
             if selected_option and selected_option != selected_job_id:
                 st.session_state["selected_job_board_job_id"] = selected_option
                 st.rerun()
-
-    if st.checkbox("Show pipeline board cards", value=False, key="job_board_show_cards"):
-        st.subheader("Pipeline Board")
-        available_statuses = list(jobs["board_status"].dropna().unique())
-        ordered_statuses = [status for status in JOB_BOARD_STATUS_ORDER if status in available_statuses]
-        ordered_statuses.extend(sorted(status for status in available_statuses if status not in JOB_BOARD_STATUS_ORDER))
-        for board_status in ordered_statuses:
-            column_df = filtered[filtered["board_status"] == board_status].sort_values("estimated_value", ascending=False, na_position="last")
-            if column_df.empty:
-                continue
-            with st.expander(f"{board_status}: {len(column_df):,} jobs | {fmt_dollar(safe_sum(column_df, 'estimated_value'))}"):
-                show_table(
-                    column_df,
-                    [
-                        "customer_display",
-                        "project",
-                        "sales_value",
-                        "project_category",
-                        "readiness_status",
-                        "schedule_health",
-                        "estimator_display",
-                        "folder",
-                    ],
-                    height=260,
-                    sort_by="sales_value",
-                )
-
-    if selected_job_id:
-        selected_rows = jobs[jobs["job_id"].astype(str) == selected_job_id]
-        if selected_rows.empty:
-            st.warning("Selected job was not found in the current job data. It may be hidden by filters.")
-            if st.button("Clear selected job", key="clear_selected_job_board_job"):
-                del st.session_state["selected_job_board_job_id"]
-                st.rerun()
-            return
-        row = selected_rows.iloc[0]
-        display_row = row
-        st.divider()
-        st.header("Job Detail")
-        detail_cols = st.columns(3)
-        detail_items = [
-            ("Project", display_row.get("project"), "text"),
-            ("Customer", display_row.get("customer_display"), "text"),
-            ("Division", row.get("division"), "text"),
-            ("Sales Stage", display_row.get("sales_stage"), "text"),
-            ("Win / Loss", display_row.get("win_loss_status"), "text"),
-            ("Closed / Did Not Get", bool_label(row.get("closed_did_not_get")), "text"),
-            ("Review Mark Contracted", bool_label(row.get("review_mark_contracted")), "text"),
-            ("Review Mark Completed", bool_label(row.get("review_mark_completed")), "text"),
-            ("Folder Rule", row.get("folder_pipeline_bucket"), "text"),
-            ("Proposal Created", row.get("proposal_created_at"), "text"),
-            ("Proposal Modified", row.get("proposal_modified_at"), "text"),
-            ("Proposal Modified By", row.get("proposal_modified_by"), "text"),
-            ("Estimate Created", row.get("estimate_created_at"), "text"),
-            ("Estimate Modified", row.get("estimate_modified_at"), "text"),
-            ("Estimate Modified By", row.get("estimate_modified_by"), "text"),
-            ("Proposal Status", row.get("proposal_status_flag"), "text"),
-            ("Priority", row.get("priority"), "text"),
-            ("Follow Up Date", row.get("follow_up_date"), "text"),
-            ("Estimator / Owner", display_row.get("estimator_display"), "text"),
-            ("Lead Source", display_row.get("lead_source_display"), "text"),
-            ("Assigned User", row.get("assigned_user"), "text"),
-            ("Pipeline Status", row.get("pipeline_status"), "text"),
-            ("Status", row.get("status"), "text"),
-            ("Project Category", display_row.get("project_category"), "text"),
-            ("Substrate", display_row.get("substrate_display"), "text"),
-            ("Material / System", display_row.get("material_system_display"), "text"),
-            ("Warranty", display_row.get("warranty_display"), "text"),
-            ("Address", " ".join(part for part in [text_value(row.get("site_address")), text_value(row.get("city")), text_value(row.get("state")), text_value(row.get("zip_code"))] if part), "text"),
-            ("Estimated / Proposal Value", display_row.get("sales_value"), "money"),
-            ("Estimated Sq Ft", row.get("estimated_sqft"), "number"),
-            ("Price / Sq Ft", row.get("price_per_sqft"), "money"),
-            ("Final Price", row.get("final_price"), "money"),
-            ("Invoice Amount", row.get("invoice_amount"), "money"),
-            ("Completion Date", display_row.get("completion_date_display"), "text"),
-            ("Assigned Crew Leader", row.get("assigned_crew_leader"), "text"),
-            ("Scheduled Start", row.get("estimated_start_date"), "text"),
-            ("Scheduled End", row.get("estimated_end_date"), "text"),
-            ("Labor Plan", display_row.get("labor_plan"), "text"),
-            ("Warnings", row.get("warning_summary") or row.get("warnings"), "text"),
-            ("Last Scanned At", row.get("last_scanned_at"), "text"),
-        ]
-        for index, (label, value, kind) in enumerate(detail_items):
-            with detail_cols[index % 3]:
-                st.write(f"**{label}:** {format_summary_value(value, kind=kind)}")
-
-        render_job_board_documents(row)
-
-        st.subheader("Edit Workflow")
-        st.caption("These workflow edits are stored in the app and do not overwrite SharePoint scan data.")
-        job_key = hashlib.sha1(str(selected_job_id).encode("utf-8")).hexdigest()[:12]
-        workflow_value = normalize_board_status(row.get("workflow_status") or row.get("pipeline_status") or row.get("status"))
-        workflow_options = JOB_BOARD_STATUS_ORDER
-        workflow_index = workflow_options.index(workflow_value) if workflow_value in workflow_options else workflow_options.index("Other")
-        priority_value = text_value(row.get("priority")) or "Normal"
-        priority_index = JOB_WORKFLOW_PRIORITY_OPTIONS.index(priority_value) if priority_value in JOB_WORKFLOW_PRIORITY_OPTIONS else JOB_WORKFLOW_PRIORITY_OPTIONS.index("Normal")
-        with st.form(f"job_workflow_form_{job_key}"):
-            edit_cols = st.columns(3)
-            with edit_cols[0]:
-                workflow_status = st.selectbox(
-                    "Workflow Status",
-                    workflow_options,
-                    index=workflow_index,
-                    key=f"job_workflow_status_{job_key}",
-                )
-                deal_owner = st.text_input("Deal Owner", value=text_value(row.get("deal_owner")), key=f"job_deal_owner_{job_key}")
-            with edit_cols[1]:
-                assigned_user = st.text_input("Assigned User", value=text_value(row.get("assigned_user")), key=f"job_assigned_user_{job_key}")
-                follow_up_date = st.date_input(
-                    "Follow Up Date",
-                    value=parsed_date_or_today(row.get("follow_up_date")),
-                    key=f"job_follow_up_date_{job_key}",
-                )
-            with edit_cols[2]:
-                priority = st.selectbox(
-                    "Priority",
-                    JOB_WORKFLOW_PRIORITY_OPTIONS,
-                    index=priority_index,
-                    key=f"job_workflow_priority_{job_key}",
-                )
-                closed_did_not_get = st.checkbox(
-                    "Closed / Did Not Get",
-                    value=truthy_bool(row.get("closed_did_not_get")),
-                    key=f"job_closed_did_not_get_{job_key}",
-                )
-                review_mark_contracted = st.checkbox(
-                    "Contracted",
-                    value=truthy_bool(row.get("review_mark_contracted")),
-                    key=f"job_review_mark_contracted_{job_key}",
-                )
-                review_mark_completed = st.checkbox(
-                    "Completed",
-                    value=truthy_bool(row.get("review_mark_completed")),
-                    key=f"job_review_mark_completed_{job_key}",
-                )
-            internal_notes = st.text_area(
-                "Internal Notes",
-                value=text_value(row.get("internal_notes")),
-                height=120,
-                key=f"job_internal_notes_{job_key}",
-            )
-            if st.form_submit_button("Save Workflow Changes"):
-                try:
-                    save_job_workflow_override(
-                        job_id=selected_job_id,
-                        workflow_status=workflow_status,
-                        deal_owner=deal_owner,
-                        assigned_user=assigned_user,
-                        follow_up_date=follow_up_date,
-                        priority=priority,
-                        internal_notes=internal_notes,
-                        closed_did_not_get=closed_did_not_get,
-                        review_mark_contracted=review_mark_contracted,
-                        review_mark_completed=review_mark_completed,
-                        updated_by=os.getenv("USER"),
-                    )
-                    st.success("Workflow updated")
-                    st.rerun()
-                except Exception as exc:
-                    show_database_error(exc)
-
-        st.subheader("Operational Context")
-        operational_items = [
-            ("Signed Contract", bool_label(row.get("has_signed_contract"))),
-            ("Invoice", bool_label(row.get("has_invoice"))),
-            ("Warranty", bool_label(row.get("has_warranty"))),
-            ("Job Spec", bool_label(row.get("has_job_spec"))),
-            ("Aerial", bool_label(row.get("has_aerial"))),
-            ("Photo Count", format_summary_value(row.get("photo_count"), kind="number")),
-            ("Warnings", text_value(row.get("warning_summary")) or text_value(row.get("warnings")) or "-"),
-        ]
-        for label, value in operational_items:
-            st.write(f"**{label}:** {value}")
-
-        st.subheader("Scheduling Context")
-        schedule_items = [
-            ("Crew Leader", row.get("assigned_crew_leader")),
-            ("Start Date", row.get("estimated_start_date")),
-            ("End Date", row.get("estimated_end_date")),
-            ("Duration Days", row.get("estimated_duration_days")),
-            ("Labor Hours", row.get("estimated_labor_hours")),
-            ("Crew Size", row.get("estimated_crew_size")),
-            ("Schedule Status", row.get("schedule_status")),
-            ("Schedule Priority", row.get("schedule_priority")),
-            ("Blocking Issue", row.get("blocking_issue")),
-            ("Schedule Notes", row.get("schedule_notes")),
-        ]
-        for label, value in schedule_items:
-            st.write(f"**{label}:** {text_value(value) or '-'}")
-        st.caption("Use Schedule Calendar to move this job.")
-
-        st.subheader("Copy Job Summary")
-        st.text_area("Copy into Teams/email", value=job_board_summary(row), height=180)
 
 
 def timesheet_job_touches_page() -> None:

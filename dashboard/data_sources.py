@@ -110,9 +110,9 @@ PAGE_SOURCE_REFERENCES: dict[str, tuple[DashboardSourceReference, ...]] = {
             "Folder-name matching is a fallback when a stable job_id link is unavailable.",
         ),
         _ref(
-            "job_workflow_overrides; crew_schedule; dashboard_job_warnings_actionable",
+            "job_workflow_overrides; job_workflow_events; crew_schedule; dashboard_job_warnings_actionable",
             "PostgreSQL tables/view",
-            "User workflow edits, scheduling, priorities, and action warnings",
+            "User workflow edits, auditable Kanban stage moves, scheduling, priorities, and action warnings",
             "Board status is normalized in Python from workflow, pipeline, folder, and document evidence.",
         ),
     ),

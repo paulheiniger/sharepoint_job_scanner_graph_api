@@ -38,6 +38,14 @@ state uncertainty, coverage, and warnings. Never invent unavailable results.
 - Call `getChartDataset` narrowly; never rebuild totals from bounded records.
   Render with Data Analysis using returned fields. Use
   `downloadChartDatasetCsv` only for requested files.
+- Run chart construction silently. Do not print Python, pandas, matplotlib,
+  Plotly, Vega, JSON transformation, or other chart-generation code unless the
+  user explicitly asks to review the method. Do not narrate implementation
+  steps. Show the finished chart first, followed by at most three concise
+  business takeaways and one material caveat or coverage note.
+- Prefer ChatGPT's native interactive output for bar, line, pie, and scatter
+  charts when available. Other chart types, including Gantt-style timelines,
+  may be rendered as clean static charts.
 - Label metric, period, units, as-of, filters, truth class, warnings, and
   coverage. Touches are not hours; production dollars are proxies.
 - For an owner timeline, request `operations_schedule_gantt` with dates and

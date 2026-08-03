@@ -316,6 +316,17 @@ CREATE TABLE IF NOT EXISTS job_workflow_overrides (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS job_workflow_events (
+    event_id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    from_status TEXT,
+    to_status TEXT,
+    event_source TEXT,
+    updated_by TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS sharepoint_delta_state (
     site_id TEXT,
     drive_id TEXT PRIMARY KEY,
@@ -788,6 +799,7 @@ CREATE INDEX IF NOT EXISTS idx_daily_production_entries_job_date ON daily_produc
 CREATE INDEX IF NOT EXISTS idx_daily_production_material_usage_entry ON daily_production_material_usage(production_entry_id);
 CREATE INDEX IF NOT EXISTS idx_job_workflow_status ON job_workflow_overrides(workflow_status);
 CREATE INDEX IF NOT EXISTS idx_job_workflow_priority ON job_workflow_overrides(priority);
+CREATE INDEX IF NOT EXISTS idx_job_workflow_events_job_created ON job_workflow_events(job_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tracking_summary_job_id ON job_tracking_summary(job_id);
 CREATE INDEX IF NOT EXISTS idx_timesheet_project_name ON office_timesheet_entries(project_name);
 CREATE INDEX IF NOT EXISTS idx_office_timesheet_job_id ON office_timesheet_entries(job_id);
