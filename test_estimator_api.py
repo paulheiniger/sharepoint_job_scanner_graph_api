@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from services.estimator_api.server import app
 from services.estimator_api.generate_openapi import build_action_openapi
+from services.estimator_api.schemas import EstimateWorkbookRequest
 from jobscan.estimator.workbook_service import (
     EstimateWorkbookArtifact,
     EstimateWorkbookInputError,
@@ -202,6 +203,18 @@ def workbook_options_request_payload(*, confirmed: bool = True) -> dict:
             {**base, "option_label": "15-year warranty"},
         ],
     }
+
+
+def test_workbook_request_applies_standard_commercial_percentages() -> None:
+    roofing = EstimateWorkbookRequest.model_validate(workbook_request_payload())
+    assert roofing.pricing.overhead_pct == 35
+    assert roofing.pricing.profit_pct == 15
+
+    insulation_payload = workbook_request_payload()
+    insulation_payload["template_type"] = "insulation"
+    insulation = EstimateWorkbookRequest.model_validate(insulation_payload)
+    assert insulation.pricing.overhead_pct == 30
+    assert insulation.pricing.profit_pct == 10
 
 
 def test_workbook_route_requires_confirmation(monkeypatch) -> None:

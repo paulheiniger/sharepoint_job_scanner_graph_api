@@ -475,6 +475,20 @@
             "title": "Exclude Source Files",
             "type": "array"
           },
+          "focus": {
+            "default": "full",
+            "description": "Optional second-pass detail view. Use labor, pricing, commercial, materials, or evidence when the full response was compacted or a specific estimate section needs more detail.",
+            "enum": [
+              "full",
+              "labor",
+              "pricing",
+              "commercial",
+              "materials",
+              "evidence"
+            ],
+            "title": "Focus",
+            "type": "string"
+          },
           "raw_notes": {
             "default": "",
             "description": "Original estimator notes or relevant conversation text.",
@@ -532,6 +546,10 @@
             "title": "Calculation Requirements",
             "type": "array"
           },
+          "commercial_guidance": {
+            "title": "Commercial Guidance",
+            "type": "object"
+          },
           "decision_concepts": {
             "items": {
               "$ref": "#/components/schemas/DecisionConcept"
@@ -553,6 +571,11 @@
             "title": "Foam Yield History",
             "type": "array"
           },
+          "focus": {
+            "default": "full",
+            "title": "Focus",
+            "type": "string"
+          },
           "historical_assemblies": {
             "items": {
               "$ref": "#/components/schemas/HistoricalAssembly"
@@ -573,6 +596,10 @@
             },
             "title": "Historical Material Usage",
             "type": "array"
+          },
+          "labor_cost_summary": {
+            "title": "Labor Cost Summary",
+            "type": "object"
           },
           "labor_plan_guidance": {
             "items": {
@@ -605,6 +632,10 @@
             },
             "title": "Pricing Candidates",
             "type": "array"
+          },
+          "pricing_coverage": {
+            "title": "Pricing Coverage",
+            "type": "object"
           },
           "product_guidance": {
             "items": {
@@ -2245,6 +2276,7 @@
                 "type": "null"
               }
             ],
+            "description": "Defaults to the standard template-family percentage when omitted.",
             "title": "Overhead Pct"
           },
           "profit_pct": {
@@ -2258,6 +2290,7 @@
                 "type": "null"
               }
             ],
+            "description": "Defaults to the standard template-family percentage when omitted.",
             "title": "Profit Pct"
           }
         },
@@ -4334,7 +4367,7 @@
   "info": {
     "description": "Estimator evidence, controlled workbook generation, and read-only operational intelligence for conversational agents.",
     "title": "Spray-Tec Business Intelligence API",
-    "version": "0.13.9"
+    "version": "0.13.12"
   },
   "openapi": "3.1.0",
   "paths": {

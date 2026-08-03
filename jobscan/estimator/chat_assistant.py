@@ -3685,6 +3685,12 @@ def _latest_historical_unit_price_records(
         "source_date_basis",
         "usage_evidence",
         "historical_observation_count",
+        "fallback_unit_price",
+        "fallback_source_document_id",
+        "fallback_source_job_id",
+        "fallback_source_file",
+        "fallback_source_sharepoint_url",
+        "fallback_source_effective_at",
     ]
     available = [column for column in preferred if column in filtered.columns]
     if not available:

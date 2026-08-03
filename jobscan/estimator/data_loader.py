@@ -137,6 +137,8 @@ INTERACTIVE_TEMPLATE_EXAMPLE_COLUMNS = [
     "decision_summary",
     "source",
     "confidence",
+    "percentage",
+    "document_count",
 ]
 
 ESTIMATOR_NUMERIC_COLUMNS = [
@@ -234,6 +236,9 @@ def normalize_estimator_data(data: EstimatorData) -> EstimatorData:
     data.relationship_material_qty_ratios = normalize_estimator_dataframe(data.relationship_material_qty_ratios)
     data.relationship_labor_rates = normalize_estimator_dataframe(data.relationship_labor_rates)
     data.semantic_labor_task_rates = normalize_estimator_dataframe(data.semantic_labor_task_rates)
+    data.commercial_markup_history = normalize_estimator_dataframe(
+        data.commercial_markup_history
+    )
     data.relationship_package_cooccurrence = normalize_estimator_dataframe(data.relationship_package_cooccurrence)
     data.job_package_summary = normalize_estimator_dataframe(data.job_package_summary)
     data.product_catalog = normalize_estimator_dataframe(data.product_catalog)
@@ -712,6 +717,25 @@ def load_estimator_data_from_database(database_url: str, *, load_profile: str = 
             if not data.semantic_labor_task_rates.empty:
                 data.source_files_used.append(
                     "database: semantic standalone labor task observations"
+                )
+            data.commercial_markup_history = _read_sql_dataframe(
+                connection,
+                """
+                SELECT
+                    LOWER(COALESCE(template_type, '')) AS template_type,
+                    LOWER(COALESCE(template_bucket, '')) AS category,
+                    COALESCE(overhead_pct, profit_pct, margin_pct) AS percentage,
+                    COUNT(DISTINCT document_id) AS document_count
+                FROM estimate_template_rows
+                WHERE LOWER(COALESCE(template_bucket, '')) IN ('overhead', 'profit')
+                  AND COALESCE(overhead_pct, profit_pct, margin_pct, 0) > 0
+                  AND COALESCE(overhead_pct, profit_pct, margin_pct) <= 100
+                GROUP BY 1, 2, 3
+                """,
+            )
+            if not data.commercial_markup_history.empty:
+                data.source_files_used.append(
+                    "database: historical overhead and profit percentages"
                 )
 
         if relation_exists(connection, "relationship_material_qty_ratios"):

@@ -26,8 +26,22 @@ CREATE TABLE IF NOT EXISTS analytics.estimator_latest_historical_unit_prices (
     source_date_basis TEXT NOT NULL,
     usage_evidence TEXT NOT NULL,
     historical_observation_count INTEGER NOT NULL,
+    fallback_unit_price NUMERIC,
+    fallback_source_document_id TEXT,
+    fallback_source_job_id TEXT,
+    fallback_source_file TEXT,
+    fallback_source_sharepoint_url TEXT,
+    fallback_source_effective_at TIMESTAMPTZ,
     refreshed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE analytics.estimator_latest_historical_unit_prices
+    ADD COLUMN IF NOT EXISTS fallback_unit_price NUMERIC,
+    ADD COLUMN IF NOT EXISTS fallback_source_document_id TEXT,
+    ADD COLUMN IF NOT EXISTS fallback_source_job_id TEXT,
+    ADD COLUMN IF NOT EXISTS fallback_source_file TEXT,
+    ADD COLUMN IF NOT EXISTS fallback_source_sharepoint_url TEXT,
+    ADD COLUMN IF NOT EXISTS fallback_source_effective_at TIMESTAMPTZ;
 
 CREATE TEMP TABLE estimator_latest_historical_unit_prices_refresh
 ON COMMIT DROP
@@ -46,13 +60,15 @@ WITH used_prices AS (
             NULLIF(BTRIM(t.row_label), ''),
             NULLIF(BTRIM(t.template_bucket), '')
         ) AS item_name,
-        LOWER(
+        BTRIM(
             REGEXP_REPLACE(
-                COALESCE(
-                    NULLIF(BTRIM(t.resolved_item_name), ''),
-                    NULLIF(BTRIM(t.selected_item_name), ''),
-                    NULLIF(BTRIM(t.row_label), ''),
-                    NULLIF(BTRIM(t.template_bucket), '')
+                LOWER(
+                    COALESCE(
+                        NULLIF(BTRIM(t.resolved_item_name), ''),
+                        NULLIF(BTRIM(t.selected_item_name), ''),
+                        NULLIF(BTRIM(t.row_label), ''),
+                        NULLIF(BTRIM(t.template_bucket), '')
+                    )
                 ),
                 '[^a-z0-9]+',
                 ' ',
@@ -138,8 +154,24 @@ ranked AS (
             ORDER BY
                 source_effective_at DESC,
                 source_document_id DESC
-        ) AS recency_rank
+        ) AS recency_rank,
+        LEAD(unit_price) OVER price_recency AS fallback_unit_price,
+        LEAD(source_document_id) OVER price_recency AS fallback_source_document_id,
+        LEAD(source_job_id) OVER price_recency AS fallback_source_job_id,
+        LEAD(source_file) OVER price_recency AS fallback_source_file,
+        LEAD(source_sharepoint_url) OVER price_recency AS fallback_source_sharepoint_url,
+        LEAD(source_effective_at) OVER price_recency AS fallback_source_effective_at
     FROM used_prices
+    WINDOW price_recency AS (
+        PARTITION BY
+            template_type,
+            template_bucket,
+            workbook_row,
+            item_name_normalized
+        ORDER BY
+            source_effective_at DESC,
+            source_document_id DESC
+    )
 )
 SELECT
     MD5(
@@ -173,6 +205,12 @@ SELECT
     source_date_basis,
     usage_evidence,
     historical_observation_count,
+    fallback_unit_price,
+    fallback_source_document_id,
+    fallback_source_job_id,
+    fallback_source_file,
+    fallback_source_sharepoint_url,
+    fallback_source_effective_at,
     NOW() AS refreshed_at
 FROM ranked
 WHERE recency_rank = 1;
@@ -203,6 +241,12 @@ INSERT INTO analytics.estimator_latest_historical_unit_prices (
     source_date_basis,
     usage_evidence,
     historical_observation_count,
+    fallback_unit_price,
+    fallback_source_document_id,
+    fallback_source_job_id,
+    fallback_source_file,
+    fallback_source_sharepoint_url,
+    fallback_source_effective_at,
     refreshed_at
 )
 SELECT
@@ -229,6 +273,12 @@ SELECT
     source_date_basis,
     usage_evidence,
     historical_observation_count,
+    fallback_unit_price,
+    fallback_source_document_id,
+    fallback_source_job_id,
+    fallback_source_file,
+    fallback_source_sharepoint_url,
+    fallback_source_effective_at,
     refreshed_at
 FROM estimator_latest_historical_unit_prices_refresh;
 

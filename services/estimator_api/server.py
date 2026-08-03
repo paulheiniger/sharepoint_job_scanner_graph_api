@@ -76,7 +76,7 @@ app = FastAPI(
         "Estimator evidence, controlled workbook generation, and read-only "
         "operational intelligence for conversational agents."
     ),
-    version="0.13.9",
+    version="0.13.12",
 )
 
 
@@ -174,6 +174,7 @@ def estimate_context(
             database_url=_database_url(),
             base_dir=PROJECT_ROOT,
             include_source_metadata=payload.include_source_metadata,
+            focus=payload.focus,
         )
         return EstimateContextResponse.model_validate(context_payload)
     except HTTPException:

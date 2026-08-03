@@ -20,6 +20,7 @@ class EstimatorData:
     relationship_material_qty_ratios: pd.DataFrame = field(default_factory=pd.DataFrame)
     relationship_labor_rates: pd.DataFrame = field(default_factory=pd.DataFrame)
     semantic_labor_task_rates: pd.DataFrame = field(default_factory=pd.DataFrame)
+    commercial_markup_history: pd.DataFrame = field(default_factory=pd.DataFrame)
     relationship_package_cooccurrence: pd.DataFrame = field(default_factory=pd.DataFrame)
     job_package_summary: pd.DataFrame = field(default_factory=pd.DataFrame)
     pricing: pd.DataFrame = field(default_factory=pd.DataFrame)

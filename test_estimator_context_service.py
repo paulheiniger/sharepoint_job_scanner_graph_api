@@ -88,6 +88,178 @@ def test_route_context_preserves_mapbox_drive_time(monkeypatch) -> None:
     assert route["source"] == "mapbox_directions"
 
 
+def test_scope_pricing_prioritizes_required_grossman_categories_and_excludes_target_copy() -> None:
+    scope = {
+        "template_type": "roofing",
+        "raw_input_notes": (
+            "2 inch ISO board, replace deteriorated wood decking, coated foam, "
+            "edge metal, gutter, caulk"
+        ),
+        "linear_scopes": [
+            {"item": "Edge Metal", "linear_ft": 52},
+            {"item": "Gutter & Downspouts", "linear_ft": 52},
+        ],
+        "exclude_source_files": ["Estimate Grossman (1).xlsx"],
+    }
+    planning = {
+        "purchasing_guidance": [
+            {"category": "roofing_foam"},
+            {"category": "coating"},
+            {"category": "board_stock"},
+        ],
+        "logistics_guidance": [
+            {"category": "dumpster", "include": True},
+            {"category": "generator", "include": True},
+        ],
+    }
+    full_context = {
+        "pricing_candidates_by_bucket": [
+            {
+                "decision_bucket": "board_stock",
+                "candidate_name": 'ISO board 2"',
+                "thickness_inches": 2,
+                "unit_price": 77.47,
+                "source": "template_lookup_materials",
+            },
+            {
+                "decision_bucket": "foam",
+                "candidate_name": "Accufoam Closed Cell Insulation",
+                "unit_price": 2.42,
+                "source": "pricing_catalog",
+            },
+        ],
+        "_deterministic_latest_historical_unit_prices": [
+            {
+                "template_bucket": "foam",
+                "item_name": "Gaco Roof 2.7",
+                "unit_price": 1.99,
+                "source_file": "Estimate Roof Reference.xlsx",
+                "source_effective_at": "2026-07-31T00:00:00Z",
+            },
+            {
+                "template_bucket": "dumpsters",
+                "item_name": "20 Yard",
+                "unit_price": 600,
+                "source_file": "Estimate Grossman.xlsx",
+                "source_effective_at": "2026-08-01T00:00:00Z",
+            },
+            {
+                "template_bucket": "dumpsters",
+                "item_name": "30 Yard",
+                "unit_price": 650,
+                "source_file": "Estimate Other Roof.xlsx",
+                "source_effective_at": "2026-07-30T00:00:00Z",
+            },
+            {
+                "template_bucket": "generator",
+                "item_name": "Generator",
+                "unit_price": 50,
+                "source_file": "Estimate Grossman.xlsx",
+                "source_effective_at": "2026-08-01T00:00:00Z",
+                "historical_observation_count": 947,
+                "fallback_unit_price": 50,
+                "fallback_source_document_id": "DOC-GENERATOR-2",
+                "fallback_source_job_id": "JOB-GENERATOR-2",
+                "fallback_source_file": "Estimate Other Generator Roof.xlsx",
+                "fallback_source_effective_at": "2026-07-31T00:00:00Z",
+            },
+        ],
+    }
+
+    rows = context_service._public_pricing_candidates(
+        full_context,
+        scope=scope,
+        planning_guidance=planning,
+    )
+    by_bucket = {}
+    for row in rows:
+        by_bucket.setdefault(row["decision_bucket"], []).append(row)
+
+    assert by_bucket["board_stock"][0]["candidate_name"] == 'ISO board 2"'
+    assert by_bucket["foam"][0]["candidate_name"] == "Gaco Roof 2.7"
+    assert by_bucket["dumpster"][0]["candidate_name"] == "30 Yard"
+    assert by_bucket["generator"][0]["unit_price"] == 50
+    assert by_bucket["generator"][0]["source_file"] == "Estimate Other Generator Roof.xlsx"
+    assert by_bucket["generator"][0]["fallback_from_excluded_latest"] is True
+    assert all(row.get("source_file") != "Estimate Grossman.xlsx" for row in rows)
+
+
+def test_labor_cost_summary_makes_current_people_rates_explicit() -> None:
+    summary = context_service._labor_cost_summary(
+        [
+            {
+                "category": "labor_tearoff",
+                "current_people_daily_rate": 1937.25,
+                "estimated_labor_cost_candidate": 2324.70,
+            },
+            {
+                "category": "labor_top_coat",
+                "current_people_daily_rate": 1667.25,
+                "estimated_labor_cost_candidate": 1017.02,
+            },
+        ]
+    )
+
+    assert summary["current_people_rates_available"] is True
+    assert summary["costed_activity_count"] == 2
+    assert summary["estimated_production_labor_cost_candidate"] == 3341.72
+    assert summary["uncosted_categories"] == []
+
+
+def test_commercial_guidance_uses_common_template_percentages() -> None:
+    data = EstimatorData(
+        commercial_markup_history=pd.DataFrame(
+            [
+                {"template_type": "roofing", "category": "overhead", "percentage": 35, "document_count": 850},
+                {"template_type": "roofing", "category": "overhead", "percentage": 30, "document_count": 69},
+                {"template_type": "roofing", "category": "profit", "percentage": 15, "document_count": 547},
+                {"template_type": "roofing", "category": "profit", "percentage": 10, "document_count": 151},
+            ]
+        )
+    )
+
+    guidance = context_service._commercial_guidance(
+        data,
+        template_type="roofing",
+    )
+
+    assert guidance["overhead_pct"] == 35
+    assert guidance["profit_pct"] == 15
+    assert guidance["blocks_workbook_generation"] is False
+    assert guidance["evidence"]["overhead"]["supporting_document_count"] == 850
+
+
+def test_labor_focus_returns_labor_without_unrelated_context(monkeypatch) -> None:
+    monkeypatch.setattr(
+        context_service,
+        "build_estimator_planning_guidance",
+        lambda **_kwargs: {
+            "purchasing_guidance": [{"category": "roofing_foam"}],
+            "labor_plan_guidance": [
+                {
+                    "category": "labor_prep",
+                    "current_people_daily_rate": 1900,
+                    "estimated_labor_cost_candidate": 1900,
+                }
+            ],
+            "logistics_guidance": [],
+        },
+    )
+
+    result = build_copilot_estimator_context(
+        scope={"template_type": "roofing", "estimated_sqft": 1000},
+        data=EstimatorData(),
+        focus="labor",
+    )
+
+    assert result["focus"] == "labor"
+    assert result["labor_plan_guidance"]
+    assert result["labor_cost_summary"]["current_people_rates_available"] is True
+    assert result["purchasing_guidance"] == []
+    assert result["pricing_candidates"] == []
+    assert result["response_budget"]["focus"] == "labor"
+
+
 def test_context_returns_reviewable_roofing_purchase_guidance() -> None:
     result = build_copilot_estimator_context(
         scope={

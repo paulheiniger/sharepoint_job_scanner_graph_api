@@ -156,6 +156,21 @@ class EstimateContextRequest(BaseModel):
             "source_links are returned separately."
         ),
     )
+    focus: Literal[
+        "full",
+        "labor",
+        "pricing",
+        "commercial",
+        "materials",
+        "evidence",
+    ] = Field(
+        default="full",
+        description=(
+            "Optional second-pass detail view. Use labor, pricing, commercial, "
+            "materials, or evidence when the full response was compacted or a "
+            "specific estimate section needs more detail."
+        ),
+    )
 
 
 class HistoricalMeasurement(BaseModel):
@@ -294,6 +309,7 @@ class EstimateContextResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: str
+    focus: str = "full"
     scope: dict[str, Any]
     template_type: str
     route_mileage: dict[str, Any] = Field(default_factory=dict)
@@ -312,10 +328,13 @@ class EstimateContextResponse(BaseModel):
     validated_relationships: list[dict[str, Any]] = Field(default_factory=list)
     approved_memories: list[dict[str, Any]] = Field(default_factory=list)
     pricing_candidates: list[dict[str, Any]] = Field(default_factory=list)
+    pricing_coverage: dict[str, Any] = Field(default_factory=dict)
     product_guidance: list[dict[str, Any]] = Field(default_factory=list)
     foam_yield_history: list[dict[str, Any]] = Field(default_factory=list)
     purchasing_guidance: list[dict[str, Any]] = Field(default_factory=list)
     labor_plan_guidance: list[dict[str, Any]] = Field(default_factory=list)
+    labor_cost_summary: dict[str, Any] = Field(default_factory=dict)
+    commercial_guidance: dict[str, Any] = Field(default_factory=dict)
     logistics_guidance: list[dict[str, Any]] = Field(default_factory=list)
     decision_concepts: list[DecisionConcept] = Field(default_factory=list)
     calculation_requirements: list[CalculationRequirement] = Field(
@@ -499,8 +518,18 @@ class EstimateWorkbookLogistics(EstimateWorkbookMaterial):
 class EstimateWorkbookPricing(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    overhead_pct: float | None = Field(default=None, ge=0, le=500)
-    profit_pct: float | None = Field(default=None, ge=0, le=500)
+    overhead_pct: float | None = Field(
+        default=None,
+        ge=0,
+        le=500,
+        description="Defaults to the standard template-family percentage when omitted.",
+    )
+    profit_pct: float | None = Field(
+        default=None,
+        ge=0,
+        le=500,
+        description="Defaults to the standard template-family percentage when omitted.",
+    )
 
 
 class EstimateWorkbookWarranty(BaseModel):
@@ -565,6 +594,20 @@ class EstimateWorkbookDraft(BaseModel):
         default_factory=list,
         max_length=20,
     )
+
+    @model_validator(mode="after")
+    def apply_standard_commercial_percentages(self) -> "EstimateWorkbookDraft":
+        defaults = {
+            "roofing": (35.0, 15.0),
+            "flooring": (35.0, 15.0),
+            "insulation": (30.0, 10.0),
+        }
+        overhead, profit = defaults[self.template_type]
+        if self.pricing.overhead_pct is None:
+            self.pricing.overhead_pct = overhead
+        if self.pricing.profit_pct is None:
+            self.pricing.profit_pct = profit
+        return self
 
 
 class EstimateWorkbookRequest(EstimateWorkbookDraft):
