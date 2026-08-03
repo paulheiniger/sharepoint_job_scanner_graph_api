@@ -8,6 +8,7 @@ from jobscan.estimator.context_service import (
     AGENT_CONTEXT_PUBLIC_MAX_BYTES,
     build_copilot_estimator_context,
 )
+from jobscan.estimator import context_service
 from jobscan.estimator.schemas import EstimatorData
 
 
@@ -40,6 +41,28 @@ def test_build_copilot_estimator_context_cannot_call_openai(monkeypatch) -> None
     )
 
     assert result["template_type"] == "roofing"
+
+
+def test_context_reuses_read_only_estimator_data_within_ttl(monkeypatch) -> None:
+    calls = []
+    context_service._ESTIMATOR_DATA_CACHE.clear()
+    monkeypatch.setenv("ESTIMATOR_CONTEXT_DATA_CACHE_TTL_SECONDS", "900")
+    monkeypatch.setattr(
+        context_service,
+        "load_estimator_data",
+        lambda **kwargs: calls.append(kwargs) or EstimatorData(),
+    )
+
+    for notes in ("First request", "Second request"):
+        build_copilot_estimator_context(
+            scope={"template_type": "roofing"},
+            raw_notes=notes,
+            database_url="postgresql://example.invalid/test",
+        )
+
+    assert len(calls) == 1
+    assert calls[0]["load_profile"] == "chat"
+    context_service._ESTIMATOR_DATA_CACHE.clear()
 
 
 def test_context_returns_reviewable_roofing_purchase_guidance() -> None:

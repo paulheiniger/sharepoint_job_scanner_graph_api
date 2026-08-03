@@ -159,6 +159,8 @@ ESTIMATOR_NUMERIC_COLUMNS = [
     "area_sqft",
     "hours_per_sqft",
     "hours_per_1000_sqft",
+    "driver_quantity",
+    "task_rate",
     "cost_per_sqft",
     "median_hours_per_1000_sqft",
     "p25_hours_per_1000_sqft",
@@ -231,6 +233,7 @@ def normalize_estimator_data(data: EstimatorData) -> EstimatorData:
     data.tracking_daily = normalize_estimator_dataframe(data.tracking_daily)
     data.relationship_material_qty_ratios = normalize_estimator_dataframe(data.relationship_material_qty_ratios)
     data.relationship_labor_rates = normalize_estimator_dataframe(data.relationship_labor_rates)
+    data.semantic_labor_task_rates = normalize_estimator_dataframe(data.semantic_labor_task_rates)
     data.relationship_package_cooccurrence = normalize_estimator_dataframe(data.relationship_package_cooccurrence)
     data.job_package_summary = normalize_estimator_dataframe(data.job_package_summary)
     data.product_catalog = normalize_estimator_dataframe(data.product_catalog)
@@ -437,6 +440,106 @@ def load_current_pricing(connection: Any, data: EstimatorData) -> pd.DataFrame:
     return pricing
 
 
+def load_semantic_labor_task_rates(connection: Any) -> pd.DataFrame:
+    """Load compact, label-derived task observations for changed roofing templates.
+
+    Historical workbooks have moved Tear Off and Board between physical rows, so
+    their row-number buckets are not reliable. Only standalone task labels are
+    accepted here; combined rows such as ``Board, Foam & Base`` remain assembly
+    evidence and are deliberately not divided between tasks.
+    """
+
+    if not relation_exists(connection, "estimate_template_rows"):
+        return pd.DataFrame()
+    return _read_sql_dataframe(
+        connection,
+        """
+        WITH material_drivers AS (
+            SELECT
+                document_id,
+                MAX(COALESCE(area_sqft, quantity)) FILTER (
+                    WHERE LOWER(COALESCE(template_bucket, '')) = 'foam'
+                      AND COALESCE(area_sqft, quantity, 0) > 0
+                ) AS foam_area_sqft,
+                MAX(COALESCE(area_sqft, quantity)) FILTER (
+                    WHERE LOWER(COALESCE(template_bucket, '')) = 'board_stock'
+                      AND COALESCE(area_sqft, quantity, 0) > 0
+                ) AS board_area_sqft,
+                MAX(estimated_gallons) FILTER (
+                    WHERE LOWER(COALESCE(template_bucket, '')) = 'coating'
+                      AND COALESCE(estimated_gallons, 0) > 0
+                ) AS coating_gallons
+            FROM estimate_template_rows
+            GROUP BY document_id
+        ),
+        labeled_labor AS (
+            SELECT
+                document_id,
+                job_id,
+                source_file,
+                sheet_name,
+                row_label,
+                total_hours,
+                crew_size,
+                days,
+                daily_rate,
+                CASE
+                    WHEN TRIM(LOWER(COALESCE(row_label, ''))) ~ '^tear[ -]?(off|out)$'
+                        THEN 'labor_tearoff'
+                    WHEN TRIM(LOWER(COALESCE(row_label, ''))) ~ '^(iso |layover )?board$'
+                        THEN 'labor_board'
+                    WHEN LOWER(COALESCE(row_label, '')) ~ 'top[ -]?coat'
+                         AND LOWER(COALESCE(row_label, '')) NOT LIKE '%base%'
+                        THEN 'labor_top_coat'
+                END AS category
+            FROM estimate_template_rows
+            WHERE LOWER(COALESCE(template_type, '')) = 'roofing'
+              AND LOWER(COALESCE(line_item_kind, '')) = 'labor'
+              AND COALESCE(total_hours, 0) > 0
+        ),
+        observations AS (
+            SELECT
+                labor.*,
+                CASE
+                    WHEN category IN ('labor_tearoff', 'labor_board')
+                        THEN COALESCE(drivers.board_area_sqft, drivers.foam_area_sqft)
+                    WHEN category = 'labor_top_coat'
+                        THEN drivers.coating_gallons
+                END AS driver_quantity,
+                CASE
+                    WHEN category = 'labor_top_coat' THEN 'gal'
+                    ELSE 'sqft'
+                END AS driver_unit,
+                CASE
+                    WHEN category = 'labor_top_coat'
+                        THEN labor.total_hours / NULLIF(drivers.coating_gallons, 0)
+                    ELSE labor.total_hours
+                         / NULLIF(COALESCE(drivers.board_area_sqft, drivers.foam_area_sqft), 0)
+                         * 1000
+                END AS task_rate,
+                CASE
+                    WHEN category IN ('labor_tearoff', 'labor_board')
+                         AND drivers.board_area_sqft IS NOT NULL THEN 'board_area'
+                    WHEN category IN ('labor_tearoff', 'labor_board')
+                        THEN 'foam_area_proxy'
+                    WHEN category = 'labor_top_coat' THEN 'coating_gallons'
+                END AS driver_type
+            FROM labeled_labor labor
+            JOIN material_drivers drivers USING (document_id)
+            WHERE labor.category IS NOT NULL
+        )
+        SELECT *
+        FROM observations
+        WHERE driver_quantity > 0
+          AND (
+              (category = 'labor_top_coat' AND task_rate BETWEEN 0.01 AND 5)
+              OR
+              (category IN ('labor_tearoff', 'labor_board') AND task_rate BETWEEN 1 AND 200)
+          )
+        """,
+    )
+
+
 def load_historical_scope_texts(connection: Any, *, limit: int | None = None) -> pd.DataFrame:
     if not relation_exists(connection, "documents") or not relation_exists(connection, "document_content"):
         return pd.DataFrame()
@@ -603,6 +706,13 @@ def load_estimator_data_from_database(database_url: str, *, load_profile: str = 
         if relation_exists(connection, "relationship_labor_rates"):
             data.relationship_labor_rates = _read_sql_dataframe(connection, "SELECT * FROM relationship_labor_rates")
             data.source_files_used.append("database: relationship_labor_rates")
+
+        if relation_exists(connection, "estimate_template_rows"):
+            data.semantic_labor_task_rates = load_semantic_labor_task_rates(connection)
+            if not data.semantic_labor_task_rates.empty:
+                data.source_files_used.append(
+                    "database: semantic standalone labor task observations"
+                )
 
         if relation_exists(connection, "relationship_material_qty_ratios"):
             data.relationship_material_qty_ratios = _read_sql_dataframe(connection, "SELECT * FROM relationship_material_qty_ratios")

@@ -448,6 +448,73 @@ def test_labor_guidance_fills_required_task_from_semantic_productivity() -> None
     assert top["blocking_input_required"] is False
 
 
+def test_labor_guidance_uses_standalone_task_cohorts_and_current_people_rate() -> None:
+    data = grossman_estimator_data()
+    observations = []
+    for category, unit, rates, driver_type, driver_quantity, crew_size in (
+        ("labor_tearoff", "sqft", [10, 11, 12, 13, 14], "foam_area_proxy", 3000, 6),
+        ("labor_board", "sqft", [15, 16, 17, 18, 19], "board_area", 3000, 6),
+        ("labor_top_coat", "gal", [0.4, 0.45, 0.5, 0.55, 0.6], "coating_gallons", 75, 5),
+    ):
+        for index, rate in enumerate(rates):
+            observations.append(
+                {
+                    "category": category,
+                    "driver_unit": unit,
+                    "driver_type": driver_type,
+                    "driver_quantity": driver_quantity,
+                    "task_rate": rate,
+                    "crew_size": crew_size,
+                    "job_id": f"HIST-{category}-{index}",
+                    "source_file": f"Historical {category} {index}.xlsx",
+                }
+            )
+    data.semantic_labor_task_rates = pd.DataFrame(observations)
+    people_rows = []
+    components = [
+        {"hourly_wage": wage, "burden_rate": 1.35}
+        for wage in (33, 26, 23.5, 21, 20, 20)
+    ]
+    for crew_size in (5, 6):
+        people_rows.append(
+            {
+                "template_labor_option_id": f"people-{crew_size}",
+                "template_type": "roofing",
+                "source_type": "people_daily_rate_selector",
+                "labor_package": "",
+                "lookup_key": str(crew_size),
+                "source_values_json": {
+                    "crew_components": components,
+                    "crew_size": crew_size,
+                    "hours_per_day": 10,
+                },
+            }
+        )
+    data.template_labor_options = pd.concat(
+        [data.template_labor_options, pd.DataFrame(people_rows)],
+        ignore_index=True,
+    )
+
+    result = build_estimator_planning_guidance(
+        scope=grossman_structured_scope(),
+        data=data,
+    )
+    labor = {row["category"]: row for row in result["labor_plan_guidance"]}
+
+    assert labor["labor_tearoff"]["recommended_total_hours"] == 37.4
+    assert labor["labor_board"]["recommended_total_hours"] == 53.0
+    assert labor["labor_top_coat"]["recommended_total_hours"] == 39.0
+    assert labor["labor_top_coat"]["driver_unit"] == "gal"
+    assert labor["labor_top_coat"]["historical_support_count"] == 5
+    assert labor["labor_tearoff"]["current_people_daily_rate"] == 1937.25
+    assert labor["labor_top_coat"]["current_people_daily_rate"] == 1667.25
+    assert all(
+        labor[category]["calibration_status"] == "historical_candidate"
+        and labor[category]["blocking_input_required"] is False
+        for category in ("labor_tearoff", "labor_board", "labor_top_coat")
+    )
+
+
 def test_grossman_scope_compiler_scales_one_comparable_and_prefers_materials_price() -> None:
     proposals = compile_deterministic_scope_proposals(
         grossman_structured_scope(),

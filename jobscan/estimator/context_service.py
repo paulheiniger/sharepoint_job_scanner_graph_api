@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import threading
+import time
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Mapping
@@ -33,6 +36,9 @@ _BOUNDED_LIST_FIELDS = (
     "calculation_requirements",
     "source_links",
 )
+
+_ESTIMATOR_DATA_CACHE: dict[tuple[str, str], tuple[float, EstimatorData]] = {}
+_ESTIMATOR_DATA_CACHE_LOCK = threading.Lock()
 
 
 def build_copilot_estimator_context(
@@ -86,11 +92,9 @@ def build_copilot_estimator_context(
     if excluded_sources:
         normalized_scope["exclude_source_files"] = excluded_sources
 
-    estimator_data = data or load_estimator_data(
+    estimator_data = data or _cached_estimator_data(
         base_dir=base_dir,
         database_url=database_url,
-        prefer_database=bool(database_url),
-        load_profile=ESTIMATOR_LOAD_PROFILE_CHAT,
     )
     full_context = estimator_context_summary(estimator_data, scope=normalized_scope)
     historical_packet = (
@@ -222,6 +226,42 @@ def _bound_agent_context(response: dict[str, Any]) -> dict[str, Any]:
     _trim_to_serialized_budget(response)
     _refresh_budget_metadata(response)
     return response
+
+
+def _cached_estimator_data(
+    *,
+    base_dir: Path | str | None,
+    database_url: str | None,
+) -> EstimatorData:
+    """Reuse the read-only chat evidence set for a short presentation-safe TTL."""
+
+    try:
+        ttl_seconds = int(os.getenv("ESTIMATOR_CONTEXT_DATA_CACHE_TTL_SECONDS") or "900")
+    except ValueError:
+        ttl_seconds = 900
+    ttl_seconds = min(max(ttl_seconds, 0), 3600)
+    if ttl_seconds == 0:
+        return load_estimator_data(
+            base_dir=base_dir,
+            database_url=database_url,
+            prefer_database=bool(database_url),
+            load_profile=ESTIMATOR_LOAD_PROFILE_CHAT,
+        )
+    key = (str(base_dir or ""), str(database_url or ""))
+    with _ESTIMATOR_DATA_CACHE_LOCK:
+        now = time.monotonic()
+        cached = _ESTIMATOR_DATA_CACHE.get(key)
+        if cached and now - cached[0] < ttl_seconds:
+            return cached[1]
+        loaded = load_estimator_data(
+            base_dir=base_dir,
+            database_url=database_url,
+            prefer_database=bool(database_url),
+            load_profile=ESTIMATOR_LOAD_PROFILE_CHAT,
+        )
+        _ESTIMATOR_DATA_CACHE.clear()
+        _ESTIMATOR_DATA_CACHE[key] = (now, loaded)
+        return loaded
 
 
 def _bounded_response_scope(scope: dict[str, Any]) -> dict[str, Any]:

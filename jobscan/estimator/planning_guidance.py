@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from statistics import median
 from typing import Any, Iterable
 
 from .decision_proposals import (
@@ -35,6 +36,7 @@ def build_estimator_planning_guidance(
     labor = _labor_guidance(
         canonical,
         data=data,
+        historical_material_usage=historical_material_usage,
         historical_labor_performance=historical_labor_performance,
     )
     return {
@@ -118,6 +120,7 @@ def _labor_guidance(
     scope: dict[str, Any],
     *,
     data: Any,
+    historical_material_usage: Iterable[Any],
     historical_labor_performance: Iterable[Any],
 ) -> list[dict[str, Any]]:
     proposals = compile_deterministic_scope_proposals(scope, data=data)
@@ -185,10 +188,24 @@ def _labor_guidance(
         if category in by_category:
             continue
         basis = _labor_basis(scope, category)
-        historical_candidate = _historical_labor_candidate(
+        driver = _labor_driver(
+            scope,
+            category=category,
+            proposals=proposals,
+            historical_material_usage=historical_material_usage,
+        )
+        historical_candidate = _semantic_task_labor_candidate(
+            data,
+            scope=scope,
+            category=category,
+            driver_quantity=driver["quantity"],
+            driver_unit=driver["unit"],
+        ) or _historical_labor_candidate(
             historical,
             category=category,
             basis=basis,
+            driver_quantity=driver["quantity"],
+            driver_unit=driver["unit"],
         )
         current_people = _current_people_rate(
             data,
@@ -200,6 +217,19 @@ def _labor_guidance(
             "activity": _activity_label(category),
             "basis_quantity": basis,
             "basis_unit": "sqft",
+            "driver_type": historical_candidate.get("driver_type")
+            or driver["type"],
+            "driver_quantity": historical_candidate.get("driver_quantity")
+            or driver["quantity"],
+            "driver_unit": historical_candidate.get("driver_unit")
+            or driver["unit"],
+            "historical_driver_rate": historical_candidate.get("driver_rate"),
+            "historical_driver_rate_unit": historical_candidate.get(
+                "driver_rate_unit"
+            ),
+            "historical_support_count": historical_candidate.get(
+                "support_count", 0
+            ),
             "recommended_total_hours": historical_candidate.get("total_hours"),
             "recommended_crew_size": historical_candidate.get("crew_size"),
             "recommended_days": historical_candidate.get("days"),
@@ -265,6 +295,8 @@ def _historical_labor_candidate(
     *,
     category: str,
     basis: float,
+    driver_quantity: float = 0.0,
+    driver_unit: str = "sqft",
 ) -> dict[str, Any]:
     candidates: list[dict[str, Any]] = []
     for observation in observations:
@@ -286,13 +318,30 @@ def _historical_labor_candidate(
         rate = _number(productivity.get("rate"))
         rate_unit = str(productivity.get("rate_unit") or "").lower()
         hours_per_1000 = 0.0
-        if rate > 0 and "1000" in rate_unit and "sq" in rate_unit:
+        scaled_hours = 0.0
+        resolved_driver_quantity = driver_quantity or basis
+        resolved_driver_unit = driver_unit
+        driver_rate_unit = ""
+        if (
+            rate > 0
+            and resolved_driver_quantity > 0
+            and resolved_driver_unit == "gal"
+            and "hour" in rate_unit
+            and ("gal" in rate_unit or "unit" in rate_unit)
+        ):
+            scaled_hours = resolved_driver_quantity * rate
+            driver_rate_unit = "hours_per_gal"
+        elif rate > 0 and "1000" in rate_unit and "sq" in rate_unit:
             hours_per_1000 = rate
         elif total_hours > 0 and reference_area > 0:
             hours_per_1000 = total_hours / reference_area * 1000
-        if hours_per_1000 <= 0 or basis <= 0:
+        if scaled_hours <= 0 and (hours_per_1000 <= 0 or basis <= 0):
             continue
-        scaled_hours = basis / 1000 * hours_per_1000
+        if scaled_hours <= 0:
+            scaled_hours = basis / 1000 * hours_per_1000
+            resolved_driver_quantity = basis
+            resolved_driver_unit = "sqft"
+            driver_rate_unit = "hours_per_1000_sqft"
         scale_factor = basis / reference_area if reference_area > 0 else None
         scaled_days = days * scale_factor if days > 0 and scale_factor else 0.0
         support = max(
@@ -306,6 +355,12 @@ def _historical_labor_candidate(
                 "crew_size": int(crew_size) if crew_size > 0 else None,
                 "days": round(scaled_days, 2) if scaled_days > 0 else None,
                 "hours_per_1000_sqft": round(hours_per_1000, 3),
+                "driver_type": productivity.get("driver_type")
+                or "historical_productivity",
+                "driver_quantity": round(resolved_driver_quantity, 3),
+                "driver_unit": resolved_driver_unit,
+                "driver_rate": round(rate or hours_per_1000, 6),
+                "driver_rate_unit": driver_rate_unit,
                 "daily_rate": _number(observation.get("daily_rate")) or None,
                 "source_job_id": source.get("job_id"),
                 "source_file": source.get("file_name"),
@@ -320,6 +375,132 @@ def _historical_labor_candidate(
     if not candidates:
         return {}
     return max(candidates, key=lambda row: (row["support_count"], row["confidence"]))
+
+
+def _semantic_task_labor_candidate(
+    data: Any,
+    *,
+    scope: dict[str, Any],
+    category: str,
+    driver_quantity: float,
+    driver_unit: str,
+) -> dict[str, Any]:
+    frame = getattr(data, "semantic_labor_task_rates", None) if data is not None else None
+    if (
+        frame is None
+        or not hasattr(frame, "empty")
+        or frame.empty
+        or driver_quantity <= 0
+    ):
+        return {}
+    exclusions = {
+        str(value or "").strip().lower().rsplit("/", 1)[-1]
+        for value in scope.get("exclude_source_files") or []
+        if str(value or "").strip()
+    }
+    rows: list[dict[str, Any]] = []
+    for row in frame.fillna("").to_dict(orient="records"):
+        if str(row.get("category") or "") != category:
+            continue
+        if str(row.get("driver_unit") or "").lower() != driver_unit:
+            continue
+        source_file = str(row.get("source_file") or "")
+        if source_file.lower().rsplit("/", 1)[-1] in exclusions:
+            continue
+        rate = _number(row.get("task_rate"))
+        reference_quantity = _number(row.get("driver_quantity"))
+        if rate <= 0 or reference_quantity <= 0:
+            continue
+        rows.append({**row, "task_rate": rate, "driver_quantity": reference_quantity})
+    if not rows:
+        return {}
+
+    nearby = [
+        row
+        for row in rows
+        if 0.4 <= row["driver_quantity"] / driver_quantity <= 2.5
+    ]
+    cohort = nearby if len(nearby) >= 5 else rows
+    if category == "labor_board":
+        direct = [row for row in cohort if row.get("driver_type") == "board_area"]
+        if len(direct) >= 5:
+            cohort = direct
+    rate = float(median(row["task_rate"] for row in cohort))
+    crew_values = [
+        int(round(_number(row.get("crew_size"))))
+        for row in cohort
+        if _number(row.get("crew_size")) > 0
+    ]
+    crew_size = int(round(median(crew_values))) if crew_values else 0
+    total_hours = (
+        driver_quantity * rate
+        if driver_unit == "gal"
+        else driver_quantity / 1000 * rate
+    )
+    days = total_hours / (crew_size * 10.5) if crew_size > 0 else 0.0
+    representative = min(cohort, key=lambda row: abs(row["task_rate"] - rate))
+    confidence = 0.88 if len(cohort) >= 20 else 0.8 if len(cohort) >= 8 else 0.68
+    rate_unit = "hours_per_gal" if driver_unit == "gal" else "hours_per_1000_sqft"
+    return {
+        "total_hours": round(total_hours, 1),
+        "crew_size": crew_size or None,
+        "days": round(days, 2) if days > 0 else None,
+        "hours_per_1000_sqft": round(total_hours / _labor_basis(scope, category) * 1000, 3)
+        if _labor_basis(scope, category) > 0
+        else None,
+        "driver_type": "historical_standalone_task_cohort",
+        "driver_quantity": round(driver_quantity, 3),
+        "driver_unit": driver_unit,
+        "driver_rate": round(rate, 6),
+        "driver_rate_unit": rate_unit,
+        "source_job_id": representative.get("job_id"),
+        "source_file": representative.get("source_file"),
+        "support_count": len(cohort),
+        "confidence": confidence,
+        "review_reasons": [
+            f"Median {rate_unit.replace('_', ' ')} from {len(cohort)} standalone historical task observations; composite labor rows were not split."
+        ],
+    }
+
+
+def _labor_driver(
+    scope: dict[str, Any],
+    *,
+    category: str,
+    proposals: Iterable[Any],
+    historical_material_usage: Iterable[Any],
+) -> dict[str, Any]:
+    basis = _labor_basis(scope, category)
+    if category != "labor_top_coat":
+        return {"type": "task_area", "quantity": basis, "unit": "sqft"}
+    for key in ("top_coat_gallons", "coating_gallons", "estimated_gallons"):
+        gallons = _number(scope.get(key))
+        if gallons > 0:
+            return {"type": "explicit_coating_gallons", "quantity": gallons, "unit": "gal"}
+    rates: list[float] = []
+    for proposal in proposals:
+        if str(getattr(proposal, "template_bucket", "") or "") != "coating":
+            continue
+        value = _number((getattr(proposal, "proposed_values", {}) or {}).get("gal_per_100_sqft"))
+        if 0.1 <= value <= 10:
+            rates.append(value)
+    for observation in historical_material_usage:
+        if not isinstance(observation, dict) or str(observation.get("category") or "") != "coating":
+            continue
+        value = _measurement(
+            observation.get("application_parameters") or [],
+            ("gal_per_100_sqft",),
+        )
+        if 0.1 <= value <= 10:
+            rates.append(value)
+    if rates and basis > 0:
+        gallons = basis / 100 * float(median(rates))
+        return {
+            "type": "coating_gallons_from_selected_coverage",
+            "quantity": round(gallons, 3),
+            "unit": "gal",
+        }
+    return {"type": "coating_area", "quantity": basis, "unit": "sqft"}
 
 
 def _current_people_rate(
@@ -337,14 +518,12 @@ def _current_people_rate(
             continue
         if _slug(row.get("source_type")) != "people_daily_rate_selector":
             continue
-        if _slug(row.get("labor_package")) not in {"", _slug(category)}:
-            continue
         if int(_number(row.get("lookup_key"))) != int(crew_size):
             continue
         values = row.get("source_values_json")
         if not isinstance(values, dict):
             continue
-        daily_rate = _number(values.get("daily_rate") or values.get("rate"))
+        daily_rate = _people_daily_rate(values, crew_size=int(crew_size))
         if daily_rate <= 0:
             continue
         candidates.append(
@@ -353,9 +532,34 @@ def _current_people_rate(
                 "crew_size": int(crew_size),
                 "template_labor_option_id": row.get("template_labor_option_id"),
                 "template_name": row.get("template_name"),
+                "labor_package": row.get("labor_package"),
             }
         )
-    return candidates[0] if len(candidates) == 1 else {}
+    exact = [
+        row for row in candidates if _slug(row.get("labor_package")) == _slug(category)
+    ]
+    generic = [row for row in candidates if not _slug(row.get("labor_package"))]
+    pool = exact or generic or candidates
+    unique_rates = {round(_number(row.get("daily_rate")), 6) for row in pool}
+    return pool[0] if len(unique_rates) == 1 else {}
+
+
+def _people_daily_rate(values: dict[str, Any], *, crew_size: int) -> float:
+    direct = _number(values.get("daily_rate") or values.get("rate"))
+    if direct > 0:
+        return direct
+    components = values.get("crew_components") or values.get("values") or []
+    if not isinstance(components, list) or crew_size <= 0:
+        return 0.0
+    hours_per_day = _number(values.get("hours_per_day")) or 10.0
+    hourly_burdened = 0.0
+    for component in components[:crew_size]:
+        if not isinstance(component, dict):
+            continue
+        wage = _number(component.get("hourly_wage"))
+        burden = _number(component.get("burden_rate")) or 1.0
+        hourly_burdened += wage * burden
+    return hourly_burdened * hours_per_day
 
 
 def _historical_area_ratio(

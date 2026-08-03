@@ -15,16 +15,18 @@ until tenant administration is available.
 - Pull/runtime identity: `spraytec-api-pull-id`
 - Public URL: `https://spraytec-business-api.icysand-5925ab36.eastus2.azurecontainerapps.io`
 
-The app is configured for zero to one replicas to limit development cost. A
-cold start must remain below the ChatGPT action timeout. Raise the minimum to
-one if real usage shows intermittent cold-start timeouts.
+The app is temporarily configured for one warm replica for the live
+presentation. Estimator context source data is cached in-process for one hour
+with `ESTIMATOR_CONTEXT_DATA_CACHE_TTL_SECONDS=3600`; estimate answers are not
+cached. After the presentation, the minimum may be returned to zero and the
+cache TTL shortened to reduce development cost and data staleness.
 
 ## Build and deploy a new image
 
 Choose an immutable version tag and run from the repository root:
 
 ```bash
-IMAGE_TAG=0.13.3
+IMAGE_TAG=0.13.8
 
 docker build \
   --platform linux/amd64 \
