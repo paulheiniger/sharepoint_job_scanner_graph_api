@@ -364,6 +364,23 @@ class RoofMeasureContextRequest(BaseModel):
         description="Street address for the roof or building site.",
     )
     job_id: str = Field(default="", max_length=200)
+    site_name: str = Field(
+        default="",
+        max_length=300,
+        description=(
+            "Optional facility or place name visible to the user, such as a school "
+            "or industrial campus. This is used for site interpretation, not for "
+            "historical-area lookup."
+        ),
+    )
+    site_type: str = Field(
+        default="",
+        max_length=100,
+        description=(
+            "Optional physical site classification such as school, campus, hospital, "
+            "industrial complex, or single building."
+        ),
+    )
     view: Literal["whole_site", "building_detail"] = Field(
         default="whole_site",
         description=(
@@ -405,6 +422,19 @@ class RoofMeasureFootprintCandidate(BaseModel):
     components: list[RoofMeasurePolygonComponent]
 
 
+class RoofMeasureCandidateGroup(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    group_id: str
+    label: str
+    footprint_ids: list[str] = Field(default_factory=list)
+    building_count: int = Field(ge=1)
+    plan_area_sqft: float = Field(gt=0)
+    perimeter_ft: float = Field(gt=0)
+    distance_from_address_point_ft: float = Field(ge=0)
+    contains_address_point: bool = False
+
+
 class RoofMeasureLidarCoverage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -425,6 +455,8 @@ class RoofMeasureContextResponse(BaseModel):
     expires_at: int
     address: str
     job_id: str = ""
+    site_name: str = ""
+    site_type: str = ""
     latitude: float
     longitude: float
     zoom: float
@@ -433,9 +465,24 @@ class RoofMeasureContextResponse(BaseModel):
     pixels_per_foot: float
     satellite_image_url: str
     footprint_overlay_url: str
+    footprint_overlay_preview_media_type: Literal["image/jpeg"]
+    footprint_overlay_preview_base64: str = Field(
+        description=(
+            "Base64-encoded JPEG preview containing the satellite pixels and all "
+            "candidate footprint outlines. Decode and display this image before "
+            "choosing footprint IDs; do not redraw the polygons on a blank canvas."
+        )
+    )
     footprint_candidates: list[RoofMeasureFootprintCandidate] = Field(
         default_factory=list
     )
+    candidate_groups: list[RoofMeasureCandidateGroup] = Field(default_factory=list)
+    site_resolution_status: Literal[
+        "candidate_group_suggested", "review_required"
+    ]
+    recommended_candidate_group_id: str = ""
+    site_resolution_reason: str = ""
+    requires_site_confirmation: bool = True
     lidar_coverage: RoofMeasureLidarCoverage
     attributions: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
@@ -494,6 +541,16 @@ class RoofMeasureSectionResult(BaseModel):
     surface_area_sqft: float | None = None
 
 
+class OpenAIActionFile(BaseModel):
+    """Native file attachment returned by a ChatGPT GPT Action."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=200)
+    mime_type: str = Field(pattern=r"^[\w.+-]+/[\w.+-]+$")
+    content: str = Field(description="Base64-encoded file content.")
+
+
 class RoofMeasureCalculationResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -505,6 +562,25 @@ class RoofMeasureCalculationResponse(BaseModel):
     pitch_rise_per_12: float | None = None
     total_surface_area_sqft: float | None = None
     sections: list[RoofMeasureSectionResult]
+    selected_footprint_overlay_url: str
+    selected_footprint_overlay_preview_media_type: Literal["image/jpeg"]
+    selected_footprint_overlay_preview_base64: str = Field(
+        description=(
+            "Base64-encoded JPEG with the selected roof sections highlighted on "
+            "the satellite image. Decode and display this exact image with the "
+            "measurement result; do not substitute a geometry-only drawing."
+        )
+    )
+    openai_file_response: list[OpenAIActionFile] = Field(
+        serialization_alias="openaiFileResponse",
+        validation_alias="openaiFileResponse",
+        description=(
+            "Native ChatGPT Action attachment containing the exact selected-footprint "
+            "overlay. ChatGPT should attach this file directly to the answer."
+        ),
+        min_length=1,
+        max_length=1,
+    )
     review_status: Literal["requires_estimator_verification"]
     assumptions: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)

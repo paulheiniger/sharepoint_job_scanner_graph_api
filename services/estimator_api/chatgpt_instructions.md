@@ -59,9 +59,29 @@ state uncertainty, coverage, and warnings. Never invent unavailable results.
   `view: whole_site` first. Use `building_detail` only after confirming the
   closer extent will not crop the target roof. Do not search the web for roof
   dimensions when this action is available.
-- Inspect the returned satellite image and labeled footprint overlay and compare
-  them with any user-supplied aerial or field image. If the signed image cannot
-  be inspected, say so and do not claim a footprint was visually verified.
+- Send the user-provided facility name as `site_name` and a physical
+  classification such as `school`, `campus`, or `single building` as
+  `site_type`. `job_id` is optional. Do not retrieve or use a stored job area to
+  choose footprints; this action must be useful for previously unmeasured sites.
+  If the first context call fails,
+  retry once with the same normalized street address, `view: whole_site`, and
+  `include_lidar_coverage: false`. If that retry fails, report the action error
+  and stop; do not substitute web search, public GIS, or guessed dimensions.
+- Decode `footprint_overlay_preview_base64` using its media type and inspect the
+  resulting image before choosing footprint IDs. Do this silently; do not print
+  the decoding code. The preview is self-contained and is preferred over trying
+  to download the signed URL. Compare it with any user-supplied aerial or field
+  image. Never select candidates solely because they are the largest or nearest.
+- Confirm that every intended roof is fully inside the image and visibly traced.
+  A building touching the image edge or an untraced roof is missing evidence;
+  say so rather than substituting a different candidate. An address point is a
+  search location, not a roof boundary. For a named campus, facility, or
+  multi-building site, inspect every associated roof section instead of using
+  only the building containing the geocoder point.
+- Review `candidate_groups` and the orange suggested group on the overlay. For
+  a school or campus, prefer the complete named facility assembly rather than
+  the footprint containing the address point. Use the suggestion only when the
+  imagery supports it; otherwise present the candidate groups for confirmation.
 - Use a returned footprint ID only when it follows the complete intended roof.
   Otherwise submit one or more reviewed custom pixel polygons to
   `calculateRoofMeasurement`. Never combine duplicate footprint candidates or
@@ -71,7 +91,11 @@ state uncertainty, coverage, and warnings. Never invent unavailable results.
   surface area unresolved. LiDAR coverage metadata proves only that public data
   exists, not that LiDAR verified the boundary, pitch, or area.
 - Lead with measured plan area, perimeter, measurement basis, and whether a
-  slope adjustment was applied. Always retain the API warnings and
+  slope adjustment was applied. The calculation action returns
+  `openaiFileResponse`; attach its native `roof_measure_overlay.jpg` file in the
+  final answer so the user can verify exactly what was measured. Do not route
+  the image through web search, rebuild it in Data Analysis, output the signed
+  URL, or redraw it on a blank grid. Always retain the API warnings and
   `requires_estimator_verification` status. The result is estimate evidence,
   not a survey or an automatically approved takeoff.
 

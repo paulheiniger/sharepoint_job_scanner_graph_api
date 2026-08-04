@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
 import re
@@ -25,9 +26,21 @@ from .visualization import image_png_bytes
 
 
 CONTEXT_ID_RE = re.compile(r"^[a-f0-9]{32}$")
+SELECTION_ASSET_RE = re.compile(r"^selected-footprints-[a-f0-9]{16}\.png$")
 ROOF_ASSET_NAMES = frozenset({"satellite.png", "footprint-overlay.png"})
-VIEW_ZOOM = {"whole_site": 17.5, "building_detail": 19.0}
+VIEW_ZOOM = {"whole_site": 16.5, "building_detail": 19.0}
 MAX_FOOTPRINT_CANDIDATES = 12
+CAMPUS_SITE_TYPES = frozenset(
+    {
+        "school",
+        "campus",
+        "hospital",
+        "industrial complex",
+        "government complex",
+        "multi-building facility",
+    }
+)
+CAMPUS_BUILDING_GAP_FEET = 85.0
 
 
 class RoofMeasureContextError(RuntimeError):
@@ -52,6 +65,8 @@ def create_roof_measure_context(
     database_url: str,
     artifact_dir: Path,
     expires_at: int,
+    site_name: str = "",
+    site_type: str = "",
 ) -> dict[str, Any]:
     token = str(mapbox_token or "").strip()
     if not token:
@@ -122,42 +137,46 @@ def create_roof_measure_context(
             if candidate is not None:
                 raw_candidates.append(candidate)
 
-    if not raw_candidates:
-        microsoft_lookup = microsoft_global_building_footprints(
-            latitude=latitude,
-            longitude=longitude,
-            radius_meters=500,
-            limit=100,
-        )
-        if microsoft_lookup.attribution not in attributions:
-            attributions.append(microsoft_lookup.attribution)
-        if microsoft_lookup.warning:
-            warnings.append(microsoft_lookup.warning)
-        if microsoft_lookup.ok:
-            for footprint in microsoft_lookup.footprints:
-                candidate = _candidate_from_footprint(
-                    footprint,
-                    latitude=latitude,
-                    longitude=longitude,
-                    zoom=resolved_zoom,
-                    width=image.width,
-                    height=image.height,
-                    pixels_per_foot=pixels_per_foot,
-                )
-                if candidate is not None:
-                    raw_candidates.append(candidate)
-
-    ranked = sorted(
-        raw_candidates,
-        key=lambda item: (
-            float(item["center_distance_pixels"]),
-            _provider_priority(str(item["provider"])),
-            -float(item["plan_area_sqft"]),
-        ),
+    microsoft_lookup = microsoft_global_building_footprints(
+        latitude=latitude,
+        longitude=longitude,
+        radius_meters=500,
+        limit=100,
     )
-    candidates = _deduplicate_candidates(ranked)[:MAX_FOOTPRINT_CANDIDATES]
+    if microsoft_lookup.attribution not in attributions:
+        attributions.append(microsoft_lookup.attribution)
+    if microsoft_lookup.warning:
+        warnings.append(microsoft_lookup.warning)
+    if microsoft_lookup.ok:
+        for footprint in microsoft_lookup.footprints:
+            candidate = _candidate_from_footprint(
+                footprint,
+                latitude=latitude,
+                longitude=longitude,
+                zoom=resolved_zoom,
+                width=image.width,
+                height=image.height,
+                pixels_per_foot=pixels_per_foot,
+            )
+            if candidate is not None:
+                raw_candidates.append(candidate)
+
+    candidates = _bounded_candidate_set(raw_candidates)
     for index, candidate in enumerate(candidates, start=1):
         candidate["footprint_id"] = f"fp-{index:02d}"
+
+    candidate_groups = _build_candidate_groups(
+        candidates,
+        pixels_per_foot=pixels_per_foot,
+        image_width=image.width,
+        image_height=image.height,
+    )
+    site_resolution = _site_resolution_guidance(
+        candidate_groups,
+        site_name=site_name,
+        site_type=site_type,
+    )
+    for candidate in candidates:
         candidate.pop("center_distance_pixels", None)
         candidate.pop("center_x", None)
         candidate.pop("center_y", None)
@@ -197,7 +216,14 @@ def create_roof_measure_context(
     context_path = _context_path(artifact_dir, context_id)
     context_path.mkdir(parents=True, exist_ok=False)
     (context_path / "satellite.png").write_bytes(image_png_bytes(image))
-    overlay = _footprint_overlay(image, candidates)
+    overlay = _footprint_overlay(
+        image,
+        candidates,
+        candidate_groups=candidate_groups,
+        recommended_group_id=str(
+            site_resolution.get("recommended_candidate_group_id") or ""
+        ),
+    )
     (context_path / "footprint-overlay.png").write_bytes(image_png_bytes(overlay))
 
     context = {
@@ -207,6 +233,8 @@ def create_roof_measure_context(
         "expires_at": int(expires_at),
         "address": address.strip(),
         "job_id": job_id.strip(),
+        "site_name": site_name.strip(),
+        "site_type": site_type.strip(),
         "latitude": latitude,
         "longitude": longitude,
         "zoom": resolved_zoom,
@@ -214,6 +242,8 @@ def create_roof_measure_context(
         "image_height": image.height,
         "pixels_per_foot": pixels_per_foot,
         "footprint_candidates": candidates,
+        "candidate_groups": candidate_groups,
+        **site_resolution,
         "lidar_coverage": lidar,
         "attributions": _unique_nonempty(attributions),
         "warnings": _unique_nonempty(warnings),
@@ -306,6 +336,13 @@ def calculate_roof_measurement(
             f"A uniform {pitch_rise_per_12:g}:12 pitch was applied to every section."
         )
 
+    selected_overlay_asset_name = _write_selected_footprint_overlay(
+        context=context,
+        selected_footprint_ids=selected_footprint_ids,
+        sections=sections,
+        artifact_dir=artifact_dir,
+    )
+
     return {
         "schema_version": "spraytec.roof_measure_calculation.v1",
         "context_id": context_id,
@@ -317,6 +354,7 @@ def calculate_roof_measurement(
             round(total_surface, 1) if total_surface is not None else None
         ),
         "sections": measurement_sections,
+        "selected_overlay_asset_name": selected_overlay_asset_name,
         "review_status": "requires_estimator_verification",
         "assumptions": assumptions,
         "warnings": warnings,
@@ -344,7 +382,9 @@ def resolve_roof_measure_asset(
     asset_name: str,
     artifact_dir: Path,
 ) -> Path:
-    if asset_name not in ROOF_ASSET_NAMES:
+    if asset_name not in ROOF_ASSET_NAMES and not SELECTION_ASSET_RE.fullmatch(
+        str(asset_name or "")
+    ):
         raise RoofMeasureInputError("Unknown roof measurement asset.")
     load_roof_measure_context(context_id=context_id, artifact_dir=artifact_dir)
     path = _context_path(artifact_dir, context_id) / asset_name
@@ -527,6 +567,195 @@ def _deduplicate_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, 
     return accepted
 
 
+def _bounded_candidate_set(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep nearby structures while ensuring large site buildings are not dropped."""
+    nearest_ranked = sorted(
+        candidates,
+        key=lambda item: (
+            float(item["center_distance_pixels"]),
+            _provider_priority(str(item["provider"])),
+            -float(item["plan_area_sqft"]),
+        ),
+    )
+    deduplicated = _deduplicate_candidates(nearest_ranked)
+    nearest = deduplicated[:8]
+    largest = sorted(
+        deduplicated,
+        key=lambda item: (
+            -float(item["plan_area_sqft"]),
+            float(item["center_distance_pixels"]),
+        ),
+    )[:4]
+    selected: list[dict[str, Any]] = []
+    for candidate in [*nearest, *largest, *deduplicated]:
+        if candidate in selected:
+            continue
+        selected.append(candidate)
+        if len(selected) >= MAX_FOOTPRINT_CANDIDATES:
+            break
+    return selected
+
+
+def _build_candidate_groups(
+    candidates: list[dict[str, Any]],
+    *,
+    pixels_per_foot: float,
+    image_width: int = 1280,
+    image_height: int = 1280,
+) -> list[dict[str, Any]]:
+    """Group nearby, non-duplicate buildings into reviewable site assemblies."""
+    if not candidates:
+        return []
+    max_gap_pixels = CAMPUS_BUILDING_GAP_FEET * float(pixels_per_foot)
+    boxes = [_candidate_bounds(candidate) for candidate in candidates]
+    neighbors: dict[int, set[int]] = {index: set() for index in range(len(candidates))}
+    for left in range(len(candidates)):
+        for right in range(left + 1, len(candidates)):
+            if _bounds_gap_pixels(boxes[left], boxes[right]) <= max_gap_pixels:
+                neighbors[left].add(right)
+                neighbors[right].add(left)
+
+    components: list[list[int]] = []
+    remaining = set(range(len(candidates)))
+    while remaining:
+        start = min(remaining)
+        stack = [start]
+        component: list[int] = []
+        remaining.remove(start)
+        while stack:
+            current = stack.pop()
+            component.append(current)
+            for neighbor in sorted(neighbors[current]):
+                if neighbor in remaining:
+                    remaining.remove(neighbor)
+                    stack.append(neighbor)
+        components.append(sorted(component))
+
+    groups: list[dict[str, Any]] = []
+    for indexes in components:
+        members = [candidates[index] for index in indexes]
+        center_distance_pixels = min(
+            float(member.get("center_distance_pixels") or 0.0) for member in members
+        )
+        groups.append(
+            {
+                "group_id": "",
+                "label": "",
+                "footprint_ids": [str(member["footprint_id"]) for member in members],
+                "building_count": len(members),
+                "plan_area_sqft": round(
+                    sum(float(member["plan_area_sqft"]) for member in members), 1
+                ),
+                "perimeter_ft": round(
+                    sum(float(member["perimeter_ft"]) for member in members), 1
+                ),
+                "distance_from_address_point_ft": round(
+                    center_distance_pixels / float(pixels_per_foot), 1
+                ),
+                "contains_address_point": any(
+                    _candidate_contains_point(
+                        member,
+                        (float(image_width) / 2.0, float(image_height) / 2.0),
+                    )
+                    for member in members
+                ),
+            }
+        )
+    groups.sort(
+        key=lambda group: (
+            -int(group["building_count"] > 1),
+            -float(group["plan_area_sqft"]),
+            float(group["distance_from_address_point_ft"]),
+        )
+    )
+    for index, group in enumerate(groups, start=1):
+        group["group_id"] = f"site-{index:02d}"
+        group["label"] = (
+            f"Site group {index}: {group['building_count']} building section"
+            f"{'s' if group['building_count'] != 1 else ''}"
+        )
+    return groups
+
+
+def _site_resolution_guidance(
+    groups: list[dict[str, Any]],
+    *,
+    site_name: str,
+    site_type: str,
+) -> dict[str, Any]:
+    site_descriptor = " ".join(
+        f"{site_name or ''} {site_type or ''}".lower().split()
+    )
+    campus_expected = any(
+        campus_type in site_descriptor for campus_type in CAMPUS_SITE_TYPES
+    )
+    multi_building = [group for group in groups if int(group["building_count"]) > 1]
+    recommended: dict[str, Any] | None = None
+    reason = ""
+    if campus_expected and multi_building:
+        recommended = max(multi_building, key=lambda group: float(group["plan_area_sqft"]))
+        reason = (
+            "The supplied site type indicates a multi-building facility, so the "
+            "largest nearby building assembly is suggested for visual review."
+        )
+    elif groups:
+        containing = [group for group in groups if group["contains_address_point"]]
+        recommended = min(
+            containing or groups,
+            key=lambda group: float(group["distance_from_address_point_ft"]),
+        )
+        reason = (
+            "The nearest site group is suggested for visual review; the address "
+            "point is a search center and is not proof of the roof boundary."
+        )
+    return {
+        "site_resolution_status": (
+            "candidate_group_suggested" if recommended else "review_required"
+        ),
+        "recommended_candidate_group_id": (
+            str(recommended["group_id"]) if recommended else ""
+        ),
+        "site_resolution_reason": reason,
+        "requires_site_confirmation": bool(len(groups) > 1 or site_name or campus_expected),
+    }
+
+
+def _candidate_bounds(candidate: dict[str, Any]) -> tuple[float, float, float, float]:
+    points = [
+        point
+        for component in candidate.get("components") or []
+        for point in component.get("polygon") or []
+    ]
+    if not points:
+        return (0.0, 0.0, 0.0, 0.0)
+    xs = [float(point["x"]) for point in points]
+    ys = [float(point["y"]) for point in points]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _bounds_gap_pixels(
+    left: tuple[float, float, float, float],
+    right: tuple[float, float, float, float],
+) -> float:
+    horizontal = max(0.0, left[0] - right[2], right[0] - left[2])
+    vertical = max(0.0, left[1] - right[3], right[1] - left[3])
+    return math.hypot(horizontal, vertical)
+
+
+def _candidate_contains_point(
+    candidate: dict[str, Any],
+    point: tuple[float, float],
+) -> bool:
+    return any(
+        _point_in_ring(point, _ring_tuples(component.get("polygon") or []))
+        and not any(
+            _point_in_ring(point, _ring_tuples(hole))
+            for hole in component.get("holes") or []
+        )
+        for component in candidate.get("components") or []
+    )
+
+
 def _same_building(left: dict[str, Any], right: dict[str, Any]) -> bool:
     left_area = float(left["plan_area_sqft"])
     right_area = float(right["plan_area_sqft"])
@@ -541,18 +770,36 @@ def _same_building(left: dict[str, Any], right: dict[str, Any]) -> bool:
     )
 
 
-def _footprint_overlay(image: Image.Image, candidates: list[dict[str, Any]]) -> Image.Image:
+def _footprint_overlay(
+    image: Image.Image,
+    candidates: list[dict[str, Any]],
+    *,
+    candidate_groups: list[dict[str, Any]] | None = None,
+    recommended_group_id: str = "",
+) -> Image.Image:
     base = image.convert("RGBA")
     overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
+    recommended_ids = {
+        str(footprint_id)
+        for group in candidate_groups or []
+        if str(group.get("group_id") or "") == recommended_group_id
+        for footprint_id in group.get("footprint_ids") or []
+    }
+    recommended_label_drawn = False
     for candidate in candidates:
+        footprint_id = str(candidate["footprint_id"])
+        is_recommended = footprint_id in recommended_ids
+        line_color = (255, 153, 0, 255) if is_recommended else (38, 126, 198, 255)
+        fill_color = (255, 153, 0, 60) if is_recommended else (38, 126, 198, 45)
+        line_width = 6 if is_recommended else 4
         label_point: tuple[float, float] | None = None
         for component in candidate["components"]:
             polygon = _ring_tuples(component["polygon"])
             if len(polygon) < 3:
                 continue
-            draw.polygon(polygon, fill=(38, 126, 198, 45))
-            draw.line([*polygon, polygon[0]], fill=(38, 126, 198, 255), width=4)
+            draw.polygon(polygon, fill=fill_color)
+            draw.line([*polygon, polygon[0]], fill=line_color, width=line_width)
             label_point = label_point or polygon[0]
             for hole in component.get("holes") or []:
                 hole_points = _ring_tuples(hole)
@@ -562,12 +809,91 @@ def _footprint_overlay(image: Image.Image, candidates: list[dict[str, Any]]) -> 
         if label_point:
             draw.text(
                 (label_point[0] + 6, label_point[1] + 6),
-                str(candidate["footprint_id"]),
+                footprint_id,
                 fill=(255, 255, 255, 255),
                 stroke_width=3,
-                stroke_fill=(0, 60, 110, 255),
+                stroke_fill=(145, 75, 0, 255) if is_recommended else (0, 60, 110, 255),
             )
+            if is_recommended and not recommended_label_drawn:
+                draw.text(
+                    (label_point[0] + 6, label_point[1] + 30),
+                    f"{recommended_group_id} SUGGESTED",
+                    fill=(255, 255, 255, 255),
+                    stroke_width=4,
+                    stroke_fill=(145, 75, 0, 255),
+                )
+                recommended_label_drawn = True
     return Image.alpha_composite(base, overlay).convert("RGB")
+
+
+def _write_selected_footprint_overlay(
+    *,
+    context: dict[str, Any],
+    selected_footprint_ids: list[str],
+    sections: list[dict[str, Any]],
+    artifact_dir: Path,
+) -> str:
+    selection_payload = json.dumps(
+        {
+            "selected_footprint_ids": selected_footprint_ids,
+            "sections": sections,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    digest = hashlib.sha256(selection_payload).hexdigest()[:16]
+    asset_name = f"selected-footprints-{digest}.png"
+    context_path = _context_path(artifact_dir, str(context["context_id"]))
+    image = Image.open(context_path / "satellite.png").convert("RGBA")
+    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    selected = set(selected_footprint_ids)
+
+    for candidate in context.get("footprint_candidates") or []:
+        footprint_id = str(candidate.get("footprint_id") or "")
+        is_selected = footprint_id in selected
+        line_color = (235, 61, 52, 255) if is_selected else (38, 126, 198, 150)
+        fill_color = (235, 61, 52, 75) if is_selected else (38, 126, 198, 22)
+        line_width = 7 if is_selected else 2
+        label_point: tuple[float, float] | None = None
+        for component in candidate.get("components") or []:
+            polygon = _ring_tuples(component.get("polygon") or [])
+            if len(polygon) < 3:
+                continue
+            draw.polygon(polygon, fill=fill_color)
+            draw.line([*polygon, polygon[0]], fill=line_color, width=line_width)
+            label_point = label_point or polygon[0]
+        if label_point:
+            label = f"{footprint_id}{' SELECTED' if is_selected else ''}"
+            draw.text(
+                (label_point[0] + 5, label_point[1] + 5),
+                label,
+                fill=(255, 255, 255, 255),
+                stroke_width=3,
+                stroke_fill=(130, 25, 20, 255) if is_selected else (0, 60, 110, 255),
+            )
+
+    for section in sections:
+        polygon = _ring_tuples(section.get("polygon") or [])
+        if len(polygon) < 3:
+            continue
+        draw.polygon(polygon, fill=(255, 193, 7, 70))
+        draw.line(
+            [*polygon, polygon[0]],
+            fill=(255, 193, 7, 255),
+            width=7,
+        )
+        draw.text(
+            (polygon[0][0] + 5, polygon[0][1] + 5),
+            f"{section.get('section_id') or 'custom'} SELECTED",
+            fill=(255, 255, 255, 255),
+            stroke_width=3,
+            stroke_fill=(125, 85, 0, 255),
+        )
+
+    rendered = Image.alpha_composite(image, overlay).convert("RGB")
+    (context_path / asset_name).write_bytes(image_png_bytes(rendered))
+    return asset_name
 
 
 def _point_in_ring(point: tuple[float, float], ring: list[tuple[float, float]]) -> bool:

@@ -252,6 +252,8 @@ def test_roof_measure_context_is_authenticated_and_returns_signed_images(
             "expires_at": 9_999_999_999,
             "address": "830 South 1st Street, Louisville, KY 40203",
             "job_id": "JOB-1",
+            "site_name": "Example School",
+            "site_type": "school",
             "latitude": 38.0,
             "longitude": -84.0,
             "zoom": 17.5,
@@ -259,6 +261,11 @@ def test_roof_measure_context_is_authenticated_and_returns_signed_images(
             "image_height": 1280,
             "pixels_per_foot": 1.5,
             "footprint_candidates": [],
+            "candidate_groups": [],
+            "site_resolution_status": "review_required",
+            "recommended_candidate_group_id": "",
+            "site_resolution_reason": "No complete group was found.",
+            "requires_site_confirmation": True,
             "lidar_coverage": {"available": False},
             "attributions": ["Imagery from Mapbox."],
             "warnings": [],
@@ -267,6 +274,10 @@ def test_roof_measure_context_is_authenticated_and_returns_signed_images(
     monkeypatch.setattr(
         "services.estimator_api.server.resolve_roof_measure_asset",
         lambda **_kwargs: satellite,
+    )
+    monkeypatch.setattr(
+        "services.estimator_api.server._roof_overlay_preview_base64",
+        lambda _path: "encoded-preview",
     )
 
     unauthorized = client.post(
@@ -286,6 +297,8 @@ def test_roof_measure_context_is_authenticated_and_returns_signed_images(
     assert body["satellite_image_url"].startswith(
         f"http://testserver/v1/roof-measure/contexts/{context_id}/assets/satellite.png?"
     )
+    assert body["footprint_overlay_preview_base64"] == "encoded-preview"
+    assert body["site_name"] == "Example School"
     asset = client.get(body["satellite_image_url"])
     assert asset.status_code == 200
     assert asset.content == b"png bytes"
@@ -296,7 +309,16 @@ def test_roof_measure_context_is_authenticated_and_returns_signed_images(
 
 
 def test_roof_measure_calculation_returns_review_required_contract(monkeypatch) -> None:
+    selected_overlay = Path("/tmp/selected-footprints-test.png")
     monkeypatch.setenv("ESTIMATOR_API_KEY", "test-secret")
+    monkeypatch.setattr(
+        "services.estimator_api.server.resolve_roof_measure_asset",
+        lambda **_kwargs: selected_overlay,
+    )
+    monkeypatch.setattr(
+        "services.estimator_api.server._roof_overlay_preview_base64",
+        lambda _path: "selected-preview",
+    )
     monkeypatch.setattr(
         "services.estimator_api.server.calculate_roof_measurement",
         lambda **_kwargs: {
@@ -313,6 +335,7 @@ def test_roof_measure_calculation_returns_review_required_contract(monkeypatch) 
                     "perimeter_ft": 300,
                 }
             ],
+            "selected_overlay_asset_name": "selected-footprints-0123456789abcdef.png",
             "review_status": "requires_estimator_verification",
             "assumptions": [],
             "warnings": ["Verify the roof boundary."],
@@ -331,6 +354,16 @@ def test_roof_measure_calculation_returns_review_required_contract(monkeypatch) 
     assert response.status_code == 200
     assert response.json()["total_plan_area_sqft"] == 5000
     assert response.json()["review_status"] == "requires_estimator_verification"
+    assert response.json()["selected_footprint_overlay_preview_base64"] == (
+        "selected-preview"
+    )
+    assert response.json()["openaiFileResponse"] == [
+        {
+            "name": "roof_measure_overlay.jpg",
+            "mime_type": "image/jpeg",
+            "content": "selected-preview",
+        }
+    ]
 
 
 def workbook_request_payload(*, confirmed: bool = True) -> dict:

@@ -26,7 +26,7 @@ cache TTL shortened to reduce development cost and data staleness.
 Choose an immutable version tag and run from the repository root:
 
 ```bash
-IMAGE_TAG=0.14.0
+IMAGE_TAG=0.15.3
 
 docker build \
   --platform linux/amd64 \
@@ -60,16 +60,15 @@ removing an older image or revision.
 ## Rotate secrets
 
 The Container App references unversioned Key Vault secret names including
-`neon-database-url`, `estimator-api-key`, and, when roof context is enabled,
-`mapbox-token`. Do not put secret values in shell
+`neon-database-url`, `estimator-api-key`, and `mapbox-access-token`. Do not put
+secret values in shell
 arguments, source code, documentation, or Azure Container App environment
 values. Stream the value to Key Vault from a protected source instead.
 
-Expose the Mapbox secret to the container as `MAPBOX_TOKEN` through the same
-managed-identity Key Vault reference pattern used by the existing secrets. The
-API will return `503` for roof context until that setting exists. The temporary
-roof context currently uses the container's artifact directory, so keep the
-app at one active replica unless that directory is moved to shared storage.
+The Container App currently exposes `mapbox-access-token` as
+`MAPBOX_ACCESS_TOKEN`, which the roof context service accepts. The temporary
+roof context currently uses the container's artifact directory, so keep the app
+at one active replica unless that directory is moved to shared storage.
 
 After rotating `estimator-api-key`, update the Custom GPT action's API Key
 authentication value to the same token and publish the GPT. Keep the auth type

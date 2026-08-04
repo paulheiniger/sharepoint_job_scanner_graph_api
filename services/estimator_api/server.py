@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
+from io import BytesIO
 import os
 import time
 from pathlib import Path
@@ -10,6 +12,7 @@ from urllib.parse import urlencode, urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response
+from PIL import Image
 
 from jobscan.business.chart_service import build_chart_dataset, chart_dataset_csv
 
@@ -97,7 +100,7 @@ app = FastAPI(
         "Estimator evidence, controlled workbook generation, and read-only "
         "operational intelligence for conversational agents."
     ),
-    version="0.14.0",
+    version="0.15.3",
 )
 
 
@@ -374,6 +377,8 @@ def roof_measure_context(
         context = create_roof_measure_context(
             address=payload.address,
             job_id=payload.job_id,
+            site_name=payload.site_name,
+            site_type=payload.site_type,
             view=payload.view,
             include_lidar_coverage=payload.include_lidar_coverage,
             mapbox_token=(
@@ -407,6 +412,14 @@ def roof_measure_context(
             expires=expires,
             signing_key=signing_key,
         ),
+        "footprint_overlay_preview_media_type": "image/jpeg",
+        "footprint_overlay_preview_base64": _roof_overlay_preview_base64(
+            resolve_roof_measure_asset(
+                context_id=context_id,
+                asset_name="footprint-overlay.png",
+                artifact_dir=_roof_measure_artifact_dir(),
+            )
+        ),
     }
     return RoofMeasureContextResponse.model_validate(response_payload)
 
@@ -437,7 +450,37 @@ def roof_measure_calculate(
             pitch_rise_per_12=payload.pitch_rise_per_12,
             artifact_dir=_roof_measure_artifact_dir(),
         )
-        return RoofMeasureCalculationResponse.model_validate(result)
+        selected_asset_name = str(result.pop("selected_overlay_asset_name"))
+        expires = int(time.time()) + _artifact_ttl_seconds()
+        signing_key = _artifact_signing_key()
+        if not signing_key:
+            raise RoofMeasureContextError("Roof imagery signing is not configured.")
+        selected_asset_path = resolve_roof_measure_asset(
+            context_id=payload.context_id,
+            asset_name=selected_asset_name,
+            artifact_dir=_roof_measure_artifact_dir(),
+        )
+        selected_preview_base64 = _roof_overlay_preview_base64(selected_asset_path)
+        response_payload = {
+            **result,
+            "selected_footprint_overlay_url": _signed_roof_asset_url(
+                request=request,
+                context_id=payload.context_id,
+                asset_name=selected_asset_name,
+                expires=expires,
+                signing_key=signing_key,
+            ),
+            "selected_footprint_overlay_preview_media_type": "image/jpeg",
+            "selected_footprint_overlay_preview_base64": selected_preview_base64,
+            "openaiFileResponse": [
+                {
+                    "name": "roof_measure_overlay.jpg",
+                    "mime_type": "image/jpeg",
+                    "content": selected_preview_base64,
+                }
+            ],
+        }
+        return RoofMeasureCalculationResponse.model_validate(response_payload)
     except RoofMeasureInputError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except RoofMeasureContextExpiredError as exc:
@@ -1295,6 +1338,22 @@ def _roof_measure_artifact_dir() -> Path:
         or "/tmp/spraytec-estimator-artifacts"
     )
     return estimator_dir.expanduser().resolve() / "roof-measure"
+
+
+def _roof_overlay_preview_base64(path: Path) -> str:
+    """Return a bounded self-contained preview for action clients without URL access."""
+    with Image.open(path) as source:
+        image = source.convert("RGB")
+        image.thumbnail((512, 512), Image.Resampling.LANCZOS)
+        buffer = BytesIO()
+        image.save(
+            buffer,
+            format="JPEG",
+            quality=58,
+            optimize=True,
+            progressive=True,
+        )
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
 def _planning_snapshot_ttl_seconds() -> int:

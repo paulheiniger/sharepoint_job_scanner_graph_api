@@ -83,6 +83,15 @@ def roof_context(monkeypatch, tmp_path):
             point_count=1234,
         ),
     )
+    monkeypatch.setattr(
+        "roof_measure.api_context.microsoft_global_building_footprints",
+        lambda **_kwargs: BuildingFootprintLookup(
+            ok=False,
+            footprints=[],
+            provider="microsoft_global_ml",
+            warning="No Microsoft footprint.",
+        ),
+    )
     context = create_roof_measure_context(
         address="830 South 1st Street, Louisville, KY 40203",
         job_id="JOB-1",
@@ -109,6 +118,11 @@ def test_context_creates_bounded_signed_asset_inputs_without_ai(roof_context) ->
         asset_name="satellite.png",
         artifact_dir=artifact_dir,
     ).is_file()
+    assert resolve_roof_measure_asset(
+        context_id=context["context_id"],
+        asset_name="footprint-overlay.png",
+        artifact_dir=artifact_dir,
+    ).is_file()
 
 
 def test_calculate_uses_reviewed_footprint_and_optional_pitch(roof_context) -> None:
@@ -126,6 +140,90 @@ def test_calculate_uses_reviewed_footprint_and_optional_pitch(roof_context) -> N
     assert result["total_perimeter_ft"] == 40.0
     assert result["total_surface_area_sqft"] == 111.8
     assert result["review_status"] == "requires_estimator_verification"
+    selected_overlay = resolve_roof_measure_asset(
+        context_id=context["context_id"],
+        asset_name=result["selected_overlay_asset_name"],
+        artifact_dir=artifact_dir,
+    )
+    assert selected_overlay.is_file()
+
+
+def test_candidate_selection_keeps_nearest_and_largest_buildings() -> None:
+    from roof_measure.api_context import _bounded_candidate_set
+
+    candidates = [
+        {
+            "source_footprint_id": f"source-{index}",
+            "center_distance_pixels": float(index),
+            "provider": "mapbox",
+            "plan_area_sqft": float(100 + index),
+            "center_x": float(index * 50),
+            "center_y": 0.0,
+        }
+        for index in range(16)
+    ]
+    candidates[-1]["plan_area_sqft"] = 100_000.0
+
+    selected = _bounded_candidate_set(candidates)
+
+    assert len(selected) == 12
+    assert candidates[-1] in selected
+    assert candidates[0] in selected
+
+
+def test_school_site_recommends_multi_building_group_not_address_point() -> None:
+    from roof_measure.api_context import (
+        _build_candidate_groups,
+        _site_resolution_guidance,
+    )
+
+    def candidate(footprint_id: str, x: float, area: float) -> dict:
+        return {
+            "footprint_id": footprint_id,
+            "center_distance_pixels": abs(640.0 - x),
+            "plan_area_sqft": area,
+            "perimeter_ft": 400.0,
+            "components": [
+                {
+                    "polygon": [
+                        {"x": x, "y": 300.0},
+                        {"x": x + 100.0, "y": 300.0},
+                        {"x": x + 100.0, "y": 400.0},
+                        {"x": x, "y": 400.0},
+                    ],
+                    "holes": [],
+                }
+            ],
+        }
+
+    candidates = [
+        candidate("fp-01", 100.0, 80_000.0),
+        candidate("fp-02", 220.0, 40_000.0),
+        candidate("fp-03", 340.0, 20_000.0),
+        candidate("fp-04", 590.0, 35_000.0),
+    ]
+
+    groups = _build_candidate_groups(
+        candidates,
+        pixels_per_foot=1.0,
+        image_width=1280,
+        image_height=1280,
+    )
+    guidance = _site_resolution_guidance(
+        groups,
+        site_name="Example School",
+        site_type="",
+    )
+
+    recommended = next(
+        group
+        for group in groups
+        if group["group_id"] == guidance["recommended_candidate_group_id"]
+    )
+    assert recommended["footprint_ids"] == ["fp-01", "fp-02", "fp-03"]
+    assert recommended["plan_area_sqft"] == 140_000.0
+    assert "fp-04" not in recommended["footprint_ids"]
+    assert guidance["requires_site_confirmation"] is True
 
 
 def test_calculate_accepts_custom_polygon_and_does_not_invent_surface_area(

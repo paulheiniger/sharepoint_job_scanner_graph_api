@@ -3901,6 +3901,35 @@
         "title": "OfficeJobProgressResponse",
         "type": "object"
       },
+      "OpenAIActionFile": {
+        "additionalProperties": false,
+        "description": "Native file attachment returned by a ChatGPT GPT Action.",
+        "properties": {
+          "content": {
+            "description": "Base64-encoded file content.",
+            "title": "Content",
+            "type": "string"
+          },
+          "mime_type": {
+            "pattern": "^[\\w.+-]+/[\\w.+-]+$",
+            "title": "Mime Type",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "mime_type",
+          "content"
+        ],
+        "title": "OpenAIActionFile",
+        "type": "object"
+      },
       "OperationsBacklogRequest": {
         "additionalProperties": false,
         "properties": {
@@ -4384,6 +4413,16 @@
             "title": "Measurement Basis",
             "type": "string"
           },
+          "openaiFileResponse": {
+            "description": "Native ChatGPT Action attachment containing the exact selected-footprint overlay. ChatGPT should attach this file directly to the answer.",
+            "items": {
+              "$ref": "#/components/schemas/OpenAIActionFile"
+            },
+            "maxItems": 1,
+            "minItems": 1,
+            "title": "Openaifileresponse",
+            "type": "array"
+          },
           "pitch_rise_per_12": {
             "anyOf": [
               {
@@ -4410,6 +4449,20 @@
             },
             "title": "Sections",
             "type": "array"
+          },
+          "selected_footprint_overlay_preview_base64": {
+            "description": "Base64-encoded JPEG with the selected roof sections highlighted on the satellite image. Decode and display this exact image with the measurement result; do not substitute a geometry-only drawing.",
+            "title": "Selected Footprint Overlay Preview Base64",
+            "type": "string"
+          },
+          "selected_footprint_overlay_preview_media_type": {
+            "const": "image/jpeg",
+            "title": "Selected Footprint Overlay Preview Media Type",
+            "type": "string"
+          },
+          "selected_footprint_overlay_url": {
+            "title": "Selected Footprint Overlay Url",
+            "type": "string"
           },
           "total_perimeter_ft": {
             "title": "Total Perimeter Ft",
@@ -4445,9 +4498,68 @@
           "total_plan_area_sqft",
           "total_perimeter_ft",
           "sections",
+          "selected_footprint_overlay_url",
+          "selected_footprint_overlay_preview_media_type",
+          "selected_footprint_overlay_preview_base64",
+          "openaiFileResponse",
           "review_status"
         ],
         "title": "RoofMeasureCalculationResponse",
+        "type": "object"
+      },
+      "RoofMeasureCandidateGroup": {
+        "additionalProperties": false,
+        "properties": {
+          "building_count": {
+            "minimum": 1.0,
+            "title": "Building Count",
+            "type": "integer"
+          },
+          "contains_address_point": {
+            "default": false,
+            "title": "Contains Address Point",
+            "type": "boolean"
+          },
+          "distance_from_address_point_ft": {
+            "minimum": 0.0,
+            "title": "Distance From Address Point Ft",
+            "type": "number"
+          },
+          "footprint_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Footprint Ids",
+            "type": "array"
+          },
+          "group_id": {
+            "title": "Group Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "perimeter_ft": {
+            "exclusiveMinimum": 0.0,
+            "title": "Perimeter Ft",
+            "type": "number"
+          },
+          "plan_area_sqft": {
+            "exclusiveMinimum": 0.0,
+            "title": "Plan Area Sqft",
+            "type": "number"
+          }
+        },
+        "required": [
+          "group_id",
+          "label",
+          "building_count",
+          "plan_area_sqft",
+          "perimeter_ft",
+          "distance_from_address_point_ft"
+        ],
+        "title": "RoofMeasureCandidateGroup",
         "type": "object"
       },
       "RoofMeasureContextRequest": {
@@ -4470,6 +4582,20 @@
             "default": "",
             "maxLength": 200,
             "title": "Job Id",
+            "type": "string"
+          },
+          "site_name": {
+            "default": "",
+            "description": "Optional facility or place name visible to the user, such as a school or industrial campus. This is used for site interpretation, not for historical-area lookup.",
+            "maxLength": 300,
+            "title": "Site Name",
+            "type": "string"
+          },
+          "site_type": {
+            "default": "",
+            "description": "Optional physical site classification such as school, campus, hospital, industrial complex, or single building.",
+            "maxLength": 100,
+            "title": "Site Type",
             "type": "string"
           },
           "view": {
@@ -4503,6 +4629,13 @@
             "title": "Attributions",
             "type": "array"
           },
+          "candidate_groups": {
+            "items": {
+              "$ref": "#/components/schemas/RoofMeasureCandidateGroup"
+            },
+            "title": "Candidate Groups",
+            "type": "array"
+          },
           "context_id": {
             "title": "Context Id",
             "type": "string"
@@ -4517,6 +4650,16 @@
             },
             "title": "Footprint Candidates",
             "type": "array"
+          },
+          "footprint_overlay_preview_base64": {
+            "description": "Base64-encoded JPEG preview containing the satellite pixels and all candidate footprint outlines. Decode and display this image before choosing footprint IDs; do not redraw the polygons on a blank canvas.",
+            "title": "Footprint Overlay Preview Base64",
+            "type": "string"
+          },
+          "footprint_overlay_preview_media_type": {
+            "const": "image/jpeg",
+            "title": "Footprint Overlay Preview Media Type",
+            "type": "string"
           },
           "footprint_overlay_url": {
             "title": "Footprint Overlay Url",
@@ -4550,12 +4693,45 @@
             "title": "Pixels Per Foot",
             "type": "number"
           },
+          "recommended_candidate_group_id": {
+            "default": "",
+            "title": "Recommended Candidate Group Id",
+            "type": "string"
+          },
+          "requires_site_confirmation": {
+            "default": true,
+            "title": "Requires Site Confirmation",
+            "type": "boolean"
+          },
           "satellite_image_url": {
             "title": "Satellite Image Url",
             "type": "string"
           },
           "schema_version": {
             "title": "Schema Version",
+            "type": "string"
+          },
+          "site_name": {
+            "default": "",
+            "title": "Site Name",
+            "type": "string"
+          },
+          "site_resolution_reason": {
+            "default": "",
+            "title": "Site Resolution Reason",
+            "type": "string"
+          },
+          "site_resolution_status": {
+            "enum": [
+              "candidate_group_suggested",
+              "review_required"
+            ],
+            "title": "Site Resolution Status",
+            "type": "string"
+          },
+          "site_type": {
+            "default": "",
+            "title": "Site Type",
             "type": "string"
           },
           "warnings": {
@@ -4583,6 +4759,9 @@
           "pixels_per_foot",
           "satellite_image_url",
           "footprint_overlay_url",
+          "footprint_overlay_preview_media_type",
+          "footprint_overlay_preview_base64",
+          "site_resolution_status",
           "lidar_coverage"
         ],
         "title": "RoofMeasureContextResponse",
@@ -5037,7 +5216,7 @@
   "info": {
     "description": "Estimator evidence, controlled workbook generation, and read-only operational intelligence for conversational agents.",
     "title": "Spray-Tec Business Intelligence API",
-    "version": "0.14.0"
+    "version": "0.15.2"
   },
   "openapi": "3.1.0",
   "paths": {
