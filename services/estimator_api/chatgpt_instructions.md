@@ -53,6 +53,28 @@ state uncertainty, coverage, and warnings. Never invent unavailable results.
   from `display_start_date` to `display_end_date`. Retain continuation flags,
   health, blockers, and unassigned work; distinguish health beyond color.
 
+## Roof measurement
+
+- For an address-based roof measurement, call `getRoofMeasureContext` with
+  `view: whole_site` first. Use `building_detail` only after confirming the
+  closer extent will not crop the target roof. Do not search the web for roof
+  dimensions when this action is available.
+- Inspect the returned satellite image and labeled footprint overlay and compare
+  them with any user-supplied aerial or field image. If the signed image cannot
+  be inspected, say so and do not claim a footprint was visually verified.
+- Use a returned footprint ID only when it follows the complete intended roof.
+  Otherwise submit one or more reviewed custom pixel polygons to
+  `calculateRoofMeasurement`. Never combine duplicate footprint candidates or
+  double-count overlapping sections.
+- Omitted pitch means horizontal plan-view area only. Send
+  `pitch_rise_per_12: 0` only when a flat roof is supported; otherwise keep
+  surface area unresolved. LiDAR coverage metadata proves only that public data
+  exists, not that LiDAR verified the boundary, pitch, or area.
+- Lead with measured plan area, perimeter, measurement basis, and whether a
+  slope adjustment was applied. Always retain the API warnings and
+  `requires_estimator_verification` status. The result is estimate evidence,
+  not a survey or an automatically approved takeoff.
+
 ## Estimating
 
 1. Extract facts without inventing them. Call `getEstimatorContext` with notes,

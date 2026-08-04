@@ -16,9 +16,45 @@ from services.estimator_api.schemas import (
     OperationsBacklogRequest,
     OperationsScheduleRequest,
     ProductionBudgetHealthRequest,
+    RoofMeasureCalculationRequest,
+    RoofMeasureContextRequest,
     SalesFollowupRequest,
     SalesPipelineRequest,
 )
+
+
+def test_roof_measure_requests_are_bounded_and_choose_one_polygon_source() -> None:
+    context = RoofMeasureContextRequest(
+        address="830 South 1st Street, Louisville, KY 40203"
+    )
+    assert context.view == "whole_site"
+    assert context.include_lidar_coverage is True
+
+    selected = RoofMeasureCalculationRequest(
+        context_id="a" * 32,
+        selected_footprint_ids=["fp-01"],
+        pitch_rise_per_12=0,
+    )
+    assert selected.pitch_rise_per_12 == 0
+
+    with pytest.raises(ValidationError):
+        RoofMeasureCalculationRequest(
+            context_id="a" * 32,
+            selected_footprint_ids=["fp-01"],
+            sections=[
+                {
+                    "section_id": "custom",
+                    "polygon": [
+                        {"x": 0, "y": 0},
+                        {"x": 10, "y": 0},
+                        {"x": 10, "y": 10},
+                    ],
+                }
+            ],
+        )
+
+    with pytest.raises(ValidationError):
+        RoofMeasureCalculationRequest(context_id="a" * 32)
 
 
 def test_chart_dataset_request_is_typed_and_bounded() -> None:

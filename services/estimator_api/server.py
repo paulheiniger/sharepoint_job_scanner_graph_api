@@ -49,6 +49,14 @@ from jobscan.estimator.workbook_service import (
     resolve_estimate_artifact,
 )
 from jobscan.env import load_project_env
+from roof_measure.api_context import (
+    RoofMeasureContextError,
+    RoofMeasureContextExpiredError,
+    RoofMeasureInputError,
+    calculate_roof_measurement,
+    create_roof_measure_context,
+    resolve_roof_measure_asset,
+)
 from .schemas import (
     ChartDatasetRequest,
     ChartDatasetResponse,
@@ -71,6 +79,10 @@ from .schemas import (
     OfficeJobProgressResponse,
     ProductionBudgetHealthRequest,
     ProductionBudgetHealthResponse,
+    RoofMeasureCalculationRequest,
+    RoofMeasureCalculationResponse,
+    RoofMeasureContextRequest,
+    RoofMeasureContextResponse,
     SalesFollowupRequest,
     SalesIntelligenceResponse,
     SalesPipelineRequest,
@@ -85,7 +97,7 @@ app = FastAPI(
         "Estimator evidence, controlled workbook generation, and read-only "
         "operational intelligence for conversational agents."
     ),
-    version="0.13.21",
+    version="0.14.0",
 )
 
 
@@ -107,7 +119,7 @@ PRIVACY_POLICY_HTML = """<!doctype html>
 <body>
 <main>
   <h1>Spray-Tec Business Assistant Privacy Policy</h1>
-  <p class="updated"><strong>Effective and last updated:</strong> August 3, 2026</p>
+  <p class="updated"><strong>Effective and last updated:</strong> August 4, 2026</p>
   <p>This policy describes how Spray-Tec, Inc. handles information sent to the Spray-Tec Business Assistant API through a custom GPT or another authorized client.</p>
 
   <h2>Information processed</h2>
@@ -117,10 +129,10 @@ PRIVACY_POLICY_HTML = """<!doctype html>
   <p>Information is used only to retrieve business evidence, prepare summaries and charts, support estimate decisions, validate estimate inputs, and generate draft estimate workbooks requested by an authorized user. Drafts require human review and are not automatically uploaded to SharePoint.</p>
 
   <h2>Storage and retention</h2>
-  <p>Context and reporting requests are processed to produce the requested response and are not intentionally added to a separate marketing or advertising database. Generated workbooks are stored temporarily by the API so the requesting user can download them; download links normally expire after 15 minutes. Limited technical logs and temporary service files may be retained as needed for security, troubleshooting, reliability, and service operation.</p>
+  <p>Context and reporting requests are processed to produce the requested response and are not intentionally added to a separate marketing or advertising database. Generated workbooks and roof-measure context images are stored temporarily by the API so the requesting user can retrieve them; signed links normally expire after 15 minutes. Limited technical logs and temporary service files may be retained as needed for security, troubleshooting, reliability, and service operation.</p>
 
   <h2>Sharing and service providers</h2>
-  <p>Spray-Tec does not sell information submitted to this service. Information may be processed by service providers used to operate it, including OpenAI for the ChatGPT experience and Microsoft Azure for API hosting. Those providers handle information under their own terms and privacy commitments. Information may also be disclosed when required by law or to protect the security and integrity of the service.</p>
+  <p>Spray-Tec does not sell information submitted to this service. Information may be processed by service providers used to operate it, including OpenAI for the ChatGPT experience, Microsoft Azure for API hosting, Mapbox for address geocoding and satellite imagery, and public mapping or LiDAR services used to retrieve building evidence. Those providers handle information under their own terms and privacy commitments. Information may also be disclosed when required by law or to protect the security and integrity of the service.</p>
 
   <h2>Security and appropriate use</h2>
   <p>The API uses access controls and encrypted network connections. Users should submit only information needed for Spray-Tec business purposes and should not submit payment-card details, Social Security numbers, health information, passwords, or other unnecessary sensitive personal information.</p>
@@ -331,6 +343,145 @@ def estimate_context(
             status_code=503,
             detail=f"Estimator context is unavailable: {type(exc).__name__}.",
         ) from exc
+
+
+@app.post(
+    "/v1/roof-measure/context",
+    response_model=RoofMeasureContextResponse,
+    response_model_exclude_none=True,
+    operation_id="getRoofMeasureContext",
+    summary="Retrieve calibrated roof imagery and footprint evidence",
+    description=(
+        "Returns short-lived signed satellite and footprint-overlay images, "
+        "bounded building-footprint candidates, calibration, and optional "
+        "public LiDAR coverage metadata. The operation does not call an LLM, "
+        "OpenAI, or SAM2 and does not create a final roof measurement."
+    ),
+)
+def roof_measure_context(
+    request: Request,
+    payload: RoofMeasureContextRequest,
+) -> RoofMeasureContextResponse:
+    _require_api_request(request)
+    signing_key = _artifact_signing_key()
+    if not signing_key:
+        raise HTTPException(
+            status_code=503,
+            detail="Roof imagery signing is not configured.",
+        )
+    expires = int(time.time()) + _artifact_ttl_seconds()
+    try:
+        context = create_roof_measure_context(
+            address=payload.address,
+            job_id=payload.job_id,
+            view=payload.view,
+            include_lidar_coverage=payload.include_lidar_coverage,
+            mapbox_token=(
+                os.getenv("MAPBOX_TOKEN")
+                or os.getenv("MAPBOX_ACCESS_TOKEN")
+                or ""
+            ),
+            database_url=_database_url() or "",
+            artifact_dir=_roof_measure_artifact_dir(),
+            expires_at=expires,
+        )
+    except RoofMeasureInputError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RoofMeasureContextError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    context_id = str(context["context_id"])
+    response_payload = {
+        **{key: value for key, value in context.items() if key != "created_at"},
+        "satellite_image_url": _signed_roof_asset_url(
+            request=request,
+            context_id=context_id,
+            asset_name="satellite.png",
+            expires=expires,
+            signing_key=signing_key,
+        ),
+        "footprint_overlay_url": _signed_roof_asset_url(
+            request=request,
+            context_id=context_id,
+            asset_name="footprint-overlay.png",
+            expires=expires,
+            signing_key=signing_key,
+        ),
+    }
+    return RoofMeasureContextResponse.model_validate(response_payload)
+
+
+@app.post(
+    "/v1/roof-measure/calculate",
+    response_model=RoofMeasureCalculationResponse,
+    response_model_exclude_none=True,
+    operation_id="calculateRoofMeasurement",
+    summary="Calculate roof area and perimeter from reviewed polygons",
+    description=(
+        "Deterministically calculates plan-view area and perimeter from one or "
+        "more footprint candidates or custom pixel polygons in a prior roof "
+        "context. An optional pitch produces a slope-adjusted surface area. "
+        "The result always requires estimator verification and no AI service is called."
+    ),
+)
+def roof_measure_calculate(
+    request: Request,
+    payload: RoofMeasureCalculationRequest,
+) -> RoofMeasureCalculationResponse:
+    _require_api_request(request)
+    try:
+        result = calculate_roof_measurement(
+            context_id=payload.context_id,
+            selected_footprint_ids=payload.selected_footprint_ids,
+            sections=[section.model_dump() for section in payload.sections],
+            pitch_rise_per_12=payload.pitch_rise_per_12,
+            artifact_dir=_roof_measure_artifact_dir(),
+        )
+        return RoofMeasureCalculationResponse.model_validate(result)
+    except RoofMeasureInputError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RoofMeasureContextExpiredError as exc:
+        raise HTTPException(status_code=410, detail=str(exc)) from exc
+    except RoofMeasureContextError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get(
+    "/v1/roof-measure/contexts/{context_id}/assets/{asset_name}",
+    include_in_schema=False,
+    name="download_roof_measure_asset",
+)
+def download_roof_measure_asset(
+    context_id: str,
+    asset_name: str,
+    expires: int,
+    signature: str,
+) -> FileResponse:
+    signing_key = _artifact_signing_key()
+    if not signing_key:
+        raise HTTPException(status_code=503, detail="Asset signing is not configured.")
+    if expires < int(time.time()):
+        raise HTTPException(status_code=410, detail="Roof image link has expired.")
+    expected = _sign_roof_asset(context_id, asset_name, expires, signing_key)
+    if not hmac.compare_digest(str(signature or ""), expected):
+        raise HTTPException(status_code=403, detail="Invalid roof image signature.")
+    try:
+        path = resolve_roof_measure_asset(
+            context_id=context_id,
+            asset_name=asset_name,
+            artifact_dir=_roof_measure_artifact_dir(),
+        )
+    except RoofMeasureInputError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RoofMeasureContextExpiredError as exc:
+        raise HTTPException(status_code=410, detail=str(exc)) from exc
+    except RoofMeasureContextError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return FileResponse(
+        path,
+        media_type="image/png",
+        headers={"Cache-Control": "private, no-store"},
+    )
 
 
 @app.post(
@@ -1135,6 +1286,17 @@ def _artifact_ttl_seconds() -> int:
     return min(max(configured, 60), 3_600)
 
 
+def _roof_measure_artifact_dir() -> Path:
+    configured = str(os.getenv("ROOF_MEASURE_CONTEXT_DIR") or "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    estimator_dir = Path(
+        os.getenv("ESTIMATOR_API_ARTIFACT_DIR")
+        or "/tmp/spraytec-estimator-artifacts"
+    )
+    return estimator_dir.expanduser().resolve() / "roof-measure"
+
+
 def _planning_snapshot_ttl_seconds() -> int:
     try:
         configured = int(os.getenv("ESTIMATOR_PLANNING_SNAPSHOT_TTL_SECONDS") or "900")
@@ -1150,6 +1312,61 @@ def _sign_artifact(artifact_id: str, expires: int, signing_key: str) -> str:
         message,
         hashlib.sha256,
     ).hexdigest()
+
+
+def _sign_roof_asset(
+    context_id: str,
+    asset_name: str,
+    expires: int,
+    signing_key: str,
+) -> str:
+    message = f"roof:{context_id}:{asset_name}:{expires}".encode("utf-8")
+    return hmac.new(
+        signing_key.encode("utf-8"),
+        message,
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _signed_roof_asset_url(
+    *,
+    request: Request,
+    context_id: str,
+    asset_name: str,
+    expires: int,
+    signing_key: str,
+) -> str:
+    configured = str(os.getenv("ESTIMATOR_API_PUBLIC_BASE_URL") or "").strip()
+    if configured:
+        parsed = urlsplit(configured)
+        if (
+            parsed.scheme != "https"
+            or not parsed.netloc
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in ("", "/")
+        ):
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "ESTIMATOR_API_PUBLIC_BASE_URL must be an HTTPS origin without "
+                    "a path, query, or fragment."
+                ),
+            )
+        origin = (
+            f"{configured.rstrip('/')}"
+            f"/v1/roof-measure/contexts/{context_id}/assets/{asset_name}"
+        )
+    else:
+        origin = str(
+            request.url_for(
+                "download_roof_measure_asset",
+                context_id=context_id,
+                asset_name=asset_name,
+            )
+        )
+    signature = _sign_roof_asset(context_id, asset_name, expires, signing_key)
+    return f"{origin}?{urlencode({'expires': expires, 'signature': signature})}"
 
 
 def _require_authenticated_request(

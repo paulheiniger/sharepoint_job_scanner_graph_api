@@ -355,6 +355,161 @@ class EstimateContextResponse(BaseModel):
     )
 
 
+class RoofMeasureContextRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    address: str = Field(
+        min_length=5,
+        max_length=500,
+        description="Street address for the roof or building site.",
+    )
+    job_id: str = Field(default="", max_length=200)
+    view: Literal["whole_site", "building_detail"] = Field(
+        default="whole_site",
+        description=(
+            "Use whole_site first so the complete roof remains visible. Use "
+            "building_detail only when a closer image is needed."
+        ),
+    )
+    include_lidar_coverage: bool = Field(
+        default=True,
+        description=(
+            "Return Kentucky public LiDAR coverage metadata when available. "
+            "Raw point-cloud data is never returned."
+        ),
+    )
+
+
+class RoofMeasurePoint(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    x: float = Field(ge=-256, le=1536)
+    y: float = Field(ge=-256, le=1536)
+
+
+class RoofMeasurePolygonComponent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    polygon: list[RoofMeasurePoint] = Field(min_length=3, max_length=200)
+    holes: list[list[RoofMeasurePoint]] = Field(default_factory=list, max_length=20)
+
+
+class RoofMeasureFootprintCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    footprint_id: str
+    label: str
+    provider: str
+    plan_area_sqft: float
+    perimeter_ft: float
+    components: list[RoofMeasurePolygonComponent]
+
+
+class RoofMeasureLidarCoverage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    available: bool = False
+    collection: str = ""
+    captured_at: str = ""
+    point_count: int = 0
+    provider: str = "kyfromabove"
+    attribution: str = ""
+    warning: str = ""
+
+
+class RoofMeasureContextResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: str
+    context_id: str
+    expires_at: int
+    address: str
+    job_id: str = ""
+    latitude: float
+    longitude: float
+    zoom: float
+    image_width: int
+    image_height: int
+    pixels_per_foot: float
+    satellite_image_url: str
+    footprint_overlay_url: str
+    footprint_candidates: list[RoofMeasureFootprintCandidate] = Field(
+        default_factory=list
+    )
+    lidar_coverage: RoofMeasureLidarCoverage
+    attributions: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class RoofMeasureSectionInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    section_id: str = Field(min_length=1, max_length=100)
+    polygon: list[RoofMeasurePoint] = Field(min_length=3, max_length=200)
+    holes: list[list[RoofMeasurePoint]] = Field(default_factory=list, max_length=20)
+
+    @model_validator(mode="after")
+    def validate_holes(self) -> "RoofMeasureSectionInput":
+        if any(len(hole) < 3 or len(hole) > 200 for hole in self.holes):
+            raise ValueError("Each polygon hole must contain 3 to 200 points.")
+        return self
+
+
+class RoofMeasureCalculationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    context_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    selected_footprint_ids: list[
+        Annotated[str, Field(min_length=1, max_length=100)]
+    ] = Field(default_factory=list, max_length=12)
+    sections: list[RoofMeasureSectionInput] = Field(default_factory=list, max_length=20)
+    pitch_rise_per_12: float | None = Field(
+        default=None,
+        ge=0,
+        le=24,
+        description=(
+            "Optional roof rise in inches per 12 inches of run. When omitted, "
+            "only plan-view area is returned. Use 0 explicitly for a flat roof."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_measurement_source(self) -> "RoofMeasureCalculationRequest":
+        if bool(self.selected_footprint_ids) == bool(self.sections):
+            raise ValueError(
+                "Provide either selected_footprint_ids or custom sections, but not both."
+            )
+        if len(set(self.selected_footprint_ids)) != len(self.selected_footprint_ids):
+            raise ValueError("selected_footprint_ids must be unique.")
+        return self
+
+
+class RoofMeasureSectionResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    section_id: str
+    source: Literal["footprint", "custom_polygon"]
+    plan_area_sqft: float
+    perimeter_ft: float
+    surface_area_sqft: float | None = None
+
+
+class RoofMeasureCalculationResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: str
+    context_id: str
+    measurement_basis: str
+    total_plan_area_sqft: float
+    total_perimeter_ft: float
+    pitch_rise_per_12: float | None = None
+    total_surface_area_sqft: float | None = None
+    sections: list[RoofMeasureSectionResult]
+    review_status: Literal["requires_estimator_verification"]
+    assumptions: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
 class EstimateWorkbookDimensionRow(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

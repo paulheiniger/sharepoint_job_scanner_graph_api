@@ -9,6 +9,39 @@ roofing and insulation milestone also provides a confirmation-gated draft
 workbook action.
 Semantic validation and SharePoint delivery remain deferred.
 
+## Roof measurement operations
+
+### `POST /v1/roof-measure/context`
+
+Accepts a site address and returns a short-lived, model-neutral evidence
+package containing:
+
+- a signed north-up satellite image;
+- a signed overlay labeling bounded building-footprint candidates;
+- pixel-coordinate footprint components, calibrated plan area, and perimeter;
+- image dimensions, map scale, coordinates, and source attribution; and
+- optional Kentucky From Above LiDAR coverage metadata.
+
+Use `view: "whole_site"` first. `building_detail` is a closer secondary view
+and can crop a large roof or campus. The API uses Mapbox and existing footprint
+providers, but it does not call OpenAI, SAM2, or another model. Raw LiDAR point
+clouds are not returned to the agent. Signed images and their context expire
+after 15 minutes by default.
+
+### `POST /v1/roof-measure/calculate`
+
+Accepts the unexpired `context_id` and either reviewed footprint candidate IDs
+or custom polygons expressed in the context image's pixel coordinates. The
+operation deterministically calculates horizontal plan-view area and perimeter.
+When `pitch_rise_per_12` is supplied, it also applies the corresponding uniform
+slope factor and returns surface area. Omitting pitch never silently treats plan
+area as roof-surface area.
+
+Every result is marked `requires_estimator_verification`. Footprints are
+building evidence, not a survey: the estimator must verify the target building,
+roof edges, overhangs, canopies, penetrations, excluded areas, and pitch before
+using the measurement in an estimate.
+
 ## Estimating operation
 
 ### `POST /v1/estimating/context`
@@ -364,7 +397,9 @@ Install dependencies:
 python -m pip install -r services/estimator_api/requirements.txt
 ```
 
-Set `NEON_DATABASE_URL` or `DATABASE_URL`, then run:
+Set `NEON_DATABASE_URL` or `DATABASE_URL`. Roof context also requires
+`MAPBOX_TOKEN` (or `MAPBOX_ACCESS_TOKEN`) and an artifact signing key through
+`ESTIMATOR_ARTIFACT_SIGNING_KEY` or `ESTIMATOR_API_KEY`. Then run:
 
 ```bash
 python -m services.estimator_api.server
@@ -430,5 +465,5 @@ public tunnel must require the API key and should be stopped after testing.
 - estimator feedback as pending memory candidates;
 - restricted memory approval;
 - persistent session resume and audit; and
-- roof-measurement and document-analysis actions.
+- model-neutral LiDAR height overlays and document-analysis actions;
 - job, schedule, timesheet, and pricing mutation actions.

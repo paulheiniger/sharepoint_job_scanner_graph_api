@@ -235,6 +235,104 @@ def test_context_openapi_has_stable_operation_id() -> None:
     assert "parameters" not in operation
 
 
+def test_roof_measure_context_is_authenticated_and_returns_signed_images(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    context_id = "f" * 32
+    satellite = tmp_path / "satellite.png"
+    satellite.write_bytes(b"png bytes")
+    monkeypatch.setenv("ESTIMATOR_API_KEY", "test-secret")
+    monkeypatch.setattr(
+        "services.estimator_api.server.create_roof_measure_context",
+        lambda **_kwargs: {
+            "schema_version": "spraytec.roof_measure_context.v1",
+            "context_id": context_id,
+            "created_at": 1,
+            "expires_at": 9_999_999_999,
+            "address": "830 South 1st Street, Louisville, KY 40203",
+            "job_id": "JOB-1",
+            "latitude": 38.0,
+            "longitude": -84.0,
+            "zoom": 17.5,
+            "image_width": 1280,
+            "image_height": 1280,
+            "pixels_per_foot": 1.5,
+            "footprint_candidates": [],
+            "lidar_coverage": {"available": False},
+            "attributions": ["Imagery from Mapbox."],
+            "warnings": [],
+        },
+    )
+    monkeypatch.setattr(
+        "services.estimator_api.server.resolve_roof_measure_asset",
+        lambda **_kwargs: satellite,
+    )
+
+    unauthorized = client.post(
+        "/v1/roof-measure/context",
+        json={"address": "830 South 1st Street, Louisville, KY 40203"},
+    )
+    response = client.post(
+        "/v1/roof-measure/context",
+        json={"address": "830 South 1st Street, Louisville, KY 40203"},
+        headers={"Authorization": "Bearer test-secret"},
+    )
+
+    assert unauthorized.status_code == 401
+    assert response.status_code == 200
+    body = response.json()
+    assert body["context_id"] == context_id
+    assert body["satellite_image_url"].startswith(
+        f"http://testserver/v1/roof-measure/contexts/{context_id}/assets/satellite.png?"
+    )
+    asset = client.get(body["satellite_image_url"])
+    assert asset.status_code == 200
+    assert asset.content == b"png bytes"
+    tampered = client.get(
+        body["footprint_overlay_url"].replace("signature=", "signature=bad")
+    )
+    assert tampered.status_code == 403
+
+
+def test_roof_measure_calculation_returns_review_required_contract(monkeypatch) -> None:
+    monkeypatch.setenv("ESTIMATOR_API_KEY", "test-secret")
+    monkeypatch.setattr(
+        "services.estimator_api.server.calculate_roof_measurement",
+        lambda **_kwargs: {
+            "schema_version": "spraytec.roof_measure_calculation.v1",
+            "context_id": "a" * 32,
+            "measurement_basis": "address_calibrated_satellite_plan_view",
+            "total_plan_area_sqft": 5000,
+            "total_perimeter_ft": 300,
+            "sections": [
+                {
+                    "section_id": "fp-01",
+                    "source": "footprint",
+                    "plan_area_sqft": 5000,
+                    "perimeter_ft": 300,
+                }
+            ],
+            "review_status": "requires_estimator_verification",
+            "assumptions": [],
+            "warnings": ["Verify the roof boundary."],
+        },
+    )
+
+    response = client.post(
+        "/v1/roof-measure/calculate",
+        json={
+            "context_id": "a" * 32,
+            "selected_footprint_ids": ["fp-01"],
+        },
+        headers={"Authorization": "Bearer test-secret"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["total_plan_area_sqft"] == 5000
+    assert response.json()["review_status"] == "requires_estimator_verification"
+
+
 def workbook_request_payload(*, confirmed: bool = True) -> dict:
     return {
         "confirmed": confirmed,
@@ -728,6 +826,8 @@ def test_openapi_exposes_expected_operations() -> None:
     assert action_operations == {
         "getJobContext",
         "getEstimatorContext",
+        "getRoofMeasureContext",
+        "calculateRoofMeasurement",
         "generateEstimateWorkbook",
         "generateEstimateWorkbookOptions",
         "downloadEstimateWorkbook",
@@ -794,6 +894,12 @@ def test_action_openapi_marks_read_only_posts_nonconsequential() -> None:
     spec = build_action_openapi()
 
     assert spec["paths"]["/v1/estimating/context"]["post"][
+        "x-openai-isConsequential"
+    ] is False
+    assert spec["paths"]["/v1/roof-measure/context"]["post"][
+        "x-openai-isConsequential"
+    ] is False
+    assert spec["paths"]["/v1/roof-measure/calculate"]["post"][
         "x-openai-isConsequential"
     ] is False
     assert spec["paths"]["/v1/jobs/search"]["post"][

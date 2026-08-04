@@ -250,10 +250,12 @@
             "type": "string"
           },
           "coverage": {
+            "additionalProperties": true,
             "title": "Coverage",
             "type": "object"
           },
           "data_freshness": {
+            "additionalProperties": true,
             "title": "Data Freshness",
             "type": "object"
           },
@@ -288,6 +290,7 @@
             "title": "End Field"
           },
           "filters_applied": {
+            "additionalProperties": true,
             "title": "Filters Applied",
             "type": "object"
           },
@@ -313,6 +316,7 @@
           },
           "rows": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 125,
@@ -507,6 +511,7 @@
             "type": "array"
           },
           "scope": {
+            "additionalProperties": true,
             "description": "Structured current-job facts extracted by Copilot.",
             "title": "Scope",
             "type": "object"
@@ -534,6 +539,7 @@
         "properties": {
           "approved_memories": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Approved Memories",
@@ -547,6 +553,7 @@
             "type": "array"
           },
           "commercial_guidance": {
+            "additionalProperties": true,
             "title": "Commercial Guidance",
             "type": "object"
           },
@@ -559,6 +566,7 @@
           },
           "decision_evidence": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Decision Evidence",
@@ -566,6 +574,7 @@
           },
           "foam_yield_history": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Foam Yield History",
@@ -598,11 +607,13 @@
             "type": "array"
           },
           "labor_cost_summary": {
+            "additionalProperties": true,
             "title": "Labor Cost Summary",
             "type": "object"
           },
           "labor_plan_guidance": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Labor Plan Guidance",
@@ -610,6 +621,7 @@
           },
           "logistics_guidance": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Logistics Guidance",
@@ -617,12 +629,14 @@
           },
           "matched_comparables": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Matched Comparables",
             "type": "array"
           },
           "matched_scope_pattern": {
+            "additionalProperties": true,
             "title": "Matched Scope Pattern",
             "type": "object"
           },
@@ -635,17 +649,20 @@
           },
           "pricing_candidates": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Pricing Candidates",
             "type": "array"
           },
           "pricing_coverage": {
+            "additionalProperties": true,
             "title": "Pricing Coverage",
             "type": "object"
           },
           "product_guidance": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Product Guidance",
@@ -653,12 +670,14 @@
           },
           "purchasing_guidance": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Purchasing Guidance",
             "type": "array"
           },
           "response_budget": {
+            "additionalProperties": true,
             "title": "Response Budget",
             "type": "object"
           },
@@ -673,10 +692,12 @@
             "type": "object"
           },
           "retrieval_summary": {
+            "additionalProperties": true,
             "title": "Retrieval Summary",
             "type": "object"
           },
           "route_mileage": {
+            "additionalProperties": true,
             "title": "Route Mileage",
             "type": "object"
           },
@@ -685,10 +706,12 @@
             "type": "string"
           },
           "scope": {
+            "additionalProperties": true,
             "title": "Scope",
             "type": "object"
           },
           "scope_integrity": {
+            "additionalProperties": true,
             "title": "Scope Integrity",
             "type": "object"
           },
@@ -705,6 +728,7 @@
           },
           "validated_relationships": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Validated Relationships",
@@ -2250,6 +2274,7 @@
             "type": "string"
           },
           "template_profile": {
+            "additionalProperties": true,
             "title": "Template Profile",
             "type": "object"
           },
@@ -2518,6 +2543,7 @@
             "type": "string"
           },
           "template_profile": {
+            "additionalProperties": true,
             "title": "Template Profile",
             "type": "object"
           },
@@ -2548,6 +2574,7 @@
         "additionalProperties": false,
         "properties": {
           "area_reconciliation": {
+            "additionalProperties": true,
             "title": "Area Reconciliation",
             "type": "object"
           },
@@ -3200,6 +3227,7 @@
           },
           "attention_items": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -3207,15 +3235,18 @@
             "type": "array"
           },
           "coverage": {
+            "additionalProperties": true,
             "title": "Coverage",
             "type": "object"
           },
           "data_freshness": {
+            "additionalProperties": true,
             "title": "Data Freshness",
             "type": "object"
           },
           "documents": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 20,
@@ -3223,6 +3254,7 @@
             "type": "array"
           },
           "job": {
+            "additionalProperties": true,
             "title": "Job",
             "type": "object"
           },
@@ -3232,6 +3264,7 @@
           },
           "recent_daily_tracking": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 10,
@@ -3240,6 +3273,7 @@
           },
           "recent_office_activity": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 10,
@@ -3247,10 +3281,12 @@
             "type": "array"
           },
           "response_budget": {
+            "additionalProperties": true,
             "title": "Response Budget",
             "type": "object"
           },
           "schedule": {
+            "additionalProperties": true,
             "title": "Schedule",
             "type": "object"
           },
@@ -3274,6 +3310,7 @@
           },
           "tracking_summary": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 5,
@@ -3288,6 +3325,7 @@
             "type": "array"
           },
           "workflow": {
+            "additionalProperties": true,
             "title": "Workflow",
             "type": "object"
           }
@@ -3379,6 +3417,7 @@
           },
           "attention_items": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -3386,23 +3425,28 @@
             "type": "array"
           },
           "coverage": {
+            "additionalProperties": true,
             "title": "Coverage",
             "type": "object"
           },
           "data_freshness": {
+            "additionalProperties": true,
             "title": "Data Freshness",
             "type": "object"
           },
           "filters_applied": {
+            "additionalProperties": true,
             "title": "Filters Applied",
             "type": "object"
           },
           "headline_metrics": {
+            "additionalProperties": true,
             "title": "Headline Metrics",
             "type": "object"
           },
           "records": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -3410,6 +3454,7 @@
             "type": "array"
           },
           "response_budget": {
+            "additionalProperties": true,
             "title": "Response Budget",
             "type": "object"
           },
@@ -3564,6 +3609,7 @@
           },
           "attention_items": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -3572,6 +3618,7 @@
           },
           "code_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -3579,11 +3626,13 @@
             "type": "array"
           },
           "coverage": {
+            "additionalProperties": true,
             "title": "Coverage",
             "type": "object"
           },
           "daily_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 92,
@@ -3591,11 +3640,13 @@
             "type": "array"
           },
           "data_freshness": {
+            "additionalProperties": true,
             "title": "Data Freshness",
             "type": "object"
           },
           "employee_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -3603,15 +3654,18 @@
             "type": "array"
           },
           "filters_applied": {
+            "additionalProperties": true,
             "title": "Filters Applied",
             "type": "object"
           },
           "headline_metrics": {
+            "additionalProperties": true,
             "title": "Headline Metrics",
             "type": "object"
           },
           "project_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -3620,6 +3674,7 @@
           },
           "records": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -3627,6 +3682,7 @@
             "type": "array"
           },
           "response_budget": {
+            "additionalProperties": true,
             "title": "Response Budget",
             "type": "object"
           },
@@ -3741,6 +3797,7 @@
           },
           "attention_items": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -3748,34 +3805,41 @@
             "type": "array"
           },
           "coverage": {
+            "additionalProperties": true,
             "title": "Coverage",
             "type": "object"
           },
           "data_freshness": {
+            "additionalProperties": true,
             "title": "Data Freshness",
             "type": "object"
           },
           "filters_applied": {
+            "additionalProperties": true,
             "title": "Filters Applied",
             "type": "object"
           },
           "headline_metrics": {
+            "additionalProperties": true,
             "title": "Headline Metrics",
             "type": "object"
           },
           "link_status_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Link Status Rollup",
             "type": "array"
           },
           "methodology": {
+            "additionalProperties": true,
             "title": "Methodology",
             "type": "object"
           },
           "owner_priorities": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 5,
@@ -3784,6 +3848,7 @@
           },
           "records": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -3791,6 +3856,7 @@
             "type": "array"
           },
           "response_budget": {
+            "additionalProperties": true,
             "title": "Response Budget",
             "type": "object"
           },
@@ -3896,6 +3962,7 @@
           },
           "attention_items": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -3903,37 +3970,44 @@
             "type": "array"
           },
           "coverage": {
+            "additionalProperties": true,
             "title": "Coverage",
             "type": "object"
           },
           "crew_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Crew Rollup",
             "type": "array"
           },
           "data_freshness": {
+            "additionalProperties": true,
             "title": "Data Freshness",
             "type": "object"
           },
           "division_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Division Rollup",
             "type": "array"
           },
           "filters_applied": {
+            "additionalProperties": true,
             "title": "Filters Applied",
             "type": "object"
           },
           "headline_metrics": {
+            "additionalProperties": true,
             "title": "Headline Metrics",
             "type": "object"
           },
           "project_health_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Project Health Rollup",
@@ -3941,6 +4015,7 @@
           },
           "readiness_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Readiness Rollup",
@@ -3948,6 +4023,7 @@
           },
           "records": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -3955,11 +4031,13 @@
             "type": "array"
           },
           "response_budget": {
+            "additionalProperties": true,
             "title": "Response Budget",
             "type": "object"
           },
           "schedule_health_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Schedule Health Rollup",
@@ -4126,6 +4204,7 @@
           },
           "attention_items": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -4134,6 +4213,7 @@
           },
           "bucket_details": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 125,
@@ -4142,34 +4222,41 @@
           },
           "bucket_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Bucket Rollup",
             "type": "array"
           },
           "coverage": {
+            "additionalProperties": true,
             "title": "Coverage",
             "type": "object"
           },
           "data_freshness": {
+            "additionalProperties": true,
             "title": "Data Freshness",
             "type": "object"
           },
           "filters_applied": {
+            "additionalProperties": true,
             "title": "Filters Applied",
             "type": "object"
           },
           "headline_metrics": {
+            "additionalProperties": true,
             "title": "Headline Metrics",
             "type": "object"
           },
           "methodology": {
+            "additionalProperties": true,
             "title": "Methodology",
             "type": "object"
           },
           "portfolio_rankings": {
             "additionalProperties": {
               "items": {
+                "additionalProperties": true,
                 "type": "object"
               },
               "type": "array"
@@ -4179,6 +4266,7 @@
           },
           "records": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -4186,6 +4274,7 @@
             "type": "array"
           },
           "response_budget": {
+            "additionalProperties": true,
             "title": "Response Budget",
             "type": "object"
           },
@@ -4228,6 +4317,493 @@
           "headline_metrics"
         ],
         "title": "ProductionBudgetHealthResponse",
+        "type": "object"
+      },
+      "RoofMeasureCalculationRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "context_id": {
+            "pattern": "^[a-f0-9]{32}$",
+            "title": "Context Id",
+            "type": "string"
+          },
+          "pitch_rise_per_12": {
+            "anyOf": [
+              {
+                "maximum": 24.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional roof rise in inches per 12 inches of run. When omitted, only plan-view area is returned. Use 0 explicitly for a flat roof.",
+            "title": "Pitch Rise Per 12"
+          },
+          "sections": {
+            "items": {
+              "$ref": "#/components/schemas/RoofMeasureSectionInput"
+            },
+            "maxItems": 20,
+            "title": "Sections",
+            "type": "array"
+          },
+          "selected_footprint_ids": {
+            "items": {
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 12,
+            "title": "Selected Footprint Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "context_id"
+        ],
+        "title": "RoofMeasureCalculationRequest",
+        "type": "object"
+      },
+      "RoofMeasureCalculationResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "assumptions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Assumptions",
+            "type": "array"
+          },
+          "context_id": {
+            "title": "Context Id",
+            "type": "string"
+          },
+          "measurement_basis": {
+            "title": "Measurement Basis",
+            "type": "string"
+          },
+          "pitch_rise_per_12": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pitch Rise Per 12"
+          },
+          "review_status": {
+            "const": "requires_estimator_verification",
+            "title": "Review Status",
+            "type": "string"
+          },
+          "schema_version": {
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "sections": {
+            "items": {
+              "$ref": "#/components/schemas/RoofMeasureSectionResult"
+            },
+            "title": "Sections",
+            "type": "array"
+          },
+          "total_perimeter_ft": {
+            "title": "Total Perimeter Ft",
+            "type": "number"
+          },
+          "total_plan_area_sqft": {
+            "title": "Total Plan Area Sqft",
+            "type": "number"
+          },
+          "total_surface_area_sqft": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Surface Area Sqft"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "schema_version",
+          "context_id",
+          "measurement_basis",
+          "total_plan_area_sqft",
+          "total_perimeter_ft",
+          "sections",
+          "review_status"
+        ],
+        "title": "RoofMeasureCalculationResponse",
+        "type": "object"
+      },
+      "RoofMeasureContextRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "address": {
+            "description": "Street address for the roof or building site.",
+            "maxLength": 500,
+            "minLength": 5,
+            "title": "Address",
+            "type": "string"
+          },
+          "include_lidar_coverage": {
+            "default": true,
+            "description": "Return Kentucky public LiDAR coverage metadata when available. Raw point-cloud data is never returned.",
+            "title": "Include Lidar Coverage",
+            "type": "boolean"
+          },
+          "job_id": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Job Id",
+            "type": "string"
+          },
+          "view": {
+            "default": "whole_site",
+            "description": "Use whole_site first so the complete roof remains visible. Use building_detail only when a closer image is needed.",
+            "enum": [
+              "whole_site",
+              "building_detail"
+            ],
+            "title": "View",
+            "type": "string"
+          }
+        },
+        "required": [
+          "address"
+        ],
+        "title": "RoofMeasureContextRequest",
+        "type": "object"
+      },
+      "RoofMeasureContextResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "address": {
+            "title": "Address",
+            "type": "string"
+          },
+          "attributions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Attributions",
+            "type": "array"
+          },
+          "context_id": {
+            "title": "Context Id",
+            "type": "string"
+          },
+          "expires_at": {
+            "title": "Expires At",
+            "type": "integer"
+          },
+          "footprint_candidates": {
+            "items": {
+              "$ref": "#/components/schemas/RoofMeasureFootprintCandidate"
+            },
+            "title": "Footprint Candidates",
+            "type": "array"
+          },
+          "footprint_overlay_url": {
+            "title": "Footprint Overlay Url",
+            "type": "string"
+          },
+          "image_height": {
+            "title": "Image Height",
+            "type": "integer"
+          },
+          "image_width": {
+            "title": "Image Width",
+            "type": "integer"
+          },
+          "job_id": {
+            "default": "",
+            "title": "Job Id",
+            "type": "string"
+          },
+          "latitude": {
+            "title": "Latitude",
+            "type": "number"
+          },
+          "lidar_coverage": {
+            "$ref": "#/components/schemas/RoofMeasureLidarCoverage"
+          },
+          "longitude": {
+            "title": "Longitude",
+            "type": "number"
+          },
+          "pixels_per_foot": {
+            "title": "Pixels Per Foot",
+            "type": "number"
+          },
+          "satellite_image_url": {
+            "title": "Satellite Image Url",
+            "type": "string"
+          },
+          "schema_version": {
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          },
+          "zoom": {
+            "title": "Zoom",
+            "type": "number"
+          }
+        },
+        "required": [
+          "schema_version",
+          "context_id",
+          "expires_at",
+          "address",
+          "latitude",
+          "longitude",
+          "zoom",
+          "image_width",
+          "image_height",
+          "pixels_per_foot",
+          "satellite_image_url",
+          "footprint_overlay_url",
+          "lidar_coverage"
+        ],
+        "title": "RoofMeasureContextResponse",
+        "type": "object"
+      },
+      "RoofMeasureFootprintCandidate": {
+        "additionalProperties": false,
+        "properties": {
+          "components": {
+            "items": {
+              "$ref": "#/components/schemas/RoofMeasurePolygonComponent"
+            },
+            "title": "Components",
+            "type": "array"
+          },
+          "footprint_id": {
+            "title": "Footprint Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "perimeter_ft": {
+            "title": "Perimeter Ft",
+            "type": "number"
+          },
+          "plan_area_sqft": {
+            "title": "Plan Area Sqft",
+            "type": "number"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          }
+        },
+        "required": [
+          "footprint_id",
+          "label",
+          "provider",
+          "plan_area_sqft",
+          "perimeter_ft",
+          "components"
+        ],
+        "title": "RoofMeasureFootprintCandidate",
+        "type": "object"
+      },
+      "RoofMeasureLidarCoverage": {
+        "additionalProperties": false,
+        "properties": {
+          "attribution": {
+            "default": "",
+            "title": "Attribution",
+            "type": "string"
+          },
+          "available": {
+            "default": false,
+            "title": "Available",
+            "type": "boolean"
+          },
+          "captured_at": {
+            "default": "",
+            "title": "Captured At",
+            "type": "string"
+          },
+          "collection": {
+            "default": "",
+            "title": "Collection",
+            "type": "string"
+          },
+          "point_count": {
+            "default": 0,
+            "title": "Point Count",
+            "type": "integer"
+          },
+          "provider": {
+            "default": "kyfromabove",
+            "title": "Provider",
+            "type": "string"
+          },
+          "warning": {
+            "default": "",
+            "title": "Warning",
+            "type": "string"
+          }
+        },
+        "title": "RoofMeasureLidarCoverage",
+        "type": "object"
+      },
+      "RoofMeasurePoint": {
+        "additionalProperties": false,
+        "properties": {
+          "x": {
+            "maximum": 1536.0,
+            "minimum": -256.0,
+            "title": "X",
+            "type": "number"
+          },
+          "y": {
+            "maximum": 1536.0,
+            "minimum": -256.0,
+            "title": "Y",
+            "type": "number"
+          }
+        },
+        "required": [
+          "x",
+          "y"
+        ],
+        "title": "RoofMeasurePoint",
+        "type": "object"
+      },
+      "RoofMeasurePolygonComponent": {
+        "additionalProperties": false,
+        "properties": {
+          "holes": {
+            "items": {
+              "items": {
+                "$ref": "#/components/schemas/RoofMeasurePoint"
+              },
+              "type": "array"
+            },
+            "maxItems": 20,
+            "title": "Holes",
+            "type": "array"
+          },
+          "polygon": {
+            "items": {
+              "$ref": "#/components/schemas/RoofMeasurePoint"
+            },
+            "maxItems": 200,
+            "minItems": 3,
+            "title": "Polygon",
+            "type": "array"
+          }
+        },
+        "required": [
+          "polygon"
+        ],
+        "title": "RoofMeasurePolygonComponent",
+        "type": "object"
+      },
+      "RoofMeasureSectionInput": {
+        "additionalProperties": false,
+        "properties": {
+          "holes": {
+            "items": {
+              "items": {
+                "$ref": "#/components/schemas/RoofMeasurePoint"
+              },
+              "type": "array"
+            },
+            "maxItems": 20,
+            "title": "Holes",
+            "type": "array"
+          },
+          "polygon": {
+            "items": {
+              "$ref": "#/components/schemas/RoofMeasurePoint"
+            },
+            "maxItems": 200,
+            "minItems": 3,
+            "title": "Polygon",
+            "type": "array"
+          },
+          "section_id": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Section Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "section_id",
+          "polygon"
+        ],
+        "title": "RoofMeasureSectionInput",
+        "type": "object"
+      },
+      "RoofMeasureSectionResult": {
+        "additionalProperties": false,
+        "properties": {
+          "perimeter_ft": {
+            "title": "Perimeter Ft",
+            "type": "number"
+          },
+          "plan_area_sqft": {
+            "title": "Plan Area Sqft",
+            "type": "number"
+          },
+          "section_id": {
+            "title": "Section Id",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "footprint",
+              "custom_polygon"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "surface_area_sqft": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Surface Area Sqft"
+          }
+        },
+        "required": [
+          "section_id",
+          "source",
+          "plan_area_sqft",
+          "perimeter_ft"
+        ],
+        "title": "RoofMeasureSectionResult",
         "type": "object"
       },
       "SalesFollowupRequest": {
@@ -4282,6 +4858,7 @@
           },
           "attention_items": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -4289,23 +4866,28 @@
             "type": "array"
           },
           "coverage": {
+            "additionalProperties": true,
             "title": "Coverage",
             "type": "object"
           },
           "data_freshness": {
+            "additionalProperties": true,
             "title": "Data Freshness",
             "type": "object"
           },
           "filters_applied": {
+            "additionalProperties": true,
             "title": "Filters Applied",
             "type": "object"
           },
           "headline_metrics": {
+            "additionalProperties": true,
             "title": "Headline Metrics",
             "type": "object"
           },
           "owner_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Owner Rollup",
@@ -4313,6 +4895,7 @@
           },
           "records": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -4320,6 +4903,7 @@
             "type": "array"
           },
           "response_budget": {
+            "additionalProperties": true,
             "title": "Response Budget",
             "type": "object"
           },
@@ -4343,6 +4927,7 @@
           },
           "stage_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Stage Rollup",
@@ -4452,7 +5037,7 @@
   "info": {
     "description": "Estimator evidence, controlled workbook generation, and read-only operational intelligence for conversational agents.",
     "title": "Spray-Tec Business Intelligence API",
-    "version": "0.13.21"
+    "version": "0.14.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -4935,6 +5520,86 @@
           }
         },
         "summary": "Download a chart-ready business dataset as CSV",
+        "x-openai-isConsequential": false
+      }
+    },
+    "/v1/roof-measure/calculate": {
+      "post": {
+        "description": "Deterministically calculates plan-view area and perimeter from one or more footprint candidates or custom pixel polygons in a prior roof context. An optional pitch produces a slope-adjusted surface area. The result always requires estimator verification and no AI service is called.",
+        "operationId": "calculateRoofMeasurement",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoofMeasureCalculationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoofMeasureCalculationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Calculate roof area and perimeter from reviewed polygons",
+        "x-openai-isConsequential": false
+      }
+    },
+    "/v1/roof-measure/context": {
+      "post": {
+        "description": "Returns short-lived signed satellite and footprint-overlay images, bounded building-footprint candidates, calibration, and optional public LiDAR coverage metadata. The operation does not call an LLM, OpenAI, or SAM2 and does not create a final roof measurement.",
+        "operationId": "getRoofMeasureContext",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoofMeasureContextRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoofMeasureContextResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retrieve calibrated roof imagery and footprint evidence",
         "x-openai-isConsequential": false
       }
     },
