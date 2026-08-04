@@ -4950,6 +4950,16 @@ def load_schedule_calendar_df() -> pd.DataFrame:
     jobs_cols = relation_columns("dashboard_jobs")
     backlog_cols = relation_columns("dashboard_contracted_backlog")
     estimate_cols = relation_columns("dashboard_estimates")
+    jobs_order_column = next(
+        (column for column in ["updated_at", "source_modified_at", "modified_at"] if column in jobs_cols),
+        None,
+    )
+    backlog_order_column = next(
+        (column for column in ["updated_at", "source_modified_at", "modified_at"] if column in backlog_cols),
+        None,
+    )
+    jobs_order_clause = f", {jobs_order_column} DESC NULLS LAST" if jobs_order_column else ""
+    backlog_order_clause = f", {backlog_order_column} DESC NULLS LAST" if backlog_order_column else ""
     folder_expr = sql_coalesce(
         [
             sql_nonblank_column("j", jobs_cols, "folder_url"),
@@ -5036,8 +5046,18 @@ def load_schedule_calendar_df() -> pd.DataFrame:
             {sql_coalesce([sql_column("j", jobs_cols, "photo_count"), sql_column("b", backlog_cols, "photo_count")])} AS photo_count,
             {sql_coalesce([sql_column("j", jobs_cols, "warnings"), sql_column("b", backlog_cols, "warnings"), "e.extraction_warnings"])} AS warnings
         FROM crew_schedule cs
-        LEFT JOIN dashboard_jobs j ON cs.job_id = j.job_id
-        LEFT JOIN dashboard_contracted_backlog b ON cs.job_id = b.job_id
+        LEFT JOIN (
+            SELECT DISTINCT ON (job_id) *
+            FROM dashboard_jobs
+            WHERE job_id IS NOT NULL
+            ORDER BY job_id{jobs_order_clause}
+        ) j ON cs.job_id = j.job_id
+        LEFT JOIN (
+            SELECT DISTINCT ON (job_id) *
+            FROM dashboard_contracted_backlog
+            WHERE job_id IS NOT NULL
+            ORDER BY job_id{backlog_order_clause}
+        ) b ON cs.job_id = b.job_id
         LEFT JOIN (
             SELECT DISTINCT ON (job_id)
                 {estimate_subquery_select}
@@ -5862,6 +5882,7 @@ def calendar_events_from_schedule(df: pd.DataFrame) -> list[dict[str, object]]:
     events: list[dict[str, object]] = []
     if df.empty:
         return events
+    seen_event_ids: set[str] = set()
     for row in df.to_dict(orient="records"):
         start = pd.to_datetime(row.get("estimated_start_date"), errors="coerce")
         if pd.isna(start):
@@ -5870,6 +5891,9 @@ def calendar_events_from_schedule(df: pd.DataFrame) -> list[dict[str, object]]:
         if pd.isna(end):
             end = start
         event_id = text_value(row.get("schedule_id")) or text_value(row.get("job_id"))
+        if not event_id or event_id in seen_event_ids:
+            continue
+        seen_event_ids.add(event_id)
         crew_leader = text_value(row.get("assigned_crew_leader")) or "Unassigned"
         customer = text_value(row.get("customer")) or "Unknown customer"
         job_name = text_value(row.get("job_name")) or text_value(row.get("job_id"))
@@ -6102,12 +6126,13 @@ def schedule_status_is_terminal(value: object) -> bool:
     return bool(re.search(r"\b(completed?|cancelled|canceled|closed|did not get|lost)\b", status))
 
 
-def render_schedule_crew_lane_board(events: list[dict[str, object]], *, horizon_days: int = 90) -> None:
-    st.subheader("Crew Lanes")
-    if not events:
-        st.info("No scheduled jobs are available for the crew board.")
-        return
-    today_ts = pd.Timestamp(date.today())
+def schedule_board_event_rows(
+    events: list[dict[str, object]],
+    *,
+    horizon_days: int = 90,
+    today_value: date | None = None,
+) -> list[dict[str, object]]:
+    today_ts = pd.Timestamp(today_value or date.today())
     horizon_ts = today_ts + timedelta(days=int(horizon_days))
     event_rows: list[dict[str, object]] = []
     for event in events:
@@ -6133,49 +6158,179 @@ def render_schedule_crew_lane_board(events: list[dict[str, object]], *, horizon_
                 "is_overdue_active": is_overdue_active,
             }
         )
+    event_rows.sort(key=lambda row: (str(row["crew"]).lower(), not bool(row["is_overdue_active"]), row["start"]))
+    return event_rows
+
+
+def schedule_board_card_label(row: dict[str, object]) -> str:
+    props = row.get("props") if isinstance(row.get("props"), dict) else {}
+    event = row.get("event") if isinstance(row.get("event"), dict) else {}
+    event_id = text_value(event.get("id"))
+    customer = text_value(props.get("customer")) or "Unknown customer"
+    job_name = text_value(props.get("job_name"))
+    title = customer if not job_name else f"{customer} - {job_name}"
+    start = pd.to_datetime(row.get("start"), errors="coerce")
+    end = pd.to_datetime(row.get("end"), errors="coerce")
+    start_label = start.strftime("%b %-d") if not pd.isna(start) else "Date TBD"
+    end_label = end.strftime("%b %-d") if not pd.isna(end) else start_label
+    date_label = start_label if start_label == end_label else f"{start_label}-{end_label}"
+    status = text_value(props.get("schedule_status"))
+    priority = text_value(props.get("priority"))
+    detail = " | ".join(part for part in [date_label, status, priority] if part)
+    short_id = event_id[-8:] if event_id else "unknown"
+    return f"{title[:72]} | {detail} [{short_id}]" if detail else f"{title[:72]} [{short_id}]"
+
+
+def build_schedule_swimlane_containers(
+    event_rows: list[dict[str, object]],
+) -> tuple[list[dict[str, object]], dict[str, str], dict[str, str]]:
+    crews = sorted(
+        {str(row.get("crew") or "Unassigned") for row in event_rows} | {"Unassigned"},
+        key=lambda value: (value == "Unassigned", value.lower()),
+    )
+    items_by_crew = {crew: [] for crew in crews}
+    card_to_event_id: dict[str, str] = {}
+    current_crew_by_event_id: dict[str, str] = {}
+    used_labels: set[str] = set()
+    for row in event_rows:
+        event = row.get("event") if isinstance(row.get("event"), dict) else {}
+        event_id = text_value(event.get("id"))
+        if not event_id:
+            continue
+        crew = text_value(row.get("crew")) or "Unassigned"
+        label = schedule_board_card_label(row)
+        if label in used_labels:
+            label = f"{label} #{len(used_labels) + 1}"
+        used_labels.add(label)
+        card_to_event_id[label] = event_id
+        current_crew_by_event_id[event_id] = crew
+        items_by_crew.setdefault(crew, []).append(label)
+    containers = [{"header": crew, "items": items_by_crew.get(crew, [])} for crew in crews]
+    return containers, card_to_event_id, current_crew_by_event_id
+
+
+def schedule_crew_assignments_from_swimlanes(
+    containers: list[dict[str, object]],
+    card_to_event_id: dict[str, str],
+) -> dict[str, str]:
+    assignments: dict[str, str] = {}
+    for container in containers:
+        if not isinstance(container, dict):
+            continue
+        crew = text_value(container.get("header")) or "Unassigned"
+        items = container.get("items")
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            event_id = card_to_event_id.get(text_value(item))
+            if event_id:
+                assignments[event_id] = crew
+    return assignments
+
+
+def update_schedule_crew_assignments(assignments: dict[str, str]) -> int:
+    records = [
+        {
+            "event_id": text_value(event_id),
+            "assigned_crew_leader": None if text_value(crew) == "Unassigned" else text_value(crew),
+        }
+        for event_id, crew in assignments.items()
+        if text_value(event_id)
+    ]
+    if not records:
+        return 0
+    engine = get_engine()
+    with engine.begin() as conn:
+        result = conn.execute(
+            text(
+                """
+                UPDATE crew_schedule
+                SET assigned_crew_leader = :assigned_crew_leader,
+                    updated_at = NOW()
+                WHERE schedule_id = :event_id
+                   OR (job_id = :event_id AND (schedule_id IS NULL OR BTRIM(schedule_id) = ''))
+                """
+            ),
+            records,
+        )
+    st.cache_data.clear()
+    return max(int(result.rowcount or 0), 0)
+
+
+def render_schedule_crew_lane_board(events: list[dict[str, object]], *, horizon_days: int = 90) -> None:
+    st.subheader("Crew Lanes")
+    if not events:
+        st.info("No scheduled jobs are available for the crew board.")
+        return
+    event_rows = schedule_board_event_rows(events, horizon_days=horizon_days)
     if not event_rows:
         st.info(f"No jobs are scheduled in the next {horizon_days} days.")
         return
 
-    event_rows.sort(key=lambda row: (str(row["crew"]).lower(), not bool(row["is_overdue_active"]), row["start"]))
-    crews = sorted({str(row["crew"]) for row in event_rows}, key=lambda value: (value == "Unassigned", value.lower()))
+    containers, card_to_event_id, current_crew_by_event_id = build_schedule_swimlane_containers(event_rows)
     selected_id = text_value(st.session_state.get("schedule_board_selected_event_id"))
-    for start_idx in range(0, len(crews), 5):
-        columns = st.columns(min(5, len(crews) - start_idx))
-        for column, crew in zip(columns, crews[start_idx : start_idx + 5]):
-            crew_rows = [row for row in event_rows if row["crew"] == crew]
-            with column:
-                st.markdown(f"**{crew}**")
-                for row in crew_rows:
-                    event = row["event"]
-                    props = row["props"]
-                    event_id = text_value(event.get("id"))
-                    customer = text_value(props.get("customer")) or "Unknown customer"
-                    job_name = text_value(props.get("job_name"))
-                    title = customer if not job_name else f"{customer} - {job_name}"
-                    date_line = f"{row['start'].date().isoformat()} to {row['end'].date().isoformat() if not pd.isna(row['end']) else row['start'].date().isoformat()}"
-                    if row.get("is_overdue_active"):
-                        date_line = f"Overdue / active · {date_line}"
-                    status_line = " · ".join(
-                        part
-                        for part in [
-                            text_value(props.get("schedule_status")),
-                            text_value(props.get("priority")),
-                            format_summary_value(props.get("estimated_duration_days"), kind="number") + " days"
-                            if text_value(props.get("estimated_duration_days"))
-                            else "",
-                        ]
-                        if part
-                    )
-                    button_type = "primary" if event_id and event_id == selected_id else "secondary"
-                    if st.button(title[:80], key=f"schedule_board_select_{event_id}", type=button_type, width="stretch"):
-                        st.session_state["schedule_board_selected_event_id"] = event_id
-                        st.rerun()
-                    st.caption(date_line)
-                    if status_line:
-                        st.caption(status_line)
-                    if text_value(props.get("blocking_issue")):
-                        st.warning(text_value(props.get("blocking_issue"))[:180])
+    if sort_items is not None:
+        board_signature = hashlib.sha1(
+            "|".join(f"{event_id}:{crew}" for event_id, crew in sorted(current_crew_by_event_id.items())).encode("utf-8")
+        ).hexdigest()[:12]
+        st.caption("Drag jobs between crew lanes, review the changes, then save. Card order within a lane is visual only.")
+        sorted_containers = sort_items(
+            containers,
+            multi_containers=True,
+            direction="horizontal",
+            custom_style="""
+            .sortable-component { overflow-x: auto; padding-bottom: 0.5rem; }
+            .sortable-container { min-width: 250px; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 8px; }
+            .sortable-container-header { font-weight: 700; color: #0f172a; }
+            .sortable-item { white-space: normal; line-height: 1.25; border-radius: 6px; }
+            """,
+            key=f"schedule_crew_lane_sortables_{board_signature}",
+        )
+        if not isinstance(sorted_containers, list):
+            sorted_containers = containers
+        proposed = schedule_crew_assignments_from_swimlanes(sorted_containers, card_to_event_id)
+        changed = {
+            event_id: crew
+            for event_id, crew in proposed.items()
+            if current_crew_by_event_id.get(event_id) != crew
+        }
+        if changed:
+            st.info(f"{len(changed):,} crew assignment change(s) are ready to save.")
+            if st.button("Save crew lane changes", type="primary", key="save_schedule_crew_lane_changes"):
+                updated = update_schedule_crew_assignments(changed)
+                st.success(f"Saved {updated:,} schedule assignment(s).")
+                st.rerun()
+        review_options = list(card_to_event_id)
+        selected_index = next(
+            (index for index, label in enumerate(review_options) if card_to_event_id[label] == selected_id),
+            0,
+        )
+        selected_label = st.selectbox(
+            "Review job details",
+            review_options,
+            index=selected_index,
+            key=f"schedule_board_review_{board_signature}",
+        )
+        st.session_state["schedule_board_selected_event_id"] = card_to_event_id[selected_label]
+    else:
+        st.caption("Install streamlit-sortables to drag jobs between crew lanes.")
+        crews = [text_value(container.get("header")) for container in containers]
+        for start_idx in range(0, len(crews), 5):
+            columns = st.columns(min(5, len(crews) - start_idx))
+            for column, crew in zip(columns, crews[start_idx : start_idx + 5]):
+                crew_rows = [row for row in event_rows if row["crew"] == crew]
+                with column:
+                    st.markdown(f"**{crew}**")
+                    for row_index, row in enumerate(crew_rows):
+                        event = row["event"]
+                        props = row["props"]
+                        event_id = text_value(event.get("id"))
+                        title = schedule_board_card_label(row)
+                        button_type = "primary" if event_id and event_id == selected_id else "secondary"
+                        button_key = f"schedule_board_select_{event_id}_{crew}_{row_index}"
+                        if st.button(title[:120], key=button_key, type=button_type, width="stretch"):
+                            st.session_state["schedule_board_selected_event_id"] = event_id
+                            st.rerun()
 
 
 def find_calendar_event(calendar_result: object, events: list[dict[str, object]]) -> dict[str, object] | None:
