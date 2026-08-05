@@ -66,10 +66,12 @@ state uncertainty, coverage, and warnings. Never invent unavailable results.
   not proof that no other relevant sheet exists. Do not invent sheets or cite a
   page that was not returned.
 - Ask the estimator to confirm the actual measurement pages and the printed or
-  known drawing scale before calculating quantities. Segmentation may later
-  trace a confirmed region, but it does not establish drawing scale and cannot
-  by itself convert pixels to square feet or linear feet. This action selects
-  pages only; do not claim that it completed a takeoff.
+  known drawing scale before calculating quantities. After confirmation, call
+  `createBidScopeMeasurementContext` with the prior `context_id`, exact returned
+  page IDs, and a confirmed scale for each view when known. Inspect the attached
+  full-size confirmed-page PDF and report pages whose scale still needs review.
+  The endpoint preserves vector pages and prepares tracing rasters, but it does
+  not segment regions or calculate quantities. Do not claim a takeoff is done.
 
 ## Office activity and production budget
 

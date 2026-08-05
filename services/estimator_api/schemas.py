@@ -1274,6 +1274,8 @@ class BidScopePageSelectionResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     schema_version: Literal["spraytec.bidscope_page_selection.v1"]
+    context_id: str = Field(min_length=32, max_length=32)
+    expires_at: int
     source_sharepoint_url: str
     trade_type: Literal["foam_insulation", "roofing"]
     trade_name: str
@@ -1294,6 +1296,75 @@ class BidScopePageSelectionResponse(BaseModel):
             "Native ChatGPT Action attachment containing only the bounded source "
             "pages selected for visual review."
         ),
+        min_length=1,
+        max_length=1,
+    )
+
+
+class BidScopeConfirmedPage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    page_id: str = Field(
+        min_length=1,
+        max_length=300,
+        description="Exact page_id returned by selectBidScopePages.",
+    )
+    confirmed_scale_text: str = Field(
+        default="",
+        max_length=80,
+        description=(
+            "Estimator-confirmed scale for this view, such as 1/8 inch = 1 foot. "
+            "Leave blank to return detected scale candidates without authorizing quantities."
+        ),
+    )
+    confirmed_scale_inches_per_foot: float | None = Field(
+        default=None,
+        gt=0,
+        le=12,
+        description=(
+            "Optional numeric drawing inches per real foot; 0.125 means 1/8 inch = 1 foot."
+        ),
+    )
+
+
+class BidScopeMeasurementContextRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    context_id: str = Field(
+        min_length=32,
+        max_length=32,
+        pattern=r"^[0-9a-f]{32}$",
+        description="Short-lived context_id returned by selectBidScopePages.",
+    )
+    confirmed_pages: list[BidScopeConfirmedPage] = Field(
+        min_length=1,
+        max_length=20,
+        description="Estimator-confirmed measurement pages and any confirmed per-view scales.",
+    )
+    render_dpi: int = Field(
+        default=144,
+        ge=96,
+        le=200,
+        description="Resolution for tracing rasters; original vector PDF coordinates remain authoritative.",
+    )
+
+
+class BidScopeMeasurementContextResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    schema_version: Literal["spraytec.bidscope_measurement_context.v1"]
+    source_context_id: str
+    measurement_context_id: str
+    expires_at: int
+    trade_type: Literal["foam_insulation", "roofing"]
+    confirmed_page_count: int = Field(ge=1, le=20)
+    pages: list[dict[str, Any]] = Field(min_length=1, max_length=20)
+    measurement_readiness: dict[str, Any]
+    warnings: list[str] = Field(default_factory=list)
+    openai_file_response: list[OpenAIActionFile] = Field(
+        serialization_alias="openaiFileResponse",
+        validation_alias="openaiFileResponse",
+        description="Confirmed original drawing pages for full-size Assistant inspection.",
         min_length=1,
         max_length=1,
     )

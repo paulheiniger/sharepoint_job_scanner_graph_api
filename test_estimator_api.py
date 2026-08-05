@@ -981,9 +981,10 @@ def test_openapi_exposes_expected_operations() -> None:
         "getWarrantySummary",
         "getWarrantyList",
         "searchSharePointDocuments",
-        "fetchSharePointDocument",
-        "selectBidScopePages",
-            "health_health_get",
+            "fetchSharePointDocument",
+            "selectBidScopePages",
+            "createBidScopeMeasurementContext",
+                "health_health_get",
         "searchJobs",
     }
 
@@ -1541,6 +1542,8 @@ def test_bidscope_page_selection_route_returns_native_review_packet(monkeypatch)
         captured.update(kwargs)
         return {
             "schema_version": "spraytec.bidscope_page_selection.v1",
+            "context_id": "a" * 32,
+            "expires_at": 4102444800,
             "source_sharepoint_url": kwargs["sharepoint_url"],
             "trade_type": kwargs["trade_type"],
             "trade_name": "Foam Insulation",
@@ -1586,6 +1589,7 @@ def test_bidscope_page_selection_route_returns_native_review_packet(monkeypatch)
     assert captured["reference_depth"] == 4
     assert captured["max_scan_pages"] == 250
     assert captured["max_packet_pages"] == 10
+    assert captured["artifact_dir"].name == "bidscope"
 
 
 def test_bidscope_page_selection_action_is_read_only_in_openapi() -> None:
@@ -1595,6 +1599,67 @@ def test_bidscope_page_selection_action_is_read_only_in_openapi() -> None:
     operation = specification["paths"]["/v1/bidscope/page-selection"]["post"]
 
     assert operation["operationId"] == "selectBidScopePages"
+    assert operation["x-openai-isConsequential"] is False
+
+
+def test_bidscope_measurement_context_route_prepares_confirmed_pages(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_measurement_context(**kwargs):
+        captured.update(kwargs)
+        return {
+            "schema_version": "spraytec.bidscope_measurement_context.v1",
+            "source_context_id": kwargs["context_id"],
+            "measurement_context_id": "b" * 32,
+            "expires_at": 4102444800,
+            "trade_type": "foam_insulation",
+            "confirmed_page_count": 1,
+            "pages": [{"page_id": "plan::page_1"}],
+            "measurement_readiness": {
+                "status": "ready_for_tracing",
+                "segmentation_status": "not_run",
+            },
+            "warnings": [],
+            "openaiFileResponse": [
+                {
+                    "name": "bidscope_confirmed_measurement_pages.pdf",
+                    "mime_type": "application/pdf",
+                    "content": "JVBERi0xLjQ=",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        "services.estimator_api.server.create_bidscope_measurement_context",
+        fake_measurement_context,
+    )
+    response = client.post(
+        "/v1/bidscope/measurement-context",
+        json={
+            "context_id": "a" * 32,
+            "confirmed_pages": [
+                {
+                    "page_id": "plan::page_1",
+                    "confirmed_scale_text": '1/8" = 1\'-0"',
+                }
+            ],
+            "render_dpi": 144,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["measurement_context_id"] == "b" * 32
+    assert captured["confirmed_pages"][0]["page_id"] == "plan::page_1"
+    assert captured["render_dpi"] == 144
+
+
+def test_bidscope_measurement_context_action_is_read_only_in_openapi() -> None:
+    specification = build_action_openapi(
+        "https://spraytec-business-api.icysand-5925ab36.eastus2.azurecontainerapps.io"
+    )
+    operation = specification["paths"]["/v1/bidscope/measurement-context"]["post"]
+
+    assert operation["operationId"] == "createBidScopeMeasurementContext"
     assert operation["x-openai-isConsequential"] is False
 
 

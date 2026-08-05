@@ -8,8 +8,10 @@ import fitz
 from ingest.package_ingest import inspect_uploaded_package
 from jobscan.business.bidscope_service import (
     BidScopeInputError,
+    _detect_drawing_scales,
     _validate_sharepoint_url,
     build_bidscope_review_packet_from_inspection,
+    create_bidscope_measurement_context,
 )
 
 
@@ -31,7 +33,7 @@ def _pdf(text: str) -> bytes:
     return payload
 
 
-def test_bidscope_packet_contains_seed_and_reference_linked_measurement_page() -> None:
+def test_bidscope_packet_contains_seed_and_reference_linked_measurement_page(tmp_path) -> None:
     uploads = [
         FakeUpload(
             "A-601 Wall Types.pdf",
@@ -61,6 +63,7 @@ def test_bidscope_packet_contains_seed_and_reference_linked_measurement_page() -
         sharepoint_url=source_url,
         max_scan_pages=25,
         max_packet_pages=6,
+        artifact_dir=tmp_path,
     )
 
     assert result["schema_version"] == "spraytec.bidscope_page_selection.v1"
@@ -68,12 +71,100 @@ def test_bidscope_packet_contains_seed_and_reference_linked_measurement_page() -
     assert any(row["sheet_id"] == "A-101" for row in result["measurement_candidates"])
     assert any(row["reference_path"] for row in result["measurement_candidates"])
     assert result["measurement_readiness"]["status"] == "requires_confirmed_pages_and_scale"
+    assert result["measurement_readiness"]["segmentation_status"] == "not_run"
+    assert len(result["context_id"]) == 32
     attachment = result["openaiFileResponse"][0]
     packet = fitz.open(stream=base64.b64decode(attachment["content"]), filetype="pdf")
     try:
         assert packet.page_count == result["packet_page_count"]
     finally:
         packet.close()
+
+
+def test_confirmed_pages_create_scaled_vector_and_raster_measurement_context(tmp_path) -> None:
+    source_url = "https://spraytec.sharepoint.com/sites/Data/Shared%20Documents/Test"
+    inspection = inspect_uploaded_package(
+        [
+            FakeUpload(
+                "A-101 Floor Plan.pdf",
+                _pdf('A-101 Floor Plan\nSCALE: 1/8" = 1\'-0"\nExterior wall dimensions.'),
+            )
+        ]
+    )
+    inspection = replace(
+        inspection,
+        candidates=[
+            replace(candidate, source_sharepoint_url=source_url)
+            for candidate in inspection.candidates
+        ],
+    )
+    selection = build_bidscope_review_packet_from_inspection(
+        inspection,
+        sharepoint_url=source_url,
+        max_scan_pages=25,
+        max_packet_pages=3,
+        artifact_dir=tmp_path,
+    )
+    page_id = (
+        selection["measurement_candidates"]
+        or selection["seed_pages"]
+        or selection["supporting_reference_pages"]
+    )[0]["page_id"]
+
+    unconfirmed = create_bidscope_measurement_context(
+        context_id=selection["context_id"],
+        confirmed_pages=[{"page_id": page_id}],
+        render_dpi=144,
+        artifact_dir=tmp_path,
+    )
+    detected = unconfirmed["pages"][0]["scale_calibration"]
+    assert detected["status"] == "detected_requires_confirmation"
+    assert detected["scale_inches_per_foot"] == 0.125
+    assert unconfirmed["measurement_readiness"]["status"] == "requires_scale_confirmation"
+
+    confirmed = create_bidscope_measurement_context(
+        context_id=selection["context_id"],
+        confirmed_pages=[
+            {"page_id": page_id, "confirmed_scale_text": '1/8" = 1\'-0"'}
+        ],
+        render_dpi=144,
+        artifact_dir=tmp_path,
+    )
+    calibration = confirmed["pages"][0]["scale_calibration"]
+    assert calibration["status"] == "confirmed"
+    assert calibration["pdf_points_per_foot"] == 9.0
+    assert calibration["rendered_pixels_per_foot"] == 18.0
+    assert confirmed["measurement_readiness"]["status"] == "ready_for_tracing"
+    context_path = tmp_path / confirmed["measurement_context_id"]
+    assert (context_path / confirmed["pages"][0]["source_pdf_asset_name"]).is_file()
+    assert (context_path / confirmed["pages"][0]["rendered_image_asset_name"]).is_file()
+    attachment = confirmed["openaiFileResponse"][0]
+    packet = fitz.open(stream=base64.b64decode(attachment["content"]), filetype="pdf")
+    try:
+        assert packet.page_count == 1
+    finally:
+        packet.close()
+
+
+def test_measurement_context_rejects_unknown_confirmed_page(tmp_path) -> None:
+    context_id = "a" * 32
+    context_path = tmp_path / context_id
+    context_path.mkdir()
+    (context_path / "context.json").write_text(
+        '{"context_type":"page_selection","expires_at":4102444800,"pages":[]}',
+        encoding="utf-8",
+    )
+
+    try:
+        create_bidscope_measurement_context(
+            context_id=context_id,
+            confirmed_pages=[{"page_id": "missing::page_1"}],
+            artifact_dir=tmp_path,
+        )
+    except BidScopeInputError as exc:
+        assert "Unknown confirmed page_id" in str(exc)
+    else:
+        raise AssertionError("Expected an unknown page ID to be rejected")
 
 
 def test_bidscope_sharepoint_url_validation_rejects_non_sharepoint_hosts() -> None:
@@ -83,3 +174,9 @@ def test_bidscope_sharepoint_url_validation_rejects_non_sharepoint_hosts() -> No
         assert "SharePoint" in str(exc)
     else:
         raise AssertionError("Expected a non-SharePoint URL to be rejected")
+
+
+def test_drawing_scale_detection_accepts_architectural_words_and_ratio() -> None:
+    scales = _detect_drawing_scales('Scale 1/8 inch = 1 foot; metric view 1:100')
+
+    assert [row["scale_inches_per_foot"] for row in scales] == [0.12, 0.125]
