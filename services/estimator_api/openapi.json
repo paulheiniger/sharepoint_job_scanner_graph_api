@@ -5521,7 +5521,7 @@
             "items": {
               "$ref": "#/components/schemas/RoofMeasureSegmentationCandidate"
             },
-            "maxItems": 3,
+            "maxItems": 1,
             "minItems": 1,
             "title": "Candidates",
             "type": "array"
@@ -5529,6 +5529,11 @@
           "context_id": {
             "title": "Context Id",
             "type": "string"
+          },
+          "evaluated_candidate_count": {
+            "minimum": 1.0,
+            "title": "Evaluated Candidate Count",
+            "type": "integer"
           },
           "lidar_cell_pixels": {
             "default": 0,
@@ -5575,12 +5580,12 @@
             "type": "string"
           },
           "requires_candidate_confirmation": {
-            "const": true,
+            "const": false,
             "title": "Requires Candidate Confirmation",
             "type": "boolean"
           },
           "schema_version": {
-            "const": "spraytec.roof_measure_sam2_candidates.v1",
+            "const": "spraytec.roof_measure_sam2_candidates.v2",
             "title": "Schema Version",
             "type": "string"
           },
@@ -5625,6 +5630,7 @@
           "selected_footprint_ids",
           "recommended_candidate_id",
           "requires_candidate_confirmation",
+          "evaluated_candidate_count",
           "candidates",
           "candidate_overlay_url",
           "candidate_overlay_preview_media_type",
@@ -7224,7 +7230,7 @@
     },
     "/v1/roof-measure/segment": {
       "post": {
-        "description": "Uses reviewed footprint IDs to fetch a tightly fitted source image and prompt private SAM2. LiDAR adds guarded high-band candidates when available. Returns up to three overlays; confirmation is required.",
+        "description": "Uses reviewed footprint IDs to fetch a tightly fitted source image and prompt private SAM2. LiDAR adds guarded high-band candidates when available. Automatically selects the top-ranked candidate and returns one zoomed review overlay; alternates remain internal diagnostics.",
         "operationId": "segmentRoofMeasureContext",
         "requestBody": {
           "content": {
@@ -7258,7 +7264,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Create reviewable SAM2 roof-mask candidates",
+        "summary": "Select the best SAM2 roof mask and return a full-size review overlay",
         "x-openai-isConsequential": false
       }
     },

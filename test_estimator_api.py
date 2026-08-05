@@ -377,11 +377,12 @@ def test_roof_measure_segmentation_returns_reviewable_candidates(monkeypatch) ->
     monkeypatch.setattr(
         "services.estimator_api.server.segment_roof_measure_context",
         lambda **_kwargs: {
-            "schema_version": "spraytec.roof_measure_sam2_candidates.v1",
+            "schema_version": "spraytec.roof_measure_sam2_candidates.v2",
             "context_id": "a" * 32,
             "selected_footprint_ids": ["fp-01"],
             "recommended_candidate_id": "sam2-0123456789abcdef",
-            "requires_candidate_confirmation": True,
+            "requires_candidate_confirmation": False,
+            "evaluated_candidate_count": 3,
             "candidates": [
                 {
                     "candidate_id": "sam2-0123456789abcdef",
@@ -416,6 +417,10 @@ def test_roof_measure_segmentation_returns_reviewable_candidates(monkeypatch) ->
         "services.estimator_api.server._roof_overlay_preview_base64",
         lambda _path: "candidate-preview",
     )
+    monkeypatch.setattr(
+        "services.estimator_api.server._roof_overlay_file_base64",
+        lambda _path: "full-size-candidate",
+    )
 
     unauthorized = client.post(
         "/v1/roof-measure/segment",
@@ -429,10 +434,14 @@ def test_roof_measure_segmentation_returns_reviewable_candidates(monkeypatch) ->
 
     assert unauthorized.status_code == 401
     assert response.status_code == 200
-    assert response.json()["requires_candidate_confirmation"] is True
+    assert response.json()["requires_candidate_confirmation"] is False
+    assert response.json()["evaluated_candidate_count"] == 3
     assert response.json()["candidates"][0]["provider_rank"] == 2
     assert response.json()["openaiFileResponse"][0]["content"] == (
-        "candidate-preview"
+        "full-size-candidate"
+    )
+    assert response.json()["openaiFileResponse"][0]["name"] == (
+        "roof_sam2_best_candidate.jpg"
     )
 
 

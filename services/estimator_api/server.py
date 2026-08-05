@@ -456,11 +456,12 @@ def roof_measure_context(
     response_model=RoofMeasureSegmentationResponse,
     response_model_exclude_none=True,
     operation_id="segmentRoofMeasureContext",
-    summary="Create reviewable SAM2 roof-mask candidates",
+    summary="Select the best SAM2 roof mask and return a full-size review overlay",
     description=(
         "Uses reviewed footprint IDs to fetch a tightly fitted source image and "
         "prompt private SAM2. LiDAR adds guarded high-band candidates when "
-        "available. Returns up to three overlays; confirmation is required."
+        "available. Automatically selects the top-ranked candidate and "
+        "returns one zoomed review overlay; alternates remain internal diagnostics."
     ),
 )
 def roof_measure_segment(
@@ -498,6 +499,7 @@ def roof_measure_segment(
             artifact_dir=_roof_measure_artifact_dir(),
         )
         preview_base64 = _roof_overlay_preview_base64(asset_path)
+        full_size_base64 = _roof_overlay_file_base64(asset_path)
         response_payload = {
             **result,
             "candidate_overlay_url": _signed_roof_asset_url(
@@ -511,9 +513,9 @@ def roof_measure_segment(
             "candidate_overlay_preview_base64": preview_base64,
             "openaiFileResponse": [
                 {
-                    "name": "roof_sam2_candidates.jpg",
+                    "name": "roof_sam2_best_candidate.jpg",
                     "mime_type": "image/jpeg",
-                    "content": preview_base64,
+                    "content": full_size_base64,
                 }
             ],
         }
@@ -1631,6 +1633,22 @@ def _roof_overlay_preview_base64(path: Path) -> str:
             buffer,
             format="JPEG",
             quality=58,
+            optimize=True,
+            progressive=True,
+        )
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def _roof_overlay_file_base64(path: Path) -> str:
+    """Return a clear, bounded full-size overlay for the GPT action attachment."""
+    with Image.open(path) as source:
+        image = source.convert("RGB")
+        image.thumbnail((1280, 1280), Image.Resampling.LANCZOS)
+        buffer = BytesIO()
+        image.save(
+            buffer,
+            format="JPEG",
+            quality=86,
             optimize=True,
             progressive=True,
         )

@@ -571,14 +571,15 @@ class RoofMeasureSegmentationCandidate(BaseModel):
 class RoofMeasureSegmentationResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["spraytec.roof_measure_sam2_candidates.v1"]
+    schema_version: Literal["spraytec.roof_measure_sam2_candidates.v2"]
     context_id: str
     selected_footprint_ids: list[str]
     recommended_candidate_id: str
-    requires_candidate_confirmation: Literal[True]
+    requires_candidate_confirmation: Literal[False]
+    evaluated_candidate_count: int = Field(ge=1)
     candidates: list[RoofMeasureSegmentationCandidate] = Field(
         min_length=1,
-        max_length=3,
+        max_length=1,
     )
     candidate_overlay_url: str
     candidate_overlay_preview_media_type: Literal["image/jpeg"]

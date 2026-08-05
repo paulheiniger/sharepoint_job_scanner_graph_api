@@ -329,16 +329,26 @@ def test_sam2_refinement_ranks_all_candidates_and_calculates_confirmed_one(
         artifact_dir=artifact_dir,
     )
 
-    assert len(segmented["candidates"]) == 3
+    assert len(segmented["candidates"]) == 1
+    assert segmented["evaluated_candidate_count"] == 3
+    assert segmented["requires_candidate_confirmation"] is False
     assert segmented["recommended_candidate_id"] == segmented["candidates"][0][
         "candidate_id"
     ]
     assert segmented["candidates"][0]["provider_rank"] == 2
-    assert resolve_roof_measure_asset(
+    candidate_asset = resolve_roof_measure_asset(
         context_id=context["context_id"],
         asset_name=segmented["candidate_overlay_asset_name"],
         artifact_dir=artifact_dir,
-    ).is_file()
+    )
+    assert candidate_asset.is_file()
+    with Image.open(candidate_asset) as candidate_image:
+        assert candidate_image.size == (1280, 1280)
+    stored_context = load_roof_measure_context(
+        context_id=context["context_id"],
+        artifact_dir=artifact_dir,
+    )
+    assert len(stored_context["sam2_candidates"]) == 3
 
     result = calculate_roof_measurement(
         context_id=context["context_id"],
@@ -469,8 +479,14 @@ def test_sam2_returns_guarded_orthogonal_candidate_with_original(
         artifact_dir=artifact_dir,
     )
 
-    assert len(segmented["candidates"]) == 2
-    cleaned, original = segmented["candidates"]
+    assert len(segmented["candidates"]) == 1
+    assert segmented["evaluated_candidate_count"] == 2
+    cleaned = segmented["candidates"][0]
+    stored_context = load_roof_measure_context(
+        context_id=context["context_id"],
+        artifact_dir=artifact_dir,
+    )
+    original = stored_context["sam2_candidates"][1]
     assert cleaned["geometry_refinement"] == "dominant_orthogonal"
     assert original["geometry_refinement"] == "mask_polygon"
     assert cleaned["boundary_refinement"] == original["boundary_refinement"]
@@ -538,9 +554,13 @@ def test_sam2_lidar_guidance_scores_elevated_edge_beyond_footprint(
     assert segmented["lidar_points"] == 2000
     assert segmented["lidar_image_points"] == 800
     assert segmented["lidar_cell_pixels"] == 10
+    stored_context = load_roof_measure_context(
+        context_id=context["context_id"],
+        artifact_dir=artifact_dir,
+    )
     refinements = {
         item["boundary_refinement"]: item
-        for item in segmented["candidates"]
+        for item in stored_context["sam2_candidates"]
     }
     assert set(refinements) == {"sam2", "sam2_lidar_high_band"}
     assert (

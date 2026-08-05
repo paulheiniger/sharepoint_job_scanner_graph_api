@@ -302,9 +302,10 @@ def segment_roof_measure_context(
                 original_image_size=original_image.size,
             )
 
+    recommended_candidate = processed[0]
     asset_name = _write_candidate_contact_sheet(
         context=context,
-        candidates=processed,
+        candidates=[recommended_candidate],
         artifact_dir=artifact_dir,
         source_asset_name=(
             "sam2-detail.png" if fitted_view is not None else "satellite.png"
@@ -317,12 +318,13 @@ def segment_roof_measure_context(
     context["sam2_source_footprint_ids"] = list(selected_footprint_ids)
     _write_json_atomic(context_path / "context.json", context)
     return {
-        "schema_version": "spraytec.roof_measure_sam2_candidates.v1",
+        "schema_version": "spraytec.roof_measure_sam2_candidates.v2",
         "context_id": context_id,
         "selected_footprint_ids": list(selected_footprint_ids),
-        "recommended_candidate_id": processed[0]["candidate_id"],
-        "requires_candidate_confirmation": True,
-        "candidates": [_public_candidate(item) for item in processed],
+        "recommended_candidate_id": recommended_candidate["candidate_id"],
+        "requires_candidate_confirmation": False,
+        "evaluated_candidate_count": len(processed),
+        "candidates": [_public_candidate(recommended_candidate)],
         "candidate_overlay_asset_name": asset_name,
         "model_name": segmentation.model_name,
         "model_version": segmentation.model_version,
@@ -354,17 +356,17 @@ def segment_roof_measure_context(
             ),
             *(
                 [
-                    "The recommended candidate uses guarded dominant-axis edge "
-                    "straightening. Its original mask polygon is also shown for "
-                    "comparison."
+                    "The automatically selected candidate uses guarded dominant-axis "
+                    "edge straightening. Alternate candidates remain in the context "
+                    "diagnostics."
                 ]
                 if orthogonalized is not None
                 else []
             ),
             (
-                "SAM2 candidates are model-derived refinements of reviewed building "
-                "footprints. Display the candidate overlay and obtain estimator "
-                "confirmation before calculating area."
+                "The displayed overlay is the automatically selected top-ranked "
+                "SAM2 refinement. Use it for calculation unless the estimator requests "
+                "a boundary correction."
             ),
         ],
     }
@@ -1058,7 +1060,7 @@ def _write_candidate_contact_sheet(
             draw.polygon(polygon, fill=(*color[:3], 70))
             draw.line([*polygon, polygon[0]], fill=color, width=7)
         panel = Image.alpha_composite(panel, overlay).crop(review_crop).convert("RGB")
-        target_width = 640
+        target_width = 1280
         target_height = max(1, int(round(panel.height * target_width / panel.width)))
         panel = panel.resize(
             (target_width, target_height),
@@ -1074,7 +1076,7 @@ def _write_candidate_contact_sheet(
         panel_draw.text(
             (16, 12),
             (
-                f"Candidate {candidate['rank']} | "
+                f"AI-selected roof boundary | "
                 f"{float(candidate['plan_area_sqft']):,.0f} sq ft | "
                 f"score {float(candidate['selection_score']):.2f} | "
                 f"{refinement_label}"
