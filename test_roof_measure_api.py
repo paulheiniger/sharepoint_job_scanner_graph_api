@@ -15,7 +15,10 @@ from roof_measure.api_context import (
     load_roof_measure_context,
     resolve_roof_measure_asset,
 )
-from roof_measure.api_segmentation import segment_roof_measure_context
+from roof_measure.api_segmentation import (
+    _architectural_simplification_tolerance_pixels,
+    segment_roof_measure_context,
+)
 from roof_measure.lidar import LidarHeightGrid
 from roof_measure.map_reference import (
     BuildingFootprint,
@@ -491,11 +494,29 @@ def test_sam2_returns_guarded_orthogonal_candidate_with_original(
     )
     original = stored_context["sam2_candidates"][1]
     assert cleaned["geometry_refinement"] == "dominant_orthogonal"
+    assert cleaned["geometry_simplification_tolerance_pixels"] == 8.0
     assert original["geometry_refinement"] == "mask_polygon"
     assert cleaned["boundary_refinement"] == original["boundary_refinement"]
     assert cleaned["candidate_id"] != original["candidate_id"]
     assert cleaned["geometry_area_drift_fraction"] <= 0.015
     assert segmented["recommended_candidate_id"] == cleaned["candidate_id"]
+
+
+def test_architectural_tolerance_uses_image_scale_and_lidar_cell_size() -> None:
+    assert _architectural_simplification_tolerance_pixels(
+        pixels_per_foot=0.5,
+    ) == 4.0
+    assert _architectural_simplification_tolerance_pixels(
+        pixels_per_foot=2.0,
+    ) == 8.0
+    assert _architectural_simplification_tolerance_pixels(
+        pixels_per_foot=2.0,
+        lidar_cell_pixels=15,
+    ) == 12.0
+    assert _architectural_simplification_tolerance_pixels(
+        pixels_per_foot=8.0,
+        lidar_cell_pixels=40,
+    ) == 20.0
 
 
 def test_sam2_lidar_guidance_scores_elevated_edge_beyond_footprint(

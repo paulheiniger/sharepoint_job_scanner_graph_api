@@ -5334,6 +5334,19 @@
             "title": "Geometry Refinement",
             "type": "string"
           },
+          "geometry_simplification_tolerance_pixels": {
+            "anyOf": [
+              {
+                "maximum": 20.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Geometry Simplification Tolerance Pixels"
+          },
           "lidar_boundary_score": {
             "anyOf": [
               {

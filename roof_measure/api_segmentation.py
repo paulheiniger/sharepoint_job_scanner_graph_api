@@ -577,8 +577,19 @@ def _orthogonalized_candidate(
     maximum_area_drift: float = 0.015,
 ) -> dict[str, Any] | None:
     original_components = list(candidate.get("components") or [])
+    pixels_per_foot = float(context["pixels_per_foot"])
+    simplification_tolerance = _architectural_simplification_tolerance_pixels(
+        pixels_per_foot=pixels_per_foot,
+        lidar_cell_pixels=(
+            lidar_guidance.cell_pixels
+            if lidar_guidance is not None
+            and candidate.get("boundary_refinement") == "sam2_lidar_high_band"
+            else None
+        ),
+    )
     cleaned_components = _orthogonalize_components(
         original_components,
+        simplification_tolerance=simplification_tolerance,
         maximum_area_drift=maximum_area_drift,
     )
     if cleaned_components is None:
@@ -597,7 +608,7 @@ def _orthogonalized_candidate(
             section_id=f"{candidate['candidate_id']}-orthogonal",
             source="sam2_candidate",
             components=cleaned_components,
-            pixels_per_foot=float(context["pixels_per_foot"]),
+            pixels_per_foot=pixels_per_foot,
             width=image_size[0],
             height=image_size[1],
             pitch_rise_per_12=None,
@@ -624,6 +635,10 @@ def _orthogonalized_candidate(
         **candidate,
         "candidate_id": f"sam2-{digest}",
         "geometry_refinement": "dominant_orthogonal",
+        "geometry_simplification_tolerance_pixels": round(
+            simplification_tolerance,
+            2,
+        ),
         "geometry_area_drift_fraction": round(area_drift, 4),
         "selection_score": metrics["selection_score"],
         "footprint_overlap": metrics["footprint_overlap"],
@@ -650,6 +665,7 @@ def _orthogonalized_candidate(
 def _orthogonalize_components(
     components: list[dict[str, Any]],
     *,
+    simplification_tolerance: float = 4.0,
     maximum_area_drift: float = 0.015,
 ) -> list[dict[str, Any]] | None:
     cleaned: list[dict[str, Any]] = []
@@ -658,14 +674,14 @@ def _orthogonalize_components(
         holes = [_ring_tuples(hole) for hole in component.get("holes") or []]
         cleaned_polygon = straighten_architectural_ring(
             polygon,
-            simplification_tolerance=4.0,
+            simplification_tolerance=simplification_tolerance,
             angle_tolerance_degrees=15.0,
             max_area_drift=maximum_area_drift,
         )
         cleaned_holes = [
             straighten_architectural_ring(
                 hole,
-                simplification_tolerance=4.0,
+                simplification_tolerance=simplification_tolerance,
                 angle_tolerance_degrees=15.0,
                 max_area_drift=maximum_area_drift,
             )
@@ -689,6 +705,25 @@ def _orthogonalize_components(
     if abs(cleaned_area - original_area) / original_area > maximum_area_drift:
         return None
     return cleaned
+
+
+def _architectural_simplification_tolerance_pixels(
+    *,
+    pixels_per_foot: float,
+    lidar_cell_pixels: int | None = None,
+) -> float:
+    """Return a scale-aware tolerance that suppresses mask and LiDAR stair steps.
+
+    The final edge still comes from the segmented image boundary. LiDAR grid
+    size only raises the cleanup tolerance enough to prevent nearest-neighbor
+    height cells from being preserved as architectural corners.
+    """
+    scale = max(float(pixels_per_foot), 0.01)
+    tolerance = max(4.0, min(scale * 4.0, 16.0))
+    if lidar_cell_pixels is not None and lidar_cell_pixels > 0:
+        lidar_tolerance = min(float(lidar_cell_pixels) * 0.8, scale * 6.0)
+        tolerance = max(tolerance, lidar_tolerance)
+    return min(tolerance, 20.0)
 
 
 def _components_area_pixels(components: list[dict[str, Any]]) -> float:

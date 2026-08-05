@@ -283,6 +283,55 @@ def test_straighten_architectural_ring_fits_rotated_orthogonal_edges_and_preserv
     )
 
 
+def test_straighten_architectural_ring_removes_short_orthogonal_stair_steps() -> None:
+    stair_stepped_roof = [
+        (0, 0),
+        (100, 0),
+        (100, 60),
+        (90, 60),
+        (90, 63),
+        (80, 63),
+        (80, 59),
+        (70, 59),
+        (70, 62),
+        (60, 62),
+        (60, 60),
+        (0, 60),
+    ]
+
+    straightened = straighten_architectural_ring(
+        stair_stepped_roof,
+        simplification_tolerance=8,
+    )
+
+    assert len(straightened) == 5
+    assert abs(
+        polygon_area_pixels(straightened)
+        - polygon_area_pixels(stair_stepped_roof)
+    ) / polygon_area_pixels(stair_stepped_roof) <= 0.03
+
+
+def test_straighten_architectural_ring_preserves_substantial_roof_setback() -> None:
+    roof_with_setback = [
+        (0, 0),
+        (100, 0),
+        (100, 60),
+        (70, 60),
+        (70, 40),
+        (50, 40),
+        (50, 60),
+        (0, 60),
+    ]
+
+    straightened = straighten_architectural_ring(
+        roof_with_setback,
+        simplification_tolerance=8,
+    )
+
+    assert len(straightened) == 9
+    assert min(y for x, y in straightened if 45 <= x <= 75) == 40
+
+
 def test_sections_from_mask_detects_multiple_sections() -> None:
     mask = np.zeros((80, 100), dtype=bool)
     mask[10:30, 20:50] = True
