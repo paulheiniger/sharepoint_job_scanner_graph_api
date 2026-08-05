@@ -1370,6 +1370,103 @@ class BidScopeMeasurementContextResponse(BaseModel):
     )
 
 
+class BidScopeNormalizedPoint(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    x: float = Field(ge=0, le=1, description="Horizontal position normalized across the full page image.")
+    y: float = Field(ge=0, le=1, description="Vertical position normalized across the full page image.")
+
+
+class BidScopeNormalizedBox(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    x_min: float = Field(ge=0, le=1)
+    y_min: float = Field(ge=0, le=1)
+    x_max: float = Field(ge=0, le=1)
+    y_max: float = Field(ge=0, le=1)
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> "BidScopeNormalizedBox":
+        if self.x_min >= self.x_max or self.y_min >= self.y_max:
+            raise ValueError("Box minimum coordinates must be less than maximum coordinates.")
+        return self
+
+
+class BidScopeTraceRegion(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    region_id: str = Field(min_length=1, max_length=80)
+    page_id: str = Field(
+        min_length=1,
+        max_length=300,
+        description="Exact page_id from the confirmed BidScope measurement context.",
+    )
+    label: str = Field(default="", max_length=160)
+    measurement_type: Literal["area", "boundary_length", "wall_area"] = "area"
+    positive_points: list[BidScopeNormalizedPoint] = Field(default_factory=list, max_length=12)
+    negative_points: list[BidScopeNormalizedPoint] = Field(default_factory=list, max_length=20)
+    box: BidScopeNormalizedBox | None = None
+    polygon: list[BidScopeNormalizedPoint] = Field(
+        default_factory=list,
+        max_length=250,
+        description=(
+            "Optional estimator-corrected closed boundary. When supplied, it replaces SAM2 prompting."
+        ),
+    )
+    architectural_cleanup: bool = Field(
+        default=True,
+        description="Straighten near-orthogonal mask edges while limiting area drift to three percent.",
+    )
+    height_ft: float | None = Field(default=None, gt=0, le=500)
+    opening_deduction_sqft: float = Field(default=0, ge=0, le=10_000_000)
+
+    @model_validator(mode="after")
+    def validate_trace_inputs(self) -> "BidScopeTraceRegion":
+        if self.polygon and len(self.polygon) < 3:
+            raise ValueError("An explicit polygon requires at least three vertices.")
+        if not self.polygon and not self.positive_points and self.box is None:
+            raise ValueError("Provide positive_points, a box, or an explicit polygon.")
+        if self.measurement_type == "wall_area" and self.height_ft is None:
+            raise ValueError("wall_area requires height_ft.")
+        return self
+
+
+class BidScopeRegionTraceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    measurement_context_id: str = Field(
+        min_length=32,
+        max_length=32,
+        pattern=r"^[0-9a-f]{32}$",
+    )
+    regions: list[BidScopeTraceRegion] = Field(min_length=1, max_length=8)
+    inference_max_side: int = Field(
+        default=1600,
+        ge=512,
+        le=2400,
+        description="Maximum SAM2 image dimension; output polygons are mapped back to full-resolution page coordinates.",
+    )
+
+
+class BidScopeRegionTraceResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    schema_version: Literal["spraytec.bidscope_region_trace.v1"]
+    measurement_context_id: str
+    trace_count: int = Field(ge=1, le=8)
+    traces: list[dict[str, Any]] = Field(min_length=1, max_length=8)
+    review_status: Literal["requires_estimator_verification"]
+    segmentation_status: Literal["completed", "not_requested"]
+    warnings: list[str] = Field(default_factory=list)
+    openai_file_response: list[OpenAIActionFile] = Field(
+        serialization_alias="openaiFileResponse",
+        validation_alias="openaiFileResponse",
+        description="Full-page overlay showing the traced regions for estimator review.",
+        min_length=1,
+        max_length=1,
+    )
+
+
 class JobContextResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

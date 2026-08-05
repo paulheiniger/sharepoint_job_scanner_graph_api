@@ -984,6 +984,7 @@ def test_openapi_exposes_expected_operations() -> None:
             "fetchSharePointDocument",
             "selectBidScopePages",
             "createBidScopeMeasurementContext",
+            "traceBidScopeRegions",
                 "health_health_get",
         "searchJobs",
     }
@@ -1660,6 +1661,76 @@ def test_bidscope_measurement_context_action_is_read_only_in_openapi() -> None:
     operation = specification["paths"]["/v1/bidscope/measurement-context"]["post"]
 
     assert operation["operationId"] == "createBidScopeMeasurementContext"
+    assert operation["x-openai-isConsequential"] is False
+
+
+def test_bidscope_region_trace_route_returns_review_overlay(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_trace(**kwargs):
+        captured.update(kwargs)
+        return {
+            "schema_version": "spraytec.bidscope_region_trace.v1",
+            "measurement_context_id": kwargs["measurement_context_id"],
+            "trace_count": 1,
+            "traces": [
+                {
+                    "region_id": "level-one",
+                    "measurement_type": "boundary_length",
+                    "measurements": {"quantity": 240.0, "unit": "linear_ft"},
+                }
+            ],
+            "review_status": "requires_estimator_verification",
+            "segmentation_status": "completed",
+            "warnings": [],
+            "openaiFileResponse": [
+                {
+                    "name": "bidscope_traced_regions.jpg",
+                    "mime_type": "image/jpeg",
+                    "content": "/9j/",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        "services.estimator_api.server.trace_bidscope_regions",
+        fake_trace,
+    )
+    response = client.post(
+        "/v1/bidscope/trace-regions",
+        json={
+            "measurement_context_id": "a" * 32,
+            "regions": [
+                {
+                    "region_id": "level-one",
+                    "page_id": "plans::page_1",
+                    "measurement_type": "boundary_length",
+                    "positive_points": [{"x": 0.5, "y": 0.5}],
+                    "negative_points": [{"x": 0.05, "y": 0.05}],
+                    "box": {
+                        "x_min": 0.1,
+                        "y_min": 0.1,
+                        "x_max": 0.9,
+                        "y_max": 0.9,
+                    },
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["openaiFileResponse"][0]["name"] == "bidscope_traced_regions.jpg"
+    assert captured["regions"][0]["measurement_type"] == "boundary_length"
+    assert captured["inference_max_side"] == 1600
+
+
+def test_bidscope_region_trace_action_is_read_only_in_openapi() -> None:
+    specification = build_action_openapi(
+        "https://spraytec-business-api.icysand-5925ab36.eastus2.azurecontainerapps.io"
+    )
+    operation = specification["paths"]["/v1/bidscope/trace-regions"]["post"]
+
+    assert operation["operationId"] == "traceBidScopeRegions"
     assert operation["x-openai-isConsequential"] is False
 
 

@@ -155,6 +155,68 @@
         "title": "BidScopeMeasurementContextResponse",
         "type": "object"
       },
+      "BidScopeNormalizedBox": {
+        "additionalProperties": false,
+        "properties": {
+          "x_max": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "X Max",
+            "type": "number"
+          },
+          "x_min": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "X Min",
+            "type": "number"
+          },
+          "y_max": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Y Max",
+            "type": "number"
+          },
+          "y_min": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Y Min",
+            "type": "number"
+          }
+        },
+        "required": [
+          "x_min",
+          "y_min",
+          "x_max",
+          "y_max"
+        ],
+        "title": "BidScopeNormalizedBox",
+        "type": "object"
+      },
+      "BidScopeNormalizedPoint": {
+        "additionalProperties": false,
+        "properties": {
+          "x": {
+            "description": "Horizontal position normalized across the full page image.",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "X",
+            "type": "number"
+          },
+          "y": {
+            "description": "Vertical position normalized across the full page image.",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Y",
+            "type": "number"
+          }
+        },
+        "required": [
+          "x",
+          "y"
+        ],
+        "title": "BidScopeNormalizedPoint",
+        "type": "object"
+      },
       "BidScopePageSelectionRequest": {
         "additionalProperties": false,
         "properties": {
@@ -326,6 +388,111 @@
         "title": "BidScopePageSelectionResponse",
         "type": "object"
       },
+      "BidScopeRegionTraceRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "inference_max_side": {
+            "default": 1600,
+            "description": "Maximum SAM2 image dimension; output polygons are mapped back to full-resolution page coordinates.",
+            "maximum": 2400.0,
+            "minimum": 512.0,
+            "title": "Inference Max Side",
+            "type": "integer"
+          },
+          "measurement_context_id": {
+            "maxLength": 32,
+            "minLength": 32,
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Measurement Context Id",
+            "type": "string"
+          },
+          "regions": {
+            "items": {
+              "$ref": "#/components/schemas/BidScopeTraceRegion"
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "title": "Regions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "measurement_context_id",
+          "regions"
+        ],
+        "title": "BidScopeRegionTraceRequest",
+        "type": "object"
+      },
+      "BidScopeRegionTraceResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "measurement_context_id": {
+            "title": "Measurement Context Id",
+            "type": "string"
+          },
+          "openaiFileResponse": {
+            "description": "Full-page overlay showing the traced regions for estimator review.",
+            "items": {
+              "$ref": "#/components/schemas/OpenAIActionFile"
+            },
+            "maxItems": 1,
+            "minItems": 1,
+            "title": "Openaifileresponse",
+            "type": "array"
+          },
+          "review_status": {
+            "const": "requires_estimator_verification",
+            "title": "Review Status",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "spraytec.bidscope_region_trace.v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "segmentation_status": {
+            "enum": [
+              "completed",
+              "not_requested"
+            ],
+            "title": "Segmentation Status",
+            "type": "string"
+          },
+          "trace_count": {
+            "maximum": 8.0,
+            "minimum": 1.0,
+            "title": "Trace Count",
+            "type": "integer"
+          },
+          "traces": {
+            "items": {
+              "type": "object"
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "title": "Traces",
+            "type": "array"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "schema_version",
+          "measurement_context_id",
+          "trace_count",
+          "traces",
+          "review_status",
+          "segmentation_status",
+          "openaiFileResponse"
+        ],
+        "title": "BidScopeRegionTraceResponse",
+        "type": "object"
+      },
       "BidScopeSourceLink": {
         "additionalProperties": false,
         "properties": {
@@ -343,6 +510,107 @@
           "url"
         ],
         "title": "BidScopeSourceLink",
+        "type": "object"
+      },
+      "BidScopeTraceRegion": {
+        "additionalProperties": false,
+        "properties": {
+          "architectural_cleanup": {
+            "default": true,
+            "description": "Straighten near-orthogonal mask edges while limiting area drift to three percent.",
+            "title": "Architectural Cleanup",
+            "type": "boolean"
+          },
+          "box": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BidScopeNormalizedBox"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "height_ft": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 500.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height Ft"
+          },
+          "label": {
+            "default": "",
+            "maxLength": 160,
+            "title": "Label",
+            "type": "string"
+          },
+          "measurement_type": {
+            "default": "area",
+            "enum": [
+              "area",
+              "boundary_length",
+              "wall_area"
+            ],
+            "title": "Measurement Type",
+            "type": "string"
+          },
+          "negative_points": {
+            "items": {
+              "$ref": "#/components/schemas/BidScopeNormalizedPoint"
+            },
+            "maxItems": 20,
+            "title": "Negative Points",
+            "type": "array"
+          },
+          "opening_deduction_sqft": {
+            "default": 0,
+            "maximum": 10000000.0,
+            "minimum": 0.0,
+            "title": "Opening Deduction Sqft",
+            "type": "number"
+          },
+          "page_id": {
+            "description": "Exact page_id from the confirmed BidScope measurement context.",
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Page Id",
+            "type": "string"
+          },
+          "polygon": {
+            "description": "Optional estimator-corrected closed boundary. When supplied, it replaces SAM2 prompting.",
+            "items": {
+              "$ref": "#/components/schemas/BidScopeNormalizedPoint"
+            },
+            "maxItems": 250,
+            "title": "Polygon",
+            "type": "array"
+          },
+          "positive_points": {
+            "items": {
+              "$ref": "#/components/schemas/BidScopeNormalizedPoint"
+            },
+            "maxItems": 12,
+            "title": "Positive Points",
+            "type": "array"
+          },
+          "region_id": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Region Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "region_id",
+          "page_id"
+        ],
+        "title": "BidScopeTraceRegion",
         "type": "object"
       },
       "CalculationRequirement": {
@@ -6892,7 +7160,7 @@
   "info": {
     "description": "Estimator evidence, controlled workbook generation, and read-only operational intelligence for conversational agents.",
     "title": "Spray-Tec Business Intelligence API",
-    "version": "0.23.0"
+    "version": "0.24.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -6973,6 +7241,46 @@
           }
         },
         "summary": "Select bid-package pages for Assistant visual review",
+        "x-openai-isConsequential": false
+      }
+    },
+    "/v1/bidscope/trace-regions": {
+      "post": {
+        "description": "Uses normalized page prompts with private SAM2, or an explicit corrected polygon, to trace confirmed bid regions. Confirmed drawing scale converts geometry to area, closed-boundary length, or wall area. Every result and overlay requires estimator verification.",
+        "operationId": "traceBidScopeRegions",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BidScopeRegionTraceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BidScopeRegionTraceResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Trace and measure confirmed drawing regions",
         "x-openai-isConsequential": false
       }
     },

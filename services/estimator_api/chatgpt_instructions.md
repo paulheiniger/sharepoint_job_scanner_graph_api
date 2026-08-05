@@ -70,8 +70,17 @@ state uncertainty, coverage, and warnings. Never invent unavailable results.
   `createBidScopeMeasurementContext` with the prior `context_id`, exact returned
   page IDs, and a confirmed scale for each view when known. Inspect the attached
   full-size confirmed-page PDF and report pages whose scale still needs review.
-  The endpoint preserves vector pages and prepares tracing rasters, but it does
-  not segment regions or calculate quantities. Do not claim a takeoff is done.
+  The endpoint preserves vector pages and prepares tracing rasters.
+- For each confirmed, scaled view, call `traceBidScopeRegions` with a stable
+  region ID and an explicit basis: `area`, `boundary_length`, or `wall_area`.
+  Use normalized positive points inside the intended connected region, negative
+  points on adjacent exclusions, and a tight normalized box. For `wall_area`,
+  pass a confirmed height and explicit opening deduction; do not infer either.
+- Inspect `bidscope_traced_regions.jpg`. SAM2 proposes a boundary but does not
+  prove scope. Verify every edge, report that closed-boundary length includes
+  the complete perimeter, and keep results draft-only. To correct a boundary,
+  resubmit its returned normalized vertices as `polygon`. Do not claim a takeoff
+  is complete until the estimator accepts the overlay and measurement basis.
 
 ## Office activity and production budget
 

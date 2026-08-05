@@ -23,6 +23,7 @@ from jobscan.business.bidscope_service import (
     build_bidscope_review_packet,
     create_bidscope_measurement_context,
 )
+from jobscan.business.bidscope_trace_service import trace_bidscope_regions
 
 from jobscan.business.job_service import (
     JobIntelligenceUnavailableError,
@@ -83,6 +84,8 @@ from .schemas import (
     BidScopeMeasurementContextResponse,
     BidScopePageSelectionRequest,
     BidScopePageSelectionResponse,
+    BidScopeRegionTraceRequest,
+    BidScopeRegionTraceResponse,
     EstimateContextRequest,
     EstimateContextResponse,
     EstimateWorkbookRequest,
@@ -134,7 +137,7 @@ app = FastAPI(
         "Estimator evidence, controlled workbook generation, and read-only "
         "operational intelligence for conversational agents."
     ),
-    version="0.23.0",
+    version="0.24.0",
     servers=[{"url": PUBLIC_API_ORIGIN}],
 )
 
@@ -1106,6 +1109,50 @@ def bidscope_measurement_context(
         raise HTTPException(
             status_code=503,
             detail=f"BidScope measurement context is unavailable: {type(exc).__name__}.",
+        ) from exc
+
+
+@app.post(
+    "/v1/bidscope/trace-regions",
+    response_model=BidScopeRegionTraceResponse,
+    response_model_exclude_none=True,
+    operation_id="traceBidScopeRegions",
+    summary="Trace and measure confirmed drawing regions",
+    description=(
+        "Uses normalized page prompts with private SAM2, or an explicit corrected "
+        "polygon, to trace confirmed bid regions. Confirmed drawing scale converts "
+        "geometry to area, closed-boundary length, or wall area. Every result and "
+        "overlay requires estimator verification."
+    ),
+)
+def bidscope_region_trace(
+    request: Request,
+    payload: BidScopeRegionTraceRequest,
+) -> BidScopeRegionTraceResponse:
+    _require_api_request(request)
+    try:
+        result = trace_bidscope_regions(
+            measurement_context_id=payload.measurement_context_id,
+            regions=[region.model_dump() for region in payload.regions],
+            sam2_url=os.getenv("SAM2_SEGMENTATION_URL") or "",
+            sam2_api_key=os.getenv("SAM2_API_KEY") or "",
+            artifact_dir=_bidscope_artifact_dir(),
+            timeout_seconds=float(
+                os.getenv("ROOF_MEASURE_SEGMENTATION_TIMEOUT_SECONDS") or "90"
+            ),
+            inference_max_side=payload.inference_max_side,
+        )
+        return BidScopeRegionTraceResponse.model_validate(result)
+    except BidScopeContextExpiredError as exc:
+        raise HTTPException(status_code=410, detail=str(exc)) from exc
+    except BidScopeInputError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except BidScopeUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"BidScope region tracing is unavailable: {type(exc).__name__}.",
         ) from exc
 
 
