@@ -26,7 +26,7 @@ cache TTL shortened to reduce development cost and data staleness.
 Choose an immutable version tag and run from the repository root:
 
 ```bash
-IMAGE_TAG=0.15.3
+IMAGE_TAG=0.18.0
 
 docker build \
   --platform linux/amd64 \
@@ -69,6 +69,14 @@ The Container App currently exposes `mapbox-access-token` as
 `MAPBOX_ACCESS_TOKEN`, which the roof context service accepts. The temporary
 roof context currently uses the container's artifact directory, so keep the app
 at one active replica unless that directory is moved to shared storage.
+
+The SharePoint document fetch action also needs the scanner's existing Graph
+application credentials exposed to the container as `MS_TENANT_ID`,
+`MS_CLIENT_ID`, and `MS_CLIENT_SECRET`. Store all three in Key Vault and use
+Container App secret references; do not copy their values into the image,
+deployment command, action schema, logs, or documentation. The application
+must already have read access to the Data site. No additional delegated-user
+connection is used by this route.
 
 After rotating `estimator-api-key`, update the Custom GPT action's API Key
 authentication value to the same token and publish the GPT. Keep the auth type

@@ -51,6 +51,11 @@ RUN_SQL_REFRESHES="${RUN_SQL_REFRESHES:-1}"
 RUN_SHAREPOINT_JOB_INDEX_SYNC="${RUN_SHAREPOINT_JOB_INDEX_SYNC:-1}"
 RUN_DOCUMENT_STATUS="${RUN_DOCUMENT_STATUS:-1}"
 BACKFILL_DOCUMENT_METADATA="${BACKFILL_DOCUMENT_METADATA:-0}"
+RUN_WARRANTY_SOURCE_REFRESH="${RUN_WARRANTY_SOURCE_REFRESH:-1}"
+WARRANTY_SOURCE_FOLDER="${WARRANTY_SOURCE_FOLDER:-2024 MASTER FILES/2024 ROOFING/COMPLETED/2024 Warranties}"
+WARRANTY_SOURCE_CACHE="${WARRANTY_SOURCE_CACHE:-.cache/warranty_sources}"
+WARRANTY_MASTER_FOLDER="${WARRANTY_MASTER_FOLDER:-WARRANTIES (Master)}"
+WARRANTY_MASTER_CACHE="${WARRANTY_MASTER_CACHE:-.cache/warranty_master}"
 
 mkdir -p "$LOG_DIR" "$(dirname "$LOCK_DIR")"
 
@@ -156,6 +161,48 @@ if [[ "$RUN_ESTIMATE_TEMPLATE_ROW_REFRESH" == "1" ]]; then
       --database-url "$DATABASE_URL_EFFECTIVE"
 fi
 
+if [[ "$RUN_WARRANTY_SOURCE_REFRESH" == "1" ]]; then
+  WARRANTY_SCAN_ROOT="${WARRANTY_SOURCE_CACHE}/Data/${WARRANTY_SOURCE_FOLDER//\//_}"
+  run_step "Refresh bounded SharePoint warranty source folder" \
+    "$PYTHON_BIN" -m jobscan.sharepoint_sync \
+      --sharepoint-url "$SITE_URL" \
+      --library "$LIBRARY" \
+      --folder "$WARRANTY_SOURCE_FOLDER" \
+      --cache "$WARRANTY_SOURCE_CACHE" \
+      --max-depth 1 \
+      --skip-images \
+      --out "${OUTPUT_DIR}/warranty_source_scan/job_index.csv" \
+      --json "${OUTPUT_DIR}/warranty_source_scan/job_index.json" \
+      --xlsx "${OUTPUT_DIR}/warranty_source_scan/job_index.xlsx"
+  run_step "Stage current SharePoint warranty records" \
+    "$PYTHON_BIN" -m jobscan.warranty_sources \
+      --warranty-folder "$WARRANTY_SCAN_ROOT" \
+      --database-url "$DATABASE_URL_EFFECTIVE" \
+      --output "${OUTPUT_DIR}/warranty_source_scan/source_records.json"
+  run_step "Refresh bounded manufacturer warranty list" \
+    "$PYTHON_BIN" -m jobscan.sharepoint_sync \
+      --sharepoint-url "$SITE_URL" \
+      --library "$LIBRARY" \
+      --folder "$WARRANTY_MASTER_FOLDER" \
+      --cache "$WARRANTY_MASTER_CACHE" \
+      --max-depth 0 \
+      --skip-images \
+      --out "${OUTPUT_DIR}/warranty_master_scan/job_index.csv" \
+      --json "${OUTPUT_DIR}/warranty_master_scan/job_index.json" \
+      --xlsx "${OUTPUT_DIR}/warranty_master_scan/job_index.xlsx"
+  run_step "Stage manufacturer warranty list" \
+    "$PYTHON_BIN" -m jobscan.warranty_sources \
+      --gaco-csv "${WARRANTY_MASTER_CACHE}/Data/WARRANTIES (Master)/Spray-Tec Warranty List GACO(Sheet1).csv" \
+      --gaco-source-url "https://aro365531128.sharepoint.com/sites/Data/Documents/WARRANTIES%20(Master)/Spray-Tec%20Warranty%20List%20GACO(Sheet1).csv" \
+      --database-url "$DATABASE_URL_EFFECTIVE" \
+      --output "${OUTPUT_DIR}/warranty_master_scan/source_records.json"
+  run_step "Refresh warranty job-match candidates" \
+    "$PYTHON_BIN" -m jobscan.warranty_sources \
+      --rematch-existing \
+      --only-unresolved \
+      --database-url "$DATABASE_URL_EFFECTIVE"
+fi
+
 if [[ "$RUN_SQL_REFRESHES" == "1" ]]; then
   run_step "Ensure job tracking material fields" run_sql_file "db/add_job_tracking_foam_fields.sql"
   run_step "Ensure daily production tables" run_sql_file "db/add_daily_production_entries.sql"
@@ -163,6 +210,7 @@ if [[ "$RUN_SQL_REFRESHES" == "1" ]]; then
   run_step "Refresh dashboard views" run_sql_file "db/dashboard_views.sql"
   run_step "Refresh job document signals" run_sql_file "db/refresh_job_document_signals.sql"
   run_step "Refresh job board static snapshot" run_sql_file "db/refresh_job_board_static_snapshot.sql"
+  run_step "Refresh warranty evidence and summary" run_sql_file "db/refresh_job_warranty_summary.sql"
   run_step "Refresh job tracking dashboard snapshots" run_sql_file "db/refresh_job_tracking_dashboard_snapshots.sql"
   run_step "Refresh operations dashboard snapshots" "$PYTHON_BIN" scripts/refresh_dashboard_snapshots.py --operations
   run_step "Refresh Power BI marts" run_sql_file "db/powerbi_marts.sql"

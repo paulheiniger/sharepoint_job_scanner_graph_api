@@ -42,6 +42,13 @@ def production_budget_engine():
                 """
             )
         )
+        connection.execute(text("ALTER TABLE job_board_static_snapshot ADD COLUMN source_year INTEGER"))
+        connection.execute(
+            text(
+                "UPDATE job_board_static_snapshot SET source_year = "
+                "CASE WHEN job_id = 'JOB-OK' THEN 2025 ELSE 2026 END"
+            )
+        )
         connection.execute(
             text(
                 """
@@ -189,6 +196,22 @@ def test_production_budget_health_filters_and_excludes_ambiguous_tracking_ids() 
     ]
 
 
+def test_production_budget_health_filters_by_source_job_year() -> None:
+    result = get_production_budget_health(
+        engine=production_budget_engine(),
+        job_year=2026,
+        include_no_actuals=True,
+        limit=10,
+    )
+
+    assert result["filters_applied"]["job_year"] == 2026
+    assert {row["job_id"] for row in result["records"]} == {
+        "JOB-OVER",
+        "JOB-NO-ACTUAL",
+    }
+    assert all(row["source_year"] == 2026 for row in result["records"])
+
+
 def test_production_budget_health_omits_no_actual_jobs_by_default() -> None:
     result = get_production_budget_health(
         engine=production_budget_engine(),
@@ -244,7 +267,7 @@ def test_foam_strokes_are_converted_to_pounds_for_like_unit_comparison() -> None
                 """
                 INSERT INTO job_board_static_snapshot VALUES
                 ('JOB-FOAM', 'Foam Co', 'Foam Roof', 'Roofing', 'Contracted',
-                 'Active', 75000, NULL, 'https://example.invalid/JOB-FOAM', '')
+                 'Active', 75000, NULL, 'https://example.invalid/JOB-FOAM', '', 2026)
                 """
             )
         )
@@ -343,7 +366,7 @@ def test_job_id_variants_and_change_order_tracking_are_not_double_counted() -> N
                 """
                 INSERT INTO job_board_static_snapshot VALUES
                 ('JOB-VARIANT', 'Echo', 'Echo Roof', 'Roofing', 'Contracted',
-                 'Active', 50000, NULL, 'https://example.invalid/JOB-VARIANT', '')
+                 'Active', 50000, NULL, 'https://example.invalid/JOB-VARIANT', '', 2026)
                 """
             )
         )

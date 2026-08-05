@@ -75,6 +75,28 @@ def operations_engine():
                 """
             )
         )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE job_board_static_snapshot (
+                    job_id TEXT PRIMARY KEY,
+                    source_year INTEGER,
+                    updated_at TIMESTAMP
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO job_board_static_snapshot VALUES
+                ('JOB-READY', 2026, '2026-07-30'),
+                ('JOB-SPEC', 2025, '2026-07-30'),
+                ('JOB-RISK', 2026, '2026-07-30'),
+                ('JOB-DONE', 2025, '2026-07-30')
+                """
+            )
+        )
     return engine
 
 
@@ -112,6 +134,27 @@ def test_operations_backlog_supports_unscheduled_and_status_filters() -> None:
         "JOB-SPEC",
     }
     assert [row["job_id"] for row in ready["records"]] == ["JOB-READY"]
+
+
+def test_operations_backlog_and_schedule_filter_by_source_job_year() -> None:
+    backlog = get_operations_backlog(
+        engine=operations_engine(),
+        job_year=2026,
+        limit=10,
+    )
+    schedule = get_operations_schedule(
+        engine=operations_engine(),
+        job_year=2026,
+        start_date=date(2026, 8, 1),
+        end_date=date(2026, 8, 14),
+        limit=10,
+    )
+
+    assert backlog["filters_applied"]["job_year"] == 2026
+    assert {row["job_id"] for row in backlog["records"]} == {"JOB-READY", "JOB-RISK"}
+    assert schedule["filters_applied"]["job_year"] == 2026
+    assert [row["job_id"] for row in schedule["records"]] == ["JOB-RISK"]
+    assert all(row["source_year"] == 2026 for row in backlog["records"])
 
 
 def test_operations_schedule_returns_window_and_production_risk() -> None:

@@ -29,6 +29,7 @@ MAX_SALES_SOURCE_ROWS = 500
 
 SALES_FIELDS = (
     "job_id",
+    "source_year",
     "division",
     "pipeline_status",
     "status",
@@ -72,6 +73,7 @@ def get_sales_pipeline(
     engine: Engine | None = None,
     division: str = "",
     owner: str = "",
+    job_year: int | None = None,
     pipeline_statuses: list[str] | None = None,
     include_completed: bool = False,
     limit: int = 10,
@@ -86,6 +88,13 @@ def get_sales_pipeline(
         if division.strip() and "division" in columns:
             conditions.append("LOWER(COALESCE(j.division, '')) = :division")
             params["division"] = division.strip().lower()
+        if job_year is not None:
+            if "source_year" not in columns:
+                raise JobIntelligenceUnavailableError(
+                    "The job source does not expose source_year for job-year filtering."
+                )
+            conditions.append("CAST(j.source_year AS TEXT) = :job_year")
+            params["job_year"] = str(job_year)
         if statuses and "pipeline_status" in columns:
             conditions.append("j.pipeline_status IN :pipeline_statuses")
             params["pipeline_statuses"] = statuses
@@ -142,6 +151,7 @@ def get_sales_pipeline(
                 for key, value in {
                     "division": division.strip() or None,
                     "owner": owner.strip() or None,
+                    "job_year": job_year,
                     "pipeline_statuses": statuses or None,
                     "include_completed": include_completed,
                     "limit": applied_limit,
@@ -230,6 +240,7 @@ def get_sales_followups(
     engine: Engine | None = None,
     division: str = "",
     owner: str = "",
+    job_year: int | None = None,
     followup_status: str = "",
     overdue_only: bool = False,
     unassigned_only: bool = False,
@@ -268,6 +279,12 @@ def get_sales_followups(
             _query_rows(resolved_engine, text(sql), params),
         )
         rows = _sales_snapshot_enrichment(resolved_engine, rows)
+        if job_year is not None:
+            rows = [
+                row
+                for row in rows
+                if str(row.get("source_year") or "").strip() == str(job_year)
+            ]
         today = date.today().isoformat()
         for row in rows:
             row["follow_up_state"] = _follow_up_state(row.get("follow_up_date"), today)
@@ -305,6 +322,7 @@ def get_sales_followups(
                 for key, value in {
                     "division": division.strip() or None,
                     "owner": owner.strip() or None,
+                    "job_year": job_year,
                     "followup_status": followup_status.strip() or None,
                     "overdue_only": overdue_only,
                     "unassigned_only": unassigned_only,
@@ -391,6 +409,7 @@ def _sales_record(
 ) -> dict[str, Any]:
     fields = [
         "job_id",
+        "source_year",
         "division",
         "pipeline_status",
         "status",
@@ -457,6 +476,7 @@ def _sales_snapshot_enrichment(
             "estimate_file_modified_by",
             "proposal_url",
             "estimate_url",
+            "source_year",
         ),
     )
     if not enrichment_fields:

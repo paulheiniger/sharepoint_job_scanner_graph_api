@@ -13,6 +13,7 @@ from jobscan.business.job_service import (
     _available_fields,
     _columns,
     _dedupe_links,
+    _job_relation,
     _job_source_links,
     _latest_value,
     _query_rows,
@@ -29,6 +30,7 @@ OPERATIONS_RELATION = "operations_dashboard_ops_snapshot"
 
 OPERATIONS_FIELDS = (
     "job_id",
+    "source_year",
     "division",
     "pipeline_status",
     "status",
@@ -92,6 +94,7 @@ def get_operations_backlog(
     database_url: str | None = None,
     engine: Engine | None = None,
     division: str = "",
+    job_year: int | None = None,
     readiness_statuses: list[str] | None = None,
     unscheduled_only: bool = False,
     needs_attention: bool | None = None,
@@ -106,6 +109,7 @@ def get_operations_backlog(
             readiness_statuses=readiness_statuses or [],
             include_completed=include_completed,
         )
+        rows = _filter_operations_job_year(resolved_engine, rows, job_year)
         if unscheduled_only:
             rows = [row for row in rows if not _is_scheduled(row)]
         if needs_attention is not None:
@@ -131,6 +135,7 @@ def get_operations_backlog(
                 key: value
                 for key, value in {
                     "division": division.strip() or None,
+                    "job_year": job_year,
                     "readiness_statuses": _unique_nonblank(
                         readiness_statuses or []
                     )
@@ -200,6 +205,7 @@ def get_operations_schedule(
     engine: Engine | None = None,
     division: str = "",
     crew_leader: str = "",
+    job_year: int | None = None,
     start_date: date | None = None,
     end_date: date | None = None,
     risk_only: bool = False,
@@ -215,6 +221,7 @@ def get_operations_schedule(
             division=division,
             include_completed=include_completed,
         )
+        rows = _filter_operations_job_year(resolved_engine, rows, job_year)
         if crew_leader.strip():
             crew_key = crew_leader.strip().lower()
             rows = [
@@ -282,6 +289,7 @@ def get_operations_schedule(
                 for key, value in {
                     "division": division.strip() or None,
                     "crew_leader": crew_leader.strip() or None,
+                    "job_year": job_year,
                     "start_date": requested_start.isoformat()
                     if requested_start
                     else None,
@@ -417,6 +425,38 @@ def _load_operations_rows(
             bindparam("readiness_statuses", expanding=True)
         )
     return _query_rows(engine, statement, params)
+
+
+def _filter_operations_job_year(
+    engine: Engine,
+    rows: list[dict[str, Any]],
+    job_year: int | None,
+) -> list[dict[str, Any]]:
+    if job_year is None or not rows:
+        return rows
+    if not all(str(row.get("source_year") or "").strip() for row in rows):
+        relation, columns = _job_relation(engine)
+        if "source_year" not in columns:
+            raise JobIntelligenceUnavailableError(
+                "The job source does not expose source_year for job-year filtering."
+            )
+        job_ids = _unique_nonblank(row.get("job_id") for row in rows)
+        statement = text(
+            f"SELECT job_id, source_year FROM {relation} WHERE job_id IN :job_ids"
+        ).bindparams(bindparam("job_ids", expanding=True))
+        years_by_job = {
+            str(item["job_id"]): item.get("source_year")
+            for item in _query_rows(engine, statement, {"job_ids": job_ids})
+        }
+        for row in rows:
+            if not str(row.get("source_year") or "").strip():
+                row["source_year"] = years_by_job.get(str(row.get("job_id") or ""))
+    requested = str(job_year)
+    return [
+        row
+        for row in rows
+        if str(row.get("source_year") or "").strip() == requested
+    ]
 
 
 def _operations_record(row: Mapping[str, Any]) -> dict[str, Any]:

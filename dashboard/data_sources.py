@@ -25,6 +25,7 @@ DASHBOARD_CORE_PAGES = [
     "Office Timesheet",
     "Timesheet Job Touches",
     "Job Tracking",
+    "Warranty Registry",
     "Schedule Calendar",
     "Daily Crew Dispatch",
     "Daily Production",
@@ -114,6 +115,20 @@ PAGE_SOURCE_REFERENCES: dict[str, tuple[DashboardSourceReference, ...]] = {
             "PostgreSQL tables/view",
             "User workflow edits, auditable Kanban stage moves, scheduling, priorities, and action warnings",
             "Board status is normalized in Python from workflow, pipeline, folder, and document evidence.",
+        ),
+    ),
+    "Warranty Registry": (
+        _ref(
+            "job_warranty_summary; job_warranty_evidence",
+            "PostgreSQL refreshed tables",
+            "Issued/proposed warranty type, coverage, duration, dates, conflicts, and source links",
+            "Evidence is refreshed from warranty documents, proposals, and estimate template rows. Issued evidence outranks proposed terms.",
+        ),
+        _ref(
+            "job_board_static_snapshot; jobs; job_tracking_summary; crew_schedule",
+            "PostgreSQL tables/snapshot",
+            "Warranty start-date inference",
+            "Start dates follow explicit warranty date, completion, issued-file modification, invoice, last work, schedule end, then proposal date plus duration.",
         ),
     ),
     "Office Timesheet": (
@@ -511,6 +526,11 @@ PAGE_AUDIT_NOTES: dict[str, tuple[str, ...]] = {
     "Job Tracking": (
         "Actual production comes from job_tracking_daily_entries and job_tracking_summary. Exact job-and-filename matches to documents/sharepoint_drive_items provide clickable tracking-workbook links; the full stored path remains visible when no URL resolves.",
         "Estimate-vs-actual and material variance views combine tracking actuals with job_tracking estimate snapshots or estimate_template_rows fallback values. Those variance numbers therefore do not originate from one file.",
+    ),
+    "Warranty Registry": (
+        "A proposed warranty is not evidence that a warranty was issued; status remains visible on every row.",
+        "Inferred start dates retain their source and confidence. Low-confidence dates should be reviewed before customer communication.",
+        "Conflicts mean the available evidence contains more than one duration for the same job and warranty category.",
     ),
     "Schedule Calendar": (
         "Planned events come from crew_schedule; optional actual-work events come from job_tracking_daily_entries. Selected job panels link to the SharePoint folder and available source documents.",

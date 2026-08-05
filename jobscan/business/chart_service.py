@@ -18,6 +18,12 @@ class ChartSpec:
     group_field: str | None = None
     start_field: str | None = None
     end_field: str | None = None
+    orientation: str = "vertical"
+    sort_field: str | None = None
+    sort_direction: str = "descending"
+    category_order: tuple[str, ...] = ()
+    category_colors: tuple[tuple[str, str], ...] = ()
+    reference_lines: tuple[tuple[str, float, str], ...] = ()
 
 
 CHART_SPECS: dict[str, ChartSpec] = {
@@ -26,14 +32,38 @@ CHART_SPECS: dict[str, ChartSpec] = {
         "stage_rollup",
         "bar",
         "pipeline_status",
-        (("estimated_value", "Pipeline value", "currency"), ("job_count", "Jobs", "count")),
+        (
+            ("estimated_value", "Pipeline value", "currency"),
+            ("job_count", "Jobs", "count"),
+        ),
+        sort_field="pipeline_status",
+        sort_direction="ascending",
+        category_order=(
+            "Proposed",
+            "Contracted",
+            "Contracted Repairs",
+            "Completed",
+            "Not captured",
+        ),
+        category_colors=(
+            ("Proposed", "#2563EB"),
+            ("Contracted", "#059669"),
+            ("Contracted Repairs", "#0D9488"),
+            ("Completed", "#64748B"),
+            ("Not captured", "#94A3B8"),
+        ),
     ),
     "sales_pipeline_by_owner": ChartSpec(
         "Sales pipeline by owner",
         "owner_rollup",
         "bar",
         "owner",
-        (("estimated_value", "Pipeline value", "currency"), ("job_count", "Jobs", "count")),
+        (
+            ("estimated_value", "Pipeline value", "currency"),
+            ("job_count", "Jobs", "count"),
+        ),
+        sort_field="estimated_value",
+        orientation="horizontal",
     ),
     "operations_backlog_by_division": ChartSpec(
         "Contracted backlog by division",
@@ -41,6 +71,7 @@ CHART_SPECS: dict[str, ChartSpec] = {
         "bar",
         "division",
         (("value", "Backlog value", "currency"), ("jobs", "Jobs", "count")),
+        sort_field="value",
     ),
     "operations_backlog_by_readiness": ChartSpec(
         "Contracted backlog by readiness",
@@ -52,6 +83,30 @@ CHART_SPECS: dict[str, ChartSpec] = {
             ("jobs", "Jobs", "count"),
             ("average_days_waiting", "Average days waiting", "days"),
         ),
+        sort_field="readiness_status",
+        sort_direction="ascending",
+        category_order=(
+            "Missing Job Spec",
+            "Not Contracted Folder",
+            "Customer Hold",
+            "Material Hold",
+            "Permit Hold",
+            "Weather Window",
+            "Ready To Schedule",
+            "Scheduled",
+            "Not captured",
+        ),
+        category_colors=(
+            ("Missing Job Spec", "#DC2626"),
+            ("Not Contracted Folder", "#D97706"),
+            ("Customer Hold", "#EA580C"),
+            ("Material Hold", "#C2410C"),
+            ("Permit Hold", "#A16207"),
+            ("Weather Window", "#0891B2"),
+            ("Ready To Schedule", "#2563EB"),
+            ("Scheduled", "#059669"),
+            ("Not captured", "#94A3B8"),
+        ),
     ),
     "operations_schedule_by_crew": ChartSpec(
         "Scheduled workload by crew leader",
@@ -59,6 +114,8 @@ CHART_SPECS: dict[str, ChartSpec] = {
         "bar",
         "crew_leader",
         (("value", "Scheduled value", "currency"), ("jobs", "Jobs", "count")),
+        sort_field="value",
+        orientation="horizontal",
     ),
     "operations_schedule_by_health": ChartSpec(
         "Scheduled work by schedule health",
@@ -66,6 +123,24 @@ CHART_SPECS: dict[str, ChartSpec] = {
         "bar",
         "schedule_health",
         (("value", "Scheduled value", "currency"), ("jobs", "Jobs", "count")),
+        sort_field="schedule_health",
+        sort_direction="ascending",
+        category_order=(
+            "Behind / Blocked",
+            "Starting Soon",
+            "On Track",
+            "Awaiting Schedule",
+            "Completed",
+            "Not captured",
+        ),
+        category_colors=(
+            ("Behind / Blocked", "#DC2626"),
+            ("Starting Soon", "#2563EB"),
+            ("On Track", "#059669"),
+            ("Awaiting Schedule", "#D97706"),
+            ("Completed", "#64748B"),
+            ("Not captured", "#94A3B8"),
+        ),
     ),
     "operations_schedule_gantt": ChartSpec(
         "Scheduled projects by crew leader",
@@ -76,6 +151,9 @@ CHART_SPECS: dict[str, ChartSpec] = {
         group_field="crew_leader",
         start_field="display_start_date",
         end_field="display_end_date",
+        orientation="timeline",
+        sort_field="crew_leader",
+        sort_direction="ascending",
     ),
     "office_activity_by_day": ChartSpec(
         "Office activity by day",
@@ -84,6 +162,8 @@ CHART_SPECS: dict[str, ChartSpec] = {
         "activity_date",
         (("total_hours", "Captured hours", "hours"), ("touch_count", "Touches", "count")),
         "mixed",
+        sort_field="activity_date",
+        sort_direction="ascending",
     ),
     "office_activity_by_employee": ChartSpec(
         "Office activity by employee",
@@ -92,6 +172,8 @@ CHART_SPECS: dict[str, ChartSpec] = {
         "employee",
         (("total_hours", "Captured hours", "hours"), ("touch_count", "Touches", "count")),
         "mixed",
+        sort_field="total_hours",
+        orientation="horizontal",
     ),
     "office_activity_by_code": ChartSpec(
         "Office activity by work code",
@@ -100,6 +182,8 @@ CHART_SPECS: dict[str, ChartSpec] = {
         "code",
         (("total_hours", "Captured hours", "hours"), ("touch_count", "Touches", "count")),
         "mixed",
+        sort_field="total_hours",
+        orientation="horizontal",
     ),
     "office_job_progress": ChartSpec(
         "Office activity evidence by project",
@@ -112,6 +196,8 @@ CHART_SPECS: dict[str, ChartSpec] = {
             ("overdue_next_actions", "Overdue next actions", "count"),
         ),
         "mixed",
+        sort_field="captured_hours",
+        orientation="horizontal",
     ),
     "production_budget_by_job": ChartSpec(
         "Estimate-rate production budget usage by job",
@@ -124,6 +210,9 @@ CHART_SPECS: dict[str, ChartSpec] = {
             ("budget_used_pct", "Budget used", "ratio"),
         ),
         "proxy",
+        sort_field="budget_used_pct",
+        orientation="horizontal",
+        reference_lines=(("budget_used_pct", 1.0, "Estimate-rate plan"),),
     ),
     "production_budget_by_bucket": ChartSpec(
         "Estimate-rate production usage by budget bucket",
@@ -136,6 +225,17 @@ CHART_SPECS: dict[str, ChartSpec] = {
             ("jobs_usage_over_plan", "Jobs over plan", "count"),
         ),
         "proxy",
+        sort_field="bucket",
+        sort_direction="ascending",
+        category_order=(
+            "Labor",
+            "Foam / SPF",
+            "Coating",
+            "Primer / Sealants",
+            "Granules",
+            "Board / Fasteners / Plates",
+            "Equipment / Travel / Lodging",
+        ),
     ),
 }
 
@@ -151,6 +251,7 @@ def build_chart_dataset(dataset: str, result: dict[str, Any]) -> dict[str, Any]:
         for row in raw_rows
         if isinstance(row, dict)
     ]
+    rows = _sort_chart_rows(rows, spec)
     warnings = [str(value) for value in result.get("warnings") or []]
     if not rows:
         warnings.append("No rows matched the requested chart dataset and filters.")
@@ -163,16 +264,15 @@ def build_chart_dataset(dataset: str, result: dict[str, Any]) -> dict[str, Any]:
         "group_field": spec.group_field,
         "start_field": spec.start_field,
         "end_field": spec.end_field,
-        "series": [
-            {"field": name, "label": label, "unit": unit}
-            for name, label, unit in spec.series
-        ],
+        "series": _series_contract(spec),
+        "display": _display_contract(spec, rows),
         "as_of": result.get("as_of"),
         "truth_class": result.get("truth_class") or spec.default_truth_class,
         "filters_applied": result.get("filters_applied") or {},
         "rows": rows,
         "source_tables": result.get("source_tables") or [],
         "data_freshness": result.get("data_freshness") or {},
+        "staging": _staging_contract(result),
         "coverage": result.get("coverage") or {},
         "warnings": warnings,
     }
@@ -319,16 +419,15 @@ def _build_schedule_gantt_dataset(
         "group_field": spec.group_field,
         "start_field": spec.start_field,
         "end_field": spec.end_field,
-        "series": [
-            {"field": name, "label": label, "unit": unit}
-            for name, label, unit in spec.series
-        ],
+        "series": _series_contract(spec),
+        "display": _display_contract(spec, rows),
         "as_of": result.get("as_of"),
         "truth_class": result.get("truth_class") or spec.default_truth_class,
         "filters_applied": filters,
         "rows": rows,
         "source_tables": result.get("source_tables") or [],
         "data_freshness": result.get("data_freshness") or {},
+        "staging": _staging_contract(result),
         "coverage": coverage,
         "warnings": warnings,
     }
@@ -364,6 +463,141 @@ def chart_dataset_csv(dataset: dict[str, Any]) -> str:
             }
         )
     return output.getvalue()
+
+
+_SERIES_COLORS = (
+    "#2563EB",
+    "#D97706",
+    "#059669",
+    "#7C3AED",
+    "#0891B2",
+)
+
+_NUMBER_FORMATS = {
+    "currency": "currency_0",
+    "count": "integer",
+    "days": "decimal_1",
+    "hours": "decimal_1",
+    "ratio": "percent_1",
+}
+
+
+def _series_contract(spec: ChartSpec) -> list[dict[str, Any]]:
+    distinct_units = list(dict.fromkeys(unit for _field, _label, unit in spec.series))
+    multi_scale_strategy = _multi_scale_strategy(spec)
+    primary_unit = distinct_units[0] if distinct_units else None
+    return [
+        {
+            "field": field,
+            "label": label,
+            "unit": unit,
+            "number_format": _NUMBER_FORMATS[unit],
+            "color": _SERIES_COLORS[index % len(_SERIES_COLORS)],
+            "axis": (
+                "secondary"
+                if multi_scale_strategy == "dual_axis" and unit != primary_unit
+                else "primary"
+            ),
+            "panel": unit if multi_scale_strategy == "small_multiples" else "main",
+        }
+        for index, (field, label, unit) in enumerate(spec.series)
+    ]
+
+
+def _display_contract(spec: ChartSpec, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "contract_version": "spraytec.chart_display.v1",
+        "orientation": spec.orientation,
+        "sort": {
+            "field": spec.sort_field or spec.category_field,
+            "direction": spec.sort_direction,
+            "then_by": (
+                ["display_start_date", "task_label"]
+                if spec.chart_type == "gantt"
+                else [spec.category_field]
+                if (spec.sort_field or spec.category_field) != spec.category_field
+                else []
+            ),
+        },
+        "category_order": list(spec.category_order),
+        "category_colors": dict(spec.category_colors),
+        "multi_scale_strategy": _multi_scale_strategy(spec),
+        "show_legend": len(spec.series) > 1,
+        "show_data_labels": len(rows) <= 12,
+        "zero_baseline": spec.chart_type != "gantt",
+        "reference_lines": [
+            {"field": field, "value": value, "label": label}
+            for field, value, label in spec.reference_lines
+        ],
+    }
+
+
+def _multi_scale_strategy(spec: ChartSpec) -> str:
+    unit_count = len({unit for _field, _label, unit in spec.series})
+    if unit_count <= 1:
+        return "shared_axis"
+    if unit_count == 2:
+        return "dual_axis"
+    return "small_multiples"
+
+
+def _sort_chart_rows(
+    rows: list[dict[str, Any]],
+    spec: ChartSpec,
+) -> list[dict[str, Any]]:
+    if not rows:
+        return rows
+    sort_field = spec.sort_field or spec.category_field
+    if spec.category_order and sort_field == spec.category_field:
+        order = {
+            value.casefold(): index
+            for index, value in enumerate(spec.category_order)
+        }
+        return sorted(
+            rows,
+            key=lambda row: (
+                order.get(str(row.get(sort_field) or "").casefold(), len(order)),
+                str(row.get(sort_field) or "").casefold(),
+            ),
+        )
+    reverse = spec.sort_direction == "descending"
+    return sorted(
+        rows,
+        key=lambda row: _sortable_value(row.get(sort_field), reverse=reverse),
+        reverse=reverse,
+    )
+
+
+def _sortable_value(value: Any, *, reverse: bool) -> tuple[int, float | str]:
+    if value is None or value == "":
+        return (0 if reverse else 1, float("-inf") if reverse else "")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return (1 if reverse else 0, float(value))
+    return (1 if reverse else 0, str(value).casefold())
+
+
+def _staging_contract(result: dict[str, Any]) -> dict[str, Any]:
+    source_tables = [str(value) for value in result.get("source_tables") or []]
+    snapshot_tables = [
+        value for value in source_tables if "snapshot" in value.casefold()
+    ]
+    if snapshot_tables and len(snapshot_tables) == len(source_tables):
+        source_storage = "current_snapshot"
+    elif snapshot_tables:
+        source_storage = "hybrid_current_snapshot"
+    else:
+        source_storage = "operational_query"
+    return {
+        "aggregation_mode": "endpoint_on_request",
+        "source_storage": source_storage,
+        "snapshot_tables": snapshot_tables,
+        "freshness": result.get("data_freshness") or {},
+        "historical_series_available": False,
+        "historical_limitation": (
+            "Current-state snapshots do not preserve a time series. Use only the "
+            "returned period field for trends."
+        ),
+    }
 
 
 def _csv_safe_scalar(value: Any) -> str | int | float | bool | None:

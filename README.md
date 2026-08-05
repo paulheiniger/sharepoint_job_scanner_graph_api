@@ -599,6 +599,16 @@ Refresh the optional static Job Board snapshot after document extraction or esti
 psql "$DATABASE_URL" -f db/refresh_job_board_static_snapshot.sql
 ```
 
+Refresh the warranty evidence and summary registry after the Job Board snapshot.
+This preserves issued warranty documents separately from proposed estimate or
+proposal terms and records the provenance/confidence of inferred start dates:
+
+```bash
+psql "${NEON_PSQL_URL:-$DATABASE_URL}" \
+  -v ON_ERROR_STOP=1 \
+  -f db/refresh_job_warranty_summary.sql
+```
+
 Limitations: image-only PDFs are marked `requires_ocr`; this patch does not perform OCR, embeddings, vector search, or LLM document answers. If the local SharePoint cache does not contain a file and the document row lacks download identifiers, extraction records a failure for that document.
 
 For faster conversational job lookup, apply the optional search indexes after the base schema:

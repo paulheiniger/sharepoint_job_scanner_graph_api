@@ -47,6 +47,13 @@ def job_engine():
                 """
             )
         )
+        connection.execute(text("ALTER TABLE job_board_static_snapshot ADD COLUMN source_year INTEGER"))
+        connection.execute(
+            text(
+                "UPDATE job_board_static_snapshot SET source_year = "
+                "CASE WHEN job_id = 'JOB-1' THEN 2026 ELSE 2025 END"
+            )
+        )
         connection.execute(
             text(
                 """
@@ -220,6 +227,14 @@ def test_search_jobs_returns_bounded_action_friendly_records() -> None:
     assert result["records"][0]["attention_items"]
     assert result["source_links"][0]["source_type"] == "job_folder"
     assert result["coverage"]["results_truncated"] is False
+
+
+def test_search_jobs_filters_by_source_job_year() -> None:
+    result = search_jobs(engine=job_engine(), job_year=2026, limit=10)
+
+    assert result["filters_applied"]["job_year"] == 2026
+    assert [row["job_id"] for row in result["records"]] == ["JOB-1"]
+    assert result["records"][0]["source_year"] == 2026
 
 
 def test_job_context_combines_authoritative_sources_and_labels_fallback() -> None:

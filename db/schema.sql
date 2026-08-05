@@ -563,6 +563,117 @@ CREATE INDEX IF NOT EXISTS idx_document_content_page_number ON document_content(
 CREATE INDEX IF NOT EXISTS idx_document_content_sheet_name ON document_content(sheet_name);
 CREATE INDEX IF NOT EXISTS idx_document_content_content_type ON document_content(content_type);
 CREATE INDEX IF NOT EXISTS idx_job_document_signals_refreshed_at ON job_document_signals(refreshed_at);
+
+CREATE TABLE IF NOT EXISTS job_warranty_evidence (
+    warranty_evidence_id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    source_year INTEGER,
+    division TEXT,
+    warranty_status TEXT NOT NULL,
+    warranty_category TEXT NOT NULL,
+    warranty_type TEXT,
+    provider TEXT,
+    duration_years NUMERIC,
+    coverage_summary TEXT,
+    coverage_excerpt TEXT,
+    explicit_start_date DATE,
+    source_kind TEXT NOT NULL,
+    source_document_id TEXT,
+    source_file TEXT,
+    source_url TEXT,
+    source_locator TEXT,
+    source_modified_at TIMESTAMPTZ,
+    extraction_method TEXT NOT NULL,
+    extraction_confidence TEXT NOT NULL,
+    refreshed_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS warranty_source_records (
+    source_record_id TEXT PRIMARY KEY,
+    source_system TEXT NOT NULL,
+    source_file TEXT NOT NULL,
+    source_sheet TEXT,
+    source_row INTEGER,
+    source_locator TEXT,
+    source_url TEXT,
+    snapshot_date DATE,
+    vsimple_id TEXT,
+    reported_name TEXT,
+    reported_customer TEXT,
+    reported_address TEXT,
+    reported_city TEXT,
+    reported_state TEXT,
+    division TEXT,
+    source_year INTEGER,
+    reported_status TEXT,
+    warranty_category TEXT,
+    warranty_type TEXT,
+    provider TEXT,
+    duration_years NUMERIC,
+    start_date DATE,
+    expiration_date DATE,
+    expiration_date_source TEXT,
+    has_date_conflict BOOLEAN NOT NULL DEFAULT FALSE,
+    coverage_summary TEXT,
+    coverage_excerpt TEXT,
+    source_modified_at TIMESTAMPTZ,
+    matched_vsimple_id TEXT,
+    matched_job_id TEXT,
+    match_method TEXT,
+    match_confidence TEXT,
+    match_score NUMERIC,
+    match_review_required BOOLEAN NOT NULL DEFAULT TRUE,
+    extraction_method TEXT NOT NULL,
+    extraction_confidence TEXT NOT NULL,
+    raw JSONB NOT NULL DEFAULT '{}'::JSONB,
+    imported_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_warranty_source_records_system ON warranty_source_records(source_system);
+CREATE INDEX IF NOT EXISTS idx_warranty_source_records_job ON warranty_source_records(matched_job_id);
+CREATE INDEX IF NOT EXISTS idx_warranty_source_records_vsimple ON warranty_source_records(matched_vsimple_id);
+CREATE INDEX IF NOT EXISTS idx_warranty_source_records_year ON warranty_source_records(source_year);
+CREATE INDEX IF NOT EXISTS idx_warranty_source_records_review ON warranty_source_records(match_review_required);
+
+CREATE TABLE IF NOT EXISTS job_warranty_summary (
+    warranty_summary_id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    source_year INTEGER,
+    division TEXT,
+    customer TEXT,
+    job_name TEXT,
+    warranty_status TEXT NOT NULL,
+    warranty_category TEXT NOT NULL,
+    warranty_type TEXT,
+    provider TEXT,
+    duration_years NUMERIC,
+    coverage_summary TEXT,
+    coverage_excerpt TEXT,
+    start_date DATE,
+    start_date_source TEXT,
+    start_date_confidence TEXT,
+    start_date_is_inferred BOOLEAN NOT NULL DEFAULT TRUE,
+    expiration_date DATE,
+    source_document_id TEXT,
+    source_file TEXT,
+    source_url TEXT,
+    duration_source_kind TEXT,
+    duration_source_document_id TEXT,
+    evidence_count INTEGER NOT NULL DEFAULT 0,
+    issued_evidence_count INTEGER NOT NULL DEFAULT 0,
+    reported_evidence_count INTEGER NOT NULL DEFAULT 0,
+    proposed_evidence_count INTEGER NOT NULL DEFAULT 0,
+    conflicting_duration_count INTEGER NOT NULL DEFAULT 0,
+    has_conflict BOOLEAN NOT NULL DEFAULT FALSE,
+    refreshed_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_warranty_evidence_job_id ON job_warranty_evidence(job_id);
+CREATE INDEX IF NOT EXISTS idx_job_warranty_evidence_status ON job_warranty_evidence(warranty_status);
+CREATE INDEX IF NOT EXISTS idx_job_warranty_summary_job_id ON job_warranty_summary(job_id);
+CREATE INDEX IF NOT EXISTS idx_job_warranty_summary_expiration ON job_warranty_summary(expiration_date);
+CREATE INDEX IF NOT EXISTS idx_job_warranty_summary_source_year ON job_warranty_summary(source_year);
 CREATE INDEX IF NOT EXISTS idx_documents_extraction_status ON documents(extraction_status);
 CREATE INDEX IF NOT EXISTS idx_estimate_template_rows_document_id ON estimate_template_rows(document_id);
 CREATE INDEX IF NOT EXISTS idx_estimate_template_rows_job_id ON estimate_template_rows(job_id);

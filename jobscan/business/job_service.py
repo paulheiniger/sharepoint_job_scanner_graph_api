@@ -20,6 +20,7 @@ MAX_CONTEXT_TIMESHEET_ENTRIES = 10
 
 JOB_FIELDS = (
     "job_id",
+    "source_year",
     "division",
     "pipeline_status",
     "status",
@@ -222,6 +223,7 @@ def search_jobs(
     pipeline_status: str = "",
     workflow_status: str = "",
     owner: str = "",
+    job_year: int | None = None,
     needs_attention: bool | None = None,
     limit: int = 10,
 ) -> dict[str, Any]:
@@ -269,6 +271,14 @@ def search_jobs(
             if normalized and field in columns:
                 conditions.append(f"LOWER(COALESCE(j.{field}, '')) = :{field}")
                 params[field] = normalized.lower()
+
+        if job_year is not None:
+            if "source_year" not in columns:
+                raise JobIntelligenceUnavailableError(
+                    "The job source does not expose source_year for job-year filtering."
+                )
+            conditions.append("CAST(j.source_year AS TEXT) = :job_year")
+            params["job_year"] = str(job_year)
 
         if workflow_status and _has_relation(resolved_engine, "job_workflow_overrides"):
             conditions.append(
@@ -330,6 +340,7 @@ def search_jobs(
                     "pipeline_status": pipeline_status.strip() or None,
                     "workflow_status": workflow_status.strip() or None,
                     "owner": owner.strip() or None,
+                    "job_year": job_year,
                     "needs_attention": needs_attention,
                     "limit": applied_limit,
                 }.items()
@@ -777,6 +788,7 @@ def _office_activity(
 def _job_search_record(row: Mapping[str, Any]) -> dict[str, Any]:
     fields = (
         "job_id",
+        "source_year",
         "division",
         "pipeline_status",
         "status",

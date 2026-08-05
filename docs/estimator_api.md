@@ -255,6 +255,35 @@ that evidence `exact_project_name` and warns that it is heuristic.
 These operations do not call an LLM. They return evidence for ChatGPT or
 Copilot to summarize.
 
+## SharePoint document operations
+
+### `POST /v1/sharepoint/documents/search`
+
+Searches file names, persisted folder paths, and extracted text for SharePoint
+documents already discovered by the SharePoint Job Scanner. The request is
+bounded to 20 documents and can be narrowed by authoritative `job_id` and
+document type. Results include the stable `document_id`, source URL, matched
+content excerpts, extraction status, and whether stored Graph identifiers are
+available.
+
+The endpoint searches PostgreSQL rather than traversing SharePoint on every
+request. This preserves the scanner's stored identifiers and scan state,
+avoids tenant-wide Graph discovery, and makes result coverage explicit.
+
+### `POST /v1/sharepoint/documents/fetch`
+
+Returns bounded readable content and source locators for one stable
+`document_id`. Stored extracted content is preferred. If text is missing and
+the file has stored drive/item identifiers, the service may perform one
+read-only Graph download into temporary storage and run the existing
+deterministic document extractor. On-demand downloads are limited to supported
+document types and 20 MB; files requiring OCR return metadata, their
+SharePoint link, and a warning rather than invented content.
+
+Both operations are read-only. They do not upload, modify, move, share, or
+delete SharePoint files. Their coverage is limited to documents known to the
+scanner and is not a tenant-wide SharePoint search.
+
 ## Sales intelligence operations
 
 ### `POST /v1/sales/pipeline`
@@ -341,6 +370,36 @@ Use `over_plan_only: true` for an exception queue or pass authoritative
 `job_ids` for selected-job detail. Every response has `truth_class: proxy` and
 includes the methodology and limitations the agent must retain.
 
+## Chart dataset operations
+
+### `POST /v1/reporting/chart-data`
+
+Returns bounded chart rows from the existing sales, operations, office, or
+production-budget service. The endpoint owns chart semantics as well as the
+aggregation: deterministic row order, category order and colors, orientation,
+number formats, multi-scale handling, data-label guidance, and reference lines
+are returned in the versioned `display` contract. This keeps rendering in the
+client while preventing different assistants from silently changing the
+meaning or ordering of the chart.
+
+The `staging` object identifies whether the source is an operational query, a
+current persisted snapshot, or a hybrid. Current snapshots improve reliability
+and request cost, but they are overwritten during refresh and are not a
+historical time series. `historical_series_available` therefore remains false;
+the client may draw a trend only when rows contain an explicit period field,
+such as `activity_date`.
+
+Mixed-unit charts return one of three strategies: `shared_axis`, `dual_axis`,
+or `small_multiples`. Production budget-by-job data also returns a 100% plan
+reference line on `budget_used_pct`. The endpoint continues to return the
+original truth class, freshness, coverage, warnings, and source tables.
+
+### `POST /v1/reporting/chart-data.csv`
+
+Downloads the same deterministically ordered rows for Data Analysis or an
+explicit user-requested file. Formula-like text values are escaped for safe
+spreadsheet opening. Display metadata remains available from the JSON endpoint.
+
 ## Office activity intelligence operation
 
 ### `POST /v1/office/activity`
@@ -399,7 +458,22 @@ python -m pip install -r services/estimator_api/requirements.txt
 
 Set `NEON_DATABASE_URL` or `DATABASE_URL`. Roof context also requires
 `MAPBOX_TOKEN` (or `MAPBOX_ACCESS_TOKEN`) and an artifact signing key through
-`ESTIMATOR_ARTIFACT_SIGNING_KEY` or `ESTIMATOR_API_KEY`. Then run:
+`ESTIMATOR_ARTIFACT_SIGNING_KEY` or `ESTIMATOR_API_KEY`.
+
+Read-only on-demand SharePoint document retrieval uses the scanner's existing
+Microsoft Graph application credentials:
+
+```text
+MS_TENANT_ID
+MS_CLIENT_ID
+MS_CLIENT_SECRET
+```
+
+Do not place their values in source code or the generated OpenAPI contract.
+Search continues to use the persisted document index when Graph is temporarily
+unavailable; only a fetch without stored extracted text requires Graph.
+
+Then run:
 
 ```bash
 python -m services.estimator_api.server

@@ -871,9 +871,12 @@ def test_openapi_exposes_expected_operations() -> None:
         "getOperationsBacklog",
         "getOperationsSchedule",
         "getProductionBudgetHealth",
-        "getSalesFollowUps",
-        "getSalesPipeline",
-        "health_health_get",
+            "getSalesFollowUps",
+            "getSalesPipeline",
+        "getWarrantySummary",
+        "searchSharePointDocuments",
+        "fetchSharePointDocument",
+            "health_health_get",
         "searchJobs",
     }
 
@@ -910,6 +913,64 @@ def test_job_search_route_is_authenticated_and_returns_contract(monkeypatch) -> 
     assert authorized.json()["records"][0]["job_id"] == "JOB-1"
 
 
+def test_sharepoint_document_routes_use_shared_auth_and_contract(monkeypatch) -> None:
+    monkeypatch.setenv("ESTIMATOR_API_KEY", "test-secret")
+    monkeypatch.setattr(
+        "services.estimator_api.server.search_sharepoint_documents",
+        lambda **_kwargs: {
+            "schema_version": "spraytec.sharepoint_document_search.v1",
+            "query": "warranty",
+            "filters_applied": {"limit": 10},
+            "records": [
+                {
+                    "document_id": "DOC-1",
+                    "job_id": "JOB-1",
+                    "file_name": "Warranty.pdf",
+                }
+            ],
+            "coverage": {"records_returned": 1},
+            "warnings": [],
+        },
+    )
+    monkeypatch.setattr(
+        "services.estimator_api.server.fetch_sharepoint_document",
+        lambda **_kwargs: {
+            "schema_version": "spraytec.sharepoint_document_fetch.v1",
+            "document_id": "DOC-1",
+            "job_id": "JOB-1",
+            "file_name": "Warranty.pdf",
+            "content": "Issued warranty details.",
+            "content_source": "persisted_extracted_content",
+            "content_available": True,
+            "included_sections": 1,
+            "total_sections": 1,
+            "truncated": False,
+            "warnings": [],
+        },
+    )
+
+    unauthorized = client.post(
+        "/v1/sharepoint/documents/search",
+        json={"query": "warranty"},
+    )
+    searched = client.post(
+        "/v1/sharepoint/documents/search",
+        json={"query": "warranty"},
+        headers={"Authorization": "Bearer test-secret"},
+    )
+    fetched = client.post(
+        "/v1/sharepoint/documents/fetch",
+        json={"document_id": "DOC-1"},
+        headers={"Authorization": "Bearer test-secret"},
+    )
+
+    assert unauthorized.status_code == 401
+    assert searched.status_code == 200
+    assert searched.json()["records"][0]["document_id"] == "DOC-1"
+    assert fetched.status_code == 200
+    assert fetched.json()["content"] == "Issued warranty details."
+
+
 def test_job_context_route_returns_404_for_unknown_job(monkeypatch) -> None:
     from jobscan.business.job_service import JobNotFoundError
 
@@ -936,6 +997,12 @@ def test_action_openapi_marks_read_only_posts_nonconsequential() -> None:
         "x-openai-isConsequential"
     ] is False
     assert spec["paths"]["/v1/jobs/search"]["post"][
+        "x-openai-isConsequential"
+    ] is False
+    assert spec["paths"]["/v1/sharepoint/documents/search"]["post"][
+        "x-openai-isConsequential"
+    ] is False
+    assert spec["paths"]["/v1/sharepoint/documents/fetch"]["post"][
         "x-openai-isConsequential"
     ] is False
     assert spec["paths"]["/v1/sales/pipeline"]["post"][
@@ -1281,6 +1348,50 @@ def test_checked_in_action_openapi_is_current() -> None:
     checked_in = json.loads(path.read_text(encoding="utf-8"))
     deployed_server_url = checked_in["servers"][0]["url"]
     assert checked_in == build_action_openapi(deployed_server_url)
+
+
+def test_warranty_summary_route_uses_auth_and_passes_filters(monkeypatch) -> None:
+    monkeypatch.setenv("ESTIMATOR_API_KEY", "test-secret")
+    captured: dict[str, object] = {}
+
+    def fake_warranty_summary(**kwargs):
+        captured.update(kwargs)
+        return {
+            "schema_version": "spraytec.warranty_summary.v2",
+            "as_of": "2026-08-04T12:00:00Z",
+            "filters_applied": {"job_year": 2026, "warranty_status": "issued"},
+            "headline_metrics": {"warranty_records": 1},
+            "status_rollup": [{"warranty_status": "issued", "warranty_count": 1}],
+            "category_rollup": [],
+            "records": [{"job_id": "JOB-1", "warranty_status": "issued"}],
+            "attention_items": [],
+            "review_queue_summary": {},
+            "data_quality_tasks": [],
+            "source_links": [],
+            "source_tables": ["job_warranty_summary"],
+            "data_freshness": {},
+            "coverage": {},
+            "warnings": [],
+            "response_budget": {"max_records": 25},
+        }
+
+    monkeypatch.setattr(
+        "services.estimator_api.server.get_warranty_summary",
+        fake_warranty_summary,
+    )
+
+    unauthorized = client.post("/v1/jobs/warranties", json={})
+    authorized = client.post(
+        "/v1/jobs/warranties",
+        json={"job_year": 2026, "warranty_status": "issued", "needs_review": False},
+        headers={"Authorization": "Bearer test-secret"},
+    )
+
+    assert unauthorized.status_code == 401
+    assert authorized.status_code == 200
+    assert captured["job_year"] == 2026
+    assert captured["warranty_status"] == "issued"
+    assert captured["needs_review"] is False
 
 
 def test_action_openapi_excludes_internal_source_metadata() -> None:

@@ -1262,6 +1262,8 @@ VIEWS = [
     "vsimple_projects",
     "vsimple_sharepoint_job_matches_accepted",
     "vsimple_sharepoint_job_matches",
+    "job_warranty_summary",
+    "job_warranty_evidence",
 ]
 
 HEALTH_TABLES = [
@@ -1269,6 +1271,8 @@ HEALTH_TABLES = [
     ("documents", "Document manifest"),
     ("document_content", "Extracted document content"),
     ("estimate_template_rows", "Estimate template parser"),
+    ("job_warranty_summary", "Warranty registry summary"),
+    ("job_warranty_evidence", "Warranty source evidence"),
     ("pricing_catalog", "Pricing catalog"),
     ("estimate_line_item_classifications", "Legacy line-item classifications"),
     ("job_package_summary", "Relationship package summary"),
@@ -1279,6 +1283,7 @@ HEALTH_TABLES = [
 selected_divisions: list[str] = []
 selected_pipeline_statuses: list[str] = []
 selected_statuses: list[str] = []
+selected_job_years: list[str] = []
 customer_search = ""
 DASHBOARD_PERF_TIMING_LIMIT = 80
 
@@ -8914,8 +8919,9 @@ def choose_dashboard_section(label: str, options: list[str], *, key: str, defaul
 def load_sidebar_filter_jobs() -> pd.DataFrame:
     cols = relation_columns("dashboard_jobs")
     if not cols:
-        return pd.DataFrame(columns=["division", "pipeline_status", "status", "customer"])
+        return pd.DataFrame(columns=["source_year", "division", "pipeline_status", "status", "customer"])
     fields = {
+        "source_year": "source_year",
         "division": "division",
         "pipeline_status": "pipeline_status",
         "status": "status",
@@ -9108,14 +9114,20 @@ def render_page_watermark() -> None:
 
 
 def sidebar_filters(jobs: pd.DataFrame) -> dict[str, object]:
-    global selected_divisions, selected_pipeline_statuses, selected_statuses, customer_search
+    global selected_divisions, selected_pipeline_statuses, selected_statuses, selected_job_years, customer_search
 
     st.sidebar.caption("Filters")
+    selected_job_years = st.sidebar.multiselect(
+        "Job Year",
+        job_year_options(jobs),
+        help="Filters by the job's source year. Leave blank to include all years.",
+    )
     selected_divisions = st.sidebar.multiselect("Division", options_from(jobs, "division"))
     selected_pipeline_statuses = st.sidebar.multiselect("Pipeline Status", options_from(jobs, "pipeline_status"))
     selected_statuses = st.sidebar.multiselect("Status", options_from(jobs, "status"))
     customer_search = st.sidebar.text_input("Customer Search", value="").strip()
     return {
+        "job_year": selected_job_years,
         "division": selected_divisions,
         "pipeline_status": selected_pipeline_statuses,
         "status": selected_statuses,
@@ -9131,6 +9143,7 @@ def apply_filters(
     include_customer: bool = True,
 ) -> pd.DataFrame:
     filtered = df.copy()
+    filtered = filter_job_years(filtered, filters.get("job_year") or [])
     for column in ("division", "pipeline_status"):
         selected = filters.get(column) or []
         if selected and column in filtered.columns:
@@ -9152,6 +9165,7 @@ def apply_basic_filters(df: pd.DataFrame) -> pd.DataFrame:
     if not isinstance(df, pd.DataFrame):
         return pd.DataFrame()
     filtered = df.copy()
+    filtered = filter_job_years(filtered, selected_job_years)
     if selected_divisions and "division" in filtered.columns:
         filtered = filtered[filtered["division"].astype(str).isin(selected_divisions)]
     if selected_pipeline_statuses and "pipeline_status" in filtered.columns:
@@ -9163,6 +9177,48 @@ def apply_basic_filters(df: pd.DataFrame) -> pd.DataFrame:
             filtered["customer"].fillna("").astype(str).str.contains(customer_search, case=False, na=False)
         ]
     return filtered
+
+
+def job_year_options(df: pd.DataFrame) -> list[str]:
+    if "source_year" not in df.columns or df.empty:
+        return []
+    years = pd.to_numeric(df["source_year"], errors="coerce").dropna().astype(int)
+    return [str(year) for year in sorted(years.unique(), reverse=True)]
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_job_year_lookup() -> pd.DataFrame:
+    columns = relation_columns("dashboard_jobs")
+    if not {"job_id", "source_year"}.issubset(columns):
+        return pd.DataFrame(columns=["job_id", "source_year"])
+    return load_df(
+        "SELECT DISTINCT job_id, source_year FROM dashboard_jobs "
+        "WHERE job_id IS NOT NULL AND source_year IS NOT NULL"
+    )
+
+
+def filter_job_years(df: pd.DataFrame, years: object) -> pd.DataFrame:
+    selected = {
+        str(int(float(year)))
+        for year in (years or [])
+        if str(year).strip()
+    }
+    if not selected or df.empty:
+        return df
+    filtered = df.copy()
+    if "source_year" in filtered.columns:
+        normalized = pd.to_numeric(filtered["source_year"], errors="coerce").astype("Int64").astype(str)
+        return filtered[normalized.isin(selected)]
+    if "job_id" not in filtered.columns:
+        # A pre-aggregated relation without job identity cannot be filtered
+        # reliably. Returning it would mix older years into filtered totals.
+        return filtered.iloc[0:0]
+    lookup = load_job_year_lookup()
+    if lookup.empty:
+        return filtered.iloc[0:0]
+    lookup_years = pd.to_numeric(lookup["source_year"], errors="coerce").astype("Int64").astype(str)
+    matching_ids = set(lookup.loc[lookup_years.isin(selected), "job_id"].dropna().astype(str))
+    return filtered[filtered["job_id"].fillna("").astype(str).isin(matching_ids)]
 
 
 def with_folder_link(df: pd.DataFrame) -> pd.DataFrame:
@@ -9188,6 +9244,7 @@ DASHBOARD_LINK_COLUMNS = {
     "sharepoint_url": "Source File",
     "proposal_url": "Proposal",
     "document_url": "Source File",
+    "source_url": "Warranty Source",
 }
 
 
@@ -16730,12 +16787,19 @@ def job_board_page() -> None:
             st.write(jobs["board_status"].value_counts(dropna=False))
 
     st.subheader("Filters")
-    f1, f2, f3, f4 = st.columns(4)
+    f1, f2, f3, f4, f5 = st.columns(5)
     with f1:
         search = st.text_input("Search jobs / customers / addresses", key="job_board_search").strip()
     with f2:
-        division_filter = st.multiselect("Division", options_from(jobs, "division"), key="job_board_division")
+        job_year_filter = st.multiselect(
+            "Job Year",
+            job_year_options(jobs),
+            key="job_board_job_year",
+            help="Leave blank to include all years.",
+        )
     with f3:
+        division_filter = st.multiselect("Division", options_from(jobs, "division"), key="job_board_division")
+    with f4:
         ordered_sales_stage_options = [stage for stage in SALES_PIPELINE_STAGES if stage in set(options_from(jobs, "sales_stage"))]
         remaining_sales_stage_options = [
             stage for stage in options_from(jobs, "sales_stage") if stage not in ordered_sales_stage_options
@@ -16745,7 +16809,7 @@ def job_board_page() -> None:
             ordered_sales_stage_options + remaining_sales_stage_options,
             key="job_board_sales_stage",
         )
-    with f4:
+    with f5:
         crew_filter = st.multiselect("Crew Leader", options_from(jobs, "assigned_crew_leader"), key="job_board_crew")
 
     f5, f6, f7 = st.columns(3)
@@ -16756,7 +16820,7 @@ def job_board_page() -> None:
     with f7:
         show_action_only = st.checkbox("Show only jobs needing action", key="job_board_action_only")
 
-    filtered = jobs.copy()
+    filtered = filter_job_years(jobs, job_year_filter)
     if search:
         search_cols = [column for column in ["job_name", "customer", "site_address", "city", "state", "zip_code"] if column in filtered.columns]
         mask = pd.Series(False, index=filtered.index)
@@ -20470,6 +20534,163 @@ def documentation_risk_page() -> None:
 
 def documentation_page() -> None:
     documentation_risk_page()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_warranty_registry() -> pd.DataFrame:
+    return load_df("SELECT * FROM warranty_registry_all")
+
+
+def warranty_registry_page() -> None:
+    st.title("Warranty Registry")
+    st.caption(
+        "Source-backed issued, legacy-reported, and proposed warranty terms. Inferred dates retain their source and confidence."
+    )
+    try:
+        warranties = apply_basic_filters(load_warranty_registry())
+    except Exception as exc:
+        show_database_error(exc)
+        return
+    if warranties.empty:
+        show_empty("No warranty records match the current filters.")
+        return
+
+    f1, f2, f3, f4 = st.columns(4)
+    with f1:
+        status_filter = st.multiselect(
+            "Warranty Status",
+            options_from(warranties, "warranty_status"),
+            key="warranty_registry_status",
+        )
+    with f2:
+        category_filter = st.multiselect(
+            "Warranty Category",
+            options_from(warranties, "warranty_category"),
+            key="warranty_registry_category",
+        )
+    with f3:
+        source_filter = st.multiselect(
+            "Evidence Source",
+            options_from(warranties, "duration_source_kind"),
+            key="warranty_registry_source",
+        )
+    with f4:
+        review_only = st.checkbox(
+            "Needs review only",
+            value=False,
+            key="warranty_registry_review_only",
+        )
+
+    filtered = warranties.copy()
+    if status_filter:
+        filtered = filtered[filtered["warranty_status"].astype(str).isin(status_filter)]
+    if category_filter:
+        filtered = filtered[filtered["warranty_category"].astype(str).isin(category_filter)]
+    if source_filter:
+        filtered = filtered[filtered["duration_source_kind"].astype(str).isin(source_filter)]
+
+    with st.expander("Expiration window", expanded=False):
+        d1, d2 = st.columns(2)
+        with d1:
+            expiration_from = st.date_input(
+                "Expires on or after", value=None, key="warranty_registry_expiration_from"
+            )
+        with d2:
+            expiration_through = st.date_input(
+                "Expires on or before", value=None, key="warranty_registry_expiration_through"
+            )
+    expiration_window = pd.to_datetime(filtered.get("expiration_date"), errors="coerce")
+    if expiration_from:
+        filtered = filtered[expiration_window.ge(pd.Timestamp(expiration_from))]
+        expiration_window = pd.to_datetime(filtered.get("expiration_date"), errors="coerce")
+    if expiration_through:
+        filtered = filtered[expiration_window.le(pd.Timestamp(expiration_through))]
+    if review_only:
+        conflict = bool_series(filtered, "has_conflict")
+        match_review = bool_series(filtered, "match_review_required")
+        missing_duration = numeric_series(filtered, "duration_years").isna()
+        confidence = filtered.get(
+            "start_date_confidence",
+            pd.Series("unavailable", index=filtered.index),
+        ).fillna("unavailable").astype(str).str.lower()
+        filtered = filtered[match_review | conflict | missing_duration | confidence.isin(["low", "unavailable"])]
+
+    expiration = pd.to_datetime(filtered.get("expiration_date"), errors="coerce")
+    today = pd.Timestamp(date.today())
+    expired = expiration.notna() & expiration.lt(today)
+    expiring_next_year = expiration.notna() & expiration.between(today, today + pd.Timedelta(days=365), inclusive="both")
+    inferred = bool_series(filtered, "start_date_is_inferred")
+    conflicts = bool_series(filtered, "has_conflict")
+    metric_row(
+        [
+            ("Warranty Records", fmt_count(len(filtered))),
+            ("Issued", fmt_count((filtered["warranty_status"].astype(str).str.lower() == "issued").sum())),
+            ("Reported", fmt_count((filtered["warranty_status"].astype(str).str.lower() == "reported").sum())),
+            ("Proposed", fmt_count((filtered["warranty_status"].astype(str).str.lower() == "proposed").sum())),
+            ("Expired", fmt_count(expired.sum())),
+            ("Expiring Next 12 Months", fmt_count(expiring_next_year.sum())),
+            ("Inferred Start Dates", fmt_count(inferred.sum())),
+            ("Conflicts", fmt_count(conflicts.sum())),
+            ("Missing Duration", fmt_count(numeric_series(filtered, "duration_years").isna().sum())),
+        ]
+    )
+
+    c1, c2 = st.columns(2)
+    with c1:
+        bar_chart(filtered, "warranty_status", None, "Warranty Records by Evidence Status")
+    with c2:
+        bar_chart(filtered, "warranty_category", None, "Warranty Records by Category", color="warranty_status")
+
+    st.subheader("Warranty Details")
+    display = filtered.copy()
+    if "match_candidates" in display.columns:
+        def candidate_summary(value: Any) -> str:
+            candidates = value if isinstance(value, list) else []
+            if isinstance(value, str) and value.strip():
+                try:
+                    parsed = json.loads(value)
+                    candidates = parsed if isinstance(parsed, list) else []
+                except (TypeError, ValueError):
+                    candidates = []
+            labels = []
+            for candidate in candidates[:3]:
+                if not isinstance(candidate, dict):
+                    continue
+                name = candidate.get("name") or candidate.get("job_id") or candidate.get("vsimple_id") or "Candidate"
+                score = candidate.get("score")
+                labels.append(f"{name} ({float(score):.0%})" if score is not None else str(name))
+            return "; ".join(labels)
+
+        display["candidate_job_matches"] = display["match_candidates"].apply(candidate_summary)
+    show_table(
+        display,
+        [
+            "customer",
+            "job_name",
+            "division",
+            "warranty_status",
+            "warranty_category",
+            "warranty_type",
+            "provider",
+            "duration_years",
+            "coverage_summary",
+            "coverage_excerpt",
+            "start_date",
+            "start_date_source",
+            "start_date_confidence",
+            "start_date_is_inferred",
+            "expiration_date",
+            "has_conflict",
+            "match_review_required",
+            "match_confidence",
+            "match_score",
+            "candidate_job_matches",
+            "evidence_count",
+            "source_file",
+            "source_url",
+        ],
+        sort_by="expiration_date",
+    )
 
 
 def pricing_catalog_page() -> None:
@@ -27199,6 +27420,8 @@ def render_dashboard_source_references(page: str) -> None:
             st.markdown(f"- {note}")
 
     active_filters: list[str] = []
+    if selected_job_years:
+        active_filters.append(f"Job Year: {', '.join(selected_job_years)}")
     if selected_divisions:
         active_filters.append(f"Division: {', '.join(selected_divisions)}")
     if selected_pipeline_statuses:
@@ -27225,6 +27448,8 @@ def render_dashboard_page(page: str) -> None:
         timesheet_job_touches_page()
     elif page == "Job Tracking":
         job_tracking_dashboard_page()
+    elif page == "Warranty Registry":
+        warranty_registry_page()
     elif page == "Sales Dashboard":
         sales_dashboard_page()
     elif page == "Operations Dashboard":
@@ -27277,7 +27502,7 @@ def render_dashboard_page(page: str) -> None:
 
 
 def main() -> None:
-    global selected_divisions, selected_pipeline_statuses, selected_statuses, customer_search
+    global selected_divisions, selected_pipeline_statuses, selected_statuses, selected_job_years, customer_search
 
     database_startup_error: Exception | None = None
     with st.sidebar:
@@ -27294,6 +27519,7 @@ def main() -> None:
             "Owner Overview",
             "Sales Dashboard",
             "Operations Dashboard",
+            "Warranty Registry",
             "Pipeline / Money",
             "Sales Follow-Up",
             "Contracted Backlog / Scheduling",
@@ -27319,6 +27545,7 @@ def main() -> None:
             selected_divisions = []
             selected_pipeline_statuses = []
             selected_statuses = []
+            selected_job_years = []
             customer_search = ""
 
     render_global_theme()

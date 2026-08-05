@@ -22,7 +22,11 @@ def test_build_chart_dataset_preserves_truth_and_chart_semantics() -> None:
                     "ignored_detail": "not part of the chart contract",
                 }
             ],
-            "source_tables": ["job_tracking_summary"],
+            "source_tables": [
+                "job_tracking_summary",
+                "job_tracking_estimate_budget_snapshot",
+            ],
+            "data_freshness": {"estimate_budget_as_of": "2026-07-31T11:45:00Z"},
             "warnings": ["Not accounting actual costs."],
         },
     )
@@ -30,6 +34,22 @@ def test_build_chart_dataset_preserves_truth_and_chart_semantics() -> None:
     assert dataset["recommended_chart_type"] == "bar"
     assert dataset["truth_class"] == "proxy"
     assert dataset["category_field"] == "job_name"
+    assert dataset["display"]["orientation"] == "horizontal"
+    assert dataset["display"]["multi_scale_strategy"] == "dual_axis"
+    assert dataset["display"]["reference_lines"] == [
+        {
+            "field": "budget_used_pct",
+            "value": 1.0,
+            "label": "Estimate-rate plan",
+        }
+    ]
+    assert dataset["series"][0]["number_format"] == "currency_0"
+    assert dataset["series"][2]["axis"] == "secondary"
+    assert dataset["staging"]["source_storage"] == "hybrid_current_snapshot"
+    assert dataset["staging"]["snapshot_tables"] == [
+        "job_tracking_estimate_budget_snapshot"
+    ]
+    assert dataset["staging"]["historical_series_available"] is False
     assert dataset["rows"] == [
         {
             "job_name": "Acme Roof",
@@ -38,6 +58,58 @@ def test_build_chart_dataset_preserves_truth_and_chart_semantics() -> None:
             "budget_used_pct": 1.1333,
         }
     ]
+
+
+def test_chart_dataset_applies_endpoint_owned_order_and_status_colors() -> None:
+    dataset = build_chart_dataset(
+        "sales_pipeline_by_stage",
+        {
+            "stage_rollup": [
+                {"pipeline_status": "Completed", "estimated_value": 3, "job_count": 1},
+                {"pipeline_status": "Custom", "estimated_value": 9, "job_count": 1},
+                {"pipeline_status": "Proposed", "estimated_value": 5, "job_count": 2},
+                {"pipeline_status": "Contracted", "estimated_value": 7, "job_count": 1},
+            ]
+        },
+    )
+
+    assert [row["pipeline_status"] for row in dataset["rows"]] == [
+        "Proposed",
+        "Contracted",
+        "Completed",
+        "Custom",
+    ]
+    assert dataset["display"]["sort"] == {
+        "field": "pipeline_status",
+        "direction": "ascending",
+        "then_by": [],
+    }
+    assert dataset["display"]["category_colors"]["Proposed"] == "#2563EB"
+
+
+def test_chart_dataset_uses_small_multiples_for_three_incompatible_units() -> None:
+    dataset = build_chart_dataset(
+        "operations_backlog_by_readiness",
+        {
+            "readiness_rollup": [
+                {
+                    "readiness_status": "Ready To Schedule",
+                    "value": 200000,
+                    "jobs": 3,
+                    "average_days_waiting": 12.5,
+                }
+            ],
+            "source_tables": ["operations_dashboard_ops_snapshot"],
+        },
+    )
+
+    assert dataset["display"]["multi_scale_strategy"] == "small_multiples"
+    assert {series["panel"] for series in dataset["series"]} == {
+        "currency",
+        "count",
+        "days",
+    }
+    assert dataset["staging"]["source_storage"] == "current_snapshot"
 
 
 def test_chart_dataset_csv_is_file_ready_and_formula_safe() -> None:

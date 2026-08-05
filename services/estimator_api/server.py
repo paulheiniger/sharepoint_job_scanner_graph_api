@@ -33,6 +33,13 @@ from jobscan.business.sales_service import (
     get_sales_followups,
     get_sales_pipeline,
 )
+from jobscan.business.sharepoint_document_service import (
+    SharePointDocumentNotFoundError,
+    SharePointDocumentUnavailableError,
+    fetch_sharepoint_document,
+    search_sharepoint_documents,
+)
+from jobscan.business.warranty_service import get_warranty_summary
 from jobscan.estimator.context_service import build_copilot_estimator_context
 from jobscan.estimator.planning_snapshot import (
     PlanningSnapshotError,
@@ -89,6 +96,12 @@ from .schemas import (
     SalesFollowupRequest,
     SalesIntelligenceResponse,
     SalesPipelineRequest,
+    SharePointDocumentFetchRequest,
+    SharePointDocumentFetchResponse,
+    SharePointDocumentSearchRequest,
+    SharePointDocumentSearchResponse,
+    WarrantySummaryRequest,
+    WarrantySummaryResponse,
 )
 
 
@@ -100,7 +113,7 @@ app = FastAPI(
         "Estimator evidence, controlled workbook generation, and read-only "
         "operational intelligence for conversational agents."
     ),
-    version="0.15.3",
+    version="0.18.0",
 )
 
 
@@ -126,16 +139,16 @@ PRIVACY_POLICY_HTML = """<!doctype html>
   <p>This policy describes how Spray-Tec, Inc. handles information sent to the Spray-Tec Business Assistant API through a custom GPT or another authorized client.</p>
 
   <h2>Information processed</h2>
-  <p>The service may process job notes, customer or project names, site addresses, measurements, scope details, estimating decisions, and operational questions supplied by a user. When a user provides an image or document to ChatGPT, the service generally receives the structured facts or notes that the GPT sends to the API, rather than the original file. The service also retrieves relevant information from Spray-Tec's internal estimating and operational data sources.</p>
+  <p>The service may process job notes, customer or project names, site addresses, measurements, scope details, estimating decisions, and operational questions supplied by a user. When a user provides an image or document to ChatGPT, the service generally receives the structured facts or notes that the GPT sends to the API, rather than the original file. At a user's request, the service may also retrieve metadata and readable content from SharePoint job documents already indexed by Spray-Tec's SharePoint Job Scanner.</p>
 
   <h2>How information is used</h2>
-  <p>Information is used only to retrieve business evidence, prepare summaries and charts, support estimate decisions, validate estimate inputs, and generate draft estimate workbooks requested by an authorized user. Drafts require human review and are not automatically uploaded to SharePoint.</p>
+  <p>Information is used only to retrieve business evidence and source documents, prepare summaries and charts, support estimate decisions, validate estimate inputs, and generate draft estimate workbooks requested by an authorized user. SharePoint access is read-only. Drafts require human review and are not automatically uploaded to SharePoint.</p>
 
   <h2>Storage and retention</h2>
-  <p>Context and reporting requests are processed to produce the requested response and are not intentionally added to a separate marketing or advertising database. Generated workbooks and roof-measure context images are stored temporarily by the API so the requesting user can retrieve them; signed links normally expire after 15 minutes. Limited technical logs and temporary service files may be retained as needed for security, troubleshooting, reliability, and service operation.</p>
+  <p>Context, reporting, and SharePoint document requests are processed to produce the requested response and are not intentionally added to a separate marketing or advertising database. A SharePoint source file downloaded for on-demand text extraction is held only in temporary service storage for that request. Generated workbooks and roof-measure context images are stored temporarily by the API so the requesting user can retrieve them; signed links normally expire after 15 minutes. Limited technical logs and temporary service files may be retained as needed for security, troubleshooting, reliability, and service operation.</p>
 
   <h2>Sharing and service providers</h2>
-  <p>Spray-Tec does not sell information submitted to this service. Information may be processed by service providers used to operate it, including OpenAI for the ChatGPT experience, Microsoft Azure for API hosting, Mapbox for address geocoding and satellite imagery, and public mapping or LiDAR services used to retrieve building evidence. Those providers handle information under their own terms and privacy commitments. Information may also be disclosed when required by law or to protect the security and integrity of the service.</p>
+  <p>Spray-Tec does not sell information submitted to this service. Information may be processed by service providers used to operate it, including OpenAI for the ChatGPT experience, Microsoft Azure for API hosting, Microsoft Graph and SharePoint for authorized source-document retrieval, Mapbox for address geocoding and satellite imagery, and public mapping or LiDAR services used to retrieve building evidence. Those providers handle information under their own terms and privacy commitments. Information may also be disclosed when required by law or to protect the security and integrity of the service.</p>
 
   <h2>Security and appropriate use</h2>
   <p>The API uses access controls and encrypted network connections. Users should submit only information needed for Spray-Tec business purposes and should not submit payment-card details, Social Security numbers, health information, passwords, or other unnecessary sensitive personal information.</p>
@@ -797,6 +810,7 @@ def job_search(
             pipeline_status=payload.pipeline_status,
             workflow_status=payload.workflow_status,
             owner=payload.owner,
+            job_year=payload.job_year,
             needs_attention=payload.needs_attention,
             limit=payload.limit,
         )
@@ -810,6 +824,75 @@ def job_search(
         raise HTTPException(
             status_code=503,
             detail=f"Job context is unavailable: {type(exc).__name__}.",
+        ) from exc
+
+
+@app.post(
+    "/v1/sharepoint/documents/search",
+    response_model=SharePointDocumentSearchResponse,
+    response_model_exclude_none=True,
+    operation_id="searchSharePointDocuments",
+    summary="Search indexed SharePoint job documents",
+    description=(
+        "Searches persisted SharePoint file metadata and extracted document text. "
+        "The operation is read-only and bounded to files already discovered by "
+        "the SharePoint Job Scanner."
+    ),
+)
+def sharepoint_document_search(
+    request: Request,
+    payload: SharePointDocumentSearchRequest,
+) -> SharePointDocumentSearchResponse:
+    _require_api_request(request)
+    try:
+        result = search_sharepoint_documents(
+            database_url=_database_url(),
+            query=payload.query,
+            job_id=payload.job_id,
+            document_type=payload.document_type,
+            limit=payload.limit,
+        )
+        return SharePointDocumentSearchResponse.model_validate(result)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except SharePointDocumentUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"SharePoint document search is unavailable: {type(exc).__name__}.",
+        ) from exc
+
+
+@app.post(
+    "/v1/sharepoint/documents/fetch",
+    response_model=SharePointDocumentFetchResponse,
+    response_model_exclude_none=True,
+    operation_id="fetchSharePointDocument",
+    summary="Fetch readable content for one indexed SharePoint document",
+    description=(
+        "Returns persisted extracted content for one stable document_id. When "
+        "content is missing and allowed, it reuses stored drive/item identifiers "
+        "for one bounded read-only Graph download and temporary extraction."
+    ),
+)
+def sharepoint_document_fetch(
+    request: Request,
+    payload: SharePointDocumentFetchRequest,
+) -> SharePointDocumentFetchResponse:
+    _require_api_request(request)
+    try:
+        result = fetch_sharepoint_document(
+            database_url=_database_url(),
+            document_id=payload.document_id,
+            max_chars=payload.max_chars,
+            allow_graph_download=payload.allow_graph_download,
+        )
+        return SharePointDocumentFetchResponse.model_validate(result)
+    except SharePointDocumentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="SharePoint document was not found.") from exc
+    except SharePointDocumentUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"SharePoint document fetch is unavailable: {type(exc).__name__}.",
         ) from exc
 
 
@@ -845,6 +928,48 @@ def job_context(
 
 
 @app.post(
+    "/v1/jobs/warranties",
+    response_model=WarrantySummaryResponse,
+    response_model_exclude_none=True,
+    operation_id="getWarrantySummary",
+    summary="Retrieve issued, reported, and proposed warranty intelligence",
+    description=(
+        "Returns source-backed warranty type, provider, coverage, duration, "
+        "start-date provenance, expiration, conflicts, candidate job matches, cleanup tasks, and document links. "
+        "Legacy reported records and proposed terms remain distinct from issued warranties. This operation is read-only."
+    ),
+)
+def warranty_summary(
+    request: Request,
+    payload: WarrantySummaryRequest,
+) -> WarrantySummaryResponse:
+    _require_api_request(request)
+    try:
+        result = get_warranty_summary(
+            database_url=_database_url(),
+            job_ids=payload.job_ids,
+            job_year=payload.job_year,
+            division=payload.division,
+            warranty_status=payload.warranty_status,
+            expiring_after=payload.expiring_after,
+            expiring_before=payload.expiring_before,
+            needs_review=payload.needs_review,
+            limit=payload.limit,
+        )
+        return WarrantySummaryResponse.model_validate(result)
+    except JobIntelligenceUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Warranty intelligence is unavailable: {type(exc).__name__}.",
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Warranty summary is unavailable: {type(exc).__name__}.",
+        ) from exc
+
+
+@app.post(
     "/v1/sales/pipeline",
     response_model=SalesIntelligenceResponse,
     response_model_exclude_none=True,
@@ -867,6 +992,7 @@ def sales_pipeline(
             database_url=_database_url(),
             division=payload.division,
             owner=payload.owner,
+            job_year=payload.job_year,
             pipeline_statuses=payload.pipeline_statuses,
             include_completed=payload.include_completed,
             limit=payload.limit,
@@ -905,6 +1031,7 @@ def sales_followups(
             database_url=_database_url(),
             division=payload.division,
             owner=payload.owner,
+            job_year=payload.job_year,
             followup_status=payload.followup_status,
             overdue_only=payload.overdue_only,
             unassigned_only=payload.unassigned_only,
@@ -943,6 +1070,7 @@ def operations_backlog(
         result = get_operations_backlog(
             database_url=_database_url(),
             division=payload.division,
+            job_year=payload.job_year,
             readiness_statuses=payload.readiness_statuses,
             unscheduled_only=payload.unscheduled_only,
             needs_attention=payload.needs_attention,
@@ -984,6 +1112,7 @@ def operations_schedule(
             database_url=_database_url(),
             division=payload.division,
             crew_leader=payload.crew_leader,
+            job_year=payload.job_year,
             start_date=payload.start_date,
             end_date=payload.end_date,
             risk_only=payload.risk_only,
@@ -1116,6 +1245,7 @@ def production_budget_health(
             database_url=_database_url(),
             job_ids=payload.job_ids,
             division=payload.division,
+            job_year=payload.job_year,
             over_plan_only=payload.over_plan_only,
             include_no_actuals=payload.include_no_actuals,
             include_completed=payload.include_completed,
@@ -1142,7 +1272,9 @@ def production_budget_health(
     summary="Retrieve a chart-ready business dataset",
     description=(
         "Reuses the authoritative sales, operations, office, or production-budget "
-        "service and returns a normalized chart specification with bounded rows. "
+        "service and returns a normalized chart specification with bounded, "
+        "deterministically ordered rows plus a versioned display and staging "
+        "contract. "
         "The operation is read-only and does not generate narrative conclusions."
     ),
 )
@@ -1220,6 +1352,7 @@ def _chart_source_result(payload: ChartDatasetRequest) -> dict[str, Any]:
             database_url=_database_url(),
             division=payload.division,
             owner=payload.owner,
+            job_year=payload.job_year,
             pipeline_statuses=payload.pipeline_statuses,
             include_completed=payload.include_completed,
             limit=payload.limit,
@@ -1228,6 +1361,7 @@ def _chart_source_result(payload: ChartDatasetRequest) -> dict[str, Any]:
         return get_operations_backlog(
             database_url=_database_url(),
             division=payload.division,
+            job_year=payload.job_year,
             readiness_statuses=payload.readiness_statuses,
             unscheduled_only=payload.unscheduled_only,
             needs_attention=payload.needs_attention,
@@ -1240,6 +1374,7 @@ def _chart_source_result(payload: ChartDatasetRequest) -> dict[str, Any]:
             database_url=_database_url(),
             division=payload.division,
             crew_leader=payload.crew_leader,
+            job_year=payload.job_year,
             start_date=payload.start_date,
             end_date=payload.end_date,
             risk_only=payload.risk_only,
@@ -1276,6 +1411,7 @@ def _chart_source_result(payload: ChartDatasetRequest) -> dict[str, Any]:
         database_url=_database_url(),
         job_ids=payload.job_ids,
         division=payload.division,
+        job_year=payload.job_year,
         over_plan_only=payload.over_plan_only,
         include_no_actuals=payload.include_no_actuals,
         include_completed=payload.include_completed,

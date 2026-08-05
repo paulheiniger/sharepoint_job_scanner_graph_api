@@ -78,6 +78,13 @@ def sales_engine():
                 """
             )
         )
+        connection.execute(text("ALTER TABLE job_board_static_snapshot ADD COLUMN source_year INTEGER"))
+        connection.execute(
+            text(
+                "UPDATE job_board_static_snapshot SET source_year = "
+                "CASE WHEN job_id = 'JOB-P2' THEN 2025 ELSE 2026 END"
+            )
+        )
         connection.execute(
             text(
                 """
@@ -177,6 +184,16 @@ def test_sales_pipeline_can_include_completed() -> None:
     assert any(
         row["pipeline_status"] == "Completed" for row in result["stage_rollup"]
     )
+
+
+def test_sales_pipeline_and_followups_filter_by_source_job_year() -> None:
+    pipeline = get_sales_pipeline(engine=sales_engine(), job_year=2026, limit=10)
+    followups = get_sales_followups(engine=sales_engine(), job_year=2026, limit=10)
+
+    assert pipeline["filters_applied"]["job_year"] == 2026
+    assert {row["job_id"] for row in pipeline["records"]} == {"JOB-P1", "JOB-C1"}
+    assert [row["job_id"] for row in followups["records"]] == ["JOB-P1"]
+    assert all(row["source_year"] == 2026 for row in pipeline["records"])
 
 
 def test_sales_followups_prioritize_overdue_and_explain_missing_data() -> None:

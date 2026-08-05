@@ -993,6 +993,12 @@ class JobSearchRequest(BaseModel):
         max_length=200,
         description="Exact deal owner or assigned user.",
     )
+    job_year: int | None = Field(
+        default=None,
+        ge=2000,
+        le=2100,
+        description="Source job year, such as 2026. Omit to include all years.",
+    )
     needs_attention: bool | None = Field(
         default=None,
         description="True returns jobs with operational warnings or missing artifacts.",
@@ -1027,6 +1033,91 @@ class JobSearchResponse(BaseModel):
     response_budget: dict[str, Any] = Field(default_factory=dict)
 
 
+class SharePointDocumentSearchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(
+        min_length=1,
+        max_length=500,
+        description="File-name, folder-path, or extracted document-text query.",
+    )
+    job_id: str = Field(
+        default="",
+        max_length=200,
+        description="Optional authoritative Spray-Tec job ID.",
+    )
+    document_type: str = Field(
+        default="",
+        max_length=100,
+        description="Optional indexed type such as estimate, proposal, contract, or warranty.",
+    )
+    limit: int = Field(default=10, ge=1, le=20)
+
+
+class SharePointDocumentSearchResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: str
+    query: str
+    filters_applied: dict[str, Any]
+    records: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
+    coverage: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class SharePointDocumentFetchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    document_id: str = Field(
+        min_length=1,
+        max_length=300,
+        description="Stable document_id returned by searchSharePointDocuments.",
+    )
+    max_chars: int = Field(
+        default=40_000,
+        ge=1_000,
+        le=80_000,
+        description="Maximum readable source text returned to the Assistant.",
+    )
+    allow_graph_download: bool = Field(
+        default=True,
+        description=(
+            "When stored extracted text is missing, use stored Graph identifiers "
+            "for one bounded read-only download and temporary extraction."
+        ),
+    )
+
+
+class SharePointDocumentFetchResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: str
+    document_id: str
+    job_id: str
+    document_type: str | None = None
+    file_name: str
+    sharepoint_url: str | None = None
+    folder_path: str | None = None
+    relative_path: str | None = None
+    mime_type: str | None = None
+    file_extension: str | None = None
+    size_bytes: int | None = None
+    modified_at: str | None = None
+    source_year: int | None = None
+    source_division: str | None = None
+    extraction_status: str | None = None
+    extraction_method: str | None = None
+    extracted_at: str | None = None
+    requires_ocr: bool = False
+    content: str = ""
+    content_source: str
+    content_available: bool
+    included_sections: int = 0
+    total_sections: int = 0
+    truncated: bool = False
+    warnings: list[str] = Field(default_factory=list)
+
+
 class JobContextResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1055,11 +1146,64 @@ class JobContextResponse(BaseModel):
     response_budget: dict[str, Any] = Field(default_factory=dict)
 
 
+class WarrantySummaryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    job_ids: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(
+        default_factory=list,
+        max_length=25,
+        description="Optional authoritative job IDs.",
+    )
+    job_year: int | None = Field(default=None, ge=2000, le=2100)
+    division: str = Field(default="", max_length=100)
+    warranty_status: Literal["", "issued", "reported", "proposed"] = ""
+    expiring_after: date | None = Field(
+        default=None,
+        description="Return warranties expiring on or after this date.",
+    )
+    expiring_before: date | None = Field(
+        default=None,
+        description="Return warranties expiring on or before this date.",
+    )
+    needs_review: bool | None = Field(
+        default=None,
+        description="Filter records with conflicts, missing duration, or uncertain start dates.",
+    )
+    limit: int = Field(default=10, ge=1, le=25)
+
+
+class WarrantySummaryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: str
+    as_of: str
+    filters_applied: dict[str, Any]
+    headline_metrics: dict[str, Any]
+    status_rollup: list[dict[str, Any]] = Field(default_factory=list)
+    category_rollup: list[dict[str, Any]] = Field(default_factory=list)
+    records: list[dict[str, Any]] = Field(default_factory=list, max_length=25)
+    attention_items: list[dict[str, Any]] = Field(default_factory=list, max_length=25)
+    review_queue_summary: dict[str, Any] = Field(default_factory=dict)
+    data_quality_tasks: list[dict[str, Any]] = Field(default_factory=list, max_length=25)
+    source_links: list[JobSourceLink] = Field(default_factory=list)
+    source_tables: list[str] = Field(default_factory=list)
+    data_freshness: dict[str, Any] = Field(default_factory=dict)
+    coverage: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+    response_budget: dict[str, Any] = Field(default_factory=dict)
+
+
 class SalesPipelineRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     division: str = Field(default="", max_length=100)
     owner: str = Field(default="", max_length=200)
+    job_year: int | None = Field(
+        default=None,
+        ge=2000,
+        le=2100,
+        description="Source job year, such as 2026. Omit to include all years.",
+    )
     pipeline_statuses: list[
         Annotated[str, Field(min_length=1, max_length=100)]
     ] = Field(default_factory=list, max_length=10)
@@ -1075,6 +1219,12 @@ class SalesFollowupRequest(BaseModel):
 
     division: str = Field(default="", max_length=100)
     owner: str = Field(default="", max_length=200)
+    job_year: int | None = Field(
+        default=None,
+        ge=2000,
+        le=2100,
+        description="Source job year, such as 2026. Omit to include all years.",
+    )
     followup_status: str = Field(
         default="",
         max_length=100,
@@ -1108,6 +1258,12 @@ class OperationsBacklogRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     division: str = Field(default="", max_length=100)
+    job_year: int | None = Field(
+        default=None,
+        ge=2000,
+        le=2100,
+        description="Source job year, such as 2026. Omit to include all years.",
+    )
     readiness_statuses: list[
         Annotated[str, Field(min_length=1, max_length=100)]
     ] = Field(default_factory=list, max_length=10)
@@ -1125,6 +1281,12 @@ class OperationsScheduleRequest(BaseModel):
 
     division: str = Field(default="", max_length=100)
     crew_leader: str = Field(default="", max_length=200)
+    job_year: int | None = Field(
+        default=None,
+        ge=2000,
+        le=2100,
+        description="Source job year, distinct from the schedule date window.",
+    )
     start_date: date | None = Field(
         default=None,
         description=(
@@ -1300,6 +1462,12 @@ class ProductionBudgetHealthRequest(BaseModel):
         ),
     )
     division: str = Field(default="", max_length=100)
+    job_year: int | None = Field(
+        default=None,
+        ge=2000,
+        le=2100,
+        description="Source job year, such as 2026. Omit to include all years.",
+    )
     over_plan_only: bool = Field(
         default=False,
         description="Return only jobs whose comparable tracked usage exceeds plan.",
@@ -1363,6 +1531,12 @@ class ChartDatasetRequest(BaseModel):
     dataset: ChartDatasetName
     division: str = Field(default="", max_length=100)
     owner: str = Field(default="", max_length=200)
+    job_year: int | None = Field(
+        default=None,
+        ge=2000,
+        le=2100,
+        description="Source job year for sales and operations chart datasets.",
+    )
     pipeline_statuses: list[Annotated[str, Field(min_length=1, max_length=100)]] = Field(
         default_factory=list,
         max_length=10,
@@ -1411,6 +1585,56 @@ class ChartSeries(BaseModel):
     field: str
     label: str
     unit: Literal["currency", "count", "days", "hours", "ratio"]
+    number_format: Literal[
+        "currency_0", "integer", "decimal_1", "percent_1"
+    ]
+    color: str = Field(pattern=r"^#[0-9A-Fa-f]{6}$")
+    axis: Literal["primary", "secondary"]
+    panel: str
+
+
+class ChartSort(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    field: str
+    direction: Literal["ascending", "descending"]
+    then_by: list[str] = Field(default_factory=list)
+
+
+class ChartReferenceLine(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    field: str
+    value: float
+    label: str
+
+
+class ChartDisplay(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    contract_version: Literal["spraytec.chart_display.v1"]
+    orientation: Literal["vertical", "horizontal", "timeline"]
+    sort: ChartSort
+    category_order: list[str] = Field(default_factory=list)
+    category_colors: dict[str, str] = Field(default_factory=dict)
+    multi_scale_strategy: Literal["shared_axis", "dual_axis", "small_multiples"]
+    show_legend: bool
+    show_data_labels: bool
+    zero_baseline: bool
+    reference_lines: list[ChartReferenceLine] = Field(default_factory=list)
+
+
+class ChartStaging(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    aggregation_mode: Literal["endpoint_on_request"]
+    source_storage: Literal[
+        "operational_query", "current_snapshot", "hybrid_current_snapshot"
+    ]
+    snapshot_tables: list[str] = Field(default_factory=list)
+    freshness: dict[str, Any] = Field(default_factory=dict)
+    historical_series_available: bool
+    historical_limitation: str
 
 
 class ChartDatasetResponse(BaseModel):
@@ -1425,11 +1649,13 @@ class ChartDatasetResponse(BaseModel):
     start_field: str | None = None
     end_field: str | None = None
     series: list[ChartSeries]
+    display: ChartDisplay
     as_of: str | None = None
     truth_class: str
     filters_applied: dict[str, Any] = Field(default_factory=dict)
     rows: list[dict[str, Any]] = Field(default_factory=list, max_length=125)
     source_tables: list[str] = Field(default_factory=list)
     data_freshness: dict[str, Any] = Field(default_factory=dict)
+    staging: ChartStaging
     coverage: dict[str, Any] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)

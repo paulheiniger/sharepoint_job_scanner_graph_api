@@ -57,6 +57,7 @@ TRACKING_FIELDS = (
 )
 JOB_FIELDS = (
     "job_id",
+    "source_year",
     "customer",
     "job_name",
     "division",
@@ -136,6 +137,7 @@ def get_production_budget_health(
     engine: Engine | None = None,
     job_ids: Iterable[str] = (),
     division: str = "",
+    job_year: int | None = None,
     over_plan_only: bool = False,
     include_no_actuals: bool = False,
     include_completed: bool = False,
@@ -186,6 +188,12 @@ def get_production_budget_health(
             (),
         )
         job_rows = _job_rows(resolved_engine, ())
+        if job_year is not None and not any(
+            str(row.get("source_year") or "").strip() for row in job_rows
+        ):
+            raise JobIntelligenceUnavailableError(
+                "The job source does not expose source_year for job-year filtering."
+            )
         job_lookup = _variant_lookup(job_rows)
         budget_lookup = _budget_lookup(budget_rows)
 
@@ -229,6 +237,8 @@ def get_production_budget_health(
         for job_id, tracking in rolled_tracking.items():
             metadata = _lookup_by_variants(job_lookup, job_id)
             if division_key and str(metadata.get("division") or "").lower() != division_key:
+                continue
+            if job_year is not None and str(metadata.get("source_year") or "").strip() != str(job_year):
                 continue
             if not include_completed and _is_completed(metadata):
                 continue
@@ -327,6 +337,7 @@ def get_production_budget_health(
             "filters_applied": {
                 "job_ids": list(normalized_job_ids),
                 "division": division.strip() or None,
+                "job_year": job_year,
                 "over_plan_only": over_plan_only,
                 "include_no_actuals": include_no_actuals,
                 "include_completed": include_completed,
@@ -840,6 +851,7 @@ def _build_job_record(
     ).strip()
     record = {
         "job_id": job_id,
+        "source_year": metadata.get("source_year"),
         "customer": metadata.get("customer"),
         "job_name": metadata.get("job_name"),
         "division": metadata.get("division"),

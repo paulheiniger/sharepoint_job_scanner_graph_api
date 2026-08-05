@@ -51,6 +51,13 @@ def test_page_dispatch_always_renders_source_footer() -> None:
     assert app.DASHBOARD_LEGACY_PAGES == DASHBOARD_LEGACY_PAGES
 
 
+def test_warranty_registry_is_a_core_page_with_provenance_notes() -> None:
+    assert "Warranty Registry" in DASHBOARD_CORE_PAGES
+    assert references_for_page("Warranty Registry")
+    assert audit_notes_for_page("Warranty Registry")
+    assert "warranty_registry_page()" in inspect.getsource(app.render_dashboard_page)
+
+
 def test_sales_and_operations_sources_disclose_fallback_paths() -> None:
     sales_text = " ".join(str(value) for row in references_for_page("Sales Dashboard") for value in row.values()).lower()
     operations_text = " ".join(
@@ -167,3 +174,43 @@ def test_dashboard_link_columns_keep_only_clickable_urls(monkeypatch) -> None:
     ]
     assert config["folder_link_or_path"]["display_text"] == "Open"
     assert config["source_file_url"]["label"] == "Source File"
+
+
+def test_job_year_filter_uses_source_year_when_present() -> None:
+    frame = pd.DataFrame(
+        [
+            {"job_id": "job-2026", "source_year": 2026.0},
+            {"job_id": "job-2025", "source_year": 2025},
+        ]
+    )
+
+    filtered = app.filter_job_years(frame, ["2026"])
+
+    assert filtered["job_id"].tolist() == ["job-2026"]
+    assert app.job_year_options(frame) == ["2026", "2025"]
+
+
+def test_job_year_filter_joins_derived_rows_by_stable_job_id(monkeypatch) -> None:
+    monkeypatch.setattr(
+        app,
+        "load_job_year_lookup",
+        lambda: pd.DataFrame(
+            [
+                {"job_id": "job-2026", "source_year": 2026},
+                {"job_id": "job-2025", "source_year": 2025},
+            ]
+        ),
+    )
+    frame = pd.DataFrame([{"job_id": "job-2026"}, {"job_id": "job-2025"}])
+
+    filtered = app.filter_job_years(frame, ["2026"])
+
+    assert filtered["job_id"].tolist() == ["job-2026"]
+
+
+def test_job_year_filter_does_not_show_unfilterable_aggregate_rows() -> None:
+    aggregate = pd.DataFrame([{"division": "Roofing", "job_count": 999}])
+
+    filtered = app.filter_job_years(aggregate, ["2026"])
+
+    assert filtered.empty
