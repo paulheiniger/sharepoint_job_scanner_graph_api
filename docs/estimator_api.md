@@ -50,6 +50,20 @@ prompts for the configured private SAM2 service. It returns up to three
 deterministically ranked mask candidates and one combined satellite overlay.
 No OpenAI API is called.
 
+When Kentucky public LiDAR is available, the API reuses the same coarse,
+image-aligned height-above-ground grid as the Streamlit workflow. SAM2 remains
+responsible for extending beyond an incomplete source footprint. LiDAR then
+scores the coarse block band immediately inside and outside each candidate
+edge, rewarding elevated roof inside, ground outside, and low elevated leakage
+beyond the boundary. Connected elevated components establish the roof-support
+band. Because blocks are averages, measured low and mixed transition blocks
+below that band are excluded from a guarded `sam2_lidar_high_band` variant;
+unsampled blocks are retained and reported through `lidar_sampled_fraction`.
+The alternative is returned alongside the unmodified SAM2 mask. The guard
+rejects a trim that removes more than 12% of the candidate or retains less than
+90% of the reviewed footprint. LiDAR never expands or becomes the polygon and
+does not infer pitch.
+
 The operation is fail-closed: a missing, unreachable, unauthorized, or invalid
 SAM2 response returns an error and never substitutes the Streamlit MVP's manual
 rectangle fallback. The recommended candidate is only a ranking aid. Display

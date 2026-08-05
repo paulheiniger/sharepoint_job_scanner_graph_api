@@ -5205,6 +5205,15 @@
             "title": "Area Ratio To Footprint",
             "type": "number"
           },
+          "boundary_refinement": {
+            "default": "sam2",
+            "enum": [
+              "sam2",
+              "sam2_lidar_high_band"
+            ],
+            "title": "Boundary Refinement",
+            "type": "string"
+          },
           "candidate_id": {
             "pattern": "^sam2-[a-f0-9]{16}$",
             "title": "Candidate Id",
@@ -5217,6 +5226,84 @@
           "footprint_overlap": {
             "title": "Footprint Overlap",
             "type": "number"
+          },
+          "lidar_boundary_score": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lidar Boundary Score"
+          },
+          "lidar_elevated_coverage": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lidar Elevated Coverage"
+          },
+          "lidar_ground_fraction": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lidar Ground Fraction"
+          },
+          "lidar_roof_leakage_outside": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lidar Roof Leakage Outside"
+          },
+          "lidar_roof_support_fraction": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lidar Roof Support Fraction"
+          },
+          "lidar_sampled_fraction": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lidar Sampled Fraction"
           },
           "model_name": {
             "title": "Model Name",
@@ -5335,6 +5422,29 @@
           "context_id": {
             "title": "Context Id",
             "type": "string"
+          },
+          "lidar_cell_pixels": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Lidar Cell Pixels",
+            "type": "integer"
+          },
+          "lidar_guidance_used": {
+            "default": false,
+            "title": "Lidar Guidance Used",
+            "type": "boolean"
+          },
+          "lidar_image_points": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Lidar Image Points",
+            "type": "integer"
+          },
+          "lidar_points": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Lidar Points",
+            "type": "integer"
           },
           "model_name": {
             "title": "Model Name",
@@ -6172,7 +6282,7 @@
   "info": {
     "description": "Estimator evidence, controlled workbook generation, and read-only operational intelligence for conversational agents.",
     "title": "Spray-Tec Business Intelligence API",
-    "version": "0.19.1"
+    "version": "0.20.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -6780,7 +6890,7 @@
     },
     "/v1/roof-measure/segment": {
       "post": {
-        "description": "Uses explicitly reviewed footprint IDs from a prior roof context to prompt the configured private SAM2 service. Returns up to three ranked candidate overlays. No OpenAI API or fallback rectangle is used, and a candidate must be confirmed before calculation.",
+        "description": "Uses explicitly reviewed footprint IDs from a prior roof context to prompt the configured private SAM2 service. When available, Kentucky LiDAR height-above-ground blocks score the inside/outside boundary band and can produce a guarded connected high-band alternative. Returns up to three ranked candidate overlays. No OpenAI API or fallback rectangle is used, and a candidate must be confirmed before calculation.",
         "operationId": "segmentRoofMeasureContext",
         "requestBody": {
           "content": {

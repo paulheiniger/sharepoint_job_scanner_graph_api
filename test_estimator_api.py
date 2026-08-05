@@ -266,7 +266,10 @@ def test_roof_measure_context_is_authenticated_and_returns_signed_images(
             "recommended_candidate_group_id": "",
             "site_resolution_reason": "No complete group was found.",
             "requires_site_confirmation": True,
-            "lidar_coverage": {"available": False},
+            "lidar_coverage": {
+                "available": False,
+                "asset_url": "https://lidar.test/private-source.copc.laz",
+            },
             "attributions": ["Imagery from Mapbox."],
             "warnings": [],
         },
@@ -299,6 +302,7 @@ def test_roof_measure_context_is_authenticated_and_returns_signed_images(
     )
     assert body["footprint_overlay_preview_base64"] == "encoded-preview"
     assert body["site_name"] == "Example School"
+    assert "asset_url" not in body["lidar_coverage"]
     asset = client.get(body["satellite_image_url"])
     assert asset.status_code == 200
     assert asset.content == b"png bytes"

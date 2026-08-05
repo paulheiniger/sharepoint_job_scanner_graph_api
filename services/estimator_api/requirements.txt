@@ -10,3 +10,5 @@ msal>=1.31.0
 pypdf>=4.0.0
 Pillow>=10.4.0
 numpy>=1.26.0,<3.0.0
+laspy[lazrs]>=2.5
+pyproj>=3.6

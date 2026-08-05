@@ -205,6 +205,7 @@ def create_roof_measure_context(
                 "collection": coverage.collection,
                 "captured_at": coverage.captured_at,
                 "point_count": coverage.point_count,
+                "asset_url": coverage.asset_url,
                 "provider": coverage.provider,
                 "attribution": coverage.attribution,
                 "warning": coverage.warning,

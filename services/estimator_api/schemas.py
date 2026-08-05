@@ -535,6 +535,7 @@ class RoofMeasureSegmentationCandidate(BaseModel):
     candidate_id: str = Field(pattern=r"^sam2-[a-f0-9]{16}$")
     rank: int = Field(ge=1, le=3)
     provider_rank: int = Field(ge=1, le=3)
+    boundary_refinement: Literal["sam2", "sam2_lidar_high_band"] = "sam2"
     model_name: str
     model_version: str
     model_score: float
@@ -542,6 +543,20 @@ class RoofMeasureSegmentationCandidate(BaseModel):
     footprint_overlap: float
     footprint_coverage: float
     area_ratio_to_footprint: float
+    lidar_roof_support_fraction: float | None = Field(
+        default=None,
+        ge=0,
+        le=1,
+    )
+    lidar_sampled_fraction: float | None = Field(default=None, ge=0, le=1)
+    lidar_ground_fraction: float | None = Field(default=None, ge=0, le=1)
+    lidar_elevated_coverage: float | None = Field(default=None, ge=0, le=1)
+    lidar_boundary_score: float | None = Field(default=None, ge=0, le=1)
+    lidar_roof_leakage_outside: float | None = Field(
+        default=None,
+        ge=0,
+        le=1,
+    )
     plan_area_sqft: float = Field(gt=0)
     perimeter_ft: float = Field(gt=0)
     section_count: int = Field(ge=1)
@@ -570,6 +585,10 @@ class RoofMeasureSegmentationResponse(BaseModel):
     )
     model_name: str
     model_version: str
+    lidar_guidance_used: bool = False
+    lidar_points: int = Field(default=0, ge=0)
+    lidar_image_points: int = Field(default=0, ge=0)
+    lidar_cell_pixels: int = Field(default=0, ge=0)
     warnings: list[str] = Field(default_factory=list)
 
 

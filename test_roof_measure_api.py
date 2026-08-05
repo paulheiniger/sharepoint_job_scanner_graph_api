@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+import json
 import time
 
 from PIL import Image
@@ -15,6 +16,7 @@ from roof_measure.api_context import (
     resolve_roof_measure_asset,
 )
 from roof_measure.api_segmentation import segment_roof_measure_context
+from roof_measure.lidar import LidarHeightGrid
 from roof_measure.map_reference import (
     BuildingFootprint,
     BuildingFootprintLookup,
@@ -245,6 +247,84 @@ def test_sam2_refinement_fails_closed_when_service_fails(
             sam2_api_key="",
             artifact_dir=artifact_dir,
         )
+
+
+def test_sam2_lidar_guidance_scores_elevated_edge_beyond_footprint(
+    roof_context,
+    monkeypatch,
+) -> None:
+    artifact_dir, context = roof_context
+    context["lidar_coverage"]["asset_url"] = "https://lidar.test/roof.copc.laz"
+    context_path = artifact_dir / context["context_id"] / "context.json"
+    context_path.write_text(json.dumps(context), encoding="utf-8")
+
+    height_grid = np.zeros((10, 10), dtype=float)
+    height_grid[3:7, 4:7] = 12.0
+    monkeypatch.setattr(
+        "roof_measure.api_segmentation.kyfromabove_height_grid_for_image",
+        lambda **_kwargs: LidarHeightGrid(
+            height_grid=height_grid,
+            cell_pixels=10,
+            lidar_points=2000,
+            image_points=800,
+        ),
+    )
+
+    extended_roof = np.zeros((100, 100), dtype=bool)
+    extended_roof[30:70, 40:70] = True
+    # A non-elevated coarse transition cell extends from the connected roof
+    # band. The guarded high-band alternative excludes it.
+    extended_roof[40:50, 30:40] = True
+
+    class FakeSegmenter:
+        def __init__(self, **_kwargs):
+            pass
+
+        def segment(self, _image, prompts):
+            assert prompts.mask_input is not None
+            assert prompts.mask_input[40:61, 40:61].any()
+            assert not prompts.mask_input[30:40, 30:80].any()
+            assert prompts.positive_points
+            return SegmentationResult(
+                candidates=[MaskCandidate(extended_roof, 0.9, "extended")],
+                model_name="sam2_remote",
+                model_version="test",
+            )
+
+    monkeypatch.setattr(
+        "roof_measure.api_segmentation.Sam2RoofSegmenter",
+        FakeSegmenter,
+    )
+
+    segmented = segment_roof_measure_context(
+        context_id=context["context_id"],
+        selected_footprint_ids=["fp-01"],
+        sam2_url="http://sam2.test/segment",
+        sam2_api_key="test-key",
+        artifact_dir=artifact_dir,
+    )
+
+    assert segmented["lidar_guidance_used"] is True
+    assert segmented["lidar_points"] == 2000
+    assert segmented["lidar_image_points"] == 800
+    assert segmented["lidar_cell_pixels"] == 10
+    refinements = {
+        item["boundary_refinement"]: item
+        for item in segmented["candidates"]
+    }
+    assert set(refinements) == {"sam2", "sam2_lidar_high_band"}
+    assert (
+        refinements["sam2_lidar_high_band"]["plan_area_sqft"]
+        < refinements["sam2"]["plan_area_sqft"]
+    )
+    candidate = refinements["sam2_lidar_high_band"]
+    assert candidate["area_ratio_to_footprint"] > 1.0
+    assert candidate["lidar_roof_support_fraction"] == 1.0
+    assert candidate["lidar_sampled_fraction"] == 1.0
+    assert candidate["lidar_ground_fraction"] == 0.0
+    assert candidate["lidar_elevated_coverage"] == 1.0
+    assert candidate["lidar_boundary_score"] > 0.5
+    assert candidate["lidar_roof_leakage_outside"] == 0.0
 
 
 def test_candidate_selection_keeps_nearest_and_largest_buildings() -> None:
