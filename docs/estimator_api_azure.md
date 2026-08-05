@@ -167,6 +167,16 @@ python -m services.estimator_api.generate_openapi \
   --output services/estimator_api/openapi.json
 ```
 
+Import the deployed GPT-specific contract from:
+
+```text
+https://spraytec-business-api.icysand-5925ab36.eastus2.azurecontainerapps.io/openapi-actions.json
+```
+
+Do not import `/openapi.json` into a Custom GPT. That is the complete FastAPI
+developer schema and includes operational endpoints and response shapes that
+the GPT action validator does not accept.
+
 The published GPT action was verified with GPT-5.6 Thinking. If the Custom GPT
 recommendation selector does not expose that model, leave it unset and tell
 testers to select GPT-5.6 Thinking for action-backed requests. Keep workbook

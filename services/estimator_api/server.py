@@ -123,7 +123,7 @@ app = FastAPI(
         "Estimator evidence, controlled workbook generation, and read-only "
         "operational intelligence for conversational agents."
     ),
-    version="0.21.2",
+    version="0.21.3",
     servers=[{"url": PUBLIC_API_ORIGIN}],
 )
 
@@ -283,7 +283,21 @@ def service_root() -> dict[str, Any]:
         "health": "/health",
         "privacy": "/privacy",
         "openapi": "/openapi.json",
+        "action_openapi": "/openapi-actions.json",
     }
+
+
+@app.get(
+    "/openapi-actions.json",
+    include_in_schema=False,
+    response_class=FileResponse,
+)
+def action_openapi() -> FileResponse:
+    """Return the GPT-safe OpenAPI contract generated for external actions."""
+    return FileResponse(
+        PROJECT_ROOT / "services" / "estimator_api" / "openapi.json",
+        media_type="application/json",
+    )
 
 
 @app.api_route(

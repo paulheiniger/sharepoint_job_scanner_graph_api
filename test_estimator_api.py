@@ -70,7 +70,20 @@ def test_service_root_supports_deployment_connectivity_checks() -> None:
         "health": "/health",
         "privacy": "/privacy",
         "openapi": "/openapi.json",
+        "action_openapi": "/openapi-actions.json",
     }
+
+
+def test_action_openapi_serves_checked_in_gpt_contract() -> None:
+    response = client.get("/openapi-actions.json")
+    checked_in = json.loads(
+        Path("services/estimator_api/openapi.json").read_text(encoding="utf-8")
+    )
+
+    assert response.status_code == 200
+    assert response.json() == checked_in
+    assert "/health" not in response.json()["paths"]
+    assert "/openapi-actions.json" not in client.get("/openapi.json").json()["paths"]
 
 
 def test_privacy_policy_is_public_html_and_excluded_from_openapi(monkeypatch) -> None:
