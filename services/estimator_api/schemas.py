@@ -591,6 +591,9 @@ class RoofMeasureSegmentationResponse(BaseModel):
     )
     model_name: str
     model_version: str
+    source_view: Literal["context", "footprint_fitted"] = "context"
+    source_zoom: float = Field(ge=0, le=22)
+    source_pixels_per_foot: float = Field(gt=0)
     lidar_guidance_used: bool = False
     lidar_points: int = Field(default=0, ge=0)
     lidar_image_points: int = Field(default=0, ge=0)

@@ -138,6 +138,131 @@ def test_context_view_zoom_supports_conversational_close_detail() -> None:
     assert VIEW_ZOOM["close_detail"] == 20.0
 
 
+def test_segmentation_view_fits_and_recenters_selected_footprint(
+    roof_context,
+    monkeypatch,
+) -> None:
+    from roof_measure.api_segmentation import (
+        _fit_segmentation_view_to_footprints,
+        _fitted_components_to_original,
+    )
+
+    _artifact_dir, context = roof_context
+    selected_components = context["footprint_candidates"][0]["components"]
+    requested: dict[str, float] = {}
+
+    class FakeDetailProvider:
+        def __init__(self, token: str):
+            assert token == "mapbox-test-token"
+
+        def static_satellite_image_at(self, **kwargs) -> MapboxStaticImage:
+            requested.update(kwargs)
+            return MapboxStaticImage(
+                ok=True,
+                image_bytes=_png_bytes(),
+                latitude=float(kwargs["latitude"]),
+                longitude=float(kwargs["longitude"]),
+                zoom=float(kwargs["zoom"]),
+                pixels_per_foot=6.8,
+            )
+
+    monkeypatch.setattr(
+        "roof_measure.api_segmentation.MapboxReferenceProvider",
+        FakeDetailProvider,
+    )
+    fitted, warning = _fit_segmentation_view_to_footprints(
+        context=context,
+        selected_components=selected_components,
+        mapbox_token="mapbox-test-token",
+    )
+
+    assert fitted is not None
+    assert 19.2 < requested["zoom"] < 19.4
+    fitted_polygon = fitted.components[0]["polygon"]
+    assert min(point["x"] for point in fitted_polygon) == pytest.approx(16, abs=1)
+    assert max(point["x"] for point in fitted_polygon) == pytest.approx(84, abs=1)
+    restored = _fitted_components_to_original(
+        fitted.components,
+        fitted_view=fitted,
+        original_image_size=(100, 100),
+    )
+    for restored_point, original_point in zip(
+        restored[0]["polygon"],
+        selected_components[0]["polygon"],
+        strict=True,
+    ):
+        assert restored_point["x"] == pytest.approx(original_point["x"])
+        assert restored_point["y"] == pytest.approx(original_point["y"])
+    assert "footprint-fitted" in warning
+
+
+def test_sam2_uses_fitted_source_then_preserves_context_coordinates(
+    roof_context,
+    monkeypatch,
+) -> None:
+    artifact_dir, context = roof_context
+
+    class FakeDetailProvider:
+        def __init__(self, _token: str):
+            pass
+
+        def static_satellite_image_at(self, **kwargs) -> MapboxStaticImage:
+            return MapboxStaticImage(
+                ok=True,
+                image_bytes=_png_bytes(),
+                latitude=float(kwargs["latitude"]),
+                longitude=float(kwargs["longitude"]),
+                zoom=float(kwargs["zoom"]),
+                pixels_per_foot=6.8,
+            )
+
+    fitted_mask = np.zeros((100, 100), dtype=bool)
+    fitted_mask[16:85, 16:85] = True
+
+    class FakeSegmenter:
+        def __init__(self, **_kwargs):
+            pass
+
+        def segment(self, image, prompts):
+            assert image.shape[:2] == (100, 100)
+            assert prompts.mask_input[16:85, 16:85].any()
+            return SegmentationResult(
+                candidates=[MaskCandidate(fitted_mask, 0.9, "fitted")],
+                model_name="sam2_remote",
+                model_version="test",
+            )
+
+    monkeypatch.setattr(
+        "roof_measure.api_segmentation.MapboxReferenceProvider",
+        FakeDetailProvider,
+    )
+    monkeypatch.setattr(
+        "roof_measure.api_segmentation.Sam2RoofSegmenter",
+        FakeSegmenter,
+    )
+    segmented = segment_roof_measure_context(
+        context_id=context["context_id"],
+        selected_footprint_ids=["fp-01"],
+        sam2_url="http://sam2.test/segment",
+        sam2_api_key="test-key",
+        mapbox_token="mapbox-test-token",
+        artifact_dir=artifact_dir,
+    )
+
+    assert segmented["source_view"] == "footprint_fitted"
+    assert 19.2 < segmented["source_zoom"] < 19.4
+    assert segmented["source_pixels_per_foot"] == 6.8
+    stored = load_roof_measure_context(
+        context_id=context["context_id"],
+        artifact_dir=artifact_dir,
+    )
+    candidate = stored["sam2_candidates"][0]
+    xs = [point["x"] for point in candidate["components"][0]["polygon"]]
+    assert min(xs) == pytest.approx(40, abs=1)
+    assert max(xs) == pytest.approx(60, abs=1)
+    assert "display_components" not in candidate
+
+
 def test_calculate_uses_reviewed_footprint_and_optional_pitch(roof_context) -> None:
     artifact_dir, context = roof_context
 

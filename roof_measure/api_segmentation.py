@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+from io import BytesIO
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
@@ -21,6 +23,7 @@ from .api_context import (
 )
 from .geometry import polygon_area_pixels, straighten_architectural_ring
 from .lidar import kyfromabove_height_grid_for_image
+from .map_reference import MapboxReferenceProvider, image_pixel_to_lon_lat
 from .polygonize import sections_from_mask
 from .segmentation import Sam2RoofSegmenter, SegmentationPrompts
 from .visualization import image_png_bytes
@@ -35,6 +38,16 @@ class _LidarGuidance:
     image_points: int
 
 
+@dataclass(frozen=True)
+class _FittedSegmentationView:
+    image: Image.Image
+    components: list[dict[str, Any]]
+    context: dict[str, Any]
+    original_center_x: float
+    original_center_y: float
+    scale: float
+
+
 def segment_roof_measure_context(
     *,
     context_id: str,
@@ -43,6 +56,7 @@ def segment_roof_measure_context(
     sam2_api_key: str,
     artifact_dir: Path,
     timeout_seconds: float = 90.0,
+    mapbox_token: str = "",
 ) -> dict[str, Any]:
     """Create reviewable SAM2 candidates from explicitly selected footprints."""
     if not str(sam2_url or "").strip():
@@ -69,14 +83,28 @@ def segment_roof_measure_context(
         )
 
     context_path = _context_path(artifact_dir, context_id)
-    image = Image.open(context_path / "satellite.png").convert("RGB")
-    image_array = np.asarray(image)
+    original_image = Image.open(context_path / "satellite.png").convert("RGB")
     selected_candidates = [candidate_by_id[item] for item in selected_footprint_ids]
-    components = [
+    original_components = [
         component
         for candidate in selected_candidates
         for component in candidate.get("components") or []
     ]
+    fitted_view, fitted_warning = _fit_segmentation_view_to_footprints(
+        context=context,
+        selected_components=original_components,
+        mapbox_token=mapbox_token,
+    )
+    if fitted_view is None:
+        image = original_image
+        components = original_components
+        segmentation_context = context
+    else:
+        image = fitted_view.image
+        components = fitted_view.components
+        segmentation_context = fitted_view.context
+        (context_path / "sam2-detail.png").write_bytes(image_png_bytes(image))
+    image_array = np.asarray(image)
     footprint_mask = _components_mask(image.size, components)
     if not footprint_mask.any():
         raise RoofMeasureInputError(
@@ -85,10 +113,13 @@ def segment_roof_measure_context(
 
     buffer_pixels = max(
         6,
-        min(48, int(round(float(context["pixels_per_foot"]) * 10.0))),
+        min(
+            192,
+            int(round(float(segmentation_context["pixels_per_foot"]) * 10.0)),
+        ),
     )
     lidar_guidance, lidar_warning = _load_lidar_guidance(
-        context=context,
+        context=segmentation_context,
         footprint_mask=footprint_mask,
     )
     corridor = _dilate_mask(footprint_mask, radius=buffer_pixels)
@@ -149,7 +180,7 @@ def segment_roof_measure_context(
                 section_id=f"sam2-candidate-{provider_index}",
                 source="sam2_candidate",
                 components=candidate_components,
-                pixels_per_foot=float(context["pixels_per_foot"]),
+                pixels_per_foot=float(segmentation_context["pixels_per_foot"]),
                 width=image.width,
                 height=image.height,
                 pitch_rise_per_12=None,
@@ -238,7 +269,7 @@ def segment_roof_measure_context(
     )
     orthogonalized = _orthogonalized_candidate(
         processed[0],
-        context=context,
+        context=segmentation_context,
         footprint_mask=footprint_mask,
         lidar_guidance=lidar_guidance,
         image_size=image.size,
@@ -262,11 +293,25 @@ def segment_roof_measure_context(
     for rank, item in enumerate(processed, start=1):
         item["rank"] = rank
 
+    if fitted_view is not None:
+        for item in processed:
+            item["display_components"] = item["components"]
+            item["components"] = _fitted_components_to_original(
+                item["components"],
+                fitted_view=fitted_view,
+                original_image_size=original_image.size,
+            )
+
     asset_name = _write_candidate_contact_sheet(
         context=context,
         candidates=processed,
         artifact_dir=artifact_dir,
+        source_asset_name=(
+            "sam2-detail.png" if fitted_view is not None else "satellite.png"
+        ),
     )
+    for item in processed:
+        item.pop("display_components", None)
     context["sam2_candidates"] = processed
     context["sam2_candidate_asset_name"] = asset_name
     context["sam2_source_footprint_ids"] = list(selected_footprint_ids)
@@ -281,12 +326,21 @@ def segment_roof_measure_context(
         "candidate_overlay_asset_name": asset_name,
         "model_name": segmentation.model_name,
         "model_version": segmentation.model_version,
+        "source_view": (
+            "footprint_fitted" if fitted_view is not None else "context"
+        ),
+        "source_zoom": round(float(segmentation_context["zoom"]), 2),
+        "source_pixels_per_foot": round(
+            float(segmentation_context["pixels_per_foot"]),
+            4,
+        ),
         "lidar_guidance_used": lidar_guidance is not None,
         "lidar_points": lidar_guidance.lidar_points if lidar_guidance else 0,
         "lidar_image_points": lidar_guidance.image_points if lidar_guidance else 0,
         "lidar_cell_pixels": lidar_guidance.cell_pixels if lidar_guidance else 0,
         "warnings": [
             *segmentation.warnings,
+            *([fitted_warning] if fitted_warning else []),
             *([lidar_warning] if lidar_warning else []),
             *(
                 [
@@ -335,11 +389,179 @@ def sam2_candidate_sections(
     )
 
 
+def _fit_segmentation_view_to_footprints(
+    *,
+    context: dict[str, Any],
+    selected_components: list[dict[str, Any]],
+    mapbox_token: str,
+    maximum_zoom: float = 22.0,
+    target_frame_fraction: float = 0.68,
+) -> tuple[_FittedSegmentationView | None, str]:
+    """Fetch the tightest safe source view that contains selected footprints."""
+    token = str(mapbox_token or "").strip()
+    points = [
+        point
+        for component in selected_components
+        for ring in [component.get("polygon") or [], *(component.get("holes") or [])]
+        for point in _ring_tuples(ring)
+    ]
+    if not token or not points:
+        return None, ""
+
+    width = int(context["image_width"])
+    height = int(context["image_height"])
+    min_x = min(point[0] for point in points)
+    max_x = max(point[0] for point in points)
+    min_y = min(point[1] for point in points)
+    max_y = max(point[1] for point in points)
+    span_x = max(max_x - min_x, 1.0)
+    span_y = max(max_y - min_y, 1.0)
+    fit_scale = min(
+        width * target_frame_fraction / span_x,
+        height * target_frame_fraction / span_y,
+    )
+    current_zoom = float(context["zoom"])
+    fitted_zoom = min(
+        float(maximum_zoom),
+        current_zoom + math.log2(max(fit_scale, 1.0)),
+    )
+    if fitted_zoom <= current_zoom + 0.05:
+        return None, ""
+
+    center_x = (min_x + max_x) / 2.0
+    center_y = (min_y + max_y) / 2.0
+    center_longitude, center_latitude = image_pixel_to_lon_lat(
+        center_x,
+        center_y,
+        center_latitude=float(context["latitude"]),
+        center_longitude=float(context["longitude"]),
+        zoom=current_zoom,
+        width=width,
+        height=height,
+    )
+    fetched = MapboxReferenceProvider(token).static_satellite_image_at(
+        latitude=center_latitude,
+        longitude=center_longitude,
+        zoom=fitted_zoom,
+        width=width,
+        height=height,
+    )
+    if (
+        not fetched.ok
+        or not fetched.image_bytes
+        or fetched.latitude is None
+        or fetched.longitude is None
+        or not fetched.pixels_per_foot
+    ):
+        return (
+            None,
+            "Footprint-fitted imagery was unavailable; SAM2 used the reviewed "
+            "context image instead.",
+        )
+
+    try:
+        image = Image.open(BytesIO(fetched.image_bytes)).convert("RGB")
+    except Exception:
+        return (
+            None,
+            "Footprint-fitted imagery was unreadable; SAM2 used the reviewed "
+            "context image instead.",
+        )
+    resolved_zoom = float(fetched.zoom or fitted_zoom)
+    scale = 2 ** (resolved_zoom - current_zoom)
+    fitted_components = _transform_components(
+        selected_components,
+        transform=lambda x, y: (
+            image.width / 2.0 + (x - center_x) * scale,
+            image.height / 2.0 + (y - center_y) * scale,
+        ),
+    )
+    fitted_context = {
+        **context,
+        "latitude": float(fetched.latitude),
+        "longitude": float(fetched.longitude),
+        "zoom": resolved_zoom,
+        "image_width": image.width,
+        "image_height": image.height,
+        "pixels_per_foot": float(fetched.pixels_per_foot),
+    }
+    return (
+        _FittedSegmentationView(
+            image=image,
+            components=fitted_components,
+            context=fitted_context,
+            original_center_x=center_x,
+            original_center_y=center_y,
+            scale=scale,
+        ),
+        (
+            f"SAM2 used a footprint-fitted zoom-{resolved_zoom:.2f} source image "
+            "centered on the confirmed footprint, with the full selected bounds "
+            "and a safety margin retained."
+        ),
+    )
+
+
+def _fitted_components_to_original(
+    components: list[dict[str, Any]],
+    *,
+    fitted_view: _FittedSegmentationView,
+    original_image_size: tuple[int, int],
+) -> list[dict[str, Any]]:
+    detail_width, detail_height = fitted_view.image.size
+    original_width, original_height = original_image_size
+    return _transform_components(
+        components,
+        transform=lambda x, y: (
+            fitted_view.original_center_x
+            + (x - detail_width / 2.0) / fitted_view.scale,
+            fitted_view.original_center_y
+            + (y - detail_height / 2.0) / fitted_view.scale,
+        ),
+        bounds=(original_width, original_height),
+    )
+
+
+def _transform_components(
+    components: list[dict[str, Any]],
+    *,
+    transform: Callable[[float, float], tuple[float, float]],
+    bounds: tuple[int, int] | None = None,
+) -> list[dict[str, Any]]:
+    def transform_ring(raw_ring: list[dict[str, Any]]) -> list[dict[str, float]]:
+        transformed: list[dict[str, float]] = []
+        ring = _ring_tuples(raw_ring)
+        if len(ring) > 1 and ring[0] == ring[-1]:
+            ring = ring[:-1]
+        for x, y in ring:
+            next_x, next_y = transform(x, y)
+            if bounds is not None:
+                next_x = max(0.0, min(float(bounds[0]), next_x))
+                next_y = max(0.0, min(float(bounds[1]), next_y))
+            transformed.append({"x": round(next_x, 4), "y": round(next_y, 4)})
+        return transformed
+
+    return [
+        {
+            "polygon": transform_ring(component.get("polygon") or []),
+            "holes": [
+                transform_ring(hole)
+                for hole in component.get("holes") or []
+            ],
+        }
+        for component in components
+    ]
+
+
 def _public_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
     return {
         key: value
         for key, value in candidate.items()
-        if key not in {"components", "selected_footprint_ids"}
+        if key not in {
+            "components",
+            "display_components",
+            "selected_footprint_ids",
+        }
     }
 
 
@@ -805,17 +1027,27 @@ def _write_candidate_contact_sheet(
     context: dict[str, Any],
     candidates: list[dict[str, Any]],
     artifact_dir: Path,
+    source_asset_name: str = "satellite.png",
 ) -> str:
     context_path = _context_path(artifact_dir, str(context["context_id"]))
-    source = Image.open(context_path / "satellite.png").convert("RGBA")
-    review_crop = _candidate_review_crop_box(source.size, candidates)
+    source = Image.open(context_path / source_asset_name).convert("RGBA")
+    display_candidates = [
+        {
+            **candidate,
+            "components": candidate.get("display_components")
+            or candidate.get("components")
+            or [],
+        }
+        for candidate in candidates
+    ]
+    review_crop = _candidate_review_crop_box(source.size, display_candidates)
     panels: list[Image.Image] = []
     colors = [
         (255, 80, 60, 255),
         (0, 180, 125, 255),
         (255, 183, 0, 255),
     ]
-    for candidate, color in zip(candidates, colors):
+    for candidate, color in zip(display_candidates, colors):
         panel = source.copy()
         overlay = Image.new("RGBA", panel.size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay)

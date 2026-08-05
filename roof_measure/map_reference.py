@@ -132,11 +132,29 @@ class MapboxReferenceProvider:
         reference = self.geocode(address)
         if not reference.ok or reference.latitude is None or reference.longitude is None:
             return MapboxStaticImage(ok=False, warning=reference.warning)
+        return self.static_satellite_image_at(
+            latitude=reference.latitude,
+            longitude=reference.longitude,
+            zoom=zoom,
+            width=width,
+            height=height,
+        )
+
+    def static_satellite_image_at(
+        self,
+        *,
+        latitude: float,
+        longitude: float,
+        zoom: float = 19.0,
+        width: int = 1280,
+        height: int = 1280,
+    ) -> MapboxStaticImage:
+        """Fetch north-up satellite imagery centered on explicit coordinates."""
         width = max(128, min(int(width), 1280))
         height = max(128, min(int(height), 1280))
         zoom = max(0.0, min(float(zoom), 22.0))
-        lon = reference.longitude
-        lat = reference.latitude
+        lon = float(longitude)
+        lat = float(latitude)
         try:
             response = requests.get(
                 (
@@ -659,6 +677,31 @@ def _mercator_world_pixels(longitude: float, latitude: float, world_size: float)
     latitude_radians = math.radians(clipped_latitude)
     y = (1 - math.asinh(math.tan(latitude_radians)) / math.pi) / 2 * world_size
     return x, y
+
+
+def image_pixel_to_lon_lat(
+    x: float,
+    y: float,
+    *,
+    center_latitude: float,
+    center_longitude: float,
+    zoom: float,
+    width: int,
+    height: int,
+) -> tuple[float, float]:
+    """Convert a north-up Mapbox image pixel to longitude and latitude."""
+    world_size = 512 * (2**float(zoom))
+    center_x, center_y = _mercator_world_pixels(
+        center_longitude,
+        center_latitude,
+        world_size,
+    )
+    world_x = center_x + float(x) - float(width) / 2.0
+    world_y = center_y + float(y) - float(height) / 2.0
+    longitude = world_x / world_size * 360.0 - 180.0
+    mercator_y = math.pi * (1.0 - 2.0 * world_y / world_size)
+    latitude = math.degrees(math.atan(math.sinh(mercator_y)))
+    return longitude, latitude
 
 
 def _web_mercator_pixels_per_foot(*, latitude: float, zoom: float) -> float:

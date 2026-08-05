@@ -402,6 +402,9 @@ def test_roof_measure_segmentation_returns_reviewable_candidates(monkeypatch) ->
             "candidate_overlay_asset_name": "sam2-candidates-0123456789abcdef.png",
             "model_name": "sam2_remote",
             "model_version": "test",
+            "source_view": "footprint_fitted",
+            "source_zoom": 20.25,
+            "source_pixels_per_foot": 7.5,
             "warnings": ["Confirm a candidate before calculation."],
         },
     )

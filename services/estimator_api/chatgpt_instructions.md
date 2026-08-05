@@ -102,11 +102,13 @@ state uncertainty, coverage, and warnings. Never invent unavailable results.
   with `whole_site`; do not compensate for a wrong address by measuring a nearby
   building. Do not search the web for roof dimensions when this action is
   available.
-- If the user asks to zoom in further on a small site, call
-  `getRoofMeasureContext` again with the same address and `view: close_detail`.
-  This fetches a new zoom-20 source image rather than enlarging the old pixels.
-  Inspect the returned overlay again and require footprint confirmation again.
-  Do not use `close_detail` when any intended roof would touch or leave the image.
+- Do not retrieve an extra-close image before the intended footprint is known.
+  After footprint confirmation, `segmentRoofMeasureContext` automatically
+  retrieves the tightest safe image centered on all selected footprint bounds,
+  retains a safety margin, and reports `source_zoom`. If that retrieval fails,
+  it uses the reviewed context image and warns. A conversational request for a
+  closer view should therefore reuse the confirmed footprint through this
+  segmentation action, not enlarge old pixels or guess a fixed zoom.
 - Do not call an OpenAI model or use general visual reasoning to invent a roof
   polygon. After the user confirms the intended footprint IDs, call
   `segmentRoofMeasureContext` before calculation unless the user explicitly

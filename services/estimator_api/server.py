@@ -117,7 +117,7 @@ app = FastAPI(
         "Estimator evidence, controlled workbook generation, and read-only "
         "operational intelligence for conversational agents."
     ),
-    version="0.20.5",
+    version="0.20.6",
 )
 
 
@@ -456,10 +456,9 @@ def roof_measure_context(
     operation_id="segmentRoofMeasureContext",
     summary="Create reviewable SAM2 roof-mask candidates",
     description=(
-        "Uses reviewed footprint IDs to prompt private SAM2. When available, "
-        "LiDAR scores boundary bands and adds guarded high-band candidates. "
-        "Returns up to three overlays. No OpenAI API or fallback rectangle is "
-        "used; confirmation is required before calculation."
+        "Uses reviewed footprint IDs to fetch a tightly fitted source image and "
+        "prompt private SAM2. LiDAR adds guarded high-band candidates when "
+        "available. Returns up to three overlays; confirmation is required."
     ),
 )
 def roof_measure_segment(
@@ -479,6 +478,11 @@ def roof_measure_segment(
             selected_footprint_ids=payload.selected_footprint_ids,
             sam2_url=os.getenv("SAM2_SEGMENTATION_URL") or "",
             sam2_api_key=os.getenv("SAM2_API_KEY") or "",
+            mapbox_token=(
+                os.getenv("MAPBOX_TOKEN")
+                or os.getenv("MAPBOX_ACCESS_TOKEN")
+                or ""
+            ),
             artifact_dir=_roof_measure_artifact_dir(),
             timeout_seconds=float(
                 os.getenv("ROOF_MEASURE_SEGMENTATION_TIMEOUT_SECONDS") or "90"

@@ -5501,6 +5501,26 @@
             "title": "Selected Footprint Ids",
             "type": "array"
           },
+          "source_pixels_per_foot": {
+            "exclusiveMinimum": 0.0,
+            "title": "Source Pixels Per Foot",
+            "type": "number"
+          },
+          "source_view": {
+            "default": "context",
+            "enum": [
+              "context",
+              "footprint_fitted"
+            ],
+            "title": "Source View",
+            "type": "string"
+          },
+          "source_zoom": {
+            "maximum": 22.0,
+            "minimum": 0.0,
+            "title": "Source Zoom",
+            "type": "number"
+          },
           "warnings": {
             "items": {
               "type": "string"
@@ -5521,7 +5541,9 @@
           "candidate_overlay_preview_base64",
           "openaiFileResponse",
           "model_name",
-          "model_version"
+          "model_version",
+          "source_zoom",
+          "source_pixels_per_foot"
         ],
         "title": "RoofMeasureSegmentationResponse",
         "type": "object"
@@ -6299,7 +6321,7 @@
   "info": {
     "description": "Estimator evidence, controlled workbook generation, and read-only operational intelligence for conversational agents.",
     "title": "Spray-Tec Business Intelligence API",
-    "version": "0.20.5"
+    "version": "0.20.6"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -6907,7 +6929,7 @@
     },
     "/v1/roof-measure/segment": {
       "post": {
-        "description": "Uses reviewed footprint IDs to prompt private SAM2. When available, LiDAR scores boundary bands and adds guarded high-band candidates. Returns up to three overlays. No OpenAI API or fallback rectangle is used; confirmation is required before calculation.",
+        "description": "Uses reviewed footprint IDs to fetch a tightly fitted source image and prompt private SAM2. LiDAR adds guarded high-band candidates when available. Returns up to three overlays; confirmation is required.",
         "operationId": "segmentRoofMeasureContext",
         "requestBody": {
           "content": {
