@@ -113,13 +113,18 @@ from .schemas import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 load_project_env(PROJECT_ROOT / ".env")
+PUBLIC_API_ORIGIN = os.getenv(
+    "ESTIMATOR_API_PUBLIC_URL",
+    "https://spraytec-business-api.icysand-5925ab36.eastus2.azurecontainerapps.io",
+).rstrip("/")
 app = FastAPI(
     title="Spray-Tec Business Intelligence API",
     description=(
         "Estimator evidence, controlled workbook generation, and read-only "
         "operational intelligence for conversational agents."
     ),
-    version="0.21.1",
+    version="0.21.2",
+    servers=[{"url": PUBLIC_API_ORIGIN}],
 )
 
 

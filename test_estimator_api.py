@@ -230,6 +230,14 @@ def test_context_returns_signed_planning_snapshot_for_structured_roofing(
 
 def test_context_openapi_has_stable_operation_id() -> None:
     response = client.get("/openapi.json")
+    assert response.json()["servers"] == [
+        {
+            "url": (
+                "https://spraytec-business-api.icysand-5925ab36."
+                "eastus2.azurecontainerapps.io"
+            )
+        }
+    ]
     operation = response.json()["paths"]["/v1/estimating/context"]["post"]
     assert operation["operationId"] == "getEstimatorContext"
     assert "parameters" not in operation
