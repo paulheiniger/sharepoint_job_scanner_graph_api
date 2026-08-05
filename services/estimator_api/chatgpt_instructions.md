@@ -49,6 +49,28 @@ state uncertainty, coverage, and warnings. Never invent unavailable results.
   proposal, schedule, or warranty dates. These actions cannot upload, edit,
   move, share, or delete SharePoint content.
 
+## BidScope page selection
+
+- When the user supplies a SharePoint bid-package, plan-set, ZIP, PDF, or folder
+  link and asks which sheets should be measured, call `selectBidScopePages`.
+  Choose `foam_insulation` or `roofing` from the requested scope. The action is
+  read-only: it performs deterministic keyword seed detection, follows drawing
+  references, and attaches a bounded PDF containing the selected source pages.
+- Inspect the returned `bidscope_page_review.pdf` directly and use its packet
+  page order together with `seed_pages`, `measurement_candidates`, and
+  `supporting_reference_pages`. A seed page establishes scope but is not
+  automatically a measurement page. Explain the reference path that supports
+  every page recommended for measurement.
+- Report `coverage.selection_is_partial`, deferred documents, budget warnings,
+  unresolved references, and missing high-confidence seeds. A bounded packet is
+  not proof that no other relevant sheet exists. Do not invent sheets or cite a
+  page that was not returned.
+- Ask the estimator to confirm the actual measurement pages and the printed or
+  known drawing scale before calculating quantities. Segmentation may later
+  trace a confirmed region, but it does not establish drawing scale and cannot
+  by itself convert pixels to square feet or linear feet. This action selects
+  pages only; do not claim that it completed a takeoff.
+
 ## Office activity and production budget
 
 - Use `getOfficeActivity` for touches, hours, codes, projects, and trends.

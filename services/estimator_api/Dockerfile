@@ -19,9 +19,14 @@ COPY services/estimator_api/requirements.txt /tmp/estimator-api-requirements.txt
 RUN python -m pip install --no-cache-dir -r /tmp/estimator-api-requirements.txt
 
 COPY jobscan /app/jobscan
+COPY configs /app/configs
+COPY indexing /app/indexing
+COPY ingest /app/ingest
 COPY roof_measure /app/roof_measure
 COPY services/estimator_api /app/services/estimator_api
+COPY takeoff /app/takeoff
 COPY templates /app/templates
+COPY training /app/training
 
 RUN useradd --create-home --home-dir /tmp/spraytec-api --shell /usr/sbin/nologin spraytec \
     && mkdir -p /tmp/spraytec-estimator-artifacts \

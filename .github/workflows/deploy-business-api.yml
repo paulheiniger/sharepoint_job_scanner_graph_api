@@ -6,10 +6,15 @@ on:
       - main
     paths:
       - ".github/workflows/deploy-business-api.yml"
+      - "configs/trades/**"
+      - "indexing/**"
+      - "ingest/**"
       - "jobscan/**"
       - "roof_measure/**"
       - "services/estimator_api/**"
+      - "takeoff/**"
       - "templates/**"
+      - "training/measurement_priors.py"
   workflow_dispatch:
 
 permissions:

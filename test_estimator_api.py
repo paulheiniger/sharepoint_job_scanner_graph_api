@@ -982,6 +982,7 @@ def test_openapi_exposes_expected_operations() -> None:
         "getWarrantyList",
         "searchSharePointDocuments",
         "fetchSharePointDocument",
+        "selectBidScopePages",
             "health_health_get",
         "searchJobs",
     }
@@ -1516,6 +1517,70 @@ def test_checked_in_action_openapi_is_current() -> None:
     checked_in = json.loads(path.read_text(encoding="utf-8"))
     deployed_server_url = checked_in["servers"][0]["url"]
     assert checked_in == build_action_openapi(deployed_server_url)
+
+
+def test_bidscope_page_selection_route_returns_native_review_packet(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_bidscope(**kwargs):
+        captured.update(kwargs)
+        return {
+            "schema_version": "spraytec.bidscope_page_selection.v1",
+            "source_sharepoint_url": kwargs["sharepoint_url"],
+            "trade_type": kwargs["trade_type"],
+            "trade_name": "Foam Insulation",
+            "selection_method": "deterministic test selection",
+            "assistant_review_instruction": "Review the attached pages.",
+            "packet_page_count": 1,
+            "seed_pages": [],
+            "measurement_candidates": [],
+            "supporting_reference_pages": [],
+            "source_links": [],
+            "coverage": {"selection_is_partial": False},
+            "measurement_readiness": {
+                "status": "requires_confirmed_pages_and_scale",
+                "scale_required": True,
+            },
+            "warnings": [],
+            "openaiFileResponse": [
+                {
+                    "name": "bidscope_page_review.pdf",
+                    "mime_type": "application/pdf",
+                    "content": "JVBERi0xLjQ=",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        "services.estimator_api.server.build_bidscope_review_packet",
+        fake_bidscope,
+    )
+    response = client.post(
+        "/v1/bidscope/page-selection",
+        json={
+            "sharepoint_url": "https://spraytec.sharepoint.com/sites/Data/Shared%20Documents/Bid",
+            "trade_type": "foam_insulation",
+            "reference_depth": 4,
+            "max_scan_pages": 250,
+            "max_packet_pages": 10,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["openaiFileResponse"][0]["name"] == "bidscope_page_review.pdf"
+    assert captured["reference_depth"] == 4
+    assert captured["max_scan_pages"] == 250
+    assert captured["max_packet_pages"] == 10
+
+
+def test_bidscope_page_selection_action_is_read_only_in_openapi() -> None:
+    specification = build_action_openapi(
+        "https://spraytec-business-api.icysand-5925ab36.eastus2.azurecontainerapps.io"
+    )
+    operation = specification["paths"]["/v1/bidscope/page-selection"]["post"]
+
+    assert operation["operationId"] == "selectBidScopePages"
+    assert operation["x-openai-isConsequential"] is False
 
 
 def test_warranty_summary_route_uses_auth_and_passes_filters(monkeypatch) -> None:

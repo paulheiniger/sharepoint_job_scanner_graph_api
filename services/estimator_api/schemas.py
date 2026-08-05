@@ -1231,6 +1231,74 @@ class SharePointDocumentFetchResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class BidScopePageSelectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sharepoint_url: str = Field(
+        min_length=20,
+        max_length=2_048,
+        description=(
+            "HTTPS SharePoint link to one bid PDF, ZIP package, or folder. The "
+            "operation uses the service's existing read-only Microsoft Graph credentials."
+        ),
+    )
+    trade_type: Literal["foam_insulation", "roofing"] = "foam_insulation"
+    reference_depth: int = Field(
+        default=5,
+        ge=1,
+        le=8,
+        description="Maximum reference-graph hops followed outward from scope seed pages.",
+    )
+    max_scan_pages: int = Field(
+        default=400,
+        ge=25,
+        le=800,
+        description="Hard cap on PDF pages read during deterministic page indexing.",
+    )
+    max_packet_pages: int = Field(
+        default=12,
+        ge=3,
+        le=20,
+        description="Maximum source pages attached for the Assistant's visual review.",
+    )
+
+
+class BidScopeSourceLink(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    label: str
+    url: str
+
+
+class BidScopePageSelectionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    schema_version: Literal["spraytec.bidscope_page_selection.v1"]
+    source_sharepoint_url: str
+    trade_type: Literal["foam_insulation", "roofing"]
+    trade_name: str
+    selection_method: str
+    assistant_review_instruction: str
+    packet_page_count: int = Field(ge=1, le=20)
+    seed_pages: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
+    measurement_candidates: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
+    supporting_reference_pages: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
+    source_links: list[BidScopeSourceLink] = Field(default_factory=list, max_length=20)
+    coverage: dict[str, Any] = Field(default_factory=dict)
+    measurement_readiness: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+    openai_file_response: list[OpenAIActionFile] = Field(
+        serialization_alias="openaiFileResponse",
+        validation_alias="openaiFileResponse",
+        description=(
+            "Native ChatGPT Action attachment containing only the bounded source "
+            "pages selected for visual review."
+        ),
+        min_length=1,
+        max_length=1,
+    )
+
+
 class JobContextResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

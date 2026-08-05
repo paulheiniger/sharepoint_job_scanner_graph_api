@@ -1,6 +1,189 @@
 {
   "components": {
     "schemas": {
+      "BidScopePageSelectionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "max_packet_pages": {
+            "default": 12,
+            "description": "Maximum source pages attached for the Assistant's visual review.",
+            "maximum": 20.0,
+            "minimum": 3.0,
+            "title": "Max Packet Pages",
+            "type": "integer"
+          },
+          "max_scan_pages": {
+            "default": 400,
+            "description": "Hard cap on PDF pages read during deterministic page indexing.",
+            "maximum": 800.0,
+            "minimum": 25.0,
+            "title": "Max Scan Pages",
+            "type": "integer"
+          },
+          "reference_depth": {
+            "default": 5,
+            "description": "Maximum reference-graph hops followed outward from scope seed pages.",
+            "maximum": 8.0,
+            "minimum": 1.0,
+            "title": "Reference Depth",
+            "type": "integer"
+          },
+          "sharepoint_url": {
+            "description": "HTTPS SharePoint link to one bid PDF, ZIP package, or folder. The operation uses the service's existing read-only Microsoft Graph credentials.",
+            "maxLength": 2048,
+            "minLength": 20,
+            "title": "Sharepoint Url",
+            "type": "string"
+          },
+          "trade_type": {
+            "default": "foam_insulation",
+            "enum": [
+              "foam_insulation",
+              "roofing"
+            ],
+            "title": "Trade Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sharepoint_url"
+        ],
+        "title": "BidScopePageSelectionRequest",
+        "type": "object"
+      },
+      "BidScopePageSelectionResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "assistant_review_instruction": {
+            "title": "Assistant Review Instruction",
+            "type": "string"
+          },
+          "coverage": {
+            "additionalProperties": true,
+            "title": "Coverage",
+            "type": "object"
+          },
+          "measurement_candidates": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "maxItems": 20,
+            "title": "Measurement Candidates",
+            "type": "array"
+          },
+          "measurement_readiness": {
+            "additionalProperties": true,
+            "title": "Measurement Readiness",
+            "type": "object"
+          },
+          "openaiFileResponse": {
+            "description": "Native ChatGPT Action attachment containing only the bounded source pages selected for visual review.",
+            "items": {
+              "$ref": "#/components/schemas/OpenAIActionFile"
+            },
+            "maxItems": 1,
+            "minItems": 1,
+            "title": "Openaifileresponse",
+            "type": "array"
+          },
+          "packet_page_count": {
+            "maximum": 20.0,
+            "minimum": 1.0,
+            "title": "Packet Page Count",
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": "spraytec.bidscope_page_selection.v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "seed_pages": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "maxItems": 20,
+            "title": "Seed Pages",
+            "type": "array"
+          },
+          "selection_method": {
+            "title": "Selection Method",
+            "type": "string"
+          },
+          "source_links": {
+            "items": {
+              "$ref": "#/components/schemas/BidScopeSourceLink"
+            },
+            "maxItems": 20,
+            "title": "Source Links",
+            "type": "array"
+          },
+          "source_sharepoint_url": {
+            "title": "Source Sharepoint Url",
+            "type": "string"
+          },
+          "supporting_reference_pages": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "maxItems": 20,
+            "title": "Supporting Reference Pages",
+            "type": "array"
+          },
+          "trade_name": {
+            "title": "Trade Name",
+            "type": "string"
+          },
+          "trade_type": {
+            "enum": [
+              "foam_insulation",
+              "roofing"
+            ],
+            "title": "Trade Type",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "schema_version",
+          "source_sharepoint_url",
+          "trade_type",
+          "trade_name",
+          "selection_method",
+          "assistant_review_instruction",
+          "packet_page_count",
+          "openaiFileResponse"
+        ],
+        "title": "BidScopePageSelectionResponse",
+        "type": "object"
+      },
+      "BidScopeSourceLink": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "url"
+        ],
+        "title": "BidScopeSourceLink",
+        "type": "object"
+      },
       "CalculationRequirement": {
         "additionalProperties": false,
         "properties": {
@@ -6669,10 +6852,50 @@
   "info": {
     "description": "Estimator evidence, controlled workbook generation, and read-only operational intelligence for conversational agents.",
     "title": "Spray-Tec Business Intelligence API",
-    "version": "0.21.3"
+    "version": "0.22.0"
   },
   "openapi": "3.1.0",
   "paths": {
+    "/v1/bidscope/page-selection": {
+      "post": {
+        "description": "Accepts a SharePoint PDF, ZIP, or folder link and uses bounded, read-only Microsoft Graph retrieval. Deterministic keyword seeds and drawing-reference expansion select a compact source-page PDF for the Assistant to inspect. The operation does not call an LLM and does not calculate quantities.",
+        "operationId": "selectBidScopePages",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BidScopePageSelectionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BidScopePageSelectionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Select bid-package pages for Assistant visual review",
+        "x-openai-isConsequential": false
+      }
+    },
     "/v1/estimating/context": {
       "post": {
         "description": "Returns a read-only evidence package for Copilot reasoning. This operation does not call an LLM or create an estimate.",

@@ -16,6 +16,11 @@ from PIL import Image
 
 from jobscan.business.chart_history_service import HISTORY_DATASETS, get_chart_history
 from jobscan.business.chart_service import build_chart_dataset, chart_dataset_csv
+from jobscan.business.bidscope_service import (
+    BidScopeInputError,
+    BidScopeUnavailableError,
+    build_bidscope_review_packet,
+)
 
 from jobscan.business.job_service import (
     JobIntelligenceUnavailableError,
@@ -72,6 +77,8 @@ from roof_measure.api_segmentation import segment_roof_measure_context
 from .schemas import (
     ChartDatasetRequest,
     ChartDatasetResponse,
+    BidScopePageSelectionRequest,
+    BidScopePageSelectionResponse,
     EstimateContextRequest,
     EstimateContextResponse,
     EstimateWorkbookRequest,
@@ -123,7 +130,7 @@ app = FastAPI(
         "Estimator evidence, controlled workbook generation, and read-only "
         "operational intelligence for conversational agents."
     ),
-    version="0.21.3",
+    version="0.22.0",
     servers=[{"url": PUBLIC_API_ORIGIN}],
 )
 
@@ -1017,6 +1024,44 @@ def sharepoint_document_fetch(
         raise HTTPException(
             status_code=503,
             detail=f"SharePoint document fetch is unavailable: {type(exc).__name__}.",
+        ) from exc
+
+
+@app.post(
+    "/v1/bidscope/page-selection",
+    response_model=BidScopePageSelectionResponse,
+    response_model_exclude_none=True,
+    operation_id="selectBidScopePages",
+    summary="Select bid-package pages for Assistant visual review",
+    description=(
+        "Accepts a SharePoint PDF, ZIP, or folder link and uses bounded, read-only "
+        "Microsoft Graph retrieval. Deterministic keyword seeds and drawing-reference "
+        "expansion select a compact source-page PDF for the Assistant to inspect. "
+        "The operation does not call an LLM and does not calculate quantities."
+    ),
+)
+def bidscope_page_selection(
+    request: Request,
+    payload: BidScopePageSelectionRequest,
+) -> BidScopePageSelectionResponse:
+    _require_api_request(request)
+    try:
+        result = build_bidscope_review_packet(
+            sharepoint_url=payload.sharepoint_url,
+            trade_type=payload.trade_type,
+            reference_depth=payload.reference_depth,
+            max_scan_pages=payload.max_scan_pages,
+            max_packet_pages=payload.max_packet_pages,
+        )
+        return BidScopePageSelectionResponse.model_validate(result)
+    except BidScopeInputError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except BidScopeUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"BidScope page selection is unavailable: {type(exc).__name__}.",
         ) from exc
 
 
