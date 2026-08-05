@@ -1336,6 +1336,12 @@ source .venv/bin/activate
 streamlit run dashboard/app.py --server.address 0.0.0.0 --server.port 8501
 ```
 
+For unattended Mac Studio startup and secure access outside the office, use
+the localhost-only Streamlit and Cloudflare Tunnel deployment in
+[`docs/streamlit_cloudflare_tunnel.md`](docs/streamlit_cloudflare_tunnel.md).
+That deployment leaves the Business API in Azure and does not open port 8501 on
+the office firewall.
+
 The root `app.py` entrypoint is a small SharePoint scanner prototype and is not the normal operational application. The dashboard entrypoint includes the operations, estimating, FoamScope, BidScope, and AI Roof Measure workflows.
 
 ## BidScope AI prototype
