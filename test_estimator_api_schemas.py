@@ -56,6 +56,19 @@ def test_roof_measure_requests_are_bounded_and_choose_one_polygon_source() -> No
     with pytest.raises(ValidationError):
         RoofMeasureCalculationRequest(context_id="a" * 32)
 
+    sam2 = RoofMeasureCalculationRequest(
+        context_id="a" * 32,
+        sam2_candidate_id="sam2-0123456789abcdef",
+    )
+    assert sam2.sam2_candidate_id == "sam2-0123456789abcdef"
+
+    with pytest.raises(ValidationError):
+        RoofMeasureCalculationRequest(
+            context_id="a" * 32,
+            selected_footprint_ids=["fp-01"],
+            sam2_candidate_id="sam2-0123456789abcdef",
+        )
+
 
 def test_chart_dataset_request_is_typed_and_bounded() -> None:
     request = ChartDatasetRequest.model_validate(

@@ -68,6 +68,7 @@ from roof_measure.api_context import (
     create_roof_measure_context,
     resolve_roof_measure_asset,
 )
+from roof_measure.api_segmentation import segment_roof_measure_context
 from .schemas import (
     ChartDatasetRequest,
     ChartDatasetResponse,
@@ -94,6 +95,8 @@ from .schemas import (
     RoofMeasureCalculationResponse,
     RoofMeasureContextRequest,
     RoofMeasureContextResponse,
+    RoofMeasureSegmentationRequest,
+    RoofMeasureSegmentationResponse,
     SalesFollowupRequest,
     SalesIntelligenceResponse,
     SalesPipelineRequest,
@@ -439,6 +442,82 @@ def roof_measure_context(
 
 
 @app.post(
+    "/v1/roof-measure/segment",
+    response_model=RoofMeasureSegmentationResponse,
+    response_model_exclude_none=True,
+    operation_id="segmentRoofMeasureContext",
+    summary="Create reviewable SAM2 roof-mask candidates",
+    description=(
+        "Uses explicitly reviewed footprint IDs from a prior roof context to "
+        "prompt the configured private SAM2 service. Returns up to three ranked "
+        "candidate overlays. No OpenAI API or fallback rectangle is used, and a "
+        "candidate must be confirmed before calculation."
+    ),
+)
+def roof_measure_segment(
+    request: Request,
+    payload: RoofMeasureSegmentationRequest,
+) -> RoofMeasureSegmentationResponse:
+    _require_api_request(request)
+    signing_key = _artifact_signing_key()
+    if not signing_key:
+        raise HTTPException(
+            status_code=503,
+            detail="Roof imagery signing is not configured.",
+        )
+    try:
+        result = segment_roof_measure_context(
+            context_id=payload.context_id,
+            selected_footprint_ids=payload.selected_footprint_ids,
+            sam2_url=os.getenv("SAM2_SEGMENTATION_URL") or "",
+            sam2_api_key=os.getenv("SAM2_API_KEY") or "",
+            artifact_dir=_roof_measure_artifact_dir(),
+            timeout_seconds=float(
+                os.getenv("ROOF_MEASURE_SEGMENTATION_TIMEOUT_SECONDS") or "90"
+            ),
+        )
+        asset_name = str(result.pop("candidate_overlay_asset_name"))
+        expires = int(time.time()) + _artifact_ttl_seconds()
+        asset_path = resolve_roof_measure_asset(
+            context_id=payload.context_id,
+            asset_name=asset_name,
+            artifact_dir=_roof_measure_artifact_dir(),
+        )
+        preview_base64 = _roof_overlay_preview_base64(asset_path)
+        response_payload = {
+            **result,
+            "candidate_overlay_url": _signed_roof_asset_url(
+                request=request,
+                context_id=payload.context_id,
+                asset_name=asset_name,
+                expires=expires,
+                signing_key=signing_key,
+            ),
+            "candidate_overlay_preview_media_type": "image/jpeg",
+            "candidate_overlay_preview_base64": preview_base64,
+            "openaiFileResponse": [
+                {
+                    "name": "roof_sam2_candidates.jpg",
+                    "mime_type": "image/jpeg",
+                    "content": preview_base64,
+                }
+            ],
+        }
+        return RoofMeasureSegmentationResponse.model_validate(response_payload)
+    except RoofMeasureInputError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RoofMeasureContextExpiredError as exc:
+        raise HTTPException(status_code=410, detail=str(exc)) from exc
+    except RoofMeasureContextError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"SAM2 roof refinement is unavailable: {type(exc).__name__}.",
+        ) from exc
+
+
+@app.post(
     "/v1/roof-measure/calculate",
     response_model=RoofMeasureCalculationResponse,
     response_model_exclude_none=True,
@@ -463,6 +542,7 @@ def roof_measure_calculate(
             sections=[section.model_dump() for section in payload.sections],
             pitch_rise_per_12=payload.pitch_rise_per_12,
             artifact_dir=_roof_measure_artifact_dir(),
+            sam2_candidate_id=payload.sam2_candidate_id,
         )
         selected_asset_name = str(result.pop("selected_overlay_asset_name"))
         expires = int(time.time()) + _artifact_ttl_seconds()

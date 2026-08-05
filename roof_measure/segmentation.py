@@ -50,9 +50,15 @@ class Sam2RoofSegmenter:
     laptops or a Mac Studio provide segmentation over HTTP.
     """
 
-    def __init__(self, url: str | None = None, timeout_seconds: float | None = None):
+    def __init__(
+        self,
+        url: str | None = None,
+        timeout_seconds: float | None = None,
+        api_key: str | None = None,
+    ):
         self.url = (url or os.getenv("SAM2_SEGMENTATION_URL") or "").strip()
         self.timeout_seconds = timeout_seconds or float(os.getenv("ROOF_MEASURE_SEGMENTATION_TIMEOUT_SECONDS", "90"))
+        self.api_key = (api_key or os.getenv("SAM2_API_KEY") or "").strip()
 
     def segment(self, image: np.ndarray, prompts: SegmentationPrompts | None = None) -> SegmentationResult:
         if not self.url:
@@ -71,7 +77,12 @@ class Sam2RoofSegmenter:
             "max_candidates": 3,
             "multimask_output": True,
         }
-        response = requests.post(self.url, json=payload, timeout=self.timeout_seconds)
+        request_kwargs = {"json": payload, "timeout": self.timeout_seconds}
+        if self.api_key:
+            request_kwargs["headers"] = {
+                "Authorization": f"Bearer {self.api_key}"
+            }
+        response = requests.post(self.url, **request_kwargs)
         response.raise_for_status()
         data = response.json()
         candidates: list[MaskCandidate] = []

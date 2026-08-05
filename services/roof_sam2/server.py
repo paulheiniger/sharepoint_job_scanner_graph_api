@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 from functools import lru_cache
+import hmac
 from io import BytesIO
 import os
 from pathlib import Path
@@ -10,7 +11,7 @@ import threading
 from typing import Any
 
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from PIL import Image
 from pydantic import BaseModel, Field
 
@@ -54,7 +55,8 @@ def health() -> dict[str, Any]:
 
 
 @app.post("/segment", response_model=SegmentResponse)
-def segment(request: SegmentRequest) -> SegmentResponse:
+def segment(request: SegmentRequest, http_request: Request) -> SegmentResponse:
+    _require_api_key(http_request)
     try:
         image = _decode_image(request.image_png_base64)
         predictor, torch, device = _predictor()
@@ -95,6 +97,16 @@ def segment(request: SegmentRequest) -> SegmentResponse:
             )
         )
     return SegmentResponse(candidates=candidates, model_version=_model_version(), warnings=_runtime_warnings(device))
+
+
+def _require_api_key(request: Request) -> None:
+    expected = str(os.getenv("SAM2_API_KEY") or "").strip()
+    if not expected:
+        return
+    authorization = str(request.headers.get("Authorization") or "")
+    provided = authorization.removeprefix("Bearer ").strip()
+    if not hmac.compare_digest(provided, expected):
+        raise HTTPException(status_code=401, detail="SAM2 authentication required.")
 
 
 @lru_cache(maxsize=1)

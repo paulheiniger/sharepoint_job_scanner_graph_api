@@ -4575,6 +4575,13 @@
             "description": "Optional roof rise in inches per 12 inches of run. When omitted, only plan-view area is returned. Use 0 explicitly for a flat roof.",
             "title": "Pitch Rise Per 12"
           },
+          "sam2_candidate_id": {
+            "default": "",
+            "description": "Estimator-confirmed candidate returned by segmentRoofMeasureContext.",
+            "pattern": "^(?:|sam2-[a-f0-9]{16})$",
+            "title": "Sam2 Candidate Id",
+            "type": "string"
+          },
           "sections": {
             "items": {
               "$ref": "#/components/schemas/RoofMeasureSectionInput"
@@ -5164,7 +5171,8 @@
           "source": {
             "enum": [
               "footprint",
-              "custom_polygon"
+              "custom_polygon",
+              "sam2_candidate"
             ],
             "title": "Source",
             "type": "string"
@@ -5188,6 +5196,207 @@
           "perimeter_ft"
         ],
         "title": "RoofMeasureSectionResult",
+        "type": "object"
+      },
+      "RoofMeasureSegmentationCandidate": {
+        "additionalProperties": false,
+        "properties": {
+          "area_ratio_to_footprint": {
+            "title": "Area Ratio To Footprint",
+            "type": "number"
+          },
+          "candidate_id": {
+            "pattern": "^sam2-[a-f0-9]{16}$",
+            "title": "Candidate Id",
+            "type": "string"
+          },
+          "footprint_coverage": {
+            "title": "Footprint Coverage",
+            "type": "number"
+          },
+          "footprint_overlap": {
+            "title": "Footprint Overlap",
+            "type": "number"
+          },
+          "model_name": {
+            "title": "Model Name",
+            "type": "string"
+          },
+          "model_score": {
+            "title": "Model Score",
+            "type": "number"
+          },
+          "model_version": {
+            "title": "Model Version",
+            "type": "string"
+          },
+          "perimeter_ft": {
+            "exclusiveMinimum": 0.0,
+            "title": "Perimeter Ft",
+            "type": "number"
+          },
+          "plan_area_sqft": {
+            "exclusiveMinimum": 0.0,
+            "title": "Plan Area Sqft",
+            "type": "number"
+          },
+          "provider_rank": {
+            "maximum": 3.0,
+            "minimum": 1.0,
+            "title": "Provider Rank",
+            "type": "integer"
+          },
+          "rank": {
+            "maximum": 3.0,
+            "minimum": 1.0,
+            "title": "Rank",
+            "type": "integer"
+          },
+          "section_count": {
+            "minimum": 1.0,
+            "title": "Section Count",
+            "type": "integer"
+          },
+          "selection_score": {
+            "title": "Selection Score",
+            "type": "number"
+          }
+        },
+        "required": [
+          "candidate_id",
+          "rank",
+          "provider_rank",
+          "model_name",
+          "model_version",
+          "model_score",
+          "selection_score",
+          "footprint_overlap",
+          "footprint_coverage",
+          "area_ratio_to_footprint",
+          "plan_area_sqft",
+          "perimeter_ft",
+          "section_count"
+        ],
+        "title": "RoofMeasureSegmentationCandidate",
+        "type": "object"
+      },
+      "RoofMeasureSegmentationRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "context_id": {
+            "pattern": "^[a-f0-9]{32}$",
+            "title": "Context Id",
+            "type": "string"
+          },
+          "selected_footprint_ids": {
+            "items": {
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 12,
+            "minItems": 1,
+            "title": "Selected Footprint Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "context_id",
+          "selected_footprint_ids"
+        ],
+        "title": "RoofMeasureSegmentationRequest",
+        "type": "object"
+      },
+      "RoofMeasureSegmentationResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "candidate_overlay_preview_base64": {
+            "title": "Candidate Overlay Preview Base64",
+            "type": "string"
+          },
+          "candidate_overlay_preview_media_type": {
+            "const": "image/jpeg",
+            "title": "Candidate Overlay Preview Media Type",
+            "type": "string"
+          },
+          "candidate_overlay_url": {
+            "title": "Candidate Overlay Url",
+            "type": "string"
+          },
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/RoofMeasureSegmentationCandidate"
+            },
+            "maxItems": 3,
+            "minItems": 1,
+            "title": "Candidates",
+            "type": "array"
+          },
+          "context_id": {
+            "title": "Context Id",
+            "type": "string"
+          },
+          "model_name": {
+            "title": "Model Name",
+            "type": "string"
+          },
+          "model_version": {
+            "title": "Model Version",
+            "type": "string"
+          },
+          "openaiFileResponse": {
+            "items": {
+              "$ref": "#/components/schemas/OpenAIActionFile"
+            },
+            "maxItems": 1,
+            "minItems": 1,
+            "title": "Openaifileresponse",
+            "type": "array"
+          },
+          "recommended_candidate_id": {
+            "title": "Recommended Candidate Id",
+            "type": "string"
+          },
+          "requires_candidate_confirmation": {
+            "const": true,
+            "title": "Requires Candidate Confirmation",
+            "type": "boolean"
+          },
+          "schema_version": {
+            "const": "spraytec.roof_measure_sam2_candidates.v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "selected_footprint_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Selected Footprint Ids",
+            "type": "array"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "schema_version",
+          "context_id",
+          "selected_footprint_ids",
+          "recommended_candidate_id",
+          "requires_candidate_confirmation",
+          "candidates",
+          "candidate_overlay_url",
+          "candidate_overlay_preview_media_type",
+          "candidate_overlay_preview_base64",
+          "openaiFileResponse",
+          "model_name",
+          "model_version"
+        ],
+        "title": "RoofMeasureSegmentationResponse",
         "type": "object"
       },
       "SalesFollowupRequest": {
@@ -6566,6 +6775,46 @@
           }
         },
         "summary": "Retrieve calibrated roof imagery and footprint evidence",
+        "x-openai-isConsequential": false
+      }
+    },
+    "/v1/roof-measure/segment": {
+      "post": {
+        "description": "Uses explicitly reviewed footprint IDs from a prior roof context to prompt the configured private SAM2 service. Returns up to three ranked candidate overlays. No OpenAI API or fallback rectangle is used, and a candidate must be confirmed before calculation.",
+        "operationId": "segmentRoofMeasureContext",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoofMeasureSegmentationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoofMeasureSegmentationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create reviewable SAM2 roof-mask candidates",
         "x-openai-isConsequential": false
       }
     },

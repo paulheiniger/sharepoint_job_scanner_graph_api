@@ -4,6 +4,7 @@ from io import BytesIO
 import time
 
 from PIL import Image
+import numpy as np
 import pytest
 
 from roof_measure.api_context import (
@@ -13,12 +14,14 @@ from roof_measure.api_context import (
     load_roof_measure_context,
     resolve_roof_measure_asset,
 )
+from roof_measure.api_segmentation import segment_roof_measure_context
 from roof_measure.map_reference import (
     BuildingFootprint,
     BuildingFootprintLookup,
     LidarCoverage,
     MapboxStaticImage,
 )
+from roof_measure.segmentation import MaskCandidate, SegmentationResult
 
 
 def _png_bytes() -> bytes:
@@ -146,6 +149,102 @@ def test_calculate_uses_reviewed_footprint_and_optional_pitch(roof_context) -> N
         artifact_dir=artifact_dir,
     )
     assert selected_overlay.is_file()
+
+
+def test_sam2_refinement_ranks_all_candidates_and_calculates_confirmed_one(
+    roof_context,
+    monkeypatch,
+) -> None:
+    artifact_dir, context = roof_context
+    exact = np.zeros((100, 100), dtype=bool)
+    exact[40:61, 40:61] = True
+    undersized = np.zeros((100, 100), dtype=bool)
+    undersized[45:56, 45:56] = True
+    oversized = np.zeros((100, 100), dtype=bool)
+    oversized[30:71, 30:71] = True
+
+    class FakeSegmenter:
+        def __init__(self, **kwargs):
+            assert kwargs["url"] == "http://sam2.test/segment"
+
+        def segment(self, _image, prompts):
+            assert prompts.box is not None
+            assert prompts.positive_points
+            assert prompts.mask_input is not None
+            return SegmentationResult(
+                candidates=[
+                    MaskCandidate(undersized, 0.95, "undersized"),
+                    MaskCandidate(exact, 0.82, "exact"),
+                    MaskCandidate(oversized, 0.88, "oversized"),
+                ],
+                model_name="sam2_remote",
+                model_version="test",
+            )
+
+    monkeypatch.setattr(
+        "roof_measure.api_segmentation.Sam2RoofSegmenter",
+        FakeSegmenter,
+    )
+
+    segmented = segment_roof_measure_context(
+        context_id=context["context_id"],
+        selected_footprint_ids=["fp-01"],
+        sam2_url="http://sam2.test/segment",
+        sam2_api_key="test-key",
+        artifact_dir=artifact_dir,
+    )
+
+    assert len(segmented["candidates"]) == 3
+    assert segmented["recommended_candidate_id"] == segmented["candidates"][0][
+        "candidate_id"
+    ]
+    assert segmented["candidates"][0]["provider_rank"] == 2
+    assert resolve_roof_measure_asset(
+        context_id=context["context_id"],
+        asset_name=segmented["candidate_overlay_asset_name"],
+        artifact_dir=artifact_dir,
+    ).is_file()
+
+    result = calculate_roof_measurement(
+        context_id=context["context_id"],
+        selected_footprint_ids=[],
+        sections=[],
+        sam2_candidate_id=segmented["recommended_candidate_id"],
+        pitch_rise_per_12=None,
+        artifact_dir=artifact_dir,
+    )
+
+    assert result["measurement_basis"].startswith("sam2_refined")
+    assert result["sections"][0]["source"] == "sam2_candidate"
+    assert "no OpenAI API" in result["assumptions"][1]
+
+
+def test_sam2_refinement_fails_closed_when_service_fails(
+    roof_context,
+    monkeypatch,
+) -> None:
+    artifact_dir, context = roof_context
+
+    class FailingSegmenter:
+        def __init__(self, **_kwargs):
+            pass
+
+        def segment(self, _image, _prompts):
+            raise RuntimeError("service unavailable")
+
+    monkeypatch.setattr(
+        "roof_measure.api_segmentation.Sam2RoofSegmenter",
+        FailingSegmenter,
+    )
+
+    with pytest.raises(RuntimeError, match="service unavailable"):
+        segment_roof_measure_context(
+            context_id=context["context_id"],
+            selected_footprint_ids=["fp-01"],
+            sam2_url="http://sam2.test/segment",
+            sam2_api_key="",
+            artifact_dir=artifact_dir,
+        )
 
 
 def test_candidate_selection_keeps_nearest_and_largest_buildings() -> None:

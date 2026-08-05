@@ -1,5 +1,6 @@
 .DS_Store
 .env
+.env.sam2
 .venv/
 .venv-sam2/
 __pycache__/

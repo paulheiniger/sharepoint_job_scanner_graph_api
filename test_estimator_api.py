@@ -366,6 +366,69 @@ def test_roof_measure_calculation_returns_review_required_contract(monkeypatch) 
     ]
 
 
+def test_roof_measure_segmentation_returns_reviewable_candidates(monkeypatch) -> None:
+    candidate_overlay = Path("/tmp/sam2-candidates-test.png")
+    monkeypatch.setenv("ESTIMATOR_API_KEY", "test-secret")
+    monkeypatch.setenv("SAM2_SEGMENTATION_URL", "http://sam2.test/segment")
+    monkeypatch.setattr(
+        "services.estimator_api.server.segment_roof_measure_context",
+        lambda **_kwargs: {
+            "schema_version": "spraytec.roof_measure_sam2_candidates.v1",
+            "context_id": "a" * 32,
+            "selected_footprint_ids": ["fp-01"],
+            "recommended_candidate_id": "sam2-0123456789abcdef",
+            "requires_candidate_confirmation": True,
+            "candidates": [
+                {
+                    "candidate_id": "sam2-0123456789abcdef",
+                    "rank": 1,
+                    "provider_rank": 2,
+                    "model_name": "sam2_remote",
+                    "model_version": "test",
+                    "model_score": 0.88,
+                    "selection_score": 0.91,
+                    "footprint_overlap": 0.95,
+                    "footprint_coverage": 0.97,
+                    "area_ratio_to_footprint": 1.02,
+                    "plan_area_sqft": 5100,
+                    "perimeter_ft": 310,
+                    "section_count": 1,
+                }
+            ],
+            "candidate_overlay_asset_name": "sam2-candidates-0123456789abcdef.png",
+            "model_name": "sam2_remote",
+            "model_version": "test",
+            "warnings": ["Confirm a candidate before calculation."],
+        },
+    )
+    monkeypatch.setattr(
+        "services.estimator_api.server.resolve_roof_measure_asset",
+        lambda **_kwargs: candidate_overlay,
+    )
+    monkeypatch.setattr(
+        "services.estimator_api.server._roof_overlay_preview_base64",
+        lambda _path: "candidate-preview",
+    )
+
+    unauthorized = client.post(
+        "/v1/roof-measure/segment",
+        json={"context_id": "a" * 32, "selected_footprint_ids": ["fp-01"]},
+    )
+    response = client.post(
+        "/v1/roof-measure/segment",
+        json={"context_id": "a" * 32, "selected_footprint_ids": ["fp-01"]},
+        headers={"Authorization": "Bearer test-secret"},
+    )
+
+    assert unauthorized.status_code == 401
+    assert response.status_code == 200
+    assert response.json()["requires_candidate_confirmation"] is True
+    assert response.json()["candidates"][0]["provider_rank"] == 2
+    assert response.json()["openaiFileResponse"][0]["content"] == (
+        "candidate-preview"
+    )
+
+
 def workbook_request_payload(*, confirmed: bool = True) -> dict:
     return {
         "confirmed": confirmed,
@@ -860,6 +923,7 @@ def test_openapi_exposes_expected_operations() -> None:
         "getJobContext",
         "getEstimatorContext",
         "getRoofMeasureContext",
+        "segmentRoofMeasureContext",
         "calculateRoofMeasurement",
         "generateEstimateWorkbook",
         "generateEstimateWorkbookOptions",
@@ -994,6 +1058,9 @@ def test_action_openapi_marks_read_only_posts_nonconsequential() -> None:
         "x-openai-isConsequential"
     ] is False
     assert spec["paths"]["/v1/roof-measure/calculate"]["post"][
+        "x-openai-isConsequential"
+    ] is False
+    assert spec["paths"]["/v1/roof-measure/segment"]["post"][
         "x-openai-isConsequential"
     ] is False
     assert spec["paths"]["/v1/jobs/search"]["post"][

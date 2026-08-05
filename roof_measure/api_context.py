@@ -27,6 +27,7 @@ from .visualization import image_png_bytes
 
 CONTEXT_ID_RE = re.compile(r"^[a-f0-9]{32}$")
 SELECTION_ASSET_RE = re.compile(r"^selected-footprints-[a-f0-9]{16}\.png$")
+SAM2_ASSET_RE = re.compile(r"^sam2-candidates-[a-f0-9]{16}\.png$")
 ROOF_ASSET_NAMES = frozenset({"satellite.png", "footprint-overlay.png"})
 VIEW_ZOOM = {"whole_site": 16.5, "building_detail": 19.0}
 MAX_FOOTPRINT_CANDIDATES = 12
@@ -259,7 +260,20 @@ def calculate_roof_measurement(
     sections: list[dict[str, Any]],
     pitch_rise_per_12: float | None,
     artifact_dir: Path,
+    sam2_candidate_id: str = "",
 ) -> dict[str, Any]:
+    source_count = sum(
+        (
+            bool(selected_footprint_ids),
+            bool(sections),
+            bool(sam2_candidate_id),
+        )
+    )
+    if source_count != 1:
+        raise RoofMeasureInputError(
+            "Provide exactly one of selected_footprint_ids, custom sections, "
+            "or sam2_candidate_id."
+        )
     context = load_roof_measure_context(
         context_id=context_id,
         artifact_dir=artifact_dir,
@@ -273,7 +287,36 @@ def calculate_roof_measurement(
     }
 
     measurement_sections: list[dict[str, Any]] = []
-    if selected_footprint_ids:
+    overlay_sections = list(sections)
+    overlay_footprint_ids = list(selected_footprint_ids)
+    if sam2_candidate_id:
+        from .api_segmentation import sam2_candidate_sections
+
+        candidate_components, source_footprint_ids = sam2_candidate_sections(
+            context,
+            sam2_candidate_id,
+        )
+        measurement_sections.append(
+            _measure_components(
+                section_id=sam2_candidate_id,
+                source="sam2_candidate",
+                components=candidate_components,
+                pixels_per_foot=pixels_per_foot,
+                width=width,
+                height=height,
+                pitch_rise_per_12=pitch_rise_per_12,
+            )
+        )
+        overlay_footprint_ids = source_footprint_ids
+        overlay_sections = [
+            {
+                "section_id": f"{sam2_candidate_id}-{index}",
+                "polygon": component.get("polygon") or [],
+                "holes": component.get("holes") or [],
+            }
+            for index, component in enumerate(candidate_components, start=1)
+        ]
+    elif selected_footprint_ids:
         missing = [item for item in selected_footprint_ids if item not in candidate_by_id]
         if missing:
             raise RoofMeasureInputError(
@@ -319,12 +362,24 @@ def calculate_roof_measurement(
         else None
     )
     warnings = [
-        "Building footprints are evidence, not a surveyed roof boundary. Verify "
-        "roof edges, overhangs, canopies, penetrations, and excluded areas before quoting."
+        (
+            "SAM2 produced a model-derived roof boundary from reviewed footprint "
+            "prompts. Verify every edge, overhang, canopy, penetration, courtyard, "
+            "and excluded area before quoting."
+            if sam2_candidate_id
+            else "Building footprints are evidence, not a surveyed roof boundary. "
+            "Verify roof edges, overhangs, canopies, penetrations, and excluded "
+            "areas before quoting."
+        )
     ]
     assumptions = [
         "Area and perimeter use the address-calibrated, north-up Mapbox image scale.",
-        "No AI model, SAM2 service, or OpenAI call was used by the API.",
+        (
+            "SAM2 refined the estimator-selected footprint evidence; no OpenAI API "
+            "call was used."
+            if sam2_candidate_id
+            else "No AI model, SAM2 service, or OpenAI call was used by the API."
+        ),
     ]
     if pitch_rise_per_12 is None:
         warnings.append(
@@ -338,15 +393,19 @@ def calculate_roof_measurement(
 
     selected_overlay_asset_name = _write_selected_footprint_overlay(
         context=context,
-        selected_footprint_ids=selected_footprint_ids,
-        sections=sections,
+        selected_footprint_ids=overlay_footprint_ids,
+        sections=overlay_sections,
         artifact_dir=artifact_dir,
     )
 
     return {
         "schema_version": "spraytec.roof_measure_calculation.v1",
         "context_id": context_id,
-        "measurement_basis": "address_calibrated_satellite_plan_view",
+        "measurement_basis": (
+            "sam2_refined_address_calibrated_satellite_plan_view"
+            if sam2_candidate_id
+            else "address_calibrated_satellite_plan_view"
+        ),
         "total_plan_area_sqft": round(total_plan, 1),
         "total_perimeter_ft": round(total_perimeter, 1),
         "pitch_rise_per_12": pitch_rise_per_12,
@@ -382,8 +441,10 @@ def resolve_roof_measure_asset(
     asset_name: str,
     artifact_dir: Path,
 ) -> Path:
-    if asset_name not in ROOF_ASSET_NAMES and not SELECTION_ASSET_RE.fullmatch(
-        str(asset_name or "")
+    if (
+        asset_name not in ROOF_ASSET_NAMES
+        and not SELECTION_ASSET_RE.fullmatch(str(asset_name or ""))
+        and not SAM2_ASSET_RE.fullmatch(str(asset_name or ""))
     ):
         raise RoofMeasureInputError("Unknown roof measurement asset.")
     load_roof_measure_context(context_id=context_id, artifact_dir=artifact_dir)

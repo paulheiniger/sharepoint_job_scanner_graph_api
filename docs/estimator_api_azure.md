@@ -70,6 +70,13 @@ The Container App currently exposes `mapbox-access-token` as
 roof context currently uses the container's artifact directory, so keep the app
 at one active replica unless that directory is moved to shared storage.
 
+Optional SAM2 refinement requires `SAM2_SEGMENTATION_URL` to be an HTTPS
+`/segment` endpoint reachable from the Container App. A Mac Studio service
+bound to `127.0.0.1` is not reachable from Azure. Use a private authenticated
+tunnel or private network path; do not expose the unauthenticated SAM2 port
+directly to the internet. Store a separate `sam2-api-key` in Key Vault and
+expose only its secret reference as `SAM2_API_KEY` to both services.
+
 The SharePoint document fetch action also needs the scanner's existing Graph
 application credentials exposed to the container as `MS_TENANT_ID`,
 `MS_CLIENT_ID`, and `MS_CLIENT_SECRET`. Store all three in Key Vault and use

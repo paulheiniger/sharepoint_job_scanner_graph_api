@@ -502,6 +502,77 @@ class RoofMeasureSectionInput(BaseModel):
         return self
 
 
+class OpenAIActionFile(BaseModel):
+    """Native file attachment returned by a ChatGPT GPT Action."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=200)
+    mime_type: str = Field(pattern=r"^[\w.+-]+/[\w.+-]+$")
+    content: str = Field(description="Base64-encoded file content.")
+
+
+class RoofMeasureSegmentationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    context_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    selected_footprint_ids: list[
+        Annotated[str, Field(min_length=1, max_length=100)]
+    ] = Field(min_length=1, max_length=12)
+
+    @model_validator(mode="after")
+    def validate_unique_footprints(self) -> "RoofMeasureSegmentationRequest":
+        if len(set(self.selected_footprint_ids)) != len(
+            self.selected_footprint_ids
+        ):
+            raise ValueError("selected_footprint_ids must be unique.")
+        return self
+
+
+class RoofMeasureSegmentationCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_id: str = Field(pattern=r"^sam2-[a-f0-9]{16}$")
+    rank: int = Field(ge=1, le=3)
+    provider_rank: int = Field(ge=1, le=3)
+    model_name: str
+    model_version: str
+    model_score: float
+    selection_score: float
+    footprint_overlap: float
+    footprint_coverage: float
+    area_ratio_to_footprint: float
+    plan_area_sqft: float = Field(gt=0)
+    perimeter_ft: float = Field(gt=0)
+    section_count: int = Field(ge=1)
+
+
+class RoofMeasureSegmentationResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["spraytec.roof_measure_sam2_candidates.v1"]
+    context_id: str
+    selected_footprint_ids: list[str]
+    recommended_candidate_id: str
+    requires_candidate_confirmation: Literal[True]
+    candidates: list[RoofMeasureSegmentationCandidate] = Field(
+        min_length=1,
+        max_length=3,
+    )
+    candidate_overlay_url: str
+    candidate_overlay_preview_media_type: Literal["image/jpeg"]
+    candidate_overlay_preview_base64: str
+    openai_file_response: list[OpenAIActionFile] = Field(
+        serialization_alias="openaiFileResponse",
+        validation_alias="openaiFileResponse",
+        min_length=1,
+        max_length=1,
+    )
+    model_name: str
+    model_version: str
+    warnings: list[str] = Field(default_factory=list)
+
+
 class RoofMeasureCalculationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -510,6 +581,13 @@ class RoofMeasureCalculationRequest(BaseModel):
         Annotated[str, Field(min_length=1, max_length=100)]
     ] = Field(default_factory=list, max_length=12)
     sections: list[RoofMeasureSectionInput] = Field(default_factory=list, max_length=20)
+    sam2_candidate_id: str = Field(
+        default="",
+        pattern=r"^(?:|sam2-[a-f0-9]{16})$",
+        description=(
+            "Estimator-confirmed candidate returned by segmentRoofMeasureContext."
+        ),
+    )
     pitch_rise_per_12: float | None = Field(
         default=None,
         ge=0,
@@ -522,9 +600,17 @@ class RoofMeasureCalculationRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_measurement_source(self) -> "RoofMeasureCalculationRequest":
-        if bool(self.selected_footprint_ids) == bool(self.sections):
+        source_count = sum(
+            (
+                bool(self.selected_footprint_ids),
+                bool(self.sections),
+                bool(self.sam2_candidate_id),
+            )
+        )
+        if source_count != 1:
             raise ValueError(
-                "Provide either selected_footprint_ids or custom sections, but not both."
+                "Provide exactly one of selected_footprint_ids, custom sections, "
+                "or sam2_candidate_id."
             )
         if len(set(self.selected_footprint_ids)) != len(self.selected_footprint_ids):
             raise ValueError("selected_footprint_ids must be unique.")
@@ -535,20 +621,10 @@ class RoofMeasureSectionResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     section_id: str
-    source: Literal["footprint", "custom_polygon"]
+    source: Literal["footprint", "custom_polygon", "sam2_candidate"]
     plan_area_sqft: float
     perimeter_ft: float
     surface_area_sqft: float | None = None
-
-
-class OpenAIActionFile(BaseModel):
-    """Native file attachment returned by a ChatGPT GPT Action."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    name: str = Field(min_length=1, max_length=200)
-    mime_type: str = Field(pattern=r"^[\w.+-]+/[\w.+-]+$")
-    content: str = Field(description="Base64-encoded file content.")
 
 
 class RoofMeasureCalculationResponse(BaseModel):

@@ -1392,9 +1392,10 @@ def test_remote_sam2_segmenter_posts_prompts_and_decodes_masks(monkeypatch) -> N
                 ],
             }
 
-    def fake_post(url, json, timeout):  # noqa: ANN001
+    def fake_post(url, json, timeout, headers=None):  # noqa: ANN001
         assert url == "http://127.0.0.1:8765/segment"
         assert timeout == 90
+        assert headers == {"Authorization": "Bearer sam2-test-secret"}
         assert json["positive_points"] == [(20.0, 15.0)]
         assert json["negative_points"] == [(3.0, 4.0)]
         assert json["box"] == (10.0, 8.0, 35.0, 28.0)
@@ -1404,6 +1405,7 @@ def test_remote_sam2_segmenter_posts_prompts_and_decodes_masks(monkeypatch) -> N
         return FakeResponse()
 
     monkeypatch.setenv("SAM2_SEGMENTATION_URL", "http://127.0.0.1:8765/segment")
+    monkeypatch.setenv("SAM2_API_KEY", "sam2-test-secret")
     monkeypatch.setattr("roof_measure.segmentation.requests.post", fake_post)
 
     result = Sam2RoofSegmenter().segment(

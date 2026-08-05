@@ -42,6 +42,23 @@ building evidence, not a survey: the estimator must verify the target building,
 roof edges, overhangs, canopies, penetrations, excluded areas, and pitch before
 using the measurement in an estimate.
 
+### `POST /v1/roof-measure/segment`
+
+Accepts an unexpired context and one or more estimator-reviewed footprint IDs.
+The API converts those footprints into bounded box, positive-point, and mask
+prompts for the configured private SAM2 service. It returns up to three
+deterministically ranked mask candidates and one combined satellite overlay.
+No OpenAI API is called.
+
+The operation is fail-closed: a missing, unreachable, unauthorized, or invalid
+SAM2 response returns an error and never substitutes the Streamlit MVP's manual
+rectangle fallback. The recommended candidate is only a ranking aid. Display
+the returned overlay and obtain explicit estimator confirmation before sending
+its `candidate_id` to `/v1/roof-measure/calculate` as `sam2_candidate_id`.
+
+SAM2 remains optional. The existing reviewed-footprint and custom-polygon
+calculation paths are unchanged when segmentation is unavailable or unwanted.
+
 ## Estimating operation
 
 ### `POST /v1/estimating/context`

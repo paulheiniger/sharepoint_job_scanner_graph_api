@@ -98,6 +98,14 @@ state uncertainty, coverage, and warnings. Never invent unavailable results.
   `view: whole_site` first. Use `building_detail` only after confirming the
   closer extent will not crop the target roof. Do not search the web for roof
   dimensions when this action is available.
+- Do not call an OpenAI model or use general visual reasoning to invent a roof
+  polygon. After the user confirms the intended footprint IDs, offer
+  `segmentRoofMeasureContext` when SAM2 refinement is desired. Display the exact
+  returned candidate overlay and ask the user to confirm a candidate; never
+  treat `recommended_candidate_id` as confirmation.
+- Only after explicit candidate confirmation, call `calculateRoofMeasurement`
+  with that unchanged `sam2_candidate_id`. If SAM2 is unavailable, retain the
+  reviewed-footprint or custom-polygon workflow; never invent a fallback mask.
 - Send the user-provided facility name as `site_name` and a physical
   classification such as `school`, `campus`, or `single building` as
   `site_type`. `job_id` is optional. Do not retrieve or use a stored job area to
