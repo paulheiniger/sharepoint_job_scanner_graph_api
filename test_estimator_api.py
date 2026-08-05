@@ -1563,6 +1563,7 @@ def test_warranty_list_route_uses_auth_and_passes_review_filters(monkeypatch) ->
             "evidence_status": "issued_document",
             "needs_review": False,
             "has_contact": True,
+            "reliable_only": True,
         },
         headers={"Authorization": "Bearer test-secret"},
     )
@@ -1573,6 +1574,7 @@ def test_warranty_list_route_uses_auth_and_passes_review_filters(monkeypatch) ->
     assert captured["evidence_status"] == "issued_document"
     assert captured["needs_review"] is False
     assert captured["has_contact"] is True
+    assert captured["reliable_only"] is True
 
 
 def test_action_openapi_excludes_internal_source_metadata() -> None:

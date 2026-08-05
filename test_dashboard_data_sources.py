@@ -59,6 +59,8 @@ def test_warranty_registry_is_a_core_page_with_provenance_notes() -> None:
     assert "warranty_master_clean" in inspect.getsource(app.load_warranty_registry)
     page_source = inspect.getsource(app.warranty_registry_page)
     assert "contact_follow_up_ready" in page_source
+    assert "warranty_registry_reliable_only" in page_source
+    assert "is_reliable_warranty" in page_source
     assert "Download filtered warranty list" in page_source
 
 

@@ -367,6 +367,30 @@ SELECT
         THEN 'issued_document'
         ELSE 'reported_source'
     END AS evidence_status,
+    (
+        idoc.job_id IS NOT NULL
+        OR COALESCE(source_system, duration_source_kind) = 'sharepoint_warranty_folder'
+        OR COALESCE(source_system, duration_source_kind) IN (
+            'recent_completed_warranty_list',
+            'vsimple_project_warranty_export',
+            'legacy_vsimple_warranty_export',
+            'legacy_customer_list',
+            'manufacturer_warranty_list'
+        )
+    ) AS is_reliable_warranty,
+    CASE
+        WHEN idoc.job_id IS NOT NULL
+          OR COALESCE(source_system, duration_source_kind) = 'sharepoint_warranty_folder'
+        THEN 'issued_document'
+        WHEN COALESCE(source_system, duration_source_kind) IN (
+            'recent_completed_warranty_list',
+            'vsimple_project_warranty_export',
+            'legacy_vsimple_warranty_export',
+            'legacy_customer_list',
+            'manufacturer_warranty_list'
+        ) THEN 'trusted_warranty_sheet'
+        ELSE 'estimate_or_proposal_only'
+    END AS reliability_basis,
     r.job_id,
     resolved_vsimple_id AS vsimple_id,
     COALESCE(NULLIF(BTRIM(vsimple_project_name), ''), NULLIF(BTRIM(job_name), ''), NULLIF(BTRIM(reported_contact_name), ''))

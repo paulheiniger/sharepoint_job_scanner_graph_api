@@ -1314,6 +1314,10 @@ class WarrantyListRequest(BaseModel):
         default=None,
         description="True returns rows with an email or phone available for follow-up.",
     )
+    reliable_only: bool = Field(
+        default=False,
+        description="True returns issued-document warranties plus warranties from trusted uploaded tracking sheets.",
+    )
     limit: int = Field(default=25, ge=1, le=50)
 
 

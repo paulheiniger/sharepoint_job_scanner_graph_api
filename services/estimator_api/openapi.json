@@ -267,10 +267,12 @@
             "type": "string"
           },
           "coverage": {
+            "additionalProperties": true,
             "title": "Coverage",
             "type": "object"
           },
           "data_freshness": {
+            "additionalProperties": true,
             "title": "Data Freshness",
             "type": "object"
           },
@@ -311,6 +313,7 @@
             "title": "End Field"
           },
           "filters_applied": {
+            "additionalProperties": true,
             "title": "Filters Applied",
             "type": "object"
           },
@@ -336,6 +339,7 @@
           },
           "rows": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 365,
@@ -607,6 +611,7 @@
             "type": "string"
           },
           "freshness": {
+            "additionalProperties": true,
             "title": "Freshness",
             "type": "object"
           },
@@ -745,6 +750,7 @@
             "type": "array"
           },
           "scope": {
+            "additionalProperties": true,
             "description": "Structured current-job facts extracted by Copilot.",
             "title": "Scope",
             "type": "object"
@@ -772,6 +778,7 @@
         "properties": {
           "approved_memories": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Approved Memories",
@@ -785,6 +792,7 @@
             "type": "array"
           },
           "commercial_guidance": {
+            "additionalProperties": true,
             "title": "Commercial Guidance",
             "type": "object"
           },
@@ -797,6 +805,7 @@
           },
           "decision_evidence": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Decision Evidence",
@@ -804,6 +813,7 @@
           },
           "foam_yield_history": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Foam Yield History",
@@ -836,11 +846,13 @@
             "type": "array"
           },
           "labor_cost_summary": {
+            "additionalProperties": true,
             "title": "Labor Cost Summary",
             "type": "object"
           },
           "labor_plan_guidance": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Labor Plan Guidance",
@@ -848,6 +860,7 @@
           },
           "logistics_guidance": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Logistics Guidance",
@@ -855,12 +868,14 @@
           },
           "matched_comparables": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Matched Comparables",
             "type": "array"
           },
           "matched_scope_pattern": {
+            "additionalProperties": true,
             "title": "Matched Scope Pattern",
             "type": "object"
           },
@@ -873,17 +888,20 @@
           },
           "pricing_candidates": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Pricing Candidates",
             "type": "array"
           },
           "pricing_coverage": {
+            "additionalProperties": true,
             "title": "Pricing Coverage",
             "type": "object"
           },
           "product_guidance": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Product Guidance",
@@ -891,12 +909,14 @@
           },
           "purchasing_guidance": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Purchasing Guidance",
             "type": "array"
           },
           "response_budget": {
+            "additionalProperties": true,
             "title": "Response Budget",
             "type": "object"
           },
@@ -911,10 +931,12 @@
             "type": "object"
           },
           "retrieval_summary": {
+            "additionalProperties": true,
             "title": "Retrieval Summary",
             "type": "object"
           },
           "route_mileage": {
+            "additionalProperties": true,
             "title": "Route Mileage",
             "type": "object"
           },
@@ -923,10 +945,12 @@
             "type": "string"
           },
           "scope": {
+            "additionalProperties": true,
             "title": "Scope",
             "type": "object"
           },
           "scope_integrity": {
+            "additionalProperties": true,
             "title": "Scope Integrity",
             "type": "object"
           },
@@ -943,6 +967,7 @@
           },
           "validated_relationships": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Validated Relationships",
@@ -2488,6 +2513,7 @@
             "type": "string"
           },
           "template_profile": {
+            "additionalProperties": true,
             "title": "Template Profile",
             "type": "object"
           },
@@ -2756,6 +2782,7 @@
             "type": "string"
           },
           "template_profile": {
+            "additionalProperties": true,
             "title": "Template Profile",
             "type": "object"
           },
@@ -2786,6 +2813,7 @@
         "additionalProperties": false,
         "properties": {
           "area_reconciliation": {
+            "additionalProperties": true,
             "title": "Area Reconciliation",
             "type": "object"
           },
@@ -3438,6 +3466,7 @@
           },
           "attention_items": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -3445,15 +3474,18 @@
             "type": "array"
           },
           "coverage": {
+            "additionalProperties": true,
             "title": "Coverage",
             "type": "object"
           },
           "data_freshness": {
+            "additionalProperties": true,
             "title": "Data Freshness",
             "type": "object"
           },
           "documents": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 20,
@@ -3461,6 +3493,7 @@
             "type": "array"
           },
           "job": {
+            "additionalProperties": true,
             "title": "Job",
             "type": "object"
           },
@@ -3470,6 +3503,7 @@
           },
           "recent_daily_tracking": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 10,
@@ -3478,6 +3512,7 @@
           },
           "recent_office_activity": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 10,
@@ -3485,10 +3520,12 @@
             "type": "array"
           },
           "response_budget": {
+            "additionalProperties": true,
             "title": "Response Budget",
             "type": "object"
           },
           "schedule": {
+            "additionalProperties": true,
             "title": "Schedule",
             "type": "object"
           },
@@ -3512,6 +3549,7 @@
           },
           "tracking_summary": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 5,
@@ -3526,6 +3564,7 @@
             "type": "array"
           },
           "workflow": {
+            "additionalProperties": true,
             "title": "Workflow",
             "type": "object"
           }
@@ -3631,6 +3670,7 @@
           },
           "attention_items": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -3638,23 +3678,28 @@
             "type": "array"
           },
           "coverage": {
+            "additionalProperties": true,
             "title": "Coverage",
             "type": "object"
           },
           "data_freshness": {
+            "additionalProperties": true,
             "title": "Data Freshness",
             "type": "object"
           },
           "filters_applied": {
+            "additionalProperties": true,
             "title": "Filters Applied",
             "type": "object"
           },
           "headline_metrics": {
+            "additionalProperties": true,
             "title": "Headline Metrics",
             "type": "object"
           },
           "records": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -3662,6 +3707,7 @@
             "type": "array"
           },
           "response_budget": {
+            "additionalProperties": true,
             "title": "Response Budget",
             "type": "object"
           },
@@ -3816,6 +3862,7 @@
           },
           "attention_items": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -3824,6 +3871,7 @@
           },
           "code_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -3831,11 +3879,13 @@
             "type": "array"
           },
           "coverage": {
+            "additionalProperties": true,
             "title": "Coverage",
             "type": "object"
           },
           "daily_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 92,
@@ -3843,11 +3893,13 @@
             "type": "array"
           },
           "data_freshness": {
+            "additionalProperties": true,
             "title": "Data Freshness",
             "type": "object"
           },
           "employee_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -3855,15 +3907,18 @@
             "type": "array"
           },
           "filters_applied": {
+            "additionalProperties": true,
             "title": "Filters Applied",
             "type": "object"
           },
           "headline_metrics": {
+            "additionalProperties": true,
             "title": "Headline Metrics",
             "type": "object"
           },
           "project_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -3872,6 +3927,7 @@
           },
           "records": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -3879,6 +3935,7 @@
             "type": "array"
           },
           "response_budget": {
+            "additionalProperties": true,
             "title": "Response Budget",
             "type": "object"
           },
@@ -3993,6 +4050,7 @@
           },
           "attention_items": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -4000,34 +4058,41 @@
             "type": "array"
           },
           "coverage": {
+            "additionalProperties": true,
             "title": "Coverage",
             "type": "object"
           },
           "data_freshness": {
+            "additionalProperties": true,
             "title": "Data Freshness",
             "type": "object"
           },
           "filters_applied": {
+            "additionalProperties": true,
             "title": "Filters Applied",
             "type": "object"
           },
           "headline_metrics": {
+            "additionalProperties": true,
             "title": "Headline Metrics",
             "type": "object"
           },
           "link_status_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Link Status Rollup",
             "type": "array"
           },
           "methodology": {
+            "additionalProperties": true,
             "title": "Methodology",
             "type": "object"
           },
           "owner_priorities": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 5,
@@ -4036,6 +4101,7 @@
           },
           "records": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -4043,6 +4109,7 @@
             "type": "array"
           },
           "response_budget": {
+            "additionalProperties": true,
             "title": "Response Budget",
             "type": "object"
           },
@@ -4191,6 +4258,7 @@
           },
           "attention_items": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -4198,37 +4266,44 @@
             "type": "array"
           },
           "coverage": {
+            "additionalProperties": true,
             "title": "Coverage",
             "type": "object"
           },
           "crew_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Crew Rollup",
             "type": "array"
           },
           "data_freshness": {
+            "additionalProperties": true,
             "title": "Data Freshness",
             "type": "object"
           },
           "division_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Division Rollup",
             "type": "array"
           },
           "filters_applied": {
+            "additionalProperties": true,
             "title": "Filters Applied",
             "type": "object"
           },
           "headline_metrics": {
+            "additionalProperties": true,
             "title": "Headline Metrics",
             "type": "object"
           },
           "project_health_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Project Health Rollup",
@@ -4236,6 +4311,7 @@
           },
           "readiness_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Readiness Rollup",
@@ -4243,6 +4319,7 @@
           },
           "records": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -4250,11 +4327,13 @@
             "type": "array"
           },
           "response_budget": {
+            "additionalProperties": true,
             "title": "Response Budget",
             "type": "object"
           },
           "schedule_health_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Schedule Health Rollup",
@@ -4449,6 +4528,7 @@
           },
           "attention_items": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -4457,6 +4537,7 @@
           },
           "bucket_details": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 125,
@@ -4465,34 +4546,41 @@
           },
           "bucket_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Bucket Rollup",
             "type": "array"
           },
           "coverage": {
+            "additionalProperties": true,
             "title": "Coverage",
             "type": "object"
           },
           "data_freshness": {
+            "additionalProperties": true,
             "title": "Data Freshness",
             "type": "object"
           },
           "filters_applied": {
+            "additionalProperties": true,
             "title": "Filters Applied",
             "type": "object"
           },
           "headline_metrics": {
+            "additionalProperties": true,
             "title": "Headline Metrics",
             "type": "object"
           },
           "methodology": {
+            "additionalProperties": true,
             "title": "Methodology",
             "type": "object"
           },
           "portfolio_rankings": {
             "additionalProperties": {
               "items": {
+                "additionalProperties": true,
                 "type": "object"
               },
               "type": "array"
@@ -4502,6 +4590,7 @@
           },
           "records": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -4509,6 +4598,7 @@
             "type": "array"
           },
           "response_budget": {
+            "additionalProperties": true,
             "title": "Response Budget",
             "type": "object"
           },
@@ -5614,6 +5704,7 @@
           },
           "attention_items": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -5621,23 +5712,28 @@
             "type": "array"
           },
           "coverage": {
+            "additionalProperties": true,
             "title": "Coverage",
             "type": "object"
           },
           "data_freshness": {
+            "additionalProperties": true,
             "title": "Data Freshness",
             "type": "object"
           },
           "filters_applied": {
+            "additionalProperties": true,
             "title": "Filters Applied",
             "type": "object"
           },
           "headline_metrics": {
+            "additionalProperties": true,
             "title": "Headline Metrics",
             "type": "object"
           },
           "owner_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Owner Rollup",
@@ -5645,6 +5741,7 @@
           },
           "records": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -5652,6 +5749,7 @@
             "type": "array"
           },
           "response_budget": {
+            "additionalProperties": true,
             "title": "Response Budget",
             "type": "object"
           },
@@ -5675,6 +5773,7 @@
           },
           "stage_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Stage Rollup",
@@ -6040,10 +6139,12 @@
         "additionalProperties": false,
         "properties": {
           "coverage": {
+            "additionalProperties": true,
             "title": "Coverage",
             "type": "object"
           },
           "filters_applied": {
+            "additionalProperties": true,
             "title": "Filters Applied",
             "type": "object"
           },
@@ -6053,6 +6154,7 @@
           },
           "records": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 20,
@@ -6198,6 +6300,12 @@
             "maxLength": 200,
             "title": "Query",
             "type": "string"
+          },
+          "reliable_only": {
+            "default": false,
+            "description": "True returns issued-document warranties plus warranties from trusted uploaded tracking sheets.",
+            "title": "Reliable Only",
+            "type": "boolean"
           }
         },
         "title": "WarrantyListRequest",
@@ -6212,36 +6320,43 @@
           },
           "category_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Category Rollup",
             "type": "array"
           },
           "coverage": {
+            "additionalProperties": true,
             "title": "Coverage",
             "type": "object"
           },
           "data_freshness": {
+            "additionalProperties": true,
             "title": "Data Freshness",
             "type": "object"
           },
           "evidence_status_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Evidence Status Rollup",
             "type": "array"
           },
           "filters_applied": {
+            "additionalProperties": true,
             "title": "Filters Applied",
             "type": "object"
           },
           "headline_metrics": {
+            "additionalProperties": true,
             "title": "Headline Metrics",
             "type": "object"
           },
           "records": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 50,
@@ -6249,6 +6364,7 @@
             "type": "array"
           },
           "response_budget": {
+            "additionalProperties": true,
             "title": "Response Budget",
             "type": "object"
           },
@@ -6389,6 +6505,7 @@
           },
           "attention_items": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -6397,21 +6514,25 @@
           },
           "category_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Category Rollup",
             "type": "array"
           },
           "coverage": {
+            "additionalProperties": true,
             "title": "Coverage",
             "type": "object"
           },
           "data_freshness": {
+            "additionalProperties": true,
             "title": "Data Freshness",
             "type": "object"
           },
           "data_quality_tasks": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -6419,15 +6540,18 @@
             "type": "array"
           },
           "filters_applied": {
+            "additionalProperties": true,
             "title": "Filters Applied",
             "type": "object"
           },
           "headline_metrics": {
+            "additionalProperties": true,
             "title": "Headline Metrics",
             "type": "object"
           },
           "records": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -6435,10 +6559,12 @@
             "type": "array"
           },
           "response_budget": {
+            "additionalProperties": true,
             "title": "Response Budget",
             "type": "object"
           },
           "review_queue_summary": {
+            "additionalProperties": true,
             "title": "Review Queue Summary",
             "type": "object"
           },
@@ -6462,6 +6588,7 @@
           },
           "status_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Status Rollup",
@@ -7297,7 +7424,7 @@
     },
     "/v1/warranties/list": {
       "post": {
-        "description": "Returns the deduplicated warranty master with terms, duration, start and end dates, customer follow-up contacts, project identity, SharePoint job links, issued-document links, historical-list provenance, and explicit review flags. This operation is read-only.",
+        "description": "Returns the deduplicated warranty master with terms, duration, start and end dates, customer follow-up contacts, project identity, SharePoint job links, issued-document links, historical-list provenance, reliability classification, and explicit review flags. This operation is read-only.",
         "operationId": "getWarrantyList",
         "requestBody": {
           "content": {

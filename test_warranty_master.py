@@ -102,3 +102,6 @@ def test_warranty_master_resolves_all_deterministic_contact_sources_with_provena
     assert "estimate_contact_email" in sql
     assert "contact_email_source" in sql
     assert "contact_source_reference" in sql
+    assert "is_reliable_warranty" in sql
+    assert "trusted_warranty_sheet" in sql
+    assert "estimate_or_proposal_only" in sql

@@ -84,6 +84,8 @@ def warranty_master_engine():
                     warranty_status TEXT,
                     has_issued_document_evidence BOOLEAN,
                     evidence_status TEXT,
+                    is_reliable_warranty BOOLEAN,
+                    reliability_basis TEXT,
                     job_id TEXT,
                     vsimple_id TEXT,
                     project_name TEXT,
@@ -126,7 +128,8 @@ def warranty_master_engine():
                 """
                 INSERT INTO warranty_master_clean (
                     warranty_master_id, warranty_status, has_issued_document_evidence,
-                    evidence_status, job_id, vsimple_id, project_name, customer_name,
+                    evidence_status, is_reliable_warranty, reliability_basis,
+                    job_id, vsimple_id, project_name, customer_name,
                     division, warranty_category, warranty_type, warranty_term, provider,
                     duration_years, start_date, end_date, contact_names, contact_emails,
                     contact_phones, contact_name_source, contact_email_source,
@@ -135,7 +138,7 @@ def warranty_master_engine():
                     issued_warranty_file, vsimple_url, source_file, source_url, source_kind,
                     source_document_id, has_conflict, match_review_required, refreshed_at
                 ) VALUES
-                ('vsimple:1', 'issued', 1, 'issued_document', 'JOB-1', '1',
+                ('vsimple:1', 'issued', 1, 'issued_document', 1, 'issued_document', 'JOB-1', '1',
                  'Acme Roof', 'Acme', 'Roofing', 'manufacturer_system',
                  'System warranty', '15-year manufacturer warranty', 'Gaco', 15,
                  '2026-06-01', '2041-06-01', 'Alex Smith', 'alex@example.com', NULL,
@@ -145,7 +148,7 @@ def warranty_master_engine():
                  'Warranty.pdf', 'https://example.invalid/vsimple', 'Warranty.pdf',
                  'https://example.invalid/warranty', 'warranty_document', 'DOC-1', 0, 0,
                  '2026-08-05'),
-                ('vsimple:2', 'reported', 0, 'reported_source', NULL, '2',
+                ('vsimple:2', 'reported', 0, 'reported_source', 1, 'trusted_warranty_sheet', NULL, '2',
                  'Legacy Plant', 'Legacy Co', 'Roofing', 'unspecified',
                  'Reported warranty', 'Reported warranty; term not captured', NULL, NULL,
                  NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
@@ -192,6 +195,27 @@ def test_warranty_list_can_return_missing_contact_review_queue() -> None:
 
     assert [row["project_name"] for row in result["records"]] == ["Legacy Plant"]
     assert result["headline_metrics"]["missing_contact"] == 1
+
+
+def test_warranty_list_reliable_only_uses_master_classification() -> None:
+    engine = warranty_master_engine()
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                UPDATE warranty_master_clean
+                SET is_reliable_warranty = 0,
+                    reliability_basis = 'estimate_or_proposal_only'
+                WHERE warranty_master_id = 'vsimple:2'
+                """
+            )
+        )
+
+    result = get_warranty_list(engine=engine, reliable_only=True, limit=25)
+
+    assert [row["warranty_master_id"] for row in result["records"]] == ["vsimple:1"]
+    assert result["filters_applied"]["reliable_only"] is True
+    assert result["headline_metrics"]["reliable_warranties"] == 1
 
 
 def test_warranty_summary_filters_and_preserves_provenance() -> None:

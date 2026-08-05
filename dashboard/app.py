@@ -20598,6 +20598,11 @@ def warranty_registry_page() -> None:
         value=False,
         key="warranty_registry_review_only",
     )
+    reliable_only = st.checkbox(
+        "Reliable warranties only (issued documents or trusted warranty sheets)",
+        value=True,
+        key="warranty_registry_reliable_only",
+    )
 
     filtered = warranties.copy()
     if search:
@@ -20632,6 +20637,8 @@ def warranty_registry_page() -> None:
     if contact_filter != "All":
         contact_ready = bool_series(filtered, "contact_follow_up_ready")
         filtered = filtered[contact_ready if contact_filter == "Contact available" else ~contact_ready]
+    if reliable_only and "is_reliable_warranty" in filtered.columns:
+        filtered = filtered[bool_series(filtered, "is_reliable_warranty")]
 
     with st.expander("Expiration window", expanded=False):
         d1, d2 = st.columns(2)
@@ -20702,6 +20709,7 @@ def warranty_registry_page() -> None:
             "customer_name",
             "division",
             "evidence_status",
+            "reliability_basis",
             "has_issued_document_evidence",
             "warranty_category",
             "warranty_type",
@@ -20730,6 +20738,7 @@ def warranty_registry_page() -> None:
             "project_name": "Project",
             "customer_name": "Customer",
             "evidence_status": "Evidence",
+            "reliability_basis": "Reliability Basis",
             "has_issued_document_evidence": "Issued Document",
             "warranty_term": "Warranty Terms",
             "duration_years": "Years",

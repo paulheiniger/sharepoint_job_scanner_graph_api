@@ -1031,7 +1031,7 @@ def job_context(
     description=(
         "Returns the deduplicated warranty master with terms, duration, start and end dates, "
         "customer follow-up contacts, project identity, SharePoint job links, issued-document links, "
-        "historical-list provenance, and explicit review flags. This operation is read-only."
+        "historical-list provenance, reliability classification, and explicit review flags. This operation is read-only."
     ),
 )
 def warranty_list(
@@ -1049,6 +1049,7 @@ def warranty_list(
             expiring_before=payload.expiring_before,
             needs_review=payload.needs_review,
             has_contact=payload.has_contact,
+            reliable_only=payload.reliable_only,
             limit=payload.limit,
         )
         return WarrantyListResponse.model_validate(result)

@@ -31,6 +31,8 @@ WARRANTY_MASTER_FIELDS = (
     "warranty_status",
     "has_issued_document_evidence",
     "evidence_status",
+    "is_reliable_warranty",
+    "reliability_basis",
     "job_id",
     "vsimple_id",
     "project_name",
@@ -121,6 +123,7 @@ def get_warranty_list(
     expiring_before: date | None = None,
     needs_review: bool | None = None,
     has_contact: bool | None = None,
+    reliable_only: bool = False,
     limit: int = 25,
 ) -> dict[str, Any]:
     """Return the deduplicated issued/reported warranty list used by the dashboard."""
@@ -181,6 +184,8 @@ def get_warranty_list(
                 if has_contact
                 else "NOT COALESCE(contact_follow_up_ready, FALSE)"
             )
+        if reliable_only and "is_reliable_warranty" in columns:
+            conditions.append("COALESCE(is_reliable_warranty, FALSE)")
 
         sql = f"SELECT {', '.join(selected_fields)} FROM {WARRANTY_MASTER_RELATION}"
         if conditions:
@@ -190,6 +195,7 @@ def get_warranty_list(
         for row in rows:
             for field in (
                 "has_issued_document_evidence",
+                "is_reliable_warranty",
                 "start_date_is_inferred",
                 "contact_follow_up_ready",
                 "needs_review",
@@ -217,6 +223,7 @@ def get_warranty_list(
                     "expiring_before": expiring_before.isoformat() if expiring_before else None,
                     "needs_review": needs_review,
                     "has_contact": has_contact,
+                    "reliable_only": reliable_only,
                     "limit": applied_limit,
                 }.items()
                 if value is not None
@@ -228,6 +235,9 @@ def get_warranty_list(
                 ),
                 "reported_source_warranties": sum(
                     str(row.get("evidence_status") or "") == "reported_source" for row in rows
+                ),
+                "reliable_warranties": sum(
+                    row.get("is_reliable_warranty") is True for row in rows
                 ),
                 "contact_follow_up_ready": sum(
                     row.get("contact_follow_up_ready") is True for row in rows
