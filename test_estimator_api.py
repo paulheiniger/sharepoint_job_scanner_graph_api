@@ -1519,6 +1519,21 @@ def test_checked_in_action_openapi_is_current() -> None:
     assert checked_in == build_action_openapi(deployed_server_url)
 
 
+def test_action_openapi_operation_descriptions_fit_gpt_limit() -> None:
+    specification = build_action_openapi(
+        "https://spraytec-business-api.icysand-5925ab36.eastus2.azurecontainerapps.io"
+    )
+    over_limit = [
+        (operation.get("operationId"), len(operation.get("description") or ""))
+        for path_item in specification["paths"].values()
+        for method, operation in path_item.items()
+        if method.lower() in {"get", "post"}
+        and len(operation.get("description") or "") > 300
+    ]
+
+    assert over_limit == []
+
+
 def test_bidscope_page_selection_route_returns_native_review_packet(monkeypatch) -> None:
     captured: dict[str, object] = {}
 

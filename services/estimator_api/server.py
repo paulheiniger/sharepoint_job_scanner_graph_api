@@ -566,12 +566,10 @@ def roof_measure_segment(
     operation_id="calculateRoofMeasurement",
     summary="Calculate roof area and perimeter from reviewed polygons",
     description=(
-        "Deterministically calculates plan-view area and perimeter from one or "
-        "more footprint candidates or custom pixel polygons in a prior roof "
-        "context. An optional pitch produces a slope-adjusted surface area. "
-        "For custom polygons, the final review overlay is automatically re-centered "
-        "on the tightest safe newly retrieved satellite view. "
-        "The result always requires estimator verification and no AI service is called."
+        "Calculates plan area and perimeter from reviewed footprint candidates "
+        "or custom polygons. Optional pitch adds surface area. Custom polygons "
+        "receive a tightly centered satellite overlay. No AI service is called, "
+        "and estimator verification is always required."
     ),
 )
 def roof_measure_calculate(
