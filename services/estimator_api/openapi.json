@@ -4766,6 +4766,40 @@
             "title": "Selected Footprint Overlay Url",
             "type": "string"
           },
+          "source_pixels_per_foot": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Pixels Per Foot"
+          },
+          "source_view": {
+            "default": "context",
+            "enum": [
+              "context",
+              "custom_boundary_fitted"
+            ],
+            "title": "Source View",
+            "type": "string"
+          },
+          "source_zoom": {
+            "anyOf": [
+              {
+                "maximum": 22.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Zoom"
+          },
           "total_perimeter_ft": {
             "title": "Total Perimeter Ft",
             "type": "number"
@@ -7163,7 +7197,7 @@
     },
     "/v1/roof-measure/calculate": {
       "post": {
-        "description": "Deterministically calculates plan-view area and perimeter from one or more footprint candidates or custom pixel polygons in a prior roof context. An optional pitch produces a slope-adjusted surface area. The result always requires estimator verification and no AI service is called.",
+        "description": "Deterministically calculates plan-view area and perimeter from one or more footprint candidates or custom pixel polygons in a prior roof context. An optional pitch produces a slope-adjusted surface area. For custom polygons, the final review overlay is automatically re-centered on the tightest safe newly retrieved satellite view. The result always requires estimator verification and no AI service is called.",
         "operationId": "calculateRoofMeasurement",
         "requestBody": {
           "content": {

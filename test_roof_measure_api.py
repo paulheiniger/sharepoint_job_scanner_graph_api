@@ -708,6 +708,65 @@ def test_calculate_accepts_custom_polygon_and_does_not_invent_surface_area(
     assert "plan-view area" in result["warnings"][-1]
 
 
+def test_calculate_refits_final_overlay_to_custom_boundary(
+    roof_context,
+    monkeypatch,
+) -> None:
+    artifact_dir, context = roof_context
+    requested: dict[str, float] = {}
+
+    class FakeDetailProvider:
+        def __init__(self, token: str):
+            assert token == "mapbox-test-token"
+
+        def static_satellite_image_at(self, **kwargs) -> MapboxStaticImage:
+            requested.update(kwargs)
+            return MapboxStaticImage(
+                ok=True,
+                image_bytes=_png_bytes(),
+                latitude=float(kwargs["latitude"]),
+                longitude=float(kwargs["longitude"]),
+                zoom=float(kwargs["zoom"]),
+                pixels_per_foot=6.8,
+            )
+
+    monkeypatch.setattr(
+        "roof_measure.api_segmentation.MapboxReferenceProvider",
+        FakeDetailProvider,
+    )
+    result = calculate_roof_measurement(
+        context_id=context["context_id"],
+        selected_footprint_ids=[],
+        sections=[
+            {
+                "section_id": "reviewed-main-roof",
+                "polygon": [
+                    {"x": 40, "y": 40},
+                    {"x": 60, "y": 40},
+                    {"x": 60, "y": 60},
+                    {"x": 40, "y": 60},
+                ],
+                "holes": [],
+            }
+        ],
+        pitch_rise_per_12=None,
+        artifact_dir=artifact_dir,
+        mapbox_token="mapbox-test-token",
+    )
+
+    assert result["total_plan_area_sqft"] == 100.0
+    assert result["source_view"] == "custom_boundary_fitted"
+    assert 19.2 < result["source_zoom"] < 19.4
+    assert result["source_pixels_per_foot"] == 6.8
+    assert requested["zoom"] == pytest.approx(result["source_zoom"], abs=0.01)
+    assert "re-centered" in result["assumptions"][-1]
+    assert resolve_roof_measure_asset(
+        context_id=context["context_id"],
+        asset_name=result["selected_overlay_asset_name"],
+        artifact_dir=artifact_dir,
+    ).is_file()
+
+
 def test_expired_context_cannot_be_reused(tmp_path) -> None:
     context_id = "b" * 32
     context_dir = tmp_path / context_id

@@ -266,6 +266,7 @@ def calculate_roof_measurement(
     pitch_rise_per_12: float | None,
     artifact_dir: Path,
     sam2_candidate_id: str = "",
+    mapbox_token: str = "",
 ) -> dict[str, Any]:
     source_count = sum(
         (
@@ -294,6 +295,12 @@ def calculate_roof_measurement(
     measurement_sections: list[dict[str, Any]] = []
     overlay_sections = list(sections)
     overlay_footprint_ids = list(selected_footprint_ids)
+    overlay_context = context
+    overlay_source_image: Image.Image | None = None
+    source_view = "context"
+    source_zoom = float(context["zoom"])
+    source_pixels_per_foot = pixels_per_foot
+    fitted_view_warning = ""
     if sam2_candidate_id:
         from .api_segmentation import sam2_candidate_sections
 
@@ -358,6 +365,43 @@ def calculate_roof_measurement(
                     pitch_rise_per_12=pitch_rise_per_12,
                 )
             )
+        if str(mapbox_token or "").strip():
+            from .api_segmentation import _fit_segmentation_view_to_footprints
+
+            fitted_view, fitted_view_warning = _fit_segmentation_view_to_footprints(
+                context=context,
+                selected_components=[
+                    {
+                        "polygon": section["polygon"],
+                        "holes": section.get("holes") or [],
+                    }
+                    for section in sections
+                ],
+                mapbox_token=mapbox_token,
+            )
+            if fitted_view is not None:
+                overlay_sections = [
+                    {
+                        "section_id": section["section_id"],
+                        "polygon": component["polygon"],
+                        "holes": component.get("holes") or [],
+                    }
+                    for section, component in zip(
+                        sections,
+                        fitted_view.components,
+                        strict=True,
+                    )
+                ]
+                overlay_context = {
+                    **fitted_view.context,
+                    "footprint_candidates": [],
+                }
+                overlay_source_image = fitted_view.image
+                source_view = "custom_boundary_fitted"
+                source_zoom = float(fitted_view.context["zoom"])
+                source_pixels_per_foot = float(
+                    fitted_view.context["pixels_per_foot"]
+                )
 
     total_plan = sum(float(item["plan_area_sqft"]) for item in measurement_sections)
     total_perimeter = sum(float(item["perimeter_ft"]) for item in measurement_sections)
@@ -395,6 +439,14 @@ def calculate_roof_measurement(
         assumptions.append(
             f"A uniform {pitch_rise_per_12:g}:12 pitch was applied to every section."
         )
+    if fitted_view_warning:
+        warnings.append(fitted_view_warning)
+    if source_view == "custom_boundary_fitted":
+        assumptions.append(
+            f"The final custom-boundary overlay was re-centered and retrieved at "
+            f"zoom {source_zoom:.2f}; its geometry and measurement remain tied to "
+            "the original address-calibrated context."
+        )
 
     recommended_sam2_candidate_id = str(
         (context.get("sam2_candidates") or [{}])[0].get("candidate_id") or ""
@@ -411,10 +463,12 @@ def calculate_roof_measurement(
         selected_overlay_asset_name = recommended_sam2_overlay
     else:
         selected_overlay_asset_name = _write_selected_footprint_overlay(
-            context=context,
+            context=overlay_context,
             selected_footprint_ids=overlay_footprint_ids,
             sections=overlay_sections,
             artifact_dir=artifact_dir,
+            source_image=overlay_source_image,
+            source_identity=f"{source_view}:{source_zoom:.4f}",
         )
 
     return {
@@ -425,6 +479,9 @@ def calculate_roof_measurement(
             if sam2_candidate_id
             else "address_calibrated_satellite_plan_view"
         ),
+        "source_view": source_view,
+        "source_zoom": round(source_zoom, 2),
+        "source_pixels_per_foot": round(source_pixels_per_foot, 4),
         "total_plan_area_sqft": round(total_plan, 1),
         "total_perimeter_ft": round(total_perimeter, 1),
         "pitch_rise_per_12": pitch_rise_per_12,
@@ -912,11 +969,14 @@ def _write_selected_footprint_overlay(
     selected_footprint_ids: list[str],
     sections: list[dict[str, Any]],
     artifact_dir: Path,
+    source_image: Image.Image | None = None,
+    source_identity: str = "context",
 ) -> str:
     selection_payload = json.dumps(
         {
             "selected_footprint_ids": selected_footprint_ids,
             "sections": sections,
+            "source_identity": source_identity,
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -924,7 +984,11 @@ def _write_selected_footprint_overlay(
     digest = hashlib.sha256(selection_payload).hexdigest()[:16]
     asset_name = f"selected-footprints-{digest}.png"
     context_path = _context_path(artifact_dir, str(context["context_id"]))
-    image = Image.open(context_path / "satellite.png").convert("RGBA")
+    image = (
+        source_image.convert("RGBA")
+        if source_image is not None
+        else Image.open(context_path / "satellite.png").convert("RGBA")
+    )
     overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     selected = set(selected_footprint_ids)

@@ -562,6 +562,8 @@ def roof_measure_segment(
         "Deterministically calculates plan-view area and perimeter from one or "
         "more footprint candidates or custom pixel polygons in a prior roof "
         "context. An optional pitch produces a slope-adjusted surface area. "
+        "For custom polygons, the final review overlay is automatically re-centered "
+        "on the tightest safe newly retrieved satellite view. "
         "The result always requires estimator verification and no AI service is called."
     ),
 )
@@ -578,6 +580,11 @@ def roof_measure_calculate(
             pitch_rise_per_12=payload.pitch_rise_per_12,
             artifact_dir=_roof_measure_artifact_dir(),
             sam2_candidate_id=payload.sam2_candidate_id,
+            mapbox_token=(
+                os.getenv("MAPBOX_TOKEN")
+                or os.getenv("MAPBOX_ACCESS_TOKEN")
+                or ""
+            ),
         )
         selected_asset_name = str(result.pop("selected_overlay_asset_name"))
         expires = int(time.time()) + _artifact_ttl_seconds()

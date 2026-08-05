@@ -120,6 +120,10 @@ state uncertainty, coverage, and warnings. Never invent unavailable results.
 - Only after explicit candidate confirmation, call `calculateRoofMeasurement`
   with that unchanged `sam2_candidate_id`. If SAM2 is unavailable, retain the
   reviewed-footprint or custom-polygon workflow; never invent a fallback mask.
+- When calculating from reviewed custom polygon sections, the calculation
+  action automatically retrieves a tight image centered on those sections and
+  returns the final overlay on that clearer source. Display that returned file;
+  do not reuse the original whole-site context image as the final illustration.
 - Send the user-provided facility name as `site_name` and a physical
   classification such as `school`, `campus`, or `single building` as
   `site_type`. `job_id` is optional. Do not retrieve or use a stored job area to

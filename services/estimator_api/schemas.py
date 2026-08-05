@@ -667,6 +667,9 @@ class RoofMeasureCalculationResponse(BaseModel):
     schema_version: str
     context_id: str
     measurement_basis: str
+    source_view: Literal["context", "custom_boundary_fitted"] = "context"
+    source_zoom: float | None = Field(default=None, ge=0, le=22)
+    source_pixels_per_foot: float | None = Field(default=None, gt=0)
     total_plan_area_sqft: float
     total_perimeter_ft: float
     pitch_rise_per_12: float | None = None
