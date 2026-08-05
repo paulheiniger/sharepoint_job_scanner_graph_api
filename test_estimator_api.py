@@ -945,6 +945,7 @@ def test_openapi_exposes_expected_operations() -> None:
             "getSalesFollowUps",
             "getSalesPipeline",
         "getWarrantySummary",
+        "getWarrantyList",
         "searchSharePointDocuments",
         "fetchSharePointDocument",
             "health_health_get",
@@ -1525,6 +1526,53 @@ def test_warranty_summary_route_uses_auth_and_passes_filters(monkeypatch) -> Non
     assert captured["job_year"] == 2026
     assert captured["warranty_status"] == "issued"
     assert captured["needs_review"] is False
+
+
+def test_warranty_list_route_uses_auth_and_passes_review_filters(monkeypatch) -> None:
+    monkeypatch.setenv("ESTIMATOR_API_KEY", "test-secret")
+    captured: dict[str, object] = {}
+
+    def fake_warranty_list(**kwargs):
+        captured.update(kwargs)
+        return {
+            "schema_version": "spraytec.warranty_list.v1",
+            "as_of": "2026-08-05T12:00:00Z",
+            "filters_applied": {"query": "Acme", "has_contact": True},
+            "headline_metrics": {"warranty_records": 1},
+            "evidence_status_rollup": [],
+            "category_rollup": [],
+            "records": [{"project_name": "Acme Roof", "contact_emails": "alex@example.com"}],
+            "source_links": [],
+            "source_tables": ["warranty_master_clean"],
+            "data_freshness": {},
+            "coverage": {},
+            "warnings": [],
+            "response_budget": {"max_records": 50, "returned_records": 1},
+        }
+
+    monkeypatch.setattr(
+        "services.estimator_api.server.get_warranty_list",
+        fake_warranty_list,
+    )
+
+    unauthorized = client.post("/v1/warranties/list", json={})
+    authorized = client.post(
+        "/v1/warranties/list",
+        json={
+            "query": "Acme",
+            "evidence_status": "issued_document",
+            "needs_review": False,
+            "has_contact": True,
+        },
+        headers={"Authorization": "Bearer test-secret"},
+    )
+
+    assert unauthorized.status_code == 401
+    assert authorized.status_code == 200
+    assert captured["query"] == "Acme"
+    assert captured["evidence_status"] == "issued_document"
+    assert captured["needs_review"] is False
+    assert captured["has_contact"] is True
 
 
 def test_action_openapi_excludes_internal_source_metadata() -> None:

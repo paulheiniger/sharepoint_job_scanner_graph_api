@@ -518,6 +518,7 @@ CREATE INDEX IF NOT EXISTS idx_job_warranty_summary_job_id ON job_warranty_summa
 CREATE INDEX IF NOT EXISTS idx_job_warranty_summary_expiration ON job_warranty_summary(expiration_date);
 CREATE INDEX IF NOT EXISTS idx_job_warranty_summary_source_year ON job_warranty_summary(source_year);
 
+DROP VIEW IF EXISTS warranty_master_clean;
 DROP VIEW IF EXISTS warranty_registry_all;
 
 CREATE VIEW warranty_registry_all AS

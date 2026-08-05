@@ -119,16 +119,16 @@ PAGE_SOURCE_REFERENCES: dict[str, tuple[DashboardSourceReference, ...]] = {
     ),
     "Warranty Registry": (
         _ref(
-            "job_warranty_summary; job_warranty_evidence",
-            "PostgreSQL refreshed tables",
-            "Issued/proposed warranty type, coverage, duration, dates, conflicts, and source links",
-            "Evidence is refreshed from warranty documents, proposals, and estimate template rows. Issued evidence outranks proposed terms.",
+            "warranty_master_clean; job_warranty_evidence; warranty_source_records",
+            "PostgreSQL cleaned view and evidence tables",
+            "Issued/reported warranty terms, dates, contacts, review flags, and source links",
+            "The cleaned master deduplicates by VSimple/project or job identity. Issued documents remain distinct from historical reported warranties.",
         ),
         _ref(
-            "job_board_static_snapshot; jobs; job_tracking_summary; crew_schedule",
-            "PostgreSQL tables/snapshot",
-            "Warranty start-date inference",
-            "Start dates follow explicit warranty date, completion, issued-file modification, invoice, last work, schedule end, then proposal date plus duration.",
+            "vsimple_warranty_projects_clean; vsimple_project_contacts_clean; vsimple_customers_clean",
+            "PostgreSQL cleaned tables",
+            "Project identity and customer follow-up contacts",
+            "Exact VSimple project-contact IDs are used; missing contacts remain flagged for review rather than inferred.",
         ),
     ),
     "Office Timesheet": (
@@ -528,9 +528,9 @@ PAGE_AUDIT_NOTES: dict[str, tuple[str, ...]] = {
         "Estimate-vs-actual and material variance views combine tracking actuals with job_tracking estimate snapshots or estimate_template_rows fallback values. Those variance numbers therefore do not originate from one file.",
     ),
     "Warranty Registry": (
-        "A proposed warranty is not evidence that a warranty was issued; status remains visible on every row.",
-        "Inferred start dates retain their source and confidence. Low-confidence dates should be reviewed before customer communication.",
-        "Conflicts mean the available evidence contains more than one duration for the same job and warranty category.",
+        "Issued-document evidence and historical reported warranties remain distinct on every row.",
+        "Needs Review includes match conflicts or missing duration, dates, or actionable contact information.",
+        "Job, issued-warranty, and VSimple links use persisted source URLs and are not reconstructed from names.",
     ),
     "Schedule Calendar": (
         "Planned events come from crew_schedule; optional actual-work events come from job_tracking_daily_entries. Selected job panels link to the SharePoint folder and available source documents.",

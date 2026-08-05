@@ -6119,6 +6119,174 @@
         "title": "ValidationError",
         "type": "object"
       },
+      "WarrantyListRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "division": {
+            "default": "",
+            "maxLength": 100,
+            "title": "Division",
+            "type": "string"
+          },
+          "evidence_status": {
+            "default": "",
+            "enum": [
+              "",
+              "issued_document",
+              "reported_source"
+            ],
+            "title": "Evidence Status",
+            "type": "string"
+          },
+          "expiring_after": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expiring After"
+          },
+          "expiring_before": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expiring Before"
+          },
+          "has_contact": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "True returns rows with an email or phone available for follow-up.",
+            "title": "Has Contact"
+          },
+          "limit": {
+            "default": 25,
+            "maximum": 50.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "needs_review": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Needs Review"
+          },
+          "query": {
+            "default": "",
+            "description": "Search project, customer, contact, job ID, VSimple ID, provider, or warranty term.",
+            "maxLength": 200,
+            "title": "Query",
+            "type": "string"
+          }
+        },
+        "title": "WarrantyListRequest",
+        "type": "object"
+      },
+      "WarrantyListResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of": {
+            "title": "As Of",
+            "type": "string"
+          },
+          "category_rollup": {
+            "items": {
+              "type": "object"
+            },
+            "title": "Category Rollup",
+            "type": "array"
+          },
+          "coverage": {
+            "title": "Coverage",
+            "type": "object"
+          },
+          "data_freshness": {
+            "title": "Data Freshness",
+            "type": "object"
+          },
+          "evidence_status_rollup": {
+            "items": {
+              "type": "object"
+            },
+            "title": "Evidence Status Rollup",
+            "type": "array"
+          },
+          "filters_applied": {
+            "title": "Filters Applied",
+            "type": "object"
+          },
+          "headline_metrics": {
+            "title": "Headline Metrics",
+            "type": "object"
+          },
+          "records": {
+            "items": {
+              "type": "object"
+            },
+            "maxItems": 50,
+            "title": "Records",
+            "type": "array"
+          },
+          "response_budget": {
+            "title": "Response Budget",
+            "type": "object"
+          },
+          "schema_version": {
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "source_links": {
+            "items": {
+              "$ref": "#/components/schemas/JobSourceLink"
+            },
+            "title": "Source Links",
+            "type": "array"
+          },
+          "source_tables": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Tables",
+            "type": "array"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "schema_version",
+          "as_of",
+          "filters_applied",
+          "headline_metrics"
+        ],
+        "title": "WarrantyListResponse",
+        "type": "object"
+      },
       "WarrantySummaryRequest": {
         "additionalProperties": false,
         "properties": {
@@ -6321,7 +6489,7 @@
   "info": {
     "description": "Estimator evidence, controlled workbook generation, and read-only operational intelligence for conversational agents.",
     "title": "Spray-Tec Business Intelligence API",
-    "version": "0.20.6"
+    "version": "0.21.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -7124,6 +7292,46 @@
           }
         },
         "summary": "Search indexed SharePoint job documents",
+        "x-openai-isConsequential": false
+      }
+    },
+    "/v1/warranties/list": {
+      "post": {
+        "description": "Returns the deduplicated warranty master with terms, duration, start and end dates, customer follow-up contacts, project identity, SharePoint job links, issued-document links, historical-list provenance, and explicit review flags. This operation is read-only.",
+        "operationId": "getWarrantyList",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WarrantyListRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WarrantyListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search the cleaned master list of issued and reported warranties",
         "x-openai-isConsequential": false
       }
     }

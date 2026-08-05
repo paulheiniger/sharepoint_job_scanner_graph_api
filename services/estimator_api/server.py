@@ -40,7 +40,7 @@ from jobscan.business.sharepoint_document_service import (
     fetch_sharepoint_document,
     search_sharepoint_documents,
 )
-from jobscan.business.warranty_service import get_warranty_summary
+from jobscan.business.warranty_service import get_warranty_list, get_warranty_summary
 from jobscan.estimator.context_service import build_copilot_estimator_context
 from jobscan.estimator.planning_snapshot import (
     PlanningSnapshotError,
@@ -106,6 +106,8 @@ from .schemas import (
     SharePointDocumentSearchResponse,
     WarrantySummaryRequest,
     WarrantySummaryResponse,
+    WarrantyListRequest,
+    WarrantyListResponse,
 )
 
 
@@ -117,7 +119,7 @@ app = FastAPI(
         "Estimator evidence, controlled workbook generation, and read-only "
         "operational intelligence for conversational agents."
     ),
-    version="0.20.6",
+    version="0.21.0",
 )
 
 
@@ -1017,6 +1019,48 @@ def job_context(
         raise HTTPException(
             status_code=503,
             detail=f"Job intelligence is unavailable: {type(exc).__name__}.",
+        ) from exc
+
+
+@app.post(
+    "/v1/warranties/list",
+    response_model=WarrantyListResponse,
+    response_model_exclude_none=True,
+    operation_id="getWarrantyList",
+    summary="Search the cleaned master list of issued and reported warranties",
+    description=(
+        "Returns the deduplicated warranty master with terms, duration, start and end dates, "
+        "customer follow-up contacts, project identity, SharePoint job links, issued-document links, "
+        "historical-list provenance, and explicit review flags. This operation is read-only."
+    ),
+)
+def warranty_list(
+    request: Request,
+    payload: WarrantyListRequest,
+) -> WarrantyListResponse:
+    _require_api_request(request)
+    try:
+        result = get_warranty_list(
+            database_url=_database_url(),
+            query=payload.query,
+            division=payload.division,
+            evidence_status=payload.evidence_status,
+            expiring_after=payload.expiring_after,
+            expiring_before=payload.expiring_before,
+            needs_review=payload.needs_review,
+            has_contact=payload.has_contact,
+            limit=payload.limit,
+        )
+        return WarrantyListResponse.model_validate(result)
+    except JobIntelligenceUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Warranty list is unavailable: {type(exc).__name__}.",
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Warranty list is unavailable: {type(exc).__name__}.",
         ) from exc
 
 

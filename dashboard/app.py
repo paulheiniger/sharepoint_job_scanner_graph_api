@@ -1264,6 +1264,7 @@ VIEWS = [
     "vsimple_sharepoint_job_matches",
     "job_warranty_summary",
     "job_warranty_evidence",
+    "warranty_master_clean",
 ]
 
 HEALTH_TABLES = [
@@ -1273,6 +1274,7 @@ HEALTH_TABLES = [
     ("estimate_template_rows", "Estimate template parser"),
     ("job_warranty_summary", "Warranty registry summary"),
     ("job_warranty_evidence", "Warranty source evidence"),
+    ("warranty_master_clean", "Cleaned warranty master list"),
     ("pricing_catalog", "Pricing catalog"),
     ("estimate_line_item_classifications", "Legacy line-item classifications"),
     ("job_package_summary", "Relationship package summary"),
@@ -9245,6 +9247,9 @@ DASHBOARD_LINK_COLUMNS = {
     "proposal_url": "Proposal",
     "document_url": "Source File",
     "source_url": "Warranty Source",
+    "job_link": "Job Folder",
+    "issued_warranty_link": "Issued Warranty",
+    "vsimple_url": "VSimple Project",
 }
 
 
@@ -20538,13 +20543,17 @@ def documentation_page() -> None:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_warranty_registry() -> pd.DataFrame:
-    return load_df("SELECT * FROM warranty_registry_all")
+    return load_df(
+        "SELECT m.*, customer_name AS customer, project_name AS job_name, "
+        "end_date AS expiration_date, source_kind AS duration_source_kind "
+        "FROM warranty_master_clean m"
+    )
 
 
 def warranty_registry_page() -> None:
     st.title("Warranty Registry")
     st.caption(
-        "Source-backed issued, legacy-reported, and proposed warranty terms. Inferred dates retain their source and confidence."
+        "Cleaned master list of issued warranties and historical reported warranties, with follow-up contacts and source links."
     )
     try:
         warranties = apply_basic_filters(load_warranty_registry())
@@ -20555,11 +20564,15 @@ def warranty_registry_page() -> None:
         show_empty("No warranty records match the current filters.")
         return
 
+    search = st.text_input(
+        "Search project, customer, contact, job ID, provider, or warranty term",
+        key="warranty_registry_search",
+    ).strip()
     f1, f2, f3, f4 = st.columns(4)
     with f1:
         status_filter = st.multiselect(
-            "Warranty Status",
-            options_from(warranties, "warranty_status"),
+            "Evidence Status",
+            options_from(warranties, "evidence_status"),
             key="warranty_registry_status",
         )
     with f2:
@@ -20575,19 +20588,50 @@ def warranty_registry_page() -> None:
             key="warranty_registry_source",
         )
     with f4:
-        review_only = st.checkbox(
-            "Needs review only",
-            value=False,
-            key="warranty_registry_review_only",
+        contact_filter = st.selectbox(
+            "Follow-up Contact",
+            ["All", "Contact available", "Missing contact"],
+            key="warranty_registry_contact",
         )
+    review_only = st.checkbox(
+        "Needs review only",
+        value=False,
+        key="warranty_registry_review_only",
+    )
 
     filtered = warranties.copy()
+    if search:
+        searchable = [
+            column
+            for column in (
+                "project_name",
+                "customer_name",
+                "contact_names",
+                "contact_emails",
+                "contact_phones",
+                "job_id",
+                "vsimple_id",
+                "provider",
+                "warranty_term",
+            )
+            if column in filtered.columns
+        ]
+        if searchable:
+            search_mask = pd.Series(False, index=filtered.index)
+            for column in searchable:
+                search_mask |= filtered[column].fillna("").astype(str).str.contains(
+                    search, case=False, regex=False
+                )
+            filtered = filtered[search_mask]
     if status_filter:
-        filtered = filtered[filtered["warranty_status"].astype(str).isin(status_filter)]
+        filtered = filtered[filtered["evidence_status"].astype(str).isin(status_filter)]
     if category_filter:
         filtered = filtered[filtered["warranty_category"].astype(str).isin(category_filter)]
     if source_filter:
         filtered = filtered[filtered["duration_source_kind"].astype(str).isin(source_filter)]
+    if contact_filter != "All":
+        contact_ready = bool_series(filtered, "contact_follow_up_ready")
+        filtered = filtered[contact_ready if contact_filter == "Contact available" else ~contact_ready]
 
     with st.expander("Expiration window", expanded=False):
         d1, d2 = st.columns(2)
@@ -20606,90 +20650,96 @@ def warranty_registry_page() -> None:
     if expiration_through:
         filtered = filtered[expiration_window.le(pd.Timestamp(expiration_through))]
     if review_only:
-        conflict = bool_series(filtered, "has_conflict")
-        match_review = bool_series(filtered, "match_review_required")
-        missing_duration = numeric_series(filtered, "duration_years").isna()
-        confidence = filtered.get(
-            "start_date_confidence",
-            pd.Series("unavailable", index=filtered.index),
-        ).fillna("unavailable").astype(str).str.lower()
-        filtered = filtered[match_review | conflict | missing_duration | confidence.isin(["low", "unavailable"])]
+        filtered = filtered[bool_series(filtered, "needs_review")]
 
     expiration = pd.to_datetime(filtered.get("expiration_date"), errors="coerce")
     today = pd.Timestamp(date.today())
     expired = expiration.notna() & expiration.lt(today)
     expiring_next_year = expiration.notna() & expiration.between(today, today + pd.Timedelta(days=365), inclusive="both")
-    inferred = bool_series(filtered, "start_date_is_inferred")
+    issued = bool_series(filtered, "has_issued_document_evidence")
+    contact_ready = bool_series(filtered, "contact_follow_up_ready")
+    needs_review = bool_series(filtered, "needs_review")
     conflicts = bool_series(filtered, "has_conflict")
     metric_row(
         [
             ("Warranty Records", fmt_count(len(filtered))),
-            ("Issued", fmt_count((filtered["warranty_status"].astype(str).str.lower() == "issued").sum())),
-            ("Reported", fmt_count((filtered["warranty_status"].astype(str).str.lower() == "reported").sum())),
-            ("Proposed", fmt_count((filtered["warranty_status"].astype(str).str.lower() == "proposed").sum())),
+            ("Issued Documents", fmt_count(issued.sum())),
+            ("Historical / Reported", fmt_count((~issued).sum())),
+            ("Contact Available", fmt_count(contact_ready.sum())),
+            ("Missing Contact", fmt_count((~contact_ready).sum())),
+            ("Needs Review", fmt_count(needs_review.sum())),
             ("Expired", fmt_count(expired.sum())),
             ("Expiring Next 12 Months", fmt_count(expiring_next_year.sum())),
-            ("Inferred Start Dates", fmt_count(inferred.sum())),
             ("Conflicts", fmt_count(conflicts.sum())),
-            ("Missing Duration", fmt_count(numeric_series(filtered, "duration_years").isna().sum())),
         ]
     )
 
     c1, c2 = st.columns(2)
     with c1:
-        bar_chart(filtered, "warranty_status", None, "Warranty Records by Evidence Status")
+        bar_chart(filtered, "evidence_status", None, "Warranty Records by Evidence Status")
     with c2:
-        bar_chart(filtered, "warranty_category", None, "Warranty Records by Category", color="warranty_status")
+        bar_chart(filtered, "warranty_category", None, "Warranty Records by Category", color="evidence_status")
 
     st.subheader("Warranty Details")
     display = filtered.copy()
-    if "match_candidates" in display.columns:
-        def candidate_summary(value: Any) -> str:
-            candidates = value if isinstance(value, list) else []
-            if isinstance(value, str) and value.strip():
-                try:
-                    parsed = json.loads(value)
-                    candidates = parsed if isinstance(parsed, list) else []
-                except (TypeError, ValueError):
-                    candidates = []
-            labels = []
-            for candidate in candidates[:3]:
-                if not isinstance(candidate, dict):
-                    continue
-                name = candidate.get("name") or candidate.get("job_id") or candidate.get("vsimple_id") or "Candidate"
-                score = candidate.get("score")
-                labels.append(f"{name} ({float(score):.0%})" if score is not None else str(name))
-            return "; ".join(labels)
-
-        display["candidate_job_matches"] = display["match_candidates"].apply(candidate_summary)
+    if {"needs_review", "end_date"}.issubset(display.columns):
+        display = display.sort_values(
+            ["needs_review", "end_date"],
+            ascending=[False, True],
+            na_position="last",
+        )
+    st.download_button(
+        "Download filtered warranty list (CSV)",
+        data=display.to_csv(index=False).encode("utf-8"),
+        file_name="spraytec_warranty_list.csv",
+        mime="text/csv",
+        key="warranty_registry_download",
+    )
     show_table(
         display,
         [
-            "customer",
-            "job_name",
+            "project_name",
+            "customer_name",
             "division",
-            "warranty_status",
+            "evidence_status",
+            "has_issued_document_evidence",
             "warranty_category",
             "warranty_type",
+            "warranty_term",
             "provider",
             "duration_years",
-            "coverage_summary",
-            "coverage_excerpt",
             "start_date",
-            "start_date_source",
-            "start_date_confidence",
-            "start_date_is_inferred",
-            "expiration_date",
+            "end_date",
+            "contact_names",
+            "contact_emails",
+            "contact_phones",
+            "contact_follow_up_ready",
+            "needs_review",
             "has_conflict",
             "match_review_required",
-            "match_confidence",
-            "match_score",
-            "candidate_job_matches",
-            "evidence_count",
+            "job_id",
+            "vsimple_id",
+            "job_link",
+            "issued_warranty_link",
+            "vsimple_url",
             "source_file",
             "source_url",
         ],
-        sort_by="expiration_date",
+        column_labels={
+            "project_name": "Project",
+            "customer_name": "Customer",
+            "evidence_status": "Evidence",
+            "has_issued_document_evidence": "Issued Document",
+            "warranty_term": "Warranty Terms",
+            "duration_years": "Years",
+            "start_date": "Start Date",
+            "end_date": "End Date",
+            "contact_names": "Contact",
+            "contact_emails": "Email",
+            "contact_phones": "Phone",
+            "contact_follow_up_ready": "Follow-up Ready",
+            "needs_review": "Needs Review",
+        },
     )
 
 

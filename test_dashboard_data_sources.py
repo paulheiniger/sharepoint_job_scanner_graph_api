@@ -56,6 +56,10 @@ def test_warranty_registry_is_a_core_page_with_provenance_notes() -> None:
     assert references_for_page("Warranty Registry")
     assert audit_notes_for_page("Warranty Registry")
     assert "warranty_registry_page()" in inspect.getsource(app.render_dashboard_page)
+    assert "warranty_master_clean" in inspect.getsource(app.load_warranty_registry)
+    page_source = inspect.getsource(app.warranty_registry_page)
+    assert "contact_follow_up_ready" in page_source
+    assert "Download filtered warranty list" in page_source
 
 
 def test_sales_and_operations_sources_disclose_fallback_paths() -> None:

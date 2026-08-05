@@ -5,7 +5,7 @@ from pathlib import Path
 
 from sqlalchemy import create_engine, text
 
-from jobscan.business.warranty_service import get_warranty_summary
+from jobscan.business.warranty_service import get_warranty_list, get_warranty_summary
 
 
 def warranty_engine():
@@ -71,6 +71,107 @@ def warranty_engine():
             )
         )
     return engine
+
+
+def warranty_master_engine():
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE warranty_master_clean (
+                    warranty_master_id TEXT PRIMARY KEY,
+                    warranty_status TEXT,
+                    has_issued_document_evidence BOOLEAN,
+                    evidence_status TEXT,
+                    job_id TEXT,
+                    vsimple_id TEXT,
+                    project_name TEXT,
+                    customer_name TEXT,
+                    division TEXT,
+                    warranty_category TEXT,
+                    warranty_type TEXT,
+                    warranty_term TEXT,
+                    provider TEXT,
+                    duration_years NUMERIC,
+                    start_date DATE,
+                    end_date DATE,
+                    contact_names TEXT,
+                    contact_emails TEXT,
+                    contact_phones TEXT,
+                    contact_follow_up_ready BOOLEAN,
+                    needs_review BOOLEAN,
+                    job_link TEXT,
+                    issued_warranty_link TEXT,
+                    issued_warranty_file TEXT,
+                    vsimple_url TEXT,
+                    source_file TEXT,
+                    source_url TEXT,
+                    source_kind TEXT,
+                    source_document_id TEXT,
+                    has_conflict BOOLEAN,
+                    match_review_required BOOLEAN,
+                    refreshed_at TIMESTAMP
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO warranty_master_clean VALUES
+                ('vsimple:1', 'issued', 1, 'issued_document', 'JOB-1', '1',
+                 'Acme Roof', 'Acme', 'Roofing', 'manufacturer_system',
+                 'System warranty', '15-year manufacturer warranty', 'Gaco', 15,
+                 '2026-06-01', '2041-06-01', 'Alex Smith', 'alex@example.com', NULL,
+                 1, 0, 'https://example.invalid/job', 'https://example.invalid/warranty',
+                 'Warranty.pdf', 'https://example.invalid/vsimple', 'Warranty.pdf',
+                 'https://example.invalid/warranty', 'warranty_document', 'DOC-1', 0, 0,
+                 '2026-08-05'),
+                ('vsimple:2', 'reported', 0, 'reported_source', NULL, '2',
+                 'Legacy Plant', 'Legacy Co', 'Roofing', 'unspecified',
+                 'Reported warranty', 'Reported warranty; term not captured', NULL, NULL,
+                 NULL, NULL, NULL, NULL, NULL, 0, 1, NULL, NULL, NULL,
+                 'https://example.invalid/vsimple/2', 'Historical.xlsx', NULL,
+                 'recent_completed_warranty_list', NULL, 0, 1, '2026-08-05')
+                """
+            )
+        )
+    return engine
+
+
+def test_warranty_list_returns_contacts_links_and_review_filters() -> None:
+    result = get_warranty_list(
+        engine=warranty_master_engine(),
+        query="Acme",
+        evidence_status="issued_document",
+        has_contact=True,
+        needs_review=False,
+        limit=25,
+    )
+
+    assert result["schema_version"] == "spraytec.warranty_list.v1"
+    assert result["headline_metrics"]["warranty_records"] == 1
+    assert result["headline_metrics"]["issued_document_warranties"] == 1
+    assert result["records"][0]["contact_emails"] == "alex@example.com"
+    assert result["records"][0]["issued_warranty_link"].endswith("/warranty")
+    assert {link["source_type"] for link in result["source_links"]} == {
+        "issued_warranty_document",
+        "sharepoint_job",
+        "vsimple_project",
+    }
+
+
+def test_warranty_list_can_return_missing_contact_review_queue() -> None:
+    result = get_warranty_list(
+        engine=warranty_master_engine(),
+        needs_review=True,
+        has_contact=False,
+        limit=25,
+    )
+
+    assert [row["project_name"] for row in result["records"]] == ["Legacy Plant"]
+    assert result["headline_metrics"]["missing_contact"] == 1
 
 
 def test_warranty_summary_filters_and_preserves_provenance() -> None:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date
+from datetime import date, datetime, timedelta
 import json
 from typing import Any, Iterable, Mapping
 
@@ -22,7 +22,54 @@ from jobscan.business.job_service import (
 
 
 WARRANTY_RELATION = "job_warranty_summary"
+WARRANTY_MASTER_RELATION = "warranty_master_clean"
 MAX_WARRANTY_SOURCE_ROWS = 500
+MAX_WARRANTY_LIST_ROWS = 1000
+
+WARRANTY_MASTER_FIELDS = (
+    "warranty_master_id",
+    "warranty_status",
+    "has_issued_document_evidence",
+    "evidence_status",
+    "job_id",
+    "vsimple_id",
+    "project_name",
+    "customer_name",
+    "division",
+    "source_year",
+    "warranty_category",
+    "warranty_type",
+    "warranty_term",
+    "provider",
+    "duration_years",
+    "start_date",
+    "start_date_source",
+    "start_date_confidence",
+    "start_date_is_inferred",
+    "end_date",
+    "expiration_date_source",
+    "contact_names",
+    "contact_emails",
+    "contact_phones",
+    "contact_count",
+    "contact_follow_up_ready",
+    "needs_review",
+    "job_link",
+    "issued_warranty_link",
+    "issued_warranty_file",
+    "vsimple_url",
+    "source_file",
+    "source_url",
+    "source_kind",
+    "source_document_id",
+    "evidence_count",
+    "issued_evidence_count",
+    "reported_evidence_count",
+    "merged_source_count",
+    "has_conflict",
+    "match_review_required",
+    "refreshed_at",
+)
 
 WARRANTY_FIELDS = (
     "warranty_summary_id",
@@ -56,6 +103,172 @@ WARRANTY_FIELDS = (
     "has_conflict",
     "refreshed_at",
 )
+
+
+def get_warranty_list(
+    *,
+    database_url: str | None = None,
+    engine: Engine | None = None,
+    query: str = "",
+    division: str = "",
+    evidence_status: str = "",
+    expiring_after: date | None = None,
+    expiring_before: date | None = None,
+    needs_review: bool | None = None,
+    has_contact: bool | None = None,
+    limit: int = 25,
+) -> dict[str, Any]:
+    """Return the deduplicated issued/reported warranty list used by the dashboard."""
+
+    resolved_engine, owns_engine = _resolve_engine(database_url, engine)
+    try:
+        columns = _columns(resolved_engine, WARRANTY_MASTER_RELATION)
+        if "warranty_master_id" not in columns:
+            raise JobIntelligenceUnavailableError(
+                "The cleaned warranty master list is unavailable."
+            )
+        selected_fields = [field for field in WARRANTY_MASTER_FIELDS if field in columns]
+        conditions: list[str] = []
+        params: dict[str, Any] = {"source_limit": MAX_WARRANTY_LIST_ROWS}
+        normalized_query = query.strip()
+        if normalized_query:
+            searchable = [
+                field
+                for field in (
+                    "project_name",
+                    "customer_name",
+                    "contact_names",
+                    "contact_emails",
+                    "contact_phones",
+                    "job_id",
+                    "vsimple_id",
+                    "provider",
+                    "warranty_term",
+                )
+                if field in columns
+            ]
+            if searchable:
+                conditions.append(
+                    "(" + " OR ".join(
+                        f"LOWER(COALESCE(CAST({field} AS TEXT), '')) LIKE :query"
+                        for field in searchable
+                    ) + ")"
+                )
+                params["query"] = f"%{normalized_query.lower()}%"
+        if division.strip() and "division" in columns:
+            conditions.append("LOWER(COALESCE(division, '')) = :division")
+            params["division"] = division.strip().lower()
+        normalized_evidence = evidence_status.strip().lower()
+        if normalized_evidence and "evidence_status" in columns:
+            conditions.append("LOWER(COALESCE(evidence_status, '')) = :evidence_status")
+            params["evidence_status"] = normalized_evidence
+        if expiring_after is not None and "end_date" in columns:
+            conditions.append("end_date >= :expiring_after")
+            params["expiring_after"] = expiring_after
+        if expiring_before is not None and "end_date" in columns:
+            conditions.append("end_date <= :expiring_before")
+            params["expiring_before"] = expiring_before
+        if needs_review is not None and "needs_review" in columns:
+            conditions.append("COALESCE(needs_review, FALSE)" if needs_review else "NOT COALESCE(needs_review, FALSE)")
+        if has_contact is not None and "contact_follow_up_ready" in columns:
+            conditions.append(
+                "COALESCE(contact_follow_up_ready, FALSE)"
+                if has_contact
+                else "NOT COALESCE(contact_follow_up_ready, FALSE)"
+            )
+
+        sql = f"SELECT {', '.join(selected_fields)} FROM {WARRANTY_MASTER_RELATION}"
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
+        sql += " ORDER BY end_date ASC NULLS LAST, project_name, warranty_master_id LIMIT :source_limit"
+        rows = _query_rows(resolved_engine, text(sql), params)
+        for row in rows:
+            for field in (
+                "has_issued_document_evidence",
+                "start_date_is_inferred",
+                "contact_follow_up_ready",
+                "needs_review",
+                "has_conflict",
+                "match_review_required",
+            ):
+                if field in row and row[field] is not None:
+                    row[field] = _truthy(row[field])
+
+        applied_limit = max(1, min(int(limit), 50))
+        selected_rows = rows[:applied_limit]
+        today = date.today()
+        next_year = today + timedelta(days=365)
+        as_of = _latest_value(row.get("refreshed_at") for row in rows)
+        return {
+            "schema_version": "spraytec.warranty_list.v1",
+            "as_of": as_of or _utc_now(),
+            "filters_applied": {
+                key: value
+                for key, value in {
+                    "query": normalized_query or None,
+                    "division": division.strip() or None,
+                    "evidence_status": normalized_evidence or None,
+                    "expiring_after": expiring_after.isoformat() if expiring_after else None,
+                    "expiring_before": expiring_before.isoformat() if expiring_before else None,
+                    "needs_review": needs_review,
+                    "has_contact": has_contact,
+                    "limit": applied_limit,
+                }.items()
+                if value is not None
+            },
+            "headline_metrics": {
+                "warranty_records": len(rows),
+                "issued_document_warranties": sum(
+                    row.get("has_issued_document_evidence") is True for row in rows
+                ),
+                "reported_source_warranties": sum(
+                    str(row.get("evidence_status") or "") == "reported_source" for row in rows
+                ),
+                "contact_follow_up_ready": sum(
+                    row.get("contact_follow_up_ready") is True for row in rows
+                ),
+                "missing_contact": sum(
+                    row.get("contact_follow_up_ready") is not True for row in rows
+                ),
+                "needs_review": sum(row.get("needs_review") is True for row in rows),
+                "expired": sum(
+                    _as_date(row.get("end_date")) is not None
+                    and _as_date(row.get("end_date")) < today
+                    for row in rows
+                ),
+                "expiring_next_12_months": sum(
+                    _as_date(row.get("end_date")) is not None
+                    and today <= _as_date(row.get("end_date")) <= next_year
+                    for row in rows
+                ),
+            },
+            "evidence_status_rollup": _rollup(rows, "evidence_status"),
+            "category_rollup": _rollup(rows, "warranty_category"),
+            "records": selected_rows,
+            "source_links": _dedupe_links(_warranty_master_source_links(selected_rows)),
+            "source_tables": [
+                WARRANTY_MASTER_RELATION,
+                "job_warranty_evidence",
+                "warranty_source_records",
+                "vsimple_warranty_projects_clean",
+                "vsimple_customers_clean",
+            ],
+            "data_freshness": {"warranty_master_as_of": as_of},
+            "coverage": {
+                "source_row_limit": MAX_WARRANTY_LIST_ROWS,
+                "matching_records_before_result_limit": len(rows),
+                "result_limit": applied_limit,
+                "results_truncated": len(rows) > applied_limit,
+            },
+            "warnings": [
+                "Issued-document evidence is kept distinct from warranties reported only in historical lists.",
+                "Rows marked needs_review have a match conflict or are missing dates, duration, or follow-up contact information.",
+            ],
+            "response_budget": {"max_records": 50, "returned_records": len(selected_rows)},
+        }
+    finally:
+        if owns_engine:
+            resolved_engine.dispose()
 
 
 def get_warranty_summary(
@@ -506,6 +719,40 @@ def _source_links(rows: Iterable[Mapping[str, Any]]) -> Iterable[dict[str, Any]]
             "url": url,
             "document_id": row.get("source_document_id"),
         }
+
+
+def _warranty_master_source_links(rows: Iterable[Mapping[str, Any]]) -> Iterable[dict[str, Any]]:
+    for row in rows:
+        candidates = (
+            ("issued_warranty_document", row.get("issued_warranty_file") or "Issued warranty", row.get("issued_warranty_link")),
+            ("sharepoint_job", "SharePoint job folder", row.get("job_link")),
+            ("vsimple_project", "VSimple project", row.get("vsimple_url")),
+        )
+        for source_type, label, url_value in candidates:
+            url = str(url_value or "").strip()
+            if not url:
+                continue
+            yield {
+                "source_type": source_type,
+                "job_id": str(row.get("job_id") or ""),
+                "label": str(label),
+                "url": url,
+                "document_id": row.get("source_document_id") if source_type == "issued_warranty_document" else None,
+            }
+
+
+def _as_date(value: Any) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text_value = str(value or "").strip()
+    if not text_value:
+        return None
+    try:
+        return date.fromisoformat(text_value[:10])
+    except ValueError:
+        return None
 
 
 def _truthy(value: Any) -> bool:

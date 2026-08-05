@@ -1297,6 +1297,44 @@ class WarrantySummaryResponse(BaseModel):
     response_budget: dict[str, Any] = Field(default_factory=dict)
 
 
+class WarrantyListRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(
+        default="",
+        max_length=200,
+        description="Search project, customer, contact, job ID, VSimple ID, provider, or warranty term.",
+    )
+    division: str = Field(default="", max_length=100)
+    evidence_status: Literal["", "issued_document", "reported_source"] = ""
+    expiring_after: date | None = None
+    expiring_before: date | None = None
+    needs_review: bool | None = None
+    has_contact: bool | None = Field(
+        default=None,
+        description="True returns rows with an email or phone available for follow-up.",
+    )
+    limit: int = Field(default=25, ge=1, le=50)
+
+
+class WarrantyListResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: str
+    as_of: str
+    filters_applied: dict[str, Any]
+    headline_metrics: dict[str, Any]
+    evidence_status_rollup: list[dict[str, Any]] = Field(default_factory=list)
+    category_rollup: list[dict[str, Any]] = Field(default_factory=list)
+    records: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
+    source_links: list[JobSourceLink] = Field(default_factory=list)
+    source_tables: list[str] = Field(default_factory=list)
+    data_freshness: dict[str, Any] = Field(default_factory=dict)
+    coverage: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+    response_budget: dict[str, Any] = Field(default_factory=dict)
+
+
 class SalesPipelineRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

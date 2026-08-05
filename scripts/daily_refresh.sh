@@ -211,6 +211,7 @@ if [[ "$RUN_SQL_REFRESHES" == "1" ]]; then
   run_step "Refresh job document signals" run_sql_file "db/refresh_job_document_signals.sql"
   run_step "Refresh job board static snapshot" run_sql_file "db/refresh_job_board_static_snapshot.sql"
   run_step "Refresh warranty evidence and summary" run_sql_file "db/refresh_job_warranty_summary.sql"
+  run_step "Refresh cleaned warranty master" run_sql_file "db/warranty_master_clean.sql"
   run_step "Refresh job tracking dashboard snapshots" run_sql_file "db/refresh_job_tracking_dashboard_snapshots.sql"
   run_step "Refresh operations dashboard snapshots" "$PYTHON_BIN" scripts/refresh_dashboard_snapshots.py --operations
   run_step "Ensure append-only reporting chart history" run_sql_file "db/add_reporting_chart_history.sql"
