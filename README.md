@@ -384,7 +384,10 @@ Incremental processing rules:
 Use `scripts/daily_refresh.sh` for the normal unattended daily refresh. It runs the
 delta-driven incremental scan, loads changed rows into Postgres, extracts pending
 estimator-relevant documents, refreshes dashboard/Power BI SQL views, and syncs
-changed jobs to the SharePoint Job Index list when changed job rows exist.
+changed jobs to the SharePoint Job Index list when changed job rows exist. After
+the current dashboard snapshots are ready, it also appends the daily pipeline,
+backlog, and estimate-rate production-budget observations used by historical
+chart datasets.
 
 ```bash
 cd /Users/paulheiniger/Downloads/sharepoint_job_scanner_graph_api
@@ -412,6 +415,18 @@ Common switches:
 
 Logs are written to `output/refresh_logs/<run-id>.log`. A lock directory under
 `.cache/daily_refresh.lock` prevents overlapping scheduled runs.
+
+Inspect or dry-run chart history independently:
+
+```bash
+python -m jobscan.business.chart_history_service \
+  --database-url "$DATABASE_URL" \
+  --status
+
+python -m jobscan.business.chart_history_service \
+  --database-url "$DATABASE_URL" \
+  --dry-run
+```
 
 ## Build and load the document index
 

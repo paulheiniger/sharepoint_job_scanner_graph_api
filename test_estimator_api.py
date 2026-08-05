@@ -1343,6 +1343,65 @@ def test_schedule_gantt_route_uses_larger_bounded_record_budget(monkeypatch) -> 
     assert body["rows"][0]["display_end_date"] == "2026-08-07"
 
 
+def test_historical_chart_route_uses_staged_daily_observations(monkeypatch) -> None:
+    monkeypatch.setenv("ESTIMATOR_API_KEY", "test-secret")
+    captured: dict[str, object] = {}
+
+    def fake_history(dataset, **kwargs):
+        captured["dataset"] = dataset
+        captured.update(kwargs)
+        return {
+            "as_of": "2026-08-04T12:00:00Z",
+            "truth_class": "authoritative",
+            "filters_applied": {
+                "start_date": "2026-08-01",
+                "end_date": "2026-08-04",
+            },
+            "records": [
+                {
+                    "snapshot_date": "2026-08-03",
+                    "pipeline_value": 100000,
+                    "job_count": 2,
+                },
+                {
+                    "snapshot_date": "2026-08-04",
+                    "pipeline_value": 125000,
+                    "job_count": 3,
+                },
+            ],
+            "source_tables": ["reporting_chart_daily_snapshots"],
+            "data_freshness": {},
+            "staging": {
+                "aggregation_mode": "staged_daily_snapshot",
+                "source_storage": "append_only_history",
+                "snapshot_tables": ["reporting_chart_daily_snapshots"],
+                "freshness": {},
+                "historical_series_available": True,
+                "historical_limitation": "History begins at deployment.",
+            },
+            "coverage": {"available_snapshot_days": 2},
+            "warnings": [],
+        }
+
+    monkeypatch.setattr("services.estimator_api.server.get_chart_history", fake_history)
+
+    response = client.post(
+        "/v1/reporting/chart-data",
+        json={
+            "dataset": "sales_pipeline_history",
+            "start_date": "2026-08-01",
+            "end_date": "2026-08-04",
+        },
+        headers={"Authorization": "Bearer test-secret"},
+    )
+
+    assert response.status_code == 200
+    assert captured["dataset"] == "sales_pipeline_history"
+    assert str(captured["start_date"]) == "2026-08-01"
+    assert response.json()["staging"]["historical_series_available"] is True
+    assert response.json()["rows"][-1]["pipeline_value"] == 125000
+
+
 def test_checked_in_action_openapi_is_current() -> None:
     path = Path("services/estimator_api/openapi.json")
     checked_in = json.loads(path.read_text(encoding="utf-8"))

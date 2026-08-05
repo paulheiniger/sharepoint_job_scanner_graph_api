@@ -636,6 +636,19 @@ CREATE INDEX IF NOT EXISTS idx_warranty_source_records_vsimple ON warranty_sourc
 CREATE INDEX IF NOT EXISTS idx_warranty_source_records_year ON warranty_source_records(source_year);
 CREATE INDEX IF NOT EXISTS idx_warranty_source_records_review ON warranty_source_records(match_review_required);
 
+CREATE TABLE IF NOT EXISTS reporting_chart_daily_snapshots (
+    snapshot_date DATE NOT NULL,
+    source_dataset TEXT NOT NULL,
+    observation_json TEXT NOT NULL,
+    source_as_of TEXT,
+    truth_class TEXT NOT NULL,
+    captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (snapshot_date, source_dataset)
+);
+
+CREATE INDEX IF NOT EXISTS idx_reporting_chart_daily_snapshots_dataset_date
+    ON reporting_chart_daily_snapshots(source_dataset, snapshot_date);
+
 CREATE TABLE IF NOT EXISTS job_warranty_summary (
     warranty_summary_id TEXT PRIMARY KEY,
     job_id TEXT NOT NULL,

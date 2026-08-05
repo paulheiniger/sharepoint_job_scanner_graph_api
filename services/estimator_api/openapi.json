@@ -56,7 +56,10 @@
               "office_activity_by_code",
               "office_job_progress",
               "production_budget_by_job",
-              "production_budget_by_bucket"
+              "production_budget_by_bucket",
+              "sales_pipeline_history",
+              "operations_backlog_history",
+              "production_budget_history"
             ],
             "title": "Dataset",
             "type": "string"
@@ -285,7 +288,10 @@
               "office_activity_by_code",
               "office_job_progress",
               "production_budget_by_job",
-              "production_budget_by_bucket"
+              "production_budget_by_bucket",
+              "sales_pipeline_history",
+              "operations_backlog_history",
+              "production_budget_history"
             ],
             "title": "Dataset",
             "type": "string"
@@ -332,7 +338,7 @@
             "items": {
               "type": "object"
             },
-            "maxItems": 125,
+            "maxItems": 365,
             "title": "Rows",
             "type": "array"
           },
@@ -593,7 +599,10 @@
         "additionalProperties": false,
         "properties": {
           "aggregation_mode": {
-            "const": "endpoint_on_request",
+            "enum": [
+              "endpoint_on_request",
+              "staged_daily_snapshot"
+            ],
             "title": "Aggregation Mode",
             "type": "string"
           },
@@ -620,7 +629,8 @@
             "enum": [
               "operational_query",
               "current_snapshot",
-              "hybrid_current_snapshot"
+              "hybrid_current_snapshot",
+              "append_only_history"
             ],
             "title": "Source Storage",
             "type": "string"

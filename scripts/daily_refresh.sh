@@ -213,6 +213,10 @@ if [[ "$RUN_SQL_REFRESHES" == "1" ]]; then
   run_step "Refresh warranty evidence and summary" run_sql_file "db/refresh_job_warranty_summary.sql"
   run_step "Refresh job tracking dashboard snapshots" run_sql_file "db/refresh_job_tracking_dashboard_snapshots.sql"
   run_step "Refresh operations dashboard snapshots" "$PYTHON_BIN" scripts/refresh_dashboard_snapshots.py --operations
+  run_step "Ensure append-only reporting chart history" run_sql_file "db/add_reporting_chart_history.sql"
+  run_step "Capture daily reporting chart history" \
+    "$PYTHON_BIN" -m jobscan.business.chart_history_service \
+      --database-url "$DATABASE_URL_EFFECTIVE"
   run_step "Refresh Power BI marts" run_sql_file "db/powerbi_marts.sql"
 fi
 

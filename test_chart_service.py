@@ -112,6 +112,34 @@ def test_chart_dataset_uses_small_multiples_for_three_incompatible_units() -> No
     assert dataset["staging"]["source_storage"] == "current_snapshot"
 
 
+def test_historical_chart_preserves_append_only_staging_contract() -> None:
+    dataset = build_chart_dataset(
+        "sales_pipeline_history",
+        {
+            "records": [
+                {"snapshot_date": "2026-08-04", "pipeline_value": 120, "job_count": 3},
+                {"snapshot_date": "2026-08-03", "pipeline_value": 100, "job_count": 2},
+            ],
+            "source_tables": ["reporting_chart_daily_snapshots"],
+            "staging": {
+                "aggregation_mode": "staged_daily_snapshot",
+                "source_storage": "append_only_history",
+                "snapshot_tables": ["reporting_chart_daily_snapshots"],
+                "freshness": {"history_last_captured_at": "2026-08-04T12:00:00Z"},
+                "historical_series_available": True,
+                "historical_limitation": "History begins at deployment.",
+            },
+        },
+    )
+
+    assert [row["snapshot_date"] for row in dataset["rows"]] == [
+        "2026-08-03",
+        "2026-08-04",
+    ]
+    assert dataset["recommended_chart_type"] == "line"
+    assert dataset["staging"]["source_storage"] == "append_only_history"
+
+
 def test_chart_dataset_csv_is_file_ready_and_formula_safe() -> None:
     dataset = build_chart_dataset(
         "sales_pipeline_by_owner",

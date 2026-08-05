@@ -206,7 +206,11 @@ CHART_SPECS: dict[str, ChartSpec] = {
         "job_name",
         (
             ("estimated_production_budget", "Estimated production budget", "currency"),
-            ("estimated_cost_used_proxy", "Tracked usage at estimate rates", "currency"),
+            (
+                "estimated_cost_used_proxy",
+                "Tracked usage at estimate rates",
+                "currency",
+            ),
             ("budget_used_pct", "Budget used", "ratio"),
         ),
         "proxy",
@@ -221,7 +225,11 @@ CHART_SPECS: dict[str, ChartSpec] = {
         "bucket",
         (
             ("estimated_cost", "Estimated cost", "currency"),
-            ("estimated_cost_used_proxy", "Tracked usage at estimate rates", "currency"),
+            (
+                "estimated_cost_used_proxy",
+                "Tracked usage at estimate rates",
+                "currency",
+            ),
             ("jobs_usage_over_plan", "Jobs over plan", "count"),
         ),
         "proxy",
@@ -236,6 +244,48 @@ CHART_SPECS: dict[str, ChartSpec] = {
             "Board / Fasteners / Plates",
             "Equipment / Travel / Lodging",
         ),
+    ),
+    "sales_pipeline_history": ChartSpec(
+        "Sales pipeline history",
+        "records",
+        "line",
+        "snapshot_date",
+        (
+            ("pipeline_value", "Pipeline value", "currency"),
+            ("job_count", "Jobs", "count"),
+        ),
+        sort_field="snapshot_date",
+        sort_direction="ascending",
+    ),
+    "operations_backlog_history": ChartSpec(
+        "Contracted backlog history",
+        "records",
+        "line",
+        "snapshot_date",
+        (
+            ("backlog_value", "Backlog value", "currency"),
+            ("job_count", "Jobs", "count"),
+        ),
+        sort_field="snapshot_date",
+        sort_direction="ascending",
+    ),
+    "production_budget_history": ChartSpec(
+        "Estimate-rate production budget history",
+        "records",
+        "line",
+        "snapshot_date",
+        (
+            ("estimated_production_budget", "Estimated production budget", "currency"),
+            (
+                "estimated_cost_used_proxy",
+                "Tracked usage at estimate rates",
+                "currency",
+            ),
+            ("jobs_usage_over_plan", "Jobs over plan", "count"),
+        ),
+        "proxy",
+        sort_field="snapshot_date",
+        sort_direction="ascending",
     ),
 }
 
@@ -577,6 +627,8 @@ def _sortable_value(value: Any, *, reverse: bool) -> tuple[int, float | str]:
 
 
 def _staging_contract(result: dict[str, Any]) -> dict[str, Any]:
+    if result.get("staging"):
+        return dict(result["staging"])
     source_tables = [str(value) for value in result.get("source_tables") or []]
     snapshot_tables = [
         value for value in source_tables if "snapshot" in value.casefold()

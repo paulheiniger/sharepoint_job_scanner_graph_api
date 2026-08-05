@@ -82,6 +82,11 @@ state uncertainty, coverage, and warnings. Never invent unavailable results.
 - Treat `staging.historical_series_available: false` as a hard limit: current
   snapshots are not historical observations. Only draw a trend when the
   returned rows contain an explicit period field, such as `activity_date`.
+- For portfolio trends, use `sales_pipeline_history`,
+  `operations_backlog_history`, or `production_budget_history` with a bounded
+  date range. These are append-only daily observations. Require at least two
+  available snapshot days, show gaps honestly, and do not imply history before
+  the first returned `snapshot_date`.
 - For an owner timeline, request `operations_schedule_gantt` with dates and
   normally `gantt_limit: 60`. Render horizontal bars grouped by `crew_leader`
   from `display_start_date` to `display_end_date`. Retain continuation flags,

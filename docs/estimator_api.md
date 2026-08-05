@@ -389,6 +389,21 @@ historical time series. `historical_series_available` therefore remains false;
 the client may draw a trend only when rows contain an explicit period field,
 such as `activity_date`.
 
+The daily refresh also captures three append-only portfolio observations:
+
+- `sales_pipeline_history` stores total pipeline value and job count;
+- `operations_backlog_history` stores total contracted backlog value and job
+  count; and
+- `production_budget_history` stores estimate-rate production budget, tracked
+  usage proxy, and jobs over plan.
+
+These datasets accept a bounded `start_date` and `end_date`, default to the most
+recent 90 days, and allow at most 365 calendar days. Re-running a refresh on the
+same day updates that day's observation instead of creating duplicates; prior
+dates are retained. The history begins when capture is deployed and cannot
+reconstruct earlier overwritten current-state snapshots. At least two available
+snapshot days are required before the API marks a historical series available.
+
 Mixed-unit charts return one of three strategies: `shared_axis`, `dual_axis`,
 or `small_multiples`. Production budget-by-job data also returns a 100% plan
 reference line on `budget_used_pct`. The endpoint continues to return the

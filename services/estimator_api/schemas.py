@@ -1522,6 +1522,9 @@ ChartDatasetName = Literal[
     "office_job_progress",
     "production_budget_by_job",
     "production_budget_by_bucket",
+    "sales_pipeline_history",
+    "operations_backlog_history",
+    "production_budget_history",
 ]
 
 
@@ -1627,9 +1630,12 @@ class ChartDisplay(BaseModel):
 class ChartStaging(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    aggregation_mode: Literal["endpoint_on_request"]
+    aggregation_mode: Literal["endpoint_on_request", "staged_daily_snapshot"]
     source_storage: Literal[
-        "operational_query", "current_snapshot", "hybrid_current_snapshot"
+        "operational_query",
+        "current_snapshot",
+        "hybrid_current_snapshot",
+        "append_only_history",
     ]
     snapshot_tables: list[str] = Field(default_factory=list)
     freshness: dict[str, Any] = Field(default_factory=dict)
@@ -1653,7 +1659,7 @@ class ChartDatasetResponse(BaseModel):
     as_of: str | None = None
     truth_class: str
     filters_applied: dict[str, Any] = Field(default_factory=dict)
-    rows: list[dict[str, Any]] = Field(default_factory=list, max_length=125)
+    rows: list[dict[str, Any]] = Field(default_factory=list, max_length=365)
     source_tables: list[str] = Field(default_factory=list)
     data_freshness: dict[str, Any] = Field(default_factory=dict)
     staging: ChartStaging

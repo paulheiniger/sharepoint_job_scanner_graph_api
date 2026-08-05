@@ -14,6 +14,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from PIL import Image
 
+from jobscan.business.chart_history_service import HISTORY_DATASETS, get_chart_history
 from jobscan.business.chart_service import build_chart_dataset, chart_dataset_csv
 
 from jobscan.business.job_service import (
@@ -1347,6 +1348,13 @@ def reporting_chart_data_csv(
 
 def _chart_source_result(payload: ChartDatasetRequest) -> dict[str, Any]:
     dataset = payload.dataset
+    if dataset in HISTORY_DATASETS:
+        return get_chart_history(
+            dataset,
+            database_url=_database_url(),
+            start_date=payload.start_date,
+            end_date=payload.end_date,
+        )
     if dataset.startswith("sales_pipeline_"):
         return get_sales_pipeline(
             database_url=_database_url(),
