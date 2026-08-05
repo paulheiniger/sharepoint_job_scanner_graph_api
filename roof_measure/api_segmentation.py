@@ -714,14 +714,18 @@ def _architectural_simplification_tolerance_pixels(
 ) -> float:
     """Return a scale-aware tolerance that suppresses mask and LiDAR stair steps.
 
-    The final edge still comes from the segmented image boundary. LiDAR grid
-    size only raises the cleanup tolerance enough to prevent nearest-neighbor
-    height cells from being preserved as architectural corners.
+    The final edge still comes from the segmented image boundary. Raw SAM uses
+    a conservative four-foot detail scale. A LiDAR-trimmed mask uses an
+    eight-foot scale (bounded in pixels) so nearest-neighbor height cells do
+    not survive as a chain of architectural corners.
     """
     scale = max(float(pixels_per_foot), 0.01)
     tolerance = max(4.0, min(scale * 4.0, 16.0))
     if lidar_cell_pixels is not None and lidar_cell_pixels > 0:
-        lidar_tolerance = min(float(lidar_cell_pixels) * 0.8, scale * 6.0)
+        lidar_tolerance = max(
+            float(lidar_cell_pixels) * 0.8,
+            scale * 8.0,
+        )
         tolerance = max(tolerance, lidar_tolerance)
     return min(tolerance, 20.0)
 

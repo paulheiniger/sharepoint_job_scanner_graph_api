@@ -512,7 +512,7 @@ def test_architectural_tolerance_uses_image_scale_and_lidar_cell_size() -> None:
     assert _architectural_simplification_tolerance_pixels(
         pixels_per_foot=2.0,
         lidar_cell_pixels=15,
-    ) == 12.0
+    ) == 16.0
     assert _architectural_simplification_tolerance_pixels(
         pixels_per_foot=8.0,
         lidar_cell_pixels=40,
