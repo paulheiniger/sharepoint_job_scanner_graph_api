@@ -117,7 +117,7 @@ app = FastAPI(
         "Estimator evidence, controlled workbook generation, and read-only "
         "operational intelligence for conversational agents."
     ),
-    version="0.20.0",
+    version="0.20.1",
 )
 
 
@@ -456,13 +456,10 @@ def roof_measure_context(
     operation_id="segmentRoofMeasureContext",
     summary="Create reviewable SAM2 roof-mask candidates",
     description=(
-        "Uses explicitly reviewed footprint IDs from a prior roof context to "
-        "prompt the configured private SAM2 service. When available, Kentucky "
-        "LiDAR height-above-ground blocks score the inside/outside boundary band "
-        "and can produce a guarded connected high-band alternative. Returns up "
-        "to three ranked candidate "
-        "overlays. No OpenAI API or fallback rectangle is used, and a candidate "
-        "must be confirmed before calculation."
+        "Uses reviewed footprint IDs to prompt private SAM2. When available, "
+        "LiDAR scores boundary bands and adds guarded high-band candidates. "
+        "Returns up to three overlays. No OpenAI API or fallback rectangle is "
+        "used; confirmation is required before calculation."
     ),
 )
 def roof_measure_segment(
