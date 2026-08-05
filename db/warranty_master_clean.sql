@@ -214,6 +214,84 @@ registry_enriched AS (
     LEFT JOIN warranty_source_records w ON w.source_record_id = r.warranty_summary_id
     WHERE r.warranty_status IN ('issued', 'reported')
 ),
+identity_candidates AS (
+    SELECT
+        r.*,
+        COALESCE(
+            'vsimple:' || NULLIF(BTRIM(r.resolved_vsimple_id), ''),
+            'job:' || NULLIF(BTRIM(r.job_id), ''),
+            'source:' || r.warranty_summary_id
+        ) AS fallback_identity_key,
+        CASE
+            WHEN r.warranty_status = 'reported'
+              AND NULLIF(BTRIM(r.resolved_vsimple_id), '') IS NULL
+              AND NULLIF(BTRIM(r.job_id), '') IS NULL
+              AND COALESCE(NULLIF(BTRIM(r.job_name), ''), NULLIF(BTRIM(r.customer), '')) IS NOT NULL
+              AND REGEXP_REPLACE(
+                  LOWER(BTRIM(COALESCE(NULLIF(r.job_name, ''), NULLIF(r.customer, '')))),
+                  '[^a-z0-9]+',
+                  '',
+                  'g'
+              ) NOT IN ('foldername', 'projectname', 'customername')
+              AND r.source_system IN (
+                  'manufacturer_warranty_list',
+                  'recent_completed_warranty_list',
+                  'vsimple_project_warranty_export',
+                  'legacy_vsimple_warranty_export',
+                  'legacy_customer_list'
+              )
+            THEN 'reported:' || MD5(CONCAT_WS(
+                '|',
+                'reported-warranty-v1',
+                COALESCE(LOWER(BTRIM(r.source_system)), ''),
+                COALESCE(LOWER(BTRIM(r.source_file)), ''),
+                COALESCE(REGEXP_REPLACE(LOWER(BTRIM(r.job_name)), '[^a-z0-9]+', '', 'g'), ''),
+                COALESCE(REGEXP_REPLACE(LOWER(BTRIM(r.customer)), '[^a-z0-9]+', '', 'g'), ''),
+                COALESCE(REGEXP_REPLACE(LOWER(BTRIM(r.site_address)), '[^a-z0-9]+', '', 'g'), ''),
+                COALESCE(LOWER(BTRIM(r.division)), ''),
+                COALESCE(r.source_year::TEXT, ''),
+                COALESCE(LOWER(BTRIM(r.warranty_category)), ''),
+                COALESCE(LOWER(BTRIM(r.warranty_type)), ''),
+                COALESCE(LOWER(BTRIM(r.provider)), ''),
+                COALESCE(r.duration_years::TEXT, ''),
+                COALESCE(r.start_date::TEXT, ''),
+                COALESCE(r.expiration_date::TEXT, ''),
+                COALESCE(LOWER(BTRIM(r.coverage_summary)), ''),
+                COALESCE(LOWER(BTRIM(r.coverage_excerpt)), ''),
+                COALESCE(REGEXP_REPLACE(LOWER(BTRIM(COALESCE(
+                    NULLIF(r.source_raw ->> 'Contact Name', ''),
+                    NULLIF(r.source_raw ->> 'bill_to_contact', ''),
+                    CONCAT_WS(
+                        ' ',
+                        NULLIF(r.source_raw ->> 'contact_first_name', ''),
+                        NULLIF(r.source_raw ->> 'contact_last_name', '')
+                    )
+                ))), '[^a-z0-9]+', '', 'g'), ''),
+                COALESCE(LOWER(BTRIM(COALESCE(
+                    NULLIF(r.source_raw ->> 'Contact Email', ''),
+                    NULLIF(r.source_raw ->> 'bill_to_email_address', ''),
+                    NULLIF(r.source_raw ->> 'contact_email', '')
+                ))), ''),
+                COALESCE(REGEXP_REPLACE(BTRIM(COALESCE(
+                    NULLIF(r.source_raw ->> 'Contact Phone', ''),
+                    NULLIF(r.source_raw ->> 'bill_to_phone', ''),
+                    NULLIF(r.source_raw ->> 'contact_phone', '')
+                )), '[^0-9]+', '', 'g'), '')
+            ))
+        END AS reported_semantic_key
+    FROM registry_enriched r
+),
+identity_resolved AS (
+    SELECT
+        r.*,
+        CASE
+            WHEN r.reported_semantic_key IS NOT NULL
+              AND COUNT(*) OVER (PARTITION BY r.reported_semantic_key) > 1
+            THEN r.reported_semantic_key
+            ELSE r.fallback_identity_key
+        END AS identity_key
+    FROM identity_candidates r
+),
 ranked AS (
     SELECT
         r.*,
@@ -242,24 +320,11 @@ ranked AS (
         jc.folder_url AS job_folder_url,
         jc.estimate_url,
         jc.estimate_file AS estimate_contact_file,
-        COALESCE(
-            'vsimple:' || NULLIF(BTRIM(r.resolved_vsimple_id), ''),
-            'job:' || NULLIF(BTRIM(r.job_id), ''),
-            'source:' || r.warranty_summary_id
-        ) AS identity_key,
         COUNT(*) OVER (
-            PARTITION BY COALESCE(
-                'vsimple:' || NULLIF(BTRIM(r.resolved_vsimple_id), ''),
-                'job:' || NULLIF(BTRIM(r.job_id), ''),
-                'source:' || r.warranty_summary_id
-            )
+            PARTITION BY r.identity_key
         ) AS merged_source_count,
         ROW_NUMBER() OVER (
-            PARTITION BY COALESCE(
-                'vsimple:' || NULLIF(BTRIM(r.resolved_vsimple_id), ''),
-                'job:' || NULLIF(BTRIM(r.job_id), ''),
-                'source:' || r.warranty_summary_id
-            )
+            PARTITION BY r.identity_key
             ORDER BY
                 CASE r.warranty_status WHEN 'issued' THEN 0 ELSE 1 END,
                 (r.expiration_date IS NOT NULL) DESC,
@@ -278,7 +343,7 @@ ranked AS (
                 r.refreshed_at DESC NULLS LAST,
                 r.warranty_summary_id
         ) AS identity_rank
-    FROM registry_enriched r
+    FROM identity_resolved r
     LEFT JOIN vsimple_warranty_projects_clean p ON p.vsimple_id = r.resolved_vsimple_id
     LEFT JOIN direct_contacts dc ON dc.vsimple_id = r.resolved_vsimple_id
     LEFT JOIN general_vsimple_contacts gvc ON gvc.vsimple_id = r.resolved_vsimple_id

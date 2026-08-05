@@ -105,3 +105,20 @@ def test_warranty_master_resolves_all_deterministic_contact_sources_with_provena
     assert "is_reliable_warranty" in sql
     assert "trusted_warranty_sheet" in sql
     assert "estimate_or_proposal_only" in sql
+
+
+def test_warranty_master_collapses_only_identical_unmatched_reported_sources() -> None:
+    sql = Path("db/warranty_master_clean.sql").read_text(encoding="utf-8")
+
+    assert "identity_candidates AS" in sql
+    assert "identity_resolved AS" in sql
+    assert "reported-warranty-v1" in sql
+    assert "r.warranty_status = 'reported'" in sql
+    assert "NULLIF(BTRIM(r.resolved_vsimple_id), '') IS NULL" in sql
+    assert "NULLIF(BTRIM(r.job_id), '') IS NULL" in sql
+    assert "NOT IN ('foldername', 'projectname', 'customername')" in sql
+    assert "COUNT(*) OVER (PARTITION BY r.reported_semantic_key) > 1" in sql
+    assert "PARTITION BY r.identity_key" in sql
+    assert "COALESCE(r.start_date::TEXT, '')" in sql
+    assert "COALESCE(r.expiration_date::TEXT, '')" in sql
+    assert "NULLIF(r.source_raw ->> 'contact_email', '')" in sql
