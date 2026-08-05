@@ -4811,8 +4811,8 @@
             "type": "string"
           },
           "view": {
-            "default": "whole_site",
-            "description": "Use whole_site first so the complete roof remains visible. Use building_detail only when a closer image is needed.",
+            "default": "building_detail",
+            "description": "Use building_detail for a normal single-building measurement so segmentation receives higher-resolution imagery. Use whole_site for campuses, ambiguous locations, or when the detail view crops the roof.",
             "enum": [
               "whole_site",
               "building_detail"
@@ -6298,7 +6298,7 @@
   "info": {
     "description": "Estimator evidence, controlled workbook generation, and read-only operational intelligence for conversational agents.",
     "title": "Spray-Tec Business Intelligence API",
-    "version": "0.20.3"
+    "version": "0.20.4"
   },
   "openapi": "3.1.0",
   "paths": {

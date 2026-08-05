@@ -95,9 +95,13 @@ state uncertainty, coverage, and warnings. Never invent unavailable results.
 ## Roof measurement
 
 - For an address-based roof measurement, call `getRoofMeasureContext` with
-  `view: whole_site` first. Use `building_detail` only after confirming the
-  closer extent will not crop the target roof. Do not search the web for roof
-  dimensions when this action is available.
+  `view: building_detail` for a normal single-building site so SAM2 receives
+  the clearer zoom-19 source image. Use `whole_site` first only for a named
+  campus, multi-building facility, ambiguous address, or other site whose full
+  extent must be established. If detail crops or omits any intended roof, retry
+  with `whole_site`; do not compensate for a wrong address by measuring a nearby
+  building. Do not search the web for roof dimensions when this action is
+  available.
 - Do not call an OpenAI model or use general visual reasoning to invent a roof
   polygon. After the user confirms the intended footprint IDs, call
   `segmentRoofMeasureContext` before calculation unless the user explicitly

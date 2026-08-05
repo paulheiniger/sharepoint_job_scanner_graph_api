@@ -22,11 +22,14 @@ package containing:
 - image dimensions, map scale, coordinates, and source attribution; and
 - optional Kentucky From Above LiDAR coverage metadata.
 
-Use `view: "whole_site"` first. `building_detail` is a closer secondary view
-and can crop a large roof or campus. The API uses Mapbox and existing footprint
-providers, but it does not call OpenAI, SAM2, or another model. Raw LiDAR point
-clouds are not returned to the agent. Signed images and their context expire
-after 15 minutes by default.
+Use `view: "building_detail"` for normal single-building work so SAM2 receives
+the higher-resolution zoom-19 image. Use `whole_site` for campuses, ambiguous
+locations, or as a fallback when the detail view crops or omits an intended
+roof. A wrong geocoder result should be corrected or explicitly reviewed rather
+than handled by permanently widening every image. The API uses Mapbox and
+existing footprint providers, but it does not call OpenAI, SAM2, or another
+model. Raw LiDAR point clouds are not returned to the agent. Signed images and
+their context expire after 15 minutes by default.
 
 ### `POST /v1/roof-measure/calculate`
 

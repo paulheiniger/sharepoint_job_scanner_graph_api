@@ -27,7 +27,7 @@ def test_roof_measure_requests_are_bounded_and_choose_one_polygon_source() -> No
     context = RoofMeasureContextRequest(
         address="830 South 1st Street, Louisville, KY 40203"
     )
-    assert context.view == "whole_site"
+    assert context.view == "building_detail"
     assert context.include_lidar_coverage is True
 
     selected = RoofMeasureCalculationRequest(

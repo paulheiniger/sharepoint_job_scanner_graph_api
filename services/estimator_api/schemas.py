@@ -382,10 +382,11 @@ class RoofMeasureContextRequest(BaseModel):
         ),
     )
     view: Literal["whole_site", "building_detail"] = Field(
-        default="whole_site",
+        default="building_detail",
         description=(
-            "Use whole_site first so the complete roof remains visible. Use "
-            "building_detail only when a closer image is needed."
+            "Use building_detail for a normal single-building measurement so "
+            "segmentation receives higher-resolution imagery. Use whole_site for "
+            "campuses, ambiguous locations, or when the detail view crops the roof."
         ),
     )
     include_lidar_coverage: bool = Field(
