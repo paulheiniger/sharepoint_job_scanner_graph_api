@@ -145,6 +145,12 @@ state uncertainty, coverage, and warnings. Never invent unavailable results.
   blocks below the connected high-elevation roof band, but retains unsampled
   blocks. Always disclose `lidar_sampled_fraction`, show the alternative beside
   the unmodified SAM2 candidate, and let the user confirm the visible boundary.
+- Prefer a candidate with `geometry_refinement: dominant_orthogonal` when its
+  overlay accurately follows the roof. It deterministically favors near-right
+  angles relative to the building's dominant axes and is rejected above 1.5%
+  area drift. Show its `mask_polygon` source candidate beside it and disclose
+  `geometry_area_drift_fraction`; never treat straightening as missing-roof
+  recovery.
 - Omitted pitch means horizontal plan-view area only. Send
   `pitch_rise_per_12: 0` only when a flat roof is supported; otherwise keep
   surface area unresolved. LiDAR coverage metadata proves only that public data

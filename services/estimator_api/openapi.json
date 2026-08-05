@@ -5227,6 +5227,22 @@
             "title": "Footprint Overlap",
             "type": "number"
           },
+          "geometry_area_drift_fraction": {
+            "default": 0,
+            "maximum": 0.015,
+            "minimum": 0.0,
+            "title": "Geometry Area Drift Fraction",
+            "type": "number"
+          },
+          "geometry_refinement": {
+            "default": "mask_polygon",
+            "enum": [
+              "mask_polygon",
+              "dominant_orthogonal"
+            ],
+            "title": "Geometry Refinement",
+            "type": "string"
+          },
           "lidar_boundary_score": {
             "anyOf": [
               {
@@ -6282,7 +6298,7 @@
   "info": {
     "description": "Estimator evidence, controlled workbook generation, and read-only operational intelligence for conversational agents.",
     "title": "Spray-Tec Business Intelligence API",
-    "version": "0.20.2"
+    "version": "0.20.3"
   },
   "openapi": "3.1.0",
   "paths": {

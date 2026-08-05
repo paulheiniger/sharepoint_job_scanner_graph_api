@@ -536,6 +536,10 @@ class RoofMeasureSegmentationCandidate(BaseModel):
     rank: int = Field(ge=1, le=3)
     provider_rank: int = Field(ge=1, le=3)
     boundary_refinement: Literal["sam2", "sam2_lidar_high_band"] = "sam2"
+    geometry_refinement: Literal["mask_polygon", "dominant_orthogonal"] = (
+        "mask_polygon"
+    )
+    geometry_area_drift_fraction: float = Field(default=0, ge=0, le=0.015)
     model_name: str
     model_version: str
     model_score: float

@@ -19,6 +19,7 @@ from .api_context import (
     _write_json_atomic,
     load_roof_measure_context,
 )
+from .geometry import polygon_area_pixels, straighten_architectural_ring
 from .lidar import kyfromabove_height_grid_for_image
 from .polygonize import sections_from_mask
 from .segmentation import Sam2RoofSegmenter, SegmentationPrompts
@@ -174,6 +175,8 @@ def segment_roof_measure_context(
                     "candidate_id": f"sam2-{digest}",
                     "provider_rank": provider_index,
                     "boundary_refinement": boundary_refinement,
+                    "geometry_refinement": "mask_polygon",
+                    "geometry_area_drift_fraction": 0.0,
                     "model_name": segmentation.model_name,
                     "model_version": segmentation.model_version,
                     "model_score": round(float(provider_candidate.score), 4),
@@ -233,20 +236,29 @@ def segment_roof_measure_context(
         ),
         None,
     )
+    orthogonalized = _orthogonalized_candidate(
+        processed[0],
+        context=context,
+        footprint_mask=footprint_mask,
+        lidar_guidance=lidar_guidance,
+        image_size=image.size,
+    )
     selected: list[dict[str, Any]] = []
-    for item in [processed[0], best_raw, best_refined, *processed]:
+    for item in [
+        orthogonalized,
+        processed[0],
+        best_raw,
+        best_refined,
+        *processed,
+    ]:
         if item is not None and item not in selected:
             selected.append(item)
         if len(selected) == 3:
             break
-    processed = sorted(
-        selected,
-        key=lambda item: (
-            float(item["selection_score"]),
-            float(item["model_score"]),
-        ),
-        reverse=True,
-    )
+    # A guarded orthogonalized variant deliberately leads its source mask so
+    # reviewers see the cleaned boundary first. The source mask and best
+    # alternate boundary remain immediately available for comparison.
+    processed = selected
     for rank, item in enumerate(processed, start=1):
         item["rank"] = rank
 
@@ -286,6 +298,15 @@ def segment_roof_measure_context(
                 if lidar_guidance is not None
                 else []
             ),
+            *(
+                [
+                    "The recommended candidate uses guarded dominant-axis edge "
+                    "straightening. Its original mask polygon is also shown for "
+                    "comparison."
+                ]
+                if orthogonalized is not None
+                else []
+            ),
             (
                 "SAM2 candidates are model-derived refinements of reviewed building "
                 "footprints. Display the candidate overlay and obtain estimator "
@@ -320,6 +341,143 @@ def _public_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
         for key, value in candidate.items()
         if key not in {"components", "selected_footprint_ids"}
     }
+
+
+def _orthogonalized_candidate(
+    candidate: dict[str, Any],
+    *,
+    context: dict[str, Any],
+    footprint_mask: np.ndarray,
+    lidar_guidance: _LidarGuidance | None,
+    image_size: tuple[int, int],
+    maximum_area_drift: float = 0.015,
+) -> dict[str, Any] | None:
+    original_components = list(candidate.get("components") or [])
+    cleaned_components = _orthogonalize_components(
+        original_components,
+        maximum_area_drift=maximum_area_drift,
+    )
+    if cleaned_components is None:
+        return None
+
+    original_area = _components_area_pixels(original_components)
+    cleaned_area = _components_area_pixels(cleaned_components)
+    if original_area <= 0 or cleaned_area <= 0:
+        return None
+    area_drift = abs(cleaned_area - original_area) / original_area
+    if area_drift > maximum_area_drift:
+        return None
+
+    try:
+        measurement = _measure_components(
+            section_id=f"{candidate['candidate_id']}-orthogonal",
+            source="sam2_candidate",
+            components=cleaned_components,
+            pixels_per_foot=float(context["pixels_per_foot"]),
+            width=image_size[0],
+            height=image_size[1],
+            pitch_rise_per_12=None,
+        )
+    except RoofMeasureInputError:
+        return None
+
+    cleaned_mask = _components_mask(image_size, cleaned_components)
+    metrics = _candidate_metrics(
+        cleaned_mask,
+        footprint_mask,
+        model_score=float(candidate["model_score"]),
+        section_count=len(cleaned_components),
+        lidar_guidance=lidar_guidance,
+    )
+    digest = hashlib.sha256(
+        json.dumps(
+            cleaned_components,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()[:16]
+    refined = {
+        **candidate,
+        "candidate_id": f"sam2-{digest}",
+        "geometry_refinement": "dominant_orthogonal",
+        "geometry_area_drift_fraction": round(area_drift, 4),
+        "selection_score": metrics["selection_score"],
+        "footprint_overlap": metrics["footprint_overlap"],
+        "footprint_coverage": metrics["footprint_coverage"],
+        "area_ratio_to_footprint": metrics["area_ratio_to_footprint"],
+        "lidar_roof_support_fraction": metrics.get(
+            "lidar_roof_support_fraction"
+        ),
+        "lidar_sampled_fraction": metrics.get("lidar_sampled_fraction"),
+        "lidar_ground_fraction": metrics.get("lidar_ground_fraction"),
+        "lidar_elevated_coverage": metrics.get("lidar_elevated_coverage"),
+        "lidar_boundary_score": metrics.get("lidar_boundary_score"),
+        "lidar_roof_leakage_outside": metrics.get(
+            "lidar_roof_leakage_outside"
+        ),
+        "plan_area_sqft": measurement["plan_area_sqft"],
+        "perimeter_ft": measurement["perimeter_ft"],
+        "section_count": len(cleaned_components),
+        "components": cleaned_components,
+    }
+    return refined
+
+
+def _orthogonalize_components(
+    components: list[dict[str, Any]],
+    *,
+    maximum_area_drift: float = 0.015,
+) -> list[dict[str, Any]] | None:
+    cleaned: list[dict[str, Any]] = []
+    for component in components:
+        polygon = _ring_tuples(component.get("polygon") or [])
+        holes = [_ring_tuples(hole) for hole in component.get("holes") or []]
+        cleaned_polygon = straighten_architectural_ring(
+            polygon,
+            simplification_tolerance=4.0,
+            angle_tolerance_degrees=15.0,
+            max_area_drift=maximum_area_drift,
+        )
+        cleaned_holes = [
+            straighten_architectural_ring(
+                hole,
+                simplification_tolerance=4.0,
+                angle_tolerance_degrees=15.0,
+                max_area_drift=maximum_area_drift,
+            )
+            for hole in holes
+        ]
+        cleaned.append(
+            {
+                "polygon": _point_dicts(cleaned_polygon),
+                "holes": [_point_dicts(hole) for hole in cleaned_holes],
+            }
+        )
+    if not cleaned or json.dumps(cleaned, sort_keys=True) == json.dumps(
+        components,
+        sort_keys=True,
+    ):
+        return None
+    original_area = _components_area_pixels(components)
+    cleaned_area = _components_area_pixels(cleaned)
+    if original_area <= 0 or cleaned_area <= 0:
+        return None
+    if abs(cleaned_area - original_area) / original_area > maximum_area_drift:
+        return None
+    return cleaned
+
+
+def _components_area_pixels(components: list[dict[str, Any]]) -> float:
+    return sum(
+        polygon_area_pixels(
+            _ring_tuples(component.get("polygon") or []),
+            [
+                _ring_tuples(hole)
+                for hole in component.get("holes") or []
+            ],
+        )
+        for component in components
+    )
 
 
 def _components_mask(
@@ -676,13 +834,18 @@ def _write_candidate_contact_sheet(
         )
         panel_draw = ImageDraw.Draw(panel, "RGBA")
         panel_draw.rectangle((0, 0, panel.width, 58), fill=(0, 0, 0, 175))
+        refinement_label = str(
+            candidate.get("boundary_refinement") or "sam2"
+        ).replace("_", " ")
+        if candidate.get("geometry_refinement") == "dominant_orthogonal":
+            refinement_label += " + right-angle cleanup"
         panel_draw.text(
             (16, 12),
             (
                 f"Candidate {candidate['rank']} | "
                 f"{float(candidate['plan_area_sqft']):,.0f} sq ft | "
                 f"score {float(candidate['selection_score']):.2f} | "
-                f"{str(candidate.get('boundary_refinement') or 'sam2').replace('_', ' ')}"
+                f"{refinement_label}"
             ),
             fill=(255, 255, 255, 255),
         )

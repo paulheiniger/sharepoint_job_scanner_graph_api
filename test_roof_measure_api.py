@@ -4,7 +4,7 @@ from io import BytesIO
 import json
 import time
 
-from PIL import Image
+from PIL import Image, ImageDraw
 import numpy as np
 import pytest
 
@@ -289,6 +289,61 @@ def test_sam2_refinement_fails_closed_when_service_fails(
             sam2_api_key="",
             artifact_dir=artifact_dir,
         )
+
+
+def test_sam2_returns_guarded_orthogonal_candidate_with_original(
+    roof_context,
+    monkeypatch,
+) -> None:
+    artifact_dir, context = roof_context
+    mask_image = Image.new("L", (100, 100), 0)
+    ImageDraw.Draw(mask_image).polygon(
+        [
+            (26, 27),
+            (50, 32),
+            (73, 37),
+            (70, 49),
+            (67, 61),
+            (44, 56),
+            (21, 51),
+            (23, 39),
+        ],
+        fill=255,
+    )
+    rotated_roof = np.asarray(mask_image, dtype=bool)
+
+    class FakeSegmenter:
+        def __init__(self, **_kwargs):
+            pass
+
+        def segment(self, _image, _prompts):
+            return SegmentationResult(
+                candidates=[MaskCandidate(rotated_roof, 0.9, "rotated")],
+                model_name="sam2_remote",
+                model_version="test",
+            )
+
+    monkeypatch.setattr(
+        "roof_measure.api_segmentation.Sam2RoofSegmenter",
+        FakeSegmenter,
+    )
+
+    segmented = segment_roof_measure_context(
+        context_id=context["context_id"],
+        selected_footprint_ids=["fp-01"],
+        sam2_url="http://sam2.test/segment",
+        sam2_api_key="test-key",
+        artifact_dir=artifact_dir,
+    )
+
+    assert len(segmented["candidates"]) == 2
+    cleaned, original = segmented["candidates"]
+    assert cleaned["geometry_refinement"] == "dominant_orthogonal"
+    assert original["geometry_refinement"] == "mask_polygon"
+    assert cleaned["boundary_refinement"] == original["boundary_refinement"]
+    assert cleaned["candidate_id"] != original["candidate_id"]
+    assert cleaned["geometry_area_drift_fraction"] <= 0.015
+    assert segmented["recommended_candidate_id"] == cleaned["candidate_id"]
 
 
 def test_sam2_lidar_guidance_scores_elevated_edge_beyond_footprint(

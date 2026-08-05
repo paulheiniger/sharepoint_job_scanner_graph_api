@@ -64,6 +64,12 @@ rejects a trim that removes more than 12% of the candidate or retains less than
 90% of the reviewed footprint. LiDAR never expands or becomes the polygon and
 does not infer pitch.
 
+For the highest-ranked mask, the API may also return a
+`dominant_orthogonal` geometry variant. It fits edges already close to the
+building's dominant rotated axes, preserves intentional diagonals, rejects
+invalid polygons, and is limited to 1.5% area drift. The original
+`mask_polygon` candidate remains in the same response for visual comparison.
+
 The operation is fail-closed: a missing, unreachable, unauthorized, or invalid
 SAM2 response returns an error and never substitutes the Streamlit MVP's manual
 rectangle fallback. The recommended candidate is only a ranking aid. Display
