@@ -29,7 +29,11 @@ CONTEXT_ID_RE = re.compile(r"^[a-f0-9]{32}$")
 SELECTION_ASSET_RE = re.compile(r"^selected-footprints-[a-f0-9]{16}\.png$")
 SAM2_ASSET_RE = re.compile(r"^sam2-candidates-[a-f0-9]{16}\.png$")
 ROOF_ASSET_NAMES = frozenset({"satellite.png", "footprint-overlay.png"})
-VIEW_ZOOM = {"whole_site": 16.5, "building_detail": 19.0}
+VIEW_ZOOM = {
+    "whole_site": 16.5,
+    "building_detail": 19.0,
+    "close_detail": 20.0,
+}
 MAX_FOOTPRINT_CANDIDATES = 12
 CAMPUS_SITE_TYPES = frozenset(
     {

@@ -381,12 +381,13 @@ class RoofMeasureContextRequest(BaseModel):
             "industrial complex, or single building."
         ),
     )
-    view: Literal["whole_site", "building_detail"] = Field(
+    view: Literal["whole_site", "building_detail", "close_detail"] = Field(
         default="building_detail",
         description=(
             "Use building_detail for a normal single-building measurement so "
             "segmentation receives higher-resolution imagery. Use whole_site for "
-            "campuses, ambiguous locations, or when the detail view crops the roof."
+            "campuses, ambiguous locations, or when the detail view crops the roof. "
+            "Use close_detail only when the user requests more zoom for a small roof."
         ),
     )
     include_lidar_coverage: bool = Field(

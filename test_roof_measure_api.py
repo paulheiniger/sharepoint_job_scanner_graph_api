@@ -130,6 +130,14 @@ def test_context_creates_bounded_signed_asset_inputs_without_ai(roof_context) ->
     ).is_file()
 
 
+def test_context_view_zoom_supports_conversational_close_detail() -> None:
+    from roof_measure.api_context import VIEW_ZOOM
+
+    assert VIEW_ZOOM["whole_site"] == 16.5
+    assert VIEW_ZOOM["building_detail"] == 19.0
+    assert VIEW_ZOOM["close_detail"] == 20.0
+
+
 def test_calculate_uses_reviewed_footprint_and_optional_pitch(roof_context) -> None:
     artifact_dir, context = roof_context
 

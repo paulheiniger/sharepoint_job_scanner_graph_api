@@ -4812,10 +4812,11 @@
           },
           "view": {
             "default": "building_detail",
-            "description": "Use building_detail for a normal single-building measurement so segmentation receives higher-resolution imagery. Use whole_site for campuses, ambiguous locations, or when the detail view crops the roof.",
+            "description": "Use building_detail for a normal single-building measurement so segmentation receives higher-resolution imagery. Use whole_site for campuses, ambiguous locations, or when the detail view crops the roof. Use close_detail only when the user requests more zoom for a small roof.",
             "enum": [
               "whole_site",
-              "building_detail"
+              "building_detail",
+              "close_detail"
             ],
             "title": "View",
             "type": "string"
@@ -6298,7 +6299,7 @@
   "info": {
     "description": "Estimator evidence, controlled workbook generation, and read-only operational intelligence for conversational agents.",
     "title": "Spray-Tec Business Intelligence API",
-    "version": "0.20.4"
+    "version": "0.20.5"
   },
   "openapi": "3.1.0",
   "paths": {

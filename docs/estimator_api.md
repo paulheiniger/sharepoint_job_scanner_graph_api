@@ -26,7 +26,10 @@ Use `view: "building_detail"` for normal single-building work so SAM2 receives
 the higher-resolution zoom-19 image. Use `whole_site` for campuses, ambiguous
 locations, or as a fallback when the detail view crops or omits an intended
 roof. A wrong geocoder result should be corrected or explicitly reviewed rather
-than handled by permanently widening every image. The API uses Mapbox and
+than handled by permanently widening every image. For a small site, a user can
+request `view: "close_detail"` to fetch a new zoom-20 image; this is new source
+imagery rather than an enlarged crop. The closer overlay must be reviewed again
+because a roof can leave the image at that extent. The API uses Mapbox and
 existing footprint providers, but it does not call OpenAI, SAM2, or another
 model. Raw LiDAR point clouds are not returned to the agent. Signed images and
 their context expire after 15 minutes by default.
