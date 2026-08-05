@@ -99,6 +99,11 @@ def warranty_master_engine():
                     contact_names TEXT,
                     contact_emails TEXT,
                     contact_phones TEXT,
+                    contact_name_source TEXT,
+                    contact_email_source TEXT,
+                    contact_phone_source TEXT,
+                    contact_source TEXT,
+                    contact_source_reference TEXT,
                     contact_follow_up_ready BOOLEAN,
                     needs_review BOOLEAN,
                     job_link TEXT,
@@ -119,11 +124,23 @@ def warranty_master_engine():
         connection.execute(
             text(
                 """
-                INSERT INTO warranty_master_clean VALUES
+                INSERT INTO warranty_master_clean (
+                    warranty_master_id, warranty_status, has_issued_document_evidence,
+                    evidence_status, job_id, vsimple_id, project_name, customer_name,
+                    division, warranty_category, warranty_type, warranty_term, provider,
+                    duration_years, start_date, end_date, contact_names, contact_emails,
+                    contact_phones, contact_name_source, contact_email_source,
+                    contact_phone_source, contact_source, contact_source_reference,
+                    contact_follow_up_ready, needs_review, job_link, issued_warranty_link,
+                    issued_warranty_file, vsimple_url, source_file, source_url, source_kind,
+                    source_document_id, has_conflict, match_review_required, refreshed_at
+                ) VALUES
                 ('vsimple:1', 'issued', 1, 'issued_document', 'JOB-1', '1',
                  'Acme Roof', 'Acme', 'Roofing', 'manufacturer_system',
                  'System warranty', '15-year manufacturer warranty', 'Gaco', 15,
                  '2026-06-01', '2041-06-01', 'Alex Smith', 'alex@example.com', NULL,
+                 'vsimple_customer_export', 'vsimple_customer_export', NULL,
+                 'vsimple_customer_export', 'https://example.invalid/vsimple',
                  1, 0, 'https://example.invalid/job', 'https://example.invalid/warranty',
                  'Warranty.pdf', 'https://example.invalid/vsimple', 'Warranty.pdf',
                  'https://example.invalid/warranty', 'warranty_document', 'DOC-1', 0, 0,
@@ -131,7 +148,8 @@ def warranty_master_engine():
                 ('vsimple:2', 'reported', 0, 'reported_source', NULL, '2',
                  'Legacy Plant', 'Legacy Co', 'Roofing', 'unspecified',
                  'Reported warranty', 'Reported warranty; term not captured', NULL, NULL,
-                 NULL, NULL, NULL, NULL, NULL, 0, 1, NULL, NULL, NULL,
+                 NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+                 0, 1, NULL, NULL, NULL,
                  'https://example.invalid/vsimple/2', 'Historical.xlsx', NULL,
                  'recent_completed_warranty_list', NULL, 0, 1, '2026-08-05')
                 """
@@ -154,6 +172,8 @@ def test_warranty_list_returns_contacts_links_and_review_filters() -> None:
     assert result["headline_metrics"]["warranty_records"] == 1
     assert result["headline_metrics"]["issued_document_warranties"] == 1
     assert result["records"][0]["contact_emails"] == "alex@example.com"
+    assert result["records"][0]["contact_source"] == "vsimple_customer_export"
+    assert result["records"][0]["contact_source_reference"].endswith("/vsimple")
     assert result["records"][0]["issued_warranty_link"].endswith("/warranty")
     assert {link["source_type"] for link in result["source_links"]} == {
         "issued_warranty_document",

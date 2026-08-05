@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 
 from openpyxl import Workbook
 
@@ -90,3 +91,14 @@ def test_contact_and_duration_parsers_are_bounded() -> None:
     assert parse_duration("TBD") is None
     assert parse_duration(52) is None
 
+
+def test_warranty_master_resolves_all_deterministic_contact_sources_with_provenance() -> None:
+    sql = Path("db/warranty_master_clean.sql").read_text(encoding="utf-8")
+
+    assert "general_vsimple_contacts AS" in sql
+    assert "FROM vsimple_projects p" in sql
+    assert "job_contacts AS" in sql
+    assert "j.raw ->> 'contact_email'" in sql
+    assert "estimate_contact_email" in sql
+    assert "contact_email_source" in sql
+    assert "contact_source_reference" in sql

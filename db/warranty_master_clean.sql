@@ -115,6 +115,48 @@ WITH direct_contacts AS (
     JOIN vsimple_customers_clean c ON c.customer_id = pc.customer_id
     GROUP BY pc.vsimple_id
 ),
+general_vsimple_contacts AS (
+    SELECT
+        p.vsimple_id,
+        COALESCE(NULLIF(BTRIM(c.display_name), ''), NULLIF(BTRIM(p.contact_name), '')) AS contact_name,
+        COALESCE(NULLIF(BTRIM(c.email), ''), NULLIF(BTRIM(p.contact_email), '')) AS contact_email,
+        COALESCE(
+            NULLIF(BTRIM(c.mobile_phone), ''),
+            NULLIF(BTRIM(c.phone), ''),
+            NULLIF(BTRIM(p.contact_phone), '')
+        ) AS contact_phone,
+        CASE
+            WHEN NULLIF(BTRIM(c.display_name), '') IS NOT NULL THEN 'vsimple_customer_export'
+            WHEN NULLIF(BTRIM(p.contact_name), '') IS NOT NULL THEN 'vsimple_project_export'
+        END AS contact_name_source,
+        CASE
+            WHEN NULLIF(BTRIM(c.email), '') IS NOT NULL THEN 'vsimple_customer_export'
+            WHEN NULLIF(BTRIM(p.contact_email), '') IS NOT NULL THEN 'vsimple_project_export'
+        END AS contact_email_source,
+        CASE
+            WHEN COALESCE(NULLIF(BTRIM(c.mobile_phone), ''), NULLIF(BTRIM(c.phone), '')) IS NOT NULL
+                THEN 'vsimple_customer_export'
+            WHEN NULLIF(BTRIM(p.contact_phone), '') IS NOT NULL THEN 'vsimple_project_export'
+        END AS contact_phone_source
+    FROM vsimple_projects p
+    LEFT JOIN vsimple_customers_clean c
+        ON c.customer_id = NULLIF(
+            BTRIM(REGEXP_REPLACE(COALESCE(p.associated_contact_id, ''), '[.]0$', '')),
+            ''
+        )
+),
+job_contacts AS (
+    SELECT
+        j.job_id,
+        NULLIF(BTRIM(j.raw ->> 'contact_name'), '') AS contact_name,
+        NULLIF(BTRIM(j.raw ->> 'contact_email'), '') AS contact_email,
+        NULLIF(BTRIM(j.raw ->> 'contact_phone'), '') AS contact_phone,
+        NULLIF(BTRIM(j.folder_url), '') AS folder_url,
+        NULLIF(BTRIM(j.estimate_url), '') AS estimate_url,
+        COALESCE(NULLIF(BTRIM(j.primary_estimate_file), ''), NULLIF(BTRIM(j.estimate_file), ''))
+            AS estimate_file
+    FROM jobs j
+),
 job_to_vsimple AS (
     SELECT DISTINCT ON (m.job_id)
         m.job_id,
@@ -188,6 +230,18 @@ ranked AS (
         dc.contact_emails AS related_contact_emails,
         dc.contact_phones AS related_contact_phones,
         dc.contacts,
+        gvc.contact_name AS general_vsimple_contact_name,
+        gvc.contact_email AS general_vsimple_contact_email,
+        gvc.contact_phone AS general_vsimple_contact_phone,
+        gvc.contact_name_source AS general_vsimple_contact_name_source,
+        gvc.contact_email_source AS general_vsimple_contact_email_source,
+        gvc.contact_phone_source AS general_vsimple_contact_phone_source,
+        jc.contact_name AS estimate_contact_name,
+        jc.contact_email AS estimate_contact_email,
+        jc.contact_phone AS estimate_contact_phone,
+        jc.folder_url AS job_folder_url,
+        jc.estimate_url,
+        jc.estimate_file AS estimate_contact_file,
         COALESCE(
             'vsimple:' || NULLIF(BTRIM(r.resolved_vsimple_id), ''),
             'job:' || NULLIF(BTRIM(r.job_id), ''),
@@ -227,6 +281,78 @@ ranked AS (
     FROM registry_enriched r
     LEFT JOIN vsimple_warranty_projects_clean p ON p.vsimple_id = r.resolved_vsimple_id
     LEFT JOIN direct_contacts dc ON dc.vsimple_id = r.resolved_vsimple_id
+    LEFT JOIN general_vsimple_contacts gvc ON gvc.vsimple_id = r.resolved_vsimple_id
+    LEFT JOIN job_contacts jc ON jc.job_id = r.job_id
+),
+contact_resolved AS (
+    SELECT
+        r.*,
+        COALESCE(
+            related_contact_names,
+            NULLIF(BTRIM(reported_contact_name), ''),
+            NULLIF(BTRIM(source_raw ->> 'Contact Name'), ''),
+            NULLIF(BTRIM(source_raw ->> 'bill_to_contact'), ''),
+            NULLIF(BTRIM(CONCAT_WS(
+                ' ',
+                NULLIF(BTRIM(source_raw ->> 'contact_first_name'), ''),
+                NULLIF(BTRIM(source_raw ->> 'contact_last_name'), '')
+            )), ''),
+            general_vsimple_contact_name,
+            estimate_contact_name
+        ) AS resolved_contact_names,
+        COALESCE(
+            related_contact_emails,
+            NULLIF(BTRIM(reported_contact_email), ''),
+            NULLIF(BTRIM(source_raw ->> 'Contact Email'), ''),
+            NULLIF(BTRIM(source_raw ->> 'bill_to_email_address'), ''),
+            NULLIF(BTRIM(source_raw ->> 'contact_email'), ''),
+            general_vsimple_contact_email,
+            estimate_contact_email
+        ) AS resolved_contact_emails,
+        COALESCE(
+            related_contact_phones,
+            NULLIF(BTRIM(reported_contact_phone), ''),
+            NULLIF(BTRIM(source_raw ->> 'Contact Phone'), ''),
+            NULLIF(BTRIM(source_raw ->> 'bill_to_phone'), ''),
+            NULLIF(BTRIM(source_raw ->> 'contact_phone'), ''),
+            general_vsimple_contact_phone,
+            estimate_contact_phone
+        ) AS resolved_contact_phones,
+        CASE
+            WHEN related_contact_names IS NOT NULL THEN 'vsimple_customer_export'
+            WHEN NULLIF(BTRIM(reported_contact_name), '') IS NOT NULL THEN 'vsimple_warranty_project_export'
+            WHEN COALESCE(
+                NULLIF(BTRIM(source_raw ->> 'Contact Name'), ''),
+                NULLIF(BTRIM(source_raw ->> 'bill_to_contact'), ''),
+                NULLIF(BTRIM(source_raw ->> 'contact_first_name'), ''),
+                NULLIF(BTRIM(source_raw ->> 'contact_last_name'), '')
+            ) IS NOT NULL THEN 'warranty_source_export'
+            WHEN general_vsimple_contact_name IS NOT NULL THEN general_vsimple_contact_name_source
+            WHEN estimate_contact_name IS NOT NULL THEN 'estimate_workbook'
+        END AS contact_name_source,
+        CASE
+            WHEN related_contact_emails IS NOT NULL THEN 'vsimple_customer_export'
+            WHEN NULLIF(BTRIM(reported_contact_email), '') IS NOT NULL THEN 'vsimple_warranty_project_export'
+            WHEN COALESCE(
+                NULLIF(BTRIM(source_raw ->> 'Contact Email'), ''),
+                NULLIF(BTRIM(source_raw ->> 'bill_to_email_address'), ''),
+                NULLIF(BTRIM(source_raw ->> 'contact_email'), '')
+            ) IS NOT NULL THEN 'warranty_source_export'
+            WHEN general_vsimple_contact_email IS NOT NULL THEN general_vsimple_contact_email_source
+            WHEN estimate_contact_email IS NOT NULL THEN 'estimate_workbook'
+        END AS contact_email_source,
+        CASE
+            WHEN related_contact_phones IS NOT NULL THEN 'vsimple_customer_export'
+            WHEN NULLIF(BTRIM(reported_contact_phone), '') IS NOT NULL THEN 'vsimple_warranty_project_export'
+            WHEN COALESCE(
+                NULLIF(BTRIM(source_raw ->> 'Contact Phone'), ''),
+                NULLIF(BTRIM(source_raw ->> 'bill_to_phone'), ''),
+                NULLIF(BTRIM(source_raw ->> 'contact_phone'), '')
+            ) IS NOT NULL THEN 'warranty_source_export'
+            WHEN general_vsimple_contact_phone IS NOT NULL THEN general_vsimple_contact_phone_source
+            WHEN estimate_contact_phone IS NOT NULL THEN 'estimate_workbook'
+        END AS contact_phone_source
+    FROM ranked r
 )
 SELECT
     identity_key AS warranty_master_id,
@@ -259,44 +385,32 @@ SELECT
     start_date_is_inferred,
     expiration_date AS end_date,
     expiration_date_source,
+    resolved_contact_names AS contact_names,
+    resolved_contact_emails AS contact_emails,
+    resolved_contact_phones AS contact_phones,
+    contact_name_source,
+    contact_email_source,
+    contact_phone_source,
+    COALESCE(contact_email_source, contact_phone_source, contact_name_source) AS contact_source,
+    CASE
+        WHEN COALESCE(contact_email_source, contact_phone_source, contact_name_source) = 'estimate_workbook'
+            THEN COALESCE(estimate_url, job_folder_url, estimate_contact_file)
+        WHEN COALESCE(contact_email_source, contact_phone_source, contact_name_source) IN (
+            'vsimple_customer_export', 'vsimple_warranty_project_export', 'vsimple_project_export'
+        ) THEN vsimple_url
+        ELSE source_url
+    END AS contact_source_reference,
     COALESCE(
-        related_contact_names,
-        NULLIF(BTRIM(reported_contact_name), ''),
-        NULLIF(BTRIM(source_raw ->> 'Contact Name'), ''),
-        NULLIF(BTRIM(source_raw ->> 'bill_to_contact'), ''),
-        NULLIF(BTRIM(source_raw ->> 'contact_first_name'), '')
-    ) AS contact_names,
-    COALESCE(
-        related_contact_emails,
-        NULLIF(BTRIM(reported_contact_email), ''),
-        NULLIF(BTRIM(source_raw ->> 'Contact Email'), ''),
-        NULLIF(BTRIM(source_raw ->> 'bill_to_email_address'), ''),
-        NULLIF(BTRIM(source_raw ->> 'contact_email'), '')
-    ) AS contact_emails,
-    COALESCE(
-        related_contact_phones,
-        NULLIF(BTRIM(reported_contact_phone), ''),
-        NULLIF(BTRIM(source_raw ->> 'Contact Phone'), ''),
-        NULLIF(BTRIM(source_raw ->> 'bill_to_phone'), ''),
-        NULLIF(BTRIM(source_raw ->> 'contact_phone'), '')
-    ) AS contact_phones,
-    COALESCE(contact_count, CASE WHEN reported_contact_name IS NOT NULL THEN 1 ELSE 0 END) AS contact_count,
+        contact_count,
+        CASE
+            WHEN COALESCE(resolved_contact_names, resolved_contact_emails, resolved_contact_phones) IS NOT NULL THEN 1
+            ELSE 0
+        END
+    ) AS contact_count,
     COALESCE(contacts, '[]'::JSONB) AS contacts,
     (
-        COALESCE(
-            related_contact_emails,
-            NULLIF(BTRIM(reported_contact_email), ''),
-            NULLIF(BTRIM(source_raw ->> 'Contact Email'), ''),
-            NULLIF(BTRIM(source_raw ->> 'bill_to_email_address'), ''),
-            NULLIF(BTRIM(source_raw ->> 'contact_email'), '')
-        ) IS NOT NULL
-        OR COALESCE(
-            related_contact_phones,
-            NULLIF(BTRIM(reported_contact_phone), ''),
-            NULLIF(BTRIM(source_raw ->> 'Contact Phone'), ''),
-            NULLIF(BTRIM(source_raw ->> 'bill_to_phone'), ''),
-            NULLIF(BTRIM(source_raw ->> 'contact_phone'), '')
-        ) IS NOT NULL
+        resolved_contact_emails IS NOT NULL
+        OR resolved_contact_phones IS NOT NULL
     ) AS contact_follow_up_ready,
     (
         COALESCE(has_conflict, FALSE)
@@ -305,23 +419,11 @@ SELECT
         OR start_date IS NULL
         OR expiration_date IS NULL
         OR (
-            COALESCE(
-                related_contact_emails,
-                NULLIF(BTRIM(reported_contact_email), ''),
-                NULLIF(BTRIM(source_raw ->> 'Contact Email'), ''),
-                NULLIF(BTRIM(source_raw ->> 'bill_to_email_address'), ''),
-                NULLIF(BTRIM(source_raw ->> 'contact_email'), '')
-            ) IS NULL
-            AND COALESCE(
-                related_contact_phones,
-                NULLIF(BTRIM(reported_contact_phone), ''),
-                NULLIF(BTRIM(source_raw ->> 'Contact Phone'), ''),
-                NULLIF(BTRIM(source_raw ->> 'bill_to_phone'), ''),
-                NULLIF(BTRIM(source_raw ->> 'contact_phone'), '')
-            ) IS NULL
+            resolved_contact_emails IS NULL
+            AND resolved_contact_phones IS NULL
         )
     ) AS needs_review,
-    COALESCE(NULLIF(BTRIM(j.folder_url), ''), NULLIF(BTRIM(sharepoint_url), '')) AS job_link,
+    COALESCE(job_folder_url, NULLIF(BTRIM(sharepoint_url), '')) AS job_link,
     COALESCE(
         idoc.issued_document_url,
         CASE WHEN COALESCE(source_system, duration_source_kind) = 'sharepoint_warranty_folder' THEN source_url END
@@ -342,10 +444,6 @@ SELECT
     has_conflict,
     match_review_required,
     refreshed_at
-FROM ranked r
+FROM contact_resolved r
 LEFT JOIN issued_documents idoc ON idoc.job_id = r.job_id
-LEFT JOIN (
-    SELECT job_id AS linked_job_id, folder_url
-    FROM jobs
-) j ON j.linked_job_id = r.job_id
 WHERE identity_rank = 1;
