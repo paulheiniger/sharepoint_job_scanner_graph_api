@@ -1,0 +1,126 @@
+name: Deploy Spray-Tec Business API
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/deploy-business-api.yml"
+      - "jobscan/**"
+      - "roof_measure/**"
+      - "services/estimator_api/**"
+      - "templates/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: spraytec-business-api-production
+  cancel-in-progress: false
+
+env:
+  AZURE_CLIENT_ID: 82512f85-dbb5-442e-92c1-3d40e438e85d
+  AZURE_TENANT_ID: 6859aac8-d2d9-40fb-8fe5-5d428cb3ce68
+  AZURE_SUBSCRIPTION_ID: 9cf94090-8859-400a-87c4-48dfdd3c7e2b
+  AZURE_RESOURCE_GROUP: spraytec-ai-rg
+  AZURE_CONTAINER_APP: spraytec-business-api
+  ACR_NAME: spraytecaiacr9cf94090
+  ACR_LOGIN_SERVER: spraytecaiacr9cf94090.azurecr.io
+  IMAGE_NAME: spraytec-business-api
+  PUBLIC_API_URL: https://spraytec-business-api.icysand-5925ab36.eastus2.azurecontainerapps.io
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install Azure Container Apps CLI support
+        run: az extension add --name containerapp --upgrade
+
+      - name: Build immutable image
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build \
+            --platform linux/amd64 \
+            --file services/estimator_api/Dockerfile \
+            --tag "${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${IMAGE_TAG}" \
+            .
+
+      - name: Smoke-test image
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker run \
+            --rm \
+            --platform linux/amd64 \
+            "${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${IMAGE_TAG}" \
+            python -c 'from services.estimator_api.server import app; import shutil; assert app.openapi()["servers"]; assert shutil.which("soffice"); print(app.version)'
+
+      - name: Push image to Azure Container Registry
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          az acr login --name "${ACR_NAME}"
+          docker push "${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${IMAGE_TAG}"
+
+      - name: Deploy Azure Container App revision
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          az containerapp update \
+            --name "${AZURE_CONTAINER_APP}" \
+            --resource-group "${AZURE_RESOURCE_GROUP}" \
+            --image "${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${IMAGE_TAG}" \
+            --set-env-vars \
+              "ESTIMATOR_API_PUBLIC_BASE_URL=${PUBLIC_API_URL}" \
+              "ESTIMATOR_API_PUBLIC_URL=${PUBLIC_API_URL}" \
+            --output none
+
+      - name: Verify deployed revision
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          expected_image="${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${IMAGE_TAG}"
+          for attempt in $(seq 1 30); do
+            live_image="$(az containerapp show \
+              --name "${AZURE_CONTAINER_APP}" \
+              --resource-group "${AZURE_RESOURCE_GROUP}" \
+              --query 'properties.template.containers[0].image' \
+              --output tsv)"
+            revision="$(az containerapp show \
+              --name "${AZURE_CONTAINER_APP}" \
+              --resource-group "${AZURE_RESOURCE_GROUP}" \
+              --query 'properties.latestReadyRevisionName' \
+              --output tsv)"
+            health="$(az containerapp revision show \
+              --name "${AZURE_CONTAINER_APP}" \
+              --resource-group "${AZURE_RESOURCE_GROUP}" \
+              --revision "${revision}" \
+              --query 'properties.healthState' \
+              --output tsv)"
+            if [ "${live_image}" = "${expected_image}" ] && [ "${health}" = "Healthy" ]; then
+              curl --fail --silent --show-error \
+                "${PUBLIC_API_URL}/health?deployment=${IMAGE_TAG}" \
+                >/dev/null
+              echo "Deployment is healthy: ${revision}"
+              exit 0
+            fi
+            echo "Waiting for revision readiness (${attempt}/30): ${revision} ${health}"
+            sleep 10
+          done
+          echo "Deployment did not become healthy in time."
+          exit 1

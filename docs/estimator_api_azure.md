@@ -23,6 +23,16 @@ cache TTL shortened to reduce development cost and data staleness.
 
 ## Build and deploy a new image
 
+Pushes to `main` that change the Business API build inputs deploy automatically
+through `.github/workflows/deploy-business-api.yml`. The workflow uses GitHub
+OIDC with the dedicated `spraytec-business-api-github` Entra application, builds
+an immutable image tagged with the commit SHA, smoke-tests it, pushes it to ACR,
+updates the Container App, and waits for a healthy revision. No Azure client
+secret is stored in GitHub.
+
+Use the manual workflow dispatch for an intentional redeploy without a code
+change. The commands below remain available as a break-glass deployment path.
+
 Choose an immutable version tag and run from the repository root:
 
 ```bash
