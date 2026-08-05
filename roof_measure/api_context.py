@@ -396,12 +396,26 @@ def calculate_roof_measurement(
             f"A uniform {pitch_rise_per_12:g}:12 pitch was applied to every section."
         )
 
-    selected_overlay_asset_name = _write_selected_footprint_overlay(
-        context=context,
-        selected_footprint_ids=overlay_footprint_ids,
-        sections=overlay_sections,
-        artifact_dir=artifact_dir,
+    recommended_sam2_candidate_id = str(
+        (context.get("sam2_candidates") or [{}])[0].get("candidate_id") or ""
     )
+    recommended_sam2_overlay = str(
+        context.get("sam2_candidate_asset_name") or ""
+    )
+    if (
+        sam2_candidate_id
+        and sam2_candidate_id == recommended_sam2_candidate_id
+        and recommended_sam2_overlay
+        and (artifact_dir / context_id / recommended_sam2_overlay).is_file()
+    ):
+        selected_overlay_asset_name = recommended_sam2_overlay
+    else:
+        selected_overlay_asset_name = _write_selected_footprint_overlay(
+            context=context,
+            selected_footprint_ids=overlay_footprint_ids,
+            sections=overlay_sections,
+            artifact_dir=artifact_dir,
+        )
 
     return {
         "schema_version": "spraytec.roof_measure_calculation.v1",

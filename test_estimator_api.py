@@ -324,6 +324,10 @@ def test_roof_measure_calculation_returns_review_required_contract(monkeypatch) 
         lambda _path: "selected-preview",
     )
     monkeypatch.setattr(
+        "services.estimator_api.server._roof_overlay_file_base64",
+        lambda _path: "selected-full-size",
+    )
+    monkeypatch.setattr(
         "services.estimator_api.server.calculate_roof_measurement",
         lambda **_kwargs: {
             "schema_version": "spraytec.roof_measure_calculation.v1",
@@ -365,7 +369,7 @@ def test_roof_measure_calculation_returns_review_required_contract(monkeypatch) 
         {
             "name": "roof_measure_overlay.jpg",
             "mime_type": "image/jpeg",
-            "content": "selected-preview",
+            "content": "selected-full-size",
         }
     ]
 

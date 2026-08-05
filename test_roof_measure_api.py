@@ -362,6 +362,9 @@ def test_sam2_refinement_ranks_all_candidates_and_calculates_confirmed_one(
     assert result["measurement_basis"].startswith("sam2_refined")
     assert result["sections"][0]["source"] == "sam2_candidate"
     assert "no OpenAI API" in result["assumptions"][1]
+    assert result["selected_overlay_asset_name"] == segmented[
+        "candidate_overlay_asset_name"
+    ]
 
 
 def test_candidate_review_crop_focuses_small_roof_and_clamps_to_image() -> None:

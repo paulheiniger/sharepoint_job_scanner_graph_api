@@ -119,7 +119,7 @@ app = FastAPI(
         "Estimator evidence, controlled workbook generation, and read-only "
         "operational intelligence for conversational agents."
     ),
-    version="0.21.0",
+    version="0.21.1",
 )
 
 
@@ -571,6 +571,7 @@ def roof_measure_calculate(
             artifact_dir=_roof_measure_artifact_dir(),
         )
         selected_preview_base64 = _roof_overlay_preview_base64(selected_asset_path)
+        selected_full_size_base64 = _roof_overlay_file_base64(selected_asset_path)
         response_payload = {
             **result,
             "selected_footprint_overlay_url": _signed_roof_asset_url(
@@ -586,7 +587,7 @@ def roof_measure_calculate(
                 {
                     "name": "roof_measure_overlay.jpg",
                     "mime_type": "image/jpeg",
-                    "content": selected_preview_base64,
+                    "content": selected_full_size_base64,
                 }
             ],
         }
