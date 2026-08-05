@@ -52,6 +52,21 @@ def make_pdf_pages(texts: list[str]) -> bytes:
     return payload
 
 
+def make_title_block_pdf(*, noisy_text: str, sheet_number: str, sheet_title: str) -> bytes:
+    import fitz
+
+    document = fitz.open()
+    page = document.new_page(width=792, height=612)
+    page.insert_text((72, 72), noisy_text, fontsize=11)
+    page.insert_text((640, 500), "SHEET TITLE", fontsize=8)
+    page.insert_text((640, 516), sheet_title, fontsize=8)
+    page.insert_text((640, 540), "SHEET NUMBER", fontsize=8)
+    page.insert_text((640, 558), sheet_number, fontsize=12)
+    payload = document.tobytes()
+    document.close()
+    return payload
+
+
 def make_zip(entries: dict[str, bytes | str]) -> bytes:
     buffer = BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
@@ -376,6 +391,29 @@ def test_filename_sheet_id_preferred_over_noisy_extracted_text() -> None:
     assert page.sheet_id == "A6-13"
     assert page.sheet_id_source == "filename"
     assert page.extracted_sheet_id == "S-130"
+
+
+def test_title_block_sheet_id_preferred_over_detail_callouts() -> None:
+    package = ingest_uploaded_package(
+        [
+            FakeUpload(
+                "architectural-drawings.pdf",
+                make_title_block_pdf(
+                    noisy_text="A1 A-301\nD4 A-329\nExterior wall layout",
+                    sheet_number="A-101A",
+                    sheet_title="LEVEL 1 FLOOR PLAN - AREA A",
+                ),
+            )
+        ]
+    )
+
+    result = analyze_documents(package.documents, depth=1, use_ocr=False)
+    page = result["pages"][0]
+
+    assert page.extracted_sheet_id == "A-101A"
+    assert page.canonical_sheet_id == "A-101A"
+    assert page.sheet_id_source == "title_block_geometry"
+    assert page.sheet_id_confidence == 0.99
 
 
 def test_plumbing_filename_sheet_id_preferred_over_noisy_text() -> None:

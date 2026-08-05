@@ -41,6 +41,7 @@ class PageRecord:
     filename_sheet_id: str = ""
     extracted_sheet_id: str = ""
     canonical_sheet_id: str = ""
+    title_block_text: str = ""
     foam_seed_level: str = "none"
     foam_specific_evidence: list[str] = field(default_factory=list)
     generic_evidence: list[str] = field(default_factory=list)
@@ -126,6 +127,23 @@ def _render_page_png(page: Any, *, dpi: int = 160) -> bytes:
     return pixmap.tobytes("png")
 
 
+def extract_title_block_text(page: Any) -> str:
+    """Extract the lower-right title block without relying on PDF text order."""
+    rect = page.rect
+    width = float(rect.width)
+    height = float(rect.height)
+    blocks: list[tuple[float, float, str]] = []
+    for block in page.get_text("blocks") or []:
+        x0, y0, x1, y1, text = block[:5]
+        center_x = (float(x0) + float(x1)) / 2.0
+        center_y = (float(y0) + float(y1)) / 2.0
+        if center_x >= width * 0.78 and center_y >= height * 0.72:
+            cleaned = str(text or "").strip()
+            if cleaned:
+                blocks.append((float(y0), float(x0), cleaned))
+    return "\n".join(text for _, _, text in sorted(blocks))
+
+
 def ingest_pdf(
     upload: bytes | BinaryIO | Path | str,
     *,
@@ -162,6 +180,7 @@ def ingest_pdf(
         document = fitz.open(stream=pdf_bytes, filetype="pdf")
         for index, page in enumerate(document):
             text = page.get_text("text") or ""
+            title_block_text = extract_title_block_text(page)
             warnings: list[str] = []
             used_ocr = False
             if ocr_sparse_pages and is_text_sparse(text):
@@ -187,6 +206,7 @@ def ingest_pdf(
                     word_count=word_count,
                     width=float(rect.width),
                     height=float(rect.height),
+                    title_block_text=title_block_text,
                     used_ocr=used_ocr,
                     warnings=warnings,
                     original_document_name=original_document_name or document_name,

@@ -194,7 +194,9 @@ def build_bidscope_review_packet_from_inspection(
         "assistant_review_instruction": (
             "Inspect the attached pages in packet order. Identify which pages contain the actual measurable plans or elevations, "
             "explain the path from scope seed to each selected measurement page, and ask the estimator to confirm the pages and "
-            "drawing scale before any segmentation or quantity calculation."
+            "drawing scale before any segmentation or quantity calculation. Preserve this context_id and the exact returned page_id "
+            "for every recommended page. After confirmation, call createBidScopeMeasurementContext with this same context_id; do not "
+            "run selectBidScopePages again unless the source link changes or this context expires."
         ),
         "packet_page_count": len(review_pages),
         "seed_pages": seed_rows,
@@ -214,7 +216,10 @@ def build_bidscope_review_packet_from_inspection(
             "measurement_context_available_after_review": True,
             "segmentation_status": "not_run",
             "scale_required": True,
-            "note": "Confirm page IDs and drawing scales, then create a measurement context. No segmentation or quantity calculation has run.",
+            "note": (
+                "Confirm page IDs and drawing scales, then create a measurement context from this same selection context. "
+                "Do not refresh page selection after confirmation. No segmentation or quantity calculation has run."
+            ),
         },
         "warnings": sorted(set(warnings)),
         "openaiFileResponse": [

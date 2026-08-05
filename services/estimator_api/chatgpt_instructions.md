@@ -70,7 +70,9 @@ state uncertainty, coverage, and warnings. Never invent unavailable results.
   `createBidScopeMeasurementContext` with the prior `context_id`, exact returned
   page IDs, and a confirmed scale for each view when known. Inspect the attached
   full-size confirmed-page PDF and report pages whose scale still needs review.
-  The endpoint preserves vector pages and prepares tracing rasters.
+  Do not call `selectBidScopePages` again after confirmation unless the source
+  link changes or the prior context has expired. The endpoint preserves vector
+  pages and prepares tracing rasters.
 - For each confirmed, scaled view, call `traceBidScopeRegions` with a stable
   region ID and an explicit basis: `area`, `boundary_length`, or `wall_area`.
   Use normalized positive points inside the intended connected region, negative

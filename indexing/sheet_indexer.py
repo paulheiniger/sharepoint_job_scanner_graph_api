@@ -21,7 +21,7 @@ def load_sheet_patterns(path: Path = DEFAULT_CONFIG) -> dict[str, Any]:
 
 def _normalize_sheet_id(value: str) -> str:
     cleaned = value.upper().replace(".", "-").strip()
-    compact = re.match(r"^([A-Z]{1,3})(\d{3,4}(?:-\d+)?)$", cleaned)
+    compact = re.match(r"^([A-Z]{1,3})(\d{3,4}[A-Z]?(?:-\d+)?)$", cleaned)
     if compact and "-" not in cleaned:
         return f"{compact.group(1)}-{compact.group(2)}"
     return cleaned
@@ -35,8 +35,8 @@ def _known_sheet_prefix(value: str) -> bool:
 def _looks_like_real_sheet_id(value: str) -> bool:
     normalized = _normalize_sheet_id(value)
     return _known_sheet_prefix(normalized) and bool(
-        re.match(r"^(?:FP|FA|[ASMEPCLG]\d?|[ASMEPCLG])-\d{2,4}(?:-\d+)?$", normalized)
-        or re.match(r"^(?:FP|FA|[ASMEPCLG])\d{3,4}$", normalized.replace("-", ""))
+        re.match(r"^(?:FP|FA|[ASMEPCLG]\d?|[ASMEPCLG])-\d{2,4}[A-Z]?(?:-\d+)?$", normalized)
+        or re.match(r"^(?:FP|FA|[ASMEPCLG])\d{3,4}[A-Z]?$", normalized.replace("-", ""))
     )
 
 
@@ -61,11 +61,11 @@ def detect_filename_sheet_id(document_name: str, source_path: str = "") -> str:
 
 def _sheet_id_confidence(value: str, line: str, line_number: int) -> tuple[float, str]:
     normalized = _normalize_sheet_id(value)
-    if re.match(r"^[A-Z]{1,3}[A-Z0-9]?-\d{2,4}(?:-\d+)?$", normalized):
+    if re.match(r"^[A-Z]{1,3}[A-Z0-9]?-\d{2,4}[A-Z]?(?:-\d+)?$", normalized):
         if not _known_sheet_prefix(normalized):
             return 0.25, "unknown_prefix"
         return 0.95 if line_number <= 8 else 0.8, "title_block_or_header"
-    if re.match(r"^[A-Z]{1,3}\d{3,4}$", value.upper()):
+    if re.match(r"^[A-Z]{1,3}\d{3,4}[A-Z]?$", value.upper()):
         if not _known_sheet_prefix(normalized):
             return 0.25, "unknown_prefix"
         return 0.85 if line_number <= 12 else 0.65, "compact_sheet_id"
@@ -110,6 +110,24 @@ def detect_sheet_number(text: str, config: dict[str, Any] | None = None) -> str:
     return sheet_number if confidence >= 0.6 else ""
 
 
+def detect_title_block_sheet_id(text: str) -> str:
+    """Read a sheet ID explicitly paired with a title-block SHEET NUMBER label."""
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    for index, line in enumerate(lines):
+        if not re.search(r"\bsheet\s+(?:number|no\.?|#)\b", line, flags=re.I):
+            continue
+        for candidate_line in lines[index + 1 : index + 5]:
+            for raw_value in re.findall(
+                r"\b(?:FP|FA|[ASMEPCLG])[A-Z0-9]?[.-]?\d{2,4}[A-Z]?(?:-\d+)?\b",
+                candidate_line,
+                flags=re.I,
+            ):
+                value = _normalize_sheet_id(raw_value)
+                if _looks_like_real_sheet_id(value):
+                    return value
+    return ""
+
+
 def detect_sheet_title(text: str, sheet_number: str = "", config: dict[str, Any] | None = None) -> str:
     config = config or load_sheet_patterns()
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
@@ -136,14 +154,20 @@ def index_sheets(pages: list[PageRecord], config_path: Path = DEFAULT_CONFIG) ->
     config = load_sheet_patterns(config_path)
     for page in pages:
         filename_sheet_id = detect_filename_sheet_id(page.document_name, page.source_path)
+        title_block_sheet_id = detect_title_block_sheet_id(page.title_block_text)
         extracted_sheet_id, confidence, source, uncertain = detect_sheet_number_with_metadata(page.text, config)
         page.filename_sheet_id = filename_sheet_id
-        page.extracted_sheet_id = extracted_sheet_id if confidence >= 0.6 else ""
+        page.extracted_sheet_id = title_block_sheet_id or (extracted_sheet_id if confidence >= 0.6 else "")
         if filename_sheet_id and (confidence < 0.98 or extracted_sheet_id != filename_sheet_id):
             page.canonical_sheet_id = filename_sheet_id
             page.sheet_number = filename_sheet_id
             page.sheet_id_confidence = 0.97
             page.sheet_id_source = "filename"
+        elif title_block_sheet_id:
+            page.canonical_sheet_id = title_block_sheet_id
+            page.sheet_number = title_block_sheet_id
+            page.sheet_id_confidence = 0.99
+            page.sheet_id_source = "title_block_geometry"
         elif extracted_sheet_id and confidence >= 0.6:
             page.canonical_sheet_id = extracted_sheet_id
             page.sheet_number = extracted_sheet_id

@@ -12,7 +12,7 @@ from indexing.page_classifier import classify_pages
 from indexing.reference_extractor import attach_references
 from indexing.sheet_indexer import index_sheets
 from ingest.package_ingest import PackageInspectionResult, PdfCandidate, materialize_selected_documents
-from ingest.pdf_ingest import PageRecord
+from ingest.pdf_ingest import PageRecord, extract_title_block_text
 from takeoff.insulation_scope_tree import build_measurement_tree, relevant_pages_table
 from indexing.trade_profiles import load_trade_profile
 
@@ -381,6 +381,7 @@ def sample_document_pages(document: Any, budgets: ProgressiveBudgets, already_sa
         for index in indexes:
             page = pdf[index]
             text = page.get_text("text") or ""
+            title_block_text = extract_title_block_text(page)
             rect = page.rect
             pages.append(
                 PageRecord(
@@ -396,6 +397,7 @@ def sample_document_pages(document: Any, budgets: ProgressiveBudgets, already_sa
                     word_count=len(text.split()),
                     width=float(rect.width),
                     height=float(rect.height),
+                    title_block_text=title_block_text,
                     processing_status="sampled",
                     original_document_name=getattr(document, "original_document_name", "") or document.document_name,
                     original_page_number=getattr(document, "original_page_number", None),

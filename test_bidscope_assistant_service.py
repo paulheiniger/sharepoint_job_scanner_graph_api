@@ -72,6 +72,7 @@ def test_bidscope_packet_contains_seed_and_reference_linked_measurement_page(tmp
     assert any(row["reference_path"] for row in result["measurement_candidates"])
     assert result["measurement_readiness"]["status"] == "requires_confirmed_pages_and_scale"
     assert result["measurement_readiness"]["segmentation_status"] == "not_run"
+    assert "do not run selectBidScopePages again" in result["assistant_review_instruction"]
     assert len(result["context_id"]) == 32
     attachment = result["openaiFileResponse"][0]
     packet = fitz.open(stream=base64.b64decode(attachment["content"]), filetype="pdf")
