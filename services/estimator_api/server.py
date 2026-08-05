@@ -117,7 +117,7 @@ app = FastAPI(
         "Estimator evidence, controlled workbook generation, and read-only "
         "operational intelligence for conversational agents."
     ),
-    version="0.20.1",
+    version="0.20.2",
 )
 
 

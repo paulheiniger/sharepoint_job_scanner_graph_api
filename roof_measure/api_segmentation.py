@@ -650,6 +650,7 @@ def _write_candidate_contact_sheet(
 ) -> str:
     context_path = _context_path(artifact_dir, str(context["context_id"]))
     source = Image.open(context_path / "satellite.png").convert("RGBA")
+    review_crop = _candidate_review_crop_box(source.size, candidates)
     panels: list[Image.Image] = []
     colors = [
         (255, 80, 60, 255),
@@ -666,8 +667,16 @@ def _write_candidate_contact_sheet(
                 continue
             draw.polygon(polygon, fill=(*color[:3], 70))
             draw.line([*polygon, polygon[0]], fill=color, width=7)
-        draw.rectangle((0, 0, panel.width, 58), fill=(0, 0, 0, 175))
-        draw.text(
+        panel = Image.alpha_composite(panel, overlay).crop(review_crop).convert("RGB")
+        target_width = 640
+        target_height = max(1, int(round(panel.height * target_width / panel.width)))
+        panel = panel.resize(
+            (target_width, target_height),
+            Image.Resampling.LANCZOS,
+        )
+        panel_draw = ImageDraw.Draw(panel, "RGBA")
+        panel_draw.rectangle((0, 0, panel.width, 58), fill=(0, 0, 0, 175))
+        panel_draw.text(
             (16, 12),
             (
                 f"Candidate {candidate['rank']} | "
@@ -677,8 +686,6 @@ def _write_candidate_contact_sheet(
             ),
             fill=(255, 255, 255, 255),
         )
-        panel = Image.alpha_composite(panel, overlay).convert("RGB")
-        panel.thumbnail((640, 640), Image.Resampling.LANCZOS)
         panels.append(panel)
     width = max(panel.width for panel in panels)
     height = sum(panel.height for panel in panels)
@@ -696,3 +703,37 @@ def _write_candidate_contact_sheet(
     asset_name = f"sam2-candidates-{digest}.png"
     (context_path / asset_name).write_bytes(image_png_bytes(sheet))
     return asset_name
+
+
+def _candidate_review_crop_box(
+    image_size: tuple[int, int],
+    candidates: list[dict[str, Any]],
+    *,
+    minimum_side_pixels: int = 320,
+    padding_ratio: float = 0.30,
+) -> tuple[int, int, int, int]:
+    width, height = image_size
+    points = [
+        point
+        for candidate in candidates
+        for component in candidate.get("components") or []
+        for point in _ring_tuples(component.get("polygon") or [])
+    ]
+    if not points:
+        return (0, 0, width, height)
+
+    min_x = min(point[0] for point in points)
+    max_x = max(point[0] for point in points)
+    min_y = min(point[1] for point in points)
+    max_y = max(point[1] for point in points)
+    span = max(max_x - min_x, max_y - min_y, 1.0)
+    maximum_side = min(width, height)
+    side = min(
+        maximum_side,
+        max(minimum_side_pixels, int(round(span * (1.0 + 2.0 * padding_ratio)))),
+    )
+    center_x = (min_x + max_x) / 2.0
+    center_y = (min_y + max_y) / 2.0
+    left = max(0, min(width - side, int(round(center_x - side / 2.0))))
+    top = max(0, min(height - side, int(round(center_y - side / 2.0))))
+    return (left, top, left + side, top + side)

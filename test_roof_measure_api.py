@@ -221,6 +221,48 @@ def test_sam2_refinement_ranks_all_candidates_and_calculates_confirmed_one(
     assert "no OpenAI API" in result["assumptions"][1]
 
 
+def test_candidate_review_crop_focuses_small_roof_and_clamps_to_image() -> None:
+    from roof_measure.api_segmentation import _candidate_review_crop_box
+
+    centered = _candidate_review_crop_box(
+        (1280, 1280),
+        [
+            {
+                "components": [
+                    {
+                        "polygon": [
+                            {"x": 600, "y": 600},
+                            {"x": 700, "y": 600},
+                            {"x": 700, "y": 700},
+                            {"x": 600, "y": 700},
+                        ]
+                    }
+                ]
+            }
+        ],
+    )
+    assert centered == (490, 490, 810, 810)
+
+    near_edge = _candidate_review_crop_box(
+        (1280, 1280),
+        [
+            {
+                "components": [
+                    {
+                        "polygon": [
+                            {"x": 10, "y": 20},
+                            {"x": 80, "y": 20},
+                            {"x": 80, "y": 90},
+                            {"x": 10, "y": 90},
+                        ]
+                    }
+                ]
+            }
+        ],
+    )
+    assert near_edge == (0, 0, 320, 320)
+
+
 def test_sam2_refinement_fails_closed_when_service_fails(
     roof_context,
     monkeypatch,
