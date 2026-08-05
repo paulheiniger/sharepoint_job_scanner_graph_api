@@ -212,8 +212,12 @@ def run_progressive_package_analysis(
             continue
         document = package.documents[0]
         materialized_by_id[candidate.candidate_id] = document
-        page_cache_path = _candidate_page_cache_path(run_digest, candidate.candidate_id)
-        cached_sampled = _load_pickle(page_cache_path) if use_disk_cache else None
+        page_cache_path = (
+            _candidate_page_cache_path(run_digest, candidate.candidate_id)
+            if use_disk_cache
+            else None
+        )
+        cached_sampled = _load_pickle(page_cache_path) if page_cache_path is not None else None
         if isinstance(cached_sampled, dict):
             sampled = {
                 "page_count": cached_sampled.get("page_count", 0),
@@ -221,7 +225,7 @@ def run_progressive_package_analysis(
             }
         else:
             sampled = sample_document_pages(document, budgets, sampled_page_count)
-            if use_disk_cache:
+            if page_cache_path is not None:
                 _save_pickle(
                     page_cache_path,
                     {

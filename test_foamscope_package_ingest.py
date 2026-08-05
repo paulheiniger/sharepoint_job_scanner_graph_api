@@ -423,7 +423,14 @@ def test_generic_plan_only_becomes_measurement_when_connected_to_foam_seed() -> 
 
 def test_progressive_cache_resume_avoids_reprocessing() -> None:
     inspection = triage_inspection(
-        inspect_uploaded_package([FakeUpload("architectural_A-101.pdf", make_pdf("A-101 Floor Plan\nspray foam insulation"))])
+        inspect_uploaded_package(
+            [
+                FakeUpload(
+                    "architectural_A-101.pdf",
+                    make_pdf("A-101 Floor Plan\nspray foam insulation"),
+                )
+            ]
+        )
     )
     budgets = ProgressiveBudgets(max_initial_sample_pages=10)
 
@@ -432,6 +439,29 @@ def test_progressive_cache_resume_avoids_reprocessing() -> None:
 
     assert first["cache_hit"] is False
     assert second["cache_hit"] is True
+
+
+def test_progressive_analysis_does_not_touch_disk_cache_when_disabled(monkeypatch) -> None:
+    inspection = triage_inspection(
+        inspect_uploaded_package([FakeUpload("architectural_A-101.pdf", make_pdf("A-101 Floor Plan\nspray foam insulation"))])
+    )
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("disk cache path should not be resolved")
+
+    monkeypatch.setattr(
+        "indexing.progressive_pipeline._candidate_page_cache_path",
+        fail_if_called,
+    )
+
+    result = run_progressive_package_analysis(
+        inspection,
+        budgets=ProgressiveBudgets(max_initial_sample_pages=10),
+        use_cache=False,
+        use_disk_cache=False,
+    )
+
+    assert result["progress"]["fast_scanned_documents"] == 1
 
 
 def test_progressive_disk_cache_resume_avoids_reprocessing(tmp_path, monkeypatch) -> None:
