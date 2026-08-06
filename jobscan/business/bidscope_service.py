@@ -402,7 +402,8 @@ def build_bidscope_review_packet_from_inspection(
             "evidence; show every resolved reference step to a measurement target; inspect the attached target and describe the exact "
             "area, face, level, assembly, and deductions to measure; identify each supporting page's purpose; and state every scope_gap. "
             "If a referenced plan or elevation is missing from the scan or omitted from this packet, say that the related quantity is "
-            "not measurable from the available packet. Then ask the estimator to confirm exact page IDs and drawing scales. Preserve "
+            "not measurable, treat that branch as excluded from the current package takeoff unless the estimator says otherwise, and "
+            "continue all supported branches. Then ask the estimator to confirm exact page IDs and drawing scales. Preserve "
             "this context_id and do not run selectBidScopePages again unless the source link changes or this context expires."
         ),
         "packet_page_count": len(review_pages),

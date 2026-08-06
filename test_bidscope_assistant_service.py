@@ -40,6 +40,8 @@ def test_business_ops_prefers_complete_native_package_analysis() -> None:
     assert "`prepareBidScopeMeasurementContext`" in normalized
     assert "identify the seed sheet and foam note/specification" in normalized
     assert "quantity is not measurable from the available package" in normalized
+    assert "excluded from the current bid-package takeoff" in normalized
+    assert "continue every supported measurable branch" in normalized
 
 
 def _pdf(text: str) -> bytes:
@@ -103,6 +105,7 @@ def test_bidscope_packet_contains_seed_and_reference_linked_measurement_page(tmp
     assert result["measurement_readiness"]["evidence_review_required"] is True
     assert result["measurement_readiness"]["segmentation_status"] == "not_run"
     assert "do not run selectBidScopePages again" in result["assistant_review_instruction"]
+    assert "continue all supported branches" in result["assistant_review_instruction"]
     assert len(result["context_id"]) == 32
     attachment = result["openaiFileResponse"][0]
     packet = fitz.open(stream=base64.b64decode(attachment["content"]), filetype="pdf")

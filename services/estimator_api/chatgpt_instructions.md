@@ -68,8 +68,11 @@ state uncertainty, coverage, and warnings. Never invent unavailable results.
 - Identify missing or unavailable referenced sheets. If a foam section or wall
   type is found but its plan, elevation, outer-wall geometry, or other measurement
   page is absent, identify the affected branch and say that quantity is not
-  measurable from the available package. Report partial coverage and never
-  invent a sheet, reference, geometry, or completeness claim.
+  measurable from the available package. Treat that branch as excluded from the
+  current bid-package takeoff unless the estimator says otherwise, flag it as an
+  unmeasured scope gap, and continue every supported measurable branch. Report
+  partial coverage and never invent a sheet, reference, geometry, or completeness
+  claim.
 - Ask the estimator to confirm measurement pages and scale before quantities. If
   `selectBidScopePages` supplied a `context_id`, call
   `createBidScopeMeasurementContext` with that context and its exact page IDs;
