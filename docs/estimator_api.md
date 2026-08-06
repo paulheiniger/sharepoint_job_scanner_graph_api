@@ -18,7 +18,6 @@ package containing:
 
 - a signed north-up satellite image;
 - a signed overlay labeling bounded building-footprint candidates;
-- a native full-size context-image attachment for conversational visual tracing;
 - pixel-coordinate footprint components, calibrated plan area, and perimeter;
 - image dimensions, map scale, coordinates, and source attribution; and
 - optional Kentucky From Above LiDAR coverage metadata.
@@ -39,11 +38,9 @@ minutes by default.
 
 ### `POST /v1/roof-measure/calculate`
 
-Accepts the unexpired `context_id` and either reviewed footprint candidate IDs,
-custom pixel polygons, normalized visual-trace polygons, or a reviewed SAM2
-candidate. Normalized x/y coordinates range from zero to one across the attached
-context image. The operation validates polygon topology, rejects overlap between
-additive sections, and deterministically calculates plan area and perimeter.
+Accepts the unexpired `context_id` and either reviewed footprint candidate IDs
+or custom polygons expressed in the context image's pixel coordinates. The
+operation deterministically calculates horizontal plan-view area and perimeter.
 When `pitch_rise_per_12` is supplied, it also applies the corresponding uniform
 slope factor and returns surface area. Omitting pitch never silently treats plan
 area as roof-surface area.

@@ -5365,15 +5365,6 @@
             "title": "Context Id",
             "type": "string"
           },
-          "normalized_sections": {
-            "description": "Roof polygons visually traced on the attached context image. Point coordinates range from 0 to 1 across its width and height.",
-            "items": {
-              "$ref": "#/components/schemas/RoofMeasureNormalizedSectionInput"
-            },
-            "maxItems": 20,
-            "title": "Normalized Sections",
-            "type": "array"
-          },
           "pitch_rise_per_12": {
             "anyOf": [
               {
@@ -5749,16 +5740,6 @@
             "title": "Longitude",
             "type": "number"
           },
-          "openaiFileResponse": {
-            "description": "Native full-size context image for visual roof tracing. Normalized section coordinates are relative to this image.",
-            "items": {
-              "$ref": "#/components/schemas/OpenAIActionFile"
-            },
-            "maxItems": 1,
-            "minItems": 1,
-            "title": "Openaifileresponse",
-            "type": "array"
-          },
           "pixels_per_foot": {
             "title": "Pixels Per Foot",
             "type": "number"
@@ -5831,7 +5812,6 @@
           "footprint_overlay_url",
           "footprint_overlay_preview_media_type",
           "footprint_overlay_preview_base64",
-          "openaiFileResponse",
           "site_resolution_status",
           "lidar_coverage"
         ],
@@ -5920,68 +5900,6 @@
           }
         },
         "title": "RoofMeasureLidarCoverage",
-        "type": "object"
-      },
-      "RoofMeasureNormalizedPoint": {
-        "additionalProperties": false,
-        "description": "Point expressed as a fraction of the context image dimensions.",
-        "properties": {
-          "x": {
-            "maximum": 1.0,
-            "minimum": 0.0,
-            "title": "X",
-            "type": "number"
-          },
-          "y": {
-            "maximum": 1.0,
-            "minimum": 0.0,
-            "title": "Y",
-            "type": "number"
-          }
-        },
-        "required": [
-          "x",
-          "y"
-        ],
-        "title": "RoofMeasureNormalizedPoint",
-        "type": "object"
-      },
-      "RoofMeasureNormalizedSectionInput": {
-        "additionalProperties": false,
-        "description": "Assistant-reviewed roof polygon drawn on the attached context image.",
-        "properties": {
-          "holes": {
-            "items": {
-              "items": {
-                "$ref": "#/components/schemas/RoofMeasureNormalizedPoint"
-              },
-              "type": "array"
-            },
-            "maxItems": 20,
-            "title": "Holes",
-            "type": "array"
-          },
-          "polygon": {
-            "items": {
-              "$ref": "#/components/schemas/RoofMeasureNormalizedPoint"
-            },
-            "maxItems": 200,
-            "minItems": 3,
-            "title": "Polygon",
-            "type": "array"
-          },
-          "section_id": {
-            "maxLength": 100,
-            "minLength": 1,
-            "title": "Section Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "section_id",
-          "polygon"
-        ],
-        "title": "RoofMeasureNormalizedSectionInput",
         "type": "object"
       },
       "RoofMeasurePoint": {
@@ -6093,7 +6011,6 @@
             "enum": [
               "footprint",
               "custom_polygon",
-              "assistant_polygon",
               "sam2_candidate"
             ],
             "title": "Source",
@@ -8123,7 +8040,7 @@
     },
     "/v1/roof-measure/calculate": {
       "post": {
-        "description": "Calculates plan area and perimeter from reviewed footprint candidates or pixel/normalized polygons drawn on the context image. Optional pitch adds surface area. Drawn polygons receive a tight review overlay. The API calls no AI service; estimator verification is required.",
+        "description": "Calculates plan area and perimeter from reviewed footprint candidates or custom polygons. Optional pitch adds surface area. Custom polygons receive a tightly centered satellite overlay. No AI service is called, and estimator verification is always required.",
         "operationId": "calculateRoofMeasurement",
         "requestBody": {
           "content": {
@@ -8163,7 +8080,7 @@
     },
     "/v1/roof-measure/context": {
       "post": {
-        "description": "Returns a full-size attached satellite context image, signed image URLs, bounded footprint evidence, calibration, and optional public LiDAR coverage. The operation does not call an AI model or measure the roof.",
+        "description": "Returns short-lived signed satellite and footprint-overlay images, bounded building-footprint candidates, calibration, and optional public LiDAR coverage metadata. The operation does not call an LLM, OpenAI, or SAM2 and does not create a final roof measurement.",
         "operationId": "getRoofMeasureContext",
         "requestBody": {
           "content": {

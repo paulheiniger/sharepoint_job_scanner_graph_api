@@ -475,16 +475,6 @@ class RoofMeasureContextResponse(BaseModel):
             "choosing footprint IDs; do not redraw the polygons on a blank canvas."
         )
     )
-    openai_file_response: list[OpenAIActionFile] = Field(
-        serialization_alias="openaiFileResponse",
-        validation_alias="openaiFileResponse",
-        description=(
-            "Native full-size context image for visual roof tracing. Normalized "
-            "section coordinates are relative to this image."
-        ),
-        min_length=1,
-        max_length=1,
-    )
     footprint_candidates: list[RoofMeasureFootprintCandidate] = Field(
         default_factory=list
     )
@@ -509,34 +499,6 @@ class RoofMeasureSectionInput(BaseModel):
 
     @model_validator(mode="after")
     def validate_holes(self) -> "RoofMeasureSectionInput":
-        if any(len(hole) < 3 or len(hole) > 200 for hole in self.holes):
-            raise ValueError("Each polygon hole must contain 3 to 200 points.")
-        return self
-
-
-class RoofMeasureNormalizedPoint(BaseModel):
-    """Point expressed as a fraction of the context image dimensions."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    x: float = Field(ge=0, le=1)
-    y: float = Field(ge=0, le=1)
-
-
-class RoofMeasureNormalizedSectionInput(BaseModel):
-    """Assistant-reviewed roof polygon drawn on the attached context image."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    section_id: str = Field(min_length=1, max_length=100)
-    polygon: list[RoofMeasureNormalizedPoint] = Field(min_length=3, max_length=200)
-    holes: list[list[RoofMeasureNormalizedPoint]] = Field(
-        default_factory=list,
-        max_length=20,
-    )
-
-    @model_validator(mode="after")
-    def validate_holes(self) -> "RoofMeasureNormalizedSectionInput":
         if any(len(hole) < 3 or len(hole) > 200 for hole in self.holes):
             raise ValueError("Each polygon hole must contain 3 to 200 points.")
         return self
@@ -653,14 +615,6 @@ class RoofMeasureCalculationRequest(BaseModel):
         Annotated[str, Field(min_length=1, max_length=100)]
     ] = Field(default_factory=list, max_length=12)
     sections: list[RoofMeasureSectionInput] = Field(default_factory=list, max_length=20)
-    normalized_sections: list[RoofMeasureNormalizedSectionInput] = Field(
-        default_factory=list,
-        max_length=20,
-        description=(
-            "Roof polygons visually traced on the attached context image. Point "
-            "coordinates range from 0 to 1 across its width and height."
-        ),
-    )
     sam2_candidate_id: str = Field(
         default="",
         pattern=r"^(?:|sam2-[a-f0-9]{16})$",
@@ -684,20 +638,16 @@ class RoofMeasureCalculationRequest(BaseModel):
             (
                 bool(self.selected_footprint_ids),
                 bool(self.sections),
-                bool(self.normalized_sections),
                 bool(self.sam2_candidate_id),
             )
         )
         if source_count != 1:
             raise ValueError(
-                "Provide exactly one of selected_footprint_ids, pixel sections, "
-                "normalized_sections, or sam2_candidate_id."
+                "Provide exactly one of selected_footprint_ids, custom sections, "
+                "or sam2_candidate_id."
             )
         if len(set(self.selected_footprint_ids)) != len(self.selected_footprint_ids):
             raise ValueError("selected_footprint_ids must be unique.")
-        section_ids = [section.section_id for section in self.normalized_sections]
-        if len(set(section_ids)) != len(section_ids):
-            raise ValueError("normalized section IDs must be unique.")
         return self
 
 
@@ -705,12 +655,7 @@ class RoofMeasureSectionResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     section_id: str
-    source: Literal[
-        "footprint",
-        "custom_polygon",
-        "assistant_polygon",
-        "sam2_candidate",
-    ]
+    source: Literal["footprint", "custom_polygon", "sam2_candidate"]
     plan_area_sqft: float
     perimeter_ft: float
     surface_area_sqft: float | None = None

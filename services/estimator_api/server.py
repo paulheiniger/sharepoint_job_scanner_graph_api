@@ -409,9 +409,10 @@ def estimate_context(
     operation_id="getRoofMeasureContext",
     summary="Retrieve calibrated roof imagery and footprint evidence",
     description=(
-        "Returns a full-size attached satellite context image, signed image URLs, "
-        "bounded footprint evidence, calibration, and optional public LiDAR "
-        "coverage. The operation does not call an AI model or measure the roof."
+        "Returns short-lived signed satellite and footprint-overlay images, "
+        "bounded building-footprint candidates, calibration, and optional "
+        "public LiDAR coverage metadata. The operation does not call an LLM, "
+        "OpenAI, or SAM2 and does not create a final roof measurement."
     ),
 )
 def roof_measure_context(
@@ -457,11 +458,6 @@ def roof_measure_context(
         for key, value in dict(context.get("lidar_coverage") or {}).items()
         if key != "asset_url"
     }
-    footprint_overlay_path = resolve_roof_measure_asset(
-        context_id=context_id,
-        asset_name="footprint-overlay.png",
-        artifact_dir=_roof_measure_artifact_dir(),
-    )
     response_payload = {
         **public_context,
         "satellite_image_url": _signed_roof_asset_url(
@@ -480,15 +476,12 @@ def roof_measure_context(
         ),
         "footprint_overlay_preview_media_type": "image/jpeg",
         "footprint_overlay_preview_base64": _roof_overlay_preview_base64(
-            footprint_overlay_path
+            resolve_roof_measure_asset(
+                context_id=context_id,
+                asset_name="footprint-overlay.png",
+                artifact_dir=_roof_measure_artifact_dir(),
+            )
         ),
-        "openaiFileResponse": [
-            {
-                "name": "roof_measure_context.jpg",
-                "mime_type": "image/jpeg",
-                "content": _roof_overlay_file_base64(footprint_overlay_path),
-            }
-        ],
     }
     return RoofMeasureContextResponse.model_validate(response_payload)
 
@@ -583,9 +576,9 @@ def roof_measure_segment(
     summary="Calculate roof area and perimeter from reviewed polygons",
     description=(
         "Calculates plan area and perimeter from reviewed footprint candidates "
-        "or pixel/normalized polygons drawn on the context image. Optional pitch "
-        "adds surface area. Drawn polygons receive a tight review overlay. The "
-        "API calls no AI service; estimator verification is required."
+        "or custom polygons. Optional pitch adds surface area. Custom polygons "
+        "receive a tightly centered satellite overlay. No AI service is called, "
+        "and estimator verification is always required."
     ),
 )
 def roof_measure_calculate(
@@ -598,9 +591,6 @@ def roof_measure_calculate(
             context_id=payload.context_id,
             selected_footprint_ids=payload.selected_footprint_ids,
             sections=[section.model_dump() for section in payload.sections],
-            normalized_sections=[
-                section.model_dump() for section in payload.normalized_sections
-            ],
             pitch_rise_per_12=payload.pitch_rise_per_12,
             artifact_dir=_roof_measure_artifact_dir(),
             sam2_candidate_id=payload.sam2_candidate_id,

@@ -303,10 +303,6 @@ def test_roof_measure_context_is_authenticated_and_returns_signed_images(
         "services.estimator_api.server._roof_overlay_preview_base64",
         lambda _path: "encoded-preview",
     )
-    monkeypatch.setattr(
-        "services.estimator_api.server._roof_overlay_file_base64",
-        lambda _path: "encoded-full-size",
-    )
 
     unauthorized = client.post(
         "/v1/roof-measure/context",
@@ -326,13 +322,6 @@ def test_roof_measure_context_is_authenticated_and_returns_signed_images(
         f"http://testserver/v1/roof-measure/contexts/{context_id}/assets/satellite.png?"
     )
     assert body["footprint_overlay_preview_base64"] == "encoded-preview"
-    assert body["openaiFileResponse"] == [
-        {
-            "name": "roof_measure_context.jpg",
-            "mime_type": "image/jpeg",
-            "content": "encoded-full-size",
-        }
-    ]
     assert body["site_name"] == "Example School"
     assert "asset_url" not in body["lidar_coverage"]
     asset = client.get(body["satellite_image_url"])

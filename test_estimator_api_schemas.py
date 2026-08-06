@@ -41,21 +41,6 @@ def test_roof_measure_requests_are_bounded_and_choose_one_polygon_source() -> No
     )
     assert selected.pitch_rise_per_12 == 0
 
-    normalized = RoofMeasureCalculationRequest(
-        context_id="a" * 32,
-        normalized_sections=[
-            {
-                "section_id": "assistant-main-roof",
-                "polygon": [
-                    {"x": 0.1, "y": 0.1},
-                    {"x": 0.9, "y": 0.1},
-                    {"x": 0.9, "y": 0.9},
-                ],
-            }
-        ],
-    )
-    assert normalized.normalized_sections[0].polygon[0].x == 0.1
-
     with pytest.raises(ValidationError):
         RoofMeasureCalculationRequest(
             context_id="a" * 32,
