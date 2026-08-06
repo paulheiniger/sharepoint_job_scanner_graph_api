@@ -22,6 +22,7 @@ from jobscan.business.bidscope_service import (
     BidScopeUnavailableError,
     build_bidscope_review_packet,
     create_bidscope_measurement_context,
+    prepare_bidscope_measurement_context,
 )
 from jobscan.business.bidscope_trace_service import trace_bidscope_regions
 
@@ -84,6 +85,7 @@ from .schemas import (
     BidScopeMeasurementContextResponse,
     BidScopePageSelectionRequest,
     BidScopePageSelectionResponse,
+    BidScopePrepareMeasurementContextRequest,
     BidScopeRegionTraceRequest,
     BidScopeRegionTraceResponse,
     EstimateContextRequest,
@@ -1109,6 +1111,45 @@ def bidscope_measurement_context(
         raise HTTPException(
             status_code=503,
             detail=f"BidScope measurement context is unavailable: {type(exc).__name__}.",
+        ) from exc
+
+
+@app.post(
+    "/v1/bidscope/prepare-measurement-context",
+    response_model=BidScopeMeasurementContextResponse,
+    response_model_exclude_none=True,
+    operation_id="prepareBidScopeMeasurementContext",
+    summary="Prepare known SharePoint bid sheets for tracing",
+    description=(
+        "Resolves estimator-confirmed printed sheet IDs from an already-reviewed "
+        "SharePoint PDF, ZIP, or folder and creates a tracing context. Use after "
+        "native package analysis; it does not repeat scope reasoning or calculate quantities."
+    ),
+)
+def bidscope_prepare_measurement_context(
+    request: Request,
+    payload: BidScopePrepareMeasurementContextRequest,
+) -> BidScopeMeasurementContextResponse:
+    _require_api_request(request)
+    try:
+        result = prepare_bidscope_measurement_context(
+            sharepoint_url=payload.sharepoint_url,
+            confirmed_pages=[page.model_dump() for page in payload.confirmed_pages],
+            trade_type=payload.trade_type,
+            max_scan_pages=payload.max_scan_pages,
+            render_dpi=payload.render_dpi,
+            artifact_dir=_bidscope_artifact_dir(),
+            ttl_seconds=_bidscope_context_ttl_seconds(),
+        )
+        return BidScopeMeasurementContextResponse.model_validate(result)
+    except BidScopeInputError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except BidScopeUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"BidScope sheet preparation is unavailable: {type(exc).__name__}.",
         ) from exc
 
 

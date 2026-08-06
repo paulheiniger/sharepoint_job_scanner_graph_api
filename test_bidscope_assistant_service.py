@@ -16,6 +16,7 @@ from jobscan.business.bidscope_service import (
     _validate_sharepoint_url,
     build_bidscope_review_packet_from_inspection,
     create_bidscope_measurement_context,
+    prepare_bidscope_measurement_context_from_inspection,
 )
 
 
@@ -36,6 +37,7 @@ def test_business_ops_prefers_complete_native_package_analysis() -> None:
 
     assert "analyze the entire package with native document reasoning" in normalized
     assert "Use `selectBidScopePages` as a fallback" in normalized
+    assert "`prepareBidScopeMeasurementContext`" in normalized
     assert "identify the seed sheet and foam note/specification" in normalized
     assert "quantity is not measurable from the available package" in normalized
 
@@ -175,6 +177,81 @@ def test_confirmed_pages_create_scaled_vector_and_raster_measurement_context(tmp
         assert packet.page_count == 1
     finally:
         packet.close()
+
+
+def test_known_sheet_ids_prepare_measurement_context_without_page_selection(tmp_path) -> None:
+    source_url = "https://spraytec.sharepoint.com/sites/Data/Shared%20Documents/Test"
+    inspection = inspect_uploaded_package(
+        [
+            FakeUpload(
+                "Architectural Drawings.pdf",
+                _pdf('A-201 Exterior Elevations\nSCALE: 1/8" = 1\'-0"'),
+            )
+        ]
+    )
+
+    prepared = prepare_bidscope_measurement_context_from_inspection(
+        inspection,
+        sharepoint_url=source_url,
+        confirmed_pages=[
+            {
+                "sheet_id": "A201",
+                "confirmed_scale_text": '1/8" = 1\'-0"',
+            }
+        ],
+        max_scan_pages=25,
+        artifact_dir=tmp_path,
+    )
+
+    assert prepared["confirmed_page_count"] == 1
+    assert prepared["pages"][0]["sheet_id"] == "A-201"
+    assert prepared["pages"][0]["source_page_number"] == 1
+    assert prepared["measurement_readiness"]["status"] == "ready_for_tracing"
+    assert (tmp_path / prepared["measurement_context_id"] / "context.json").is_file()
+
+
+def test_known_sheet_resolution_rejects_ambiguous_duplicate_sheet_ids(tmp_path) -> None:
+    source_url = "https://spraytec.sharepoint.com/sites/Data/Shared%20Documents/Test"
+    inspection = inspect_uploaded_package(
+        [
+            FakeUpload("Architectural Part 1.pdf", _pdf("A-201 Exterior Elevations")),
+            FakeUpload("Architectural Part 2.pdf", _pdf("A-201 Revised Exterior Elevations")),
+        ]
+    )
+
+    try:
+        prepare_bidscope_measurement_context_from_inspection(
+            inspection,
+            sharepoint_url=source_url,
+            confirmed_pages=[{"sheet_id": "A-201"}],
+            max_scan_pages=25,
+            artifact_dir=tmp_path,
+        )
+    except BidScopeInputError as exc:
+        assert "ambiguous" in str(exc)
+        assert "document_name_hint" in str(exc)
+    else:
+        raise AssertionError("Expected duplicate sheet IDs to require disambiguation")
+
+
+def test_known_sheet_resolution_prefers_printed_id_over_filename(tmp_path) -> None:
+    source_url = "https://spraytec.sharepoint.com/sites/Data/Shared%20Documents/Test"
+    inspection = inspect_uploaded_package(
+        [FakeUpload("A-201 Exterior Elevations.pdf", _pdf("A-202 Exterior Elevations"))]
+    )
+
+    try:
+        prepare_bidscope_measurement_context_from_inspection(
+            inspection,
+            sharepoint_url=source_url,
+            confirmed_pages=[{"sheet_id": "A-201"}],
+            max_scan_pages=25,
+            artifact_dir=tmp_path,
+        )
+    except BidScopeInputError as exc:
+        assert "was not found" in str(exc)
+    else:
+        raise AssertionError("Expected a filename/title-block mismatch to be rejected")
 
 
 def test_bidscope_seed_tree_reports_missing_referenced_measurement_sheet(tmp_path) -> None:

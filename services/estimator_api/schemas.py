@@ -1341,6 +1341,66 @@ class BidScopeConfirmedPage(BaseModel):
     )
 
 
+class BidScopePreparedPage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sheet_id: str = Field(
+        min_length=3,
+        max_length=40,
+        description="Estimator-confirmed printed sheet ID, such as A-201.",
+    )
+    document_name_hint: str = Field(
+        default="",
+        max_length=160,
+        description="Optional filename substring used to disambiguate duplicate sheet IDs.",
+    )
+    source_page_number: int | None = Field(
+        default=None,
+        ge=1,
+        le=5_000,
+        description="Optional one-based PDF page number used to disambiguate duplicate sheet IDs.",
+    )
+    confirmed_scale_text: str = Field(
+        default="",
+        max_length=80,
+        description="Estimator-confirmed printed scale, such as 1/8 inch = 1 foot.",
+    )
+    confirmed_scale_inches_per_foot: float | None = Field(
+        default=None,
+        gt=0,
+        le=12,
+        description="Optional numeric scale; 0.125 means 1/8 inch = 1 foot.",
+    )
+
+
+class BidScopePrepareMeasurementContextRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sharepoint_url: str = Field(
+        min_length=20,
+        max_length=2_048,
+        description="HTTPS SharePoint link to the already-reviewed bid PDF, ZIP, or folder.",
+    )
+    confirmed_pages: list[BidScopePreparedPage] = Field(
+        min_length=1,
+        max_length=20,
+        description="Printed sheet IDs selected during native package review.",
+    )
+    trade_type: Literal["foam_insulation", "roofing"] = "foam_insulation"
+    max_scan_pages: int = Field(
+        default=800,
+        ge=25,
+        le=800,
+        description="Hard cap on pages indexed while resolving the requested sheet IDs.",
+    )
+    render_dpi: int = Field(
+        default=144,
+        ge=96,
+        le=200,
+        description="Tracing-image resolution; vector PDF coordinates remain authoritative.",
+    )
+
+
 class BidScopeMeasurementContextRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

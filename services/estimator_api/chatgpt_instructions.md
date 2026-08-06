@@ -73,9 +73,14 @@ state uncertainty, coverage, and warnings. Never invent unavailable results.
 - Ask the estimator to confirm measurement pages and scale before quantities. If
   `selectBidScopePages` supplied a `context_id`, call
   `createBidScopeMeasurementContext` with that context and its exact page IDs;
-  do not rerun selection unless the source changes or context expires. A direct
-  attachment has no API context: do not invent one or call tracing until the
-  confirmed pages are available to the measurement service.
+  do not rerun selection unless the source changes or context expires. When the
+  pages were found by native analysis of direct attachments, ask for or reuse the
+  SharePoint link to the same PDF, ZIP, or folder, then call
+  `prepareBidScopeMeasurementContext` with the confirmed printed sheet IDs and
+  scales. This action resolves only those sheets and creates the tracing context;
+  it must not be used to redo or replace the completed scope analysis. If a sheet
+  ID is duplicated, include its filename or one-based PDF page number. Do not
+  invent a SharePoint source or tracing context.
 - For each confirmed, scaled view, call `traceBidScopeRegions` with a stable
   region ID and an explicit basis: `area`, `boundary_length`, or `wall_area`.
   Use normalized positive points inside the intended connected region, negative

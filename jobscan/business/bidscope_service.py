@@ -97,6 +97,196 @@ def build_bidscope_review_packet(
     )
 
 
+def prepare_bidscope_measurement_context(
+    *,
+    sharepoint_url: str,
+    confirmed_pages: list[dict[str, Any]],
+    trade_type: str = "foam_insulation",
+    max_scan_pages: int = 800,
+    render_dpi: int = 144,
+    artifact_dir: Path | None = None,
+    ttl_seconds: int = 900,
+) -> dict[str, Any]:
+    """Resolve known sheet IDs from SharePoint and prepare them for tracing.
+
+    This is the bridge for packages that the Assistant has already reviewed
+    natively. It performs deterministic page identity resolution only; it does
+    not repeat scope reasoning, segment a drawing, or calculate a quantity.
+    """
+    source_url = _validate_sharepoint_url(sharepoint_url)
+    inspection = inspect_sharepoint_url_package(source_url)
+    if not inspection.candidates:
+        detail = "; ".join(inspection.warnings[:3]) or "No PDF or ZIP candidates were found."
+        raise BidScopeUnavailableError(detail)
+    if any(candidate.source_kind == "sharepoint_zip" for candidate in inspection.candidates):
+        inspection = expand_sharepoint_zip_candidates(inspection)
+    return prepare_bidscope_measurement_context_from_inspection(
+        inspection,
+        sharepoint_url=source_url,
+        confirmed_pages=confirmed_pages,
+        trade_type=trade_type,
+        max_scan_pages=max_scan_pages,
+        render_dpi=render_dpi,
+        artifact_dir=artifact_dir,
+        ttl_seconds=ttl_seconds,
+    )
+
+
+def prepare_bidscope_measurement_context_from_inspection(
+    inspection: PackageInspectionResult,
+    *,
+    sharepoint_url: str,
+    confirmed_pages: list[dict[str, Any]],
+    trade_type: str = "foam_insulation",
+    max_scan_pages: int = 800,
+    render_dpi: int = 144,
+    artifact_dir: Path | None = None,
+    ttl_seconds: int = 900,
+) -> dict[str, Any]:
+    if not confirmed_pages:
+        raise BidScopeInputError("At least one confirmed sheet is required.")
+
+    requested_keys = [
+        (
+            _normalize_requested_sheet_id(str(row.get("sheet_id") or "")),
+            str(row.get("document_name_hint") or "").strip().casefold(),
+            int(row["source_page_number"]) if row.get("source_page_number") is not None else None,
+        )
+        for row in confirmed_pages
+    ]
+    if any(not key[0] for key in requested_keys):
+        raise BidScopeInputError("Every confirmed page requires a valid architectural sheet_id.")
+    if len(requested_keys) != len(set(requested_keys)):
+        raise BidScopeInputError("confirmed_pages contains a duplicate sheet request.")
+
+    result = run_progressive_package_analysis(
+        inspection,
+        depth=1,
+        budgets=ProgressiveBudgets(
+            max_initial_sample_pages=max_scan_pages,
+            max_light_index_pages=max_scan_pages,
+            max_deep_analysis_pages=0,
+            max_ocr_pages=0,
+            max_runtime_seconds=90,
+            include_low_priority_documents=True,
+            full_lightweight_index=True,
+        ),
+        use_cache=True,
+        use_disk_cache=False,
+        analysis_mode="Confirmed Sheet Resolution",
+        trade_type=trade_type,
+    )
+    indexed_pages = list(result.get("pages") or [])
+    selected_pages: list[Any] = []
+    resolved_requests: list[dict[str, Any]] = []
+    for request_page, (sheet_id, document_hint, source_page_number) in zip(
+        confirmed_pages, requested_keys
+    ):
+        matches = []
+        for page in indexed_pages:
+            title_block_id = _normalize_requested_sheet_id(
+                str(page.extracted_sheet_id or "")
+            )
+            detected_ids = {
+                title_block_id
+                or _normalize_requested_sheet_id(str(page.canonical_sheet_id or ""))
+            }
+            if sheet_id not in detected_ids:
+                continue
+            if document_hint and document_hint not in str(page.document_name or "").casefold():
+                continue
+            if source_page_number is not None and int(page.page_num) != source_page_number:
+                continue
+            matches.append(page)
+
+        if not matches:
+            budget_note = (
+                " The scan budget was reached before the full source was indexed."
+                if bool(result.get("partial"))
+                else ""
+            )
+            raise BidScopeInputError(
+                f"Confirmed sheet {sheet_id} was not found in the SharePoint source."
+                f"{budget_note} Verify the sheet ID, document hint, or PDF page number."
+            )
+        if len(matches) > 1:
+            locations = ", ".join(
+                f"{page.document_name} page {page.page_num}" for page in matches[:5]
+            )
+            raise BidScopeInputError(
+                f"Confirmed sheet {sheet_id} is ambiguous ({locations}). "
+                "Provide document_name_hint or source_page_number."
+            )
+        selected_pages.append(matches[0])
+        resolved_requests.append(request_page)
+
+    document_by_id = {
+        str(document.get("document_id") or ""): document
+        for document in result.get("documents") or []
+    }
+    selection_rows = [
+        {
+            "packet_page": index,
+            "page_id": page.global_page_id,
+            "document_name": page.document_name,
+            "source_page_number": page.page_num,
+            "sheet_id": page.extracted_sheet_id or page.canonical_sheet_id,
+            "sheet_title": page.sheet_title,
+            "page_type": page.page_type,
+            "role": "estimator_confirmed_measurement_page",
+            "selection_tier": "measurement_candidate",
+            "seed_evidence": [],
+            "reference_path": [],
+            "seed_evidence_score": 0.0,
+            "measurement_likelihood_score": 0.0,
+            "selection_score": 0.0,
+            "measurement_guidance": "Sheet selected from the Assistant's completed native package review.",
+        }
+        for index, page in enumerate(selected_pages, start=1)
+    ]
+    root = artifact_dir or _default_artifact_dir()
+    selection = _persist_selection_context(
+        review_pages=selected_pages,
+        selection_rows=selection_rows,
+        document_by_id=document_by_id,
+        source_sharepoint_url=sharepoint_url,
+        trade_type=trade_type,
+        reference_trees=[],
+        scope_gaps=[],
+        artifact_dir=root,
+        ttl_seconds=ttl_seconds,
+    )
+    context_pages = [
+        {
+            "page_id": page.global_page_id,
+            "confirmed_scale_text": str(request.get("confirmed_scale_text") or ""),
+            "confirmed_scale_inches_per_foot": request.get(
+                "confirmed_scale_inches_per_foot"
+            ),
+        }
+        for page, request in zip(selected_pages, resolved_requests)
+    ]
+    prepared = create_bidscope_measurement_context(
+        context_id=selection["context_id"],
+        confirmed_pages=context_pages,
+        render_dpi=render_dpi,
+        artifact_dir=root,
+        ttl_seconds=ttl_seconds,
+    )
+    prepared["warnings"] = sorted(
+        set(list(result.get("warnings") or []) + list(prepared.get("warnings") or []))
+    )
+    return prepared
+
+
+def _normalize_requested_sheet_id(value: str) -> str:
+    cleaned = re.sub(r"\s+", "", str(value or "").upper().replace(".", "-"))
+    compact = re.fullmatch(r"([A-Z]{1,3})(\d{2,4}[A-Z]?(?:-\d+)?)", cleaned)
+    if compact:
+        cleaned = f"{compact.group(1)}-{compact.group(2)}"
+    return cleaned if re.fullmatch(r"[A-Z]{1,3}\d?-[A-Z0-9-]{2,12}", cleaned) else ""
+
+
 def build_bidscope_review_packet_from_inspection(
     inspection: PackageInspectionResult,
     *,

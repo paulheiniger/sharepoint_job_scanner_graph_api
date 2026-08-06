@@ -984,6 +984,7 @@ def test_openapi_exposes_expected_operations() -> None:
             "fetchSharePointDocument",
             "selectBidScopePages",
             "createBidScopeMeasurementContext",
+            "prepareBidScopeMeasurementContext",
             "traceBidScopeRegions",
                 "health_health_get",
         "searchJobs",
@@ -1661,6 +1662,62 @@ def test_bidscope_measurement_context_action_is_read_only_in_openapi() -> None:
     operation = specification["paths"]["/v1/bidscope/measurement-context"]["post"]
 
     assert operation["operationId"] == "createBidScopeMeasurementContext"
+    assert operation["x-openai-isConsequential"] is False
+
+
+def test_bidscope_prepare_measurement_context_route_resolves_known_sheets(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_prepare(**kwargs):
+        captured.update(kwargs)
+        return {
+            "schema_version": "spraytec.bidscope_measurement_context.v1",
+            "source_context_id": "a" * 32,
+            "measurement_context_id": "b" * 32,
+            "expires_at": 4102444800,
+            "trade_type": "foam_insulation",
+            "confirmed_page_count": 1,
+            "pages": [{"page_id": "plans::page_4", "sheet_id": "A-201"}],
+            "measurement_readiness": {"status": "ready_for_tracing"},
+            "warnings": [],
+            "openaiFileResponse": [
+                {
+                    "name": "bidscope_confirmed_measurement_pages.pdf",
+                    "mime_type": "application/pdf",
+                    "content": "JVBERi0xLjQ=",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        "services.estimator_api.server.prepare_bidscope_measurement_context",
+        fake_prepare,
+    )
+    response = client.post(
+        "/v1/bidscope/prepare-measurement-context",
+        json={
+            "sharepoint_url": "https://spraytec.sharepoint.com/sites/Data/Plans.pdf",
+            "confirmed_pages": [
+                {
+                    "sheet_id": "A-201",
+                    "confirmed_scale_text": '1/8" = 1\'-0"',
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["measurement_context_id"] == "b" * 32
+    assert captured["confirmed_pages"][0]["sheet_id"] == "A-201"
+
+
+def test_bidscope_prepare_measurement_context_action_is_read_only_in_openapi() -> None:
+    specification = build_action_openapi(
+        "https://spraytec-business-api.icysand-5925ab36.eastus2.azurecontainerapps.io"
+    )
+    operation = specification["paths"]["/v1/bidscope/prepare-measurement-context"]["post"]
+
+    assert operation["operationId"] == "prepareBidScopeMeasurementContext"
     assert operation["x-openai-isConsequential"] is False
 
 
