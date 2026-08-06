@@ -5357,8 +5357,9 @@
         "title": "ProductionBudgetHealthResponse",
         "type": "object"
       },
-      "RoofMeasureCalculationRequest": {
+      "RoofMeasureAssistantCalculationRequest": {
         "additionalProperties": false,
+        "description": "Measure roof polygons visually traced by the Assistant on the full-size context image.",
         "properties": {
           "context_id": {
             "pattern": "^[a-f0-9]{32}$",
@@ -5387,37 +5388,13 @@
             ],
             "description": "Optional roof rise in inches per 12 inches of run. When omitted, only plan-view area is returned. Use 0 explicitly for a flat roof.",
             "title": "Pitch Rise Per 12"
-          },
-          "sam2_candidate_id": {
-            "default": "",
-            "description": "Estimator-confirmed candidate returned by segmentRoofMeasureContext.",
-            "pattern": "^(?:|sam2-[a-f0-9]{16})$",
-            "title": "Sam2 Candidate Id",
-            "type": "string"
-          },
-          "sections": {
-            "items": {
-              "$ref": "#/components/schemas/RoofMeasureSectionInput"
-            },
-            "maxItems": 20,
-            "title": "Sections",
-            "type": "array"
-          },
-          "selected_footprint_ids": {
-            "items": {
-              "maxLength": 100,
-              "minLength": 1,
-              "type": "string"
-            },
-            "maxItems": 12,
-            "title": "Selected Footprint Ids",
-            "type": "array"
           }
         },
         "required": [
-          "context_id"
+          "context_id",
+          "normalized_sections"
         ],
-        "title": "RoofMeasureCalculationRequest",
+        "title": "RoofMeasureAssistantCalculationRequest",
         "type": "object"
       },
       "RoofMeasureCalculationResponse": {
@@ -8123,13 +8100,13 @@
     },
     "/v1/roof-measure/calculate": {
       "post": {
-        "description": "Calculates plan area and perimeter from reviewed footprint candidates or pixel/normalized polygons drawn on the context image. Optional pitch adds surface area. Drawn polygons receive a tight review overlay. The API calls no AI service; estimator verification is required.",
+        "description": "Validates and measures normalized roof polygons visually traced on the attached context image. Returns a tight review overlay. The API calls no AI model and requires estimator verification.",
         "operationId": "calculateRoofMeasurement",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/RoofMeasureCalculationRequest"
+                "$ref": "#/components/schemas/RoofMeasureAssistantCalculationRequest"
               }
             }
           },
@@ -8157,7 +8134,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Calculate roof area and perimeter from reviewed polygons",
+        "summary": "Measure an Assistant-traced roof boundary",
         "x-openai-isConsequential": false
       }
     },
@@ -8198,46 +8175,6 @@
           }
         },
         "summary": "Retrieve calibrated roof imagery and footprint evidence",
-        "x-openai-isConsequential": false
-      }
-    },
-    "/v1/roof-measure/segment": {
-      "post": {
-        "description": "Uses reviewed footprint IDs to fetch a tightly fitted source image and prompt private SAM2. LiDAR adds guarded high-band candidates when available. Automatically selects the top-ranked candidate and returns one zoomed review overlay; alternates remain internal diagnostics.",
-        "operationId": "segmentRoofMeasureContext",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RoofMeasureSegmentationRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RoofMeasureSegmentationResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Select the best SAM2 roof mask and return a full-size review overlay",
         "x-openai-isConsequential": false
       }
     },

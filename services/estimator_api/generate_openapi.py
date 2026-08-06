@@ -35,6 +35,7 @@ def build_action_openapi(
         {},
     )
     response_schema.get("properties", {}).pop("source_metadata", None)
+    _restrict_roof_measure_to_visual_trace(specification)
     for path_item in specification["paths"].values():
         for method, operation in path_item.items():
             if method.lower() in {"get", "post"}:
@@ -46,6 +47,40 @@ def build_action_openapi(
                     }
                 )
     return specification
+
+
+def _restrict_roof_measure_to_visual_trace(specification: dict) -> None:
+    """Expose only Assistant-drawn roof geometry in the Custom GPT contract."""
+    schemas = specification["components"]["schemas"]
+    source = schemas["RoofMeasureCalculationRequest"]
+    properties = source["properties"]
+    schemas["RoofMeasureAssistantCalculationRequest"] = {
+        "additionalProperties": False,
+        "description": (
+            "Measure roof polygons visually traced by the Assistant on the "
+            "full-size context image."
+        ),
+        "properties": {
+            "context_id": copy.deepcopy(properties["context_id"]),
+            "normalized_sections": copy.deepcopy(properties["normalized_sections"]),
+            "pitch_rise_per_12": copy.deepcopy(properties["pitch_rise_per_12"]),
+        },
+        "required": ["context_id", "normalized_sections"],
+        "title": "RoofMeasureAssistantCalculationRequest",
+        "type": "object",
+    }
+    calculation = specification["paths"]["/v1/roof-measure/calculate"]["post"]
+    calculation["requestBody"]["content"]["application/json"]["schema"] = {
+        "$ref": "#/components/schemas/RoofMeasureAssistantCalculationRequest"
+    }
+    calculation["summary"] = "Measure an Assistant-traced roof boundary"
+    calculation["description"] = (
+        "Validates and measures normalized roof polygons visually traced on the "
+        "attached context image. Returns a tight review overlay. The API calls no "
+        "AI model and requires estimator verification."
+    )
+    specification["paths"].pop("/v1/roof-measure/segment", None)
+    schemas.pop("RoofMeasureCalculationRequest", None)
 
 
 def _validated_server_url(value: str) -> str:
