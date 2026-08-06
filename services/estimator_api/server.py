@@ -462,11 +462,6 @@ def roof_measure_context(
         asset_name="footprint-overlay.png",
         artifact_dir=_roof_measure_artifact_dir(),
     )
-    satellite_path = resolve_roof_measure_asset(
-        context_id=context_id,
-        asset_name="satellite.png",
-        artifact_dir=_roof_measure_artifact_dir(),
-    )
     response_payload = {
         **public_context,
         "satellite_image_url": _signed_roof_asset_url(
@@ -491,7 +486,7 @@ def roof_measure_context(
             {
                 "name": "roof_measure_context.jpg",
                 "mime_type": "image/jpeg",
-                "content": _roof_overlay_file_base64(satellite_path),
+                "content": _roof_overlay_file_base64(footprint_overlay_path),
             }
         ],
     }

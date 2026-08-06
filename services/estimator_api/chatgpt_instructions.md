@@ -176,9 +176,10 @@ state uncertainty, coverage, and warnings. Never invent unavailable results.
   or trace trees, shadows, pavement, grade, labels, or footprint spillover.
 - Footprints help identify the target but do not control a direct visual trace.
   If the image is ambiguous, cropped, obstructed, or too soft to place defensible
-  vertices, say exactly which edges are uncertain and stop instead of substituting
-  footprint or segmentation geometry. Retry `getRoofMeasureContext` with a more
-  appropriate view when that can restore the missing visual evidence.
+  vertices, say exactly which edges are uncertain. Then use reviewed footprint
+  IDs with `segmentRoofMeasureContext` as a fallback or refinement. Display its
+  exact returned overlay and use its unchanged candidate only after review; do
+  not silently mix SAM2 and Assistant-drawn geometry.
 - When calculating from reviewed custom polygon sections, the calculation
   action automatically retrieves a tight image centered on those sections and
   returns the final overlay on that clearer source. Display that returned file;
@@ -205,12 +206,30 @@ state uncertainty, coverage, and warnings. Never invent unavailable results.
   a school or campus, prefer the complete named facility assembly rather than
   the footprint containing the address point. Use the suggestion only when the
   imagery supports it; otherwise present the candidate groups for confirmation.
-- Submit only visually traced `normalized_sections`. Never substitute returned
-  footprint IDs, join disconnected roof areas, or double-count overlaps. LiDAR
-  coverage metadata is contextual evidence only and is not used in this path.
+- Use a returned footprint ID directly only when the user requests a footprint-
+  only result and it follows the complete intended roof. Otherwise prefer
+  visually traced `normalized_sections`; pixel `sections` remain a compatibility
+  path. Never combine duplicate candidates or double-count overlapping sections.
+- Treat `lidar_guidance_used` and the candidate LiDAR fractions returned by
+  `segmentRoofMeasureContext` as supporting boundary evidence. They show whether
+  the candidate retained connected elevated blocks and avoided ground, but do
+  not independently prove pitch or survey-grade geometry. A
+  `sam2_lidar_high_band` candidate is a guarded review alternative, not an
+  automatic correction. It excludes measured low and averaged transition
+  blocks below the connected high-elevation roof band, but retains unsampled
+  blocks. Always disclose `lidar_sampled_fraction`, show the alternative beside
+  the unmodified SAM2 candidate, and let the user confirm the visible boundary.
+- Prefer a candidate with `geometry_refinement: dominant_orthogonal` when its
+  overlay accurately follows the roof. It deterministically favors near-right
+  angles relative to the building's dominant axes and is rejected above 1.5%
+  area drift. Show its `mask_polygon` source candidate beside it and disclose
+  `geometry_area_drift_fraction`; never treat straightening as missing-roof
+  recovery.
 - Omitted pitch means horizontal plan-view area only. Send
   `pitch_rise_per_12: 0` only when a flat roof is supported; otherwise keep
-  surface area unresolved.
+  surface area unresolved. LiDAR coverage metadata proves only that public data
+  exists; only segmentation responses with `lidar_guidance_used: true` used the
+  height grid in boundary ranking and the guarded high-band alternative.
 - Lead with measured plan area, perimeter, measurement basis, and whether a
   slope adjustment was applied. The calculation action returns
   `openaiFileResponse`; attach its native `roof_measure_overlay.jpg` file in the

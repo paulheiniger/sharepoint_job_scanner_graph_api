@@ -1117,7 +1117,9 @@ def test_action_openapi_marks_read_only_posts_nonconsequential() -> None:
     assert spec["paths"]["/v1/roof-measure/calculate"]["post"][
         "x-openai-isConsequential"
     ] is False
-    assert "/v1/roof-measure/segment" not in spec["paths"]
+    assert spec["paths"]["/v1/roof-measure/segment"]["post"][
+        "x-openai-isConsequential"
+    ] is False
     assert spec["paths"]["/v1/jobs/search"]["post"][
         "x-openai-isConsequential"
     ] is False
@@ -1544,26 +1546,6 @@ def test_action_openapi_operation_descriptions_fit_gpt_limit() -> None:
     ]
 
     assert over_limit == []
-
-
-def test_action_openapi_forces_assistant_visual_roof_trace() -> None:
-    specification = build_action_openapi()
-    schemas = specification["components"]["schemas"]
-    operation = specification["paths"]["/v1/roof-measure/calculate"]["post"]
-    request_ref = operation["requestBody"]["content"]["application/json"][
-        "schema"
-    ]["$ref"]
-
-    assert "/v1/roof-measure/segment" not in specification["paths"]
-    assert request_ref.endswith("/RoofMeasureAssistantCalculationRequest")
-    request_schema = schemas["RoofMeasureAssistantCalculationRequest"]
-    assert set(request_schema["properties"]) == {
-        "context_id",
-        "normalized_sections",
-        "pitch_rise_per_12",
-    }
-    assert request_schema["required"] == ["context_id", "normalized_sections"]
-    assert "RoofMeasureCalculationRequest" not in schemas
 
 
 def test_bidscope_page_selection_route_returns_native_review_packet(monkeypatch) -> None:
