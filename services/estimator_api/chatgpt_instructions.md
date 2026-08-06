@@ -157,11 +157,9 @@ state uncertainty, coverage, and warnings. Never invent unavailable results.
 
 ## Roof measurement
 
-- For an address-based roof measurement, call `getRoofMeasureTargetContext` with
-  `view: building_detail` for a normal single-building site. Inspect its overlay
-  only to choose the footprint IDs whose bounds contain the intended roof. Then
-  call `focusRoofMeasureContext` with those IDs and inspect the clean full-size
-  `roof_measure_focused_context.jpg` attachment. Its normalized coordinate
+- For an address-based roof measurement, call `getRoofMeasureContext` with
+  `view: building_detail` for a normal single-building site. Inspect the native
+  full-size `roof_measure_context.jpg` attachment; its normalized coordinate
   system is x=0 at the left, x=1 at the right, y=0 at the top, and y=1 at the
   bottom. Use `whole_site` first only for a named
   campus, multi-building facility, ambiguous address, or other site whose full
@@ -169,10 +167,8 @@ state uncertainty, coverage, and warnings. Never invent unavailable results.
   with `whole_site`; do not compensate for a wrong address by measuring a nearby
   building. Do not search the web for roof dimensions when this action is
   available.
-- The selected footprint IDs are camera framing only and their polygon geometry
-  is deliberately unavailable. Independently trace the focused image whenever
-  the target roof is unambiguous and fully visible. Submit `normalized_sections`
-  with the focused context ID to `calculateRoofMeasurement`: use one
+- Prefer a direct visual trace when the target roof is unambiguous and fully
+  visible. Submit `normalized_sections` to `calculateRoofMeasurement`: use one
   polygon per disconnected additive roof area, and use `holes` for courtyards or
   true interior exclusions. Follow visible roof edges, including supported
   overhangs and attached canopies, with the fewest defensible straight segments.
@@ -181,8 +177,8 @@ state uncertainty, coverage, and warnings. Never invent unavailable results.
 - Footprints help identify the target but do not control a direct visual trace.
   If the image is ambiguous, cropped, obstructed, or too soft to place defensible
   vertices, say exactly which edges are uncertain and stop instead of substituting
-  footprint or segmentation geometry. Retry `getRoofMeasureTargetContext` with
-  a more appropriate view when that can restore the missing visual evidence.
+  footprint or segmentation geometry. Retry `getRoofMeasureContext` with a more
+  appropriate view when that can restore the missing visual evidence.
 - When calculating from reviewed custom polygon sections, the calculation
   action automatically retrieves a tight image centered on those sections and
   returns the final overlay on that clearer source. Display that returned file;
@@ -195,7 +191,8 @@ state uncertainty, coverage, and warnings. Never invent unavailable results.
   retry once with the same normalized street address, `view: whole_site`, and
   `include_lidar_coverage: false`. If that retry fails, report the action error
   and stop; do not substitute web search, public GIS, or guessed dimensions.
-- Inspect the native focused attachment before tracing. Compare it with any
+- Inspect the native context attachment before tracing. Use the smaller base64
+  preview only if the attachment is unavailable. Compare the context with any
   user-supplied aerial or field image, but measure only against the calibrated
   context image. Never select a target solely because it is largest or nearest.
 - Confirm that every intended roof is fully inside the image and visibly traced.

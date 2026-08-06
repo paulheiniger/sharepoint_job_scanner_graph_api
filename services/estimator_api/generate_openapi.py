@@ -79,21 +79,8 @@ def _restrict_roof_measure_to_visual_trace(specification: dict) -> None:
         "attached context image. Returns a tight review overlay. The API calls no "
         "AI model and requires estimator verification."
     )
-    specification["paths"].pop("/v1/roof-measure/context", None)
     specification["paths"].pop("/v1/roof-measure/segment", None)
-    for schema_name in (
-        "RoofMeasureCalculationRequest",
-        "RoofMeasureContextResponse",
-        "RoofMeasureFootprintCandidate",
-        "RoofMeasureLidarCoverage",
-        "RoofMeasurePoint",
-        "RoofMeasurePolygonComponent",
-        "RoofMeasureSectionInput",
-        "RoofMeasureSegmentationCandidate",
-        "RoofMeasureSegmentationRequest",
-        "RoofMeasureSegmentationResponse",
-    ):
-        schemas.pop(schema_name, None)
+    schemas.pop("RoofMeasureCalculationRequest", None)
 
 
 def _validated_server_url(value: str) -> str:

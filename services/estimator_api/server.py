@@ -75,7 +75,6 @@ from roof_measure.api_context import (
     RoofMeasureInputError,
     calculate_roof_measurement,
     create_roof_measure_context,
-    focus_roof_measure_context,
     resolve_roof_measure_asset,
 )
 from roof_measure.api_segmentation import segment_roof_measure_context
@@ -112,11 +111,8 @@ from .schemas import (
     RoofMeasureCalculationResponse,
     RoofMeasureContextRequest,
     RoofMeasureContextResponse,
-    RoofMeasureFocusRequest,
     RoofMeasureSegmentationRequest,
     RoofMeasureSegmentationResponse,
-    RoofMeasureTargetContextResponse,
-    RoofMeasureVisualContextResponse,
     SalesFollowupRequest,
     SalesIntelligenceResponse,
     SalesPipelineRequest,
@@ -343,29 +339,6 @@ def health() -> dict[str, Any]:
     }
 
 
-def _create_roof_context_from_request(
-    payload: RoofMeasureContextRequest,
-    *,
-    expires: int,
-) -> dict[str, Any]:
-    return create_roof_measure_context(
-        address=payload.address,
-        job_id=payload.job_id,
-        site_name=payload.site_name,
-        site_type=payload.site_type,
-        view=payload.view,
-        include_lidar_coverage=payload.include_lidar_coverage,
-        mapbox_token=(
-            os.getenv("MAPBOX_TOKEN")
-            or os.getenv("MAPBOX_ACCESS_TOKEN")
-            or ""
-        ),
-        database_url=_database_url() or "",
-        artifact_dir=_roof_measure_artifact_dir(),
-        expires_at=expires,
-    )
-
-
 @app.post(
     "/v1/estimating/context",
     response_model=EstimateContextResponse,
@@ -454,7 +427,22 @@ def roof_measure_context(
         )
     expires = int(time.time()) + _artifact_ttl_seconds()
     try:
-        context = _create_roof_context_from_request(payload, expires=expires)
+        context = create_roof_measure_context(
+            address=payload.address,
+            job_id=payload.job_id,
+            site_name=payload.site_name,
+            site_type=payload.site_type,
+            view=payload.view,
+            include_lidar_coverage=payload.include_lidar_coverage,
+            mapbox_token=(
+                os.getenv("MAPBOX_TOKEN")
+                or os.getenv("MAPBOX_ACCESS_TOKEN")
+                or ""
+            ),
+            database_url=_database_url() or "",
+            artifact_dir=_roof_measure_artifact_dir(),
+            expires_at=expires,
+        )
     except RoofMeasureInputError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except RoofMeasureContextError as exc:
@@ -508,169 +496,6 @@ def roof_measure_context(
         ],
     }
     return RoofMeasureContextResponse.model_validate(response_payload)
-
-
-@app.post(
-    "/v1/roof-measure/target-context",
-    response_model=RoofMeasureTargetContextResponse,
-    response_model_exclude_none=True,
-    operation_id="getRoofMeasureTargetContext",
-    summary="Choose footprint bounds for a centered roof image",
-    description=(
-        "Returns a footprint overlay and candidate IDs solely for selecting the "
-        "bounds of a focused image. It omits all footprint polygon coordinates "
-        "and does not authorize those footprints as measurement geometry."
-    ),
-)
-def roof_measure_target_context(
-    request: Request,
-    payload: RoofMeasureContextRequest,
-) -> RoofMeasureTargetContextResponse:
-    _require_api_request(request)
-    if not _artifact_signing_key():
-        raise HTTPException(
-            status_code=503,
-            detail="Roof imagery signing is not configured.",
-        )
-    expires = int(time.time()) + _artifact_ttl_seconds()
-    try:
-        context = _create_roof_context_from_request(payload, expires=expires)
-        context_id = str(context["context_id"])
-        overlay_path = resolve_roof_measure_asset(
-            context_id=context_id,
-            asset_name="footprint-overlay.png",
-            artifact_dir=_roof_measure_artifact_dir(),
-        )
-        return RoofMeasureTargetContextResponse.model_validate(
-            {
-                "schema_version": "spraytec.roof_measure_target_context.v1",
-                "context_id": context_id,
-                "expires_at": context["expires_at"],
-                "address": context["address"],
-                "site_name": context.get("site_name") or "",
-                "site_type": context.get("site_type") or "",
-                "footprint_candidates": [
-                    {
-                        key: candidate[key]
-                        for key in (
-                            "footprint_id",
-                            "label",
-                            "provider",
-                            "plan_area_sqft",
-                            "perimeter_ft",
-                        )
-                    }
-                    for candidate in context.get("footprint_candidates") or []
-                ],
-                "candidate_groups": context.get("candidate_groups") or [],
-                "recommended_candidate_group_id": context.get(
-                    "recommended_candidate_group_id"
-                )
-                or "",
-                "site_resolution_reason": context.get("site_resolution_reason")
-                or "",
-                "openaiFileResponse": [
-                    {
-                        "name": "roof_measure_target_overlay.jpg",
-                        "mime_type": "image/jpeg",
-                        "content": _roof_overlay_file_base64(overlay_path),
-                    }
-                ],
-                "attributions": context.get("attributions") or [],
-                "warnings": context.get("warnings") or [],
-            }
-        )
-    except RoofMeasureInputError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except RoofMeasureContextError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-
-
-@app.post(
-    "/v1/roof-measure/focus",
-    response_model=RoofMeasureVisualContextResponse,
-    response_model_exclude_none=True,
-    operation_id="focusRoofMeasureContext",
-    summary="Retrieve clean imagery centered on selected footprint bounds",
-    description=(
-        "Uses selected footprint IDs only to center and zoom a new clean satellite "
-        "image. Returns a new calibrated context without footprint geometry. The "
-        "Assistant must independently trace visible roof edges on that image."
-    ),
-)
-def roof_measure_focus(
-    request: Request,
-    payload: RoofMeasureFocusRequest,
-) -> RoofMeasureVisualContextResponse:
-    _require_api_request(request)
-    signing_key = _artifact_signing_key()
-    if not signing_key:
-        raise HTTPException(
-            status_code=503,
-            detail="Roof imagery signing is not configured.",
-        )
-    try:
-        context = focus_roof_measure_context(
-            context_id=payload.context_id,
-            selected_footprint_ids=payload.selected_footprint_ids,
-            artifact_dir=_roof_measure_artifact_dir(),
-            mapbox_token=(
-                os.getenv("MAPBOX_TOKEN")
-                or os.getenv("MAPBOX_ACCESS_TOKEN")
-                or ""
-            ),
-        )
-        context_id = str(context["context_id"])
-        satellite_path = resolve_roof_measure_asset(
-            context_id=context_id,
-            asset_name="satellite.png",
-            artifact_dir=_roof_measure_artifact_dir(),
-        )
-        expires = int(context["expires_at"])
-        return RoofMeasureVisualContextResponse.model_validate(
-            {
-                "schema_version": "spraytec.roof_measure_visual_context.v1",
-                "context_id": context_id,
-                "source_context_id": payload.context_id,
-                "expires_at": expires,
-                "address": context["address"],
-                "site_name": context.get("site_name") or "",
-                "site_type": context.get("site_type") or "",
-                "latitude": context["latitude"],
-                "longitude": context["longitude"],
-                "zoom": context["zoom"],
-                "image_width": context["image_width"],
-                "image_height": context["image_height"],
-                "pixels_per_foot": context["pixels_per_foot"],
-                "satellite_image_url": _signed_roof_asset_url(
-                    request=request,
-                    context_id=context_id,
-                    asset_name="satellite.png",
-                    expires=expires,
-                    signing_key=signing_key,
-                ),
-                "trace_instruction": (
-                    "Trace the visible roof edges independently on this clean image. "
-                    "The selected footprint was used only to center the camera and "
-                    "is not available as measurement geometry."
-                ),
-                "openaiFileResponse": [
-                    {
-                        "name": "roof_measure_focused_context.jpg",
-                        "mime_type": "image/jpeg",
-                        "content": _roof_overlay_file_base64(satellite_path),
-                    }
-                ],
-                "attributions": context.get("attributions") or [],
-                "warnings": context.get("warnings") or [],
-            }
-        )
-    except RoofMeasureInputError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except RoofMeasureContextExpiredError as exc:
-        raise HTTPException(status_code=410, detail=str(exc)) from exc
-    except RoofMeasureContextError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.post(

@@ -5652,31 +5652,251 @@
         "title": "RoofMeasureContextRequest",
         "type": "object"
       },
-      "RoofMeasureFocusRequest": {
+      "RoofMeasureContextResponse": {
         "additionalProperties": false,
         "properties": {
+          "address": {
+            "title": "Address",
+            "type": "string"
+          },
+          "attributions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Attributions",
+            "type": "array"
+          },
+          "candidate_groups": {
+            "items": {
+              "$ref": "#/components/schemas/RoofMeasureCandidateGroup"
+            },
+            "title": "Candidate Groups",
+            "type": "array"
+          },
           "context_id": {
-            "pattern": "^[a-f0-9]{32}$",
             "title": "Context Id",
             "type": "string"
           },
-          "selected_footprint_ids": {
+          "expires_at": {
+            "title": "Expires At",
+            "type": "integer"
+          },
+          "footprint_candidates": {
             "items": {
-              "maxLength": 100,
-              "minLength": 1,
+              "$ref": "#/components/schemas/RoofMeasureFootprintCandidate"
+            },
+            "title": "Footprint Candidates",
+            "type": "array"
+          },
+          "footprint_overlay_preview_base64": {
+            "description": "Base64-encoded JPEG preview containing the satellite pixels and all candidate footprint outlines. Decode and display this image before choosing footprint IDs; do not redraw the polygons on a blank canvas.",
+            "title": "Footprint Overlay Preview Base64",
+            "type": "string"
+          },
+          "footprint_overlay_preview_media_type": {
+            "const": "image/jpeg",
+            "title": "Footprint Overlay Preview Media Type",
+            "type": "string"
+          },
+          "footprint_overlay_url": {
+            "title": "Footprint Overlay Url",
+            "type": "string"
+          },
+          "image_height": {
+            "title": "Image Height",
+            "type": "integer"
+          },
+          "image_width": {
+            "title": "Image Width",
+            "type": "integer"
+          },
+          "job_id": {
+            "default": "",
+            "title": "Job Id",
+            "type": "string"
+          },
+          "latitude": {
+            "title": "Latitude",
+            "type": "number"
+          },
+          "lidar_coverage": {
+            "$ref": "#/components/schemas/RoofMeasureLidarCoverage"
+          },
+          "longitude": {
+            "title": "Longitude",
+            "type": "number"
+          },
+          "openaiFileResponse": {
+            "description": "Native full-size context image for visual roof tracing. Normalized section coordinates are relative to this image.",
+            "items": {
+              "$ref": "#/components/schemas/OpenAIActionFile"
+            },
+            "maxItems": 1,
+            "minItems": 1,
+            "title": "Openaifileresponse",
+            "type": "array"
+          },
+          "pixels_per_foot": {
+            "title": "Pixels Per Foot",
+            "type": "number"
+          },
+          "recommended_candidate_group_id": {
+            "default": "",
+            "title": "Recommended Candidate Group Id",
+            "type": "string"
+          },
+          "requires_site_confirmation": {
+            "default": true,
+            "title": "Requires Site Confirmation",
+            "type": "boolean"
+          },
+          "satellite_image_url": {
+            "title": "Satellite Image Url",
+            "type": "string"
+          },
+          "schema_version": {
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "site_name": {
+            "default": "",
+            "title": "Site Name",
+            "type": "string"
+          },
+          "site_resolution_reason": {
+            "default": "",
+            "title": "Site Resolution Reason",
+            "type": "string"
+          },
+          "site_resolution_status": {
+            "enum": [
+              "candidate_group_suggested",
+              "review_required"
+            ],
+            "title": "Site Resolution Status",
+            "type": "string"
+          },
+          "site_type": {
+            "default": "",
+            "title": "Site Type",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
               "type": "string"
             },
-            "maxItems": 12,
-            "minItems": 1,
-            "title": "Selected Footprint Ids",
+            "title": "Warnings",
             "type": "array"
+          },
+          "zoom": {
+            "title": "Zoom",
+            "type": "number"
           }
         },
         "required": [
+          "schema_version",
           "context_id",
-          "selected_footprint_ids"
+          "expires_at",
+          "address",
+          "latitude",
+          "longitude",
+          "zoom",
+          "image_width",
+          "image_height",
+          "pixels_per_foot",
+          "satellite_image_url",
+          "footprint_overlay_url",
+          "footprint_overlay_preview_media_type",
+          "footprint_overlay_preview_base64",
+          "openaiFileResponse",
+          "site_resolution_status",
+          "lidar_coverage"
         ],
-        "title": "RoofMeasureFocusRequest",
+        "title": "RoofMeasureContextResponse",
+        "type": "object"
+      },
+      "RoofMeasureFootprintCandidate": {
+        "additionalProperties": false,
+        "properties": {
+          "components": {
+            "items": {
+              "$ref": "#/components/schemas/RoofMeasurePolygonComponent"
+            },
+            "title": "Components",
+            "type": "array"
+          },
+          "footprint_id": {
+            "title": "Footprint Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "perimeter_ft": {
+            "title": "Perimeter Ft",
+            "type": "number"
+          },
+          "plan_area_sqft": {
+            "title": "Plan Area Sqft",
+            "type": "number"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          }
+        },
+        "required": [
+          "footprint_id",
+          "label",
+          "provider",
+          "plan_area_sqft",
+          "perimeter_ft",
+          "components"
+        ],
+        "title": "RoofMeasureFootprintCandidate",
+        "type": "object"
+      },
+      "RoofMeasureLidarCoverage": {
+        "additionalProperties": false,
+        "properties": {
+          "attribution": {
+            "default": "",
+            "title": "Attribution",
+            "type": "string"
+          },
+          "available": {
+            "default": false,
+            "title": "Available",
+            "type": "boolean"
+          },
+          "captured_at": {
+            "default": "",
+            "title": "Captured At",
+            "type": "string"
+          },
+          "collection": {
+            "default": "",
+            "title": "Collection",
+            "type": "string"
+          },
+          "point_count": {
+            "default": 0,
+            "title": "Point Count",
+            "type": "integer"
+          },
+          "provider": {
+            "default": "kyfromabove",
+            "title": "Provider",
+            "type": "string"
+          },
+          "warning": {
+            "default": "",
+            "title": "Warning",
+            "type": "string"
+          }
+        },
+        "title": "RoofMeasureLidarCoverage",
         "type": "object"
       },
       "RoofMeasureNormalizedPoint": {
@@ -5741,6 +5961,96 @@
         "title": "RoofMeasureNormalizedSectionInput",
         "type": "object"
       },
+      "RoofMeasurePoint": {
+        "additionalProperties": false,
+        "properties": {
+          "x": {
+            "maximum": 1536.0,
+            "minimum": -256.0,
+            "title": "X",
+            "type": "number"
+          },
+          "y": {
+            "maximum": 1536.0,
+            "minimum": -256.0,
+            "title": "Y",
+            "type": "number"
+          }
+        },
+        "required": [
+          "x",
+          "y"
+        ],
+        "title": "RoofMeasurePoint",
+        "type": "object"
+      },
+      "RoofMeasurePolygonComponent": {
+        "additionalProperties": false,
+        "properties": {
+          "holes": {
+            "items": {
+              "items": {
+                "$ref": "#/components/schemas/RoofMeasurePoint"
+              },
+              "type": "array"
+            },
+            "maxItems": 20,
+            "title": "Holes",
+            "type": "array"
+          },
+          "polygon": {
+            "items": {
+              "$ref": "#/components/schemas/RoofMeasurePoint"
+            },
+            "maxItems": 200,
+            "minItems": 3,
+            "title": "Polygon",
+            "type": "array"
+          }
+        },
+        "required": [
+          "polygon"
+        ],
+        "title": "RoofMeasurePolygonComponent",
+        "type": "object"
+      },
+      "RoofMeasureSectionInput": {
+        "additionalProperties": false,
+        "properties": {
+          "holes": {
+            "items": {
+              "items": {
+                "$ref": "#/components/schemas/RoofMeasurePoint"
+              },
+              "type": "array"
+            },
+            "maxItems": 20,
+            "title": "Holes",
+            "type": "array"
+          },
+          "polygon": {
+            "items": {
+              "$ref": "#/components/schemas/RoofMeasurePoint"
+            },
+            "maxItems": 200,
+            "minItems": 3,
+            "title": "Polygon",
+            "type": "array"
+          },
+          "section_id": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Section Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "section_id",
+          "polygon"
+        ],
+        "title": "RoofMeasureSectionInput",
+        "type": "object"
+      },
       "RoofMeasureSectionResult": {
         "additionalProperties": false,
         "properties": {
@@ -5787,170 +6097,297 @@
         "title": "RoofMeasureSectionResult",
         "type": "object"
       },
-      "RoofMeasureTargetCandidate": {
+      "RoofMeasureSegmentationCandidate": {
         "additionalProperties": false,
         "properties": {
-          "footprint_id": {
-            "title": "Footprint Id",
+          "area_ratio_to_footprint": {
+            "title": "Area Ratio To Footprint",
+            "type": "number"
+          },
+          "boundary_refinement": {
+            "default": "sam2",
+            "enum": [
+              "sam2",
+              "sam2_lidar_high_band"
+            ],
+            "title": "Boundary Refinement",
             "type": "string"
           },
-          "label": {
-            "title": "Label",
+          "candidate_id": {
+            "pattern": "^sam2-[a-f0-9]{16}$",
+            "title": "Candidate Id",
+            "type": "string"
+          },
+          "footprint_coverage": {
+            "title": "Footprint Coverage",
+            "type": "number"
+          },
+          "footprint_overlap": {
+            "title": "Footprint Overlap",
+            "type": "number"
+          },
+          "geometry_area_drift_fraction": {
+            "default": 0,
+            "maximum": 0.015,
+            "minimum": 0.0,
+            "title": "Geometry Area Drift Fraction",
+            "type": "number"
+          },
+          "geometry_refinement": {
+            "default": "mask_polygon",
+            "enum": [
+              "mask_polygon",
+              "dominant_orthogonal"
+            ],
+            "title": "Geometry Refinement",
+            "type": "string"
+          },
+          "geometry_simplification_tolerance_pixels": {
+            "anyOf": [
+              {
+                "maximum": 20.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Geometry Simplification Tolerance Pixels"
+          },
+          "lidar_boundary_score": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lidar Boundary Score"
+          },
+          "lidar_elevated_coverage": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lidar Elevated Coverage"
+          },
+          "lidar_ground_fraction": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lidar Ground Fraction"
+          },
+          "lidar_roof_leakage_outside": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lidar Roof Leakage Outside"
+          },
+          "lidar_roof_support_fraction": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lidar Roof Support Fraction"
+          },
+          "lidar_sampled_fraction": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lidar Sampled Fraction"
+          },
+          "model_name": {
+            "title": "Model Name",
+            "type": "string"
+          },
+          "model_score": {
+            "title": "Model Score",
+            "type": "number"
+          },
+          "model_version": {
+            "title": "Model Version",
             "type": "string"
           },
           "perimeter_ft": {
+            "exclusiveMinimum": 0.0,
             "title": "Perimeter Ft",
             "type": "number"
           },
           "plan_area_sqft": {
+            "exclusiveMinimum": 0.0,
             "title": "Plan Area Sqft",
             "type": "number"
           },
-          "provider": {
-            "title": "Provider",
-            "type": "string"
+          "provider_rank": {
+            "maximum": 3.0,
+            "minimum": 1.0,
+            "title": "Provider Rank",
+            "type": "integer"
+          },
+          "rank": {
+            "maximum": 3.0,
+            "minimum": 1.0,
+            "title": "Rank",
+            "type": "integer"
+          },
+          "section_count": {
+            "minimum": 1.0,
+            "title": "Section Count",
+            "type": "integer"
+          },
+          "selection_score": {
+            "title": "Selection Score",
+            "type": "number"
           }
         },
         "required": [
-          "footprint_id",
-          "label",
-          "provider",
+          "candidate_id",
+          "rank",
+          "provider_rank",
+          "model_name",
+          "model_version",
+          "model_score",
+          "selection_score",
+          "footprint_overlap",
+          "footprint_coverage",
+          "area_ratio_to_footprint",
           "plan_area_sqft",
-          "perimeter_ft"
+          "perimeter_ft",
+          "section_count"
         ],
-        "title": "RoofMeasureTargetCandidate",
+        "title": "RoofMeasureSegmentationCandidate",
         "type": "object"
       },
-      "RoofMeasureTargetContextResponse": {
+      "RoofMeasureSegmentationRequest": {
         "additionalProperties": false,
         "properties": {
-          "address": {
-            "title": "Address",
-            "type": "string"
-          },
-          "attributions": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Attributions",
-            "type": "array"
-          },
-          "candidate_groups": {
-            "items": {
-              "$ref": "#/components/schemas/RoofMeasureCandidateGroup"
-            },
-            "title": "Candidate Groups",
-            "type": "array"
-          },
           "context_id": {
+            "pattern": "^[a-f0-9]{32}$",
             "title": "Context Id",
             "type": "string"
           },
-          "expires_at": {
-            "title": "Expires At",
-            "type": "integer"
-          },
-          "footprint_candidates": {
+          "selected_footprint_ids": {
             "items": {
-              "$ref": "#/components/schemas/RoofMeasureTargetCandidate"
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
             },
             "maxItems": 12,
-            "title": "Footprint Candidates",
-            "type": "array"
-          },
-          "openaiFileResponse": {
-            "description": "Full-size footprint overlay used only to choose image focus.",
-            "items": {
-              "$ref": "#/components/schemas/OpenAIActionFile"
-            },
-            "maxItems": 1,
             "minItems": 1,
-            "title": "Openaifileresponse",
-            "type": "array"
-          },
-          "recommended_candidate_group_id": {
-            "default": "",
-            "title": "Recommended Candidate Group Id",
-            "type": "string"
-          },
-          "schema_version": {
-            "const": "spraytec.roof_measure_target_context.v1",
-            "title": "Schema Version",
-            "type": "string"
-          },
-          "site_name": {
-            "default": "",
-            "title": "Site Name",
-            "type": "string"
-          },
-          "site_resolution_reason": {
-            "default": "",
-            "title": "Site Resolution Reason",
-            "type": "string"
-          },
-          "site_type": {
-            "default": "",
-            "title": "Site Type",
-            "type": "string"
-          },
-          "warnings": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Warnings",
+            "title": "Selected Footprint Ids",
             "type": "array"
           }
         },
         "required": [
-          "schema_version",
           "context_id",
-          "expires_at",
-          "address",
-          "openaiFileResponse"
+          "selected_footprint_ids"
         ],
-        "title": "RoofMeasureTargetContextResponse",
+        "title": "RoofMeasureSegmentationRequest",
         "type": "object"
       },
-      "RoofMeasureVisualContextResponse": {
+      "RoofMeasureSegmentationResponse": {
         "additionalProperties": false,
         "properties": {
-          "address": {
-            "title": "Address",
+          "candidate_overlay_preview_base64": {
+            "title": "Candidate Overlay Preview Base64",
             "type": "string"
           },
-          "attributions": {
+          "candidate_overlay_preview_media_type": {
+            "const": "image/jpeg",
+            "title": "Candidate Overlay Preview Media Type",
+            "type": "string"
+          },
+          "candidate_overlay_url": {
+            "title": "Candidate Overlay Url",
+            "type": "string"
+          },
+          "candidates": {
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/RoofMeasureSegmentationCandidate"
             },
-            "title": "Attributions",
+            "maxItems": 1,
+            "minItems": 1,
+            "title": "Candidates",
             "type": "array"
           },
           "context_id": {
             "title": "Context Id",
             "type": "string"
           },
-          "expires_at": {
-            "title": "Expires At",
+          "evaluated_candidate_count": {
+            "minimum": 1.0,
+            "title": "Evaluated Candidate Count",
             "type": "integer"
           },
-          "image_height": {
-            "title": "Image Height",
+          "lidar_cell_pixels": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Lidar Cell Pixels",
             "type": "integer"
           },
-          "image_width": {
-            "title": "Image Width",
+          "lidar_guidance_used": {
+            "default": false,
+            "title": "Lidar Guidance Used",
+            "type": "boolean"
+          },
+          "lidar_image_points": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Lidar Image Points",
             "type": "integer"
           },
-          "latitude": {
-            "title": "Latitude",
-            "type": "number"
+          "lidar_points": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Lidar Points",
+            "type": "integer"
           },
-          "longitude": {
-            "title": "Longitude",
-            "type": "number"
+          "model_name": {
+            "title": "Model Name",
+            "type": "string"
+          },
+          "model_version": {
+            "title": "Model Version",
+            "type": "string"
           },
           "openaiFileResponse": {
-            "description": "Clean full-size satellite image for independent visual tracing.",
             "items": {
               "$ref": "#/components/schemas/OpenAIActionFile"
             },
@@ -5959,36 +6396,46 @@
             "title": "Openaifileresponse",
             "type": "array"
           },
-          "pixels_per_foot": {
-            "title": "Pixels Per Foot",
-            "type": "number"
-          },
-          "satellite_image_url": {
-            "title": "Satellite Image Url",
+          "recommended_candidate_id": {
+            "title": "Recommended Candidate Id",
             "type": "string"
           },
+          "requires_candidate_confirmation": {
+            "const": false,
+            "title": "Requires Candidate Confirmation",
+            "type": "boolean"
+          },
           "schema_version": {
-            "const": "spraytec.roof_measure_visual_context.v1",
+            "const": "spraytec.roof_measure_sam2_candidates.v2",
             "title": "Schema Version",
             "type": "string"
           },
-          "site_name": {
-            "default": "",
-            "title": "Site Name",
+          "selected_footprint_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Selected Footprint Ids",
+            "type": "array"
+          },
+          "source_pixels_per_foot": {
+            "exclusiveMinimum": 0.0,
+            "title": "Source Pixels Per Foot",
+            "type": "number"
+          },
+          "source_view": {
+            "default": "context",
+            "enum": [
+              "context",
+              "footprint_fitted"
+            ],
+            "title": "Source View",
             "type": "string"
           },
-          "site_type": {
-            "default": "",
-            "title": "Site Type",
-            "type": "string"
-          },
-          "source_context_id": {
-            "title": "Source Context Id",
-            "type": "string"
-          },
-          "trace_instruction": {
-            "title": "Trace Instruction",
-            "type": "string"
+          "source_zoom": {
+            "maximum": 22.0,
+            "minimum": 0.0,
+            "title": "Source Zoom",
+            "type": "number"
           },
           "warnings": {
             "items": {
@@ -5996,29 +6443,26 @@
             },
             "title": "Warnings",
             "type": "array"
-          },
-          "zoom": {
-            "title": "Zoom",
-            "type": "number"
           }
         },
         "required": [
           "schema_version",
           "context_id",
-          "source_context_id",
-          "expires_at",
-          "address",
-          "latitude",
-          "longitude",
-          "zoom",
-          "image_width",
-          "image_height",
-          "pixels_per_foot",
-          "satellite_image_url",
-          "trace_instruction",
-          "openaiFileResponse"
+          "selected_footprint_ids",
+          "recommended_candidate_id",
+          "requires_candidate_confirmation",
+          "evaluated_candidate_count",
+          "candidates",
+          "candidate_overlay_url",
+          "candidate_overlay_preview_media_type",
+          "candidate_overlay_preview_base64",
+          "openaiFileResponse",
+          "model_name",
+          "model_version",
+          "source_zoom",
+          "source_pixels_per_foot"
         ],
-        "title": "RoofMeasureVisualContextResponse",
+        "title": "RoofMeasureSegmentationResponse",
         "type": "object"
       },
       "SalesFollowupRequest": {
@@ -7694,50 +8138,10 @@
         "x-openai-isConsequential": false
       }
     },
-    "/v1/roof-measure/focus": {
+    "/v1/roof-measure/context": {
       "post": {
-        "description": "Uses selected footprint IDs only to center and zoom a new clean satellite image. Returns a new calibrated context without footprint geometry. The Assistant must independently trace visible roof edges on that image.",
-        "operationId": "focusRoofMeasureContext",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RoofMeasureFocusRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RoofMeasureVisualContextResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Retrieve clean imagery centered on selected footprint bounds",
-        "x-openai-isConsequential": false
-      }
-    },
-    "/v1/roof-measure/target-context": {
-      "post": {
-        "description": "Returns a footprint overlay and candidate IDs solely for selecting the bounds of a focused image. It omits all footprint polygon coordinates and does not authorize those footprints as measurement geometry.",
-        "operationId": "getRoofMeasureTargetContext",
+        "description": "Returns a full-size attached satellite context image, signed image URLs, bounded footprint evidence, calibration, and optional public LiDAR coverage. The operation does not call an AI model or measure the roof.",
+        "operationId": "getRoofMeasureContext",
         "requestBody": {
           "content": {
             "application/json": {
@@ -7753,7 +8157,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RoofMeasureTargetContextResponse"
+                  "$ref": "#/components/schemas/RoofMeasureContextResponse"
                 }
               }
             },
@@ -7770,7 +8174,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Choose footprint bounds for a centered roof image",
+        "summary": "Retrieve calibrated roof imagery and footprint evidence",
         "x-openai-isConsequential": false
       }
     },
