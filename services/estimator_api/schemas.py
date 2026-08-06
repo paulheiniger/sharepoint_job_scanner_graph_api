@@ -514,6 +514,17 @@ class OpenAIActionFile(BaseModel):
     content: str = Field(description="Base64-encoded file content.")
 
 
+class OpenAIFileReference(BaseModel):
+    """Runtime file reference injected by ChatGPT for a GPT Action request."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str = Field(default="", max_length=200)
+    id: str = Field(default="", max_length=500)
+    mime_type: str = Field(default="", max_length=200)
+    download_link: str = Field(default="", max_length=4_000)
+
+
 class RoofMeasureSegmentationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1062,6 +1073,73 @@ class EstimateWorkbookResponse(BaseModel):
     calculated_outputs: dict[str, float] = Field(default_factory=dict)
     template_profile: dict[str, Any] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
+
+
+class EstimateWorkbookTemplateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    template_type: Literal["roofing", "insulation", "flooring"]
+
+
+class EstimateWorkbookTemplateResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["spraytec.estimate_workbook_template.v1"]
+    template_type: Literal["roofing", "insulation", "flooring"]
+    template_version: str = Field(pattern=r"^[a-f0-9]{64}$")
+    file_name: str
+    template_profile: dict[str, Any] = Field(default_factory=dict)
+    assistant_edit_instruction: str
+    openai_file_response: list[OpenAIActionFile] = Field(
+        serialization_alias="openaiFileResponse",
+        validation_alias="openaiFileResponse",
+        min_length=1,
+        max_length=1,
+    )
+    warnings: list[str] = Field(default_factory=list)
+
+
+class EstimateWorkbookValidationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    template_type: Literal["roofing", "insulation", "flooring"]
+    template_version: str = Field(pattern=r"^[a-f0-9]{64}$")
+    expected_estimated_sqft: float | None = Field(default=None, gt=0, le=10_000_000)
+    expected_items: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(
+        default_factory=list,
+        max_length=50,
+    )
+    save_to_sharepoint: bool = Field(
+        default=True,
+        description="Save a valid recalculated draft to the configured SharePoint staging folder.",
+    )
+    openai_file_id_refs: list[OpenAIFileReference | str] = Field(
+        serialization_alias="openaiFileIdRefs",
+        validation_alias="openaiFileIdRefs",
+        min_length=1,
+        max_length=1,
+        description="Attach exactly one assistant-edited XLSX workbook from the conversation.",
+    )
+
+
+class EstimateWorkbookValidationResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["spraytec.estimate_workbook_validation.v1"]
+    template_type: Literal["roofing", "insulation", "flooring"]
+    template_version: str = Field(pattern=r"^[a-f0-9]{64}$")
+    valid: bool
+    calculated_outputs: dict[str, float] = Field(default_factory=dict)
+    template_profile: dict[str, Any] = Field(default_factory=dict)
+    issues: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    sharepoint_url: str = ""
+    openai_file_response: list[OpenAIActionFile] = Field(
+        default_factory=list,
+        serialization_alias="openaiFileResponse",
+        validation_alias="openaiFileResponse",
+        max_length=1,
+    )
 
 
 class EstimateWorkbookOptionArtifact(BaseModel):

@@ -25,6 +25,8 @@ from jobscan.estimator.workbook_service import (
     create_estimate_workbook,
     create_estimate_workbook_options,
     estimate_template_path,
+    estimate_template_version,
+    validate_ai_edited_workbook,
     validate_semantic_workbook_payload,
 )
 
@@ -47,6 +49,43 @@ def test_checked_in_templates_are_the_service_defaults(monkeypatch) -> None:
     assert estimate_template_path("flooring", base_dir=Path.cwd()) == (
         FLOORING_TEMPLATE_PATH.resolve()
     )
+
+
+@pytest.mark.parametrize(
+    "template_type,template_path",
+    [
+        ("roofing", TEMPLATE_PATH),
+        ("insulation", INSULATION_TEMPLATE_PATH),
+        ("flooring", FLOORING_TEMPLATE_PATH),
+    ],
+)
+def test_template_versions_bind_all_supported_estimate_types(
+    template_type: str,
+    template_path: Path,
+) -> None:
+    resolved = estimate_template_path(template_type, base_dir=Path.cwd())
+    assert estimate_template_version(resolved) == hashlib.sha256(
+        template_path.read_bytes()
+    ).hexdigest()
+
+
+def test_ai_edited_workbook_validation_rejects_changed_template_formula(
+    tmp_path: Path,
+) -> None:
+    edited = tmp_path / "edited.xlsx"
+    shutil.copy2(TEMPLATE_PATH, edited)
+    workbook = openpyxl.load_workbook(edited, data_only=False)
+    workbook["Estimate"]["H106"] = 123
+    workbook.save(edited)
+
+    result = validate_ai_edited_workbook(
+        edited,
+        template_type="roofing",
+        base_dir=Path.cwd(),
+    )
+
+    assert result.valid is False
+    assert any("Estimate!H106" in issue for issue in result.issues)
 
 
 def complete_payload() -> dict:
@@ -756,6 +795,41 @@ def test_create_workbook_persists_calculated_costs(monkeypatch, tmp_path: Path) 
     assert artifact.calculated_outputs["truck_expense_cost"] == pytest.approx(675)
     assert artifact.calculated_outputs["labor_prep_daily_rate"] == pytest.approx(1890)
     assert hashlib.sha256(TEMPLATE_PATH.read_bytes()).hexdigest() == source_hash
+
+
+@pytest.mark.skipif(
+    not (shutil.which("soffice") or shutil.which("libreoffice")),
+    reason="A spreadsheet recalculation engine is not installed.",
+)
+@pytest.mark.parametrize(
+    "payload_factory,expected_item",
+    [
+        (complete_payload, "Gaco Silicone"),
+        (complete_insulation_payload, "Gaco 2.0 lb. closed-cell foam"),
+        (complete_flooring_payload, "NPI 707 Epoxy"),
+    ],
+)
+def test_ai_edited_validation_accepts_a_complete_formula_preserving_workbook(
+    monkeypatch,
+    tmp_path: Path,
+    payload_factory,
+    expected_item: str,
+) -> None:
+    monkeypatch.setenv("ESTIMATOR_API_ARTIFACT_DIR", str(tmp_path))
+    payload = payload_factory()
+    artifact = create_estimate_workbook(payload, base_dir=Path.cwd())
+
+    result = validate_ai_edited_workbook(
+        artifact.path,
+        template_type=payload["template_type"],
+        base_dir=Path.cwd(),
+        expected_estimated_sqft=payload["header"]["estimated_sqft"],
+        expected_items=[expected_item],
+    )
+
+    assert result.valid is True
+    assert result.issues == []
+    assert result.calculated_outputs["worksheet_price"] > 0
 
 
 @pytest.mark.skipif(

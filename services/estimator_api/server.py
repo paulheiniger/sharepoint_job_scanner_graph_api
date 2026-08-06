@@ -5,6 +5,7 @@ import hashlib
 import hmac
 from io import BytesIO
 import os
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,7 @@ from urllib.parse import urlencode, urlsplit
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from PIL import Image
+import requests
 
 from jobscan.business.chart_history_service import HISTORY_DATASETS, get_chart_history
 from jobscan.business.chart_service import build_chart_dataset, chart_dataset_csv
@@ -66,8 +68,17 @@ from jobscan.estimator.workbook_service import (
     EstimateWorkbookUnavailableError,
     create_estimate_workbook,
     create_estimate_workbook_options,
+    discover_estimate_workbook_profile,
+    estimate_template_path,
+    estimate_template_version,
     resolve_estimate_artifact,
+    validate_ai_edited_workbook,
 )
+from jobscan.estimator.sharepoint_staging import (
+    EstimateSharePointStagingUnavailable,
+    stage_estimate_workbook,
+)
+from jobscan.estimator.workbook_writer import safe_filename
 from jobscan.env import load_project_env
 from roof_measure.api_context import (
     RoofMeasureContextError,
@@ -92,6 +103,10 @@ from .schemas import (
     EstimateContextResponse,
     EstimateWorkbookRequest,
     EstimateWorkbookResponse,
+    EstimateWorkbookTemplateRequest,
+    EstimateWorkbookTemplateResponse,
+    EstimateWorkbookValidationRequest,
+    EstimateWorkbookValidationResponse,
     EstimateWorkbookOptionArtifact,
     EstimateWorkbookOptionsRequest,
     EstimateWorkbookOptionsResponse,
@@ -128,6 +143,8 @@ from .schemas import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+MAX_ACTION_WORKBOOK_BYTES = 10 * 1024 * 1024
 load_project_env(PROJECT_ROOT / ".env")
 PUBLIC_API_ORIGIN = os.getenv(
     "ESTIMATOR_API_PUBLIC_URL",
@@ -139,7 +156,7 @@ app = FastAPI(
         "Estimator evidence, controlled workbook generation, and read-only "
         "operational intelligence for conversational agents."
     ),
-    version="0.24.0",
+    version="0.25.0",
     servers=[{"url": PUBLIC_API_ORIGIN}],
 )
 
@@ -162,17 +179,17 @@ PRIVACY_POLICY_HTML = """<!doctype html>
 <body>
 <main>
   <h1>Spray-Tec Business Assistant Privacy Policy</h1>
-  <p class="updated"><strong>Effective and last updated:</strong> August 4, 2026</p>
+  <p class="updated"><strong>Effective and last updated:</strong> August 6, 2026</p>
   <p>This policy describes how Spray-Tec, Inc. handles information sent to the Spray-Tec Business Assistant API through a custom GPT or another authorized client.</p>
 
   <h2>Information processed</h2>
   <p>The service may process job notes, customer or project names, site addresses, measurements, scope details, estimating decisions, and operational questions supplied by a user. When a user provides an image or document to ChatGPT, the service generally receives the structured facts or notes that the GPT sends to the API, rather than the original file. At a user's request, the service may also retrieve metadata and readable content from SharePoint job documents already indexed by Spray-Tec's SharePoint Job Scanner.</p>
 
   <h2>How information is used</h2>
-  <p>Information is used only to retrieve business evidence and source documents, prepare summaries and charts, support estimate decisions, validate estimate inputs, and generate draft estimate workbooks requested by an authorized user. SharePoint access is read-only. Drafts require human review and are not automatically uploaded to SharePoint.</p>
+  <p>Information is used only to retrieve business evidence and source documents, prepare summaries and charts, support estimate decisions, validate estimate inputs, and generate draft estimate workbooks requested by an authorized user. Most SharePoint operations are read-only. When requested, a validated draft estimate may be uploaded only to Spray-Tec's configured SharePoint estimate-staging folder. Drafts require human review and are not automatically filed in permanent job folders.</p>
 
   <h2>Storage and retention</h2>
-  <p>Context, reporting, and SharePoint document requests are processed to produce the requested response and are not intentionally added to a separate marketing or advertising database. A SharePoint source file downloaded for on-demand text extraction is held only in temporary service storage for that request. Generated workbooks and roof-measure context images are stored temporarily by the API so the requesting user can retrieve them; signed links normally expire after 15 minutes. Limited technical logs and temporary service files may be retained as needed for security, troubleshooting, reliability, and service operation.</p>
+  <p>Context, reporting, and SharePoint document requests are processed to produce the requested response and are not intentionally added to a separate marketing or advertising database. A SharePoint source file downloaded for on-demand text extraction is held only in temporary service storage for that request. Generated workbooks and roof-measure context images are stored temporarily by the API so the requesting user can retrieve them; signed links normally expire after 15 minutes. Validated workbooks uploaded to the configured SharePoint staging folder remain there until Spray-Tec reviews, moves, or deletes them. Limited technical logs and temporary service files may be retained as needed for security, troubleshooting, reliability, and service operation.</p>
 
   <h2>Sharing and service providers</h2>
   <p>Spray-Tec does not sell information submitted to this service. Information may be processed by service providers used to operate it, including OpenAI for the ChatGPT experience, Microsoft Azure for API hosting, Microsoft Graph and SharePoint for authorized source-document retrieval, Mapbox for address geocoding and satellite imagery, and public mapping or LiDAR services used to retrieve building evidence. Those providers handle information under their own terms and privacy commitments. Information may also be disclosed when required by law or to protect the security and integrity of the service.</p>
@@ -676,6 +693,207 @@ def download_roof_measure_asset(
         media_type="image/png",
         headers={"Cache-Control": "private, no-store"},
     )
+
+
+def _download_openai_action_workbook(file_reference: Any) -> tuple[str, bytes]:
+    reference = (
+        file_reference.model_dump()
+        if hasattr(file_reference, "model_dump")
+        else file_reference
+    )
+    if not isinstance(reference, dict):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Attach the edited XLSX workbook to validateEstimateWorkbook; "
+                "the action did not receive a downloadable file reference."
+            ),
+        )
+    file_name = safe_filename(str(reference.get("name") or "edited-estimate.xlsx"))
+    download_link = str(reference.get("download_link") or "").strip()
+    parsed = urlsplit(download_link)
+    hostname = (parsed.hostname or "").lower()
+    if (
+        parsed.scheme != "https"
+        or not hostname
+        or not (
+            hostname == "files.oaiusercontent.com"
+            or hostname.endswith(".files.oaiusercontent.com")
+        )
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="The attached workbook did not provide a trusted HTTPS download link.",
+        )
+    try:
+        response = requests.get(
+            download_link,
+            timeout=(5, 30),
+            stream=True,
+            allow_redirects=False,
+        )
+        response.raise_for_status()
+        content_length = int(response.headers.get("Content-Length") or 0)
+        if content_length > MAX_ACTION_WORKBOOK_BYTES:
+            raise HTTPException(status_code=413, detail="The workbook exceeds 10 MB.")
+        chunks: list[bytes] = []
+        total = 0
+        for chunk in response.iter_content(chunk_size=1024 * 1024):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > MAX_ACTION_WORKBOOK_BYTES:
+                raise HTTPException(status_code=413, detail="The workbook exceeds 10 MB.")
+            chunks.append(chunk)
+    except HTTPException:
+        raise
+    except (requests.RequestException, ValueError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"The attached workbook could not be downloaded: {type(exc).__name__}.",
+        ) from exc
+    if not file_name.lower().endswith(".xlsx"):
+        raise HTTPException(status_code=422, detail="Attach an XLSX estimate workbook.")
+    return file_name, b"".join(chunks)
+
+
+@app.post(
+    "/v1/estimating/workbook-template",
+    response_model=EstimateWorkbookTemplateResponse,
+    response_model_by_alias=True,
+    operation_id="getEstimateWorkbookTemplate",
+    summary="Get the default estimate workbook for assistant editing",
+    description=(
+        "Returns the authoritative roofing, insulation, or flooring XLSX template "
+        "as a native action file, plus the template version required for validation."
+    ),
+)
+def estimate_workbook_template(
+    request: Request,
+    payload: EstimateWorkbookTemplateRequest,
+) -> EstimateWorkbookTemplateResponse:
+    _require_api_request(request)
+    try:
+        template_path = estimate_template_path(payload.template_type, base_dir=PROJECT_ROOT)
+        profile = discover_estimate_workbook_profile(payload.template_type, template_path)
+        content = template_path.read_bytes()
+    except EstimateWorkbookUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return EstimateWorkbookTemplateResponse.model_validate(
+        {
+            "schema_version": "spraytec.estimate_workbook_template.v1",
+            "template_type": payload.template_type,
+            "template_version": estimate_template_version(template_path),
+            "file_name": template_path.name,
+            "template_profile": profile.action_summary(),
+            "assistant_edit_instruction": (
+                "Edit input cells in the attached workbook directly. Preserve all sheets, "
+                "formulas, merged cells, formatting, selectors, and lookup tables. Then attach "
+                "the edited XLSX to validateEstimateWorkbook."
+            ),
+            "openaiFileResponse": [
+                {
+                    "name": template_path.name,
+                    "mime_type": XLSX_MEDIA_TYPE,
+                    "content": base64.b64encode(content).decode("ascii"),
+                }
+            ],
+            "warnings": [
+                "This is an unpriced working copy until it is edited, recalculated, and validated."
+            ],
+        }
+    )
+
+
+@app.post(
+    "/v1/estimating/workbook-validation",
+    response_model=EstimateWorkbookValidationResponse,
+    response_model_by_alias=True,
+    operation_id="validateEstimateWorkbook",
+    summary="Validate an assistant-edited estimate workbook",
+    description=(
+        "Downloads one attached XLSX, verifies the authoritative template formulas and "
+        "sheets, recalculates it, checks required totals, and optionally stages a valid "
+        "draft in the configured SharePoint folder."
+    ),
+)
+def estimate_workbook_validation(
+    request: Request,
+    payload: EstimateWorkbookValidationRequest,
+) -> EstimateWorkbookValidationResponse:
+    _require_api_request(request)
+    template_path = estimate_template_path(payload.template_type, base_dir=PROJECT_ROOT)
+    current_version = estimate_template_version(template_path)
+    if payload.template_version != current_version:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The default estimate template changed after this workbook was retrieved. "
+                "Fetch a fresh template and reapply the reviewed inputs."
+            ),
+        )
+    original_name, content = _download_openai_action_workbook(
+        payload.openai_file_id_refs[0]
+    )
+    with tempfile.TemporaryDirectory(prefix="estimate-validation-") as temporary:
+        timestamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+        output_name = f"Assistant Draft - {timestamp} - {safe_filename(original_name)}"
+        path = Path(temporary) / output_name
+        path.write_bytes(content)
+        try:
+            validation = validate_ai_edited_workbook(
+                path,
+                template_type=payload.template_type,
+                base_dir=PROJECT_ROOT,
+                expected_estimated_sqft=payload.expected_estimated_sqft,
+                expected_items=payload.expected_items,
+            )
+        except EstimateWorkbookInputError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": "The submitted workbook could not be validated.",
+                    "issues": exc.issues,
+                },
+            ) from exc
+        except EstimateWorkbookUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        sharepoint_url = ""
+        warnings = list(validation.warnings)
+        file_response: list[dict[str, str]] = []
+        if validation.valid:
+            recalculated_content = path.read_bytes()
+            file_response = [
+                {
+                    "name": output_name,
+                    "mime_type": XLSX_MEDIA_TYPE,
+                    "content": base64.b64encode(recalculated_content).decode("ascii"),
+                }
+            ]
+            if payload.save_to_sharepoint:
+                try:
+                    sharepoint_url = stage_estimate_workbook(path)
+                    warnings.append(
+                        "The workbook is in the temporary SharePoint estimate staging folder; "
+                        "it was not filed in a permanent job folder."
+                    )
+                except EstimateSharePointStagingUnavailable as exc:
+                    warnings.append(str(exc))
+        return EstimateWorkbookValidationResponse.model_validate(
+            {
+                "schema_version": "spraytec.estimate_workbook_validation.v1",
+                "template_type": payload.template_type,
+                "template_version": current_version,
+                "valid": validation.valid,
+                "calculated_outputs": validation.calculated_outputs,
+                "template_profile": validation.template_profile,
+                "issues": validation.issues,
+                "warnings": warnings,
+                "sharepoint_url": sharepoint_url,
+                "openaiFileResponse": file_response,
+            }
+        )
 
 
 @app.post(

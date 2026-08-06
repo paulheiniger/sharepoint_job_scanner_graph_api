@@ -3622,6 +3622,226 @@
         "title": "EstimateWorkbookStructuredScope",
         "type": "object"
       },
+      "EstimateWorkbookTemplateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "template_type": {
+            "enum": [
+              "roofing",
+              "insulation",
+              "flooring"
+            ],
+            "title": "Template Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "template_type"
+        ],
+        "title": "EstimateWorkbookTemplateRequest",
+        "type": "object"
+      },
+      "EstimateWorkbookTemplateResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "assistant_edit_instruction": {
+            "title": "Assistant Edit Instruction",
+            "type": "string"
+          },
+          "file_name": {
+            "title": "File Name",
+            "type": "string"
+          },
+          "openaiFileResponse": {
+            "items": {
+              "$ref": "#/components/schemas/OpenAIActionFile"
+            },
+            "maxItems": 1,
+            "minItems": 1,
+            "title": "Openaifileresponse",
+            "type": "array"
+          },
+          "schema_version": {
+            "const": "spraytec.estimate_workbook_template.v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "template_profile": {
+            "title": "Template Profile",
+            "type": "object"
+          },
+          "template_type": {
+            "enum": [
+              "roofing",
+              "insulation",
+              "flooring"
+            ],
+            "title": "Template Type",
+            "type": "string"
+          },
+          "template_version": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Template Version",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "schema_version",
+          "template_type",
+          "template_version",
+          "file_name",
+          "assistant_edit_instruction",
+          "openaiFileResponse"
+        ],
+        "title": "EstimateWorkbookTemplateResponse",
+        "type": "object"
+      },
+      "EstimateWorkbookValidationRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_estimated_sqft": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 10000000.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Estimated Sqft"
+          },
+          "expected_items": {
+            "items": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "Expected Items",
+            "type": "array"
+          },
+          "openaiFileIdRefs": {
+            "description": "Attach exactly one assistant-edited XLSX workbook from the conversation.",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 1,
+            "minItems": 1,
+            "title": "Openaifileidrefs",
+            "type": "array"
+          },
+          "save_to_sharepoint": {
+            "default": true,
+            "description": "Save a valid recalculated draft to the configured SharePoint staging folder.",
+            "title": "Save To Sharepoint",
+            "type": "boolean"
+          },
+          "template_type": {
+            "enum": [
+              "roofing",
+              "insulation",
+              "flooring"
+            ],
+            "title": "Template Type",
+            "type": "string"
+          },
+          "template_version": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Template Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "template_type",
+          "template_version",
+          "openaiFileIdRefs"
+        ],
+        "title": "EstimateWorkbookValidationRequest",
+        "type": "object"
+      },
+      "EstimateWorkbookValidationResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "calculated_outputs": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "title": "Calculated Outputs",
+            "type": "object"
+          },
+          "issues": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Issues",
+            "type": "array"
+          },
+          "openaiFileResponse": {
+            "items": {
+              "$ref": "#/components/schemas/OpenAIActionFile"
+            },
+            "maxItems": 1,
+            "title": "Openaifileresponse",
+            "type": "array"
+          },
+          "schema_version": {
+            "const": "spraytec.estimate_workbook_validation.v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "sharepoint_url": {
+            "default": "",
+            "title": "Sharepoint Url",
+            "type": "string"
+          },
+          "template_profile": {
+            "title": "Template Profile",
+            "type": "object"
+          },
+          "template_type": {
+            "enum": [
+              "roofing",
+              "insulation",
+              "flooring"
+            ],
+            "title": "Template Type",
+            "type": "string"
+          },
+          "template_version": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Template Version",
+            "type": "string"
+          },
+          "valid": {
+            "title": "Valid",
+            "type": "boolean"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "schema_version",
+          "template_type",
+          "template_version",
+          "valid"
+        ],
+        "title": "EstimateWorkbookValidationResponse",
+        "type": "object"
+      },
       "EstimateWorkbookWarranty": {
         "additionalProperties": false,
         "properties": {
@@ -4918,6 +5138,37 @@
           "content"
         ],
         "title": "OpenAIActionFile",
+        "type": "object"
+      },
+      "OpenAIFileReference": {
+        "description": "Runtime file reference injected by ChatGPT for a GPT Action request.",
+        "properties": {
+          "download_link": {
+            "default": "",
+            "maxLength": 4000,
+            "title": "Download Link",
+            "type": "string"
+          },
+          "id": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Id",
+            "type": "string"
+          },
+          "mime_type": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Mime Type",
+            "type": "string"
+          },
+          "name": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "title": "OpenAIFileReference",
         "type": "object"
       },
       "OperationsBacklogRequest": {
@@ -7352,7 +7603,7 @@
   "info": {
     "description": "Estimator evidence, controlled workbook generation, and read-only operational intelligence for conversational agents.",
     "title": "Spray-Tec Business Intelligence API",
-    "version": "0.24.0"
+    "version": "0.25.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -7633,6 +7884,86 @@
           }
         },
         "summary": "Create estimate workbooks for multiple approved options",
+        "x-openai-isConsequential": true
+      }
+    },
+    "/v1/estimating/workbook-template": {
+      "post": {
+        "description": "Returns the authoritative roofing, insulation, or flooring XLSX template as a native action file, plus the template version required for validation.",
+        "operationId": "getEstimateWorkbookTemplate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EstimateWorkbookTemplateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EstimateWorkbookTemplateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get the default estimate workbook for assistant editing",
+        "x-openai-isConsequential": false
+      }
+    },
+    "/v1/estimating/workbook-validation": {
+      "post": {
+        "description": "Downloads one attached XLSX, verifies the authoritative template formulas and sheets, recalculates it, checks required totals, and optionally stages a valid draft in the configured SharePoint folder.",
+        "operationId": "validateEstimateWorkbook",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EstimateWorkbookValidationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EstimateWorkbookValidationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Validate an assistant-edited estimate workbook",
         "x-openai-isConsequential": true
       }
     },

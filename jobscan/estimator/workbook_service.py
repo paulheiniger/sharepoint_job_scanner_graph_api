@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from copy import deepcopy
@@ -52,6 +53,15 @@ class EstimateWorkbookArtifact:
     file_name: str
     path: Path
     calculated_outputs: dict[str, float]
+    template_profile: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class EstimateWorkbookValidation:
+    valid: bool
+    calculated_outputs: dict[str, float]
+    issues: list[str]
+    warnings: list[str]
     template_profile: dict[str, Any]
 
 
@@ -126,6 +136,188 @@ def discover_estimate_workbook_profile(
     if template_type == "flooring":
         return discover_flooring_workbook_profile(template_path)
     return discover_roofing_workbook_profile(template_path)
+
+
+def estimate_template_version(template_path: Path) -> str:
+    """Return the content version used to bind editing and validation."""
+    return hashlib.sha256(Path(template_path).read_bytes()).hexdigest()
+
+
+def validate_ai_edited_workbook(
+    path: Path,
+    *,
+    template_type: str,
+    base_dir: Path,
+    expected_estimated_sqft: float | None = None,
+    expected_items: list[str] | None = None,
+) -> EstimateWorkbookValidation:
+    """Validate an assistant-edited copy without requiring a fill-API payload."""
+    try:
+        import openpyxl
+    except ImportError as exc:
+        raise EstimateWorkbookUnavailableError(
+            "Install openpyxl to validate estimate workbooks."
+        ) from exc
+
+    submitted_path = Path(path).resolve()
+    template_path = estimate_template_path(template_type, base_dir=base_dir)
+    profile = discover_estimate_workbook_profile(template_type, template_path)
+    issues: list[str] = []
+    warnings: list[str] = []
+
+    try:
+        template_workbook = openpyxl.load_workbook(
+            template_path,
+            data_only=False,
+            read_only=False,
+        )
+        edited_workbook = openpyxl.load_workbook(
+            submitted_path,
+            data_only=False,
+            read_only=False,
+        )
+    except Exception as exc:
+        raise EstimateWorkbookInputError(
+            [f"The submitted file is not a readable XLSX workbook: {type(exc).__name__}."]
+        ) from exc
+
+    missing_sheets = [
+        sheet_name
+        for sheet_name in template_workbook.sheetnames
+        if sheet_name not in edited_workbook.sheetnames
+    ]
+    required_sheet_names = {
+        profile.estimate_sheet,
+        profile.people_sheet,
+        *([profile.job_spec_sheet] if profile.job_spec_sheet else []),
+    }
+    missing_required_sheets = [
+        sheet_name for sheet_name in missing_sheets if sheet_name in required_sheet_names
+    ]
+    missing_auxiliary_sheets = [
+        sheet_name for sheet_name in missing_sheets if sheet_name not in required_sheet_names
+    ]
+    if missing_required_sheets:
+        issues.append(
+            "Required template sheets are missing: "
+            + ", ".join(missing_required_sheets)
+            + "."
+        )
+    if missing_auxiliary_sheets:
+        warnings.append(
+            "Auxiliary template sheets are missing and require estimator review: "
+            + ", ".join(missing_auxiliary_sheets)
+            + "."
+        )
+
+    protected_formula_cells = {
+        profile.estimate_sheet: {
+            profile.material_subtotal_cell,
+            profile.labor_subtotal_cell,
+            profile.total_job_cost_cell,
+            profile.final_price_cell,
+            profile.sales_inspection.cost_cell,
+            profile.truck_expense.cost_cell,
+            *(row.cost_cell for row in profile.labor_rows.values()),
+            *(row.cost_cell for row in profile.per_trip_labor_rows.values()),
+        },
+        profile.people_sheet: set(profile.crew_daily_rate_cells.values()),
+    }
+    if profile.warranty is not None:
+        protected_formula_cells[profile.estimate_sheet].add(profile.warranty.cost_cell)
+    changed_formulas: list[str] = []
+    for sheet_name in template_workbook.sheetnames:
+        if sheet_name not in edited_workbook.sheetnames:
+            continue
+        template_sheet = template_workbook[sheet_name]
+        edited_sheet = edited_workbook[sheet_name]
+        for row in template_sheet.iter_rows():
+            for cell in row:
+                formula = cell.value
+                if not isinstance(formula, str) or not formula.startswith("="):
+                    continue
+                edited_formula = edited_sheet[cell.coordinate].value
+                formula_missing = not (
+                    isinstance(edited_formula, str)
+                    and edited_formula.startswith("=")
+                )
+                protected_formula_changed = (
+                    cell.coordinate in protected_formula_cells.get(sheet_name, set())
+                    and edited_formula != formula
+                )
+                if formula_missing or protected_formula_changed:
+                    changed_formulas.append(f"{sheet_name}!{cell.coordinate}")
+    if changed_formulas:
+        preview = ", ".join(changed_formulas[:12])
+        suffix = (
+            ""
+            if len(changed_formulas) <= 12
+            else f" and {len(changed_formulas) - 12} more"
+        )
+        issues.append(
+            "Template formulas were removed or changed at " + preview + suffix + "."
+        )
+
+    if expected_estimated_sqft is not None and profile.estimate_sheet in edited_workbook:
+        actual_area = edited_workbook[profile.estimate_sheet]["C12"].value
+        if not _positive_number(actual_area):
+            issues.append("Estimate!C12 must contain the estimated square footage.")
+        elif abs(float(actual_area) - float(expected_estimated_sqft)) > 0.5:
+            issues.append(
+                "Estimate!C12 does not match expected_estimated_sqft within 0.5 sq. ft."
+            )
+
+    searchable_text = "\n".join(
+        str(cell.value).casefold()
+        for worksheet in edited_workbook.worksheets
+        for row in worksheet.iter_rows()
+        for cell in row
+        if isinstance(cell.value, str) and not cell.value.startswith("=")
+    )
+    for expected_item in expected_items or []:
+        normalized = str(expected_item or "").strip().casefold()
+        if normalized and normalized not in searchable_text:
+            warnings.append(
+                f"Expected scope item was not found as visible workbook text: {expected_item}."
+            )
+
+    if issues:
+        return EstimateWorkbookValidation(
+            valid=False,
+            calculated_outputs={},
+            issues=issues,
+            warnings=warnings,
+            template_profile=profile.action_summary(),
+        )
+
+    recalculate_estimate_workbook(submitted_path)
+    try:
+        calculated_outputs = validate_recalculated_workbook(
+            submitted_path,
+            {
+                "header": {"estimated_sqft": expected_estimated_sqft},
+                "materials": [],
+                "labor": [],
+                "logistics": [],
+                "warranty": {},
+            },
+            profile,
+        )
+    except EstimateWorkbookOutputError as exc:
+        return EstimateWorkbookValidation(
+            valid=False,
+            calculated_outputs={},
+            issues=exc.issues,
+            warnings=warnings,
+            template_profile=profile.action_summary(),
+        )
+    return EstimateWorkbookValidation(
+        valid=True,
+        calculated_outputs=calculated_outputs,
+        issues=[],
+        warnings=warnings,
+        template_profile=profile.action_summary(),
+    )
 
 
 def estimate_artifact_dir(*, base_dir: Path) -> Path:

@@ -16,6 +16,9 @@ from jobscan.estimator.planning_snapshot import create_planning_snapshot
 from jobscan.estimator.workbook_service import (
     EstimateWorkbookArtifact,
     EstimateWorkbookInputError,
+    EstimateWorkbookValidation,
+    estimate_template_path,
+    estimate_template_version,
 )
 
 
@@ -515,6 +518,79 @@ def test_workbook_request_applies_standard_commercial_percentages() -> None:
     assert insulation.pricing.profit_pct == 10
 
 
+@pytest.mark.parametrize("template_type", ["roofing", "insulation", "flooring"])
+def test_workbook_template_route_returns_native_default_file(
+    monkeypatch,
+    template_type: str,
+) -> None:
+    monkeypatch.setenv("ESTIMATOR_API_KEY", "test-secret")
+    response = client.post(
+        "/v1/estimating/workbook-template",
+        json={"template_type": template_type},
+        headers={"Authorization": "Bearer test-secret"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    template_path = estimate_template_path(template_type, base_dir=Path.cwd())
+    assert body["template_version"] == estimate_template_version(template_path)
+    assert body["openaiFileResponse"][0]["content"] == __import__("base64").b64encode(
+        template_path.read_bytes()
+    ).decode("ascii")
+
+
+def test_workbook_validation_returns_recalculated_file_and_sharepoint_link(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ESTIMATOR_API_KEY", "test-secret")
+    template_path = estimate_template_path("roofing", base_dir=Path.cwd())
+    monkeypatch.setattr(
+        "services.estimator_api.server._download_openai_action_workbook",
+        lambda _reference: ("Estimate - Test.xlsx", template_path.read_bytes()),
+    )
+    monkeypatch.setattr(
+        "services.estimator_api.server.validate_ai_edited_workbook",
+        lambda *_args, **_kwargs: EstimateWorkbookValidation(
+            valid=True,
+            calculated_outputs={"worksheet_price": 12345.0},
+            issues=[],
+            warnings=[],
+            template_profile={"profile_version": "test"},
+        ),
+    )
+    monkeypatch.setattr(
+        "services.estimator_api.server.stage_estimate_workbook",
+        lambda _path: "https://spraytec.sharepoint.com/staged-estimate",
+    )
+    response = client.post(
+        "/v1/estimating/workbook-validation",
+        json={
+            "template_type": "roofing",
+            "template_version": estimate_template_version(template_path),
+            "expected_estimated_sqft": 5000,
+            "expected_items": ["roofing foam"],
+            "save_to_sharepoint": True,
+            "openaiFileIdRefs": [
+                {
+                    "name": "Estimate - Test.xlsx",
+                    "mime_type": (
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    ),
+                    "download_link": "https://files.oaiusercontent.com/test.xlsx",
+                }
+            ],
+        },
+        headers={"Authorization": "Bearer test-secret"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is True
+    assert body["sharepoint_url"].endswith("/staged-estimate")
+    assert body["calculated_outputs"]["worksheet_price"] == 12345
+    assert len(body["openaiFileResponse"]) == 1
+
+
 def test_workbook_route_requires_confirmation(monkeypatch) -> None:
     monkeypatch.setenv("ESTIMATOR_API_KEY", "test-secret")
 
@@ -966,6 +1042,8 @@ def test_openapi_exposes_expected_operations() -> None:
         "getRoofMeasureContext",
         "segmentRoofMeasureContext",
         "calculateRoofMeasurement",
+        "getEstimateWorkbookTemplate",
+        "validateEstimateWorkbook",
         "generateEstimateWorkbook",
         "generateEstimateWorkbookOptions",
         "downloadEstimateWorkbook",
@@ -1145,6 +1223,18 @@ def test_action_openapi_marks_read_only_posts_nonconsequential() -> None:
     assert spec["paths"]["/v1/estimating/workbook-options"]["post"][
         "x-openai-isConsequential"
     ] is True
+    assert spec["paths"]["/v1/estimating/workbook-template"]["post"][
+        "x-openai-isConsequential"
+    ] is False
+    assert spec["paths"]["/v1/estimating/workbook-validation"]["post"][
+        "x-openai-isConsequential"
+    ] is True
+    validation_schema = spec["components"]["schemas"][
+        "EstimateWorkbookValidationRequest"
+    ]
+    assert validation_schema["properties"]["openaiFileIdRefs"]["items"] == {
+        "type": "string"
+    }
     assert "/v1/estimating/workbooks/{artifact_id}" not in spec["paths"]
 
 

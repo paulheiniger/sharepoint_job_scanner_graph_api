@@ -35,6 +35,16 @@ def build_action_openapi(
         {},
     )
     response_schema.get("properties", {}).pop("source_metadata", None)
+    validation_schema = specification["components"]["schemas"].get(
+        "EstimateWorkbookValidationRequest",
+        {},
+    )
+    file_refs = validation_schema.get("properties", {}).get("openaiFileIdRefs")
+    if isinstance(file_refs, dict):
+        # ChatGPT injects runtime file-reference objects, but GPT Actions only
+        # enables the attachment handoff when this parameter is declared as an
+        # array of strings in the imported OpenAPI contract.
+        file_refs["items"] = {"type": "string"}
     for path_item in specification["paths"].values():
         for method, operation in path_item.items():
             if method.lower() in {"get", "post"}:
@@ -43,6 +53,7 @@ def build_action_openapi(
                     in {
                         "generateEstimateWorkbook",
                         "generateEstimateWorkbookOptions",
+                        "validateEstimateWorkbook",
                     }
                 )
     return specification
