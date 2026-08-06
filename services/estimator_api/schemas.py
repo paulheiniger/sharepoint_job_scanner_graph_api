@@ -1422,6 +1422,14 @@ class BidScopeTraceRegion(BaseModel):
             "Optional estimator-corrected closed boundary. When supplied, it replaces SAM2 prompting."
         ),
     )
+    polygons: list[list[BidScopeNormalizedPoint]] = Field(
+        default_factory=list,
+        max_length=200,
+        description=(
+            "Independent closed boundaries for disconnected components such as windows and doors. "
+            "Do not join separate openings with connector lines. When supplied, this replaces SAM2 prompting."
+        ),
+    )
     clip_polygon: list[BidScopeNormalizedPoint] = Field(
         default_factory=list,
         max_length=100,
@@ -1436,12 +1444,18 @@ class BidScopeTraceRegion(BaseModel):
 
     @model_validator(mode="after")
     def validate_trace_inputs(self) -> "BidScopeTraceRegion":
+        if self.polygon and self.polygons:
+            raise ValueError("Provide polygon or polygons, not both.")
         if self.polygon and len(self.polygon) < 3:
             raise ValueError("An explicit polygon requires at least three vertices.")
+        if any(len(component) < 3 for component in self.polygons):
+            raise ValueError("Every polygons component requires at least three vertices.")
+        if sum(len(component) for component in self.polygons) > 2_000:
+            raise ValueError("polygons may contain at most 2,000 total vertices.")
         if self.clip_polygon and len(self.clip_polygon) < 3:
             raise ValueError("clip_polygon requires at least three vertices.")
-        if not self.polygon and not self.positive_points and self.box is None:
-            raise ValueError("Provide positive_points, a box, or an explicit polygon.")
+        if not self.polygon and not self.polygons and not self.positive_points and self.box is None:
+            raise ValueError("Provide positive_points, a box, polygon, or polygons.")
         if self.measurement_type == "wall_area" and self.height_ft is None:
             raise ValueError("wall_area requires height_ft.")
         if self.quantity_role == "deduction":

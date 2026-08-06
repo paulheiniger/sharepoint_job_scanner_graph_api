@@ -87,11 +87,14 @@ state uncertainty, coverage, and warnings. Never invent unavailable results.
 - For elevation takeoffs, trace the gross insulated surface and the openings on
   the same image as separate regions. Set each window/door/opening region to
   `measurement_type: area`, `quantity_role: deduction`, and link it with
-  `deduct_from_region_id` to the matching gross elevation region. Multiple
-  positive points may be used for a grouped opening mask; add more deduction
-  regions when one mask misses openings. Report gross surface, traced opening
-  deductions, and net surface separately. Do not present a net wall quantity
-  until the opening overlay has been visually reviewed.
+  `deduct_from_region_id` to the matching gross elevation region. For explicit
+  geometry, use `polygons` with one independent closed ring per window or door.
+  Never join disconnected openings with connector lines and never put multiple
+  openings into one `polygon`. The service sums the independent components and
+  rejects overlaps or deductions outside the gross region. Report gross
+  surface, traced opening deductions, and net surface separately. Do not
+  present a net wall quantity until the opening overlay has been visually
+  reviewed.
 - Inspect `bidscope_traced_regions.jpg`. SAM2 proposes a boundary but does not
   prove scope. Verify every edge, report that closed-boundary length includes
   the complete perimeter, and keep results draft-only. To correct a boundary,

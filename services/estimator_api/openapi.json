@@ -624,6 +624,18 @@
             "title": "Polygon",
             "type": "array"
           },
+          "polygons": {
+            "description": "Independent closed boundaries for disconnected components such as windows and doors. Do not join separate openings with connector lines. When supplied, this replaces SAM2 prompting.",
+            "items": {
+              "items": {
+                "$ref": "#/components/schemas/BidScopeNormalizedPoint"
+              },
+              "type": "array"
+            },
+            "maxItems": 200,
+            "title": "Polygons",
+            "type": "array"
+          },
           "positive_points": {
             "items": {
               "$ref": "#/components/schemas/BidScopeNormalizedPoint"

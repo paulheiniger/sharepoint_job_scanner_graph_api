@@ -9,6 +9,9 @@ from typing import Any
 
 import numpy as np
 from PIL import Image, ImageDraw
+from shapely.geometry import Polygon
+from shapely.ops import unary_union
+from shapely.validation import explain_validity
 
 from jobscan.business.bidscope_service import (
     BidScopeInputError,
@@ -108,14 +111,27 @@ def trace_bidscope_regions(
         with Image.open(image_path) as source:
             source_image = source.convert("RGB")
         normalized_polygon = _normalized_polygon(region.get("polygon") or [])
-        if normalized_polygon:
+        normalized_polygons = _normalized_polygons(region.get("polygons") or [])
+        if normalized_polygon and normalized_polygons:
+            raise BidScopeInputError("Provide polygon or polygons, not both.")
+        if normalized_polygon or normalized_polygons:
+            explicit_components = normalized_polygons or [normalized_polygon]
+            _validate_independent_polygons(
+                explicit_components,
+                region_id=str(region["region_id"]),
+            )
             sections = [
                 section_from_polygon(
-                    str(region["region_id"]),
-                    _normalized_to_pixels(normalized_polygon, source_image.size),
+                    f"{region['region_id']}-{index + 1}",
+                    _normalized_to_pixels(component, source_image.size),
                 )
+                for index, component in enumerate(explicit_components)
             ]
-            trace_method = "assistant_supplied_polygon"
+            trace_method = (
+                "assistant_supplied_multipolygon"
+                if normalized_polygons
+                else "assistant_supplied_polygon"
+            )
             model_name = "none"
             model_version = "none"
             model_score = None
@@ -236,6 +252,7 @@ def trace_bidscope_regions(
             "model_version": model_version,
             "model_score": model_score,
             "hard_clip_applied": trace_method.endswith("hard_clipped"),
+            "component_count": len(sections),
             "scale_calibration": calibration,
             "measurements": measurement,
             "sections": public_sections,
@@ -309,6 +326,54 @@ def _normalized_polygon(value: Any) -> list[tuple[float, float]]:
     if len(points) < 3:
         raise BidScopeInputError("An explicit polygon requires at least three vertices.")
     return points
+
+
+def _normalized_polygons(value: Any) -> list[list[tuple[float, float]]]:
+    if not value:
+        return []
+    if not isinstance(value, (list, tuple)):
+        raise BidScopeInputError("polygons must be a list of independent polygon rings.")
+    polygons: list[list[tuple[float, float]]] = []
+    for index, component in enumerate(value):
+        points = _normalized_points(component, field_name=f"polygons[{index}]")
+        if len(points) < 3:
+            raise BidScopeInputError(
+                f"polygons[{index}] requires at least three vertices."
+            )
+        polygons.append(points)
+    if len(polygons) > 200:
+        raise BidScopeInputError("polygons may contain at most 200 components.")
+    if sum(len(component) for component in polygons) > 2_000:
+        raise BidScopeInputError("polygons may contain at most 2,000 total vertices.")
+    return polygons
+
+
+def _validate_independent_polygons(
+    polygons: list[list[tuple[float, float]]],
+    *,
+    region_id: str,
+) -> None:
+    shapes: list[Polygon] = []
+    for index, ring in enumerate(polygons):
+        shape = Polygon(ring)
+        if shape.is_empty or shape.area <= 0:
+            raise BidScopeInputError(
+                f"Region {region_id} polygon component {index + 1} has no measurable area."
+            )
+        if not shape.is_valid:
+            raise BidScopeInputError(
+                f"Region {region_id} polygon component {index + 1} is invalid "
+                f"({explain_validity(shape)}). Use one independent ring per opening; "
+                "do not connect separate openings with lines."
+            )
+        shapes.append(shape)
+    for left_index, left in enumerate(shapes):
+        for right_index in range(left_index + 1, len(shapes)):
+            if left.intersection(shapes[right_index]).area > 1e-10:
+                raise BidScopeInputError(
+                    f"Region {region_id} polygon components {left_index + 1} and "
+                    f"{right_index + 1} overlap. Opening components must be independent."
+                )
 
 
 def _normalized_box(value: Any) -> tuple[float, float, float, float] | None:
@@ -565,6 +630,9 @@ def _apply_linked_deductions(traces: list[dict[str, Any]]) -> list[dict[str, Any
             raise BidScopeInputError("Opening deductions must be measured in square feet.")
         linked.setdefault(target_id, []).append(trace)
 
+    for target_id, deductions in linked.items():
+        _validate_linked_deduction_geometry(by_id[target_id], deductions)
+
     summaries: list[dict[str, Any]] = []
     for trace in traces:
         if str(trace.get("quantity_role") or "additive") == "deduction":
@@ -621,6 +689,62 @@ def _apply_linked_deductions(traces: list[dict[str, Any]]) -> list[dict[str, Any
             }
         )
     return summaries
+
+
+def _validate_linked_deduction_geometry(
+    gross_trace: dict[str, Any],
+    deductions: list[dict[str, Any]],
+) -> None:
+    gross_geometry = _trace_geometry(gross_trace)
+    if gross_geometry.is_empty:
+        raise BidScopeInputError(
+            f"Gross region {gross_trace.get('region_id')} has no usable polygon geometry."
+        )
+
+    components: list[tuple[str, Polygon]] = []
+    for deduction in deductions:
+        deduction_id = str(deduction.get("region_id") or "")
+        for shape in _trace_component_geometries(deduction):
+            if not gross_geometry.buffer(1e-7).covers(shape):
+                raise BidScopeInputError(
+                    f"Deduction region {deduction_id} extends outside gross region "
+                    f"{gross_trace.get('region_id')}. Correct the opening boundary before measuring."
+                )
+            components.append((deduction_id, shape))
+
+    for left_index, (left_id, left) in enumerate(components):
+        for right_id, right in components[left_index + 1 :]:
+            if left.intersection(right).area > 1e-10:
+                raise BidScopeInputError(
+                    f"Opening deductions {left_id} and {right_id} overlap. "
+                    "Each opening may be deducted only once."
+                )
+
+
+def _trace_geometry(trace: dict[str, Any]):
+    return unary_union(_trace_component_geometries(trace))
+
+
+def _trace_component_geometries(trace: dict[str, Any]) -> list[Polygon]:
+    shapes: list[Polygon] = []
+    for section in trace.get("sections") or []:
+        shell = [
+            (float(point["x"]), float(point["y"]))
+            for point in section.get("polygon") or []
+        ]
+        holes = [
+            [(float(point["x"]), float(point["y"])) for point in hole]
+            for hole in section.get("holes") or []
+        ]
+        if len(shell) < 3:
+            continue
+        shape = Polygon(shell, holes=holes)
+        if shape.is_empty or shape.area <= 0 or not shape.is_valid:
+            raise BidScopeInputError(
+                f"Region {trace.get('region_id')} contains invalid persisted polygon geometry."
+            )
+        shapes.append(shape)
+    return shapes
 
 
 def _normalized_records(
